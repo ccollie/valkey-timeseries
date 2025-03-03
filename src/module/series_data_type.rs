@@ -13,10 +13,16 @@ use std::os::raw::{c_int, c_void};
 use valkey_module::raw;
 // see https://github.com/redis/redis/blob/unstable/tests/modules
 
-pub static VK_TIME_SERIES_VERSION: i32 = 1;
+/// Used for decoding and encoding `TimeSeries`. Currently used in AOF Rewrite.
+/// This value must be incremented when the `TimeSeries` struct change.
+pub const TIMESERIES_TYPE_OBJECT_VERSION: u8 = 1;
+
+/// Bloom Module data type RDB encoding version.
+const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
+
 pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
     "vktseries",
-    VK_TIME_SERIES_VERSION,
+    TIMESERIES_TYPE_ENCODING_VERSION,
     RedisModuleTypeMethods {
         version: valkey_module::TYPE_METHOD_VERSION,
         rdb_load: Some(rdb_load),

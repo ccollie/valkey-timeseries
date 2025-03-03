@@ -4,11 +4,35 @@ use crate::iterators::aggregator::AggregationOptions;
 use crate::labels::matchers::Matchers;
 use crate::series::{TimestampRange, TimestampValue, ValueFilter};
 
-pub struct MetadataFunctionArgs {
-    pub start: Timestamp,
-    pub end: Timestamp,
+#[derive(Default)]
+pub struct MatchFilterOptions {
+    pub date_range: Option<TimestampRange>,
     pub matchers: Vec<Matchers>,
     pub limit: Option<usize>,
+}
+
+impl MatchFilterOptions {
+    pub fn is_empty(&self) -> bool {
+        self.date_range.is_none() && self.matchers.is_empty()
+    }
+}
+
+impl From<Vec<Matchers>> for MatchFilterOptions {
+    fn from(matchers: Vec<Matchers>) -> Self {
+        Self {
+            matchers,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<Matchers> for MatchFilterOptions {
+    fn from(matcher: Matchers) -> Self {
+        Self {
+            matchers: vec![matcher],
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +58,8 @@ impl RangeOptions {
     pub fn new(start: Timestamp, end: Timestamp) -> Self {
         Self {
             date_range: TimestampRange {
-                start: TimestampValue::Value(start),
-                end: TimestampValue::Value(end),
+                start: TimestampValue::Specific(start),
+                end: TimestampValue::Specific(end),
             },
             ..Default::default()
         }

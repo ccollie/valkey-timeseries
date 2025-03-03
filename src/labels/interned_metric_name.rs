@@ -1,5 +1,4 @@
 use super::label::{Label, SeriesLabel};
-use crate::common::arc_interner::ArcIntern;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::serialization::{rdb_load_string, rdb_load_usize, rdb_save_usize};
 use enquote::enquote;
@@ -7,6 +6,7 @@ use get_size::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
 use valkey_module::{raw, ValkeyResult};
+use yasi::InternedString;
 
 const VALUE_SEPARATOR: &str = "=";
 const EMPTY_LABEL: &str = "";
@@ -26,13 +26,14 @@ impl SeriesLabel for InternedLabel<'_> {
     }
 }
 
+
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
-pub struct InternedMetricName(Vec<ArcIntern<String>>);
+pub struct InternedMetricName(Vec<InternedString>);
 
 impl GetSize for InternedMetricName {
     fn get_size(&self) -> usize {
         // all actual content is shared by interner, so we only need to count the stack size of the vector
-        self.0.capacity() * size_of::<ArcIntern<String>>()
+        self.0.capacity() * size_of::<InternedString>()
     }
 }
 
@@ -46,6 +47,7 @@ impl InternedMetricName {
         for label in labels {
             metric_name.add_label(label.name(), label.value());
         }
+        metric_name.shrink_to_fit();
         metric_name
     }
 
@@ -56,7 +58,7 @@ impl InternedMetricName {
     /// adds new label to mn with the given key and value.
     pub fn add_label(&mut self, key: &str, value: &str) {
         let full_label = format!("{}{}{}", key, VALUE_SEPARATOR, value);
-        let interned_value = ArcIntern::new(full_label);
+        let interned_value = InternedString::intern(full_label);
         match self.0.binary_search_by_key(&key, |tag| {
             if let Some((k, _)) = tag.split_once(VALUE_SEPARATOR) {
                 k
@@ -75,9 +77,9 @@ impl InternedMetricName {
 
     pub fn get_value(&self, key: &str) -> Option<&str> {
         for interned in &self.0 {
-            if let Some((k, v)) = &interned.split_once(VALUE_SEPARATOR) {
-                if *k == key {
-                    return Some(*v);
+            if let Some((k, v)) = interned.split_once(VALUE_SEPARATOR) {
+                if k == key {
+                    return Some(v);
                 }
             }
         }
@@ -154,6 +156,10 @@ impl InternedMetricName {
         }
         Ok(result)
     }
+    
+    pub fn shrink_to_fit(&mut self) {
+        self.0.shrink_to_fit();
+    }
 }
 
 impl From<HashMap<String, String>> for InternedMetricName {
@@ -163,6 +169,18 @@ impl From<HashMap<String, String>> for InternedMetricName {
             metric_name.add_label(&key, &value);
         }
         metric_name
+    }
+}
+
+impl From<&[Label]> for InternedMetricName {
+    fn from(labels: &[Label]) -> Self {
+        InternedMetricName::new(labels)
+    }
+}
+
+impl From<Vec<Label>> for InternedMetricName {
+    fn from(labels: Vec<Label>) -> Self {
+        InternedMetricName::new(&labels)
     }
 }
 

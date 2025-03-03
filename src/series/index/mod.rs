@@ -21,6 +21,9 @@ use crate::series::TimeSeries;
 pub use timeseries_index::*;
 pub use posting_stats::*;
 pub use querier::*;
+use crate::arg_types::MatchFilterOptions;
+use crate::common::time::current_time_millis;
+use crate::error_consts;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex>;
@@ -55,36 +58,54 @@ where
     res
 }
 
-pub(crate) fn with_matched_series<F, STATE>(
+pub fn with_matched_series<F, STATE>(
     ctx: &Context,
     acc: &mut STATE,
-    matchers: &[Matchers],
+    filter: &MatchFilterOptions,
     mut f: F,
 ) -> ValkeyResult<()>
 where
-    F: FnMut(&mut STATE, &TimeSeries, ValkeyString) -> ValkeyResult<()>,
+    F: FnMut(&mut STATE, &TimeSeries, ValkeyString),
 {
     with_timeseries_index(ctx, move |index| {
-        let keys = series_keys_by_matchers(ctx, index, matchers)?;
+        let keys = series_keys_by_matchers(ctx, index, &filter.matchers)?;
         if keys.is_empty() {
-            return Err(ValkeyError::Str("ERR no series found"));
+            return Err(ValkeyError::Str(error_consts::NO_SERIES_FOUND));
         }
+
+        let now = Some(current_time_millis());
+
         for key in keys {
-            let db_key = ctx.open_key(&key);
-            if let Some(series) = db_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)? {
-                f(acc, series, key)?
+            let redis_key = ctx.open_key(&key);
+            // get series from redis
+            match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+                Ok(Some(series)) => {
+                    if let Some(range) = filter.date_range {
+                        let (start, end) = range.get_series_range(series, now, true);
+                        if series.overlaps(start, end) {
+                            f(acc, series, key);
+                        }
+                    } else {
+                        f(acc, series, key);
+                    }
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+                _ => {}
             }
         }
         Ok(())
     })
 }
 
+
 pub fn series_keys_by_matchers(
     ctx: &Context,
     ts_index: &TimeSeriesIndex,
     matchers: &[Matchers],
 ) -> ValkeyResult<Vec<ValkeyString>> {
-    get_keys_by_matchers(ctx, ts_index, matchers)
+    get_keys_by_matchers(ctx, ts_index, matchers, None)
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {

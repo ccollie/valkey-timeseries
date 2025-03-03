@@ -1,5 +1,7 @@
 extern crate get_size;
 extern crate valkey_module_macros;
+extern crate strum;
+extern crate strum_macros;
 
 use crate::config::load_config;
 use crate::module::VK_TIME_SERIES_TYPE;
@@ -88,11 +90,18 @@ valkey_module! {
         ["TS.MGET", commands::mget, "readonly fast", 0, 0, -1],
         ["TS.MADD", commands::madd, "write deny-oom", 1, -1, 3],
         ["TS.DEL", commands::del, "write deny-oom", 1, 1, 1],
+        ["TS.DECRBY", commands::decrby, "write deny-oom", 1, 1, 1],
+        ["TS.INCRBY", commands::incrby, "write deny-oom", 1, 1, 1],
         ["TS.JOIN", commands::join, "readonly", 1, 2, 1],
+        ["TS.MREVRANGE", commands::mrevrange, "readonly deny-oom", 0, 0, -1],
         ["TS.MRANGE", commands::mrange, "readonly deny-oom", 0, 0, -1],
         ["TS.RANGE", commands::range, "readonly deny-oom", 1, 1, 1],
+        ["TS.REVRANGE", commands::rev_range, "readonly deny-oom", 1, 1, 1],
         ["TS.INFO", commands::info, "readonly", 0, 0, 0],
         ["TS.QUERYINDEX", commands::query_index, "readonly", 0, 0, 0],
+        ["TS.CARD", commands::cardinality, "readonly fast", 0, 0, 0],
+        ["TS.LABELNAMES", commands::label_names, "readonly fast", 0, 0, 0],
+        ["TS.LABELVALUES", commands::label_values, "readonly fast", 0, 0, 0],
         ["TS.STATS", commands::stats, "readonly", 0, 0, 0],
     ],
      event_handlers: [

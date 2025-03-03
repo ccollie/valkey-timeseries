@@ -2,9 +2,10 @@ use crate::common::binop::BinopFunc;
 use crate::common::{Sample, Timestamp};
 use crate::iterators::aggregator::aggregate;
 use crate::join::{JoinIterator, JoinOptions, JoinValue};
-use crate::series::{get_series_range_filtered, TimeSeries};
+use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
+use crate::common::parallel::join;
 
 // naming is hard :-)
 /// Result of a join operation
@@ -34,9 +35,9 @@ pub fn process_join(
     right_series: &TimeSeries,
     options: &JoinOptions,
 ) -> JoinResultType {
-    let (left_samples, right_samples) = chili::Scope::global().join(
-        |_| fetch_samples(left_series, options),
-        |_| fetch_samples(right_series, options),
+    let (left_samples, right_samples) = join(
+        || fetch_samples(left_series, options),
+        || fetch_samples(right_series, options),
     );
     join_internal(&left_samples, &right_samples, options)
 }
@@ -93,9 +94,8 @@ pub(super) fn transform_join_value_to_sample(item: &JoinValue, f: BinopFunc) -> 
 }
 
 fn fetch_samples(ts: &TimeSeries, options: &JoinOptions) -> Vec<Sample> {
-    let (start, end) = options.date_range.get_series_range(ts, true);
-    let mut samples = get_series_range_filtered(
-        ts,
+    let (start, end) = options.date_range.get_series_range(ts, None,true);
+    let mut samples = ts.get_range_filtered(
         start,
         end,
         &options.timestamp_filter,

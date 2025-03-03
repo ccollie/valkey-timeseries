@@ -8,7 +8,7 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::vec;
-use valkey_module::ValkeyError;
+use valkey_module::{raw, ValkeyError, ValkeyResult};
 
 pub const MIN_CHUNK_SIZE: usize = 48;
 pub const MAX_CHUNK_SIZE: usize = 1048576;
@@ -30,23 +30,15 @@ impl ChunkCompression {
             ChunkCompression::Pco => "pco",
         }
     }
+    
+    pub fn is_compressed(&self) -> bool {
+        *self != ChunkCompression::Uncompressed
+    }
 }
 
 impl Display for ChunkCompression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
-    }
-}
-
-impl TryFrom<u8> for ChunkCompression {
-    type Error = TsdbError;
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(ChunkCompression::Uncompressed),
-            2 => Ok(ChunkCompression::Gorilla),
-            4 => Ok(ChunkCompression::Pco),
-            _ => Err(TsdbError::InvalidCompression(value.to_string())),
-        }
     }
 }
 
@@ -100,6 +92,9 @@ pub trait Chunk: Sized {
     ) -> TsdbResult<Vec<SampleAddResult>>;
 
     fn split(&mut self) -> TsdbResult<Self>;
+    
+    fn save_rdb(&self, rdb: *mut raw::RedisModuleIO);
+    fn load_rdb(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self>;
 }
 
 pub struct ChunkSampleIterator<'a> {

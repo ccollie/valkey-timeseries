@@ -8,6 +8,8 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use core::mem::size_of;
 use get_size::GetSize;
+use valkey_module::{raw, RedisModuleIO, ValkeyResult};
+use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
 
 // todo: move to constants
 pub const MAX_UNCOMPRESSED_SAMPLES: usize = 256;
@@ -309,6 +311,37 @@ impl Chunk for UncompressedChunk {
             max_size: self.max_size,
             samples: right.to_vec(),
             max_elements: self.max_elements,
+        })
+    }
+
+    fn save_rdb(&self, rdb: *mut RedisModuleIO) {
+        // todo: compress ?
+        rdb_save_usize(rdb, self.max_size);
+        rdb_save_usize(rdb, self.max_elements);
+        rdb_save_usize(rdb, self.samples.len());
+        for Sample { timestamp, value } in self.samples.iter() {
+            raw::save_signed(rdb, *timestamp);
+            raw::save_double(rdb, *value);
+        }
+    }
+
+    fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
+        let max_size = rdb_load_usize(rdb)?;
+        let max_elements = rdb_load_usize(rdb)?;
+        let len = rdb_load_usize(rdb)?;
+        let mut samples = Vec::with_capacity(len);
+        for _ in 0..len {
+            let ts = raw::load_signed(rdb)?;
+            let val = raw::load_double(rdb)?;
+            samples.push(Sample {
+                timestamp: ts,
+                value: val,
+            });
+        }
+        Ok(UncompressedChunk {
+            max_size,
+            samples,
+            max_elements,
         })
     }
 }

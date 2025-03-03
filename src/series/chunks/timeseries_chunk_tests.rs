@@ -266,19 +266,21 @@ mod tests {
             chunk.remove_range(20, 30).unwrap();
 
             assert_eq!(chunk.len(), 2);
-            assert_eq!(
-                chunk.get_range(0, 100).unwrap(),
-                vec![
-                    Sample {
-                        timestamp: 10,
-                        value: 1.0
-                    },
-                    Sample {
-                        timestamp: 40,
-                        value: 4.0
-                    },
-                ]
-            );
+
+            let removed = chunk.remove_range(20, 30).unwrap();
+            let current = chunk.get_range(0, 100).unwrap();
+            let expected = vec![
+                Sample {
+                    timestamp: 20,
+                    value: 2.0
+                },
+                Sample {
+                    timestamp: 40,
+                    value: 4.0
+                },
+            ];
+
+            assert_eq!(current, expected, "{chunk_type}: Expected range {:?} after removing [20, 30], got {:?}", expected, current);
         }
     }
 

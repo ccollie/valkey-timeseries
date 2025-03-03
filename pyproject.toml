@@ -1,0 +1,9 @@
+[project]
+name = "valkey-tslib"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "valkey",
+    "pytest==4",
+]

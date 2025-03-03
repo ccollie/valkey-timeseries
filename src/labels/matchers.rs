@@ -191,16 +191,9 @@ impl PredicateMatch {
                     re.is_match(other)
                 }
             }
-            PredicateMatch::RegexNotEqual(re) => !re.is_match(other),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match self {
-            PredicateMatch::Equal(value) => value.is_empty(),
-            PredicateMatch::NotEqual(value) => value.is_empty(),
-            PredicateMatch::RegexEqual(_) => false,
-            PredicateMatch::RegexNotEqual(_) => false,
+            PredicateMatch::RegexNotEqual(re) => {
+                !re.is_match(other)
+            }
         }
     }
 
@@ -336,8 +329,19 @@ impl Matcher {
         }
     }
 
+    pub fn string_value(&self) -> Option<&str> {
+        match &self.matcher {
+            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(re.as_str()),
+            PredicateMatch::Equal(value) | 
+            PredicateMatch::NotEqual(value) => match value {
+                PredicateValue::String(s) => Some(s.as_str()),
+                _ => None,
+            },
+        }
+    }
+
     pub fn is_empty_matcher(&self) -> bool {
-        self.matcher.is_empty()
+        self.matches("")
     }
 
     pub fn is_metric_name_filter(&self) -> bool {
@@ -376,18 +380,24 @@ impl Hash for Matcher {
 
 fn is_empty_regex_matcher(re: &Regex, negative: bool) -> bool {
     // cheap check
-    let empty_text = matches!(
-        re.as_str(),
-        "" | "?:" | "^$" | "^.*$" | "^.*" | ".*$" | ".*" | ".^"
-    );
+    let value = re.as_str();
+    let matches_empty = match value.len() {
+        0 => true,
+        1 => value == "^" || value == "$",
+        2 => value == ".*" || value == "^$" || value == "?:",
+        3 => value == "^.*" || value == ".*$",
+        4 => value == "^.*$",
+        _ => false,
+    };
+
     if negative {
-        if !empty_text {
+        if !matches_empty {
             true
         } else {
             !re.is_match("")
         }
     } else {
-        empty_text || re.is_match("")
+        matches_empty || re.is_match("")
     }
 }
 
@@ -398,19 +408,6 @@ pub enum MatcherSetEnum {
 }
 
 impl MatcherSetEnum {
-    pub fn or(other: Vec<Vec<Matcher>>) -> Self {
-        match other.len() {
-            1 => {
-                let mut other = other;
-                MatcherSetEnum::And(other.pop().expect("popping from empty vec"))
-            },
-            _ => MatcherSetEnum::Or(other),
-        }
-    }
-
-    pub fn and(other: Vec<Matcher>) -> Self {
-        MatcherSetEnum::And(other)
-    }
 
     pub fn is_empty(&self) -> bool {
         match self {
@@ -574,21 +571,12 @@ impl Matchers {
     pub fn is_only_metric_name(&self) -> bool {
         self.name.is_some() && self.matchers.is_empty()
     }
-
-    pub fn iter(&self) -> impl Iterator<Item = &Vec<Matcher>> {
-        MatcherSetEnumIter::new(&self.matchers)
-    }
-}
-
-fn hash_filters(hasher: &mut impl Hasher, filters: &[Matcher]) {
-    for filter in filters {
-        filter.hash(hasher);
-    }
 }
 
 const MATCHER_HASH_ID: u8 = 1;
-const OR_MATCHER_HASH_ID: u8 = 3;
-const NAME_HASH_ID: u8 = 7;
+const NAME_HASH_ID: u8 = 3;
+const OR_HASH_ID: u8 = 5;
+const AND_HASH_ID: u8 = 7;
 
 impl Hash for Matchers {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -598,6 +586,15 @@ impl Hash for Matchers {
         }
         if !self.matchers.is_empty() {
             state.write_u8(MATCHER_HASH_ID);
+            // constants added here since an empty Vec<Matcher> is equivalent tp an empty Vec<Vec<Matcher>>()
+            match &self.matchers {
+                MatcherSetEnum::Or(_) => {
+                    state.write_u8(OR_HASH_ID);
+                }
+                MatcherSetEnum::And(_) => {
+                    state.write_u8(AND_HASH_ID);
+                }
+            }
             self.matchers.hash(state);
         }
     }
@@ -632,41 +629,4 @@ fn join_matchers(f: &mut Formatter<'_>, v: &[Matcher]) -> fmt::Result {
     }
 
     Ok(())
-}
-
-struct MatcherSetEnumIter<'a> {
-    matchers: &'a MatcherSetEnum,
-    index: usize,
-}
-
-impl<'a> MatcherSetEnumIter<'a> {
-    fn new(matchers: &'a MatcherSetEnum) -> Self {
-        Self {
-            matchers,
-            index: 0,
-        }
-    }
-}
-impl<'a> Iterator for MatcherSetEnumIter<'a> {
-    type Item = &'a Vec<Matcher>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match &self.matchers {
-            MatcherSetEnum::Or(or_matchers) => {
-                if self.index < or_matchers.len() {
-                    let index = self.index;
-                    self.index += 1;
-                    return Some(&or_matchers[index])
-                }
-                None
-            },
-            MatcherSetEnum::And(and_matchers) => {
-                if self.index == 0 {
-                    self.index += 1;
-                    return Some(and_matchers);
-                }
-                None
-            }
-        }
-    }
 }

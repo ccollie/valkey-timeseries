@@ -48,7 +48,8 @@ pub fn with_timeseries_mut<R>(
     f: impl FnOnce(&mut TimeSeries) -> ValkeyResult<R>,
 ) -> ValkeyResult<R> {
     // expect should not panic, since must_exist will cause an error if the key is non-existent, and `?` will ensure it propagates
-    f(get_timeseries_mut(ctx, key, true)?.expect("key does not exist"))
+    let series = get_timeseries_mut(ctx, key, true)?.expect("expected key to exist");
+    f(series)
 }
 
 pub fn get_timeseries_mut<'a>(
@@ -63,8 +64,8 @@ pub fn get_timeseries_mut<'a>(
     match series {
         Some(series) => Ok(Some(series)),
         None => {
-            let msg = format!("TS: the key \"{}\" is not a timeseries", key);
             if must_exist {
+                let msg = format!("TS: the key \"{}\" is not a timeseries", key);
                 Err(ValkeyError::String(msg))
             } else {
                 Ok(None)

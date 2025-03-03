@@ -14,7 +14,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(WrongArity);
     }
     let keys = with_timeseries_index(ctx, move |index| {
-        get_keys_by_matchers(ctx, index, &matcher_list)
+        get_keys_by_matchers(ctx, index, &matcher_list, None)
     })?;
 
     Ok(ValkeyValue::from(keys))

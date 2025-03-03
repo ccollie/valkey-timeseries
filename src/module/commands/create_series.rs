@@ -3,8 +3,8 @@ use crate::labels::Label;
 use crate::module::arg_parse::{
     parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
     parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options,
-    parse_label_value_pairs, parse_retention, parse_significant_digit_rounding, CommandArgIterator,
-    CommandArgToken,
+    parse_label_value_pairs, parse_retention, parse_significant_digit_rounding,
+    CommandArgIterator, CommandArgToken,
 };
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::parser::metric_name::parse_metric_name;
@@ -118,8 +118,7 @@ pub fn parse_series_options(
                 if options.rounding.is_some() {
                     return Err(ValkeyError::Str(error_consts::ROUNDING_ALREADY_SET));
                 }
-                let rounding = parse_significant_digit_rounding(args)?;
-                options.rounding = Some(rounding);
+                options.rounding = Some(parse_significant_digit_rounding(args)?);
             }
             _ => {
                 return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));

@@ -25,14 +25,14 @@ const KEY_PREFIX_KEY: &str = "KEY_PREFIX";
 const QUERY_DEFAULT_STEP_KEY: &str = "query.default_step";
 const QUERY_ROUND_DIGITS_KEY: &str = "query.round_digits";
 
-const SERIES_RETENTION_KEY: &str = "series.retention";
+const SERIES_RETENTION_KEY: &str = "ts.retention";
 const SERIES_CHUNK_COMPRESSION_KEY: &str = "series.chunk_compression";
-const SERIES_CHUNK_SIZE_KEY: &str = "series.chunk_size";
-const SERIES_DEDUPE_INTERVAL_KEY: &str = "series.dedupe_interval";
-const SERIES_DUPLICATE_POLICY_KEY: &str = "series.duplicate_policy";
-const SERIES_ROUND_DIGITS_KEY: &str = "series.round_digits";
-const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "series.significant_digits";
-const SERIES_WORKER_INTERVAL_KEY: &str = "series.worker_interval";
+const SERIES_CHUNK_SIZE_KEY: &str = "ts.chunk_size";
+const SERIES_DEDUPE_INTERVAL_KEY: &str = "ts.dedupe_interval";
+const SERIES_DUPLICATE_POLICY_KEY: &str = "ts.duplicate_policy";
+const SERIES_ROUND_DIGITS_KEY: &str = "ts.round_digits";
+const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "ts.significant_digits";
+const SERIES_WORKER_INTERVAL_KEY: &str = "ts.worker_interval";
 
 pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 4 * 1024;
 pub const DEFAULT_CHUNK_COMPRESSION: ChunkCompression = ChunkCompression::Gorilla;

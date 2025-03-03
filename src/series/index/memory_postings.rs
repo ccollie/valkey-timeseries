@@ -12,6 +12,7 @@ use crate::labels::SeriesLabel;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::{Bitmap64, Portable};
 use integer_encoding::{VarIntReader, VarIntWriter};
+use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -158,6 +159,10 @@ impl MemoryPostings {
         None
     }
 
+    pub(super) fn has_id(&self, id: SeriesRef) -> bool {
+        self.id_to_key.contains_key(&id)
+    }
+
     pub fn postings_for_label_value<'a>(
         &'a self,
         name: &str,
@@ -167,7 +172,7 @@ impl MemoryPostings {
         if let Some(bmp) = self.label_index.get(&key) {
             Cow::Borrowed(bmp)
         } else {
-            Cow::Owned(PostingsBitmap::default())
+            Cow::Borrowed(&*EMPTY_BITMAP)
         }
     }
 
@@ -242,16 +247,20 @@ impl MemoryPostings {
         acc
     }
 
-    pub fn postings_without_label(&self, label: &str) -> PostingsBitmap {
+    pub fn postings_without_label<'a>(&'a self, label: &str) -> Cow<'a, PostingsBitmap> {
         let all = self.all_postings();
         let to_remove = self.postings_for_all_label_values(label);
-        all.andnot(&to_remove)
+        if to_remove.is_empty() {
+            Cow::Borrowed(all)
+        } else {
+            Cow::Owned(all.andnot(&to_remove))
+        }
     }
 
-    pub fn postings_without_labels(&self, labels: &[&str]) -> PostingsBitmap {
+    pub fn postings_without_labels<'a>(&'a self, labels: &[&str]) -> Cow<'a, PostingsBitmap> {
         match labels.len() {
-            0 => self.all_postings().clone(),            // bad boy !!
-            1 => self.postings_without_label(labels[0]), // more efficient (1 less allocation)
+            0 => Cow::Borrowed(self.all_postings()),      // bad boy !!
+            1 => self.postings_without_label(labels[0]), // slightly more efficient (1 less allocation)
             _ => {
                 let all = self.all_postings();
                 let mut to_remove = PostingsBitmap::new();
@@ -261,19 +270,30 @@ impl MemoryPostings {
                         to_remove.or_inplace(map);
                     }
                 }
-                all.andnot(&to_remove)
+                if to_remove.is_empty() {
+                    Cow::Borrowed(all)
+                } else {
+                    Cow::Owned(all.andnot(&to_remove))
+                }
             }
         }
     }
 
-    pub fn has_label(&self, series_id: SeriesRef, name: &str) -> bool {
-        let prefix = get_key_for_label_prefix(name);
-        for (_, map) in self.label_index.prefix(prefix.as_bytes()) {
-            if map.contains(series_id) {
-                return true;
+    pub fn postings_for_matcher(&self, matcher: &Matcher) -> Cow<PostingsBitmap> {
+        match matcher.matcher {
+            PredicateMatch::Equal(ref value) => {
+                handle_equal_match(self, &matcher.label, value)
+            }
+            PredicateMatch::NotEqual(ref value) => {
+                handle_not_equal_match(self, &matcher.label, value)
+            }
+            PredicateMatch::RegexEqual(_) => {
+                handle_regex_equal_match(self, matcher)
+            }
+            PredicateMatch::RegexNotEqual(_) => {
+                handle_regex_not_equal_match(self, matcher)
             }
         }
-        false
     }
 
     pub(crate) fn get_keys_by_iter(&self, iter: impl Iterator<Item = SeriesRef>) -> Vec<&KeyType> {
@@ -325,6 +345,89 @@ impl MemoryPostings {
     pub(crate) fn get_key_by_id(&self, id: SeriesRef) -> Option<&KeyType> {
         self.id_to_key.get(&id)
     }
+}
+
+
+pub(super) fn handle_equal_match<'a>(ix: &'a MemoryPostings, label: &str, value: &PredicateValue) -> Cow<'a, PostingsBitmap> {
+    match value {
+        PredicateValue::String(ref s) => {
+            if s.is_empty() {
+                return ix.postings_without_label(label);
+            }
+            ix.postings_for_label_value(label, s)
+        }
+        PredicateValue::List(ref val) => match val.len() {
+            0 => ix.postings_without_label(label),
+            1 => ix.postings_for_label_value(label, &val[0]),
+            _ => Cow::Owned(ix.postings(label, val)),
+        },
+        PredicateValue::Empty => ix.postings_without_label(label),
+    }
+}
+
+// return postings for series which has the label `label
+fn with_label<'a>(ix: &'a MemoryPostings, label: &str) -> Cow<'a, PostingsBitmap> {
+    let mut state = ();
+    let postings = ix.postings_for_label_matching(label, &mut state, |_value, _| true);
+    Cow::Owned(postings)
+}
+
+pub(super) fn handle_not_equal_match<'a>(ix: &'a MemoryPostings, label: &str, value: &PredicateValue) -> Cow<'a, PostingsBitmap> {
+    // the time series has a label named label
+    match value {
+        PredicateValue::String(ref s) => {
+            if s.is_empty() {
+                return with_label(ix, label);
+            }
+            let all = ix.all_postings();
+            let postings = ix.postings_for_label_value(label, s);
+            if postings.is_empty() {
+                Cow::Borrowed(all)
+            } else {
+                let result = all.andnot(&postings);
+                Cow::Owned(result)
+            }
+        }
+        PredicateValue::List(ref values) => {
+            match values.len() {
+                0 => with_label(ix, label), // TODO !!
+                _ => {
+                    // get postings for label m.label without values in values
+                    let to_remove = ix.postings(label, values);
+                    let all_postings = ix.all_postings();
+                    if to_remove.is_empty() {
+                        Cow::Borrowed(all_postings)
+                    } else {
+                        let result = all_postings.andnot(&to_remove);
+                        Cow::Owned(result)
+                    }
+                }
+            }
+        }
+        PredicateValue::Empty => with_label(ix, label),
+    }
+}
+
+pub(super) fn handle_regex_equal_match<'a>(postings: &'a MemoryPostings, matcher: &Matcher) -> Cow<'a, PostingsBitmap> {
+    if matcher.is_empty_matcher() {
+        return postings.postings_without_label(&matcher.label);
+    }
+    let mut state = matcher;
+    let postings = postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
+        matcher.matches(value)
+    });
+    Cow::Owned(postings)
+}
+
+pub(super) fn handle_regex_not_equal_match<'a>(postings: &'a MemoryPostings, matcher: &Matcher) -> Cow<'a, PostingsBitmap> {
+    if matcher.is_empty_matcher() {
+        return with_label(postings, &matcher.label);
+    }
+    let mut state = matcher;
+    let postings = postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
+        !matcher.matches(value)
+    });
+    Cow::Owned(postings)
 }
 
 pub(super) fn write_bitmap<W: Write>(
@@ -646,7 +749,7 @@ mod tests {
         let result = postings.postings_without_labels(&[]);
 
         // The result should be equal to all_postings
-        assert_eq!(result, *postings.all_postings());
+        assert_eq!(result.as_ref(), postings.all_postings());
         assert_eq!(result.cardinality(), 3);
         assert!(result.contains(1));
         assert!(result.contains(2));

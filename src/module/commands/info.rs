@@ -40,7 +40,12 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
     );
     map.insert("chunkCount".into(), (ts.chunks.len() as f64).into());
     map.insert("chunkSize".into(), ts.chunk_size_bytes.into());
-    map.insert("chunkType".into(), ts.chunk_compression.name().into());
+    
+    if ts.chunk_compression.is_compressed() {
+        map.insert("chunkType".into(), "compressed".into());
+    } else {
+        map.insert("chunkType".into(), "uncompressed".into());
+    }
 
     if let Some(key) = key {
         map.insert(
@@ -49,18 +54,23 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
         );
     }
 
-    let mut labels_map: HashMap<ValkeyValueKey, ValkeyValue> =
-        HashMap::with_capacity(ts.labels.len() + 1);
+    if ts.labels.is_empty() {
+        map.insert("labels".into(), ValkeyValue::Null);
+    } else {
+        let mut labels_map: HashMap<ValkeyValueKey, ValkeyValue> =
+            HashMap::with_capacity(ts.labels.len() + 1);
 
-    for InternedLabel { name, value } in ts.labels.iter() {
-        labels_map.insert(
-            ValkeyValueKey::String(name.into()),
-            ValkeyValue::from(value),
-        );
+        for InternedLabel { name, value } in ts.labels.iter() {
+            labels_map.insert(
+                ValkeyValueKey::String(name.into()),
+                ValkeyValue::from(value),
+            );
+        }
+        map.insert("labels".into(), ValkeyValue::from(labels_map));
     }
-    map.insert("labels".into(), ValkeyValue::from(labels_map));
 
     if debug {
+        map.insert("keySelfName".into(), ValkeyValue::from(key));
         map.insert("chunks".into(), get_chunks_info(ts));
     }
 

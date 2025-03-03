@@ -32,22 +32,3 @@ pub fn generate_random_samples(seed: u64, vec_size: usize) -> Vec<Sample> {
 
     vec
 }
-
-#[cfg(test)]
-pub fn generate_random_test_data_ex(seed: u64, cases: usize) -> Vec<Vec<Sample>> {
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-
-    let mut test_cases = Vec::with_capacity(cases);
-    for _ in 0..cases {
-        let vec_size = rng.random_range(1..129);
-
-        let vec = generate_random_samples(seed, vec_size);
-        test_cases.push(vec);
-    }
-    test_cases
-}
-
-pub fn generate_random_test_data(seed: u64) -> Vec<Sample> {
-    let mut cases = generate_random_test_data_ex(seed, 1);
-    cases.remove(0)
-}

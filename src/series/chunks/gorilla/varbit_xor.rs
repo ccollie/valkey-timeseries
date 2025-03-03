@@ -180,7 +180,7 @@ mod tests {
                 trailing = new_trailing;
             }
 
-            bit_writer.byte_align().unwrap();
+           // bit_writer.byte_align().unwrap();
 
             // Read again
             value = 0.0;

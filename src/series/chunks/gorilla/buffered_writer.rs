@@ -44,13 +44,6 @@ impl BufferedWriter {
         }
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
-        BufferedWriter {
-            buf: Vec::with_capacity(capacity),
-            pos: 0,
-        }
-    }
-
     /// Hydrate a BufferedWriter from a Vec<u8> and a position
     pub(crate) fn hydrate(buf: Vec<u8>, pos: u32) -> Self {
         BufferedWriter { buf, pos }
@@ -170,19 +163,6 @@ impl BitWrite for BufferedWriter {
         // Write the remainder, if any.
         b = byte.wrapping_shl(self.pos);
         self.buf[i] |= b;
-    }
-
-    fn byte_aligned(&self) -> bool {
-        self.pos % 8 == 0
-    }
-
-    fn byte_align(&mut self) -> Result<()> {
-        // if self.pos != 0 {
-        //     self.write_all(&[self.data])?;
-        //     self.pos = 0;
-        // }
-
-        Ok(())
     }
 }
 

@@ -1,13 +1,10 @@
 use crate::common::serialization::*;
 use crate::common::Sample;
 use crate::labels::InternedMetricName;
-use crate::series::chunks::{
-    rdb_load_series_chunk, rdb_save_series_chunk, Chunk, ChunkCompression,
-};
+use crate::series::chunks::{Chunk, ChunkCompression, TimeSeriesChunk};
 use crate::series::{DuplicatePolicy, SampleDuplicatePolicy, TimeSeries, TimeseriesId};
 use valkey_module::{raw, ValkeyResult};
 
-pub const SERIES_ENC_VERSION: u64 = 1;
 
 fn rdb_save_sample_duplicate_policy(
     rdb: *mut raw::RedisModuleIO,
@@ -46,7 +43,7 @@ pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     rdb_save_usize(rdb, series.chunk_size_bytes);
     rdb_save_usize(rdb, series.chunks.len());
     for chunk in series.chunks.iter() {
-        rdb_save_series_chunk(chunk, rdb);
+        chunk.save_rdb(rdb);
     }
 }
 
@@ -68,7 +65,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     let mut last_sample: Option<Sample> = None;
 
     for _ in 0..chunks_len {
-        let chunk = rdb_load_series_chunk(rdb, enc_ver)?;
+        let chunk = TimeSeriesChunk::load_rdb(rdb, enc_ver)?;
         total_samples += chunk.len();
         if first_timestamp == 0 {
             first_timestamp = chunk.first_timestamp();

@@ -13,10 +13,6 @@ pub struct IndexKey(Box<[u8]>);
 const SENTINEL: u8 = 0;
 
 impl IndexKey {
-    pub fn new(key: &str) -> Self {
-        Self::from(key)
-    }
-
     pub fn for_metric_name(metric_name: &str) -> Self {
         Self::for_label_value(METRIC_NAME_LABEL, metric_name)
     }
@@ -151,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         assert_eq!(key.as_str(), "test_key");
     }
 
@@ -169,13 +165,13 @@ mod tests {
 
     #[test]
     fn test_as_str() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         assert_eq!(key.as_str(), "test_key");
     }
 
     #[test]
     fn test_split() {
-        let key = IndexKey::new("label=value");
+        let key = IndexKey::from("label=value");
         let (label, value) = key.split().unwrap();
         assert_eq!(label, "label");
         assert_eq!(value, "value");
@@ -183,31 +179,31 @@ mod tests {
 
     #[test]
     fn test_sub_string() {
-        let key = IndexKey::new("label=value");
+        let key = IndexKey::from("label=value");
         assert_eq!(key.sub_string(6), "value");
     }
 
     #[test]
     fn test_into_vec() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         assert_eq!(key.into_vec(), b"test_key\0".to_vec());
     }
 
     #[test]
     fn test_len() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         assert_eq!(key.len(), 8);
     }
 
     #[test]
     fn test_display() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         assert_eq!(format!("{}", key), "test_key");
     }
 
     #[test]
     fn test_as_bytes() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         assert_eq!(key.as_bytes(), b"test_key\0");
     }
 
@@ -231,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_borrow() {
-        let key = IndexKey::new("test_key");
+        let key = IndexKey::from("test_key");
         let borrowed: &[u8] = key.borrow();
         assert_eq!(borrowed, b"test_key\0");
     }

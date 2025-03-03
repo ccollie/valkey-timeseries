@@ -35,8 +35,22 @@ fn handle_key_rename(ctx: &Context, old_key: &[u8], new_key: &[u8]) {
 
 fn remove_key_from_index(ctx: &Context, key: &[u8]) {
     with_timeseries_index(ctx, |ts_index| {
-        // todo: batch these and run in the background, sine lookups by key can be slow
+        // todo: batch these and run in the background, since lookups by key can be slow
         ts_index.slow_remove_series_by_key(key)
+    });
+}
+
+fn handle_loaded(ctx: &Context, key: &[u8]) {
+    let _key = ctx.create_string(key);
+    let _ = with_timeseries(ctx, &_key, |series| {
+        with_timeseries_index(ctx, |index| {
+            if !index.has_id(series.id) {
+                index.index_timeseries(series, key)
+            } else {
+                logging::log_warning("Trying to load a series that is already in the index");
+            }
+            Ok(())
+        })
     });
 }
 
@@ -48,7 +62,7 @@ pub(crate) fn generic_key_event_handler(
 ) {
     // todo: AddPostNotificationJob(ctx, event, key);
     match event {
-        "del" | "set" | "expired" | "evict" | "evicted" | "expire" | "trimmed" => {
+        "del" | "evict" | "evicted" | "expire" | "expired" | "trimmed" | "set" => {
             remove_key_from_index(ctx, key);
         }
         // SAFETY: This is safe because the key is only used in the closure and this function

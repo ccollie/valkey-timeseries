@@ -7,7 +7,8 @@ use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::aggregator::{AggregationOptions, BucketAlignment, BucketTimestamp};
 use crate::join::join_reducer::JoinReducer;
-use crate::labels::Label;
+use crate::labels::matchers::Matchers;
+use crate::labels::{parse_series_selector, Label};
 use crate::parser::number::parse_number;
 use crate::parser::{
     metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal,
@@ -16,13 +17,15 @@ use crate::parser::{
 use crate::series::chunks::{ChunkCompression, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
-use std::collections::{BTreeSet, HashMap};
+use ahash::AHashMap;
+use std::collections::BTreeSet;
 use std::iter::{Peekable, Skip};
 use std::time::Duration;
 use std::vec::IntoIter;
+use strum_macros::EnumIter;
 use valkey_module::{NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
-const MAX_TS_VALUES_FILTER: usize = 16;
+const MAX_TS_VALUES_FILTER: usize = 128;
 const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
 const CMD_ARG_ALIGN: &str = "ALIGN";
 const CMD_ARG_ASOF: &str = "ASOF";
@@ -63,10 +66,11 @@ const CMD_ARG_SELECTED_LABELS: &str = "SELECTED_LABELS";
 const CMD_ARG_STEP: &str = "STEP";
 const CMD_ARG_SIGNIFICANT_DIGITS: &str = "SIGNIFICANT_DIGITS";
 const CMD_ARG_START: &str = "START";
+const CMD_ARG_TIMESTAMP: &str = "TIMESTAMP";
 const CMD_ARG_UNCOMPRESSED: &str = "UNCOMPRESSED";
 const CMD_ARG_WITH_LABELS: &str = "WITHLABELS";
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum CommandArgToken {
     AsOf,
     Aggregation,
@@ -94,7 +98,6 @@ pub enum CommandArgToken {
     Left,
     Limit,
     Match,
-    MaxEntries,
     Metric,
     Name,
     Next,
@@ -108,10 +111,11 @@ pub enum CommandArgToken {
     SignificantDigits,
     Start,
     Step,
+    Timestamp,
     Uncompressed,
     WithLabels,
     #[default]
-    Invalid,
+    Invalid
 }
 
 impl CommandArgToken {
@@ -143,7 +147,6 @@ impl CommandArgToken {
             CommandArgToken::Left => CMD_ARG_LEFT,
             CommandArgToken::Limit => CMD_ARG_LIMIT,
             CommandArgToken::Match => CMD_ARG_MATCH,
-            CommandArgToken::MaxEntries => CMD_ARG_MAX_ENTRIES,
             CommandArgToken::Metric => CMD_ARG_METRIC,
             CommandArgToken::Name => CMD_ARG_NAME,
             CommandArgToken::OnDuplicate => CMD_ARG_ON_DUPLICATE,
@@ -154,13 +157,14 @@ impl CommandArgToken {
             CommandArgToken::Start => CMD_ARG_START,
             CommandArgToken::Step => CMD_ARG_STEP,
             CommandArgToken::WithLabels => CMD_ARG_WITH_LABELS,
-            CommandArgToken::Invalid => "INVALID COMMAND ARG",
             CommandArgToken::BucketTimestamp => CMD_ARG_BUCKET_TIMESTAMP,
             CommandArgToken::Next => CMD_ARG_NEXT,
             CommandArgToken::Prior => CMD_ARG_PRIOR,
             CommandArgToken::Reduce => CMD_ARG_REDUCE,
             CommandArgToken::Uncompressed => CMD_ARG_UNCOMPRESSED,
             CommandArgToken::SelectedLabels => CMD_ARG_SELECTED_LABELS,
+            CommandArgToken::Timestamp => CMD_ARG_TIMESTAMP,
+            CommandArgToken::Invalid => "INVALID",
         }
     }
 }
@@ -194,7 +198,6 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "LEFT" => CommandArgToken::Left,
         "LIMIT" => CommandArgToken::Limit,
         "MATCH" => CommandArgToken::Match,
-        "MAX_ENTRIES" => CommandArgToken::MaxEntries,
         "METRIC" => CommandArgToken::Metric,
         "NAME" => CommandArgToken::Name,
         "NEXT" => CommandArgToken::Next,
@@ -208,6 +211,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "SIGNIFICANT_DIGITS" => CommandArgToken::SignificantDigits,
         "START" => CommandArgToken::Start,
         "STEP" => CommandArgToken::Step,
+        "TIMESTAMP" => CommandArgToken::Timestamp,
         "UNCOMPRESSED" => CommandArgToken::Uncompressed,
         "WITHLABELS" => CommandArgToken::WithLabels,
     }
@@ -255,6 +259,13 @@ pub fn parse_timestamp(arg: &str) -> ValkeyResult<Timestamp> {
         return Ok(current_time_millis());
     }
     parse_timestamp_internal(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))
+}
+
+pub fn parse_timestamp_arg(arg: &str, name: &str) -> Result<TimestampValue, ValkeyError> {
+    parse_timestamp_range_value(arg).map_err(|_e| {
+        let msg = format!("TSDB: invalid {name} timestamp");
+        ValkeyError::String(msg)
+    })
 }
 
 pub fn parse_timestamp_range_value(arg: &str) -> ValkeyResult<TimestampValue> {
@@ -336,7 +347,7 @@ pub fn parse_timestamp_range(args: &mut CommandArgIterator) -> ValkeyResult<Time
     let start = parse_timestamp_range_value(first_arg)?;
     let end_value = if let Ok(arg) = args.next_str() {
         parse_timestamp_range_value(arg)
-            .map_err(|_e| ValkeyError::Str("ERR invalid end timestamp"))?
+            .map_err(|_e| ValkeyError::Str("TSDB: invalid end timestamp"))?
     } else {
         TimestampValue::Latest
     };
@@ -486,8 +497,8 @@ pub fn parse_label_list(
 pub fn parse_label_value_pairs(
     args: &mut CommandArgIterator,
     stop_tokens: &[CommandArgToken],
-) -> ValkeyResult<HashMap<String, String>> {
-    let mut labels: HashMap<String, String> = HashMap::new();
+) -> ValkeyResult<AHashMap<String, String>> {
+    let mut labels: AHashMap<String, String> = AHashMap::new();
 
     loop {
         let label = args.next_string()?;
@@ -626,4 +637,58 @@ pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResul
     let ignore_max_val_diff =
         parse_number(str).map_err(|_| ValkeyError::Str("Invalid ignoreMaxValDiff"))?;
     Ok((ignore_max_timediff, ignore_max_val_diff))
+}
+
+pub fn parse_series_selector_list(
+    args: &mut CommandArgIterator,
+    is_cmd_token: fn(CommandArgToken) -> bool,
+) -> ValkeyResult<Vec<Matchers>> {
+    let mut matchers = vec![];
+
+    while let Some(next) = args.peek() {
+        if let Some(token) = parse_command_arg_token(next.as_slice()) {
+            if is_cmd_token(token) {
+                break;
+            }
+        } else {
+            return Err(ValkeyError::Str("ERR: Invalid series selector"));
+        }
+        let arg = next.try_as_str()?;
+
+        if let Ok(selector) = parse_series_selector(arg) {
+            matchers.push(selector);
+        } else {
+            return Err(ValkeyError::Str(error_consts::INVALID_SERIES_SELECTOR));
+        }
+    }
+
+    Ok(matchers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use strum::IntoEnumIterator;
+
+    #[test]
+    fn test_parse_command_arg_token_case_insensitive() {
+        let input = b"aGgReGaTiOn";
+        let result = parse_command_arg_token(input);
+        assert_eq!(result, Some(CommandArgToken::Aggregation));
+    }
+
+    #[test]
+    fn test_parse_command_arg_token_exhaustive() {
+        for token in CommandArgToken::iter() {
+            if token == CommandArgToken::Invalid {
+                continue;
+            }
+            let parsed = parse_command_arg_token(token.as_str().as_bytes());
+            assert_eq!(parsed, Some(token));
+            let lower = token.as_str().to_lowercase();
+            let parsed_lowercase = parse_command_arg_token(lower.as_bytes());
+            assert_eq!(parsed_lowercase, Some(token));
+        }
+
+    }
 }

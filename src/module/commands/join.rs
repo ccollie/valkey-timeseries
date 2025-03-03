@@ -155,13 +155,13 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
                 let arg = args.next_str()?;
                 options.reducer = Some(parse_join_operator(arg)?);
             }
-            _ => return Err(ValkeyError::Str("ERR: invalid JOIN command argument")),
+            _ => return Err(ValkeyError::Str("TSDB: invalid JOIN command argument")),
         }
     }
 
     // aggregations are only valid when there is a transform
     if options.aggregation.is_some() && options.reducer.is_none() {
-        return Err(ValkeyError::Str("ERR: join aggregation requires a reducer"));
+        return Err(ValkeyError::Str("TSDB: join aggregation requires a reducer"));
     }
 
     Ok(())

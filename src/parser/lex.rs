@@ -34,9 +34,6 @@ pub enum Token {
     #[token(",")]
     Comma,
 
-    #[token(":")]
-    Colon,
-
     #[token("(")]
     LeftParen,
 
@@ -78,7 +75,6 @@ impl Token {
             // symbols
             Self::LeftBrace => "{{",
             Self::RightBrace => "}}",
-            Self::Colon => ":",
             Self::Comma => ",",
             Self::LeftParen => "(",
             Self::RightParen => ")",
@@ -120,9 +116,9 @@ pub(crate) fn get_next_token<'a>(lex: &'a mut Lexer<Token>) -> ParseResult<(Toke
     }
 }
 
-pub(crate) fn expect_token<'a>(lex: &'a mut Lexer<Token>, kind: Token) -> ParseResult<&'a str> {
+pub(crate) fn expect_token<'a>(lex: &'a mut Lexer<Token>, expected: Token) -> ParseResult<&'a str> {
     let res = get_next_token(lex)?;
-    if res.0 == kind {
+    if res.0 == expected {
         Ok(res.1)
     } else {
         let actual = res.1.to_string();
@@ -130,7 +126,7 @@ pub(crate) fn expect_token<'a>(lex: &'a mut Lexer<Token>, kind: Token) -> ParseR
         Err(unexpected(
             "label name",
             &actual,
-            kind.as_str(),
+            expected.as_str(),
             Some(&res.2),
         ))
     }
@@ -138,15 +134,15 @@ pub(crate) fn expect_token<'a>(lex: &'a mut Lexer<Token>, kind: Token) -> ParseR
 
 pub(crate) fn expect_one_of_tokens<'a>(
     lex: &'a mut Lexer<Token>,
-    kinds: &[Token],
+    expected: &[Token],
 ) -> ParseResult<(Token, &'a str)> {
     let res = get_next_token(lex)?;
-    if kinds.contains(&res.0) {
+    if expected.contains(&res.0) {
         Ok((res.0, res.1))
     } else {
         let actual = res.1.to_string();
         // let span = lex.span();
-        let expected = kinds
+        let expected = expected
             .iter()
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
@@ -209,7 +205,6 @@ mod tests {
     #[test_case("(", LeftParen)]
     #[test_case(")", RightParen)]
     #[test_case(",", Comma)]
-    #[test_case(":", Colon)]
     #[test_case("=", Equal)]
     fn symbol(src: &str, tok: Token) {
         test_tokens!(src, [tok]);
@@ -254,18 +249,6 @@ mod tests {
     #[test]
     fn identifier() {
         test_tokens!("foobar123", [Identifier]);
-    }
-
-    fn get_single_token(src: &str) -> Token {
-        let mut lexer = Token::lexer(src);
-        if let Some(first) = lexer.next() {
-            let token = first.unwrap();
-            if lexer.next().is_some() {
-                panic!("unexpected token after {:?} : {}", token, lexer.slice());
-            }
-            return token;
-        }
-        panic!("unexpected Eof")
     }
 
     #[test]
@@ -316,19 +299,6 @@ mod tests {
         test_success("foo.bar_", &["foo.bar_"]);
     }
 
-    #[test]
-    fn metric_name_with_window() {
-        // Metric name with window
-        let s = "metric[5m]  ";
-        test_success(s, &["metric", "[", "5m", "]"]);
-    }
-
-    #[test]
-    fn metric_name_with_offset() {
-        // Metric name with offset
-        let s = "   metric offset 10d   ";
-        test_success(s, &["metric", "offset", "10d"]);
-    }
 
     #[test]
     fn metric_name_with_tag_filters() {

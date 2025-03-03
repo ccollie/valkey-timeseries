@@ -17,6 +17,8 @@ use ahash::AHashSet;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
+use valkey_module::{raw, RedisModuleIO, ValkeyResult};
+use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
 
 /// items above this count will cause value and timestamp encoding/decoding to happen in parallel
 pub(in crate::series) const COMPRESSION_PARALLELIZATION_THRESHOLD: usize = 1024;
@@ -507,6 +509,38 @@ impl Chunk for PcoChunk {
         }
 
         Ok(result)
+    }
+
+    fn save_rdb(&self, rdb: *mut RedisModuleIO) {
+        raw::save_signed(rdb, self.min_time);
+        raw::save_signed(rdb, self.max_time);
+        rdb_save_usize(rdb, self.max_size);
+        raw::save_double(rdb, self.last_value);
+        rdb_save_usize(rdb, self.count);
+        raw::save_slice(rdb, &self.timestamps);
+        raw::save_slice(rdb, &self.values);
+    }
+    
+    fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
+        let min_time = raw::load_signed(rdb)?;
+        let max_time = raw::load_signed(rdb)?;
+        let max_size = rdb_load_usize(rdb)?;
+        let last_value = raw::load_double(rdb)?;
+        let count = rdb_load_usize(rdb)?;
+        let ts = raw::load_string_buffer(rdb)?;
+        let vals = raw::load_string_buffer(rdb)?;
+        let timestamps: Vec<u8> = Vec::from(ts.as_ref());
+        let values: Vec<u8> = Vec::from(vals.as_ref());
+
+        Ok(PcoChunk {
+            min_time,
+            max_time,
+            max_size,
+            last_value,
+            count,
+            timestamps,
+            values,
+        })
     }
 }
 

@@ -10,6 +10,8 @@ use crate::series::settings::SERIES_SETTINGS;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use get_size::GetSize;
 use std::mem::size_of;
+use valkey_module::{RedisModuleIO, ValkeyResult};
+use crate::common::serialization::{rdb_load_timestamp, rdb_load_usize, rdb_save_timestamp, rdb_save_usize};
 
 /// `GorillaChunk` is a chunk of timeseries data encoded using Gorilla XOR encoding.
 #[derive(Debug, Clone, PartialEq, GetSize)]
@@ -129,12 +131,7 @@ impl Chunk for GorillaChunk {
         self.max_size
     }
     fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
-        if self.is_empty() {
-            return Ok(0);
-        }
-
-        if start_ts > self.last_timestamp() || end_ts < self.first_timestamp() {
-            self.clear();
+        if self.is_empty() || start_ts > self.last_timestamp() || end_ts < self.first_timestamp() {
             return Ok(0);
         }
 
@@ -319,6 +316,24 @@ impl Chunk for GorillaChunk {
         self.encoder = left_chunk;
 
         Ok(right_chunk)
+    }
+
+    fn save_rdb(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_usize(rdb, self.max_size);
+        rdb_save_timestamp(rdb, self.first_ts);
+        self.encoder.rdb_save(rdb);
+    }
+    
+    fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
+        let max_size = rdb_load_usize(rdb)?;
+        let first_ts = rdb_load_timestamp(rdb)?;
+        let encoder = GorillaEncoder::rdb_load(rdb)?;
+        let chunk = GorillaChunk {
+            encoder,
+            first_ts,
+            max_size,
+        };
+        Ok(chunk)
     }
 }
 

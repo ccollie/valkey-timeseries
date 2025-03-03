@@ -63,22 +63,6 @@ impl Display for ParseErr {
     }
 }
 
-pub(crate) fn syntax_error(msg: &str, range: &Span, context: String) -> ParseError {
-    let mut res = String::with_capacity(100);
-    if !context.is_empty() {
-        res.push_str(format!("{} :", context).as_str())
-    }
-
-    if range.start != 0 && range.end != 0 {
-        if range.start == range.end {
-            res.push_str(format!("error at {}: {}", range.start, msg).as_str());
-        } else {
-            res.push_str(format!("error at {}..{}: {}", range.start, range.end, msg).as_str());
-        }
-    }
-    ParseError::SyntaxError(res)
-}
-
 /// unexpected creates a parser error complaining about an unexpected lexer item.
 /// The item that is presented as unexpected is always the last item produced
 /// by the lexer.

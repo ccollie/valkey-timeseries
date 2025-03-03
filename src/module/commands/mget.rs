@@ -1,6 +1,6 @@
+use crate::arg_types::MatchFilterOptions;
 use crate::common::Sample;
 use crate::error_consts;
-use crate::labels::matchers::Matchers;
 use crate::labels::parse_series_selector;
 use crate::module::arg_parse::{
     parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
@@ -11,10 +11,11 @@ use crate::series::index::with_matched_series;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 struct MGetOptions {
-    filter: Matchers,
     with_labels: bool,
+    filter: MatchFilterOptions,
     selected_labels: Vec<String>,
 }
+
 /// TS.MGET selector
 ///   [WITHLABELS]
 ///   [SELECTED_LABELS label...]
@@ -41,7 +42,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         series: Vec::new(),
     };
 
-    with_matched_series(ctx, &mut state, &[options.filter], |acc, series, key| {
+    with_matched_series(ctx, &mut state, &options.filter, |acc, series, key| {
         let sample = series.last_sample;
         let labels = get_series_labels(series, acc.with_labels, &acc.selected_labels);
         acc.series.push(SeriesData {
@@ -49,7 +50,6 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             labels,
             series_key: key,
         });
-        Ok(())
     })?;
 
     let result = state
@@ -79,7 +79,7 @@ fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetOptions
     let filter = parse_series_selector(args.next_str()?)?;
     let mut options = MGetOptions {
         with_labels: false,
-        filter,
+        filter: filter.into(),
         selected_labels: Default::default(),
     };
 

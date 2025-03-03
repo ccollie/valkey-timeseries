@@ -4,8 +4,8 @@ use crate::error::TsdbResult;
 use crate::module::arg_parse::parse_timestamp;
 use crate::module::get_timeseries_mut;
 use crate::series::SampleAddResult;
+use ahash::AHashMap;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 struct ParsedInput<'a> {
@@ -61,14 +61,14 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         index += 3;
     }
 
-    // todo! Parallelize this !!!
+    // todo! Parallelize this if we involve multiple chunks
 
     let mut temp = group(inputs.into_iter().map(|input| (input.key_buf, input)))
         .into_iter()
         .fold(vec![], |mut acc, inputs| {
             // todo: remove unwrap
             let key = inputs[0].key;
-            let mut arr = add_sample_internal(ctx, key, &inputs).unwrap();
+            let mut arr = add_samples_internal(ctx, key, &inputs).unwrap();
             acc.append(&mut arr);
             acc
         });
@@ -83,7 +83,7 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     Ok(ValkeyValue::Array(result))
 }
 
-fn add_sample_internal(
+fn add_samples_internal(
     ctx: &Context,
     key: &ValkeyString,
     input: &Vec<ParsedInput>,
@@ -132,8 +132,8 @@ where
     I: Iterator<Item = (K, V)>,
 {
     let mut hash_map = match iter.size_hint() {
-        (_, Some(len)) => HashMap::with_capacity(len),
-        (len, None) => HashMap::with_capacity(len),
+        (_, Some(len)) => AHashMap::with_capacity(len),
+        (len, None) => AHashMap::with_capacity(len),
     };
 
     for (key, value) in iter {

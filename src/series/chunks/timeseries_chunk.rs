@@ -1,8 +1,9 @@
+use crate::common::serialization::rdb_load_string;
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::TsdbResult;
 use crate::iterators::SampleIter;
-use crate::series::chunks::utils::{filter_samples_by_date_range, filter_samples_by_value};
+use crate::series::chunks::utils::filter_samples_by_value;
 use crate::series::types::ValueFilter;
 use crate::series::{
     chunks::{Chunk, ChunkCompression, GorillaChunk, PcoChunk, UncompressedChunk},
@@ -10,7 +11,9 @@ use crate::series::{
 };
 use core::mem::size_of;
 use get_size::GetSize;
+use smallvec::SmallVec;
 use std::cmp::Ordering;
+use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
 
 #[derive(Debug, Clone, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {
@@ -160,48 +163,43 @@ impl TimeSeriesChunk {
         timestamp_filter: &Option<Vec<Timestamp>>,
         value_filter: &Option<ValueFilter>,
     ) -> Vec<Sample> {
-        fn get_by_range(
-            chunk: &TimeSeriesChunk,
-            start_timestamp: Timestamp,
-            end_timestamp: Timestamp,
-        ) -> Vec<Sample> {
-            // todo: raise error
-            chunk
-                .get_range(start_timestamp, end_timestamp)
+
+        fn filter_timestamps(
+            timestamps: &[Timestamp],
+            start: Timestamp,
+            end: Timestamp,
+        ) -> SmallVec<Timestamp, 32> {
+            timestamps
+                .iter()
+                .filter_map(|ts| {
+                    let ts = *ts;
+                    if ts >= start && ts <= end {
+                        Some(ts)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        
+        let mut samples = if let Some(ts_filter) = timestamp_filter {
+            let filtered_ts = filter_timestamps(ts_filter, start_timestamp, end_timestamp);
+            self
+                .samples_by_timestamps(&filtered_ts)
                 .unwrap_or_default()
                 .into_iter()
                 .collect()
+        } else {
+            self.get_range(start_timestamp, end_timestamp)
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        };
+        
+        if let Some(value_filter) = value_filter {
+            filter_samples_by_value(&mut samples, value_filter);
         }
-
-        match (timestamp_filter, value_filter) {
-            (Some(ts_filter), Some(value_filter)) => {
-                let mut samples = self
-                    .samples_by_timestamps(ts_filter)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-
-                filter_samples_by_date_range(&mut samples, start_timestamp, end_timestamp);
-                filter_samples_by_value(&mut samples, value_filter);
-                samples
-            }
-            (None, Some(value_filter)) => {
-                let mut samples = get_by_range(self, start_timestamp, end_timestamp);
-                filter_samples_by_value(&mut samples, value_filter);
-                samples
-            }
-            (Some(ts_filter), None) => {
-                let mut samples = self
-                    .samples_by_timestamps(ts_filter)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-
-                filter_samples_by_date_range(&mut samples, start_timestamp, end_timestamp);
-                samples
-            }
-            (None, None) => get_by_range(self, start_timestamp, end_timestamp),
-        }
+        samples
     }
 
     pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
@@ -385,5 +383,42 @@ impl Chunk for TimeSeriesChunk {
             Gorilla(chunk) => Ok(Gorilla(chunk.split()?)),
             Pco(chunk) => Ok(Pco(chunk.split()?)),
         }
+    }
+
+    fn save_rdb(&self, rdb: *mut RedisModuleIO) {
+        use TimeSeriesChunk::*;
+        save_chunk_type(self, rdb);
+        match self { 
+            Uncompressed(chunk) => chunk.save_rdb(rdb),
+            Gorilla(chunk) => chunk.save_rdb(rdb),
+            Pco(chunk) => chunk.save_rdb(rdb),
+        }
+    }
+
+    fn load_rdb(rdb: *mut RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self> {
+        use TimeSeriesChunk::*;
+        let chunk_type = rdb_load_string(rdb)?;
+        let chunk = match chunk_type.as_str() {
+            "uncompressed" => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
+            "gorilla" => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
+            "pco" => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
+            _ => return Err(ValkeyError::Str("Invalid chunk type")),
+        };
+        Ok(chunk)
+    }
+}
+
+fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut raw::RedisModuleIO) {
+    let chunk_type = match chunk {
+        TimeSeriesChunk::Uncompressed(_) => "uncompressed",
+        TimeSeriesChunk::Gorilla(_) => "gorilla",
+        TimeSeriesChunk::Pco(_) => "pco",
+    };
+    raw::save_string(rdb, chunk_type);
+}
+
+impl PartialOrd for TimeSeriesChunk {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.first_timestamp().partial_cmp(&other.first_timestamp())
     }
 }

@@ -86,15 +86,4 @@ pub trait BitWrite {
     }
 
     fn write_byte(&mut self, byte: u8);
-
-    /// Returns true if the stream is aligned at a whole byte.
-    fn byte_aligned(&self) -> bool;
-
-    /// Pads the stream with 0 bits until it is aligned at a whole byte.
-    /// Does nothing if the stream is already aligned.
-    ///
-    /// # Errors
-    ///
-    /// Passes along any I/O error from the underlying stream.
-    fn byte_align(&mut self) -> io::Result<()>;
 }

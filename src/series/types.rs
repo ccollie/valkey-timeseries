@@ -16,18 +16,12 @@ use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize)]
 /// The policy to use when a duplicate sample is encountered
 pub enum DuplicatePolicy {
-    /// ignore any newly reported value and reply with an error
     #[default]
     Block,
-    /// ignore any newly reported value
     KeepFirst,
-    /// overwrite the existing value with the new value
     KeepLast,
-    /// only override if the value is lower than the existing value
     Min,
-    /// only override if the value is higher than the existing value
     Max,
-    /// append the new value to the existing value
     Sum,
 }
 
@@ -51,24 +45,17 @@ impl DuplicatePolicy {
 
     pub fn duplicate_value(self, ts: Timestamp, old: f64, new: f64) -> TsdbResult<f64> {
         use DuplicatePolicy::*;
-        let has_nan = old.is_nan() || new.is_nan();
-        if has_nan && self != Block {
-            // take the valid sample regardless of policy
-            let value = if new.is_nan() { old } else { new };
-            return Ok(value);
+        if (old.is_nan() || new.is_nan()) && self != Block {
+            return Ok(if new.is_nan() { old } else { new });
         }
-        Ok(match self {
-            Block => {
-                // todo: format ts as iso-8601 or rfc3339
-                let msg = format!("{new} @ {ts}");
-                return Err(TsdbError::DuplicateSample(msg));
-            }
-            KeepFirst => old,
-            KeepLast => new,
-            Min => old.min(new),
-            Max => old.max(new),
-            Sum => old + new,
-        })
+        match self {
+            Block => Err(TsdbError::DuplicateSample(format!("{new} @ {ts}"))),
+            KeepFirst => Ok(old),
+            KeepLast => Ok(new),
+            Min => Ok(old.min(new)),
+            Max => Ok(old.max(new)),
+            Sum => Ok(old + new),
+        }
     }
 }
 
@@ -104,21 +91,6 @@ impl TryFrom<String> for DuplicatePolicy {
     }
 }
 
-impl TryFrom<u8> for DuplicatePolicy {
-    type Error = TsdbError;
-
-    fn try_from(n: u8) -> Result<Self, Self::Error> {
-        match n {
-            0 => Ok(DuplicatePolicy::Block),
-            1 => Ok(DuplicatePolicy::KeepFirst),
-            2 => Ok(DuplicatePolicy::KeepLast),
-            4 => Ok(DuplicatePolicy::Min),
-            8 => Ok(DuplicatePolicy::Max),
-            16 => Ok(DuplicatePolicy::Sum),
-            _ => Err(TsdbError::General(format!("invalid duplicate policy: {n}"))),
-        }
-    }
-}
 
 #[derive(Copy, Clone, Debug, GetSize, PartialEq)]
 pub struct SampleDuplicatePolicy {
@@ -251,28 +223,6 @@ impl ValueFilter {
             return Err(ValkeyError::Str("ERR invalid range"));
         }
         Ok(Self { min, max })
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Default)]
-pub struct RangeFilter {
-    pub value: Option<ValueFilter>,
-    pub timestamps: Option<Vec<Timestamp>>,
-}
-
-impl RangeFilter {
-    pub fn filter(&self, timestamp: Timestamp, value: f64) -> bool {
-        if let Some(value_filter) = &self.value {
-            if value < value_filter.min || value > value_filter.max {
-                return false;
-            }
-        }
-        if let Some(timestamps) = &self.timestamps {
-            if !timestamps.contains(&timestamp) {
-                return false;
-            }
-        }
-        true
     }
 }
 

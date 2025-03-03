@@ -13,6 +13,7 @@ use crate::series::index::{series_keys_by_matchers, with_timeseries_index};
 use crate::series::{SeriesSampleIterator, TimeSeries};
 use ahash::AHashMap;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 
 struct SeriesMeta<'a> {
     series: &'a TimeSeries,
@@ -21,7 +22,6 @@ struct SeriesMeta<'a> {
     end_ts: Timestamp,
 }
 
-// TODO: rayon as appropriate
 
 /// TS.MRANGE fromTimestamp toTimestamp
 //   [LATEST]
@@ -33,11 +33,18 @@ struct SeriesMeta<'a> {
 //   FILTER filterExpr...
 //   [GROUPBY label REDUCE reducer]
 pub fn mrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    mrange_internal(ctx, args, false)
+}
+
+pub fn mrevrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    mrange_internal(ctx, args, true)
+}
+
+fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let mut options = parse_range_options(&mut args)?;
 
     args.done()?;
-    // todo: use with_matched_series
 
     with_timeseries_index(ctx, move |index| {
         let matchers = std::mem::take(&mut options.series_selector);
@@ -46,28 +53,33 @@ pub fn mrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         // needed to keep valkey keys alive below
         let db_keys = keys.iter().map(|key| ctx.open_key(key)).collect::<Vec<_>>();
 
-        let mut metas = Vec::with_capacity(keys.len());
-
-        for (db_key, source_key) in db_keys.iter().zip(keys.into_iter()) {
-            if let Some(series) = db_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)? {
-                let (start_ts, end_ts) = options.date_range.get_series_range(series, false);
-                metas.push(SeriesMeta {
-                    series,
-                    source_key,
-                    start_ts,
-                    end_ts,
-                });
-            } else {
-                // todo error
-            }
-        }
+        let metas = db_keys.iter()
+            .zip(keys)
+            .filter_map(|(db_key, source_key)| {
+                if let Ok(Some(series)) = db_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+                    let (start_ts, end_ts) = options.date_range.get_series_range(series, None,false);
+                    let meta = SeriesMeta {
+                        series,
+                        source_key,
+                        start_ts,
+                        end_ts,
+                    };
+                    Some(meta)
+                } else {
+                    None
+                }
+            }).collect();
 
         let result_rows = process_command(metas, &options);
-        let result = result_rows
+        let mut result = result_rows
             .into_iter()
             .map(result_row_to_value)
             .collect::<Vec<_>>();
 
+        if reverse {
+            result.reverse();
+        }
+        
         Ok(ValkeyValue::from(result))
     })
 }
@@ -206,6 +218,8 @@ fn get_grouped_raw_samples(
     options: &RangeOptions,
     grouping_options: &RangeGroupingOptions,
 ) -> Vec<Sample> {
+    // todo: maybe use rayon/chili rather than the multi iterator to read multiple chunks
+    // concurrently
     let iterators = get_sample_iterators(series, options);
     let multi_iter = MultiSeriesSampleIter::new(iterators);
     group_samples_internal(multi_iter, grouping_options)
@@ -244,6 +258,9 @@ fn aggregate_grouped_samples(
         });
         aggregator.reset()
     }
+
+    // todo: maybe use rayon/chili rather than the multi iterator. Could significantly speed up
+    // the process if we go beyond a small number of chunks
 
     let mut count = options.count.unwrap_or(usize::MAX);
     let iterators = get_sample_iterators(&group.series, options);
@@ -343,8 +360,6 @@ fn get_series_sample_aggregates(
     )
 }
 
-const REDUCER_KEY: &str = "__reducer__";
-const SOURCE_KEY: &str = "__source__";
 
 struct GroupedSeries<'a> {
     label_value: String,

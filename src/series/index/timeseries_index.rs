@@ -117,6 +117,11 @@ impl TimeSeriesIndex {
             .get_key_by_id(id)
             .map(|key| ctx.create_string(key.as_bytes()))
     }
+    
+    pub fn has_id(&self, id: SeriesRef) -> bool {
+        let inner = self.inner.read().unwrap();
+        inner.has_id(id)
+    }
 
     /// `postings` returns the postings list iterator for the label pairs.
     /// The postings here contain the ids to the series inside the index.
@@ -171,11 +176,6 @@ impl TimeSeriesIndex {
         set.into_iter().collect::<Vec<_>>()
     }
 
-    pub fn has_label(&self, series_id: SeriesRef, name: &str) -> bool {
-        let inner = self.inner.read().unwrap();
-        inner.has_label(series_id, name)
-    }
-
     /// label_names returns all the unique label names.
     pub fn label_names(&self) -> Vec<String> {
         let mut set: BTreeSet<String> = BTreeSet::new();
@@ -221,11 +221,6 @@ impl TimeSeriesIndex {
             1 => Ok(Some(acc.iter().next().expect("cardinality should be 1"))),
             _ => Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES)),
         }
-    }
-
-    pub fn postings_without_labels(&self, labels: &[&str]) -> PostingsBitmap {
-        let inner = self.inner.read().unwrap();
-        inner.postings_without_labels(labels)
     }
 
     pub fn process_label_values<T, CONTEXT, F, PRED>(
@@ -346,7 +341,7 @@ impl TimeSeriesIndex {
     ) -> Vec<(String, usize)> {
         let mut metrics = StatsMaxHeap::new(limit);
         let inner = self.inner.read().unwrap();
-
+        
         let prefix = get_key_for_label_value(METRIC_NAME_LABEL, prefix.unwrap_or(""));
         for (key, bmp) in inner.label_index.prefix(prefix.as_bytes()) {
             // keys and values are expected to be utf-8. If we panic, we have bigger issues

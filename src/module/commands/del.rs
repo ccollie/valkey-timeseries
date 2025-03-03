@@ -13,7 +13,7 @@ pub fn del(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let date_range = parse_timestamp_range(&mut args)?;
     let count = with_timeseries_mut(ctx, &key, |series| {
-        let (start_ts, end_ts) = date_range.get_series_range(series, true);
+        let (start_ts, end_ts) = date_range.get_series_range(series,  None,true);
 
         let deleted = series
             .remove_range(start_ts, end_ts)

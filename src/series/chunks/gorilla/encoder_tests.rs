@@ -33,7 +33,7 @@ mod tests {
             ), 
         ];
 
-        for (name, input, want_err) in tests {
+        for (_name, input, want_err) in tests {
             let mut encoder = GorillaEncoder::new();
             for point in &input {
                 encoder.add_sample(point).unwrap();

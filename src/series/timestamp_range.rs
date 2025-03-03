@@ -2,13 +2,13 @@ use crate::common::constants::MAX_TIMESTAMP;
 use crate::common::humanize::humanize_duration_ms;
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
-use crate::config::QUERY_DEFAULT_STEP;
 use crate::error_consts;
 use crate::parser::duration::parse_duration_value;
 use crate::parser::timestamp::parse_timestamp;
 use crate::series::TimeSeries;
 use std::cmp::Ordering;
 use std::fmt::Display;
+use std::ops::RangeBounds;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyString};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Copy)]
@@ -21,31 +21,31 @@ pub enum TimestampValue {
     /// The current time
     Now,
     /// A specific timestamp
-    Value(Timestamp),
+    Specific(Timestamp),
     /// A timestamp with a given delta(ms) from the current timestamp
     Relative(i64),
 }
 
 impl TimestampValue {
-    pub fn as_timestamp(&self) -> Timestamp {
+    pub fn as_timestamp(&self, now: Option<Timestamp>) -> Timestamp {
         use TimestampValue::*;
         match self {
             Earliest => 0,
             Latest => MAX_TIMESTAMP,
-            Now => current_time_millis(),
-            Value(ts) => *ts,
-            Relative(delta) => current_time_millis().wrapping_add(*delta),
+            Now => now.unwrap_or_else(current_time_millis),
+            Specific(ts) => *ts,
+            Relative(delta) => now.unwrap_or_else(current_time_millis).saturating_add(*delta),
         }
     }
 
-    pub fn as_series_timestamp(&self, series: &TimeSeries) -> Timestamp {
+    pub fn as_series_timestamp(&self, series: &TimeSeries, now: Option<Timestamp>) -> Timestamp {
         use TimestampValue::*;
         match self {
             Earliest => series.first_timestamp,
             Latest => series.last_timestamp(),
-            Now => current_time_millis(),
-            Value(ts) => *ts,
-            Relative(delta) => current_time_millis().saturating_add(*delta),
+            Now => now.unwrap_or_else(current_time_millis),
+            Specific(ts) => *ts,
+            Relative(delta) => now.unwrap_or_else(current_time_millis).saturating_add(*delta),
         }
     }
 }
@@ -81,7 +81,7 @@ impl TryFrom<&str> for TimestampValue {
                     ));
                 }
 
-                Ok(Value(ts))
+                Ok(Specific(ts))
             }
         }
     }
@@ -115,10 +115,10 @@ impl TryFrom<&ValkeyString> for TimestampValue {
         if let Ok(int_val) = value.parse_integer() {
             if int_val < 0 {
                 return Err(ValkeyError::Str(
-                    "ERR: invalid timestamp, must be a non-negative integer",
+                    "TSDB: invalid timestamp, must be a non-negative integer",
                 ));
             }
-            Ok(Value(int_val))
+            Ok(Specific(int_val))
         } else {
             let date_str = value.to_string_lossy();
             date_str.as_str().try_into()
@@ -128,7 +128,7 @@ impl TryFrom<&ValkeyString> for TimestampValue {
 
 impl From<Timestamp> for TimestampValue {
     fn from(ts: Timestamp) -> Self {
-        TimestampValue::Value(ts)
+        TimestampValue::Specific(ts)
     }
 }
 
@@ -138,7 +138,7 @@ impl Display for TimestampValue {
         match self {
             Earliest => write!(f, "-"),
             Latest => write!(f, "+"),
-            Value(ts) => write!(f, "{}", ts),
+            Specific(ts) => write!(f, "{}", ts),
             Now => write!(f, "*"),
             Relative(delta) => {
                 let human = humanize_duration_ms(*delta);
@@ -152,6 +152,12 @@ impl Display for TimestampValue {
     }
 }
 
+impl From<TimestampValue> for Timestamp {
+    fn from(value: TimestampValue) -> Self {
+        value.as_timestamp(None)
+    }
+}
+
 impl PartialOrd for TimestampValue {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         use TimestampValue::*;
@@ -161,19 +167,19 @@ impl PartialOrd for TimestampValue {
             (Earliest, Earliest) => Some(Ordering::Equal),
             (Latest, Latest) => Some(Ordering::Equal),
             (Relative(x), Relative(y)) => x.partial_cmp(y),
-            (Value(a), Value(b)) => a.partial_cmp(b),
-            (Now, Value(v)) => {
+            (Specific(a), Specific(b)) => a.partial_cmp(b),
+            (Now, Specific(v)) => {
                 let now = current_time_millis();
                 now.partial_cmp(v)
             }
-            (Value(v), Now) => {
+            (Specific(v), Now) => {
                 let now = current_time_millis();
                 v.partial_cmp(&now)
             }
             (Relative(y), Now) => y.partial_cmp(&0i64),
             (Now, Relative(y)) => 0i64.partial_cmp(y),
-            (Value(_), Relative(y)) => 0i64.partial_cmp(y),
-            (Relative(delta), Value(y)) => {
+            (Specific(_), Relative(y)) => 0i64.partial_cmp(y),
+            (Relative(delta), Specific(y)) => {
                 let relative = current_time_millis() + *delta;
                 relative.partial_cmp(y)
             }
@@ -203,16 +209,17 @@ impl TimestampRange {
     pub fn get_series_range(
         &self,
         series: &TimeSeries,
+        now: Option<Timestamp>,
         check_retention: bool,
     ) -> (Timestamp, Timestamp) {
         use TimestampValue::*;
 
         // In case a retention is set shouldn't return chunks older than the retention
-        let mut start_timestamp = self.start.as_series_timestamp(series);
+        let mut start_timestamp = self.start.as_series_timestamp(series, now);
         let end_timestamp = if let Relative(delta) = self.end {
             start_timestamp.wrapping_add(delta)
         } else {
-            self.end.as_series_timestamp(series)
+            self.end.as_series_timestamp(series, now)
         };
 
         if check_retention && !series.retention.is_zero() {
@@ -224,17 +231,8 @@ impl TimestampRange {
         (start_timestamp, end_timestamp)
     }
 
-    pub fn get_timestamps(&self) -> (Timestamp, Timestamp) {
-        use TimestampValue::*;
-
-        let start_timestamp = self.start.as_timestamp();
-        let end_timestamp = if let Relative(delta) = self.end {
-            start_timestamp.wrapping_add(delta)
-        } else {
-            self.end.as_timestamp()
-        };
-
-        (start_timestamp, end_timestamp)
+    pub fn is_empty(&self) -> bool {
+        self.end == TimestampValue::Latest && self.start == TimestampValue::Earliest
     }
 }
 
@@ -253,33 +251,16 @@ impl Default for TimestampRange {
     }
 }
 
-pub(crate) fn normalize_range_args(
-    start: Option<TimestampValue>,
-    end: Option<TimestampValue>,
-) -> ValkeyResult<(Timestamp, Timestamp)> {
-    let now = current_time_millis();
-
-    let start = if let Some(val) = start {
-        val.as_timestamp()
-    } else {
-        let ts = now.saturating_sub(QUERY_DEFAULT_STEP.as_millis() as i64); // todo: how to avoid overflow?
-        ts as Timestamp
-    };
-
-    let end = if let Some(val) = end {
-        val.as_timestamp()
-    } else {
-        now
-    };
-
-    if start > end {
-        return Err(ValkeyError::Str(
-            "ERR end timestamp must not be before start time",
-        ));
+impl RangeBounds<TimestampValue> for TimestampValue {
+    fn start_bound(&self) -> std::ops::Bound<&TimestampValue> {
+        std::ops::Bound::Included(self)
     }
 
-    Ok((start, end))
+    fn end_bound(&self) -> std::ops::Bound<&TimestampValue> {
+        std::ops::Bound::Included(self)
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -329,7 +310,7 @@ mod tests {
         let input = "12345678";
         let result = TimestampValue::try_from(input);
         assert!(result.is_ok());
-        let expected = TimestampValue::Value(12345678);
+        let expected = TimestampValue::Specific(12345678);
         assert_eq!(result.unwrap(), expected);
     }
 
@@ -371,7 +352,7 @@ mod tests {
     fn test_timestamp_value_as_timestamp_now() {
         let now = TimestampValue::Now;
         let current_time = current_time_millis();
-        let result = now.as_timestamp();
+        let result = now.as_timestamp(None);
         assert!(
             (current_time..=current_time + 1).contains(&result),
             "Expected current time, got {}",
@@ -382,8 +363,8 @@ mod tests {
     #[test]
     fn test_timestamp_value_as_timestamp_value() {
         let specific_timestamp = 1627849200000; // Example specific timestamp
-        let value = TimestampValue::Value(specific_timestamp);
-        let result = value.as_timestamp();
+        let value = TimestampValue::Specific(specific_timestamp);
+        let result = value.as_timestamp(None);
         assert_eq!(
             result, specific_timestamp,
             "Expected {}, got {}",
@@ -402,7 +383,7 @@ mod tests {
             ..Default::default()
         };
         let earliest = TimestampValue::Earliest;
-        let result = earliest.as_series_timestamp(&series);
+        let result = earliest.as_series_timestamp(&series, None);
         assert_eq!(
             result, series.first_timestamp,
             "Expected {}, got {}",
@@ -421,7 +402,7 @@ mod tests {
             ..Default::default()
         };
         let latest = TimestampValue::Latest;
-        let result = latest.as_series_timestamp(&series);
+        let result = latest.as_series_timestamp(&series, None);
         let last_timestamp = series.last_timestamp();
         assert_eq!(
             result, last_timestamp,
@@ -443,7 +424,7 @@ mod tests {
         let positive_delta = 5000; // 5 seconds
         let relative = TimestampValue::Relative(positive_delta);
         let current_time = current_time_millis();
-        let result = relative.as_series_timestamp(&series);
+        let result = relative.as_series_timestamp(&series, None);
         assert_eq!(
             result,
             current_time.wrapping_add(positive_delta),
@@ -466,7 +447,7 @@ mod tests {
         let negative_delta = -5000; // -5 seconds
         let relative = TimestampValue::Relative(negative_delta);
         let current_time = current_time_millis();
-        let result = relative.as_series_timestamp(&series);
+        let result = relative.as_series_timestamp(&series, None);
         assert_eq!(
             result,
             current_time.wrapping_add(negative_delta),
@@ -489,7 +470,7 @@ mod tests {
         let large_delta = i64::MAX; // A large positive delta that will cause overflow
         let relative = TimestampValue::Relative(large_delta);
         let current_time = current_time_millis();
-        let result = relative.as_series_timestamp(&series);
+        let result = relative.as_series_timestamp(&series, None);
         assert_eq!(
             result,
             current_time.wrapping_add(large_delta),
@@ -512,7 +493,7 @@ mod tests {
         let large_negative_delta = i64::MIN; // A large negative delta that will cause underflow
         let relative = TimestampValue::Relative(large_negative_delta);
         let current_time = current_time_millis();
-        let result = relative.as_series_timestamp(&series);
+        let result = relative.as_series_timestamp(&series, None);
         assert_eq!(
             result,
             current_time.wrapping_add(large_negative_delta),
@@ -532,8 +513,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        let zero_value = TimestampValue::Value(0);
-        let result = zero_value.as_series_timestamp(&series);
+        let zero_value = TimestampValue::Specific(0);
+        let result = zero_value.as_series_timestamp(&series, None);
         assert_eq!(result, 0, "Expected 0, got {}", result);
     }
 
@@ -549,7 +530,7 @@ mod tests {
         };
         let now = TimestampValue::Now;
         let current_time = current_time_millis();
-        let result = now.as_series_timestamp(&series);
+        let result = now.as_series_timestamp(&series, None);
         assert!(
             (current_time..=current_time + 1).contains(&result),
             "Expected current time, got {}",
@@ -585,7 +566,7 @@ mod tests {
         let earliest = TimestampValue::Earliest;
         let latest = TimestampValue::Latest;
         let now = TimestampValue::Now;
-        let value = TimestampValue::Value(1000);
+        let value = TimestampValue::Specific(1000);
         let relative = TimestampValue::Relative(5000);
 
         assert_eq!(
@@ -620,7 +601,7 @@ mod tests {
         let values = vec![
             TimestampValue::Latest,
             TimestampValue::Now,
-            TimestampValue::Value(1000),
+            TimestampValue::Specific(1000),
             TimestampValue::Relative(1000),
         ];
 
@@ -646,7 +627,7 @@ mod tests {
         let values = vec![
             TimestampValue::Earliest,
             TimestampValue::Now,
-            TimestampValue::Value(1000),
+            TimestampValue::Specific(1000),
             TimestampValue::Relative(5000),
         ];
 
@@ -681,7 +662,7 @@ mod tests {
             "Expected Now to be less than Latest"
         );
 
-        let value = TimestampValue::Value(1000);
+        let value = TimestampValue::Specific(1000);
         assert_eq!(
             value.partial_cmp(&latest),
             Some(Ordering::Less),
@@ -698,8 +679,8 @@ mod tests {
 
     #[test]
     fn test_partial_cmp_equal_values() {
-        let timestamp1 = TimestampValue::Value(1627849200000);
-        let timestamp2 = TimestampValue::Value(1627849200000);
+        let timestamp1 = TimestampValue::Specific(1627849200000);
+        let timestamp2 = TimestampValue::Specific(1627849200000);
         let result = timestamp1.partial_cmp(&timestamp2);
         assert_eq!(
             result,
@@ -743,7 +724,7 @@ mod tests {
     fn test_partial_cmp_now_with_value_current_time() {
         let now = TimestampValue::Now;
         let current_time = current_time_millis();
-        let value = TimestampValue::Value(current_time);
+        let value = TimestampValue::Specific(current_time);
         let result = now.partial_cmp(&value);
         assert_eq!(
             result,
@@ -756,7 +737,7 @@ mod tests {
     #[test]
     fn test_partial_cmp_value_future_with_now() {
         let future_timestamp = current_time_millis() + 10000; // 10 seconds in the future
-        let value = TimestampValue::Value(future_timestamp);
+        let value = TimestampValue::Specific(future_timestamp);
         let now = TimestampValue::Now;
 
         let result = value.partial_cmp(&now);
@@ -771,8 +752,8 @@ mod tests {
 
     #[test]
     fn test_timestamp_range_new_start_greater_than_end() {
-        let start = TimestampValue::Value(2000);
-        let end = TimestampValue::Value(1000);
+        let start = TimestampValue::Specific(2000);
+        let end = TimestampValue::Specific(1000);
         let result = TimestampRange::new(start, end);
 
         assert!(
@@ -784,8 +765,8 @@ mod tests {
 
     #[test]
     fn test_timestamp_range_new_negative_start_greater_than_end() {
-        let start = TimestampValue::Value(-1000);
-        let end = TimestampValue::Value(-2000);
+        let start = TimestampValue::Specific(-1000);
+        let end = TimestampValue::Specific(-2000);
         let result = TimestampRange::new(start, end);
 
         assert!(
@@ -797,8 +778,8 @@ mod tests {
 
     #[test]
     fn test_timestamp_range_new_start_less_than_end() {
-        let start = TimestampValue::Value(1000);
-        let end = TimestampValue::Value(2000);
+        let start = TimestampValue::Specific(1000);
+        let end = TimestampValue::Specific(2000);
         let result = TimestampRange::new(start, end);
 
         assert!(
@@ -822,7 +803,7 @@ mod tests {
             start: TimestampValue::Earliest,
             end: TimestampValue::Latest,
         };
-        let (start, end) = timestamp_range.get_series_range(&series, false);
+        let (start, end) = timestamp_range.get_series_range(&series, None,false);
         assert_eq!(
             start, series.first_timestamp,
             "Expected start to be the earliest timestamp, got {}",
@@ -852,7 +833,7 @@ mod tests {
         let end = TimestampValue::Latest;
         let range = TimestampRange::new(start, end).unwrap();
 
-        let (start_timestamp, end_timestamp) = range.get_series_range(&series, true);
+        let (start_timestamp, end_timestamp) = range.get_series_range(&series, None, true);
 
         let last_timestamp = series.last_timestamp();
 
@@ -885,7 +866,7 @@ mod tests {
             end: TimestampValue::Latest,
         };
         let check_retention = false;
-        let (start, end) = timestamp_range.get_series_range(&series, check_retention);
+        let (start, end) = timestamp_range.get_series_range(&series, None, check_retention);
         assert_eq!(
             start, series.first_timestamp,
             "Expected start timestamp to be {}, got {}",
@@ -910,12 +891,12 @@ mod tests {
             }),
             ..Default::default()
         };
-        let start = TimestampValue::Value(2000);
+        let start = TimestampValue::Specific(2000);
         let end_delta = 3000; // 3 seconds
         let end = TimestampValue::Relative(end_delta);
         let timestamp_range = TimestampRange::new(start, end).unwrap();
 
-        let (start_timestamp, end_timestamp) = timestamp_range.get_series_range(&series, false);
+        let (start_timestamp, end_timestamp) = timestamp_range.get_series_range(&series, None, false);
 
         assert_eq!(
             start_timestamp, 2000,
@@ -944,7 +925,7 @@ mod tests {
             end: TimestampValue::Latest,
         };
         let current_time = current_time_millis();
-        let (start_timestamp, end_timestamp) = timestamp_range.get_series_range(&series, false);
+        let (start_timestamp, end_timestamp) = timestamp_range.get_series_range(&series, None,false);
         assert!(
             (current_time..=current_time + 1).contains(&start_timestamp),
             "Expected start timestamp to be current time, got {}",
