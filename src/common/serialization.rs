@@ -35,14 +35,6 @@ pub(crate) fn save_optional_unsigned(rdb: *mut RedisModuleIO, value: Option<u64>
     }
 }
 
-pub(crate) fn load_optional_unsigned(rdb: *mut RedisModuleIO) -> ValkeyResult<Option<u64>> {
-    let value = raw::load_signed(rdb)?;
-    Ok(if value == -1 {
-        None
-    } else {
-        Some(value as u64)
-    })
-}
 
 pub fn rdb_save_duration(rdb: *mut RedisModuleIO, duration: &Duration) {
     let millis = duration.as_millis() as i64;
@@ -85,11 +77,6 @@ pub fn rdb_load_usize(rdb: *mut RedisModuleIO) -> ValkeyResult<usize> {
 
 pub fn rdb_save_optional_usize(rdb: *mut RedisModuleIO, value: Option<usize>) {
     save_optional_unsigned(rdb, value.map(|x| x as u64));
-}
-
-pub(crate) fn rdb_load_optional_usize(rdb: *mut RedisModuleIO) -> ValkeyResult<Option<usize>> {
-    let value = load_optional_unsigned(rdb)?;
-    Ok(value.map(|x| x as usize))
 }
 
 #[inline]

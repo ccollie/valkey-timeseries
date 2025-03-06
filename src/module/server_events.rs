@@ -45,7 +45,10 @@ fn handle_loaded(ctx: &Context, key: &[u8]) {
     let _ = with_timeseries(ctx, &_key, |series| {
         with_timeseries_index(ctx, |index| {
             if !index.has_id(series.id) {
-                index.index_timeseries(series, key)
+                index.index_timeseries(series, key);
+                // on module load, our series id generator would have been reset to zero. We have to ensure
+                // that after load the counter has the value of the highest series id
+                TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
             } else {
                 logging::log_warning("Trying to load a series that is already in the index");
             }
@@ -62,6 +65,9 @@ pub(crate) fn generic_key_event_handler(
 ) {
     // todo: AddPostNotificationJob(ctx, event, key);
     match event {
+        "loaded" => {
+            handle_loaded(ctx, key);
+        }
         "del" | "evict" | "evicted" | "expire" | "expired" | "trimmed" | "set" => {
             remove_key_from_index(ctx, key);
         }

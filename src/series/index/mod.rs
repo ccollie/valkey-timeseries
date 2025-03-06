@@ -114,6 +114,7 @@ pub fn clear_timeseries_index(ctx: &Context) {
 }
 
 pub fn clear_all_timeseries_indexes() {
+    reset_timeseries_id(0);
     TIMESERIES_INDEX.pin().clear();
 }
 

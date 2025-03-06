@@ -5,7 +5,6 @@ use valkey_module::{
 };
 
 use crate::series::defrag_series;
-use crate::series::index::serialization::{ts_index_rdb_aux_load, ts_index_rdb_aux_save};
 use crate::series::index::with_timeseries_index;
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
@@ -31,8 +30,8 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         free: Some(free),
         mem_usage: Some(mem_usage),
         digest: None,
-        aux_load: Some(ts_index_rdb_aux_load),
-        aux_save: Some(ts_index_rdb_aux_save),
+        aux_load: None,
+        aux_save: None,
         aux_save_triggers: REDISMODULE_AUX_BEFORE_RDB as i32,
         free_effort: None,
         unlink: Some(unlink),
