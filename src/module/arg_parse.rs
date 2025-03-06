@@ -1,5 +1,5 @@
 use crate::aggregators::Aggregator;
-use crate::arg_types::RangeGroupingOptions;
+use crate::arg_types::{MatchFilterOptions, RangeGroupingOptions};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
@@ -663,6 +663,80 @@ pub fn parse_series_selector_list(
     }
 
     Ok(matchers)
+}
+
+pub(crate) fn parse_metadata_command_args(
+    args: Vec<ValkeyString>,
+    require_matchers: bool,
+) -> ValkeyResult<MatchFilterOptions> {
+    const ARG_TOKENS: [CommandArgToken; 3] = [
+        CommandArgToken::End,
+        CommandArgToken::Start,
+        CommandArgToken::Limit,
+    ];
+
+    let mut args = args.into_iter().skip(1).peekable();
+    let mut matchers = Vec::with_capacity(4);
+    let mut start_value: Option<TimestampValue> = None;
+    let mut end_value: Option<TimestampValue> = None;
+    let mut limit: Option<usize> = None;
+
+    fn is_cmd_token(arg: CommandArgToken) -> bool {
+        ARG_TOKENS.contains(&arg)
+    }
+
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        match token {
+            CommandArgToken::Start => {
+                let next = args.next_str()?;
+                start_value = Some(parse_timestamp_arg(next, "START")?);
+            }
+            CommandArgToken::End => {
+                let next = args.next_str()?;
+                end_value = Some(parse_timestamp_arg(next, "END")?);
+            }
+            CommandArgToken::Match => {
+                let m = parse_series_selector_list(&mut args, is_cmd_token)?;
+                matchers.extend(m);
+            }
+            CommandArgToken::Limit => {
+                let next = args.next_u64()?;
+                if next > usize::MAX as u64 {
+                    return Err(ValkeyError::Str("ERR LIMIT too large"));
+                }
+                limit = Some(next as usize);
+            }
+            _ => {
+                let msg = format!("ERR invalid argument '{}'", arg);
+                return Err(ValkeyError::String(msg));
+            }
+        };
+    }
+
+
+    if require_matchers && matchers.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+
+
+    let mut options = MatchFilterOptions {
+        matchers,
+        limit,
+        ..Default::default()
+    };
+
+    if start_value.is_some() || end_value.is_some() {
+        let range = TimestampRange {
+            start: start_value.unwrap_or(TimestampValue::Earliest),
+            end: end_value.unwrap_or(TimestampValue::Latest),
+        };
+        if !range.is_empty() {
+            options.date_range = Some(range);
+        }
+    }
+
+    Ok(options)
 }
 
 #[cfg(test)]
