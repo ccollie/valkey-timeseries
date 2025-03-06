@@ -18,6 +18,7 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use valkey_module::{raw, RedisModuleIO, ValkeyResult};
+use crate::common::parallel::join;
 use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
 
 /// items above this count will cause value and timestamp encoding/decoding to happen in parallel
@@ -112,7 +113,7 @@ impl PcoChunk {
 
             // then we compress in parallel
             // TODO: handle errors
-            let _ = rayon::join(
+            let _ = join(
                 || compress_timestamps(&mut t_data, timestamps).ok(),
                 || compress_values(&mut v_data, values).ok(),
             );
@@ -152,7 +153,7 @@ impl PcoChunk {
         // todo: dynamically calculate cutoff or just use chili
         if self.values.len() > 2048 {
             // todo: return errors as appropriate
-            let _ = rayon::join(
+            let _ = join(
                 || decompress_timestamps(&self.timestamps, timestamps).ok(),
                 || decompress_values(&self.values, values).ok(),
             );
@@ -499,7 +500,7 @@ impl Chunk for PcoChunk {
             let (left_timestamps, right_timestamps) = timestamps.split_at(mid);
             let (left_values, right_values) = values.split_at_mut(mid);
 
-            let (res_a, res_b) = rayon::join(
+            let (res_a, res_b) = join(
                 || self.compress(left_timestamps, left_values).ok(),
                 || result.compress(right_timestamps, right_values).ok(),
             );
