@@ -2,6 +2,10 @@
 
 ValkeyTimeSeries is a module providing a TimeSeries data type for [Valkey](https:://valkey.io).
 
+### WARNING !!!!
+This is a work in progress and a moving target. It is not yet ready for production or even casual use. It probably doesn't work. 
+On any day of the week it may not even build :-)
+
 ## Features
 - In-memory storage for time series data
 - Configurable data retention period
@@ -10,12 +14,7 @@ ValkeyTimeSeries is a module providing a TimeSeries data type for [Valkey](https
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
 - Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
-## Caveats
-- Is highly experimental and not yet ready for production use
-
-
 ## Tests
-
 The module includes a basic set of unit tests and integration tests.
 
 **Unit tests**
@@ -23,18 +22,6 @@ The module includes a basic set of unit tests and integration tests.
 To run all unit tests, follow these steps:
 
     $ cargo test
-
-
-**Integration tests**
-
-```bash
-RLTest --module ./target/debug/libredis_promql.so --module-args
-```
-
-#### MacOSX
-```bash
-RLTest --module ./target/debug/libredis_promql.dylib --module-args
-```
 
 ## Commands
 
@@ -57,18 +44,20 @@ TS.CREATE
 TS.ALTER
 TS.ADD
 TS.MADD
+TS.DECRBY
 TS.DEL
-TS.LABELS
 TS.JOIN
 TS.GET
+TS.INCRBY
 TS.MGET
-TS.DELETE-SERIES
 TS.MRANGE
+TS.MREVRANGE
 TS.RANGE
+TS.REVRANGE
 TS.QUERYINDEX
 TS.CARDINALITY
-TS.LABEL-NAMES
-TS.LABEL-VALUES
+TS.LABELNAMES
+TS.LABELVALUES
 TS.STATS
 ```
 
