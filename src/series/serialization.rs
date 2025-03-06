@@ -2,33 +2,9 @@ use crate::common::serialization::*;
 use crate::common::Sample;
 use crate::labels::InternedMetricName;
 use crate::series::chunks::{Chunk, ChunkCompression, TimeSeriesChunk};
-use crate::series::{DuplicatePolicy, SampleDuplicatePolicy, TimeSeries, TimeseriesId};
+use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeseriesId};
 use valkey_module::{raw, ValkeyResult};
 
-
-fn rdb_save_sample_duplicate_policy(
-    rdb: *mut raw::RedisModuleIO,
-    sample_policy: &SampleDuplicatePolicy,
-) {
-    let tmp = sample_policy.policy.as_str();
-    raw::save_string(rdb, tmp);
-    raw::save_unsigned(rdb, sample_policy.max_time_delta);
-    raw::save_double(rdb, sample_policy.max_value_delta);
-}
-
-fn rdb_load_sample_duplicate_policy(
-    rdb: *mut raw::RedisModuleIO,
-) -> ValkeyResult<SampleDuplicatePolicy> {
-    let policy = rdb_load_string(rdb)?;
-    let max_time_delta = raw::load_unsigned(rdb)?;
-    let max_value_delta = raw::load_double(rdb)?;
-    let duplicate_policy = DuplicatePolicy::try_from(policy)?;
-    Ok(SampleDuplicatePolicy {
-        policy: duplicate_policy,
-        max_time_delta,
-        max_value_delta,
-    })
-}
 
 pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     raw::save_unsigned(rdb, series.id);
@@ -39,7 +15,7 @@ pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     raw::save_string(rdb, tmp);
 
     rdb_save_optional_rounding(rdb, &series.rounding);
-    rdb_save_sample_duplicate_policy(rdb, &series.sample_duplicates);
+    series.sample_duplicates.rdb_save(rdb);
     rdb_save_usize(rdb, series.chunk_size_bytes);
     rdb_save_usize(rdb, series.chunks.len());
     for chunk in series.chunks.iter() {
@@ -55,7 +31,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     let chunk_compression = ChunkCompression::try_from(rdb_load_string(rdb)?)?;
 
     let rounding = rdb_load_optional_rounding(rdb)?;
-    let sample_duplicates = rdb_load_sample_duplicate_policy(rdb)?;
+    let sample_duplicates = SampleDuplicatePolicy::rdb_load(rdb)?;
     let chunk_size_bytes = rdb_load_usize(rdb)?;
     let chunks_len = rdb_load_usize(rdb)?;
     let mut chunks = Vec::with_capacity(chunks_len);

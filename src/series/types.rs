@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::time::Duration;
-use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{raw, ValkeyError, ValkeyResult, ValkeyValue};
+use crate::common::serialization::rdb_load_string;
 
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize)]
 /// The policy to use when a duplicate sample is encountered
@@ -133,6 +134,26 @@ impl SampleDuplicatePolicy {
         }
         false
     }
+
+    pub(crate) fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
+        let tmp = self.policy.as_str();
+        raw::save_string(rdb, tmp);
+        raw::save_unsigned(rdb, self.max_time_delta);
+        raw::save_double(rdb, self.max_value_delta);
+    }
+
+    pub(crate) fn rdb_load(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<SampleDuplicatePolicy> {
+        let policy = rdb_load_string(rdb)?;
+        let max_time_delta = raw::load_unsigned(rdb)?;
+        let max_value_delta = raw::load_double(rdb)?;
+        let duplicate_policy = DuplicatePolicy::try_from(policy)?;
+        Ok(SampleDuplicatePolicy {
+            policy: duplicate_policy,
+            max_time_delta,
+            max_value_delta,
+        })
+    }
+
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
