@@ -65,7 +65,7 @@ pub fn get_series_labels(
     with_labels: bool,
     selected_labels: &[String],
 ) -> Vec<ValkeyValue> {
-    if !with_labels && selected_labels.is_empty() {
+    if !with_labels || selected_labels.is_empty() {
         return vec![];
     }
 
