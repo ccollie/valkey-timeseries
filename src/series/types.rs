@@ -1,10 +1,12 @@
 use crate::common::rounding::RoundingStrategy;
+use crate::common::serialization::rdb_load_string;
 use crate::common::{Sample, Timestamp};
+use crate::config::get_series_config_settings;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::chunks::ChunkCompression;
-use crate::series::settings::SERIES_SETTINGS;
+use crate::series::settings::ConfigSettings;
 use get_size::GetSize;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
@@ -12,7 +14,6 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::time::Duration;
 use valkey_module::{raw, ValkeyError, ValkeyResult, ValkeyValue};
-use crate::common::serialization::rdb_load_string;
 
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize)]
 /// The policy to use when a duplicate sample is encountered
@@ -196,7 +197,7 @@ impl From<SampleAddResult> for ValkeyValue {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct TimeSeriesOptions {
     pub chunk_compression: Option<ChunkCompression>,
     pub chunk_size: Option<usize>,
@@ -211,23 +212,26 @@ impl TimeSeriesOptions {
     pub fn retention(&mut self, retention: Duration) {
         self.retention = Some(retention);
     }
+}
 
-    pub fn set_defaults_from_config(&mut self) {
-        let globals = *SERIES_SETTINGS;
-        self.chunk_compression = self
-            .chunk_compression
-            .unwrap_or(globals.chunk_compression.unwrap_or_default())
-            .into();
-        self.chunk_size = self.chunk_size.unwrap_or(globals.chunk_size_bytes).into();
-        if self.retention.is_none() && globals.retention_period.is_some() {
-            self.retention = globals.retention_period;
-        }
-        self.sample_duplicate_policy.policy = globals.duplicate_policy;
-        if let Some(delta) = globals.dedupe_interval {
-            self.sample_duplicate_policy.max_time_delta = delta.as_millis() as u64;
-        }
-        if self.rounding.is_none() {
-            self.rounding = globals.rounding;
+
+impl Default for TimeSeriesOptions {
+    fn default() -> Self {
+        let config = get_series_config_settings();
+        config.into()
+    }
+}
+
+impl From<ConfigSettings> for TimeSeriesOptions {
+    fn from(settings: ConfigSettings) -> Self {
+        Self {
+            chunk_compression: settings.chunk_encoding,
+            chunk_size: Some(settings.chunk_size_bytes),
+            retention: settings.retention_period,
+            sample_duplicate_policy: settings.duplicate_policy,
+            labels: vec![],
+            rounding: settings.rounding,
+            on_duplicate: None,
         }
     }
 }

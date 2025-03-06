@@ -64,8 +64,6 @@ impl TimeSeries {
     pub fn with_options(options: TimeSeriesOptions) -> TsdbResult<Self> {
         let mut options = options;
 
-        options.set_defaults_from_config();
-
         let mut res = Self::new();
         if let Some(chunk_size) = options.chunk_size {
             validate_chunk_size(chunk_size)?;

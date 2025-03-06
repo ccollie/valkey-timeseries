@@ -2,12 +2,14 @@ use crate::common::rounding::RoundingStrategy;
 use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
 use crate::series::chunks::ChunkCompression;
-use crate::series::settings::SeriesSettings;
-use crate::series::DuplicatePolicy;
+use crate::series::settings::ConfigSettings;
+use crate::series::{DuplicatePolicy, SampleDuplicatePolicy};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, ValkeyError};
 use valkey_module::{ValkeyResult, ValkeyString};
+
+// See https://redis.io/docs/latest/develop/data-types/timeseries/configuration/
 
 pub const SPLIT_FACTOR: f64 = 1.2;
 
@@ -25,13 +27,14 @@ const KEY_PREFIX_KEY: &str = "KEY_PREFIX";
 const QUERY_DEFAULT_STEP_KEY: &str = "query.default_step";
 const QUERY_ROUND_DIGITS_KEY: &str = "query.round_digits";
 
-const SERIES_RETENTION_KEY: &str = "ts.retention";
-const SERIES_CHUNK_COMPRESSION_KEY: &str = "series.chunk_compression";
-const SERIES_CHUNK_SIZE_KEY: &str = "ts.chunk_size";
-const SERIES_DEDUPE_INTERVAL_KEY: &str = "ts.dedupe_interval";
-const SERIES_DUPLICATE_POLICY_KEY: &str = "ts.duplicate_policy";
-const SERIES_ROUND_DIGITS_KEY: &str = "ts.round_digits";
-const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "ts.significant_digits";
+const SERIES_RETENTION_KEY: &str = "RETENTION_POLICY";
+const SERIES_CHUNK_ENCODING_KEY: &str = "ENCODING";
+const SERIES_CHUNK_SIZE_KEY: &str = "CHUNK_SIZE_BYTES";
+const SERIES_DEDUPE_INTERVAL_KEY: &str = "IGNORE_MAX_TIME_DIFF";
+const SERIES_DEDUPE_VALUE_KEY: &str = "IGNORE_MAX_VALUE_DIFF";
+const SERIES_DUPLICATE_POLICY_KEY: &str = "DUPLICATE_POLICY";
+const SERIES_ROUND_DIGITS_KEY: &str = "ROUND_DIGITS";
+const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "SIGNIFICANT_DIGITS";
 const SERIES_WORKER_INTERVAL_KEY: &str = "ts.worker_interval";
 
 pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 4 * 1024;
@@ -46,8 +49,8 @@ static _KEY_PREFIX: LazyLock<Mutex<String>> =
 static _QUERY_ROUND_DIGITS: LazyLock<Mutex<Option<u8>>> = LazyLock::new(|| Mutex::new(None));
 static _QUERY_DEFAULT_STEP: LazyLock<Mutex<Duration>> = LazyLock::new(|| Mutex::new(DEFAULT_STEP));
 
-static _SERIES_SETTINGS: LazyLock<Mutex<SeriesSettings>> =
-    LazyLock::new(|| Mutex::new(SeriesSettings::default()));
+static _SERIES_SETTINGS: LazyLock<Mutex<ConfigSettings>> =
+    LazyLock::new(|| Mutex::new(ConfigSettings::default()));
 
 pub static KEY_PREFIX: LazyLock<String> = LazyLock::new(|| {
     let key_prefix = _KEY_PREFIX.lock().unwrap();
@@ -106,16 +109,6 @@ fn get_optional_duration_config_value(
     }
 }
 
-fn get_bool_config_value(args: &[ValkeyString], name: &str, default_value: bool) -> bool {
-    find_config_value(args, name)
-        .and_then(|arg| match arg.as_slice() {
-            b"yes" | b"YES" | b"1" => Some(true),
-            b"false" | b"FALSE" | b"0" => Some(false),
-            _ => None,
-        })
-        .unwrap_or(default_value)
-}
-
 fn get_number_config_value(
     args: &[ValkeyString],
     name: &str,
@@ -165,7 +158,7 @@ fn get_rounding_strategy_digit_value(
 
 #[allow(clippy::field_reassign_with_default)]
 fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
-    let mut config = SeriesSettings::default();
+    let mut config = ConfigSettings::default();
 
     config.retention_period = get_optional_duration_config_value(args, SERIES_RETENTION_KEY)?;
     config.chunk_size_bytes = get_number_config_value(
@@ -175,12 +168,13 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
     )? as usize;
     // todo: validate chunk_size_bytes
 
-    config.dedupe_interval = get_optional_duration_config_value(args, SERIES_DEDUPE_INTERVAL_KEY)?;
-
+    config.duplicate_policy.max_time_delta = get_duration_config_value_ms(args, SERIES_DEDUPE_INTERVAL_KEY, Some(0))? as u64;
+    config.duplicate_policy.max_value_delta = get_number_config_value(args, SERIES_DEDUPE_VALUE_KEY, Some(0.0))?;
+    
     if let Some(policy) = find_config_value(args, SERIES_DUPLICATE_POLICY_KEY) {
         let temp = policy.try_as_str()?;
         if let Ok(policy) = DuplicatePolicy::try_from(temp) {
-            config.duplicate_policy = policy;
+            config.duplicate_policy.policy = policy;
         } else {
             return Err(ValkeyError::String(format!(
                 "Invalid value for {}: {temp}",
@@ -188,15 +182,16 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
             )));
         }
     }
+    
 
-    if let Some(compression) = find_config_value(args, SERIES_CHUNK_COMPRESSION_KEY) {
+    if let Some(compression) = find_config_value(args, SERIES_CHUNK_ENCODING_KEY) {
         let temp = compression.try_as_str()?;
         if let Ok(compression) = ChunkCompression::try_from(temp) {
-            config.chunk_compression = Some(compression);
+            config.chunk_encoding = Some(compression);
         } else {
             return Err(ValkeyError::String(format!(
                 "Error parsing compression chunk value for \"{}\", got  \"{temp}\"",
-                SERIES_CHUNK_COMPRESSION_KEY
+                SERIES_CHUNK_ENCODING_KEY
             )));
         }
     }
@@ -238,7 +233,7 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
     Ok(())
 }
 
-pub(crate) fn get_series_settings() -> SeriesSettings {
+pub(crate) fn get_series_config_settings() -> ConfigSettings {
     *_SERIES_SETTINGS.lock().unwrap()
 }
 

@@ -1,40 +1,38 @@
 use crate::common::rounding::RoundingStrategy;
 use crate::config::{
-    get_series_settings, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_SERIES_WORKER_INTERVAL,
+    get_series_config_settings, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_SERIES_WORKER_INTERVAL,
 };
 use crate::series::chunks::ChunkCompression;
 use crate::series::index::optimize_all_timeseries_indexes;
-use crate::series::DuplicatePolicy;
+use crate::series::{DuplicatePolicy, SampleDuplicatePolicy};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, RedisModuleTimerID};
 
 #[derive(Clone, Copy)]
-pub struct SeriesSettings {
+pub struct ConfigSettings {
     pub retention_period: Option<Duration>,
-    pub chunk_compression: Option<ChunkCompression>,
+    pub chunk_encoding: Option<ChunkCompression>,
     pub chunk_size_bytes: usize,
-    pub duplicate_policy: DuplicatePolicy,
-    pub dedupe_interval: Option<Duration>,
     pub rounding: Option<RoundingStrategy>,
     pub worker_interval: Duration,
+    pub duplicate_policy: SampleDuplicatePolicy
 }
 
-impl Default for SeriesSettings {
+impl Default for ConfigSettings {
     fn default() -> Self {
         Self {
             retention_period: None,
             chunk_size_bytes: DEFAULT_CHUNK_SIZE_BYTES,
-            chunk_compression: Some(ChunkCompression::Gorilla),
-            duplicate_policy: DuplicatePolicy::KeepLast,
+            chunk_encoding: Some(ChunkCompression::Gorilla),
             worker_interval: DEFAULT_SERIES_WORKER_INTERVAL,
-            dedupe_interval: None,
             rounding: None,
+            duplicate_policy: SampleDuplicatePolicy::default()
         }
     }
 }
 
-pub static SERIES_SETTINGS: LazyLock<SeriesSettings> = LazyLock::new(get_series_settings);
+pub static SERIES_SETTINGS: LazyLock<ConfigSettings> = LazyLock::new(get_series_config_settings);
 static SERIES_WORKER_TIMER_ID: LazyLock<Mutex<RedisModuleTimerID>> =
     LazyLock::new(|| Mutex::new(0));
 
