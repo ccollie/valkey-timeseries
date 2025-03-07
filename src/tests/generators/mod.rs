@@ -2,9 +2,8 @@ mod generator;
 mod mackey_glass;
 mod rand;
 
-use ::rand::prelude::*;
-use ::rand::rng;
-
+use ::rand::prelude::StdRng;
+use ::rand::{rng, SeedableRng};
 pub use generator::*;
 pub use rand::*;
 

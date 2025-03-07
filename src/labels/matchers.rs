@@ -98,14 +98,6 @@ impl PredicateValue {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        match self {
-            PredicateValue::Empty => true,
-            PredicateValue::String(s) => s.is_empty(),
-            PredicateValue::List(s) => s.is_empty(),
-        }
-    }
-
     fn cost(&self) -> usize {
         match self {
             PredicateValue::Empty => 0,
@@ -326,17 +318,6 @@ impl Matcher {
         match &self.matcher {
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(re.as_str()),
             _ => None,
-        }
-    }
-
-    pub fn string_value(&self) -> Option<&str> {
-        match &self.matcher {
-            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(re.as_str()),
-            PredicateMatch::Equal(value) | 
-            PredicateMatch::NotEqual(value) => match value {
-                PredicateValue::String(s) => Some(s.as_str()),
-                _ => None,
-            },
         }
     }
 

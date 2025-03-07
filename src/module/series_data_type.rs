@@ -5,7 +5,7 @@ use valkey_module::{
 };
 
 use crate::series::defrag_series;
-use crate::series::index::with_timeseries_index;
+use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
@@ -85,7 +85,7 @@ unsafe extern "C" fn copy(
         let sm = &*(value as *mut TimeSeries);
         let mut new_series = sm.clone();
         // set id to 0 so indexer can allocate a new id
-        new_series.id = 0;
+        new_series.id = next_timeseries_id();
         let key = ValkeyString::from_redis_module_string(guard.ctx, to_key);
         index.index_timeseries(&new_series, key.as_slice());
         Box::into_raw(Box::new(new_series)).cast::<c_void>()

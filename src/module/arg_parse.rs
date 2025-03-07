@@ -452,7 +452,7 @@ pub(crate) fn expect_one_of(
             }
         }
     }
-    let msg = format!("ERR: expected one of: {:?}", tokens);
+    let msg = format!("TSDB: expected one of: {:?}", tokens);
     Err(ValkeyError::String(msg))
 }
 

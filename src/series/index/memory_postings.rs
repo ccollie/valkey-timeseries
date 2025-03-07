@@ -1,6 +1,6 @@
 use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
 use blart::map::Entry as ARTEntry;
-use blart::{AsBytes, TreeMap};
+use blart::TreeMap;
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
@@ -89,7 +89,7 @@ impl MemoryPostings {
         }
     }
 
-    pub(crate) fn add_id_to_all_postings(&mut self, id: SeriesRef) {
+    pub(super) fn add_id_to_all_postings(&mut self, id: SeriesRef) {
         let key = &*ALL_POSTINGS_KEY;
         if let Some(bitmap) = self.label_index.get_mut(key) {
             bitmap.add(id);
@@ -99,16 +99,10 @@ impl MemoryPostings {
             self.label_index.insert(key.clone(), bmp);
         }
     }
-
-    pub(super) fn remove_id_from_all_postings(&mut self, id: SeriesRef) {
+    
+    fn remove_id_from_all_postings(&mut self, id: SeriesRef) {
         if let Some(bmp) = self.label_index.get_mut(&*ALL_POSTINGS_KEY) {
             bmp.remove(id);
-        }
-    }
-
-    fn remove_ids_from_all_postings(&mut self, ids: &[SeriesRef]) {
-        if let Some(bmp) = self.label_index.get_mut(&*ALL_POSTINGS_KEY) {
-            bmp.remove_all(ids.iter().cloned());
         }
     }
 
@@ -126,6 +120,7 @@ impl MemoryPostings {
         let id = series.id;
         let labels = series.labels.iter().collect::<Vec<_>>();
         self.remove_posting_by_id_and_labels(id, &labels);
+        self.remove_id_from_all_postings(id);
     }
 
     pub fn count(&self) -> usize {
