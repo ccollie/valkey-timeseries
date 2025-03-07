@@ -3,7 +3,7 @@ use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
 use crate::series::chunks::ChunkCompression;
 use crate::series::settings::ConfigSettings;
-use crate::series::{DuplicatePolicy, SampleDuplicatePolicy};
+use crate::series::DuplicatePolicy;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, ValkeyError};
@@ -25,8 +25,6 @@ pub const DEFAULT_KEY_PREFIX: &str = "__vts__";
 
 const KEY_PREFIX_KEY: &str = "KEY_PREFIX";
 const QUERY_DEFAULT_STEP_KEY: &str = "query.default_step";
-const QUERY_ROUND_DIGITS_KEY: &str = "query.round_digits";
-
 const SERIES_RETENTION_KEY: &str = "RETENTION_POLICY";
 const SERIES_CHUNK_ENCODING_KEY: &str = "ENCODING";
 const SERIES_CHUNK_SIZE_KEY: &str = "CHUNK_SIZE_BYTES";
@@ -250,7 +248,7 @@ pub fn load_config(_ctx: &Context, args: &[ValkeyString]) -> ValkeyResult<()> {
     *prefix = key_prefix.to_string();
 
     let round_digits =
-        get_optional_number_config_value(args, QUERY_ROUND_DIGITS_KEY)?.map(|v| v as u8);
+        get_optional_number_config_value(args, SERIES_ROUND_DIGITS_KEY)?.map(|v| v as u8);
     let mut temp = _QUERY_ROUND_DIGITS.lock().map_err(|_| {
         ValkeyError::String("mutex lock error setting query round digits".to_string())
     })?;
