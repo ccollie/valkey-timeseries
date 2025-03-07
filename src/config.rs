@@ -4,7 +4,7 @@ use crate::parser::parse_duration_value;
 use crate::series::chunks::ChunkCompression;
 use crate::series::settings::ConfigSettings;
 use crate::series::DuplicatePolicy;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use valkey_module::{Context, ValkeyError};
 use valkey_module::{ValkeyResult, ValkeyString};
@@ -47,8 +47,8 @@ static _KEY_PREFIX: LazyLock<Mutex<String>> =
 static _QUERY_ROUND_DIGITS: LazyLock<Mutex<Option<u8>>> = LazyLock::new(|| Mutex::new(None));
 static _QUERY_DEFAULT_STEP: LazyLock<Mutex<Duration>> = LazyLock::new(|| Mutex::new(DEFAULT_STEP));
 
-static _SERIES_SETTINGS: LazyLock<Mutex<ConfigSettings>> =
-    LazyLock::new(|| Mutex::new(ConfigSettings::default()));
+static _SERIES_SETTINGS: LazyLock<RwLock<ConfigSettings>> =
+    LazyLock::new(|| RwLock::new(ConfigSettings::default()));
 
 pub static KEY_PREFIX: LazyLock<String> = LazyLock::new(|| {
     let key_prefix = _KEY_PREFIX.lock().unwrap();
@@ -222,9 +222,10 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
         SERIES_WORKER_INTERVAL_KEY,
         Some(DEFAULT_SERIES_WORKER_INTERVAL),
     )?;
+    
     let mut res = _SERIES_SETTINGS
-        .lock()
-        .map_err(|_| ValkeyError::String("mutex lock error setting series config".to_string()))?;
+        .write()
+        .expect("mutex lock error setting series config");
 
     *res = config;
 
@@ -232,7 +233,7 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
 }
 
 pub(crate) fn get_series_config_settings() -> ConfigSettings {
-    *_SERIES_SETTINGS.lock().unwrap()
+    *_SERIES_SETTINGS.read().unwrap()
 }
 
 pub fn load_config(_ctx: &Context, args: &[ValkeyString]) -> ValkeyResult<()> {

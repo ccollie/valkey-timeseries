@@ -640,7 +640,11 @@ impl Default for TimeSeries {
             id: 0,
             labels: Default::default(),
             retention: Default::default(),
-            sample_duplicates: Default::default(),
+            sample_duplicates: SampleDuplicatePolicy {
+                policy: DuplicatePolicy::default(),
+                max_time_delta: 0,
+                max_value_delta: 0.0,
+            },
             chunk_compression: Default::default(),
             chunk_size_bytes: DEFAULT_CHUNK_SIZE_BYTES,
             chunks: vec![],
