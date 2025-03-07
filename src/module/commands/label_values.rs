@@ -5,7 +5,7 @@ use crate::series::index::with_matched_series;
 
 // TS.LABEL_VALUES label [FILTER seriesMatcher] [START fromTimestamp] [END fromTimestamp]
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
-pub(crate) fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let label_args = parse_metadata_command_args(args, true)?;
     let limit = label_args.limit.unwrap_or(usize::MAX);
 

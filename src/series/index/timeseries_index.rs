@@ -3,8 +3,6 @@ use ahash::AHashMap;
 use blart::AsBytes;
 use std::collections::hash_map::Entry;
 use std::collections::BTreeSet;
-use std::io;
-use std::io::{Read, Write};
 use std::ops::ControlFlow;
 use std::sync::RwLock;
 
@@ -359,19 +357,7 @@ impl TimeSeriesIndex {
         }
         result
     }
-
-    pub fn serialize_into<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        let inner = self.inner.read().unwrap();
-        inner.serialize_into(writer)
-    }
-
-    pub fn deserialize_from<R: Read>(reader: &mut R) -> io::Result<Self> {
-        let inner = MemoryPostings::deserialize_from(reader)?;
-        Ok(Self {
-            inner: RwLock::new(inner),
-        })
-    }
-
+    
     pub fn count(&self) -> usize {
         let inner = self.inner.read().unwrap();
         inner.count()

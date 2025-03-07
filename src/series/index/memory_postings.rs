@@ -1,18 +1,14 @@
 use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
-use ahash::HashMapExt;
 use blart::map::Entry as ARTEntry;
 use blart::{AsBytes, TreeMap};
 use std::borrow::Cow;
-use std::io;
-use std::io::{Read, Write};
 use std::sync::LazyLock;
 
 use crate::common::hash::IntMap;
+use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::SeriesLabel;
 use crate::series::{SeriesRef, TimeSeries};
-use croaring::{Bitmap64, Portable};
-use integer_encoding::{VarIntReader, VarIntWriter};
-use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
+use croaring::Bitmap64;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -305,34 +301,7 @@ impl MemoryPostings {
         }
         keys
     }
-
-    pub fn serialize_into<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        // todo: version
-        writer.write_varint(self.count() as u64)?;
-        let mut buffer = Vec::new();
-        for (key, bitmap) in self.label_index.iter() {
-            write_key(key, &mut *writer)?;
-            write_bitmap(writer, &mut buffer, bitmap)?;
-        }
-        // now write out the id to key map
-        write_id_key_map(writer, &self.id_to_key)
-    }
-
-    pub fn deserialize_from<R: Read>(reader: &mut R) -> io::Result<Self> {
-        let len = reader.read_varint::<u64>()?;
-
-        let mut result = Self::default();
-        let mut buffer = Vec::new();
-        for _ in 0..len {
-            let key = read_key(&mut *reader)?;
-            let bitmap = read_bitmap(reader, &mut buffer)?;
-            result.label_index.insert(key, bitmap);
-            buffer.clear();
-        }
-        result.id_to_key = read_id_key_map(reader)?;
-        Ok(result)
-    }
-
+    
     pub(super) fn get_key_range(&self) -> Option<(&IndexKey, &IndexKey)> {
         if let Some((start, _)) = self.label_index.first_key_value() {
             if let Some((end, _)) = self.label_index.last_key_value() {
@@ -428,73 +397,6 @@ pub(super) fn handle_regex_not_equal_match<'a>(postings: &'a MemoryPostings, mat
         !matcher.matches(value)
     });
     Cow::Owned(postings)
-}
-
-pub(super) fn write_bitmap<W: Write>(
-    writer: &mut W,
-    buf: &mut Vec<u8>,
-    bitmap: &PostingsBitmap,
-) -> io::Result<()> {
-    buf.clear();
-
-    // Docs for Portable state that it is Endian dependent, whereas the docs below imply that the data is
-    // serialized as Little Endian
-    // https://github.com/RoaringBitmap/RoaringFormatSpec?tab=readme-ov-file#extension-for-64-bit-implementations
-    let serialized = bitmap.serialize_into_vec::<Portable>(buf);
-    // Because Bitmap has no method to serialize using a writer,
-    // we end up duplicating the serialized length so we can properly deserialize below
-    writer.write_varint(serialized.len())?;
-    writer.write_all(serialized)
-}
-
-pub(super) fn read_bitmap<R: Read>(
-    reader: &mut R,
-    buf: &mut Vec<u8>,
-) -> io::Result<PostingsBitmap> {
-    let len = reader.read_varint::<usize>()?;
-    buf.resize(len, 0);
-
-    reader.read_exact(buf)?;
-    // Not sure how I feel about the possible silent failure
-    Ok(PostingsBitmap::deserialize::<Portable>(buf))
-}
-
-pub(super) fn write_key<W: Write>(key: &IndexKey, mut writer: W) -> io::Result<()> {
-    let val = key.as_str();
-    writer.write_varint(val.len())?;
-    writer.write_all(val.as_bytes())
-}
-
-pub(super) fn read_key<R: Read>(reader: &mut R) -> io::Result<IndexKey> {
-    let len = reader.read_varint::<usize>()?;
-
-    let mut data = vec![0u8; len];
-    reader.read_exact(&mut data)?;
-    let key = IndexKey::from(data);
-    Ok(key)
-}
-
-pub(super) fn write_id_key_map<W: Write>(
-    writer: &mut W,
-    map: &IntMap<SeriesRef, KeyType>,
-) -> io::Result<()> {
-    writer.write_varint(map.len() as u64)?;
-    for (id, key) in map.iter() {
-        writer.write_varint(*id)?;
-        writer.write_all(key.as_bytes())?;
-    }
-    Ok(())
-}
-
-pub(super) fn read_id_key_map<R: Read>(reader: &mut R) -> io::Result<IntMap<SeriesRef, KeyType>> {
-    let len = reader.read_varint::<u64>()?;
-    let mut map = IntMap::with_capacity(len as usize);
-    for _ in 0..len {
-        let id = reader.read_varint::<SeriesRef>()?;
-        let key = read_key(reader)?;
-        map.insert(id, key.into_vec().into_boxed_slice());
-    }
-    Ok(map)
 }
 
 #[cfg(test)]
@@ -903,25 +805,5 @@ mod tests {
 
         assert_eq!(result.cardinality(), 1);
         assert!(result.contains(1));
-    }
-
-    #[test]
-    fn test_memory_postings_serialize_deserialize() {
-        let mut postings = MemoryPostings::default();
-
-        postings.add_posting_for_label_value(1, "label1", "value1");
-        postings.add_posting_for_label_value(2, "label2", "value2");
-        postings.set_timeseries_key(1, b"key1");
-        postings.set_timeseries_key(2, b"key2");
-
-        let mut buffer = Vec::new();
-        postings.serialize_into(&mut buffer).unwrap();
-
-        let deserialized = MemoryPostings::deserialize_from(&mut buffer.as_slice()).unwrap();
-
-        assert_eq!(postings.count(), deserialized.count());
-        assert_eq!(postings.all_postings(), deserialized.all_postings());
-        assert_eq!(postings.get_key_by_id(1), deserialized.get_key_by_id(1));
-        assert_eq!(postings.get_key_by_id(2), deserialized.get_key_by_id(2));
     }
 }

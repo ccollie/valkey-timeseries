@@ -52,7 +52,6 @@ const CMD_ARG_LATEST: &str = "LATEST";
 const CMD_ARG_LEFT: &str = "LEFT";
 const CMD_ARG_LIMIT: &str = "LIMIT";
 const CMD_ARG_MATCH: &str = "MATCH";
-const CMD_ARG_MAX_ENTRIES: &str = "MAX_ENTRIES";
 const CMD_ARG_METRIC: &str = "METRIC";
 const CMD_ARG_NAME: &str = "NAME";
 const CMD_ARG_NEXT: &str = "NEXT";

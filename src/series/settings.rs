@@ -4,7 +4,7 @@ use crate::config::{
 };
 use crate::series::chunks::ChunkCompression;
 use crate::series::index::optimize_all_timeseries_indexes;
-use crate::series::{DuplicatePolicy, SampleDuplicatePolicy};
+use crate::series::SampleDuplicatePolicy;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, RedisModuleTimerID};

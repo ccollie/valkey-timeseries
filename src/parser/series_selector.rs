@@ -115,8 +115,9 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
     let mut or_matchers: Vec<Vec<Matcher>> = Vec::new();
     let mut matchers: Vec<Matcher> = Vec::new();
     let mut has_or_matchers = false;
-
-    let mut last_token = LeftBrace;
+    
+    // underscore here is ugly, but gets rid of the unused_assignment warning
+    let mut _last_token = LeftBrace;
 
     loop {
         if has_or_matchers && !matchers.is_empty() {
@@ -124,9 +125,9 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
             or_matchers.push(last_matchers);
         }
 
-        (matchers, last_token) = parse_label_filters_internal(p)?;
+        (matchers, _last_token) = parse_label_filters_internal(p)?;
 
-        match last_token {
+        match _last_token {
             RightBrace => {
                 break;
             }
@@ -136,7 +137,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
             _ => {
                 return Err(unexpected(
                     "label filter",
-                    last_token.as_str(),
+                    _last_token.as_str(),
                     "OR or }",
                     None,
                 ))

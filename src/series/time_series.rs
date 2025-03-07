@@ -1,10 +1,9 @@
 use super::chunks::utils::filter_samples_by_value;
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
-use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::hash::IntMap;
+use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::{Sample, Timestamp};
-use crate::common::parallel::join;
 use crate::config::{
     DEFAULT_CHUNK_COMPRESSION, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD,
 };
@@ -62,8 +61,6 @@ impl TimeSeries {
     }
 
     pub fn with_options(options: TimeSeriesOptions) -> TsdbResult<Self> {
-        let mut options = options;
-
         let mut res = Self::new();
         if let Some(chunk_size) = options.chunk_size {
             validate_chunk_size(chunk_size)?;
@@ -79,11 +76,11 @@ impl TimeSeries {
         res.sample_duplicates = options.sample_duplicate_policy;
 
         // todo: make sure labels are sorted and dont contain __name__
-        if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
-            return Err(TsdbError::InvalidMetric(
-                "ERR missing metric name".to_string(),
-            ));
-        }
+        // if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
+        //     return Err(TsdbError::InvalidMetric(
+        //         "ERR missing metric name".to_string(),
+        //     ));
+        // }
 
         res.labels = InternedMetricName::new(&options.labels);
         res.id = next_timeseries_id();
@@ -219,18 +216,6 @@ impl TimeSeries {
         self.chunks.last_mut().unwrap()
     }
 
-    fn upsert_internal(
-        chunk: &mut TimeSeriesChunk,
-        sample: Sample,
-        policy: DuplicatePolicy,
-    ) -> (usize, SampleAddResult) {
-        match chunk.upsert_sample(sample, policy) {
-            Ok(size) => (size, SampleAddResult::Ok(sample.timestamp)),
-            Err(TsdbError::DuplicateSample(_)) => (0, SampleAddResult::Duplicate),
-            Err(_) => (0, SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE)),
-        }
-    }
-
     fn upsert_sample(
         &mut self,
         sample: Sample,
@@ -242,7 +227,7 @@ impl TimeSeries {
         let chunk = self.chunks.get_mut(pos).unwrap();
 
         if !chunk.should_split() {
-            let (size, res) = Self::upsert_internal(chunk, sample, dp_policy);
+            let (size, res) = chunk.upsert(sample, dp_policy);
             if res.is_ok() {
                 self.total_samples += size;
                 if is_last {
@@ -253,7 +238,7 @@ impl TimeSeries {
         }
 
         if let Ok(mut new_chunk) = chunk.split() {
-            let (size, res) = Self::upsert_internal(&mut new_chunk, sample, dp_policy);
+            let (size, res) = new_chunk.upsert(sample, dp_policy);
             if res.is_ok() {
                 if let Err(_e) = self.trim() {
                     logging::log_warning(format!("Error trimming time series: {:?}", _e));

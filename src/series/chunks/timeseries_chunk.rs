@@ -1,7 +1,7 @@
 use crate::common::serialization::rdb_load_string;
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
-use crate::error::TsdbResult;
+use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
 use crate::series::chunks::utils::filter_samples_by_value;
 use crate::series::types::ValueFilter;
@@ -14,6 +14,7 @@ use get_size::GetSize;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
+use crate::error_consts;
 
 #[derive(Debug, Clone, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {
@@ -242,15 +243,12 @@ impl TimeSeriesChunk {
     pub(crate) fn upsert(
         &mut self,
         sample: Sample,
-        dp_policy: DuplicatePolicy,
-    ) -> TsdbResult<(usize, Option<TimeSeriesChunk>)> {
-        if self.should_split() {
-            let mut new_chunk = self.split()?;
-            let size = new_chunk.upsert_sample(sample, dp_policy)?;
-            Ok((size, Some(new_chunk)))
-        } else {
-            let size = self.upsert_sample(sample, dp_policy)?;
-            Ok((size, None))
+        policy: DuplicatePolicy,
+    ) -> (usize, SampleAddResult) {
+        match self.upsert_sample(sample, policy) {
+            Ok(size) => (size, SampleAddResult::Ok(sample.timestamp)),
+            Err(TsdbError::DuplicateSample(_)) => (0, SampleAddResult::Duplicate),
+            Err(_) => (0, SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE)),
         }
     }
 
