@@ -130,16 +130,16 @@ mod tests {
         }
 
         let cases = vec![
-            // TestCase {
-            //     matchers: vec![
-            //         Matcher::create(Equal, "n", "1").unwrap(),
-            //         Matcher::create(RegexEqual, "i", "^a?$").unwrap(),
-            //     ],
-            //     exp: to_label_vec(&[
-            //         labels_from_strings(&["n", "1"]),
-            //         labels_from_strings(&["n", "1", "i", "a"]),
-            //     ]),
-            // },
+            TestCase {
+                matchers: vec![
+                    Matcher::create(Equal, "n", "1").unwrap(),
+                    Matcher::create(RegexEqual, "i", "^a?$").unwrap(),
+                ],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1"]),
+                    labels_from_strings(&["n", "1", "i", "a"]),
+                ]),
+            },
             // TestCase {
             //     matchers: vec![
             //         Matcher::create(Equal, "n", "1").unwrap(),
@@ -152,7 +152,7 @@ mod tests {
             //         labels_from_strings(&["n", "1", "i", "\n"]),
             //     ]),
             // },
-            ///
+            //----------------------------------------------------------------------------
             TestCase {
                 matchers: vec![
                     Matcher::create(Equal, "n", "1").unwrap(),

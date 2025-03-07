@@ -3,7 +3,7 @@ use super::TimeSeriesIndex;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
 use crate::error_consts::MISSING_FILTER;
-use crate::labels::matchers::{MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch};
+use crate::labels::matchers::{MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesRef, TimeSeries, TimestampRange};
 use ahash::AHashSet;
@@ -391,9 +391,28 @@ fn inverse_postings_for_matcher<'a>(
     let op = m.op();
 
     // If the matcher being inverted is =~"" or ="", we just want all the values.
-    if matches_empty && (op == MatchOp::RegexEqual || op == MatchOp::Equal) {
-        return Cow::Owned(ix.postings_for_all_label_values(&m.label));
+    match op {
+        MatchOp::Equal => {
+            match m.matcher  {
+                PredicateMatch::Equal(ref pv) => {
+                    if let PredicateValue::String(ref s) = pv {
+                        if s.is_empty() {
+                            return Cow::Owned(ix.postings_for_all_label_values(&m.label));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        MatchOp::RegexEqual => {
+            let v = m.regex_text().unwrap_or("");
+            if (v == "") | (v == ".*") {
+                return Cow::Owned(ix.postings_for_all_label_values(&m.label));
+            }
+        }
+        _=> {}
     }
+
 
     let mut state = m;
     let postings =

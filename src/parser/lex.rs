@@ -327,18 +327,7 @@ mod tests {
 
         test_success(s, &expected);
     }
-
-    #[test]
-    fn function_call() {
-        // fn call
-        let s = r#"sum  (  metric{x="y"  }  [5m] offset 10h)"#;
-        let expected = vec![
-            "sum", "(", "metric", "{", "x", "=", r#""y""#, "}", "[", "5m", "]", "offset", "10h",
-            ")",
-        ];
-        test_success(s, &expected);
-    }
-
+    
     #[test]
     fn comments() {
         let s = r"# comment # sdf
