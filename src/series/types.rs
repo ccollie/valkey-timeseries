@@ -105,11 +105,8 @@ pub struct SampleDuplicatePolicy {
 
 impl Default for SampleDuplicatePolicy {
     fn default() -> Self {
-        Self {
-            policy: DuplicatePolicy::Block,
-            max_time_delta: 0,
-            max_value_delta: 0.0,
-        }
+        let config = get_series_config_settings();
+        config.duplicate_policy
     }
 }
 
