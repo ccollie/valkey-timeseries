@@ -1,3 +1,23 @@
+use regex::Regex;
+use crate::parser::ParseError;
+
+/// remove_start_end_anchors removes '^' at the start of expr and '$' at the end of the expr.
+pub fn remove_start_end_anchors(expr: &str) -> &str {
+    let mut cursor = expr;
+    while let Some(t) = cursor.strip_prefix('^') {
+        cursor = t;
+    }
+    while cursor.ends_with("$") && !cursor.ends_with("\\$") {
+        if let Some(t) = cursor.strip_suffix("$") {
+            cursor = t;
+        } else {
+            break;
+        }
+    }
+    cursor
+}
+
+
 /// Go and Rust handle the repeat pattern differently
 /// in Go the following is valid: `aaa{bbb}ccc`
 /// in Rust {bbb} is seen as an invalid repeat and must be escaped \{bbb}
@@ -56,20 +76,34 @@ pub fn try_escape_for_repeat_re(re: &str) -> String {
     result
 }
 
-#[test]
-fn test_convert_re() {
-    assert_eq!(try_escape_for_repeat_re("abc{}"), r"abc\{}");
-    assert_eq!(try_escape_for_repeat_re("abc{def}"), r"abc\{def}");
-    assert_eq!(try_escape_for_repeat_re("abc{def"), r"abc\{def");
-    assert_eq!(try_escape_for_repeat_re("abc{1}"), "abc{1}");
-    assert_eq!(try_escape_for_repeat_re("abc{1,}"), "abc{1,}");
-    assert_eq!(try_escape_for_repeat_re("abc{1,2}"), "abc{1,2}");
-    assert_eq!(try_escape_for_repeat_re("abc{,2}"), r"abc\{,2}");
-    assert_eq!(try_escape_for_repeat_re("abc{{1,2}}"), r"abc\{{1,2}}");
-    assert_eq!(try_escape_for_repeat_re(r"abc\{abc"), r"abc\{abc");
-    assert_eq!(try_escape_for_repeat_re("abc{1a}"), r"abc\{1a}");
-    assert_eq!(try_escape_for_repeat_re("abc{1,a}"), r"abc\{1,a}");
-    assert_eq!(try_escape_for_repeat_re("abc{1,2a}"), r"abc\{1,2a}");
-    assert_eq!(try_escape_for_repeat_re("abc{1,2,3}"), r"abc\{1,2,3}");
-    assert_eq!(try_escape_for_repeat_re("abc{1,,2}"), r"abc\{1,,2}");
+pub fn parse_regex_anchored(value: &str) -> Result<Regex, ParseError> {
+    let modified = try_escape_for_repeat_re(value);
+    // ensure all regexes are anchored
+    let unanchored = remove_start_end_anchors(&modified);
+    let regex_str = format!("^{}$", unanchored);
+    Regex::new(&regex_str).map_err(|_| ParseError::InvalidRegex(value.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::labels::regex::try_escape_for_repeat_re;
+
+    #[test]
+    fn test_convert_re() {
+        assert_eq!(try_escape_for_repeat_re("abc{}"), r"abc\{}");
+        assert_eq!(try_escape_for_repeat_re("abc{def}"), r"abc\{def}");
+        assert_eq!(try_escape_for_repeat_re("abc{def"), r"abc\{def");
+        assert_eq!(try_escape_for_repeat_re("abc{1}"), "abc{1}");
+        assert_eq!(try_escape_for_repeat_re("abc{1,}"), "abc{1,}");
+        assert_eq!(try_escape_for_repeat_re("abc{1,2}"), "abc{1,2}");
+        assert_eq!(try_escape_for_repeat_re("abc{,2}"), r"abc\{,2}");
+        assert_eq!(try_escape_for_repeat_re("abc{{1,2}}"), r"abc\{{1,2}}");
+        assert_eq!(try_escape_for_repeat_re(r"abc\{abc"), r"abc\{abc");
+        assert_eq!(try_escape_for_repeat_re("abc{1a}"), r"abc\{1a}");
+        assert_eq!(try_escape_for_repeat_re("abc{1,a}"), r"abc\{1,a}");
+        assert_eq!(try_escape_for_repeat_re("abc{1,2a}"), r"abc\{1,2a}");
+        assert_eq!(try_escape_for_repeat_re("abc{1,2,3}"), r"abc\{1,2,3}");
+        assert_eq!(try_escape_for_repeat_re("abc{1,,2}"), r"abc\{1,,2}");
+    }
+
 }

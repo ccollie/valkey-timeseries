@@ -1,5 +1,5 @@
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::labels::regex::try_escape_for_repeat_re;
+use crate::labels::regex::parse_regex_anchored;
 use crate::parser::lex::Token;
 use crate::parser::utils::escape_ident;
 use crate::parser::ParseError;
@@ -255,11 +255,6 @@ pub struct Matcher {
     pub matcher: PredicateMatch,
 }
 
-fn parse_regex(value: &str) -> Result<Regex, ParseError> {
-    let modified = try_escape_for_repeat_re(value);
-    Regex::new(&modified).map_err(|_| ParseError::InvalidRegex(value.to_string()))
-}
-
 impl Matcher {
     pub fn create<N, V>(match_op: MatchOp, label: N, value: V) -> Result<Self, ParseError>
     where
@@ -273,14 +268,14 @@ impl Matcher {
             MatchOp::Equal => Ok(Self::equals(label, &value)),
             MatchOp::NotEqual => Ok(Self::not_equals(label, &value)),
             MatchOp::RegexEqual => {
-                let re = parse_regex(&value)?;
+                let re = parse_regex_anchored(&value)?;
                 Ok(Self {
                     label,
                     matcher: PredicateMatch::RegexEqual(re),
                 })
             }
             MatchOp::RegexNotEqual => {
-                let re = parse_regex(&value)?;
+                let re = parse_regex_anchored(&value)?;
                 Ok(Self {
                     label,
                     matcher: PredicateMatch::RegexNotEqual(re),
@@ -367,7 +362,7 @@ fn is_empty_regex_matcher(re: &Regex, negative: bool) -> bool {
         1 => value == "^" || value == "$",
         2 => value == ".*" || value == "^$" || value == "?:",
         3 => value == "^.*" || value == ".*$",
-        4 => value == "^.*$",
+        4 => value == "^.*$" || value == "^?:$",
         _ => false,
     };
 
