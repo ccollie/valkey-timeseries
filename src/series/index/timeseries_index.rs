@@ -399,10 +399,17 @@ impl TimeSeriesIndex {
         }
     }
 
-    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) {
+    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize{
         const BATCH_SIZE: usize = 500;
 
         let mut inner = self.inner.write().unwrap();
+        let all_postings = inner.label_index.get_mut(&*ALL_POSTINGS_KEY)
+            .expect("ALL_POSTINGS_KEY should always exist");
+        
+        let old_count = all_postings.cardinality();
+        all_postings.remove_all(ids.iter().cloned());
+        let removed_count = old_count - all_postings.cardinality();
+        
         inner.id_to_key.retain(|id, _| !ids.contains(id));
 
         let range = inner.get_key_range();
@@ -453,16 +460,19 @@ impl TimeSeriesIndex {
                 }
             }
         }
+        removed_count as usize
     }
 
-    pub fn slow_remove_series_by_key(&self, key: &[u8]) {
+    pub fn slow_remove_series_by_key(&self, key: &[u8]) -> bool {
         let id = {
             let inner = self.inner.read().unwrap();
             inner.get_id_for_key(key)
         };
         if let Some(id) = id {
-            self.slow_remove_series_by_ids(&[id]);
+            let removed = self.slow_remove_series_by_ids(&[id]);
+            return removed > 0;
         }
+        false
     }
 
     pub fn optimize(&self) {
