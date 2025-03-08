@@ -38,8 +38,8 @@ impl GorillaChunk {
     }
 
     pub fn is_full(&self) -> bool {
-        let usage = self.encoder.get_size();
-        usage >= self.max_size
+        let data_size = self.encoder.buf().len();
+        data_size >= self.max_size
     }
 
     pub fn clear(&mut self) {
