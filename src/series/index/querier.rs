@@ -116,7 +116,7 @@ fn collect_series_keys(
     keys
 }
 
-fn check_key_is_allowed_to_read(ctx: &Context, key: &[u8]) -> bool {
+fn check_key_is_allowed_to_read(_ctx: &Context, key: &[u8]) -> bool {
     // todo: implement permission checking
     true
 }
@@ -393,20 +393,17 @@ fn inverse_postings_for_matcher<'a>(
     // If the matcher being inverted is =~"" or ="", we just want all the values.
     match op {
         MatchOp::Equal => {
-            match m.matcher  {
-                PredicateMatch::Equal(ref pv) => {
-                    if let PredicateValue::String(ref s) = pv {
-                        if s.is_empty() {
-                            return Cow::Owned(ix.postings_for_all_label_values(&m.label));
-                        }
+            if let PredicateMatch::Equal(ref pv) = m.matcher {
+                if let PredicateValue::String(ref s) = pv {
+                    if s.is_empty() {
+                        return Cow::Owned(ix.postings_for_all_label_values(&m.label));
                     }
                 }
-                _ => {}
             }
         }
         MatchOp::RegexEqual => {
             let v = m.regex_text().unwrap_or("");
-            if (v == "") | (v == ".*") {
+            if (v.is_empty()) | (v == ".*") {
                 return Cow::Owned(ix.postings_for_all_label_values(&m.label));
             }
         }

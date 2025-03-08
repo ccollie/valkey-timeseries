@@ -6,7 +6,6 @@ mod posting_stats;
 mod querier;
 #[cfg(test)]
 mod querier_tests;
-pub mod serialization;
 mod timeseries_index;
 
 use crate::common::db::get_current_db;

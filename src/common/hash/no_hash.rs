@@ -21,7 +21,7 @@ use core::{
 /// See [`IsEnabled`] for use with custom types.
 ///
 /// ```
-/// use valkey_tslib::common::hash::IntMap;
+/// use valkey_timeseries::common::hash::IntMap;
 ///
 /// let mut m: IntMap<u32, bool> = IntMap::default();
 ///
@@ -40,7 +40,7 @@ pub type IntMap<K, V> = std::collections::HashMap<K, V, BuildNoHashHasher<K>>;
 /// See [`IsEnabled`] for use with custom types.
 ///
 /// ```
-/// use valkey_tslib::common::hash::IntSet;
+/// use valkey_timeseries::common::hash::IntSet;
 ///
 /// let mut m = IntSet::default();
 ///
@@ -60,7 +60,7 @@ pub type IntSet<T> = std::collections::HashSet<T, BuildNoHashHasher<T>>;
 ///
 /// ``` rust
 /// use std::collections::HashMap;
-/// use valkey_tslib::common::hash::BuildNoHashHasher;
+/// use valkey_timeseries::common::hash::BuildNoHashHasher;
 ///
 /// let mut m: HashMap::<u8, char, BuildNoHashHasher<u8>> =
 ///     HashMap::with_capacity_and_hasher(2, BuildNoHashHasher::default());
@@ -92,7 +92,7 @@ pub type BuildNoHashHasher<T> = BuildHasherDefault<NoHashHasher<T>>;
 ///
 /// ``` rust
 /// use std::{collections::HashMap, hash::BuildHasherDefault};
-/// use valkey_tslib::common::hash::NoHashHasher;
+/// use valkey_timeseries::common::hash::NoHashHasher;
 ///
 /// let mut m: HashMap::<u8, char, BuildHasherDefault<NoHashHasher<u8>>> =
 ///     HashMap::with_capacity_and_hasher(2, BuildHasherDefault::default());
@@ -166,7 +166,7 @@ impl<T> Copy for NoHashHasher<T> {}
 /// # Example
 ///
 /// ```
-/// use valkey_tslib::common::hash::{IsEnabled, IntMap};
+/// use valkey_timeseries::common::hash::{IsEnabled, IntMap};
 ///
 /// #[derive(PartialEq, Eq)]
 /// struct SomeType(u32);

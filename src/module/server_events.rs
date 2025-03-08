@@ -1,17 +1,11 @@
-use crate::series::index::serialization::series_on_async_load_done;
 use crate::series::index::*;
 use crate::series::{with_timeseries, TimeSeries};
 use std::os::raw::c_void;
-use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
-static ASYNC_LOADING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn is_async_loading_in_progress() -> bool {
-    ASYNC_LOADING_IN_PROGRESS.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 fn handle_key_restore(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
@@ -125,36 +119,6 @@ unsafe extern "C" fn on_swap_db_event(
     }
 }
 
-fn on_async_load_done(completed: bool) {
-    ASYNC_LOADING_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Relaxed);
-    series_on_async_load_done(completed);
-}
-
-unsafe extern "C" fn on_async_load_event(
-    _ctx: *mut raw::RedisModuleCtx,
-    _eid: raw::RedisModuleEvent,
-    sub_event: u64,
-    _data: *mut c_void,
-) {
-    match sub_event {
-        raw::REDISMODULE_SUBEVENT_REPL_ASYNC_LOAD_STARTED => {
-            logging::log_notice("Async RDB loading started");
-            ASYNC_LOADING_IN_PROGRESS.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        raw::REDISMODULE_SUBEVENT_REPL_ASYNC_LOAD_ABORTED => {
-            logging::log_notice("Async AOF loading aborted");
-            on_async_load_done(false);
-        }
-        raw::REDISMODULE_SUBEVENT_REPL_ASYNC_LOAD_COMPLETED => {
-            logging::log_notice("Async loading completed");
-            on_async_load_done(true);
-        }
-        _ => {
-            logging::log_warning("Unknown async loading sub-event");
-        }
-    }
-}
-
 pub fn register_server_event_handler(
     ctx: &Context,
     server_event: u64,
@@ -180,11 +144,5 @@ pub fn register_server_event_handler(
 pub fn register_server_events(ctx: &Context) -> ValkeyResult<()> {
     register_server_event_handler(ctx, raw::REDISMODULE_EVENT_FLUSHDB, Some(on_flush_event))?;
     register_server_event_handler(ctx, raw::REDISMODULE_EVENT_SWAPDB, Some(on_swap_db_event))?;
-    register_server_event_handler(
-        ctx,
-        raw::REDISMODULE_EVENT_REPL_ASYNC_LOAD,
-        Some(on_async_load_event),
-    )?;
-
     Ok(())
 }

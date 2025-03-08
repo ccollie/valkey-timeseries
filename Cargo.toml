@@ -15,7 +15,6 @@ croaring = "2.2.0"
 enquote = "1.1"
 get-size = { version = "^0.1", features = ["derive"] }
 hashify = { version = "^0.2" }
-integer-encoding = "4.0"
 linkme = "0.3.32"
 logos = "0.15"
 min-max-heap = "1.3"
