@@ -9,7 +9,7 @@ use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
 //   [FILTER_BY_TS ts...]
 //   [FILTER_BY_VALUE min max]
 //   [COUNT count]
-//   [[ALIGN align] AGGREGATION aggregator bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
+//   [[ALIGN align] AGGREGATION aggregator bucket_duration [BUCKETTIMESTAMP bt] [EMPTY]]
 pub fn rev_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 

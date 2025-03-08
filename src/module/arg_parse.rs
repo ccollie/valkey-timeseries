@@ -519,7 +519,7 @@ pub fn parse_aggregation_options(
         .map_err(|_e| ValkeyError::Str("ERR: Error parsing AGGREGATION"))?;
     let aggregator = Aggregator::try_from(agg_str)?;
     let bucket_duration = parse_duration_arg(&args.next_arg()?)
-        .map_err(|_e| ValkeyError::Str("Error parsing bucketDuration"))?;
+        .map_err(|_e| ValkeyError::Str("Error parsing bucket_duration"))?;
 
     let mut aggr: AggregationOptions = AggregationOptions {
         aggregator,

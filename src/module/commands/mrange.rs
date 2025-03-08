@@ -29,7 +29,7 @@ pub(super) struct MRangeSeriesMeta<'a> {
 //   [FILTER_BY_VALUE min max]
 //   [WITHLABELS | <SELECTED_LABELS label...>]
 //   [COUNT count]
-//   [[ALIGN align] AGGREGATION aggregator bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
+//   [[ALIGN align] AGGREGATION aggregator bucket_duration [BUCKETTIMESTAMP bt] [EMPTY]]
 //   FILTER filterExpr...
 //   [GROUPBY label REDUCE reducer]
 pub fn mrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {

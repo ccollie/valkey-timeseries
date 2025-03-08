@@ -18,7 +18,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 ///   [FILTER_BY_VALUE min max]
 ///   [COUNT count]
 ///   [REDUCE op]
-///   [AGGREGATION aggregator bucketDuration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
+///   [AGGREGATION aggregator bucket_duration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
 pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 
