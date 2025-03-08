@@ -138,6 +138,7 @@ impl Chunk for GorillaChunk {
         let mut new_encoder = GorillaEncoder::new();
 
         let mut deleted_count: usize = 0;
+        let mut first_timestamp: Timestamp = 0;
 
         for value in self.encoder.iter() {
             let sample = value?;
@@ -145,10 +146,14 @@ impl Chunk for GorillaChunk {
                 deleted_count += 1;
                 continue;
             }
+            if first_timestamp == 0 {
+                first_timestamp = sample.timestamp;
+            }
             push_sample(&mut new_encoder, &sample)?;
         }
 
         self.encoder = new_encoder;
+        self.first_ts = first_timestamp;
 
         Ok(deleted_count)
     }
