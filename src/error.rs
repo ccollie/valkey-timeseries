@@ -56,7 +56,7 @@ pub enum TsdbError {
     EndOfStream,
 }
 
-pub type TsdbResult<T> = Result<T, TsdbError>;
+pub type TsdbResult<T = ()> = Result<T, TsdbError>;
 
 impl From<&str> for TsdbError {
     fn from(s: &str) -> Self {

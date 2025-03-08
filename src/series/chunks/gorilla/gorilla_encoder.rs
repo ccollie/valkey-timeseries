@@ -148,6 +148,10 @@ impl GorillaEncoder {
     pub(crate) fn buf(&self) -> &[u8] {
         self.writer.get_ref()
     }
+    
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.writer.shrink_to_fit()
+    }
 
     pub fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
         save_bitwriter_to_rdb(rdb, &self.writer);

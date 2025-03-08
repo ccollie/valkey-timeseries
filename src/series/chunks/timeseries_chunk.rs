@@ -383,6 +383,15 @@ impl Chunk for TimeSeriesChunk {
         }
     }
 
+    fn optimize(&mut self) -> TsdbResult {
+        use TimeSeriesChunk::*;
+        match self {
+            Uncompressed(chunk) => chunk.optimize(),
+            Gorilla(chunk) => chunk.optimize(),
+            Pco(chunk) => chunk.optimize(),
+        }
+    }
+    
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         use TimeSeriesChunk::*;
         save_chunk_type(self, rdb);

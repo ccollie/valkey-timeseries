@@ -240,6 +240,7 @@ impl TimeSeries {
         if let Ok(mut new_chunk) = chunk.split() {
             let (size, res) = new_chunk.upsert(sample, dp_policy);
             if res.is_ok() {
+                // todo: handle this in the background so that we don't slow down ingestion
                 if let Err(_e) = self.trim() {
                     logging::log_warning(format!("Error trimming time series: {:?}", _e));
                 }
@@ -262,9 +263,9 @@ impl TimeSeries {
     pub fn merge_samples(
         &mut self,
         samples: &[Sample],
-        dp_policy: Option<DuplicatePolicy>,
+        policy_override: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
-        let dp_policy = dp_policy.unwrap_or(self.sample_duplicates.policy);
+        let dp_policy = policy_override.unwrap_or(self.sample_duplicates.policy);
         let earliest_ts = self.get_min_timestamp();
         let mut res = Vec::with_capacity(samples.len());
         
@@ -631,6 +632,28 @@ impl TimeSeries {
         }
 
         Some((start_idx, end_idx))
+    }
+    
+    pub fn optimize(&mut self) {
+        
+        fn optimize_internal(chunks: &mut [TimeSeriesChunk]) {
+            match chunks {
+                [] => {}
+                [chunk] => { let _ = chunk.optimize(); },
+                [first, second] => {
+                    let _ = join(|| first.optimize(), || second.optimize());
+                }
+                _ => {
+                    let mid = chunks.len() / 2;
+                    let (left, right) = chunks.split_at_mut(mid);
+                    let _ = join(|| optimize_internal(left), || optimize_internal(right));
+                }
+            }
+        }
+        
+        // todo: merge chunks if possible
+        // trim
+        optimize_internal(&mut self.chunks)
     }
 }
 

@@ -314,6 +314,11 @@ impl Chunk for UncompressedChunk {
         })
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        self.samples.shrink_to_fit();
+        Ok(())
+    }
+
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         // todo: compress ?
         rdb_save_usize(rdb, self.max_size);

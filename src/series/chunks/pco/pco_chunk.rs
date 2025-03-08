@@ -512,6 +512,12 @@ impl Chunk for PcoChunk {
         Ok(result)
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        self.timestamps.shrink_to_fit();
+        self.values.shrink_to_fit();
+        Ok(())
+    }
+
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         raw::save_signed(rdb, self.min_time);
         raw::save_signed(rdb, self.max_time);

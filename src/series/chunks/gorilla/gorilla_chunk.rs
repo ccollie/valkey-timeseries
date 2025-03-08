@@ -318,6 +318,11 @@ impl Chunk for GorillaChunk {
         Ok(right_chunk)
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        self.encoder.shrink_to_fit();
+        Ok(())
+    }
+
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         rdb_save_usize(rdb, self.max_size);
         rdb_save_timestamp(rdb, self.first_ts);
@@ -337,6 +342,7 @@ impl Chunk for GorillaChunk {
     }
 }
 
+#[inline]
 fn push_sample(encoder: &mut GorillaEncoder, sample: &Sample) -> TsdbResult<()> {
     encoder.add_sample(sample).map_err(|e| {
         eprintln!("Error adding sample: {:?}", e);

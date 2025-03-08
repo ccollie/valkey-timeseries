@@ -93,6 +93,10 @@ pub trait Chunk: Sized {
 
     fn split(&mut self) -> TsdbResult<Self>;
     
+    fn optimize(&mut self) -> TsdbResult<()> {
+        Ok(())
+    }
+    
     fn save_rdb(&self, rdb: *mut raw::RedisModuleIO);
     fn load_rdb(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self>;
 }

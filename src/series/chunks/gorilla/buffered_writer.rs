@@ -122,6 +122,10 @@ impl BufferedWriter {
     pub fn position(&self) -> u32 {
         self.pos
     }
+    
+    pub fn shrink_to_fit(&mut self) {
+        self.buf.shrink_to_fit();
+    }
 }
 
 impl BitWrite for BufferedWriter {
