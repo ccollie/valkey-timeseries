@@ -61,8 +61,8 @@ unsafe extern "C" fn rdb_load(rdb: *mut raw::RedisModuleIO, enc_ver: c_int) -> *
 }
 
 unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
-    let sm = unsafe { &*(value as *mut TimeSeries) };
-    sm.memory_usage()
+    let series = unsafe { &*(value as *mut TimeSeries) };
+    series.memory_usage()
 }
 
 #[allow(unused)]
