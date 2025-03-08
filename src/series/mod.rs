@@ -9,6 +9,7 @@ mod test_utils;
 mod time_series;
 mod timestamp_range;
 pub(crate) mod types;
+mod tasks;
 
 pub use crate::module::utils::*;
 pub use defrag::defrag_series;
