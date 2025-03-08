@@ -450,10 +450,10 @@ impl TimeSeries {
         timestamp < min_ts
     }
 
-    pub(super) fn trim(&mut self) -> TsdbResult<()> {
+    pub(super) fn trim(&mut self) -> TsdbResult<usize> {
         let min_timestamp = self.get_min_timestamp();
         if self.first_timestamp == min_timestamp {
-            return Ok(());
+            return Ok(0);
         }
 
         let mut deleted_count = 0;
@@ -489,7 +489,7 @@ impl TimeSeries {
         
         self.chunks.shrink_to_fit();
 
-        Ok(())
+        Ok(deleted_count)
     }
 
     pub fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
