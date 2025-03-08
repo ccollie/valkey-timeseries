@@ -6,9 +6,8 @@ use crate::series::settings::ConfigSettings;
 use crate::series::DuplicatePolicy;
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
-use valkey_module::{Context, ValkeyError};
-use valkey_module::{ValkeyResult, ValkeyString};
-
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::redisvalue::ValkeyValueKey;
 // See https://redis.io/docs/latest/develop/data-types/timeseries/configuration/
 
 pub const SPLIT_FACTOR: f64 = 1.2;
@@ -20,9 +19,7 @@ pub const DEFAULT_MAX_SERIES_LIMIT: usize = 1_000;
 /// Default step used if not set.
 pub const DEFAULT_STEP: Duration = Duration::from_millis(5 * MILLIS_PER_MIN);
 pub const DEFAULT_ROUND_DIGITS: u8 = 0;
-
 pub const DEFAULT_KEY_PREFIX: &str = "__vts__";
-
 const KEY_PREFIX_KEY: &str = "KEY_PREFIX";
 const QUERY_DEFAULT_STEP_KEY: &str = "query.default_step";
 const SERIES_RETENTION_KEY: &str = "RETENTION_POLICY";
@@ -234,6 +231,48 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
 
 pub(crate) fn get_series_config_settings() -> ConfigSettings {
     *_SERIES_SETTINGS.read().unwrap()
+}
+
+fn valkey_value_to_integer(value: &ValkeyValue) -> ValkeyResult<i64> {
+    match value {
+        ValkeyValue::SimpleStringStatic(str) => Ok(str.parse::<i64>()?),
+        ValkeyValue::BulkString(s) |
+        ValkeyValue::SimpleString(s) => Ok(s.parse::<i64>()?),
+        ValkeyValue::Integer(i) => Ok(*i),
+        ValkeyValue::Float(f) => Ok(*f as i64),
+        _ => Err(ValkeyError::String("Invalid value".to_string())),
+    }
+}
+
+pub(crate) fn get_configured_databases(ctx: &Context) -> usize {
+    let db_count = ctx.call::<&[&ValkeyString]>("CONFIG GET databases", &[])
+        .expect("error getting database count");
+    
+    fn parse_value(value: &ValkeyValue) -> usize {
+        valkey_value_to_integer(value).expect("error parsing database count") as usize
+    }
+    
+    match db_count {
+        ValkeyValue::Array(values) => {
+            if values.len() == 2 {
+                return parse_value(&values[1])
+            }
+        }
+        ValkeyValue::OrderedMap(map) => {
+            let key: ValkeyValueKey = "databases".into();
+            if let Some(value) = map.get(&key) {
+                return parse_value(value)
+            }
+        }
+        ValkeyValue::Map(map) => {
+            let key: ValkeyValueKey = "databases".into();
+            if let Some(value) = map.get(&key) {
+                return parse_value(value)
+            }
+        }
+        _ => {}
+    }
+    16 // default
 }
 
 pub fn load_config(_ctx: &Context, args: &[ValkeyString]) -> ValkeyResult<()> {
