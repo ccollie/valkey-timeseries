@@ -47,6 +47,7 @@ impl DataGenerator {
         values: Range<f64>,
         samples: usize,
         seed: Option<u64>,
+        #[builder(default = RandAlgo::StdNorm)]
         algorithm: RandAlgo,
         significant_digits: Option<usize>,
     ) -> Self {
