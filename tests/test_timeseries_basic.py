@@ -28,14 +28,14 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
     def test_timeseries_create_cmd(self):
         client = self.server.get_new_client()
         # cmd create
-        assert client.execute_command('TS.CREATE temperature:2:32 RETENTION 60000 DUPLICATE_POLICY MAX LABELS sensor_id 2 area_id 32') == 1
-        assert client.execute_command('TS.ADD temperature:2:32 * 1000') == 1
+        assert client.execute_command('TS.CREATE temperature:2:32 RETENTION 60000 DUPLICATE_POLICY MAX LABELS sensor_id 2 area_id 32') == "OK"
+        assert client.execute_command('TS.ADD temperature:2:32 1000 72.5') == 1000
     
 
     def test_module_data_type(self):
         # Validate the name of the Module data type.
         client = self.server.get_new_client()
-        assert client.execute_command('TS.ADD series * 2000') == 1
+        assert client.execute_command('TS.ADD series 2000 45.0') == 2000
         type_result = client.execute_command('TYPE series')
         assert type_result == b"vktseries"
         # Validate the name of the Module data type.
