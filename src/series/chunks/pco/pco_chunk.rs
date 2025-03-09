@@ -91,7 +91,7 @@ impl PcoChunk {
         Ok(())
     }
 
-    fn compress(&mut self, timestamps: &[Timestamp], values: &[f64]) -> TsdbResult<()> {
+    fn compress(&mut self, timestamps: &[Timestamp], values: &[f64]) -> TsdbResult {
         if timestamps.is_empty() {
             self.clear();
             return Ok(());

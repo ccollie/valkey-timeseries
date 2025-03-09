@@ -3,7 +3,7 @@ use super::merge::merge_by_capacity;
 use super::time_series::TimeSeries;
 use crate::error::TsdbResult;
 
-pub fn defrag_series(series: &mut TimeSeries) -> TsdbResult<()> {
+pub fn defrag_series(series: &mut TimeSeries) -> TsdbResult {
     series.trim()?;
 
     if series.chunks.len() < 2 {
