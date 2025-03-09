@@ -327,9 +327,11 @@ impl TimeSeries {
         &self,
         start_timestamp: Timestamp,
         end_timestamp: Timestamp,
-        timestamp_filter: &Option<Vec<Timestamp>>,
-        value_filter: &Option<ValueFilter>,
+        timestamp_filter: Option<&[Timestamp]>,
+        value_filter: Option<ValueFilter>,
     ) -> Vec<Sample> {
+        debug_assert!(start_timestamp <= end_timestamp);
+        
         // TODO: propagate errors
         let mut samples = if let Some(ts_filter) = timestamp_filter {
             let timestamps = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
@@ -343,7 +345,7 @@ impl TimeSeries {
         };
         
         if let Some(value_filter) = value_filter {
-            filter_samples_by_value(&mut samples, value_filter);
+            filter_samples_by_value(&mut samples, &value_filter);
         }
         
         samples
@@ -745,7 +747,7 @@ fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (usize, bool
     if chunks.len() <= 16 {
         return chunks
             .iter()
-            .rposition(|x| ts >= x.last_timestamp())
+            .rposition(|x| ts >= x.first_timestamp())
             .map_or((0, false), |idx| {
                 let chunk = &chunks[idx];
                 if chunk.is_timestamp_in_range(ts) {
@@ -832,8 +834,8 @@ fn filter_timestamp_slice(
     ts_filter: &[Timestamp],
     start: Timestamp,
     end: Timestamp,
-) -> SmallVec<Timestamp, 16> {
-    ts_filter
+) -> SmallVec<Timestamp, 32> {
+    let mut filtered: SmallVec<Timestamp, 32> = ts_filter
         .iter()
         .filter_map(|ts| {
             let ts = *ts;
@@ -843,7 +845,11 @@ fn filter_timestamp_slice(
                 None
             }
         })
-        .collect()
+        .collect();
+    
+    filtered.sort();
+    filtered.dedup();
+    filtered
 }
 
 

@@ -15,8 +15,8 @@ pub(crate) fn get_range(
     let mut range = series.get_range_filtered(
         start_timestamp,
         end_timestamp,
-        &args.timestamp_filter,
-        &args.value_filter,
+        args.timestamp_filter.as_ref().map(|v| v.as_slice()),
+        args.value_filter,
     );
 
     if let Some(aggr_options) = &args.aggregation {

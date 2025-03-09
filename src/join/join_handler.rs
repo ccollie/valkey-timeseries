@@ -98,8 +98,8 @@ fn fetch_samples(ts: &TimeSeries, options: &JoinOptions) -> Vec<Sample> {
     let mut samples = ts.get_range_filtered(
         start,
         end,
-        &options.timestamp_filter,
-        &options.value_filter,
+        options.timestamp_filter.as_ref().map(|v| v.as_slice()),
+        options.value_filter,
     );
     if let Some(count) = &options.count {
         samples.truncate(*count);

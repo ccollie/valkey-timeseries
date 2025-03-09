@@ -4,8 +4,9 @@ mod tests {
     use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
     use crate::error::TsdbError;
     use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk};
-    use crate::series::TimeSeries;
+    use crate::series::{TimeSeries, ValueFilter};
     use std::time::Duration;
+    use crate::tests::generators::{DataGenerator, RandAlgo};
 
     fn create_chunk(size: Option<usize>) -> TimeSeriesChunk {
         TimeSeriesChunk::Gorilla(GorillaChunk::with_max_size(size.unwrap_or(1024)))
@@ -488,4 +489,280 @@ mod tests {
         assert_eq!(time_series.first_timestamp, 1);
         assert_eq!(time_series.last_timestamp(), 4);
     }
+
+    // get_range()
+    #[test]
+    fn test_get_range_returns_empty_when_end_time_less_than_min_timestamp() {
+        let mut time_series = TimeSeries::default();
+
+        // Add some samples to the time series
+        let sample1 = Sample { timestamp: 100, value: 1.0 };
+        let sample2 = Sample { timestamp: 200, value: 2.0 };
+        time_series.add(sample1.timestamp, sample1.value, None);
+        time_series.add(sample2.timestamp, sample2.value, None);
+
+        // Define a range where end_time is less than the minimum timestamp in the series
+        let start_time = 50;
+        let end_time = 75;
+
+        // Call get_range and assert that it returns an empty vector
+        let result = time_series.get_range(start_time, end_time);
+        assert!(result.is_empty(), "Expected an empty vector, got {:?}", result);
+    }
+
+    #[test]
+    fn test_get_range_with_matching_start_and_end_time() {
+        let mut time_series = TimeSeries::default();
+
+        // Assuming Sample and Timestamp are properly defined and Sample has a constructor
+        let timestamp = 1000; // Example timestamp
+        let sample = Sample {
+            value: 42.0,
+            timestamp,
+        };
+
+        // Add a sample to the time series
+        time_series.add(timestamp, sample.value, None);
+
+        // Call get_range with start_time and end_time being the same and matching the sample timestamp
+        let result = time_series.get_range(timestamp, timestamp);
+
+        // Assert that the result contains exactly one sample with the expected timestamp and value
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].timestamp, timestamp);
+        assert_eq!(result[0].value, sample.value);
+    }
+
+    #[test]
+    fn test_get_range_across_multiple_chunks() {
+        let mut time_series = TimeSeries::default();
+
+        let start_time = 1000;
+        let mut count: usize = 0;
+        for _ in 0 .. 4 {
+            let mut chunk = create_chunk(None);
+            for _ in 0 .. 5 {
+                count += 1;
+                let timestamp = start_time + (count * 1000) as Timestamp;
+                chunk.add_sample(&Sample { timestamp, value: count as f64 }).unwrap();
+            }
+            time_series.chunks.push(chunk);
+        }
+        
+        time_series.update_state_from_chunks();
+        
+        // Define the range that spans across multiple chunks
+        let start_time = 2000;
+        let end_time = 14000;
+
+        // Get the range of samples
+        let result = time_series.get_range(start_time, end_time);
+
+        // Expected samples in the range
+        let expected_samples = vec![
+            Sample { timestamp: 2000, value: 1.0 }, 
+            Sample { timestamp: 3000, value: 2.0 },
+            Sample { timestamp: 4000, value: 3.0 },
+            Sample { timestamp: 5000, value: 4.0 }, 
+            Sample { timestamp: 6000, value: 5.0 },
+            Sample { timestamp: 7000, value: 6.0 },
+            Sample { timestamp: 8000, value: 7.0 },
+            Sample { timestamp: 9000, value: 8.0 },
+            Sample { timestamp: 10000, value: 9.0 },
+            Sample { timestamp: 11000, value: 10.0 },
+            Sample { timestamp: 12000, value: 11.0 },
+            Sample { timestamp: 13000, value: 12.0 }, 
+            Sample { timestamp: 14000, value: 13.0 }
+        ];
+
+        assert_eq!(result, expected_samples);
+    }
+
+    #[test]
+    fn test_get_range_filtered_empty_no_filters_no_samples() {
+        let ts = TimeSeries::new();
+        let start_timestamp = 100;
+        let end_timestamp = 200;
+
+        let result = ts.get_range_filtered(start_timestamp, end_timestamp, &None, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_range_filtered_with_timestamp_filter() {
+        let mut ts = TimeSeries::new();
+        let data = DataGenerator::builder()
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::Deriv)
+            .samples(10)
+            .build()
+            .generate();
+
+        for sample in data.iter() {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        let timestamp_filter = Some(vec![2000, 4000, 6000, 8000]);
+        let value_filter: Option<ValueFilter> = None;
+
+        let filtered_samples = ts.get_range_filtered(1000, 10000, &timestamp_filter, value_filter);
+
+        assert_eq!(filtered_samples.len(), 4);
+        assert_eq!(filtered_samples[0].timestamp, 2000);
+        assert_eq!(filtered_samples[1].timestamp, 4000);
+        assert_eq!(filtered_samples[2].timestamp, 6000);
+        assert_eq!(filtered_samples[3].timestamp, 8000);
+    }
+
+    #[test]
+    fn test_get_range_filtered_with_value_filter_only() {
+        let mut ts = TimeSeries::new();
+        let data = vec![
+            Sample { timestamp: 100, value: 10.0 },
+            Sample { timestamp: 200, value: 20.0 },
+            Sample { timestamp: 300, value: 30.0 },
+        ];
+
+        for sample in &data {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        let value_filter = ValueFilter::new(15.0, 25.0).unwrap(); // Assuming ValueFilter has a constructor like this
+        let filtered_samples = ts.get_range_filtered(0, 400, &None, Some(value_filter));
+
+        assert_eq!(filtered_samples.len(), 1);
+        assert_eq!(filtered_samples[0].timestamp, 200);
+        assert_eq!(filtered_samples[0].value, 20.0);
+    }
+
+    #[test]
+    fn test_get_range_filtered_with_empty_timestamp_filter() {
+        let mut ts = TimeSeries::new();
+        let start_timestamp = 1000;
+        let end_timestamp = 5000;
+
+        let data = DataGenerator::builder()
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::StdNorm)
+            .samples(5)
+            .build()
+            .generate();
+
+        for sample in data.iter() {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+        
+        let timestamp_filter: Option<Vec<Timestamp>> = Some(vec![]);
+        let value_filter: Option<ValueFilter> = None;
+
+        let result = ts.get_range_filtered(start_timestamp, end_timestamp, &timestamp_filter, value_filter);
+
+        assert_eq!(result, vec![]);
+    }
+
+    #[test]
+    fn test_get_range_filtered_with_value_filter_no_results() {
+        let mut ts = TimeSeries::new();
+        let data = DataGenerator::builder()
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::StdNorm)
+            .samples(10)
+            .build()
+            .generate();
+
+        for sample in data.iter() {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        // Define a value filter that will filter out all samples
+        let value_filter = Some(ValueFilter::new(20000f64, 50000f64).unwrap());
+
+        // Call get_range_filtered with a value filter that results in no samples
+        let filtered_samples = ts.get_range_filtered(1000, 10000, &None, value_filter);
+
+        // Assert that no samples are returned
+        assert!(filtered_samples.is_empty());
+    }
+
+    #[test]
+    fn test_get_range_filtered_with_both_filters() {
+        let mut ts = TimeSeries::new();
+        let samples = vec![
+            Sample { timestamp: 100, value: 1.0 },
+            Sample { timestamp: 200, value: 2.0 },
+            Sample { timestamp: 300, value: 3.0 },
+            Sample { timestamp: 400, value: 4.0 },
+            Sample { timestamp: 500, value: 5.0 },
+        ];
+
+        for sample in &samples {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        let timestamp_filter = Some(vec![200, 300, 400]);
+        let value_filter = Some(ValueFilter { min: 2.5, max: 4.5 });
+
+        let filtered_samples = ts.get_range_filtered(100, 500, &timestamp_filter, value_filter);
+
+        assert_eq!(filtered_samples.len(), 2);
+        assert_eq!(filtered_samples[0].timestamp, 300);
+        assert_eq!(filtered_samples[0].value, 3.0);
+        assert_eq!(filtered_samples[1].timestamp, 400);
+        assert_eq!(filtered_samples[1].value, 4.0);
+    }
+
+    #[test]
+    fn test_get_range_filtered_with_out_of_range_timestamps() {
+        let mut ts = TimeSeries::new();
+        // Add some samples to the time series
+        for i in 0..10 {
+            assert!(ts.add(i as i64 * 10, i as f64, None).is_ok());
+        }
+
+        // Define a timestamp filter with some timestamps outside the range
+        let timestamp_filter = Some(vec![5, 15, 20, 25, 30, 35, 40, 55, 65, 70, 85, 95, 105, 115]);
+
+        // Get filtered range
+        let filtered_samples = ts.get_range_filtered(20, 80, &timestamp_filter, None);
+
+        // Check that only the samples within the range 20 to 80 are returned
+        assert_eq!(filtered_samples.len(), 4);
+        assert_eq!(filtered_samples[0].timestamp, 20);
+        assert_eq!(filtered_samples[1].timestamp, 30);
+        assert_eq!(filtered_samples[2].timestamp, 40);
+        assert_eq!(filtered_samples[3].timestamp, 70);
+    }
+
+    #[test]
+    fn test_get_range_filtered_no_filter() {
+        let mut ts = TimeSeries::new();
+        
+        let data = DataGenerator::builder()
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::StdNorm)
+            .samples(10)
+            .build()
+            .generate();
+        
+        for sample in data.iter() {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        let start_timestamp = data.first().unwrap().timestamp;
+        let end_timestamp = data.last().unwrap().timestamp;
+
+        let result = ts.get_range_filtered(start_timestamp, end_timestamp, &None, None);
+
+        assert_eq!(result.len(), data.len());
+
+        for (result_sample, original_sample) in result.iter().zip(data.iter()) {
+            assert_eq!(result_sample.timestamp, original_sample.timestamp);
+            assert_eq!(result_sample.value, original_sample.value);
+        }
+    }
+    
 }

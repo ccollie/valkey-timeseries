@@ -120,36 +120,41 @@ impl TimeSeriesChunk {
         }
     }
 
-    // assumes timestamps are sorted
+    // NOTE! this function assumes that timestamps are sorted ascending and deduped
     pub fn samples_by_timestamps(&self, timestamps: &[Timestamp]) -> TsdbResult<Vec<Sample>> {
         if self.len() == 0 || timestamps.is_empty() {
             return Ok(vec![]);
         }
+
         let mut samples = Vec::with_capacity(timestamps.len());
-        let mut timestamps = timestamps;
 
         let mut first_ts = timestamps[0];
+        let mut index: usize = 0;
 
         let first_timestamp = first_ts.max(self.first_timestamp());
         let last_timestamp = timestamps[timestamps.len() - 1].min(self.last_timestamp());
 
         for sample in self.range_iter(first_timestamp, last_timestamp) {
+            if index >= timestamps.len() {
+                break;
+            }
+            let mut first_ts = timestamps[index];
             match sample.timestamp.cmp(&first_ts) {
                 Ordering::Less => continue,
                 Ordering::Equal => {
-                    timestamps = &timestamps[1..];
                     samples.push(sample);
-                    if timestamps.is_empty() {
-                        break;
-                    }
-                    first_ts = timestamps[0];
+                    index += 1;
                 }
                 Ordering::Greater => {
-                    timestamps = &timestamps[1..];
-                    if timestamps.is_empty() {
-                        break;
+                    while first_ts < sample.timestamp && index < timestamps.len() {
+                        index += 1;
+                        first_ts = timestamps[index];
+                        if first_ts == sample.timestamp {
+                            samples.push(sample);
+                            index += 1;
+                            break;
+                        }
                     }
-                    first_ts = timestamps[0];
                 }
             }
         }
