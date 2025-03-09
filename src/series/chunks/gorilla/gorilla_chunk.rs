@@ -1,12 +1,12 @@
 use super::{GorillaEncoder, GorillaIterator};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
+use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::SampleIter;
 use crate::series::chunks::chunk::Chunk;
 use crate::series::chunks::merge::merge_samples;
-use crate::series::settings::SERIES_SETTINGS;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use get_size::GetSize;
 use std::mem::size_of;
@@ -23,7 +23,7 @@ pub struct GorillaChunk {
 
 impl Default for GorillaChunk {
     fn default() -> Self {
-        Self::with_max_size(SERIES_SETTINGS.chunk_size_bytes)
+        Self::with_max_size(DEFAULT_CHUNK_SIZE_BYTES)
     }
 }
 
@@ -308,18 +308,29 @@ impl Chunk for GorillaChunk {
             return Ok(self.clone());
         }
 
+        let mut first_ts: Timestamp = 0;
+        let mut other_first_ts: Timestamp = 0;
+
         let mid = self.len() / 2;
         for (i, value) in self.encoder.iter().enumerate() {
             let sample = value?;
             if i < mid {
+                if first_ts == 0 {
+                    first_ts = sample.timestamp;
+                }
                 // todo: handle min and max timestamps
                 push_sample(&mut left_chunk, &sample)?;
             } else {
+                if other_first_ts == 0 {
+                    other_first_ts = sample.timestamp;
+                }
                 push_sample(&mut right_chunk.encoder, &sample)?;
             }
         }
         self.encoder = left_chunk;
+        self.first_ts = first_ts;
 
+        right_chunk.first_ts = other_first_ts;
         Ok(right_chunk)
     }
 
@@ -480,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_upsert_while_at_capacity() {
-        let mut chunk = GorillaChunk::with_max_size(4096);
+        let mut chunk = GorillaChunk::with_max_size(1024);
 
         let mut ts = 1000;
         let mut value: f64 = 1.0;
@@ -506,12 +517,12 @@ mod tests {
 
         // return an error on insert
         let mut sample = Sample {
-            timestamp: 0,
+            timestamp,
             value: 1.0,
         };
 
         assert!(chunk
-            .upsert_sample(sample, DuplicatePolicy::KeepLast)
+            .upsert_sample(sample, DuplicatePolicy::Block)
             .is_err());
 
         // should update value for duplicate timestamp

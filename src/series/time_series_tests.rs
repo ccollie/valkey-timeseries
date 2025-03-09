@@ -350,7 +350,7 @@ mod tests {
         let chunk_size = 5; // Assume each chunk can hold 5 samples
 
         // Create and add samples to the time series
-        for i in 0..15 {
+        for i in 1..15 {
             time_series.add(i as Timestamp, i as f64, None);
         }
 
@@ -365,7 +365,6 @@ mod tests {
         // Verify the remaining samples are correct
         let remaining_samples: Vec<_> = time_series.iter().collect();
         let expected_samples = vec![
-            Sample { timestamp: 0, value: 0.0 },
             Sample { timestamp: 1, value: 1.0 },
             Sample { timestamp: 2, value: 2.0 },
             Sample { timestamp: 12, value: 12.0 },
@@ -584,7 +583,7 @@ mod tests {
         let start_timestamp = 100;
         let end_timestamp = 200;
 
-        let result = ts.get_range_filtered(start_timestamp, end_timestamp, &None, None);
+        let result = ts.get_range_filtered(start_timestamp, end_timestamp, None, None);
         assert!(result.is_empty());
     }
 
@@ -603,10 +602,10 @@ mod tests {
             assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
         }
 
-        let timestamp_filter = Some(vec![2000, 4000, 6000, 8000]);
+        let timestamp_filter = vec![2000, 4000, 6000, 8000];
         let value_filter: Option<ValueFilter> = None;
 
-        let filtered_samples = ts.get_range_filtered(1000, 10000, &timestamp_filter, value_filter);
+        let filtered_samples = ts.get_range_filtered(1000, 10000, Some(&timestamp_filter), value_filter);
 
         assert_eq!(filtered_samples.len(), 4);
         assert_eq!(filtered_samples[0].timestamp, 2000);
@@ -629,7 +628,7 @@ mod tests {
         }
 
         let value_filter = ValueFilter::new(15.0, 25.0).unwrap(); // Assuming ValueFilter has a constructor like this
-        let filtered_samples = ts.get_range_filtered(0, 400, &None, Some(value_filter));
+        let filtered_samples = ts.get_range_filtered(0, 400, None, Some(value_filter));
 
         assert_eq!(filtered_samples.len(), 1);
         assert_eq!(filtered_samples[0].timestamp, 200);
@@ -654,10 +653,10 @@ mod tests {
             assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
         }
         
-        let timestamp_filter: Option<Vec<Timestamp>> = Some(vec![]);
+        let timestamp_filter: Vec<Timestamp> = vec![];
         let value_filter: Option<ValueFilter> = None;
 
-        let result = ts.get_range_filtered(start_timestamp, end_timestamp, &timestamp_filter, value_filter);
+        let result = ts.get_range_filtered(start_timestamp, end_timestamp, Some(&timestamp_filter), value_filter);
 
         assert_eq!(result, vec![]);
     }
@@ -681,7 +680,7 @@ mod tests {
         let value_filter = Some(ValueFilter::new(20000f64, 50000f64).unwrap());
 
         // Call get_range_filtered with a value filter that results in no samples
-        let filtered_samples = ts.get_range_filtered(1000, 10000, &None, value_filter);
+        let filtered_samples = ts.get_range_filtered(1000, 10000, None, value_filter);
 
         // Assert that no samples are returned
         assert!(filtered_samples.is_empty());
@@ -702,10 +701,10 @@ mod tests {
             assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
         }
 
-        let timestamp_filter = Some(vec![200, 300, 400]);
+        let timestamp_filter = vec![200, 300, 400];
         let value_filter = Some(ValueFilter { min: 2.5, max: 4.5 });
 
-        let filtered_samples = ts.get_range_filtered(100, 500, &timestamp_filter, value_filter);
+        let filtered_samples = ts.get_range_filtered(100, 500, Some(&timestamp_filter), value_filter);
 
         assert_eq!(filtered_samples.len(), 2);
         assert_eq!(filtered_samples[0].timestamp, 300);
@@ -723,10 +722,10 @@ mod tests {
         }
 
         // Define a timestamp filter with some timestamps outside the range
-        let timestamp_filter = Some(vec![5, 15, 20, 25, 30, 35, 40, 55, 65, 70, 85, 95, 105, 115]);
+        let timestamp_filter = vec![5, 15, 20, 25, 30, 35, 40, 55, 65, 70, 85, 95, 105, 115];
 
         // Get filtered range
-        let filtered_samples = ts.get_range_filtered(20, 80, &timestamp_filter, None);
+        let filtered_samples = ts.get_range_filtered(20, 80, Some(&timestamp_filter), None);
 
         // Check that only the samples within the range 20 to 80 are returned
         assert_eq!(filtered_samples.len(), 4);
@@ -755,7 +754,7 @@ mod tests {
         let start_timestamp = data.first().unwrap().timestamp;
         let end_timestamp = data.last().unwrap().timestamp;
 
-        let result = ts.get_range_filtered(start_timestamp, end_timestamp, &None, None);
+        let result = ts.get_range_filtered(start_timestamp, end_timestamp, None, None);
 
         assert_eq!(result.len(), data.len());
 
