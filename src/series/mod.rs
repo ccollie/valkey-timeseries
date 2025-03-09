@@ -10,6 +10,8 @@ mod time_series;
 mod timestamp_range;
 pub(crate) mod types;
 mod tasks;
+#[cfg(test)]
+mod time_series_tests;
 
 pub use crate::module::utils::*;
 pub use defrag::defrag_series;

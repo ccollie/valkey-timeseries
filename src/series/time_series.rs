@@ -364,8 +364,6 @@ impl TimeSeries {
     }
     
     pub fn samples_by_timestamps(&self, timestamps: &[Timestamp]) -> TsdbResult<Vec<Sample>> {
-        const PARALLEL_THRESHOLD: usize = 2;
-    
         if self.is_empty() || timestamps.is_empty() {
             return Ok(vec![]);
         }
@@ -416,12 +414,6 @@ impl TimeSeries {
         let len = meta_map.len();
         if len == 0 {
             Ok(vec![])
-        } else if len < PARALLEL_THRESHOLD {
-            let mut samples = Vec::with_capacity(timestamps.len());
-            for meta in meta_map.values() {
-                samples.extend(meta.chunk.samples_by_timestamps(&meta.timestamps)?);
-            }
-            Ok(samples)
         } else {
             let metas = meta_map.into_values().collect::<Vec<_>>();
             fetch_parallel(&metas)
@@ -494,6 +486,8 @@ impl TimeSeries {
     }
 
     pub fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
+        debug_assert!(start_ts <= end_ts);
+        
         let mut deleted_samples = 0;
         if let Some((start_index, end_index)) = self.get_chunk_index_bounds(start_ts, end_ts) {
             let mut deleted_chunks = 0;
@@ -565,9 +559,16 @@ impl TimeSeries {
             return self.first_timestamp;
         }
         if let Some(last_sample) = self.last_sample {
-            last_sample
+            let x = last_sample
                 .timestamp
-                .saturating_sub(self.retention.as_millis() as i64)
+                .saturating_sub(self.retention.as_millis() as i64);
+            
+            if x < 0 {
+                0
+            } else {
+                x
+            }
+                
         } else {
             0
         }
@@ -654,6 +655,11 @@ impl TimeSeries {
         // todo: merge chunks if possible
         // trim
         optimize_internal(&mut self.chunks)
+    }
+    
+    pub(super) fn update_state_from_chunks(&mut self) {
+        self.update_first_last_timestamps();
+        self.total_samples = self.chunks.iter().map(|x| x.len()).sum();
     }
 }
 
