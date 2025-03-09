@@ -1,7 +1,7 @@
 use crate::common::rounding::RoundingStrategy;
 use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
-use crate::series::chunks::ChunkCompression;
+use crate::series::chunks::ChunkEncoding;
 use crate::series::settings::ConfigSettings;
 use crate::series::DuplicatePolicy;
 use std::sync::{LazyLock, Mutex, RwLock};
@@ -33,7 +33,7 @@ const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "SIGNIFICANT_DIGITS";
 const SERIES_WORKER_INTERVAL_KEY: &str = "ts.worker_interval";
 
 pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 4 * 1024;
-pub const DEFAULT_CHUNK_COMPRESSION: ChunkCompression = ChunkCompression::Gorilla;
+pub const DEFAULT_CHUNK_COMPRESSION: ChunkEncoding = ChunkEncoding::Gorilla;
 pub const DEFAULT_DUPLICATE_POLICY: DuplicatePolicy = DuplicatePolicy::KeepLast;
 pub const DEFAULT_RETENTION_PERIOD: Duration = Duration::ZERO;
 pub const DEFAULT_SERIES_WORKER_INTERVAL: Duration = Duration::from_secs(60);
@@ -181,7 +181,7 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
 
     if let Some(compression) = find_config_value(args, SERIES_CHUNK_ENCODING_KEY) {
         let temp = compression.try_as_str()?;
-        if let Ok(compression) = ChunkCompression::try_from(temp) {
+        if let Ok(compression) = ChunkEncoding::try_from(temp) {
             config.chunk_encoding = Some(compression);
         } else {
             return Err(ValkeyError::String(format!(

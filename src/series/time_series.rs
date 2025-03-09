@@ -10,7 +10,7 @@ use crate::config::{
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::InternedMetricName;
-use crate::series::chunks::{validate_chunk_size, Chunk, ChunkCompression, TimeSeriesChunk};
+use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::index::next_timeseries_id;
 use crate::series::DuplicatePolicy;
 use get_size::GetSize;
@@ -36,7 +36,7 @@ pub struct TimeSeries {
 
     pub retention: Duration,
     pub sample_duplicates: SampleDuplicatePolicy,
-    pub chunk_compression: ChunkCompression,
+    pub chunk_compression: ChunkEncoding,
     pub rounding: Option<RoundingStrategy>,
     pub chunk_size_bytes: usize,
     pub chunks: Vec<TimeSeriesChunk>,

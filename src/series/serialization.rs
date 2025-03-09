@@ -1,7 +1,7 @@
 use crate::common::serialization::*;
 use crate::common::Sample;
 use crate::labels::InternedMetricName;
-use crate::series::chunks::{Chunk, ChunkCompression, TimeSeriesChunk};
+use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeseriesId};
 use valkey_module::{raw, ValkeyResult};
 
@@ -28,7 +28,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     let labels = InternedMetricName::from_rdb(rdb)?;
 
     let retention = rdb_load_duration(rdb)?;
-    let chunk_compression = ChunkCompression::try_from(rdb_load_string(rdb)?)?;
+    let chunk_compression = ChunkEncoding::try_from(rdb_load_string(rdb)?)?;
 
     let rounding = rdb_load_optional_rounding(rdb)?;
     let sample_duplicates = SampleDuplicatePolicy::rdb_load(rdb)?;

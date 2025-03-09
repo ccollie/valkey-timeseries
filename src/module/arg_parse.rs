@@ -14,7 +14,7 @@ use crate::parser::{
     metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal,
     parse_duration_value, timestamp::parse_timestamp as parse_timestamp_internal,
 };
-use crate::series::chunks::{ChunkCompression, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
+use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
 use ahash::AHashMap;
@@ -327,9 +327,9 @@ pub fn parse_chunk_size(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     Ok(chunk_size)
 }
 
-pub fn parse_chunk_compression(args: &mut CommandArgIterator) -> ValkeyResult<ChunkCompression> {
+pub fn parse_chunk_compression(args: &mut CommandArgIterator) -> ValkeyResult<ChunkEncoding> {
     args.next_str().and_then(|next| {
-        ChunkCompression::try_from(next)
+        ChunkEncoding::try_from(next)
             .map_err(|_| ValkeyError::Str(error_consts::INVALID_CHUNK_COMPRESSION))
     })
 }

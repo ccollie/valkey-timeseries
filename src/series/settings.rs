@@ -2,7 +2,7 @@ use crate::common::rounding::RoundingStrategy;
 use crate::config::{
     get_series_config_settings, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_SERIES_WORKER_INTERVAL,
 };
-use crate::series::chunks::ChunkCompression;
+use crate::series::chunks::ChunkEncoding;
 use crate::series::index::optimize_all_timeseries_indexes;
 use crate::series::SampleDuplicatePolicy;
 use std::sync::{LazyLock, Mutex};
@@ -12,7 +12,7 @@ use valkey_module::{Context, RedisModuleTimerID};
 #[derive(Clone, Copy)]
 pub struct ConfigSettings {
     pub retention_period: Option<Duration>,
-    pub chunk_encoding: Option<ChunkCompression>,
+    pub chunk_encoding: Option<ChunkEncoding>,
     pub chunk_size_bytes: usize,
     pub rounding: Option<RoundingStrategy>,
     pub worker_interval: Duration,
@@ -24,7 +24,7 @@ impl Default for ConfigSettings {
         Self {
             retention_period: None,
             chunk_size_bytes: DEFAULT_CHUNK_SIZE_BYTES,
-            chunk_encoding: Some(ChunkCompression::Gorilla),
+            chunk_encoding: Some(ChunkEncoding::Gorilla),
             worker_interval: DEFAULT_SERIES_WORKER_INTERVAL,
             rounding: None,
             duplicate_policy: SampleDuplicatePolicy::default()

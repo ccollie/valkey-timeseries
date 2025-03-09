@@ -15,34 +15,34 @@ pub const MAX_CHUNK_SIZE: usize = 1048576;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, GetSize)]
 #[non_exhaustive]
-pub enum ChunkCompression {
+pub enum ChunkEncoding {
     Uncompressed = 1,
     #[default]
     Gorilla = 2,
     Pco = 4,
 }
 
-impl ChunkCompression {
+impl ChunkEncoding {
     pub fn name(&self) -> &'static str {
         match self {
-            ChunkCompression::Uncompressed => "uncompressed",
-            ChunkCompression::Gorilla => "gorilla",
-            ChunkCompression::Pco => "pco",
+            ChunkEncoding::Uncompressed => "uncompressed",
+            ChunkEncoding::Gorilla => "gorilla",
+            ChunkEncoding::Pco => "pco",
         }
     }
     
     pub fn is_compressed(&self) -> bool {
-        *self != ChunkCompression::Uncompressed
+        *self != ChunkEncoding::Uncompressed
     }
 }
 
-impl Display for ChunkCompression {
+impl Display for ChunkEncoding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl TryFrom<&str> for ChunkCompression {
+impl TryFrom<&str> for ChunkEncoding {
     type Error = ValkeyError;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         if let Some(compression) = parse_encoding(s) {
@@ -52,20 +52,20 @@ impl TryFrom<&str> for ChunkCompression {
     }
 }
 
-impl TryFrom<String> for ChunkCompression {
+impl TryFrom<String> for ChunkEncoding {
     type Error = ValkeyError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        ChunkCompression::try_from(&s[..])
+        ChunkEncoding::try_from(&s[..])
     }
 }
 
-fn parse_encoding(encoding: &str) -> Option<ChunkCompression> {
+fn parse_encoding(encoding: &str) -> Option<ChunkEncoding> {
     hashify::tiny_map_ignore_case! {
         encoding.as_bytes(),
-        "compressed" => ChunkCompression::default(),
-        "uncompressed" => ChunkCompression::Uncompressed,
-        "gorilla" => ChunkCompression::Gorilla,
-        "pco" => ChunkCompression::Pco,
+        "compressed" => ChunkEncoding::default(),
+        "uncompressed" => ChunkEncoding::Uncompressed,
+        "gorilla" => ChunkEncoding::Gorilla,
+        "pco" => ChunkEncoding::Pco,
     }
 }
 

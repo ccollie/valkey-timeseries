@@ -5,7 +5,7 @@ use crate::config::get_series_config_settings;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::Label;
-use crate::series::chunks::ChunkCompression;
+use crate::series::chunks::ChunkEncoding;
 use crate::series::settings::ConfigSettings;
 use get_size::GetSize;
 use num_traits::Zero;
@@ -196,7 +196,7 @@ impl From<SampleAddResult> for ValkeyValue {
 
 #[derive(Debug, Clone)]
 pub struct TimeSeriesOptions {
-    pub chunk_compression: Option<ChunkCompression>,
+    pub chunk_compression: Option<ChunkEncoding>,
     pub chunk_size: Option<usize>,
     pub retention: Option<Duration>,
     pub sample_duplicate_policy: SampleDuplicatePolicy,

@@ -6,7 +6,7 @@ use crate::iterators::SampleIter;
 use crate::series::chunks::utils::filter_samples_by_value;
 use crate::series::types::ValueFilter;
 use crate::series::{
-    chunks::{Chunk, ChunkCompression, GorillaChunk, PcoChunk, UncompressedChunk},
+    chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
     DuplicatePolicy, SampleAddResult,
 };
 use core::mem::size_of;
@@ -24,18 +24,18 @@ pub enum TimeSeriesChunk {
 }
 
 impl TimeSeriesChunk {
-    pub fn new(compression: ChunkCompression, chunk_size: usize) -> Self {
+    pub fn new(compression: ChunkEncoding, chunk_size: usize) -> Self {
         use TimeSeriesChunk::*;
         match compression {
-            ChunkCompression::Uncompressed => {
+            ChunkEncoding::Uncompressed => {
                 let chunk = UncompressedChunk::with_max_size(chunk_size);
                 Uncompressed(chunk)
             }
-            ChunkCompression::Gorilla => {
+            ChunkEncoding::Gorilla => {
                 let chunk = GorillaChunk::with_max_size(chunk_size);
                 Gorilla(chunk)
             }
-            ChunkCompression::Pco => Pco(PcoChunk::with_max_size(chunk_size)),
+            ChunkEncoding::Pco => Pco(PcoChunk::with_max_size(chunk_size)),
         }
     }
 

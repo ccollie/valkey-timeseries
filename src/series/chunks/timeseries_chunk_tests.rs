@@ -5,14 +5,14 @@ mod tests {
     use crate::series::chunks::merge::merge_by_capacity;
     use crate::series::test_utils::generate_random_samples;
     use crate::series::{
-        chunks::{Chunk, ChunkCompression, TimeSeriesChunk},
+        chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
         DuplicatePolicy,
     };
 
-    const CHUNK_TYPES: [ChunkCompression; 3] = [
-        ChunkCompression::Uncompressed,
-        ChunkCompression::Gorilla,
-        ChunkCompression::Pco,
+    const CHUNK_TYPES: [ChunkEncoding; 3] = [
+        ChunkEncoding::Uncompressed,
+        ChunkEncoding::Gorilla,
+        ChunkEncoding::Pco,
     ];
 
     #[test]
@@ -831,8 +831,8 @@ mod tests {
 
     #[test]
     fn test_merge_by_capacity_with_empty_source_chunk() {
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Ensure the source chunk is empty
         assert!(src_chunk.is_empty());
@@ -850,8 +850,8 @@ mod tests {
     #[test]
     fn test_merge_by_capacity_exact_capacity() {
         // possibly dont need
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Fill the source chunk with samples
         let samples = generate_random_samples(0, ELEMENTS_PER_CHUNK);
@@ -888,8 +888,8 @@ mod tests {
 
     #[test]
     fn test_merge_by_capacity_partial_merge() {
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         let capacity = dest_chunk.estimate_remaining_sample_capacity();
 
@@ -924,8 +924,8 @@ mod tests {
 
     #[test]
     fn test_merge_by_capacity_dest_less_than_quarter_capacity() {
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 2048);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 2048);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 2048);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 2048);
 
         // Fill the source chunk with samples
         let samples = generate_random_samples(0, 100);
@@ -953,8 +953,8 @@ mod tests {
 
     #[test]
     fn test_merge_by_capacity_with_duplicate_timestamps_block_policy() {
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Add samples to the source chunk with duplicate timestamps
         let samples = vec![
@@ -1004,8 +1004,8 @@ mod tests {
 
     #[test]
     fn test_merge_by_capacity_with_empty_destination() {
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Add some samples to the source chunk
         let samples = vec![
@@ -1047,8 +1047,8 @@ mod tests {
 
     #[test]
     fn test_merge_by_capacity_clears_source_after_full_merge() {
-        let mut dest_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
-        let mut src_chunk = TimeSeriesChunk::new(ChunkCompression::Uncompressed, 1024);
+        let mut dest_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
+        let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Populate source chunk with samples
         let samples = generate_random_samples(0, ELEMENTS_PER_CHUNK);
