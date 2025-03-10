@@ -1,9 +1,10 @@
 [project]
-name = "valkey-tslib"
+name = "valkey-timeseries"
 version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.12"
+description = "A Timeseries data type for Valkey"
+requires-python = "==3.9"
 dependencies = [
     "valkey",
     "pytest==4",
+    "pytest-html"
 ]

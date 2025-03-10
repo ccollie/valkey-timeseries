@@ -8,24 +8,6 @@ pkill -9 -f "valkey-server.*:" || true
 pkill -9 -f Valgrind || true
 pkill -9 -f "valkey-benchmark" || true
 
-VALKEY_VERSION=${VALKEY_VERSION:-unstable}
-PROGNAME="${BASH_SOURCE[0]}"
-CWD="$(cd "$(dirname "$PROGNAME")" &>/dev/null && pwd)"
-ROOT=$(cd $CWD/.. && pwd)
-MODULE="$ROOT/target/debug/libvalkey_timeseries${MODULE_EXT}"
-BINARY_PATH="$CWD/.build/binaries/$VALKEY_VERSION/valkey-server"
-PORT=${PORT:-6379}
-
-# If environment variable SERVER_VERSION is not set, default to "unstable"
-if [ -z "$SERVER_VERSION" ]; then
-    echo "SERVER_VERSION environment variable is not set. Defaulting to \"unstable\"."
-    export SERVER_VERSION="unstable"
-fi
-
-# cd to the current directory of the script
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-cd "${DIR}"
-
 os_type=$(uname)
 MODULE_EXT=".so"
 if [[ "$os_type" == "Darwin" ]]; then
@@ -39,8 +21,39 @@ else
   exit 1
 fi
 
+VALKEY_VERSION=${VALKEY_VERSION:-unstable}
+PROGNAME="${BASH_SOURCE[0]}"
+CWD="$(cd "$(dirname "$PROGNAME")" &>/dev/null && pwd)"
+BINARY_PATH="$CWD/.build/binaries/$VALKEY_VERSION/valkey-server"
+PORT=${PORT:-6379}
+REPO_URL="https://github.com/valkey-io/valkey.git"
+
+# If environment variable SERVER_VERSION is not set, default to "unstable"
+if [ -z "$SERVER_VERSION" ]; then
+    echo "SERVER_VERSION environment variable is not set. Defaulting to \"unstable\"."
+    export SERVER_VERSION="unstable"
+fi
+
+if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
+    echo "valkey-server binary '$BINARY_PATH' found."
+else
+    echo "valkey-server binary '$BINARY_PATH' not found."
+    mkdir -p ".build/binaries/$SERVER_VERSION"
+    cd .build
+    rm -rf valkey
+    git clone "$REPO_URL"
+    cd valkey
+    git checkout "$SERVER_VERSION"
+    make -j
+    cp src/valkey-server ../binaries/$SERVER_VERSION/
+fi
+
+# cd to the current directory of the script
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+cd "${DIR}"
+
 export SOURCE_DIR=$2
-export MODULE_PATH=${SOURCE_DIR}/build/src/libvalkey_timeseries${MODULE_EXT}
+export MODULE_PATH=$SOURCE_DIR/build/src/libvalkey_timeseries$MODULE_EXT
 echo "Running integration tests against Valkey version $SERVER_VERSION"
 
 if [[ ! -z "${TEST_PATTERN}" ]] ; then
@@ -55,6 +68,5 @@ fi
 if [[ $1 == "test" ]] ; then
     python -m pytest --html=report.html --cache-clear -v ${TEST_FLAG} ./ ${TEST_PATTERN}
 else
-    echo "Unknown target: $1"
-    exit 1
+    python -m pytest --html=report.html --cache-clear -v ${TEST_FLAG} ./
 fi
