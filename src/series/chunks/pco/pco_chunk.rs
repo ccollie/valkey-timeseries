@@ -87,6 +87,7 @@ impl PcoChunk {
         }
 
         self.compress(&timestamps, &values)?;
+        self.min_time = samples[0].timestamp;
         // todo: complain if size > max_size
         Ok(())
     }
@@ -351,11 +352,10 @@ impl Chunk for PcoChunk {
             let removed_count = count - timestamps.len();
             if timestamps.is_empty() {
                 self.clear();
-                Ok(removed_count)
             } else {
                 self.compress(&timestamps, &values)?;
-                Ok(0)
             }
+            Ok(removed_count)
         } else {
             Ok(0)
         }

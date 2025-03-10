@@ -49,13 +49,15 @@ impl GorillaChunk {
         self.first_ts = 0;
     }
 
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult {
         debug_assert!(!samples.is_empty());
-        self.compress(samples)
+        self.compress(samples)?;
+        self.first_ts = samples[0].timestamp;
         // todo: complain if size > max_size
+        Ok(())
     }
 
-    fn compress(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+    fn compress(&mut self, samples: &[Sample]) -> TsdbResult {
         let mut encoder = GorillaEncoder::new();
         for sample in samples {
             push_sample(&mut encoder, sample)?;
@@ -138,14 +140,13 @@ impl Chunk for GorillaChunk {
         }
 
         let mut new_encoder = GorillaEncoder::new();
-
-        let mut deleted_count: usize = 0;
+        
         let mut first_timestamp: Timestamp = 0;
+        let saved_count = self.len();
 
         for value in self.encoder.iter() {
             let sample = value?;
             if sample.timestamp >= start_ts && sample.timestamp <= end_ts {
-                deleted_count += 1;
                 continue;
             }
             if first_timestamp == 0 {
@@ -156,18 +157,18 @@ impl Chunk for GorillaChunk {
 
         self.encoder = new_encoder;
         self.first_ts = first_timestamp;
-
-        Ok(deleted_count)
+        Ok(saved_count - self.len())
     }
 
-    fn add_sample(&mut self, sample: &Sample) -> TsdbResult<()> {
+    fn add_sample(&mut self, sample: &Sample) -> TsdbResult {
         if self.is_full() {
             return Err(TsdbError::CapacityFull(self.max_size));
         }
 
         push_sample(&mut self.encoder, sample)?;
-
-        self.first_ts = self.first_ts.min(sample.timestamp);
+        if self.len() == 1 {
+            self.first_ts = sample.timestamp;
+        }
 
         Ok(())
     }
@@ -336,7 +337,7 @@ impl Chunk for GorillaChunk {
         Ok(right_chunk)
     }
 
-    fn optimize(&mut self) -> TsdbResult<()> {
+    fn optimize(&mut self) -> TsdbResult {
         self.encoder.shrink_to_fit();
         Ok(())
     }
@@ -361,7 +362,7 @@ impl Chunk for GorillaChunk {
 }
 
 #[inline]
-fn push_sample(encoder: &mut GorillaEncoder, sample: &Sample) -> TsdbResult<()> {
+fn push_sample(encoder: &mut GorillaEncoder, sample: &Sample) -> TsdbResult {
     encoder.add_sample(sample).map_err(|e| {
         eprintln!("Error adding sample: {:?}", e);
         TsdbError::CannotAddSample(*sample)
@@ -429,7 +430,6 @@ impl Iterator for GorillaChunkIterator<'_> {
 #[cfg(test)]
 mod tests {
     use crate::common::Sample;
-    use crate::error::TsdbError;
     use crate::series::chunks::chunk::Chunk;
     use crate::series::chunks::gorilla::gorilla_chunk::GorillaChunk;
     use crate::series::test_utils::generate_random_samples;

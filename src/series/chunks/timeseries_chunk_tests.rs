@@ -114,7 +114,7 @@ mod tests {
             assert_eq!(chunk.len(), 3);
 
             let result = chunk.get_range(20, 20).unwrap();
-            assert_eq!(result.len(), 1);
+            assert_eq!(result.len(), 1, "{}: Expected 1 result, got {}", chunk_type, result.len());
             assert_eq!(
                 result[0],
                 Sample {
@@ -130,34 +130,6 @@ mod tests {
                 chunk_type,
                 empty_result
             );
-        }
-    }
-
-    #[test]
-    fn test_get_range_start_greater_than_end() {
-        let samples = vec![
-            Sample {
-                timestamp: 10,
-                value: 1.0,
-            },
-            Sample {
-                timestamp: 20,
-                value: 2.0,
-            },
-            Sample {
-                timestamp: 30,
-                value: 3.0,
-            },
-        ];
-
-        for chunk_type in CHUNK_TYPES {
-            let mut chunk = TimeSeriesChunk::new(chunk_type, 100);
-            chunk.set_data(&samples).unwrap();
-
-            assert_eq!(chunk.len(), 3);
-
-            let result = chunk.get_range(30, 10).unwrap();
-            assert!(result.is_empty());
         }
     }
 
@@ -182,10 +154,10 @@ mod tests {
             let mut chunk = TimeSeriesChunk::new(chunk_type, 100);
             chunk.set_data(&samples).unwrap();
 
-            assert_eq!(chunk.len(), 3);
+            assert_eq!(chunk.len(), 3, "{}: Expected 3 results, got {}", chunk_type, chunk.len());
 
             let result = chunk.get_range(0, 40).unwrap();
-            assert_eq!(result.len(), 3);
+            assert_eq!(result.len(), 3, "{}: Expected 3 results, got {}", chunk_type, result.len());
             assert_eq!(result, samples);
         }
     }
@@ -218,7 +190,7 @@ mod tests {
             assert_eq!(chunk.len(), 4);
 
             let result = chunk.get_range(15, 35).unwrap();
-            assert_eq!(result.len(), 2);
+            assert_eq!(result.len(), 2, "{}: Expected 2 results, got {}", chunk_type, result.len());
             assert_eq!(
                 result[0],
                 Sample {
@@ -271,8 +243,8 @@ mod tests {
             let current = chunk.get_range(0, 100).unwrap();
             let expected = vec![
                 Sample {
-                    timestamp: 20,
-                    value: 2.0,
+                    timestamp: 10,
+                    value: 1.0,
                 },
                 Sample {
                     timestamp: 40,
@@ -304,7 +276,7 @@ mod tests {
 
             chunk.remove_range(10, 20).unwrap();
 
-            assert_eq!(chunk.len(), 0);
+            assert_eq!(chunk.len(), 0, "{}: Expected 0 results, got {}", chunk_type, chunk.len());
             assert_eq!(chunk.get_range(0, 100).unwrap(), vec![]);
         }
     }
@@ -317,11 +289,11 @@ mod tests {
                 value: 1.0,
             },
             Sample {
-                timestamp: 10,
+                timestamp: 20,
                 value: 2.0,
             },
             Sample {
-                timestamp: 20,
+                timestamp: 30,
                 value: 3.0,
             },
         ];
@@ -332,15 +304,20 @@ mod tests {
 
             assert_eq!(chunk.len(), 3);
 
-            chunk.remove_range(10, 10).unwrap();
+            let removed = chunk.remove_range(10, 10).unwrap();
 
-            assert_eq!(chunk.len(), 1);
+            assert_eq!(removed, 1, "{}: Expected 1 result, got {removed}", chunk_type);
             assert_eq!(
                 chunk.get_range(0, 100).unwrap(),
-                vec![Sample {
+                vec![
+                    Sample {
                     timestamp: 20,
+                    value: 2.0
+                },
+                Sample {
+                    timestamp: 30,
                     value: 3.0
-                },]
+                }]
             );
         }
     }
@@ -380,7 +357,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(result.len(), 3);
-            assert_eq!(chunk.len(), 3);
+            assert_eq!(chunk.len(), 3, "{}: Expected 3 results, got {}", chunk_type, chunk.len());
             assert_eq!(
                 chunk.get_range(0, 100).unwrap(),
                 vec![
@@ -558,7 +535,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(result.len(), 3);
-            assert_eq!(chunk.len(), 3);
+            assert_eq!(chunk.len(), 3, "{}: Expected 3 results, got {}", chunk_type, chunk.len());
 
             let merged_samples = chunk.get_range(0, 40).unwrap();
             assert_eq!(
@@ -625,7 +602,7 @@ mod tests {
                 .merge_samples(&samples, Some(DuplicatePolicy::Block))
                 .unwrap();
 
-            assert_eq!(result.len(), 2);
+            assert_eq!(result.len(), 2, "{}: Expected 2 results, got {}", chunk_type, result.len());
             assert_eq!(chunk.len(), 4);
             assert_eq!(chunk.first_timestamp(), 5);
             assert_eq!(chunk.last_timestamp(), 35);

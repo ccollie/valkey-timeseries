@@ -341,6 +341,7 @@ impl Chunk for TimeSeriesChunk {
     }
 
     fn get_range(&self, start: Timestamp, end: Timestamp) -> TsdbResult<Vec<Sample>> {
+        debug_assert!(start <= end);
         use TimeSeriesChunk::*;
         match self {
             Uncompressed(chunk) => chunk.get_range(start, end),

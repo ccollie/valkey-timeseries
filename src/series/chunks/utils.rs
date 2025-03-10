@@ -39,6 +39,9 @@ pub(crate) fn get_sample_index_bounds(
     start_ts: Timestamp,
     end_ts: Timestamp,
 ) -> Option<(usize, usize)> {
+    if samples.is_empty() {
+        return None;
+    }
     let start_sample = Sample {
         timestamp: start_ts,
         value: 0.0,

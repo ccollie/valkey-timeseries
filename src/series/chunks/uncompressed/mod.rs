@@ -3,7 +3,6 @@ use crate::common::{Sample, Timestamp, SAMPLE_SIZE};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
 use crate::series::chunks::merge::merge_samples;
-use crate::series::chunks::utils::get_sample_index_bounds;
 use crate::series::chunks::Chunk;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
@@ -127,12 +126,85 @@ impl UncompressedChunk {
 
     fn get_range_slice(&self, start_ts: Timestamp, end_ts: Timestamp) -> Vec<Sample> {
         if let Some((start_idx, end_index)) =
-            get_sample_index_bounds(&self.samples, start_ts, end_ts)
+            self.get_index_bounds(start_ts, end_ts)
         {
             self.samples[start_idx..=end_index].to_vec()
         } else {
             vec![]
         }
+    }
+
+    /// Finds the start and end chunk indices (inclusive) for a date range.
+    ///
+    /// #### Parameters
+    ///
+    /// * `start`: The lower bound of the range to search for.
+    /// * `end`: The upper bound of the range to search for.
+    ///
+    /// #### Returns
+    ///
+    /// Returns `Option<(usize, usize)>`:
+    /// * `Some((start_idx, end_idx))` if valid indices are found within the range.
+    /// * `None` if the series is empty, if all samples are less than `start`,
+    ///   or if `start` and `end` are equal and greater than the sample at the found index.
+    ///
+    /// Used to get an inclusive bounds for series chunks (all chunks containing samples in the range [start_index...=end_index])
+    fn get_index_bounds(
+        &self,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> Option<(usize, usize)> {
+        let len = self.samples.len();
+        if len == 0 {
+            return None;
+        }
+        let last_ts = self.samples[len - 1].timestamp;
+        if end < self.samples[0].timestamp || start > last_ts {
+            return None;
+        }
+
+        let (start_idx, _) = binary_search_samples_by_timestamp(&self.samples, start);
+        if start_idx >= len {
+            return None;
+        }
+
+        let (mut end_idx, found) = binary_search_samples_by_timestamp(&self.samples, end);
+        if !found && end_idx > 0 {
+            // if the end timestamp is not found, we need to include the previous sample
+            // to ensure that the end timestamp is included in the range.
+            let right = &self.samples[end_idx - 1];
+            if right.timestamp < end {
+                end_idx -= 1;
+            }
+        }
+
+        // imagine this scenario:
+        // sample start timestamps = [10, 20, 30, 40]
+        // start = 25, end = 25
+        // we have a situation where start_index == end_index (2), yet samples[2] is greater than end,
+        if start_idx == end_idx {
+            // todo: get_unchecked
+            if self.samples[start_idx].timestamp > end {
+                return None;
+            }
+        }
+
+        Some((start_idx, end_idx))
+    }
+}
+
+fn binary_search_samples_by_timestamp(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
+    match samples.binary_search_by(|probe| {
+        if ts < probe.timestamp {
+            std::cmp::Ordering::Greater
+        } else if ts > probe.timestamp {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }) {
+        Ok(pos) => (pos, true),
+        Err(pos) => (pos, false),
     }
 }
 
@@ -179,8 +251,11 @@ impl Chunk for UncompressedChunk {
 
     fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
         let count = self.samples.len();
-        self.samples
-            .retain(|sample| -> bool { sample.timestamp < start_ts || sample.timestamp > end_ts });
+        if let Some((start_idx, end_idx)) =
+            self.get_index_bounds(start_ts, end_ts)
+        {
+            let _ = self.samples.drain(start_idx..=end_idx);
+        };
         Ok(count - self.samples.len())
     }
 
@@ -356,6 +431,78 @@ mod tests {
     use crate::common::{Sample, SAMPLE_SIZE};
     use crate::series::chunks::{Chunk, UncompressedChunk};
     use crate::series::{DuplicatePolicy, SampleAddResult};
+
+
+    #[test]
+    fn test_get_range_slice_start_equals_end() {
+        let samples = vec![
+            Sample { timestamp: 10, value: 1.0 },
+            Sample { timestamp: 20, value: 2.0 },
+            Sample { timestamp: 30, value: 3.0 },
+            Sample { timestamp: 40, value: 4.0 },
+            Sample { timestamp: 50, value: 5.0 },
+        ];
+        let chunk = UncompressedChunk::new(1000, &samples);
+        let result = chunk.get_range_slice(30, 30);
+        assert_eq!(result, vec![
+            Sample { timestamp: 30, value: 3.0 },
+        ]);
+    }
+
+    #[test]
+    fn test_get_range_slice_within_bounds() {
+        let samples = vec![
+            Sample { timestamp: 10, value: 1.0 },
+            Sample { timestamp: 20, value: 2.0 },
+            Sample { timestamp: 30, value: 3.0 },
+            Sample { timestamp: 40, value: 4.0 },
+            Sample { timestamp: 50, value: 5.0 },
+        ];
+        let chunk = UncompressedChunk::new(1000, &samples);
+        let result = chunk.get_range_slice(20, 40);
+        assert_eq!(result, vec![
+            Sample { timestamp: 20, value: 2.0 },
+            Sample { timestamp: 30, value: 3.0 },
+            Sample { timestamp: 40, value: 4.0 },
+        ]);
+    }
+
+    #[test]
+    fn test_get_range_slice_out_of_bounds() {
+        let samples = vec![
+            Sample { timestamp: 10, value: 1.0 },
+            Sample { timestamp: 20, value: 2.0 },
+            Sample { timestamp: 30, value: 3.0 },
+            Sample { timestamp: 40, value: 4.0 },
+            Sample { timestamp: 50, value: 5.0 },
+        ];
+        let chunk = UncompressedChunk::new(1000, &samples);
+        let result = chunk.get_range_slice(60, 70);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_range_slice_partial_overlap() {
+        let samples = vec![
+            Sample { timestamp: 10, value: 1.0 },
+            Sample { timestamp: 20, value: 2.0 },
+            Sample { timestamp: 30, value: 3.0 },
+            Sample { timestamp: 40, value: 4.0 },
+            Sample { timestamp: 50, value: 5.0 },
+        ];
+        let chunk = UncompressedChunk::new(1000, &samples);
+        let result = chunk.get_range_slice(35, 45);
+        assert_eq!(result, vec![
+            Sample { timestamp: 40, value: 4.0 },
+        ]);
+    }
+
+    #[test]
+    fn test_get_range_slice_empty_chunk() {
+        let chunk = UncompressedChunk::default();
+        let result = chunk.get_range_slice(10, 20);
+        assert!(result.is_empty());
+    }
 
     #[test]
     fn test_remove_range() {
