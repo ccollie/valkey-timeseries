@@ -21,9 +21,9 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         assert all(item in command_cmd_result for item in ts_cmds)
         # Basic bloom filter create, item add and item exists validation.
         bf_add_result = client.execute_command('TS.ADD series1 1000 102')
-        assert bf_add_result == 1
+        assert bf_add_result == 1000
         bf_exists_result = client.execute_command('TS.GET series1 1000')
-        assert bf_exists_result == 1
+        assert bf_exists_result == 102
 
     def test_timeseries_create_cmd(self):
         client = self.server.get_new_client()
