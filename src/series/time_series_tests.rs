@@ -1022,4 +1022,45 @@ mod tests {
             assert_eq!(result_sample.value, original_sample.value);
         }
     }
+
+    #[test]
+    fn test_increment_sample_value_with_existing_sample() {
+        let mut ts = TimeSeries::new();
+        ts.add(100, 200.0, None);
+
+        let result = ts.increment_sample_value(Some(100), 50.0);
+        assert!(result.is_ok());
+        let sample = ts.get_sample(100).unwrap().unwrap();
+        assert_eq!(sample.value, 250.0);
+    }
+
+    #[test]
+    fn test_increment_sample_value_with_new_sample() {
+        let mut ts = TimeSeries::new();
+
+        let result = ts.increment_sample_value(Some(100), 50.0);
+        assert!(result.is_ok());
+        let sample = ts.get_sample(100).unwrap().unwrap();
+        assert_eq!(sample.value, 50.0);
+    }
+
+    #[test]
+    fn test_increment_sample_value_with_no_timestamp() {
+        let mut ts = TimeSeries::new();
+        ts.add(100, 200.0, None);
+
+        let result = ts.increment_sample_value(None, 50.0);
+        assert!(result.is_ok());
+        let sample = ts.get_sample(100).unwrap().unwrap();
+        assert_eq!(sample.value, 250.0);
+    }
+
+    #[test]
+    fn test_increment_sample_value_with_lower_timestamp() {
+        let mut ts = TimeSeries::new();
+        ts.add(100, 200.0, None);
+
+        let result = ts.increment_sample_value(Some(50), 50.0);
+        assert!(result.is_err());
+    }
 }

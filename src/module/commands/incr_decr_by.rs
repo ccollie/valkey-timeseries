@@ -1,9 +1,8 @@
-use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
 use crate::module::arg_parse::parse_timestamp;
 use crate::module::commands::{create_series, parse_series_options};
 use crate::module::get_timeseries_mut;
-use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, TimeSeriesOptions};
+use crate::series::{SampleAddResult, TimeSeries, TimeSeriesOptions};
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 pub fn incrby(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
@@ -62,24 +61,13 @@ fn handle_update(
     delta: f64,
     is_increment: bool,
 ) -> ValkeyResult {
-    let (timestamp, last_ts, value) = if let Some(sample) = series.last_sample {
-        let last_ts = sample.timestamp;
-        let ts = timestamp.unwrap_or(last_ts);
-        let value = sample.value + if is_increment { delta } else { -delta };
-        (ts, last_ts, value)
-    } else {
-        let last_ts = current_time_millis();
-        let ts = timestamp.unwrap_or(last_ts);
-        (ts, last_ts, delta)
-    };
-
-    if timestamp < last_ts {
-        return Err(ValkeyError::Str(
-            "TSDB: timestamp must be equal to or higher than the maximum existing timestamp",
-        ));
+    let mut delta = delta;
+    if !series.is_empty() {
+        if !is_increment {
+            delta = -delta;
+        }
     }
-
-    let result = series.add(timestamp, value, Some(DuplicatePolicy::KeepLast));
+    let result = series.increment_sample_value(timestamp, delta)?;
     match result {
         SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
             let event = if is_increment {

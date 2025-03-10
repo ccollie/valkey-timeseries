@@ -3,6 +3,7 @@ use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilt
 use crate::common::hash::IntMap;
 use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
+use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::{
     DEFAULT_CHUNK_COMPRESSION, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD,
@@ -544,6 +545,31 @@ impl TimeSeries {
         }
 
         Ok(deleted_samples)
+    }
+
+    pub fn increment_sample_value(
+        &mut self,
+        timestamp: Option<Timestamp>,
+        delta: f64,
+    ) -> ValkeyResult<SampleAddResult> {
+        // if we have at least one sample, increment the last one
+        let (timestamp, last_ts, value) = if let Some(sample) = self.last_sample {
+            let last_ts = sample.timestamp;
+            let ts = timestamp.unwrap_or(last_ts);
+            let value = sample.value + delta;
+            (ts, last_ts, value)
+        } else {
+            let ts = timestamp.unwrap_or_else(current_time_millis);
+            (ts, ts, delta)
+        };
+
+        if timestamp < last_ts {
+            return Err(ValkeyError::Str(
+                "TSDB: timestamp must be equal to or higher than the maximum existing timestamp",
+            ));
+        }
+
+        Ok(self.add(timestamp, value, Some(DuplicatePolicy::KeepLast)))
     }
 
     fn update_first_last_timestamps(&mut self) {
