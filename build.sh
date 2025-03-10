@@ -70,7 +70,7 @@ else
   exit 1
 fi
 
-export MODULE_PATH="$SCRIPT_DIR/target/release/libvalkey_timeseries${MODULE_EXT}"
+export MODULE_PATH="$SCRIPT_DIR/target/release/libvalkey_timeseries$MODULE_EXT"
 
 echo "Running the integration tests..."
 # TEST_PATTERN can be used to run specific tests or test patterns.

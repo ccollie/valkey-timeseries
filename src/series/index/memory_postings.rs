@@ -99,7 +99,7 @@ impl MemoryPostings {
             self.label_index.insert(key.clone(), bmp);
         }
     }
-    
+
     fn remove_id_from_all_postings(&mut self, id: SeriesRef) {
         if let Some(bmp) = self.label_index.get_mut(&*ALL_POSTINGS_KEY) {
             bmp.remove(id);
@@ -209,6 +209,7 @@ impl MemoryPostings {
         for (key, map) in self.label_index.prefix(prefix.as_bytes()) {
             let value = key.sub_string(start_pos);
             if match_fn(value, state) {
+                println!("matched {value}");
                 result |= map;
             }
         }
@@ -250,7 +251,7 @@ impl MemoryPostings {
 
     pub fn postings_without_labels<'a>(&'a self, labels: &[&str]) -> Cow<'a, PostingsBitmap> {
         match labels.len() {
-            0 => Cow::Borrowed(self.all_postings()),      // bad boy !!
+            0 => Cow::Borrowed(self.all_postings()),     // bad boy !!
             1 => self.postings_without_label(labels[0]), // slightly more efficient (1 less allocation)
             _ => {
                 let all = self.all_postings();
@@ -272,18 +273,12 @@ impl MemoryPostings {
 
     pub fn postings_for_matcher(&self, matcher: &Matcher) -> Cow<PostingsBitmap> {
         match matcher.matcher {
-            PredicateMatch::Equal(ref value) => {
-                handle_equal_match(self, &matcher.label, value)
-            }
+            PredicateMatch::Equal(ref value) => handle_equal_match(self, &matcher.label, value),
             PredicateMatch::NotEqual(ref value) => {
                 handle_not_equal_match(self, &matcher.label, value)
             }
-            PredicateMatch::RegexEqual(_) => {
-                handle_regex_equal_match(self, matcher)
-            }
-            PredicateMatch::RegexNotEqual(_) => {
-                handle_regex_not_equal_match(self, matcher)
-            }
+            PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, matcher),
+            PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, matcher),
         }
     }
 
@@ -296,7 +291,7 @@ impl MemoryPostings {
         }
         keys
     }
-    
+
     pub(super) fn get_key_range(&self) -> Option<(&IndexKey, &IndexKey)> {
         if let Some((start, _)) = self.label_index.first_key_value() {
             if let Some((end, _)) = self.label_index.last_key_value() {
@@ -311,8 +306,11 @@ impl MemoryPostings {
     }
 }
 
-
-pub(super) fn handle_equal_match<'a>(ix: &'a MemoryPostings, label: &str, value: &PredicateValue) -> Cow<'a, PostingsBitmap> {
+pub(super) fn handle_equal_match<'a>(
+    ix: &'a MemoryPostings,
+    label: &str,
+    value: &PredicateValue,
+) -> Cow<'a, PostingsBitmap> {
     match value {
         PredicateValue::String(ref s) => {
             if s.is_empty() {
@@ -336,7 +334,11 @@ fn with_label<'a>(ix: &'a MemoryPostings, label: &str) -> Cow<'a, PostingsBitmap
     Cow::Owned(postings)
 }
 
-pub(super) fn handle_not_equal_match<'a>(ix: &'a MemoryPostings, label: &str, value: &PredicateValue) -> Cow<'a, PostingsBitmap> {
+pub(super) fn handle_not_equal_match<'a>(
+    ix: &'a MemoryPostings,
+    label: &str,
+    value: &PredicateValue,
+) -> Cow<'a, PostingsBitmap> {
     // the time series has a label named label
     match value {
         PredicateValue::String(ref s) => {
@@ -372,25 +374,33 @@ pub(super) fn handle_not_equal_match<'a>(ix: &'a MemoryPostings, label: &str, va
     }
 }
 
-pub(super) fn handle_regex_equal_match<'a>(postings: &'a MemoryPostings, matcher: &Matcher) -> Cow<'a, PostingsBitmap> {
+pub(super) fn handle_regex_equal_match<'a>(
+    postings: &'a MemoryPostings,
+    matcher: &Matcher,
+) -> Cow<'a, PostingsBitmap> {
     if matcher.is_empty_matcher() {
         return postings.postings_without_label(&matcher.label);
     }
     let mut state = matcher;
-    let postings = postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
-        matcher.matches(value)
-    });
+    let postings =
+        postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
+            matcher.matches(value)
+        });
     Cow::Owned(postings)
 }
 
-pub(super) fn handle_regex_not_equal_match<'a>(postings: &'a MemoryPostings, matcher: &Matcher) -> Cow<'a, PostingsBitmap> {
+pub(super) fn handle_regex_not_equal_match<'a>(
+    postings: &'a MemoryPostings,
+    matcher: &Matcher,
+) -> Cow<'a, PostingsBitmap> {
     if matcher.is_empty_matcher() {
         return with_label(postings, &matcher.label);
     }
     let mut state = matcher;
-    let postings = postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
-        !matcher.matches(value)
-    });
+    let postings =
+        postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
+            !matcher.matches(value)
+        });
     Cow::Owned(postings)
 }
 

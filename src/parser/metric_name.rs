@@ -1,5 +1,5 @@
-use super::parse_error::unexpected;
 use super::lex::{expect_one_of_tokens, expect_token, get_next_token, Token};
+use super::parse_error::unexpected;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::Label;
 use crate::parser::utils::extract_string_value;

@@ -6,8 +6,8 @@ use crate::series::settings::ConfigSettings;
 use crate::series::DuplicatePolicy;
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 use valkey_module::redisvalue::ValkeyValueKey;
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 // See https://redis.io/docs/latest/develop/data-types/timeseries/configuration/
 
 pub const SPLIT_FACTOR: f64 = 1.2;
@@ -163,9 +163,11 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
     )? as usize;
     // todo: validate chunk_size_bytes
 
-    config.duplicate_policy.max_time_delta = get_duration_config_value_ms(args, SERIES_DEDUPE_INTERVAL_KEY, Some(0))? as u64;
-    config.duplicate_policy.max_value_delta = get_number_config_value(args, SERIES_DEDUPE_VALUE_KEY, Some(0.0))?;
-    
+    config.duplicate_policy.max_time_delta =
+        get_duration_config_value_ms(args, SERIES_DEDUPE_INTERVAL_KEY, Some(0))? as u64;
+    config.duplicate_policy.max_value_delta =
+        get_number_config_value(args, SERIES_DEDUPE_VALUE_KEY, Some(0.0))?;
+
     if let Some(policy) = find_config_value(args, SERIES_DUPLICATE_POLICY_KEY) {
         let temp = policy.try_as_str()?;
         if let Ok(policy) = DuplicatePolicy::try_from(temp) {
@@ -177,7 +179,6 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
             )));
         }
     }
-    
 
     if let Some(compression) = find_config_value(args, SERIES_CHUNK_ENCODING_KEY) {
         let temp = compression.try_as_str()?;
@@ -219,7 +220,7 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
         SERIES_WORKER_INTERVAL_KEY,
         Some(DEFAULT_SERIES_WORKER_INTERVAL),
     )?;
-    
+
     let mut res = _SERIES_SETTINGS
         .write()
         .expect("mutex lock error setting series config");
@@ -236,8 +237,7 @@ pub(crate) fn get_series_config_settings() -> ConfigSettings {
 fn valkey_value_to_integer(value: &ValkeyValue) -> ValkeyResult<i64> {
     match value {
         ValkeyValue::SimpleStringStatic(str) => Ok(str.parse::<i64>()?),
-        ValkeyValue::BulkString(s) |
-        ValkeyValue::SimpleString(s) => Ok(s.parse::<i64>()?),
+        ValkeyValue::BulkString(s) | ValkeyValue::SimpleString(s) => Ok(s.parse::<i64>()?),
         ValkeyValue::Integer(i) => Ok(*i),
         ValkeyValue::Float(f) => Ok(*f as i64),
         _ => Err(ValkeyError::String("Invalid value".to_string())),
@@ -245,29 +245,30 @@ fn valkey_value_to_integer(value: &ValkeyValue) -> ValkeyResult<i64> {
 }
 
 pub(crate) fn get_configured_databases(ctx: &Context) -> usize {
-    let db_count = ctx.call::<&[&ValkeyString]>("CONFIG GET databases", &[])
+    let db_count = ctx
+        .call::<&[&ValkeyString]>("CONFIG GET databases", &[])
         .expect("error getting database count");
-    
+
     fn parse_value(value: &ValkeyValue) -> usize {
         valkey_value_to_integer(value).expect("error parsing database count") as usize
     }
-    
+
     match db_count {
         ValkeyValue::Array(values) => {
             if values.len() == 2 {
-                return parse_value(&values[1])
+                return parse_value(&values[1]);
             }
         }
         ValkeyValue::OrderedMap(map) => {
             let key: ValkeyValueKey = "databases".into();
             if let Some(value) = map.get(&key) {
-                return parse_value(value)
+                return parse_value(value);
             }
         }
         ValkeyValue::Map(map) => {
             let key: ValkeyValueKey = "databases".into();
             if let Some(value) = map.get(&key) {
-                return parse_value(value)
+                return parse_value(value);
             }
         }
         _ => {}

@@ -34,7 +34,9 @@ impl TimestampValue {
             Latest => MAX_TIMESTAMP,
             Now => now.unwrap_or_else(current_time_millis),
             Specific(ts) => *ts,
-            Relative(delta) => now.unwrap_or_else(current_time_millis).saturating_add(*delta),
+            Relative(delta) => now
+                .unwrap_or_else(current_time_millis)
+                .saturating_add(*delta),
         }
     }
 
@@ -45,7 +47,9 @@ impl TimestampValue {
             Latest => series.last_timestamp(),
             Now => now.unwrap_or_else(current_time_millis),
             Specific(ts) => *ts,
-            Relative(delta) => now.unwrap_or_else(current_time_millis).saturating_add(*delta),
+            Relative(delta) => now
+                .unwrap_or_else(current_time_millis)
+                .saturating_add(*delta),
         }
     }
 }
@@ -260,7 +264,6 @@ impl RangeBounds<TimestampValue> for TimestampValue {
         std::ops::Bound::Included(self)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -803,7 +806,7 @@ mod tests {
             start: TimestampValue::Earliest,
             end: TimestampValue::Latest,
         };
-        let (start, end) = timestamp_range.get_series_range(&series, None,false);
+        let (start, end) = timestamp_range.get_series_range(&series, None, false);
         assert_eq!(
             start, series.first_timestamp,
             "Expected start to be the earliest timestamp, got {}",
@@ -896,7 +899,8 @@ mod tests {
         let end = TimestampValue::Relative(end_delta);
         let timestamp_range = TimestampRange::new(start, end).unwrap();
 
-        let (start_timestamp, end_timestamp) = timestamp_range.get_series_range(&series, None, false);
+        let (start_timestamp, end_timestamp) =
+            timestamp_range.get_series_range(&series, None, false);
 
         assert_eq!(
             start_timestamp, 2000,
@@ -925,7 +929,8 @@ mod tests {
             end: TimestampValue::Latest,
         };
         let current_time = current_time_millis();
-        let (start_timestamp, end_timestamp) = timestamp_range.get_series_range(&series, None,false);
+        let (start_timestamp, end_timestamp) =
+            timestamp_range.get_series_range(&series, None, false);
         assert!(
             (current_time..=current_time + 1).contains(&start_timestamp),
             "Expected start timestamp to be current time, got {}",

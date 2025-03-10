@@ -5,7 +5,6 @@ use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeseriesId};
 use valkey_module::{raw, ValkeyResult};
 
-
 pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     raw::save_unsigned(rdb, series.id);
     series.labels.to_rdb(rdb);

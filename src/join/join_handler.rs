@@ -1,11 +1,11 @@
 use crate::common::binop::BinopFunc;
+use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::iterators::aggregator::aggregate;
 use crate::join::{JoinIterator, JoinOptions, JoinValue};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
-use crate::common::parallel::join;
 
 // naming is hard :-)
 /// Result of a join operation
@@ -94,7 +94,7 @@ pub(super) fn transform_join_value_to_sample(item: &JoinValue, f: BinopFunc) -> 
 }
 
 fn fetch_samples(ts: &TimeSeries, options: &JoinOptions) -> Vec<Sample> {
-    let (start, end) = options.date_range.get_series_range(ts, None,true);
+    let (start, end) = options.date_range.get_series_range(ts, None, true);
     let mut samples = ts.get_range_filtered(
         start,
         end,

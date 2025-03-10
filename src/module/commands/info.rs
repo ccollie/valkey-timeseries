@@ -40,7 +40,7 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
     );
     map.insert("chunkCount".into(), (ts.chunks.len() as f64).into());
     map.insert("chunkSize".into(), ts.chunk_size_bytes.into());
-    
+
     if ts.chunk_compression.is_compressed() {
         map.insert("chunkType".into(), "compressed".into());
     } else {

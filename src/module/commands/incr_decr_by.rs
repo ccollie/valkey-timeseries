@@ -20,7 +20,8 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     }
 
     let mut args = args;
-    let delta = args[2].parse_float()
+    let delta = args[2]
+        .parse_float()
         .map_err(|_e| ValkeyError::Str("TSDB: invalid delta value"))?;
 
     let timestamp = handle_parse_timestamp(&mut args)?;
@@ -37,7 +38,10 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
 }
 
 fn handle_parse_timestamp(args: &mut Vec<ValkeyString>) -> ValkeyResult<Option<Timestamp>> {
-    if let Some(index) = args.iter().position(|x| { x.eq_ignore_ascii_case(b"timestamp") }) {
+    if let Some(index) = args
+        .iter()
+        .position(|x| x.eq_ignore_ascii_case(b"timestamp"))
+    {
         return if index < args.len() - 1 {
             args.remove(index);
             let timestamp_str = args.remove(index).to_string_lossy();
@@ -45,26 +49,23 @@ fn handle_parse_timestamp(args: &mut Vec<ValkeyString>) -> ValkeyResult<Option<T
             Ok(Some(value))
         } else {
             Err(ValkeyError::Str("TSDB: missing timestamp value"))
-        }
+        };
     }
     Ok(None)
 }
 
-fn handle_update(ctx: &Context, 
-                 series: &mut TimeSeries,
-                 key_name: &ValkeyString,
-                 timestamp: Option<Timestamp>,
-                 delta: f64,
-                 is_increment: bool) -> ValkeyResult {
-    
+fn handle_update(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    key_name: &ValkeyString,
+    timestamp: Option<Timestamp>,
+    delta: f64,
+    is_increment: bool,
+) -> ValkeyResult {
     let (timestamp, last_ts, value) = if let Some(sample) = series.last_sample {
         let last_ts = sample.timestamp;
         let ts = timestamp.unwrap_or(last_ts);
-        let value = sample.value + if is_increment {
-            delta
-        } else {
-            -delta
-        };
+        let value = sample.value + if is_increment { delta } else { -delta };
         (ts, last_ts, value)
     } else {
         let last_ts = current_time_millis();
@@ -73,13 +74,19 @@ fn handle_update(ctx: &Context,
     };
 
     if timestamp < last_ts {
-        return Err(ValkeyError::Str("TSDB: timestamp must be equal to or higher than the maximum existing timestamp"));
+        return Err(ValkeyError::Str(
+            "TSDB: timestamp must be equal to or higher than the maximum existing timestamp",
+        ));
     }
 
     let result = series.add(timestamp, value, Some(DuplicatePolicy::KeepLast));
     match result {
         SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
-            let event = if is_increment { "ts.incrby" } else { "ts.decrby" };
+            let event = if is_increment {
+                "ts.incrby"
+            } else {
+                "ts.decrby"
+            };
             ctx.replicate_verbatim();
             ctx.notify_keyspace_event(NotifyEvent::MODULE, event, key_name);
             Ok(ValkeyValue::Integer(ts))

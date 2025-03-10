@@ -35,7 +35,6 @@ pub(crate) fn save_optional_unsigned(rdb: *mut RedisModuleIO, value: Option<u64>
     }
 }
 
-
 pub fn rdb_save_duration(rdb: *mut RedisModuleIO, duration: &Duration) {
     let millis = duration.as_millis() as i64;
     raw::save_signed(rdb, millis);

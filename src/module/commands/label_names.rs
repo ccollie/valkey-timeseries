@@ -1,10 +1,7 @@
 use crate::module::arg_parse::parse_metadata_command_args;
 use crate::series::index::with_matched_series;
 use std::collections::BTreeSet;
-use valkey_module::{
-    Context, ValkeyResult, ValkeyString, ValkeyValue,
-};
-
+use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
 pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
@@ -24,6 +21,6 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         .take(limit)
         .map(ValkeyValue::from)
         .collect::<Vec<_>>();
-    
+
     Ok(ValkeyValue::Array(labels))
 }

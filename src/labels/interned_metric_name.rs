@@ -26,7 +26,6 @@ impl SeriesLabel for InternedLabel<'_> {
     }
 }
 
-
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
 pub struct InternedMetricName(Vec<InternedString>);
 
@@ -156,7 +155,7 @@ impl InternedMetricName {
         }
         Ok(result)
     }
-    
+
     pub fn shrink_to_fit(&mut self) {
         self.0.shrink_to_fit();
     }

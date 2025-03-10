@@ -6,7 +6,6 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 
 const DEFAULT_LIMIT: usize = 10;
 
-
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#tsdb-stats
 pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let limit = match args.len() {
@@ -33,19 +32,19 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         data.insert("numSeries".into(), series_count.into());
         data.insert(
             "seriesCountByMetricName".into(),
-            stats_slice_to_value(&stats.cardinality_metrics_stats)
+            stats_slice_to_value(&stats.cardinality_metrics_stats),
         );
         data.insert(
             "labelValueCountByLabelName".into(),
-            stats_slice_to_value(&stats.cardinality_label_stats)
+            stats_slice_to_value(&stats.cardinality_label_stats),
         );
         data.insert(
             "memoryInBytesByLabelPair".into(),
-            stats_slice_to_value(&stats.label_value_stats)
+            stats_slice_to_value(&stats.label_value_stats),
         );
         data.insert(
             "seriesCountByLabelPair".into(),
-            stats_slice_to_value(&stats.label_value_pairs_stats)
+            stats_slice_to_value(&stats.label_value_pairs_stats),
         );
 
         Ok(ValkeyValue::Map(data))
@@ -53,13 +52,15 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 }
 
 fn stats_slice_to_value(items: &[PostingStat]) -> ValkeyValue {
-    let res: Vec<ValkeyValue> = items.iter().map(posting_stat_to_value)
-     .collect();
+    let res: Vec<ValkeyValue> = items.iter().map(posting_stat_to_value).collect();
     ValkeyValue::Array(res)
 }
 
 fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     let mut res: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::with_capacity(1);
-    res.insert(ValkeyValueKey::from(&stat.name), ValkeyValue::BigNumber(stat.count.to_string()));
+    res.insert(
+        ValkeyValueKey::from(&stat.name),
+        ValkeyValue::BigNumber(stat.count.to_string()),
+    );
     ValkeyValue::Map(res)
 }

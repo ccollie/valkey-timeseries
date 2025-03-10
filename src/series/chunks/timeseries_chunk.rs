@@ -2,6 +2,7 @@ use crate::common::serialization::rdb_load_string;
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};
+use crate::error_consts;
 use crate::iterators::SampleIter;
 use crate::series::chunks::utils::filter_samples_by_value;
 use crate::series::types::ValueFilter;
@@ -14,7 +15,6 @@ use get_size::GetSize;
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
-use crate::error_consts;
 
 #[derive(Debug, Clone, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {
@@ -169,7 +169,6 @@ impl TimeSeriesChunk {
         timestamp_filter: &Option<Vec<Timestamp>>,
         value_filter: &Option<ValueFilter>,
     ) -> Vec<Sample> {
-
         fn filter_timestamps(
             timestamps: &[Timestamp],
             start: Timestamp,
@@ -187,11 +186,10 @@ impl TimeSeriesChunk {
                 })
                 .collect()
         }
-        
+
         let mut samples = if let Some(ts_filter) = timestamp_filter {
             let filtered_ts = filter_timestamps(ts_filter, start_timestamp, end_timestamp);
-            self
-                .samples_by_timestamps(&filtered_ts)
+            self.samples_by_timestamps(&filtered_ts)
                 .unwrap_or_default()
                 .into_iter()
                 .collect()
@@ -201,7 +199,7 @@ impl TimeSeriesChunk {
                 .into_iter()
                 .collect()
         };
-        
+
         if let Some(value_filter) = value_filter {
             filter_samples_by_value(&mut samples, value_filter);
         }
@@ -396,11 +394,11 @@ impl Chunk for TimeSeriesChunk {
             Pco(chunk) => chunk.optimize(),
         }
     }
-    
+
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         use TimeSeriesChunk::*;
         save_chunk_type(self, rdb);
-        match self { 
+        match self {
             Uncompressed(chunk) => chunk.save_rdb(rdb),
             Gorilla(chunk) => chunk.save_rdb(rdb),
             Pco(chunk) => chunk.save_rdb(rdb),

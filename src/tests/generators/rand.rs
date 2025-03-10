@@ -2,7 +2,7 @@ use crate::common::rounding::round_to_sig_figs;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::tests::generators::generator::{
-    DerivativeGenerator, MackeyGlassGenerator, StdNormalGenerator, UniformGenerator
+    DerivativeGenerator, MackeyGlassGenerator, StdNormalGenerator, UniformGenerator,
 };
 use bon::bon;
 use std::ops::Range;
@@ -43,12 +43,10 @@ impl DataGenerator {
         start: Timestamp,
         end: Option<Timestamp>,
         interval: Option<Duration>,
-        #[builder(default = 0.0..1.0)]
-        values: Range<f64>,
+        #[builder(default = 0.0..1.0)] values: Range<f64>,
         samples: usize,
         seed: Option<u64>,
-        #[builder(default = RandAlgo::StdNorm)]
-        algorithm: RandAlgo,
+        #[builder(default = RandAlgo::StdNorm)] algorithm: RandAlgo,
         significant_digits: Option<usize>,
     ) -> Self {
         let mut res = DataGenerator {
@@ -59,7 +57,7 @@ impl DataGenerator {
             interval,
             values,
             typ: algorithm,
-            significant_digits
+            significant_digits,
         };
         res.fixup();
         res
@@ -123,7 +121,7 @@ fn get_generator_impl(
 }
 
 // Generates time series data from the given type.
-pub fn generate_series_data(options: &DataGenerator) ->Vec<Sample> {
+pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
     let interval = if let Some(interval) = options.interval {
         interval.as_millis() as i64
     } else {

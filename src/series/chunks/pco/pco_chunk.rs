@@ -1,6 +1,8 @@
 use crate::common::binary_search::{find_last_ge_index, ExponentialSearch};
 use crate::common::constants::VEC_BASE_SIZE;
+use crate::common::parallel::join;
 use crate::common::pool::{get_pooled_vec_f64, get_pooled_vec_i64, PooledVecF64, PooledVecI64};
+use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
@@ -18,8 +20,6 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use valkey_module::{raw, RedisModuleIO, ValkeyResult};
-use crate::common::parallel::join;
-use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
 
 /// items above this count will cause value and timestamp encoding/decoding to happen in parallel
 pub(in crate::series) const COMPRESSION_PARALLELIZATION_THRESHOLD: usize = 1024;
@@ -527,7 +527,7 @@ impl Chunk for PcoChunk {
         raw::save_slice(rdb, &self.timestamps);
         raw::save_slice(rdb, &self.values);
     }
-    
+
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
         let min_time = raw::load_signed(rdb)?;
         let max_time = raw::load_signed(rdb)?;

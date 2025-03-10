@@ -1,9 +1,9 @@
 use crate::aggregators::{AggOp, Aggregator};
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
+use crate::parser::timestamp::parse_timestamp;
 use std::time::Duration;
 use valkey_module::{ValkeyError, ValkeyString};
-use crate::parser::timestamp::parse_timestamp;
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum BucketTimestamp {

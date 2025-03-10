@@ -6,7 +6,6 @@ use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResul
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 
-
 fn handle_key_restore(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
     with_timeseries(ctx, &_key, |series| reindex_series(ctx, series, key))

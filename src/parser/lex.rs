@@ -299,7 +299,6 @@ mod tests {
         test_success("foo.bar_", &["foo.bar_"]);
     }
 
-
     #[test]
     fn metric_name_with_tag_filters() {
         // Metric name with tag filters
@@ -327,7 +326,7 @@ mod tests {
 
         test_success(s, &expected);
     }
-    
+
     #[test]
     fn comments() {
         let s = r"# comment # sdf

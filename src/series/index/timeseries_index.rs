@@ -115,7 +115,7 @@ impl TimeSeriesIndex {
             .get_key_by_id(id)
             .map(|key| ctx.create_string(key.as_bytes()))
     }
-    
+
     pub fn has_id(&self, id: SeriesRef) -> bool {
         let inner = self.inner.read().unwrap();
         inner.has_id(id)
@@ -339,7 +339,7 @@ impl TimeSeriesIndex {
     ) -> Vec<(String, usize)> {
         let mut metrics = StatsMaxHeap::new(limit);
         let inner = self.inner.read().unwrap();
-        
+
         let prefix = get_key_for_label_value(METRIC_NAME_LABEL, prefix.unwrap_or(""));
         for (key, bmp) in inner.label_index.prefix(prefix.as_bytes()) {
             // keys and values are expected to be utf-8. If we panic, we have bigger issues
@@ -357,7 +357,7 @@ impl TimeSeriesIndex {
         }
         result
     }
-    
+
     pub fn count(&self) -> usize {
         let inner = self.inner.read().unwrap();
         inner.count()
@@ -399,17 +399,19 @@ impl TimeSeriesIndex {
         }
     }
 
-    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize{
+    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize {
         const BATCH_SIZE: usize = 500;
 
         let mut inner = self.inner.write().unwrap();
-        let all_postings = inner.label_index.get_mut(&*ALL_POSTINGS_KEY)
+        let all_postings = inner
+            .label_index
+            .get_mut(&*ALL_POSTINGS_KEY)
             .expect("ALL_POSTINGS_KEY should always exist");
-        
+
         let old_count = all_postings.cardinality();
         all_postings.remove_all(ids.iter().cloned());
         let removed_count = old_count - all_postings.cardinality();
-        
+
         inner.id_to_key.retain(|id, _| !ids.contains(id));
 
         let range = inner.get_key_range();

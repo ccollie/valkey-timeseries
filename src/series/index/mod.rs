@@ -14,15 +14,15 @@ use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
-use crate::labels::matchers::Matchers;
-use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::TimeSeries;
-pub use timeseries_index::*;
-pub use posting_stats::*;
-pub use querier::*;
 use crate::arg_types::MatchFilterOptions;
 use crate::common::time::current_time_millis;
 use crate::error_consts;
+use crate::labels::matchers::Matchers;
+use crate::module::VK_TIME_SERIES_TYPE;
+use crate::series::TimeSeries;
+pub use posting_stats::*;
+pub use querier::*;
+pub use timeseries_index::*;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex>;
@@ -97,7 +97,6 @@ where
         Ok(())
     })
 }
-
 
 pub fn series_keys_by_matchers(
     ctx: &Context,

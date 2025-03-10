@@ -93,7 +93,6 @@ impl TryFrom<String> for DuplicatePolicy {
     }
 }
 
-
 #[derive(Copy, Clone, Debug, GetSize, PartialEq)]
 pub struct SampleDuplicatePolicy {
     pub policy: DuplicatePolicy,
@@ -151,7 +150,6 @@ impl SampleDuplicatePolicy {
             max_value_delta,
         })
     }
-
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -210,7 +208,6 @@ impl TimeSeriesOptions {
         self.retention = Some(retention);
     }
 }
-
 
 impl Default for TimeSeriesOptions {
     fn default() -> Self {

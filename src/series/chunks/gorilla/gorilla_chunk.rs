@@ -1,4 +1,7 @@
 use super::{GorillaEncoder, GorillaIterator};
+use crate::common::serialization::{
+    rdb_load_timestamp, rdb_load_usize, rdb_save_timestamp, rdb_save_usize,
+};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -11,7 +14,6 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use get_size::GetSize;
 use std::mem::size_of;
 use valkey_module::{RedisModuleIO, ValkeyResult};
-use crate::common::serialization::{rdb_load_timestamp, rdb_load_usize, rdb_save_timestamp, rdb_save_usize};
 
 /// `GorillaChunk` is a chunk of timeseries data encoded using Gorilla XOR encoding.
 #[derive(Debug, Clone, PartialEq, GetSize)]
@@ -344,7 +346,7 @@ impl Chunk for GorillaChunk {
         rdb_save_timestamp(rdb, self.first_ts);
         self.encoder.rdb_save(rdb);
     }
-    
+
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
         let max_size = rdb_load_usize(rdb)?;
         let first_ts = rdb_load_timestamp(rdb)?;
@@ -521,9 +523,7 @@ mod tests {
             value: 1.0,
         };
 
-        assert!(chunk
-            .upsert_sample(sample, DuplicatePolicy::Block)
-            .is_err());
+        assert!(chunk.upsert_sample(sample, DuplicatePolicy::Block).is_err());
 
         // should update value for duplicate timestamp
         sample.timestamp = timestamp;

@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 use crate::module::arg_parse::parse_metadata_command_args;
 use crate::series::index::with_matched_series;
+use std::collections::BTreeSet;
+use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
 // TS.LABEL_VALUES label [FILTER seriesMatcher] [START fromTimestamp] [END fromTimestamp]
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values

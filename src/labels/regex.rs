@@ -1,5 +1,5 @@
-use regex::Regex;
 use crate::parser::ParseError;
+use regex::Regex;
 
 /// remove_start_end_anchors removes '^' at the start of expr and '$' at the end of the expr.
 pub fn remove_start_end_anchors(expr: &str) -> &str {
@@ -16,7 +16,6 @@ pub fn remove_start_end_anchors(expr: &str) -> &str {
     }
     cursor
 }
-
 
 /// Go and Rust handle the repeat pattern differently
 /// in Go the following is valid: `aaa{bbb}ccc`
@@ -76,12 +75,13 @@ pub fn try_escape_for_repeat_re(re: &str) -> String {
     result
 }
 
-pub fn parse_regex_anchored(value: &str) -> Result<Regex, ParseError> {
-    let modified = try_escape_for_repeat_re(value);
+pub fn parse_regex_anchored(value: &str) -> Result<(Regex, &str), ParseError> {
     // ensure all regexes are anchored
-    let unanchored = remove_start_end_anchors(&modified);
-    let regex_str = format!("^{}$", unanchored);
-    Regex::new(&regex_str).map_err(|_| ParseError::InvalidRegex(value.to_string()))
+    let unanchored = remove_start_end_anchors(value);
+    let modified = try_escape_for_repeat_re(unanchored);
+    let regex_str = format!("^{modified}$");
+    let regex = Regex::new(&regex_str).map_err(|_| ParseError::InvalidRegex(value.to_string()))?;
+    Ok((regex, unanchored))
 }
 
 #[cfg(test)]
@@ -105,5 +105,4 @@ mod tests {
         assert_eq!(try_escape_for_repeat_re("abc{1,2,3}"), r"abc\{1,2,3}");
         assert_eq!(try_escape_for_repeat_re("abc{1,,2}"), r"abc\{1,,2}");
     }
-
 }

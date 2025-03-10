@@ -75,7 +75,7 @@ mod tests {
     pub fn approximately_equal(f1: f64, f2: f64) -> bool {
         (f1 - f2).abs() < f64::EPSILON
     }
-    
+
     #[test]
     fn test_round_to_decimal_digits_extremely_large_positive_input() {
         let f = 1234567890123456789012345678901234567890.0;

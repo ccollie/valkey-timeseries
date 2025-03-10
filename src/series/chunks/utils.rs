@@ -51,6 +51,5 @@ pub(crate) fn get_sample_index_bounds(
     get_index_bounds(samples, &start_sample, &end_sample)
 }
 
-
 #[cfg(test)]
 mod tests {}

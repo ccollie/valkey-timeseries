@@ -1,5 +1,6 @@
 use crate::aggregators::{AggOp, Aggregator};
 use crate::arg_types::{RangeGroupingOptions, RangeOptions};
+use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::{Sample, Timestamp};
 use crate::iterators::aggregator::AggregationOptions;
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
@@ -13,7 +14,6 @@ use crate::series::index::{series_keys_by_matchers, with_timeseries_index};
 use crate::series::{SeriesSampleIterator, TimeSeries};
 use ahash::AHashMap;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 
 struct SeriesMeta<'a> {
     series: &'a TimeSeries,
@@ -21,7 +21,6 @@ struct SeriesMeta<'a> {
     start_ts: Timestamp,
     end_ts: Timestamp,
 }
-
 
 /// TS.MRANGE fromTimestamp toTimestamp
 //   [LATEST]
@@ -53,11 +52,13 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
         // needed to keep valkey keys alive below
         let db_keys = keys.iter().map(|key| ctx.open_key(key)).collect::<Vec<_>>();
 
-        let metas = db_keys.iter()
+        let metas = db_keys
+            .iter()
             .zip(keys)
             .filter_map(|(db_key, source_key)| {
                 if let Ok(Some(series)) = db_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-                    let (start_ts, end_ts) = options.date_range.get_series_range(series, None,false);
+                    let (start_ts, end_ts) =
+                        options.date_range.get_series_range(series, None, false);
                     let meta = SeriesMeta {
                         series,
                         source_key,
@@ -68,7 +69,8 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
                 } else {
                     None
                 }
-            }).collect();
+            })
+            .collect();
 
         let result_rows = process_command(metas, &options);
         let mut result = result_rows
@@ -79,7 +81,7 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
         if reverse {
             result.reverse();
         }
-        
+
         Ok(ValkeyValue::from(result))
     })
 }
@@ -359,7 +361,6 @@ fn get_series_sample_aggregates(
         range_options.count,
     )
 }
-
 
 struct GroupedSeries<'a> {
     label_value: String,

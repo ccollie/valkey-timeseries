@@ -3,7 +3,9 @@ use super::TimeSeriesIndex;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
 use crate::error_consts::MISSING_FILTER;
-use crate::labels::matchers::{MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+use crate::labels::matchers::{
+    MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
+};
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesRef, TimeSeries, TimestampRange};
 use ahash::AHashSet;
@@ -133,8 +135,6 @@ pub fn postings_for_matchers(
         #[cfg(test)]
         debug_bitmap("first", &postings);
         let res = postings.into_owned();
-        #[cfg(test)]
-        debug_bitmap("owned", &res);
         Ok(res)
     })
 }
@@ -221,7 +221,6 @@ fn process_and_matchers<'a>(
     }
 }
 
-
 /// `postings_for_matchers` assembles a single postings iterator against the index
 /// based on the given matchers.
 fn postings_for_matcher_slice<'a>(
@@ -301,7 +300,7 @@ fn postings_for_matcher_slice<'a>(
         }
 
         if typ == MatchOp::RegexNotEqual && regex_value == ".*" {
-            return Ok(Cow::Borrowed(&*EMPTY_BITMAP)); 
+            return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
         }
 
         if typ == MatchOp::RegexEqual && regex_value == ".+" {
@@ -338,6 +337,8 @@ fn postings_for_matcher_slice<'a>(
                 // l="a", l=~"a|b", l=~"a.b", etc.
                 // Non-Not matcher, use normal `postings_for_matcher`.
                 let it = ix.postings_for_matcher(m);
+                #[cfg(test)]
+                debug_bitmap(&format!("ids for matcher: {}", &m), &it);
                 its.push(it);
             }
         } else {
@@ -350,7 +351,7 @@ fn postings_for_matcher_slice<'a>(
 
             #[cfg(test)]
             debug_bitmap(&format!("ids for matcher: {}", &m), &it);
-    
+
             not_its.push(it)
         }
     }
@@ -385,7 +386,7 @@ fn inverse_postings_for_matcher<'a>(
     // Fast-path for NotEqual matching.
     // Inverse of a NotEqual is Equal (double negation).
     if let PredicateMatch::NotEqual(ref pv) = m.matcher {
-        return handle_equal_match(ix, &m.label, pv)
+        return handle_equal_match(ix, &m.label, pv);
     }
 
     let op = m.op();
@@ -407,9 +408,8 @@ fn inverse_postings_for_matcher<'a>(
                 return Cow::Owned(ix.postings_for_all_label_values(&m.label));
             }
         }
-        _=> {}
+        _ => {}
     }
-
 
     let mut state = m;
     let postings =
@@ -433,7 +433,7 @@ where
             debug_bitmap("item", &it);
 
             result.and_inplace(&it);
-      
+
             #[cfg(test)]
             debug_bitmap("and_inplace", &result);
         }

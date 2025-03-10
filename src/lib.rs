@@ -1,7 +1,7 @@
 extern crate get_size;
-extern crate valkey_module_macros;
 extern crate strum;
 extern crate strum_macros;
+extern crate valkey_module_macros;
 
 use crate::config::load_config;
 use crate::module::VK_TIME_SERIES_TYPE;

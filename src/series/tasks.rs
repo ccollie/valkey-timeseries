@@ -26,20 +26,21 @@ impl TaskMeta {
             stale_ids: Mutex::new(Vec::new()),
         }
     }
-    
+
     pub fn reset(&self) {
-        self.last_processed_id.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.last_processed_id
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         self.stale_ids.lock().unwrap().clear();
     }
-    
+
     pub fn add_stale_id(&self, id: SeriesRef) {
         self.add_stale_ids(&[id])
     }
-    
+
     pub fn add_stale_ids(&self, ids: &[SeriesRef]) {
         self.stale_ids.lock().unwrap().extend(ids);
     }
-    
+
     pub fn get_stale_ids(&self) -> Vec<SeriesRef> {
         self.stale_ids.lock().unwrap().clone()
     }
@@ -48,13 +49,15 @@ impl TaskMeta {
         let mut ids = self.stale_ids.lock().unwrap();
         std::mem::take(&mut ids)
     }
-    
+
     pub fn mark_processed(&self, id: SeriesRef) {
-        self.last_processed_id.fetch_max(id, std::sync::atomic::Ordering::Relaxed);
+        self.last_processed_id
+            .fetch_max(id, std::sync::atomic::Ordering::Relaxed);
     }
-    
+
     pub fn last_processed_id(&self) -> u64 {
-        self.last_processed_id.load(std::sync::atomic::Ordering::Relaxed)
+        self.last_processed_id
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -89,14 +92,14 @@ fn next_db() -> i32 {
 }
 
 pub fn trim_series_task(ctx: &Context) {
-    let last_id = with_db_task_meta(ctx, |meta| { meta.last_processed_id() });
+    let last_id = with_db_task_meta(ctx, |meta| meta.last_processed_id());
     let mut processed = 0;
     let mut last_processed = last_id;
     let mut keys = IntMap::with_capacity(BATCH_SIZE);
     let mut to_delete = Vec::with_capacity(BATCH_SIZE);
     let mut total_deletes: usize = 0;
     let mut trimmed_count: usize = 0;
-    
+
     if fetch_keys_batch(ctx, last_processed + 1, BATCH_SIZE, &mut keys) {
         // todo: can we use rayon here ?
         for (id, key) in keys.iter() {
@@ -130,7 +133,7 @@ pub fn trim_series_task(ctx: &Context) {
             meta.add_stale_ids(&to_delete);
         }
     });
-    
+
     if processed.is_zero() {
         ctx.log_debug("No series to trim");
     } else {
@@ -138,14 +141,19 @@ pub fn trim_series_task(ctx: &Context) {
     }
 }
 
-fn fetch_keys_batch(ctx: &Context, start_id: SeriesRef, batch_size: usize, ids: &mut IntMap<SeriesRef, ValkeyString>) -> bool {
+fn fetch_keys_batch(
+    ctx: &Context,
+    start_id: SeriesRef,
+    batch_size: usize,
+    ids: &mut IntMap<SeriesRef, ValkeyString>,
+) -> bool {
     with_timeseries_index(ctx, |index| {
         let mut state = ();
         index.with_postings(&mut state, |postings, _| {
             let mut id = start_id;
             let max_id = postings.max_id();
             let mut added: usize = 0;
-            for _ in 0 .. batch_size {
+            for _ in 0..batch_size {
                 if id > max_id {
                     return !added.is_zero();
                 }
@@ -162,7 +170,7 @@ fn fetch_keys_batch(ctx: &Context, start_id: SeriesRef, batch_size: usize, ids: 
 }
 
 pub fn remove_stale_series_task(ctx: &Context) {
-    let stale_ids = with_db_task_meta(ctx, |meta| { meta.take_stale_ids() });
+    let stale_ids = with_db_task_meta(ctx, |meta| meta.take_stale_ids());
     remove_stale_series(ctx, &stale_ids);
 }
 

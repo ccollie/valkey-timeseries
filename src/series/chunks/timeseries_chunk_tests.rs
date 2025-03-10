@@ -272,15 +272,19 @@ mod tests {
             let expected = vec![
                 Sample {
                     timestamp: 20,
-                    value: 2.0
+                    value: 2.0,
                 },
                 Sample {
                     timestamp: 40,
-                    value: 4.0
+                    value: 4.0,
                 },
             ];
 
-            assert_eq!(current, expected, "{chunk_type}: Expected range {:?} after removing [20, 30], got {:?}", expected, current);
+            assert_eq!(
+                current, expected,
+                "{chunk_type}: Expected range {:?} after removing [20, 30], got {:?}",
+                expected, current
+            );
         }
     }
 

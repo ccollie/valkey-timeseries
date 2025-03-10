@@ -161,7 +161,9 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
 
     // aggregations are only valid when there is a transform
     if options.aggregation.is_some() && options.reducer.is_none() {
-        return Err(ValkeyError::Str("TSDB: join aggregation requires a reducer"));
+        return Err(ValkeyError::Str(
+            "TSDB: join aggregation requires a reducer",
+        ));
     }
 
     Ok(())

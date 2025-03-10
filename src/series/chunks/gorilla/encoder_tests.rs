@@ -30,7 +30,7 @@ mod tests {
                     Sample::new(1600002000, 10.8),
                 ],
                 false,
-            ), 
+            ),
         ];
 
         for (_name, input, want_err) in tests {

@@ -114,7 +114,7 @@ pub enum CommandArgToken {
     Uncompressed,
     WithLabels,
     #[default]
-    Invalid
+    Invalid,
 }
 
 impl CommandArgToken {
@@ -713,11 +713,9 @@ pub(crate) fn parse_metadata_command_args(
         };
     }
 
-
     if require_matchers && matchers.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
-
 
     let mut options = MatchFilterOptions {
         matchers,
@@ -762,6 +760,5 @@ mod tests {
             let parsed_lowercase = parse_command_arg_token(lower.as_bytes());
             assert_eq!(parsed_lowercase, Some(token));
         }
-
     }
 }

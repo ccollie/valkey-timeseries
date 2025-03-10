@@ -1,4 +1,6 @@
-use crate::labels::matchers::{MatchOp, Matcher, Matchers, PredicateMatch, PredicateValue, ValueList};
+use crate::labels::matchers::{
+    MatchOp, Matcher, Matchers, PredicateMatch, PredicateValue, ValueList,
+};
 use crate::parser::lex::{expect_one_of_tokens, expect_token, Token};
 use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
@@ -115,7 +117,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
     let mut or_matchers: Vec<Vec<Matcher>> = Vec::new();
     let mut matchers: Vec<Matcher> = Vec::new();
     let mut has_or_matchers = false;
-    
+
     // underscore here is ugly, but gets rid of the unused_assignment warning
     let mut _last_token = LeftBrace;
 
@@ -184,7 +186,6 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
     }
     //Ok(matchers)
 }
-
 
 /// parse_label_filter parses a single label matcher.
 ///

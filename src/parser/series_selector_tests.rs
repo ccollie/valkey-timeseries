@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::labels::matchers::{MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+    use crate::labels::matchers::{
+        MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
+    };
     use crate::labels::parse_series_selector;
 
     fn assert_matcher(matcher: &Matcher, label: &str, op: MatchOp, value: &str) {
@@ -34,18 +36,20 @@ mod tests {
             &expected, matcher
         );
     }
-    
+
     fn with_and_matchers<F>(matchers: &Matchers, f: F)
-    where F: Fn(&Vec<Matcher>)
+    where
+        F: Fn(&Vec<Matcher>),
     {
         match matchers.matchers {
             MatcherSetEnum::And(ref m) => f(m),
             _ => panic!("expected AND matcher"),
-        } 
+        }
     }
-    
-    fn with_or_matchers<F>(matchers: &Matchers, f: F) 
-    where F: Fn(&Vec<Vec<Matcher>>) 
+
+    fn with_or_matchers<F>(matchers: &Matchers, f: F)
+    where
+        F: Fn(&Vec<Vec<Matcher>>),
     {
         match matchers.matchers {
             MatcherSetEnum::Or(ref m) => f(m),
@@ -69,7 +73,7 @@ mod tests {
         let result = parse_series_selector(input).unwrap();
 
         assert_eq!(result.name, None);
-        
+
         with_and_matchers(&result, |matchers| {
             assert_eq!(matchers.len(), 1);
 
@@ -77,9 +81,8 @@ mod tests {
             assert_eq!(matcher.label, "job");
             assert!(
                 matches!(matcher.matcher, PredicateMatch::Equal(PredicateValue::String(ref s)) if s == "prometheus")
-            );            
+            );
         });
-
     }
 
     #[test]
@@ -92,20 +95,9 @@ mod tests {
             assert_eq!(or_matchers.len(), 2);
             assert_eq!(or_matchers[0].len(), 1);
             assert_eq!(or_matchers[1].len(), 1);
-            assert_matcher(
-                &or_matchers[0][0],
-                "label1",
-                MatchOp::Equal,
-                "value1",
-            );
-            assert_matcher(
-                &or_matchers[1][0],
-                "label2",
-                MatchOp::RegexEqual,
-                "value.*",
-            );
+            assert_matcher(&or_matchers[0][0], "label1", MatchOp::Equal, "value1");
+            assert_matcher(&or_matchers[1][0], "label2", MatchOp::RegexEqual, "value.*");
         });
-        
     }
 
     #[test]
@@ -123,8 +115,18 @@ mod tests {
             assert_eq!(or_matchers[2].len(), 1);
             assert_matcher(&or_matchers[0][0], "job", MatchOp::Equal, "prometheus");
             assert_matcher(&or_matchers[0][1], "env", MatchOp::Equal, "prod");
-            assert_matcher(&or_matchers[1][0], "datacenter", MatchOp::RegexEqual, "us-.*");
-            assert_matcher(&or_matchers[2][0], "instance", MatchOp::NotEqual, "localhost");
+            assert_matcher(
+                &or_matchers[1][0],
+                "datacenter",
+                MatchOp::RegexEqual,
+                "us-.*",
+            );
+            assert_matcher(
+                &or_matchers[2][0],
+                "instance",
+                MatchOp::NotEqual,
+                "localhost",
+            );
         });
     }
 
@@ -132,17 +134,12 @@ mod tests {
     fn test_parse_series_selector_with_regex_not_equal_matchers() {
         let input = r#"{job!~"prom.*",instance!~"local.*"}"#;
         let matchers = parse_series_selector(input).unwrap();
-        
+
         assert!(matchers.name.is_none());
-        
+
         with_and_matchers(&matchers, |and_matchers| {
             assert_eq!(and_matchers.len(), 2);
-            assert_matcher(
-                &and_matchers[0],
-                "job",
-                MatchOp::RegexNotEqual,
-                "prom.*",
-            );
+            assert_matcher(&and_matchers[0], "job", MatchOp::RegexNotEqual, "prom.*");
             assert_matcher(
                 &and_matchers[1],
                 "instance",
@@ -151,7 +148,7 @@ mod tests {
             );
         });
     }
-    
+
     #[test]
     fn test_parse_series_selector_with_negated_label_matchers() {
         let input = r#"{job!="prometheus",instance!="localhost:9090"}"#;
@@ -160,12 +157,7 @@ mod tests {
         assert!(matchers.name.is_none());
         with_and_matchers(&matchers, |and_matchers| {
             assert_eq!(and_matchers.len(), 2);
-            assert_matcher(
-                &and_matchers[0],
-                "job",
-                MatchOp::NotEqual,
-                "prometheus",
-            );
+            assert_matcher(&and_matchers[0], "job", MatchOp::NotEqual, "prometheus");
             assert_matcher(
                 &and_matchers[1],
                 "instance",
@@ -174,13 +166,12 @@ mod tests {
             );
         });
     }
-    
 
     #[test]
     fn test_parse_series_selector_with_special_characters() {
         let input = "metric_name:with.special_characters";
         let matchers = parse_series_selector(input).unwrap();
-        
+
         assert_eq!(
             matchers.name,
             Some("metric_name:with.special_characters".to_string())
@@ -194,7 +185,7 @@ mod tests {
         let result = parse_series_selector(input).unwrap();
 
         assert_eq!(result.name, Some("http_requests_total".to_string()));
-        
+
         with_and_matchers(&result, |and_matchers| {
             assert_eq!(and_matchers.len(), 2);
 
@@ -216,13 +207,18 @@ mod tests {
             assert_eq!(matchers.len(), 2);
 
             let method_matcher = &matchers[0];
-            assert_list_matcher(&method_matcher, "method", MatchOp::Equal, &["GET", "SET", "POST"]);
+            assert_list_matcher(
+                &method_matcher,
+                "method",
+                MatchOp::Equal,
+                &["GET", "SET", "POST"],
+            );
 
             let status_matcher = &matchers[1];
             assert_matcher(&status_matcher, "status", MatchOp::RegexEqual, "2[0-9]{2}");
         });
     }
-    
+
     #[test]
     fn test_parse_series_selector_metric_name_only() {
         let input = "metric_name";

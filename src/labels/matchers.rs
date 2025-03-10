@@ -155,11 +155,68 @@ impl Hash for PredicateValue {
 }
 
 #[derive(Clone, Debug)]
+pub struct RegexMatcher {
+    regex: Regex,
+    negate: bool,
+    value: String, // original (possibly unanchored) string
+}
+
+impl Hash for RegexMatcher {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.regex.as_str().hash(state);
+        self.negate.hash(state);
+        self.value.hash(state);
+    }
+}
+
+impl RegexMatcher {
+    fn new(regex: Regex, negate: bool, value: String) -> Self {
+        Self {
+            regex,
+            negate,
+            value,
+        }
+    }
+
+    pub fn create(value: &str, negate: bool) -> Result<Self, ParseError> {
+        let (regex, unanchored) = parse_regex_anchored(value)?;
+        Ok(Self::new(regex, negate, unanchored.to_string()))
+    }
+
+    pub fn is_match(&self, other: &str) -> bool {
+        if other.is_empty() {
+            return is_empty_regex_matcher(&self.regex, self.negate);
+        }
+
+        let matches = self.regex.is_match(other);
+        if self.negate {
+            !matches
+        } else {
+            matches
+        }
+    }
+}
+
+impl Display for RegexMatcher {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", enquote('"', &self.value))
+    }
+}
+
+impl Eq for RegexMatcher {}
+
+impl PartialEq for RegexMatcher {
+    fn eq(&self, other: &Self) -> bool {
+        self.regex.as_str() == other.regex.as_str()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum PredicateMatch {
     Equal(PredicateValue),
     NotEqual(PredicateValue),
-    RegexEqual(Regex),
-    RegexNotEqual(Regex),
+    RegexEqual(RegexMatcher),
+    RegexNotEqual(RegexMatcher),
 }
 
 impl PredicateMatch {
@@ -176,15 +233,8 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(value) => value.matches(other),
             PredicateMatch::NotEqual(value) => !value.matches(other),
-            PredicateMatch::RegexEqual(re) => {
-                if other.is_empty() {
-                    is_empty_regex_matcher(re, false)
-                } else {
-                    re.is_match(other)
-                }
-            }
-            PredicateMatch::RegexNotEqual(re) => {
-                !re.is_match(other)
+            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
+                re.is_match(other)
             }
         }
     }
@@ -221,11 +271,11 @@ impl Hash for PredicateMatch {
             }
             PredicateMatch::RegexEqual(re) => {
                 state.write_u8(3);
-                re.as_str().hash(state);
+                re.hash(state);
             }
             PredicateMatch::RegexNotEqual(re) => {
                 state.write_u8(4);
-                re.as_str().hash(state);
+                re.hash(state);
             }
         }
     }
@@ -238,12 +288,8 @@ impl PartialEq for PredicateMatch {
         match (self, other) {
             (PredicateMatch::Equal(v1), PredicateMatch::Equal(v2)) => v1 == v2,
             (PredicateMatch::NotEqual(v1), PredicateMatch::NotEqual(v2)) => v1 == v2,
-            (PredicateMatch::RegexEqual(re1), PredicateMatch::RegexEqual(re2)) => {
-                re1.as_str() == re2.as_str()
-            }
-            (PredicateMatch::RegexNotEqual(re1), PredicateMatch::RegexNotEqual(re2)) => {
-                re1.as_str() == re2.as_str()
-            }
+            (PredicateMatch::RegexEqual(re1), PredicateMatch::RegexEqual(re2)) => re1 == re2,
+            (PredicateMatch::RegexNotEqual(re1), PredicateMatch::RegexNotEqual(re2)) => re1 == re2,
             _ => false,
         }
     }
@@ -268,14 +314,14 @@ impl Matcher {
             MatchOp::Equal => Ok(Self::equals(label, &value)),
             MatchOp::NotEqual => Ok(Self::not_equals(label, &value)),
             MatchOp::RegexEqual => {
-                let re = parse_regex_anchored(&value)?;
+                let re = RegexMatcher::create(&value, true)?;
                 Ok(Self {
                     label,
                     matcher: PredicateMatch::RegexEqual(re),
                 })
             }
             MatchOp::RegexNotEqual => {
-                let re = parse_regex_anchored(&value)?;
+                let re = RegexMatcher::create(&value, false)?;
                 Ok(Self {
                     label,
                     matcher: PredicateMatch::RegexNotEqual(re),
@@ -311,7 +357,7 @@ impl Matcher {
 
     pub fn regex_text(&self) -> Option<&str> {
         match &self.matcher {
-            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(re.as_str()),
+            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(&re.value),
             _ => None,
         }
     }
@@ -341,7 +387,7 @@ impl Display for Matcher {
                 write!(f, "{}", value)
             }
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
-                write!(f, "{}", enquote('"', re.as_str()))
+                write!(f, "{}", enquote('"', &re.value))
             }
         }
     }
@@ -384,14 +430,13 @@ pub enum MatcherSetEnum {
 }
 
 impl MatcherSetEnum {
-
     pub fn is_empty(&self) -> bool {
         match self {
             MatcherSetEnum::Or(or_matchers) => or_matchers.is_empty(),
             MatcherSetEnum::And(and_matchers) => and_matchers.is_empty(),
         }
     }
-    
+
     fn normalize(self, name: Option<String>) -> (Self, Option<String>) {
         // now normalize the matchers
         let mut name = name;
@@ -500,9 +545,7 @@ impl Display for MatcherSetEnum {
                 }
                 Ok(())
             }
-            MatcherSetEnum::And(and_matchers) => {
-                join_matchers(f, and_matchers)
-            }
+            MatcherSetEnum::And(and_matchers) => join_matchers(f, and_matchers),
         }
     }
 }
@@ -522,10 +565,7 @@ pub struct Matchers {
 impl Matchers {
     pub fn with_matchers(name: Option<String>, matchers: Vec<Matcher>) -> Self {
         let (matchers, name) = MatcherSetEnum::And(matchers).normalize(name);
-        Matchers {
-            name,
-            matchers,
-        }
+        Matchers { name, matchers }
     }
 
     pub fn with_or_matchers(name: Option<String>, or_matchers: Vec<Vec<Matcher>>) -> Self {
@@ -534,10 +574,7 @@ impl Matchers {
             return Self::with_matchers(name, or_matchers.pop().expect("or_matchers is not empty"));
         }
         let (matchers, name) = MatcherSetEnum::Or(or_matchers).normalize(name);
-        Matchers {
-            name,
-            matchers,
-        }
+        Matchers { name, matchers }
     }
 
     pub fn is_empty(&self) -> bool {

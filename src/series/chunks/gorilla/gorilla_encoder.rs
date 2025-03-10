@@ -148,7 +148,7 @@ impl GorillaEncoder {
     pub(crate) fn buf(&self) -> &[u8] {
         self.writer.get_ref()
     }
-    
+
     pub(crate) fn shrink_to_fit(&mut self) {
         self.writer.shrink_to_fit()
     }

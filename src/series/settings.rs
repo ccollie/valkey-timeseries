@@ -16,7 +16,7 @@ pub struct ConfigSettings {
     pub chunk_size_bytes: usize,
     pub rounding: Option<RoundingStrategy>,
     pub worker_interval: Duration,
-    pub duplicate_policy: SampleDuplicatePolicy
+    pub duplicate_policy: SampleDuplicatePolicy,
 }
 
 impl Default for ConfigSettings {
@@ -27,7 +27,7 @@ impl Default for ConfigSettings {
             chunk_encoding: Some(ChunkEncoding::Gorilla),
             worker_interval: DEFAULT_SERIES_WORKER_INTERVAL,
             rounding: None,
-            duplicate_policy: SampleDuplicatePolicy::default()
+            duplicate_policy: SampleDuplicatePolicy::default(),
         }
     }
 }

@@ -11,7 +11,8 @@ pub(crate) fn get_range(
     check_retention: bool,
 ) -> Vec<Sample> {
     let (start_timestamp, end_timestamp) =
-        args.date_range.get_series_range(series, None, check_retention);
+        args.date_range
+            .get_series_range(series, None, check_retention);
     let mut range = series.get_range_filtered(
         start_timestamp,
         end_timestamp,
@@ -38,7 +39,8 @@ fn get_series_aggregator(
     check_retention: bool,
 ) -> AggrIterator {
     let (start_timestamp, end_timestamp) =
-        args.date_range.get_series_range(series, None, check_retention);
+        args.date_range
+            .get_series_range(series, None, check_retention);
     let aligned_timestamp = aggr_options
         .alignment
         .get_aligned_timestamp(start_timestamp, end_timestamp);
