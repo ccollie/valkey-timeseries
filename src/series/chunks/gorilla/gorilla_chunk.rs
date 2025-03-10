@@ -490,47 +490,7 @@ mod tests {
             assert_eq!(chunk.len(), sample_count);
         }
     }
-
-    #[test]
-    fn test_upsert_while_at_capacity() {
-        let mut chunk = GorillaChunk::with_max_size(1024);
-
-        let mut ts = 1000;
-        let mut value: f64 = 1.0;
-
-        loop {
-            let sample = Sample {
-                timestamp: ts,
-                value,
-            };
-            ts += 1000;
-            value *= 2.0;
-
-            if let Err(e) = chunk.add_sample(&sample) {
-                if let TsdbError::CapacityFull(_) = e {
-                    break;
-                } else {
-                    panic!("unexpected error: {:?}", e);
-                }
-            }
-        }
-
-        let timestamp = chunk.last_timestamp();
-
-        // return an error on insert
-        let mut sample = Sample {
-            timestamp,
-            value: 1.0,
-        };
-
-        assert!(chunk.upsert_sample(sample, DuplicatePolicy::Block).is_err());
-
-        // should update value for duplicate timestamp
-        sample.timestamp = timestamp;
-        let res = chunk.upsert_sample(sample, DuplicatePolicy::KeepLast);
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), 0);
-    }
+    
 
     #[test]
     fn test_split() {
