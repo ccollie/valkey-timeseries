@@ -296,8 +296,8 @@ pub fn parse_number_with_unit(arg: &str) -> TsdbResult<f64> {
     parse_number_internal(arg).map_err(|_e| TsdbError::InvalidNumber(arg.to_string()))
 }
 
-pub fn parse_metric_name(arg: &str) -> TsdbResult<Vec<Label>> {
-    parse_metric(arg).map_err(|_e| TsdbError::InvalidMetric(arg.to_string()))
+pub fn parse_metric_name(arg: &str) -> ValkeyResult<Vec<Label>> {
+    parse_metric(arg).map_err(|_e| ValkeyError::Str(error_consts::INVALID_METRIC_NAME))
 }
 
 pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {

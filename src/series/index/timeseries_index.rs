@@ -542,8 +542,8 @@ mod tests {
 
         index.index_timeseries(&mut ts, b"time-series-1");
 
-        let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="prod"}"#);
-        index.reindex_timeseries(&mut ts, b"time-series-1");
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="prod"}"#);
+        index.reindex_timeseries(&ts, b"time-series-1");
 
         assert_eq!(index.count(), 2);
         assert_eq!(label_count(&index), 3); // metric_name + region + env
@@ -552,9 +552,9 @@ mod tests {
     #[test]
     fn test_remove_time_series() {
         let index = TimeSeriesIndex::new();
-        let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
 
-        index.index_timeseries(&mut ts, b"time-series-1");
+        index.index_timeseries(&ts, b"time-series-1");
         assert_eq!(index.count(), 1);
 
         index.remove_timeseries(&ts);
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn test_get_label_values() {
         let index = TimeSeriesIndex::new();
-        let mut ts1 = create_series(
+        let ts1 = create_series(
             "latency",
             vec![
                 Label {
@@ -579,7 +579,7 @@ mod tests {
                 },
             ],
         );
-        let mut ts2 = create_series(
+        let ts2 = create_series(
             "latency",
             vec![
                 Label {
@@ -593,8 +593,8 @@ mod tests {
             ],
         );
 
-        index.index_timeseries(&mut ts1, b"time-series-1");
-        index.index_timeseries(&mut ts2, b"time-series-2");
+        index.index_timeseries(&ts1, b"time-series-1");
+        index.index_timeseries(&ts2, b"time-series-2");
 
         let values = index.label_values("region");
         assert_eq!(values.len(), 2);
@@ -610,9 +610,9 @@ mod tests {
     #[test]
     fn test_get_id_by_name_and_labels() {
         let index = TimeSeriesIndex::new();
-        let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
 
-        index.index_timeseries(&mut ts, b"time-series-1");
+        index.index_timeseries(&ts, b"time-series-1");
 
         let labels = ts
             .labels

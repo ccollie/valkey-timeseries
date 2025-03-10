@@ -188,7 +188,7 @@ mod tests {
             trailing = 0;
 
             let buffer = bit_writer.get_ref();
-            let mut reader = BufferedReader::new(&buffer);
+            let mut reader = BufferedReader::new(buffer);
 
             for (i, number) in test_case.iter().enumerate() {
                 let (new_value, new_leading, new_trailing) =

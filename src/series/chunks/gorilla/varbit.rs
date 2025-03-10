@@ -168,7 +168,7 @@ mod tests {
         }
 
         let binding = bit_writer.get_ref();
-        let mut reader = BufferedReader::new(&binding);
+        let mut reader = BufferedReader::new(binding);
         // Read again
         for want in NUMBERS {
             let got = read_varbit_int(&mut reader).unwrap();

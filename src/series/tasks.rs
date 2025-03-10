@@ -169,6 +169,7 @@ fn fetch_keys_batch(
     })
 }
 
+
 pub fn remove_stale_series_task(ctx: &Context) {
     let stale_ids = with_db_task_meta(ctx, |meta| meta.take_stale_ids());
     remove_stale_series(ctx, &stale_ids);
@@ -177,7 +178,7 @@ pub fn remove_stale_series_task(ctx: &Context) {
 pub(crate) fn remove_stale_series(ctx: &Context, ids: &[SeriesRef]) {
     if !ids.is_empty() {
         with_timeseries_index(ctx, |index| {
-            let removed = index.slow_remove_series_by_ids(&ids);
+            let removed = index.slow_remove_series_by_ids(ids);
             ctx.log_notice(&format!("Removed {} stale series", removed));
         });
     }

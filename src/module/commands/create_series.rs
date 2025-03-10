@@ -3,11 +3,10 @@ use crate::labels::Label;
 use crate::module::arg_parse::{
     parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
     parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options,
-    parse_label_value_pairs, parse_retention, parse_significant_digit_rounding, CommandArgIterator,
-    CommandArgToken,
+    parse_label_value_pairs, parse_metric_name, parse_retention, parse_significant_digit_rounding, 
+    CommandArgIterator, CommandArgToken,
 };
 use crate::module::VK_TIME_SERIES_TYPE;
-use crate::parser::metric_name::parse_metric_name;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::{TimeSeries, TimeSeriesOptions};
 use smallvec::SmallVec;
@@ -96,8 +95,7 @@ pub fn parse_series_options(
                     return Err(ValkeyError::Str(error_consts::METRIC_ALREADY_SET));
                 }
                 let metric = args.next_string()?;
-                options.labels = parse_metric_name(&metric)
-                    .map_err(|_e| ValkeyError::Str(error_consts::INVALID_METRIC))?;
+                options.labels = parse_metric_name(&metric)?;
             }
             CommandArgToken::Labels => {
                 if metric_set {

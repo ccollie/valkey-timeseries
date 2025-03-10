@@ -98,7 +98,7 @@ fn fetch_samples(ts: &TimeSeries, options: &JoinOptions) -> Vec<Sample> {
     let mut samples = ts.get_range_filtered(
         start,
         end,
-        options.timestamp_filter.as_ref().map(|v| v.as_slice()),
+        options.timestamp_filter.as_deref(),
         options.value_filter,
     );
     if let Some(count) = &options.count {

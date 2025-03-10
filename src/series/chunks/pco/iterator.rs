@@ -188,9 +188,9 @@ mod tests {
     use crate::common::Sample;
     use crate::series::chunks::pco::pco_utils::{compress_timestamps, compress_values};
     use crate::series::chunks::pco::PcoSampleIterator;
+    use std::time::Duration;
     use crate::tests::generators::DataGenerator;
     use crate::tests::generators::RandAlgo::MackeyGlass;
-    use std::time::Duration;
 
     #[test]
     fn test_pco_sample_iterator() {

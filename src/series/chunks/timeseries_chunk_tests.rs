@@ -1143,7 +1143,7 @@ mod tests {
                 2000, // not present
                 samples[15].timestamp,
             ];
-            let expected_samples = vec![samples[5].clone(), samples[15].clone()];
+            let expected_samples = vec![samples[5], samples[15]];
 
             let result_samples = chunk.samples_by_timestamps(&timestamps).unwrap();
             assert_eq!(result_samples, expected_samples);

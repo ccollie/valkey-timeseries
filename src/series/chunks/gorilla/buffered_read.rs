@@ -163,22 +163,22 @@ mod tests {
         let mut b = BufferedReader::new(&bytes);
 
         assert_eq!(b.read_bit().unwrap(), false);
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
         assert_eq!(b.read_bit().unwrap(), false);
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
         assert_eq!(b.read_bit().unwrap(), false);
         assert_eq!(b.read_bit().unwrap(), false);
 
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
         assert_eq!(b.read_bit().unwrap(), false);
-        assert_eq!(b.read_bit().unwrap(), true);
+        assert!(b.read_bit().unwrap());
         assert_eq!(b.read_bit().unwrap(), false);
         assert_eq!(b.read_bit().unwrap(), false);
-        assert_eq!(b.read_bit().unwrap(), true);
+        assert!(b.read_bit().unwrap());
 
         assert_eq!(b.read_bit().err().unwrap(), Error::Eof);
     }
@@ -194,10 +194,10 @@ mod tests {
 
         // read some individual bits we can test `read_byte` when the position in the
         // byte we are currently reading is non-zero
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
-        assert_eq!(b.read_bit().unwrap(), true);
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
+        assert!(b.read_bit().unwrap());
 
         assert_eq!(b.read_byte().unwrap(), 15);
 

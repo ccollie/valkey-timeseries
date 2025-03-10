@@ -456,7 +456,6 @@ mod tests {
     fn test_remove_range_partial_overlap_multiple_chunks() {
         // Setup a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
-        let chunk_size = 5; // Assume each chunk can hold 5 samples
 
         // Create and add samples to the time series
         for i in 1..15 {
@@ -583,10 +582,11 @@ mod tests {
     #[test]
     fn test_remove_range_exactly_matches_chunk_boundaries() {
         // Setup a TimeSeries with multiple chunks
-        let mut time_series = TimeSeries::default();
-
-        // Assume each chunk can hold 2 samples for simplicity
-        time_series.chunk_size_bytes = 2 * size_of::<Sample>();
+        let mut time_series = TimeSeries {
+            // Assume each chunk can hold 2 samples for simplicity
+            chunk_size_bytes:  2 * size_of::<Sample>(),
+            ..TimeSeries::default()   
+        };
 
         // Add samples to create multiple chunks
         let samples = vec![

@@ -118,7 +118,7 @@ fn collect_series_keys(
     keys
 }
 
-fn check_key_is_allowed_to_read(_ctx: &Context, key: &[u8]) -> bool {
+fn check_key_is_allowed_to_read(_ctx: &Context, _key: &[u8]) -> bool {
     // todo: implement permission checking
     true
 }
@@ -330,7 +330,7 @@ fn postings_for_matcher_slice<'a>(
                     // l!=""
                     // If the label can't be empty and is a Not, but the inner matcher can
                     // be empty we need to use inverse_postings_for_matcher.
-                    let it = inverse_postings_for_matcher(ix, &inverse, matches_empty);
+                    let it = inverse_postings_for_matcher(ix, &inverse);
                     its.push(it);
                 }
             } else {
@@ -347,7 +347,7 @@ fn postings_for_matcher_slice<'a>(
             // the series which don't have the label name set too. See:
             // https://github.com/prometheus/prometheus/issues/3575 and
             // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
-            let it = inverse_postings_for_matcher(ix, m, matches_empty);
+            let it = inverse_postings_for_matcher(ix, m);
 
             #[cfg(test)]
             debug_bitmap(&format!("ids for matcher: {}", &m), &it);
@@ -380,8 +380,7 @@ fn is_subtracting_matcher(m: &Matcher, label_must_be_set: &AHashSet<&str>) -> bo
 
 fn inverse_postings_for_matcher<'a>(
     ix: &'a MemoryPostings,
-    m: &Matcher,
-    matches_empty: bool,
+    m: &Matcher
 ) -> Cow<'a, PostingsBitmap> {
     // Fast-path for NotEqual matching.
     // Inverse of a NotEqual is Equal (double negation).

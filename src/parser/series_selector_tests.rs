@@ -215,7 +215,7 @@ mod tests {
             );
 
             let status_matcher = &matchers[1];
-            assert_matcher(&status_matcher, "status", MatchOp::RegexEqual, "2[0-9]{2}");
+            assert_matcher(status_matcher, "status", MatchOp::RegexEqual, "2[0-9]{2}");
         });
     }
 
@@ -239,7 +239,7 @@ mod tests {
             assert_eq!(matchers.len(), 1);
 
             let temperature_matcher = &matchers[0];
-            assert_matcher(&temperature_matcher, "temperature", MatchOp::Equal, "hot");
+            assert_matcher(temperature_matcher, "temperature", MatchOp::Equal, "hot");
         });
     }
 
@@ -255,7 +255,7 @@ mod tests {
 
             let matcher = &matchers[0];
             assert_list_matcher(
-                &matcher,
+                matcher,
                 "size",
                 MatchOp::Equal,
                 &["small", "medium", "large"],

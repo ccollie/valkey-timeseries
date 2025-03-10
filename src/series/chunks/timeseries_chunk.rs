@@ -128,7 +128,7 @@ impl TimeSeriesChunk {
 
         let mut samples = Vec::with_capacity(timestamps.len());
 
-        let mut first_ts = timestamps[0];
+        let first_ts = timestamps[0];
         let mut index: usize = 0;
 
         let first_timestamp = first_ts.max(self.first_timestamp());
