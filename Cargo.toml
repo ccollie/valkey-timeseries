@@ -2,6 +2,10 @@
 name = "valkey-timeseries"
 version = "0.1.0"
 edition = "2021"
+readme = "README.md"
+repository = "https://github.com/ccollie/valkey-timeseries"
+homepage = "https://github.com/ccollie/valkey-timeseries"
+description = "A Timeseries data type for Valkey"
 
 [dependencies]
 ahash = { version = "0.8", features = ["std", "serde"] }
@@ -40,3 +44,4 @@ test-case = "3.3.1"
 
 [lib]
 name="valkey_timeseries"
+crate-type=["cdylib"]
