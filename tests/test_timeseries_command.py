@@ -8,7 +8,7 @@ class TestTimeSeriesCommand(ValkeyTimeSeriesTestCaseBase):
         actual_arity = command_info.get(command).get('arity')
         assert actual_arity == expected_arity, f"Arity mismatch for command '{command}'"
 
-    def test_bloom_command_arity(self):
+    def test_command_arity(self):
         self.verify_command_arity('TS.CREATE', -1)
         self.verify_command_arity('TS.ADD', -1)
         self.verify_command_arity('TS.MADD', -1)

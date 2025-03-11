@@ -1,14 +1,11 @@
-import subprocess
-import time
-import os
 import pytest
 import re
+import subprocess
 from contextlib import contextmanager
-from functools import wraps
-from valkey import *
-from util.waiters import *
-
 from enum import Enum
+from valkey import *
+
+from util.waiters import *
 
 MAX_PING_TRIES = 60
 
@@ -29,7 +26,7 @@ def verify_string_in_file(string, filename):
                 return True
     return False
 
-# Return true if the any of the strings is present in the provided file
+# Return true if any of the strings is present in the provided file
 def verify_any_of_strings_in_file(strings, filename):
     if not os.path.exists(filename):
         return False

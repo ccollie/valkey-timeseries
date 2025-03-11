@@ -14,15 +14,7 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         self.set_server_version(os.environ['SERVER_VERSION'])
         return {
             'loadmodule': os.getenv('MODULE_PATH'),
-            'bf.bloom-use-random-seed': self.use_random_seed,
         }
-
-    @pytest.fixture(autouse=True)
-    def use_random_seed_fixture(self, bloom_config_parameterization):
-        if bloom_config_parameterization == "random-seed":
-            self.use_random_seed = "yes"
-        elif bloom_config_parameterization == "fixed-seed":
-            self.use_random_seed = "no"
 
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
@@ -44,6 +36,13 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
                 assert value in [0, 1], f"Returned value: {value} is not 0 or 1"
         else:
             assert cmd_actual_result == expected_result, assert_error_msg
+
+
+    def verify_key_exists(self, client, key, value, should_exist=True):
+        if should_exist:
+            assert client.execute_command(f'EXISTS {key}') == 1, f"Item {key} {value} doesn't exist"
+        else:
+            assert client.execute_command(f'EXISTS {key}') == 0, f"Item {key} {value} exists"
 
     def verify_bloom_filter_item_existence(self, client, key, value, should_exist=True):
         if should_exist:
@@ -69,24 +68,6 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         random_string = ''.join(random.choice(characters) for _ in range(length))
         return random_string
 
-    def add_items_till_scaling_failure(self, client, filter_name, starting_item_idx, rand_prefix):
-        """
-        Adds items to the provided bloom filter object (filter_name) until we get a scaling error.
-        Item names will start with the provided prefix (rand_prefix) followed by a counter (starting_item_idx onwards).
-        """
-        new_item_idx = starting_item_idx
-        try:
-            while True:
-                item = f"{rand_prefix}{new_item_idx}"
-                new_item_idx += 1
-                result = client.execute_command(f'BF.ADD {filter_name} {item}')
-                if result == 1:
-                    raise RuntimeError("Unexpected return value 1 from BF.ADD")
-        except Exception as e:
-            if "non scaling filter is full" in str(e):
-                return
-            else:
-                raise RuntimeError(f"Unexpected error BF.ADD: {e}")
 
     def add_items_till_capacity(self, client, filter_name, capacity_needed, starting_item_idx, rand_prefix, batch_size=1000):
         """
@@ -114,25 +95,6 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
                     raise RuntimeError(f"Unexpected return value from add_item: {res}")
         return fp_count, new_item_idx - 1
 
-    def check_items_exist(self, client, filter_name, start_idx, end_idx, expected_result, rand_prefix, batch_size=1000):
-        """
-        Executes BF.MEXISTS on the given bloom filter. Items that we expect to exist are those starting with
-        rand_prefix, followed by a number beginning with start_idx. The result is compared with `expected_result` based
-        on whether we expect the item to exist or not.
-        """
-        error_count = 0
-        num_operations = (end_idx - start_idx) + 1
-        # Check that items exist in batches.
-        for batch_start in range(start_idx, end_idx + 1, batch_size):
-            batch_end = min(batch_start + batch_size - 1, end_idx)
-            # Execute BF.MEXISTS with the batch of items
-            items = [f"{rand_prefix}{i}" for i in range(batch_start, batch_end + 1)]
-            result = client.execute_command(f'BF.MEXISTS {filter_name} ' + ' '.join(items))
-            # Check the results
-            for item_result in result:
-                if item_result != expected_result:
-                    error_count += 1
-        return error_count, num_operations
 
     def fp_assert(self, error_count, num_operations, expected_fp_rate, fp_margin):
         """

@@ -21,11 +21,17 @@ else
   exit 1
 fi
 
+BUILD=${BUILD:-debug}
 VALKEY_VERSION=${VALKEY_VERSION:-unstable}
 PROGNAME="${BASH_SOURCE[0]}"
 CWD="$(cd "$(dirname "$PROGNAME")" &>/dev/null && pwd)"
 BINARY_PATH="$CWD/.build/binaries/$VALKEY_VERSION/valkey-server"
 PORT=${PORT:-6379}
+ROOT=$(cd $CWD/.. && pwd)
+
+export MODULE_PATH="$ROOT/target/$BUILD/libvalkey_timeseries${MODULE_EXT}"
+
+
 REPO_URL="https://github.com/valkey-io/valkey.git"
 
 # If environment variable SERVER_VERSION is not set, default to "unstable"
@@ -53,20 +59,19 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "${DIR}"
 
 export SOURCE_DIR=$2
-export MODULE_PATH=$SOURCE_DIR/build/src/libvalkey_timeseries$MODULE_EXT
 echo "Running integration tests against Valkey version $SERVER_VERSION"
-
-if [[ ! -z "${TEST_PATTERN}" ]] ; then
-    export TEST_PATTERN="-k ${TEST_PATTERN}"
-fi
 
 if [[ ! -f "${BINARY_PATH}" ]] ; then
     echo "${BINARY_PATH} missing"
     exit 1
 fi
 
-if [[ $1 == "test" ]] ; then
-    python -m pytest --html=report.html --cache-clear -v ${TEST_FLAG} ./ ${TEST_PATTERN}
+if [[ ! -z "${TEST_PATTERN}" ]] ; then
+    export TEST_PATTERN="-k ${TEST_PATTERN}"
+fi
+
+if [[ ! -z "${TEST_PATTERN}" ]] ; then
+    pytest --cache-clear -v ${TEST_FLAG} ./ ${TEST_PATTERN}
 else
-    python -m pytest --html=report.html --cache-clear -v ${TEST_FLAG} ./
+    pytest --cache-clear -v ${TEST_FLAG} ./
 fi

@@ -24,6 +24,7 @@ Cargo.lock
 
 /target
 tests/.build
+tests/test-data
 __pycache__
 test-data
 .attach_pid*

@@ -2,9 +2,9 @@
 name = "valkey-timeseries"
 version = "0.1.0"
 description = "A Timeseries data type for Valkey"
-requires-python = "==3.9"
+requires-python=">=3.11,<3.12"
 dependencies = [
     "valkey",
-    "pytest==4",
-    "pytest-html"
+    "pytest>=6.0,<7.0",
+    "pytest-html",
 ]
