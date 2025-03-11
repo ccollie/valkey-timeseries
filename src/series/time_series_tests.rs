@@ -584,8 +584,8 @@ mod tests {
         // Setup a TimeSeries with multiple chunks
         let mut time_series = TimeSeries {
             // Assume each chunk can hold 2 samples for simplicity
-            chunk_size_bytes:  2 * size_of::<Sample>(),
-            ..TimeSeries::default()   
+            chunk_size_bytes: 2 * size_of::<Sample>(),
+            ..TimeSeries::default()
         };
 
         // Add samples to create multiple chunks

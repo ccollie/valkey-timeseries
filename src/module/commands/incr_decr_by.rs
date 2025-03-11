@@ -62,10 +62,8 @@ fn handle_update(
     is_increment: bool,
 ) -> ValkeyResult {
     let mut delta = delta;
-    if !series.is_empty() {
-        if !is_increment {
-            delta = -delta;
-        }
+    if !series.is_empty() && !is_increment {
+        delta = -delta;
     }
     let result = series.increment_sample_value(timestamp, delta)?;
     match result {

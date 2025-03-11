@@ -125,9 +125,7 @@ impl UncompressedChunk {
     }
 
     fn get_range_slice(&self, start_ts: Timestamp, end_ts: Timestamp) -> Vec<Sample> {
-        if let Some((start_idx, end_index)) =
-            self.get_index_bounds(start_ts, end_ts)
-        {
+        if let Some((start_idx, end_index)) = self.get_index_bounds(start_ts, end_ts) {
             self.samples[start_idx..=end_index].to_vec()
         } else {
             vec![]
@@ -149,11 +147,7 @@ impl UncompressedChunk {
     ///   or if `start` and `end` are equal and greater than the sample at the found index.
     ///
     /// Used to get an inclusive bounds for series chunks (all chunks containing samples in the range [start_index...=end_index])
-    fn get_index_bounds(
-        &self,
-        start: Timestamp,
-        end: Timestamp,
-    ) -> Option<(usize, usize)> {
+    fn get_index_bounds(&self, start: Timestamp, end: Timestamp) -> Option<(usize, usize)> {
         let len = self.samples.len();
         if len == 0 {
             return None;
@@ -251,9 +245,7 @@ impl Chunk for UncompressedChunk {
 
     fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
         let count = self.samples.len();
-        if let Some((start_idx, end_idx)) =
-            self.get_index_bounds(start_ts, end_ts)
-        {
+        if let Some((start_idx, end_idx)) = self.get_index_bounds(start_ts, end_ts) {
             let _ = self.samples.drain(start_idx..=end_idx);
         };
         Ok(count - self.samples.len())
@@ -432,49 +424,109 @@ mod tests {
     use crate::series::chunks::{Chunk, UncompressedChunk};
     use crate::series::{DuplicatePolicy, SampleAddResult};
 
-
     #[test]
     fn test_get_range_slice_start_equals_end() {
         let samples = vec![
-            Sample { timestamp: 10, value: 1.0 },
-            Sample { timestamp: 20, value: 2.0 },
-            Sample { timestamp: 30, value: 3.0 },
-            Sample { timestamp: 40, value: 4.0 },
-            Sample { timestamp: 50, value: 5.0 },
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
         let result = chunk.get_range_slice(30, 30);
-        assert_eq!(result, vec![
-            Sample { timestamp: 30, value: 3.0 },
-        ]);
+        assert_eq!(
+            result,
+            vec![Sample {
+                timestamp: 30,
+                value: 3.0
+            },]
+        );
     }
 
     #[test]
     fn test_get_range_slice_within_bounds() {
         let samples = vec![
-            Sample { timestamp: 10, value: 1.0 },
-            Sample { timestamp: 20, value: 2.0 },
-            Sample { timestamp: 30, value: 3.0 },
-            Sample { timestamp: 40, value: 4.0 },
-            Sample { timestamp: 50, value: 5.0 },
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
         let result = chunk.get_range_slice(20, 40);
-        assert_eq!(result, vec![
-            Sample { timestamp: 20, value: 2.0 },
-            Sample { timestamp: 30, value: 3.0 },
-            Sample { timestamp: 40, value: 4.0 },
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Sample {
+                    timestamp: 20,
+                    value: 2.0
+                },
+                Sample {
+                    timestamp: 30,
+                    value: 3.0
+                },
+                Sample {
+                    timestamp: 40,
+                    value: 4.0
+                },
+            ]
+        );
     }
 
     #[test]
     fn test_get_range_slice_out_of_bounds() {
         let samples = vec![
-            Sample { timestamp: 10, value: 1.0 },
-            Sample { timestamp: 20, value: 2.0 },
-            Sample { timestamp: 30, value: 3.0 },
-            Sample { timestamp: 40, value: 4.0 },
-            Sample { timestamp: 50, value: 5.0 },
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
         let result = chunk.get_range_slice(60, 70);
@@ -484,17 +536,36 @@ mod tests {
     #[test]
     fn test_get_range_slice_partial_overlap() {
         let samples = vec![
-            Sample { timestamp: 10, value: 1.0 },
-            Sample { timestamp: 20, value: 2.0 },
-            Sample { timestamp: 30, value: 3.0 },
-            Sample { timestamp: 40, value: 4.0 },
-            Sample { timestamp: 50, value: 5.0 },
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
         ];
         let chunk = UncompressedChunk::new(1000, &samples);
         let result = chunk.get_range_slice(35, 45);
-        assert_eq!(result, vec![
-            Sample { timestamp: 40, value: 4.0 },
-        ]);
+        assert_eq!(
+            result,
+            vec![Sample {
+                timestamp: 40,
+                value: 4.0
+            },]
+        );
     }
 
     #[test]

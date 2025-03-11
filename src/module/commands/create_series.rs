@@ -3,7 +3,7 @@ use crate::labels::Label;
 use crate::module::arg_parse::{
     parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
     parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options,
-    parse_label_value_pairs, parse_metric_name, parse_retention, parse_significant_digit_rounding, 
+    parse_label_value_pairs, parse_metric_name, parse_retention, parse_significant_digit_rounding,
     CommandArgIterator, CommandArgToken,
 };
 use crate::module::VK_TIME_SERIES_TYPE;

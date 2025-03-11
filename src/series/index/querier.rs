@@ -380,40 +380,26 @@ fn is_subtracting_matcher(m: &Matcher, label_must_be_set: &AHashSet<&str>) -> bo
 
 fn inverse_postings_for_matcher<'a>(
     ix: &'a MemoryPostings,
-    m: &Matcher
+    m: &Matcher,
 ) -> Cow<'a, PostingsBitmap> {
-    // Fast-path for NotEqual matching.
-    // Inverse of a NotEqual is Equal (double negation).
-    if let PredicateMatch::NotEqual(ref pv) = m.matcher {
-        return handle_equal_match(ix, &m.label, pv);
-    }
-
-    let op = m.op();
-
-    // If the matcher being inverted is =~"" or ="", we just want all the values.
-    match op {
-        MatchOp::Equal => {
-            if let PredicateMatch::Equal(ref pv) = m.matcher {
-                if let PredicateValue::String(ref s) = pv {
-                    if s.is_empty() {
-                        return Cow::Owned(ix.postings_for_all_label_values(&m.label));
-                    }
-                }
-            }
+    match &m.matcher {
+        PredicateMatch::NotEqual(pv) => handle_equal_match(ix, &m.label, pv),
+        PredicateMatch::Equal(PredicateValue::String(s)) if s.is_empty() => {
+            Cow::Owned(ix.postings_for_all_label_values(&m.label))
         }
-        MatchOp::RegexEqual => {
-            let v = m.regex_text().unwrap_or("");
-            if (v.is_empty()) | (v == ".*") {
+        _ => {
+            let op = m.op();
+            if matches!(op, MatchOp::RegexEqual)
+                && matches!(m.regex_text().unwrap_or(""), "" | ".*")
+            {
                 return Cow::Owned(ix.postings_for_all_label_values(&m.label));
             }
+            let mut state = m;
+            let postings =
+                ix.postings_for_label_matching(&m.label, &mut state, |s, state| !state.matches(s));
+            Cow::Owned(postings)
         }
-        _ => {}
     }
-
-    let mut state = m;
-    let postings =
-        ix.postings_for_label_matching(&m.label, &mut state, |s, state| !state.matches(s));
-    Cow::Owned(postings)
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
