@@ -10,6 +10,7 @@ use crate::module::{invalid_series_key_error, VK_TIME_SERIES_TYPE};
 use crate::series::TimeSeries;
 use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::error_consts;
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
 ///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PRIOR | NEXT] tolerance]]
@@ -33,7 +34,7 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     parse_join_args(&mut args, &mut options)?;
 
     if left_key == right_key {
-        return Err(ValkeyError::Str("VM: JOIN keys must be different"));
+        return Err(ValkeyError::Str(error_consts::DUPLICATE_JOIN_KEY));
     }
 
     let left_db_key = ctx.open_key(&left_key);
@@ -48,7 +49,7 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
         (Some(_), None) => Err(invalid_series_key_error(&right_key)),
         (None, Some(_)) => Err(invalid_series_key_error(&left_key)),
-        _ => Err(ValkeyError::Str("TS: Invalid JOIN key")),
+        _ => Err(ValkeyError::Str(error_consts::INVALID_JOIN_KEY)),
     }
 }
 
@@ -76,7 +77,7 @@ fn parse_asof(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
             if ch.is_ascii_digit() {
                 let tolerance_ms = parse_duration_ms(arg_str)?;
                 if tolerance_ms < 0 {
-                    return Err(ValkeyError::Str("ERR: negative ASOF tolerance not valid"));
+                    return Err(ValkeyError::Str(error_consts::INVALID_ASOF_TOLERANCE));
                 }
                 tolerance = Duration::from_millis(tolerance_ms as u64);
                 let _ = args.next_arg()?;
@@ -161,9 +162,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
 
     // aggregations are only valid when there is a transform
     if options.aggregation.is_some() && options.reducer.is_none() {
-        return Err(ValkeyError::Str(
-            "TSDB: join aggregation requires a reducer",
-        ));
+        return Err(ValkeyError::Str(error_consts::MISSING_JOIN_REDUCER));
     }
 
     Ok(())
