@@ -140,7 +140,7 @@ impl Chunk for GorillaChunk {
         }
 
         let mut new_encoder = GorillaEncoder::new();
-        
+
         let mut first_timestamp: Timestamp = 0;
         let saved_count = self.len();
 
@@ -432,22 +432,28 @@ mod tests {
     use crate::common::Sample;
     use crate::series::chunks::chunk::Chunk;
     use crate::series::chunks::gorilla::gorilla_chunk::GorillaChunk;
-    use crate::series::test_utils::generate_random_samples;
     use crate::series::DuplicatePolicy;
+    use crate::tests::generators::DataGenerator;
+    use std::time::Duration;
+
+    fn generate_samples(count: usize) -> Vec<Sample> {
+        DataGenerator::builder()
+            .samples(count)
+            .start(1000)
+            .decimal_digits(3)
+            .interval(Duration::from_millis(1000))
+            .build()
+            .generate()
+    }
 
     fn decompress(chunk: &GorillaChunk) -> Vec<Sample> {
         chunk.iter().collect()
     }
 
-    fn compare_chunks(chunk1: &GorillaChunk, chunk2: &GorillaChunk) {
-        assert_eq!(chunk1.encoder, chunk2.encoder, "xor chunks do not match");
-        assert_eq!(chunk1.max_size, chunk2.max_size);
-    }
-
     #[test]
     fn test_chunk_compress() {
         let mut chunk = GorillaChunk::with_max_size(16384);
-        let data = generate_random_samples(0, 1000);
+        let data = generate_samples(1000);
 
         for sample in data.iter() {
             chunk.add_sample(sample).unwrap();
@@ -461,7 +467,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut chunk = GorillaChunk::with_max_size(16384);
-        let data = generate_random_samples(0, 500);
+        let data = generate_samples(500);
 
         for datum in data.iter() {
             chunk.add_sample(datum).unwrap();
@@ -478,7 +484,7 @@ mod tests {
     fn test_upsert() {
         for chunk_size in (64..8192).step_by(64) {
             const SAMPLE_COUNT: usize = 200;
-            let samples = generate_random_samples(0, SAMPLE_COUNT);
+            let samples = generate_samples(SAMPLE_COUNT);
             let mut chunk = GorillaChunk::with_max_size(chunk_size);
 
             let sample_count = samples.len();
@@ -490,12 +496,11 @@ mod tests {
             assert_eq!(chunk.len(), sample_count);
         }
     }
-    
 
     #[test]
     fn test_split() {
         const COUNT: usize = 500;
-        let samples = generate_random_samples(0, COUNT);
+        let samples = generate_samples(COUNT);
         let mut chunk = GorillaChunk::with_max_size(16384);
 
         for sample in samples.iter() {
@@ -521,7 +526,7 @@ mod tests {
     #[test]
     fn test_split_odd() {
         const COUNT: usize = 51;
-        let samples = generate_random_samples(0, COUNT);
+        let samples = generate_samples(COUNT);
         let mut chunk = GorillaChunk::default();
 
         for sample in samples.iter() {
@@ -547,7 +552,7 @@ mod tests {
     #[test]
     fn test_iter() {
         let mut chunk = GorillaChunk::default();
-        let data = generate_random_samples(0, 1000);
+        let data = generate_samples(1000);
 
         chunk.set_data(&data).unwrap();
 
@@ -558,7 +563,7 @@ mod tests {
     #[test]
     fn test_remove_range() {
         let mut chunk = GorillaChunk::with_max_size(16384);
-        let samples = generate_random_samples(0, 100);
+        let samples = generate_samples(100);
 
         for sample in samples.iter() {
             chunk.add_sample(sample).unwrap();
@@ -589,7 +594,7 @@ mod tests {
     #[test]
     fn test_remove_range_no_overlap() {
         let mut chunk = GorillaChunk::with_max_size(16384);
-        let samples = generate_random_samples(0, 100);
+        let samples = generate_samples(100);
 
         for sample in samples.iter() {
             chunk.add_sample(sample).unwrap();

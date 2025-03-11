@@ -1,4 +1,4 @@
-use crate::common::rounding::round_to_sig_figs;
+use crate::common::rounding::{round_to_decimal_digits, round_to_sig_figs};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::tests::generators::generator::{
@@ -34,6 +34,8 @@ pub struct DataGenerator {
     pub typ: RandAlgo,
     /// Number of significant digits.
     pub significant_digits: Option<usize>,
+    /// Number of decimal digits.
+    pub decimal_digits: Option<usize>,
 }
 
 #[bon]
@@ -48,6 +50,7 @@ impl DataGenerator {
         seed: Option<u64>,
         #[builder(default = RandAlgo::StdNorm)] algorithm: RandAlgo,
         significant_digits: Option<usize>,
+        decimal_digits: Option<usize>,
     ) -> Self {
         let mut res = DataGenerator {
             start,
@@ -58,6 +61,7 @@ impl DataGenerator {
             values,
             typ: algorithm,
             significant_digits,
+            decimal_digits,
         };
         res.fixup();
         res
@@ -101,6 +105,7 @@ impl Default for DataGenerator {
             seed: None,
             typ: RandAlgo::StdNorm,
             significant_digits: None,
+            decimal_digits: None,
         };
         res.fixup();
         res
@@ -146,6 +151,11 @@ pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
     if let Some(significant_digits) = options.significant_digits {
         for v in values.iter_mut() {
             let rounded = round_to_sig_figs(*v, significant_digits as i32);
+            *v = rounded;
+        }
+    } else if let Some(decimal_digits) = options.decimal_digits {
+        for v in values.iter_mut() {
+            let rounded = round_to_decimal_digits(*v, decimal_digits as i32);
             *v = rounded;
         }
     }

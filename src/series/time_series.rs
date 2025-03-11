@@ -927,7 +927,7 @@ fn get_range_parallel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::series::test_utils::generate_random_samples;
+    use crate::tests::generators::DataGenerator;
 
     #[test]
     fn test_one_entry() {
@@ -949,7 +949,12 @@ mod tests {
     #[test]
     fn test_1000_entries() {
         let mut ts = TimeSeries::new();
-        let data = generate_random_samples(0, 1000);
+        let data = DataGenerator::builder()
+            .samples(1000)
+            .start(0)
+            .interval(Duration::from_millis(1000))
+            .build()
+            .generate();
 
         for sample in data.iter() {
             assert!(ts.add(sample.timestamp, sample.value, None).is_ok());

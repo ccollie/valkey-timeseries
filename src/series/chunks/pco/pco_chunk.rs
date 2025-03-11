@@ -609,21 +609,31 @@ fn remove_values_in_range(
 #[cfg(test)]
 mod tests {
     use crate::common::{Sample, Timestamp};
-    use crate::series::test_utils::generate_random_samples;
+    use std::time::Duration;
 
     use crate::error::TsdbError;
     use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
     use crate::series::chunks::Chunk;
     use crate::series::chunks::PcoChunk;
     use crate::series::{DuplicatePolicy, SampleAddResult};
+    use crate::tests::generators::DataGenerator;
 
     fn decompress(chunk: &PcoChunk) -> Vec<Sample> {
         chunk.iter().collect()
     }
 
+    fn generate_samples(count: usize) -> Vec<Sample> {
+        DataGenerator::builder()
+            .samples(count)
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .build()
+            .generate()
+    }
+
     fn saturate_chunk(chunk: &mut PcoChunk) {
         loop {
-            let samples = generate_random_samples(0, 250);
+            let samples = generate_samples(250);
             for sample in samples {
                 match chunk.add_sample(&sample) {
                     Ok(_) => {}
@@ -651,7 +661,7 @@ mod tests {
     #[test]
     fn test_chunk_compress() {
         let mut chunk = PcoChunk::default();
-        let data = generate_random_samples(0, 1000);
+        let data = generate_samples(1000);
 
         chunk.set_data(&data).unwrap();
         assert_eq!(chunk.len(), data.len());
@@ -665,7 +675,7 @@ mod tests {
     #[test]
     fn test_compress_decompress() {
         let mut chunk = PcoChunk::default();
-        let data = generate_random_samples(0, 1000);
+        let data = generate_samples(1000);
         chunk.set_data(&data).unwrap();
         let actual = chunk.decompress_samples().unwrap();
         assert_eq!(actual, data);
@@ -674,7 +684,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut chunk = PcoChunk::default();
-        let data = generate_random_samples(0, 1000);
+        let data = generate_samples(1000);
 
         chunk.set_data(&data).unwrap();
         assert_eq!(chunk.len(), data.len());
@@ -690,7 +700,7 @@ mod tests {
     #[test]
     fn test_upsert() {
         for chunk_size in (64..8192).step_by(64) {
-            let data = generate_random_samples(0, 500);
+            let data = generate_samples(500);
             let mut chunk = PcoChunk::with_max_size(chunk_size);
 
             let data_len = data.len();
@@ -730,7 +740,7 @@ mod tests {
     #[test]
     fn test_split() {
         let mut chunk = PcoChunk::default();
-        let data = generate_random_samples(0, 500);
+        let data = generate_samples(500);
         chunk.set_data(&data).unwrap();
 
         let count = data.len();
@@ -752,7 +762,7 @@ mod tests {
     #[test]
     fn test_split_odd() {
         let mut chunk = PcoChunk::default();
-        let samples = generate_random_samples(1, 51);
+        let samples = generate_samples(51);
 
         for sample in samples.iter() {
             chunk.add_sample(sample).unwrap();
@@ -998,11 +1008,11 @@ mod tests {
     #[test]
     fn test_merge_samples_with_greater_timestamps() {
         let mut chunk = PcoChunk::default();
-        let mut initial_samples = generate_random_samples(0, 5);
+        let mut initial_samples = generate_samples(5);
         chunk.set_data(&initial_samples).unwrap();
 
         let mut timestamp = chunk.last_timestamp() + 5000;
-        let mut new_samples = generate_random_samples(0, 5);
+        let mut new_samples = generate_samples(5);
 
         for sample in new_samples.iter_mut() {
             sample.timestamp = timestamp;
@@ -1025,26 +1035,24 @@ mod tests {
     #[test]
     fn test_merge_samples_with_timestamps_less_than_first() {
         let mut chunk = PcoChunk::default();
-        let existing_samples = generate_random_samples(1000, 1100);
-        chunk.set_data(&existing_samples).unwrap();
-
-        // Create new samples with timestamps less than the current first timestamp
-        let new_samples = generate_random_samples(900, 950);
+        let existing_samples = generate_samples(1000);
+        let (left_samples, right_samples) = existing_samples.split_at(500);
+        chunk.set_data(right_samples).unwrap();
 
         // Merge the new samples into the chunk
         let result = chunk
-            .merge_samples(&new_samples, Some(DuplicatePolicy::Block))
+            .merge_samples(left_samples, Some(DuplicatePolicy::Block))
             .unwrap();
 
         // Check that all new samples were added successfully
-        for (i, sample) in new_samples.iter().enumerate() {
+        for (i, sample) in left_samples.iter().enumerate() {
             assert_eq!(result[i], SampleAddResult::Ok(sample.timestamp));
         }
 
         // Verify that the chunk now contains both the new and existing samples
-        let expected_samples: Vec<Sample> = new_samples
+        let expected_samples: Vec<Sample> = left_samples
             .iter()
-            .chain(existing_samples.iter())
+            .chain(right_samples.iter())
             .cloned()
             .collect();
         let actual_samples = decompress(&chunk);
@@ -1191,7 +1199,7 @@ mod tests {
     #[test]
     fn test_merge_samples_empty_chunk_default_policy() {
         let mut chunk = PcoChunk::default();
-        let samples = generate_random_samples(0, 10);
+        let samples = generate_samples(10);
 
         // Merge samples into an empty chunk with DuplicatePolicy set to None
         let result = chunk.merge_samples(&samples, None).unwrap();
@@ -1212,7 +1220,7 @@ mod tests {
     #[test]
     fn test_merge_samples_on_boundary() {
         let mut chunk = PcoChunk::default();
-        let initial_samples = generate_random_samples(0, 10);
+        let initial_samples = generate_samples(10);
 
         // Set initial data to the chunk
         chunk.set_data(&initial_samples).unwrap();

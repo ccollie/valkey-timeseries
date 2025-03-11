@@ -5,8 +5,6 @@ mod merge;
 pub mod serialization;
 pub mod settings;
 mod tasks;
-#[cfg(test)]
-mod test_utils;
 mod time_series;
 #[cfg(test)]
 mod time_series_tests;

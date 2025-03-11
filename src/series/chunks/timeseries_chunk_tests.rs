@@ -3,17 +3,27 @@ mod tests {
     use crate::common::Sample;
     use crate::error::TsdbError;
     use crate::series::chunks::merge::merge_by_capacity;
-    use crate::series::test_utils::generate_random_samples;
     use crate::series::{
         chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
         DuplicatePolicy,
     };
+    use crate::tests::generators::DataGenerator;
+    use std::time::Duration;
 
     const CHUNK_TYPES: [ChunkEncoding; 3] = [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
         ChunkEncoding::Pco,
     ];
+
+    fn generate_random_samples(count: usize) -> Vec<Sample> {
+        DataGenerator::builder()
+            .samples(count)
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .build()
+            .generate()
+    }
 
     #[test]
     fn test_clear_chunk_with_multiple_samples() {
@@ -114,7 +124,13 @@ mod tests {
             assert_eq!(chunk.len(), 3);
 
             let result = chunk.get_range(20, 20).unwrap();
-            assert_eq!(result.len(), 1, "{}: Expected 1 result, got {}", chunk_type, result.len());
+            assert_eq!(
+                result.len(),
+                1,
+                "{}: Expected 1 result, got {}",
+                chunk_type,
+                result.len()
+            );
             assert_eq!(
                 result[0],
                 Sample {
@@ -154,10 +170,22 @@ mod tests {
             let mut chunk = TimeSeriesChunk::new(chunk_type, 100);
             chunk.set_data(&samples).unwrap();
 
-            assert_eq!(chunk.len(), 3, "{}: Expected 3 results, got {}", chunk_type, chunk.len());
+            assert_eq!(
+                chunk.len(),
+                3,
+                "{}: Expected 3 results, got {}",
+                chunk_type,
+                chunk.len()
+            );
 
             let result = chunk.get_range(0, 40).unwrap();
-            assert_eq!(result.len(), 3, "{}: Expected 3 results, got {}", chunk_type, result.len());
+            assert_eq!(
+                result.len(),
+                3,
+                "{}: Expected 3 results, got {}",
+                chunk_type,
+                result.len()
+            );
             assert_eq!(result, samples);
         }
     }
@@ -190,7 +218,13 @@ mod tests {
             assert_eq!(chunk.len(), 4);
 
             let result = chunk.get_range(15, 35).unwrap();
-            assert_eq!(result.len(), 2, "{}: Expected 2 results, got {}", chunk_type, result.len());
+            assert_eq!(
+                result.len(),
+                2,
+                "{}: Expected 2 results, got {}",
+                chunk_type,
+                result.len()
+            );
             assert_eq!(
                 result[0],
                 Sample {
@@ -239,7 +273,7 @@ mod tests {
 
             assert_eq!(chunk.len(), 2);
 
-            let removed = chunk.remove_range(20, 30).unwrap();
+            let _ = chunk.remove_range(20, 30).unwrap();
             let current = chunk.get_range(0, 100).unwrap();
             let expected = vec![
                 Sample {
@@ -276,7 +310,13 @@ mod tests {
 
             chunk.remove_range(10, 20).unwrap();
 
-            assert_eq!(chunk.len(), 0, "{}: Expected 0 results, got {}", chunk_type, chunk.len());
+            assert_eq!(
+                chunk.len(),
+                0,
+                "{}: Expected 0 results, got {}",
+                chunk_type,
+                chunk.len()
+            );
             assert_eq!(chunk.get_range(0, 100).unwrap(), vec![]);
         }
     }
@@ -306,18 +346,23 @@ mod tests {
 
             let removed = chunk.remove_range(10, 10).unwrap();
 
-            assert_eq!(removed, 1, "{}: Expected 1 result, got {removed}", chunk_type);
+            assert_eq!(
+                removed, 1,
+                "{}: Expected 1 result, got {removed}",
+                chunk_type
+            );
             assert_eq!(
                 chunk.get_range(0, 100).unwrap(),
                 vec![
                     Sample {
-                    timestamp: 20,
-                    value: 2.0
-                },
-                Sample {
-                    timestamp: 30,
-                    value: 3.0
-                }]
+                        timestamp: 20,
+                        value: 2.0
+                    },
+                    Sample {
+                        timestamp: 30,
+                        value: 3.0
+                    }
+                ]
             );
         }
     }
@@ -357,7 +402,13 @@ mod tests {
                 .unwrap();
 
             assert_eq!(result.len(), 3);
-            assert_eq!(chunk.len(), 3, "{}: Expected 3 results, got {}", chunk_type, chunk.len());
+            assert_eq!(
+                chunk.len(),
+                3,
+                "{}: Expected 3 results, got {}",
+                chunk_type,
+                chunk.len()
+            );
             assert_eq!(
                 chunk.get_range(0, 100).unwrap(),
                 vec![
@@ -535,7 +586,13 @@ mod tests {
                 .unwrap();
 
             assert_eq!(result.len(), 3);
-            assert_eq!(chunk.len(), 3, "{}: Expected 3 results, got {}", chunk_type, chunk.len());
+            assert_eq!(
+                chunk.len(),
+                3,
+                "{}: Expected 3 results, got {}",
+                chunk_type,
+                chunk.len()
+            );
 
             let merged_samples = chunk.get_range(0, 40).unwrap();
             assert_eq!(
@@ -602,7 +659,13 @@ mod tests {
                 .merge_samples(&samples, Some(DuplicatePolicy::Block))
                 .unwrap();
 
-            assert_eq!(result.len(), 2, "{}: Expected 2 results, got {}", chunk_type, result.len());
+            assert_eq!(
+                result.len(),
+                2,
+                "{}: Expected 2 results, got {}",
+                chunk_type,
+                result.len()
+            );
             assert_eq!(chunk.len(), 4);
             assert_eq!(chunk.first_timestamp(), 5);
             assert_eq!(chunk.last_timestamp(), 35);
@@ -795,7 +858,7 @@ mod tests {
 
     fn saturate_chunk(chunk: &mut TimeSeriesChunk) -> Vec<Sample> {
         let estimated_capacity = chunk.estimate_remaining_sample_capacity();
-        let samples = generate_random_samples(0, estimated_capacity * 2);
+        let samples = generate_random_samples(estimated_capacity * 2);
         let (normal, spillage) = samples.split_at(estimated_capacity);
         chunk.set_data(normal).unwrap();
         for sample in spillage {
@@ -835,7 +898,7 @@ mod tests {
         let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Fill the source chunk with samples
-        let samples = generate_random_samples(0, ELEMENTS_PER_CHUNK);
+        let samples = generate_random_samples(ELEMENTS_PER_CHUNK);
         src_chunk.set_data(&samples).unwrap();
 
         // Ensure destination chunk has exactly the same remaining capacity as source chunk's size
@@ -875,7 +938,7 @@ mod tests {
         let capacity = dest_chunk.estimate_remaining_sample_capacity();
 
         // Fill the destination chunk to have more than a quarter but less than full capacity of source
-        let dest_samples = generate_random_samples(0, capacity / 2);
+        let dest_samples = generate_random_samples(capacity / 2);
         dest_chunk.set_data(&dest_samples).unwrap();
 
         let dest_samples_count = dest_samples.len();
@@ -909,11 +972,11 @@ mod tests {
         let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 2048);
 
         // Fill the source chunk with samples
-        let samples = generate_random_samples(0, 100);
+        let samples = generate_random_samples(100);
         src_chunk.set_data(&samples).unwrap();
 
         // Ensure the destination chunk has less than a quarter of the source chunk's capacity
-        let dest_samples = generate_random_samples(0, 10);
+        let dest_samples = generate_random_samples(10);
         dest_chunk.set_data(&dest_samples).unwrap();
 
         // Calculate remaining capacity in destination chunk
@@ -1032,7 +1095,7 @@ mod tests {
         let mut src_chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 1024);
 
         // Populate source chunk with samples
-        let samples = generate_random_samples(0, ELEMENTS_PER_CHUNK);
+        let samples = generate_random_samples(ELEMENTS_PER_CHUNK);
         src_chunk.set_data(&samples).unwrap();
 
         // Ensure destination chunk has enough capacity for a full merge
@@ -1058,7 +1121,7 @@ mod tests {
     fn test_iter_all() {
         for chunk_type in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(chunk_type, 16384);
-            let samples = generate_random_samples(0, 2500);
+            let samples = generate_random_samples(2500);
             chunk.set_data(&samples).unwrap();
 
             let actual_samples = chunk.iter().collect::<Vec<Sample>>();
@@ -1079,7 +1142,7 @@ mod tests {
     fn test_samples_by_timestamps() {
         for chunk_type in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(chunk_type, 16384);
-            let samples = generate_random_samples(0, 100);
+            let samples = generate_random_samples(100);
 
             for sample in samples.iter() {
                 chunk.add_sample(sample).unwrap();
@@ -1108,7 +1171,7 @@ mod tests {
     fn test_samples_by_timestamps_partial_overlap() {
         for chunk_type in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(chunk_type, 16384);
-            let samples = generate_random_samples(0, 100);
+            let samples = generate_random_samples(100);
 
             for sample in samples.iter() {
                 chunk.add_sample(sample).unwrap();
