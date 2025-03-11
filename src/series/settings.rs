@@ -4,6 +4,7 @@ use crate::config::{
 };
 use crate::series::chunks::ChunkEncoding;
 use crate::series::index::optimize_all_timeseries_indexes;
+use crate::series::tasks::process_expires_task;
 use crate::series::SampleDuplicatePolicy;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -64,4 +65,5 @@ fn series_worker_callback(ctx: &Context, _ignore: usize) {
     ctx.log_debug("[series worker callback]: optimizing series indexes");
     // use rayon threadpool to run off the main thread
     rayon::spawn(optimize_all_timeseries_indexes);
+    rayon::spawn(process_expires_task);
 }

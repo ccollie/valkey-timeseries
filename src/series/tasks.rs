@@ -1,4 +1,4 @@
-use crate::common::db::get_current_db;
+use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::IntMap;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::{with_timeseries_index, TIMESERIES_INDEX};
@@ -9,9 +9,9 @@ use num_traits::Zero;
 use papaya::{Guard, HashMap};
 use std::sync::atomic::{AtomicI32, AtomicU64};
 use std::sync::{LazyLock, Mutex};
-use valkey_module::{Context, ValkeyString};
+use valkey_module::{Context, DetachedContext, Status, ValkeyString};
 
-const BATCH_SIZE: usize = 1000;
+const BATCH_SIZE: usize = 500;
 
 /// Per-db task metadata
 pub struct TaskMeta {
@@ -68,10 +68,6 @@ pub(crate) static DB_TASK_METAS: LazyLock<TaskMetaMap> = LazyLock::new(TaskMetaM
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 
-fn is_db_used(db: i32) -> bool {
-    TIMESERIES_INDEX.pin().contains_key(&db)
-}
-
 fn get_used_dbs() -> Vec<i32> {
     let index = TIMESERIES_INDEX.pin();
     let mut keys: Vec<i32> = index.keys().copied().collect();
@@ -91,7 +87,12 @@ fn next_db() -> i32 {
     next
 }
 
-pub fn trim_series_task(ctx: &Context) {
+fn trim_series(ctx: &Context, db: i32) -> usize {
+    if set_current_db(ctx, db) == Status::Err {
+        ctx.log_warning(&format!("Failed to select db {}", db));
+        return 0;
+    }
+
     let last_id = with_db_task_meta(ctx, |meta| meta.last_processed_id());
     let mut processed = 0;
     let mut last_processed = last_id;
@@ -139,6 +140,8 @@ pub fn trim_series_task(ctx: &Context) {
     } else {
         ctx.log_notice(&format!("Processed: {processed} Trimmed {trimmed_count}, Deleted Samples: {total_deletes} samples"));
     }
+
+    processed
 }
 
 fn fetch_keys_batch(
@@ -169,7 +172,6 @@ fn fetch_keys_batch(
     })
 }
 
-
 pub fn remove_stale_series_task(ctx: &Context) {
     let stale_ids = with_db_task_meta(ctx, |meta| meta.take_stale_ids());
     remove_stale_series(ctx, &stale_ids);
@@ -199,4 +201,27 @@ where
 #[inline]
 fn get_task_meta_for_db(db: i32, guard: &impl Guard) -> &TaskMeta {
     DB_TASK_METAS.get_or_insert_with(db, TaskMeta::new, guard)
+}
+
+pub fn process_expires_task() {
+    let detached_ctx = DetachedContext::new();
+    let mut db = next_db();
+    let first_db = db;
+    let mut iterations = 0;
+    loop {
+        let guard = detached_ctx.lock();
+        let processed = trim_series(&guard, db);
+        if processed > 10 {
+            // todo: make it a configurable constant
+            break;
+        }
+        db = next_db();
+        if db == first_db {
+            break;
+        }
+        iterations += 1;
+        if iterations > 10 {
+            break;
+        }
+    }
 }
