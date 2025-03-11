@@ -2,8 +2,8 @@ use crate::aggregators::AggOp;
 use crate::arg_types::{RangeGroupingOptions, RangeOptions};
 use crate::common::{Sample, Timestamp};
 use crate::iterators::aggregator::{AggrIterator, AggregationOptions};
+use crate::labels::InternedLabel;
 use crate::series::TimeSeries;
-use valkey_module::ValkeyValue;
 
 pub(crate) fn get_range(
     series: &TimeSeries,
@@ -62,35 +62,28 @@ pub(crate) fn aggregate_samples(
     aggr.calculate(iter)
 }
 
-pub fn get_series_labels(
-    series: &TimeSeries,
+pub fn get_series_labels<'a>(
+    series: &'a TimeSeries,
     with_labels: bool,
     selected_labels: &[String],
-) -> Vec<ValkeyValue> {
+) -> Vec<InternedLabel<'a>> {
     if !with_labels || selected_labels.is_empty() {
         return vec![];
     }
 
     let mut dest = Vec::new();
 
-    fn create_label(name: &str, value: &str) -> ValkeyValue {
-        ValkeyValue::Array(vec![
-            ValkeyValue::SimpleString(name.to_string()),
-            ValkeyValue::SimpleString(value.to_string()),
-        ])
-    }
-
     if !selected_labels.is_empty() {
-        for name in selected_labels.iter() {
-            if let Some(value) = series.label_value(name) {
-                dest.push(create_label(name, value));
+        for label in series.labels.iter() {
+            if selected_labels.iter().any(|name| name == label.name) {
+                dest.push(label)
             }
         }
         return dest;
     }
 
-    for label in series.labels.iter().by_ref() {
-        dest.push(create_label(label.name, label.value));
+    for label in series.labels.iter() {
+        dest.push(label);
     }
 
     dest

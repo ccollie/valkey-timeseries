@@ -45,6 +45,12 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     with_matched_series(ctx, &mut state, &options.filter, |acc, series, key| {
         let sample = series.last_sample;
         let labels = get_series_labels(series, acc.with_labels, &acc.selected_labels);
+        let labels: Vec<_> = labels.into_iter().map(|label| {
+            ValkeyValue::Array(vec![
+                ValkeyValue::from(label.name),
+                ValkeyValue::from(label.value),
+            ])
+        }).collect();
         acc.series.push(SeriesData {
             sample,
             labels,

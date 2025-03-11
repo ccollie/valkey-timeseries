@@ -235,6 +235,19 @@ impl TimestampRange {
         (start_timestamp, end_timestamp)
     }
 
+    pub fn get_timestamps(&self, now: Option<Timestamp>) -> (Timestamp, Timestamp) {
+        use TimestampValue::*;
+
+        let start_timestamp = self.start.as_timestamp(now);
+        let end_timestamp = if let Relative(delta) = self.end {
+            start_timestamp.wrapping_add(delta)
+        } else {
+            self.end.as_timestamp(now)
+        };
+
+        (start_timestamp, end_timestamp)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.end == TimestampValue::Latest && self.start == TimestampValue::Earliest
     }
