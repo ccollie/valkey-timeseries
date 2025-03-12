@@ -32,19 +32,6 @@ pub struct JoinValue {
 }
 
 impl JoinValue {
-    pub fn new(timestamp: Timestamp, left: Option<f64>, right: Option<f64>) -> Self {
-        JoinValue {
-            timestamp,
-            other_timestamp: None,
-            value: match (&left, &right) {
-                (Some(l), Some(r)) => EitherOrBoth::Both(*l, *r),
-                (Some(l), None) => EitherOrBoth::Left(*l),
-                (None, Some(r)) => EitherOrBoth::Right(*r),
-                (None, None) => unreachable!(),
-            },
-        }
-    }
-
     pub fn left(timestamp: Timestamp, value: f64) -> Self {
         JoinValue {
             timestamp,

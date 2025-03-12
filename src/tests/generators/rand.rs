@@ -161,30 +161,13 @@ pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
     }
 
     timestamps
-        .iter()
-        .zip(values.iter_mut())
+        .iter().cloned()
+        .zip(values.iter().cloned())
         .map(|(timestamp, value)| Sample {
-            timestamp: *timestamp,
-            value: *value,
+            timestamp,
+            value,
         })
         .collect::<Vec<Sample>>()
-}
-
-pub fn generate_timestamps_in_range(
-    start: Timestamp,
-    end: Timestamp,
-    interval: Duration,
-) -> Vec<Timestamp> {
-    let interval_millis = interval.as_millis() as i64;
-    let capacity = ((end - start) / interval_millis) as usize;
-    let mut res = Vec::with_capacity(capacity);
-    let mut t = start;
-
-    while t < end {
-        res.push(t);
-        t += interval_millis;
-    }
-    res
 }
 
 pub fn generate_timestamps(count: usize, start: Timestamp, interval: Duration) -> Vec<Timestamp> {

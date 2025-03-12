@@ -33,26 +33,3 @@ pub(crate) fn get_timestamp_index_bounds(
 ) -> Option<(usize, usize)> {
     get_index_bounds(timestamps, &start_ts, &end_ts)
 }
-
-pub(crate) fn get_sample_index_bounds(
-    samples: &[Sample],
-    start_ts: Timestamp,
-    end_ts: Timestamp,
-) -> Option<(usize, usize)> {
-    if samples.is_empty() {
-        return None;
-    }
-    let start_sample = Sample {
-        timestamp: start_ts,
-        value: 0.0,
-    };
-    let end_sample = Sample {
-        timestamp: end_ts,
-        value: 0.0,
-    };
-
-    get_index_bounds(samples, &start_sample, &end_sample)
-}
-
-#[cfg(test)]
-mod tests {}

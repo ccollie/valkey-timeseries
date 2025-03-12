@@ -1,5 +1,4 @@
 use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::index::with_timeseries_index;
 use crate::series::TimeSeries;
 use std::fmt::Display;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
@@ -22,24 +21,6 @@ pub fn with_timeseries<R>(
     } else {
         Err(invalid_series_key_error(key))
     }
-}
-
-pub fn with_timeseries_by_id<R>(
-    ctx: &Context,
-    id: u64,
-    f: impl FnOnce(&TimeSeries) -> ValkeyResult<R>,
-) -> ValkeyResult<R> {
-    with_timeseries_index(ctx, |index| {
-        if let Some(key) = index.get_key_by_id(ctx, id) {
-            let key = ctx.create_string(&key[0..]);
-            with_timeseries(ctx, &key, f)
-        } else {
-            Err(ValkeyError::String(format!(
-                "TS: series with id \"{}\" does not exist",
-                id
-            )))
-        }
-    })
 }
 
 pub fn with_timeseries_mut<R>(

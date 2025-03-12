@@ -701,6 +701,7 @@ impl TimeSeries {
         optimize_internal(&mut self.chunks)
     }
 
+    #[cfg(test)]
     pub(super) fn update_state_from_chunks(&mut self) {
         self.update_first_last_timestamps();
         self.total_samples = self.chunks.iter().map(|x| x.len()).sum();

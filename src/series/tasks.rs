@@ -29,7 +29,7 @@ impl TaskMeta {
 
     pub fn reset(&self) {
         self.last_processed_id
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         self.stale_ids.lock().unwrap().clear();
     }
 

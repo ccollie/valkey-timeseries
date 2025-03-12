@@ -439,6 +439,7 @@ fn debug_bitmap(context: &str, bitmap: &PostingsBitmap) {
 }
 
 // for debugging purposes
+#[cfg(test)]
 fn bitmap_to_string(bitmap: &PostingsBitmap) -> String {
     let mut s = String::with_capacity((bitmap.cardinality() * 4) as usize);
     for (i, id) in bitmap.iter().enumerate() {

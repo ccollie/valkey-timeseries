@@ -106,9 +106,13 @@ pub fn series_keys_by_matchers(
     get_keys_by_matchers(ctx, ts_index, matchers, None)
 }
 
+pub fn clear_timeseries_db_index(db: i32) {
+    TIMESERIES_INDEX.pin().remove(&db);
+}
+
 pub fn clear_timeseries_index(ctx: &Context) {
     let db = get_current_db(ctx);
-    TIMESERIES_INDEX.pin().remove(&db);
+    clear_timeseries_db_index(db);
 }
 
 pub fn clear_all_timeseries_indexes() {

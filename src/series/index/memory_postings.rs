@@ -35,7 +35,7 @@ impl MemoryPostings {
         self.label_index.clear();
         self.id_to_key.clear();
     }
-
+    
     pub(super) fn remove_posting_for_label_value(
         &mut self,
         label: &str,
@@ -413,13 +413,6 @@ mod tests {
 
     fn contains(set: &[String], needle: &str) -> bool {
         set.iter().any(|s| s == needle)
-    }
-
-    fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
-        let mut ts = TimeSeries::new();
-        let labels = parse_metric_name(prometheus_name).unwrap();
-        ts.labels = InternedMetricName::new(&labels);
-        ts
     }
 
     fn create_series(metric_name: &str, labels: Vec<Label>) -> TimeSeries {

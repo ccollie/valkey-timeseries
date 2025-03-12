@@ -99,11 +99,6 @@ impl TimeSeriesIndex {
         result
     }
 
-    pub fn max_id(&self) -> SeriesRef {
-        let inner = self.inner.read().unwrap();
-        inner.max_id()
-    }
-
     pub fn get_id_for_key(&self, key: &[u8]) -> Option<SeriesRef> {
         let inner = self.inner.read().unwrap();
         inner.get_id_for_key(key)

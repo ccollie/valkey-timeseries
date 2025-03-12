@@ -10,11 +10,6 @@ use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
 use valkey_module::raw;
-// see https://github.com/redis/redis/blob/unstable/tests/modules
-
-/// Used for decoding and encoding `TimeSeries`. Currently used in AOF Rewrite.
-/// This value must be incremented when the `TimeSeries` struct change.
-pub const TIMESERIES_TYPE_OBJECT_VERSION: u8 = 1;
 
 /// Bloom Module data type RDB encoding version.
 const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
