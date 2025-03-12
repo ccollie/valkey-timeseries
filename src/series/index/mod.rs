@@ -30,10 +30,10 @@ pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex>;
 pub(crate) static TIMESERIES_INDEX: LazyLock<TimeSeriesIndexMap> =
     LazyLock::new(TimeSeriesIndexMap::new);
 
-pub(crate) static TIMESERIES_ID: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TIMESERIES_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn next_timeseries_id() -> u64 {
-    TIMESERIES_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    TIMESERIES_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn reset_timeseries_id(id: u64) {
