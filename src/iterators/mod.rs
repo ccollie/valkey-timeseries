@@ -3,7 +3,6 @@ mod group_aggregation_iter;
 mod multi_series_sample_iter;
 mod sample_iter;
 mod sample_merge_iterator;
-mod sample_slice_iterator;
 mod shared_vec_iter;
 mod vec_sample_iterator;
 
