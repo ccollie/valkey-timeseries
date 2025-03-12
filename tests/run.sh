@@ -71,7 +71,7 @@ if [[ ! -z "${TEST_PATTERN}" ]] ; then
 fi
 
 if [[ ! -z "${TEST_PATTERN}" ]] ; then
-    pytest --cache-clear -v ${TEST_FLAG} ./ ${TEST_PATTERN}
+    python -m pytest --cache-clear -vvv ${TEST_FLAG} ./ ${TEST_PATTERN}
 else
-    pytest --cache-clear -v ${TEST_FLAG} ./
+    python -m pytest --cache-clear -vvv ${TEST_FLAG} ./
 fi

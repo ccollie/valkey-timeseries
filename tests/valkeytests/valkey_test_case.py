@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from enum import Enum
 from valkey import *
 
-from util.waiters import *
+from .util.waiters import *
 
 MAX_PING_TRIES = 60
 

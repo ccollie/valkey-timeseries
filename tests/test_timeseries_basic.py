@@ -1,5 +1,5 @@
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
-
+from valkeytests.conftest import resource_port_tracker
 
 class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
 
@@ -20,10 +20,10 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         ts_cmds = ["TS.CREATE", "TS.ALTER", "TS.ADD", "TS.MADD", "TS.DEL", "TS.GET", "TS.MGET", "TS.RANGE", "TS.MRANGE", "TS.CARD", "TS.QUERYINDEX", "TS.STATS", "TS.LABELNAMES", "TS.LABELVALUES", "TS.INFO"]
         assert all(item in command_cmd_result for item in ts_cmds)
         # Basic bloom filter create, item add and item exists validation.
-        bf_add_result = client.execute_command('TS.ADD series1 1000 102')
-        assert bf_add_result == 1000
-        bf_exists_result = client.execute_command('TS.GET series1 1000')
-        assert bf_exists_result == 102
+        ts_add_result = client.execute_command('TS.ADD series1 1000 102')
+        assert ts_add_result == 1000
+        exists_result = client.execute_command('TS.GET series1 1000')
+        assert exists_result == 102
 
     def test_timeseries_create_cmd(self):
         client = self.server.get_new_client()

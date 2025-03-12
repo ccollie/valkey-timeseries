@@ -5,6 +5,6 @@ description = "A Timeseries data type for Valkey"
 requires-python=">=3.11,<3.12"
 dependencies = [
     "valkey",
-    "pytest>=6.0,<7.0",
+    "pytest",
     "pytest-html",
 ]
