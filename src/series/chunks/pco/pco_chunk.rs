@@ -644,20 +644,6 @@ mod tests {
         }
     }
 
-    fn compare_chunks(chunk1: &PcoChunk, chunk2: &PcoChunk) {
-        assert_eq!(chunk1.min_time, chunk2.min_time, "min_time");
-        assert_eq!(chunk1.max_time, chunk2.max_time);
-        assert_eq!(chunk1.max_size, chunk2.max_size);
-        assert_eq!(chunk1.last_value, chunk2.last_value);
-        assert_eq!(
-            chunk1.count, chunk2.count,
-            "mismatched counts {} vs {}",
-            chunk1.count, chunk2.count
-        );
-        assert_eq!(chunk1.timestamps, chunk2.timestamps);
-        assert_eq!(chunk1.values, chunk2.values);
-    }
-
     #[test]
     fn test_chunk_compress() {
         let mut chunk = PcoChunk::default();
