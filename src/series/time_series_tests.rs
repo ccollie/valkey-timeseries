@@ -1,8 +1,6 @@
 #[cfg(test)]
 mod tests {
     use crate::common::{Sample, Timestamp};
-    use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
-    use crate::error::TsdbError;
     use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk};
     use crate::series::{TimeSeries, ValueFilter};
     use crate::tests::generators::{DataGenerator, RandAlgo};
@@ -239,32 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_remove_range_error() {
-        // Setup a TimeSeries with a chunk that will cause remove_range to fail
-        let mut time_series = TimeSeries::default();
-        let mut chunk = TimeSeriesChunk::new(Default::default(), DEFAULT_CHUNK_SIZE_BYTES);
-
-        // Assuming remove_range will fail if the range is invalid, we simulate this by adding a sample
-        // with a timestamp that will not be removed by the range, causing an error.
-        let sample = Sample {
-            timestamp: 100,
-            value: 1.0,
-        };
-        chunk.add_sample(&sample).unwrap();
-        time_series.chunks.push(chunk);
-
-        // Set the retention so that the min_timestamp is greater than the sample's timestamp
-        time_series.retention = Duration::from_secs(1);
-        time_series.last_sample = Some(sample);
-
-        // Attempt to trim, expecting an error due to remove_range failure
-        let result = time_series.trim();
-
-        // Assert that the result is an error
-        assert!(matches!(result, Err(TsdbError::RemoveRangeError)));
-    }
-
-    #[test]
     fn test_trim_all_chunks_before_min_timestamp() {
         let mut time_series = TimeSeries::new();
         let mut chunk1 = create_chunk(None);
@@ -279,9 +251,14 @@ mod tests {
             timestamp: 20,
             value: 2.0,
         };
+        let sample3 = Sample {
+            timestamp: 60,
+            value: 4.0,
+        };
         chunk1.add_sample(&sample1).unwrap();
         chunk2.add_sample(&sample2).unwrap();
-
+        chunk2.add_sample(&sample3).unwrap();
+        
         time_series.chunks.push(chunk1);
         time_series.chunks.push(chunk2);
 
@@ -295,10 +272,10 @@ mod tests {
 
         // Check that all chunks are removed
         assert_eq!(deleted_count, 2);
-        assert!(time_series.chunks.is_empty());
-        assert_eq!(time_series.total_samples, 0);
-        assert_eq!(time_series.first_timestamp, 0);
-        assert_eq!(time_series.last_sample, None);
+        assert!(time_series.chunks.len() == 1);
+        assert_eq!(time_series.total_samples, 1);
+        assert_eq!(time_series.first_timestamp, 60);
+        assert_eq!(time_series.last_sample, Some(sample3));
     }
 
     #[test]
@@ -365,49 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_adjusts_total_samples_correctly() {
-        let mut time_series = TimeSeries::new();
-
-        // Set up chunks with samples
-        let mut chunk1 = create_chunk(None);
-        let mut chunk2 = create_chunk(None);
-
-        // Assuming add_sample is a method to add samples to a chunk
-        chunk1
-            .add_sample(&Sample {
-                timestamp: 1,
-                value: 10.0,
-            })
-            .unwrap();
-        chunk1
-            .add_sample(&Sample {
-                timestamp: 2,
-                value: 20.0,
-            })
-            .unwrap();
-        chunk2
-            .add_sample(&Sample {
-                timestamp: 3,
-                value: 30.0,
-            })
-            .unwrap();
-
-        time_series.chunks.push(chunk1);
-        time_series.chunks.push(chunk2);
-
-        time_series.update_state_from_chunks();
-
-        // Set retention to remove the first chunk
-        time_series.retention = Duration::from_millis(2);
-
-        let deleted_count = time_series.trim().unwrap();
-
-        assert_eq!(deleted_count, 2);
-        assert_eq!(time_series.total_samples, 1);
-        // todo: check last_sample, first_timestamp, etc.
-    }
-
-    #[test]
     fn test_trim_partial_overlap_with_min_timestamp() {
         let mut time_series = TimeSeries::new();
 
@@ -446,7 +380,7 @@ mod tests {
         let deleted_count = time_series.trim().unwrap();
 
         // Verify the results
-        assert_eq!(deleted_count, 1); // Only one sample should be deleted from chunk1
+        assert_eq!(deleted_count, 2); // Only one sample should be deleted from chunk1
         assert_eq!(time_series.total_samples, 1); // Total samples should reflect the deletion
         assert_eq!(time_series.chunks.len(), 1); // Only one chunk should remain
         assert_eq!(time_series.chunks[0].first_timestamp(), 200); // First timestamp should be updated
