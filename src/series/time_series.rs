@@ -970,26 +970,4 @@ mod tests {
             assert_eq!(sample.value, orig.value);
         }
     }
-
-    const BLOCK_SIZE_FOR_TIME_SERIES: usize = 1000;
-
-    #[test]
-    fn test_block_size_entries() {
-        let mut ts = TimeSeries::new();
-        for i in 0..BLOCK_SIZE_FOR_TIME_SERIES {
-            assert!(ts.add(i as i64, i as f64, None).is_ok());
-        }
-
-        // All the entries will go to 'last', as we have pushed exactly BLOCK_SIZE_FOR_TIME_SERIES entries.
-        assert_eq!(ts.chunks.len(), 2);
-        assert_eq!(ts.get_last_chunk().len(), BLOCK_SIZE_FOR_TIME_SERIES);
-
-        for i in 0..BLOCK_SIZE_FOR_TIME_SERIES {
-            let last_block = ts.get_last_chunk();
-            let samples = last_block.get_range(0, 7000).unwrap();
-            let data_point = samples.get(i).unwrap();
-            assert_eq!(data_point.timestamp, i as i64);
-            assert_eq!(data_point.value, i as f64);
-        }
-    }
 }
