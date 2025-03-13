@@ -32,7 +32,7 @@ const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "SIGNIFICANT_DIGITS";
 const SERIES_WORKER_INTERVAL_KEY: &str = "ts.worker_interval";
 
 pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 4 * 1024;
-pub const DEFAULT_CHUNK_COMPRESSION: ChunkEncoding = ChunkEncoding::Gorilla;
+pub const DEFAULT_CHUNK_ENCODING: ChunkEncoding = ChunkEncoding::Gorilla;
 pub const DEFAULT_DUPLICATE_POLICY: DuplicatePolicy = DuplicatePolicy::KeepLast;
 pub const DEFAULT_RETENTION_PERIOD: Duration = Duration::ZERO;
 pub const DEFAULT_SERIES_WORKER_INTERVAL: Duration = Duration::from_secs(60);
