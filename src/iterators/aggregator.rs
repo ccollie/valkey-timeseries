@@ -30,6 +30,7 @@ impl TryFrom<&str> for BucketTimestamp {
             match c {
                 '-' => return Ok(BucketTimestamp::Start),
                 '+' => return Ok(BucketTimestamp::End),
+                '~' => return Ok(BucketTimestamp::Mid),
                 _ => {}
             }
         }
