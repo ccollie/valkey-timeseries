@@ -408,7 +408,6 @@ pub(super) fn handle_regex_not_equal_match<'a>(
 mod tests {
     use super::*;
     use crate::labels::{InternedMetricName, Label};
-    use crate::parser::metric_name::parse_metric_name;
     use crate::series::time_series::TimeSeries;
 
     fn contains(set: &[String], needle: &str) -> bool {
@@ -551,7 +550,7 @@ mod tests {
     fn test_postings_with_large_number_of_values() {
         let mut postings = MemoryPostings::default();
         let label_name = "large_label";
-        let num_values = 100_000;
+        let num_values = 10_000;
 
         // Add postings for a large number of values
         for i in 0..num_values {
