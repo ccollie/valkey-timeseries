@@ -327,7 +327,7 @@ pub fn parse_chunk_size(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
 pub fn parse_chunk_compression(args: &mut CommandArgIterator) -> ValkeyResult<ChunkEncoding> {
     args.next_str().and_then(|next| {
         ChunkEncoding::try_from(next)
-            .map_err(|_| ValkeyError::Str(error_consts::INVALID_CHUNK_COMPRESSION))
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING))
     })
 }
 

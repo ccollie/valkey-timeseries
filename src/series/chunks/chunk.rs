@@ -23,7 +23,7 @@ pub enum ChunkEncoding {
 }
 
 impl ChunkEncoding {
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
             ChunkEncoding::Uncompressed => "uncompressed",
             ChunkEncoding::Gorilla => "gorilla",
@@ -48,7 +48,7 @@ impl TryFrom<&str> for ChunkEncoding {
         if let Some(compression) = parse_encoding(s) {
             return Ok(compression);
         }
-        Err(ValkeyError::Str(error_consts::INVALID_CHUNK_COMPRESSION))
+        Err(ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING))
     }
 }
 

@@ -1,7 +1,5 @@
 use crate::common::rounding::RoundingStrategy;
-use crate::config::{
-    get_series_config_settings, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_SERIES_WORKER_INTERVAL,
-};
+use crate::config::{CONFIG_SETTINGS, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_SERIES_WORKER_INTERVAL};
 use crate::series::chunks::ChunkEncoding;
 use crate::series::index::optimize_all_timeseries_indexes;
 use crate::series::tasks::process_expires_task;
@@ -13,7 +11,7 @@ use valkey_module::{Context, RedisModuleTimerID};
 #[derive(Clone, Copy)]
 pub struct ConfigSettings {
     pub retention_period: Option<Duration>,
-    pub chunk_encoding: Option<ChunkEncoding>,
+    pub chunk_encoding: ChunkEncoding,
     pub chunk_size_bytes: usize,
     pub rounding: Option<RoundingStrategy>,
     pub worker_interval: Duration,
@@ -25,7 +23,7 @@ impl Default for ConfigSettings {
         Self {
             retention_period: None,
             chunk_size_bytes: DEFAULT_CHUNK_SIZE_BYTES,
-            chunk_encoding: Some(ChunkEncoding::Gorilla),
+            chunk_encoding: ChunkEncoding::Gorilla,
             worker_interval: DEFAULT_SERIES_WORKER_INTERVAL,
             rounding: None,
             duplicate_policy: SampleDuplicatePolicy::default(),
@@ -33,7 +31,6 @@ impl Default for ConfigSettings {
     }
 }
 
-pub static SERIES_SETTINGS: LazyLock<ConfigSettings> = LazyLock::new(get_series_config_settings);
 static SERIES_WORKER_TIMER_ID: LazyLock<Mutex<RedisModuleTimerID>> =
     LazyLock::new(|| Mutex::new(0));
 
@@ -41,7 +38,8 @@ pub(crate) fn start_series_background_worker() {
     let mut timer_id = SERIES_WORKER_TIMER_ID.lock().unwrap();
     if *timer_id == 0 {
         let ctx = valkey_module::MODULE_CONTEXT.lock();
-        let interval = SERIES_SETTINGS.worker_interval;
+        let settings = CONFIG_SETTINGS.read().unwrap();
+        let interval = settings.worker_interval;
         *timer_id = ctx.create_timer(interval, series_worker_callback, 0usize);
     }
 }

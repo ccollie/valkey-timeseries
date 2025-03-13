@@ -1,7 +1,7 @@
 use crate::common::rounding::RoundingStrategy;
 use crate::common::serialization::rdb_load_string;
 use crate::common::{Sample, Timestamp};
-use crate::config::get_series_config_settings;
+use crate::config::CONFIG_SETTINGS;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::Label;
@@ -34,7 +34,7 @@ impl Display for DuplicatePolicy {
 }
 
 impl DuplicatePolicy {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             DuplicatePolicy::Block => "block",
             DuplicatePolicy::KeepFirst => "first",
@@ -104,7 +104,7 @@ pub struct SampleDuplicatePolicy {
 
 impl Default for SampleDuplicatePolicy {
     fn default() -> Self {
-        let config = get_series_config_settings();
+        let config = CONFIG_SETTINGS.read().unwrap();
         config.duplicate_policy
     }
 }
@@ -194,7 +194,7 @@ impl From<SampleAddResult> for ValkeyValue {
 
 #[derive(Debug, Clone)]
 pub struct TimeSeriesOptions {
-    pub chunk_compression: Option<ChunkEncoding>,
+    pub chunk_compression: ChunkEncoding,
     pub chunk_size: Option<usize>,
     pub retention: Option<Duration>,
     pub sample_duplicate_policy: SampleDuplicatePolicy,
@@ -211,13 +211,13 @@ impl TimeSeriesOptions {
 
 impl Default for TimeSeriesOptions {
     fn default() -> Self {
-        let config = get_series_config_settings();
+        let config = &*CONFIG_SETTINGS.read().unwrap();
         config.into()
     }
 }
 
-impl From<ConfigSettings> for TimeSeriesOptions {
-    fn from(settings: ConfigSettings) -> Self {
+impl From<&ConfigSettings> for TimeSeriesOptions {
+    fn from(settings: &ConfigSettings) -> Self {
         Self {
             chunk_compression: settings.chunk_encoding,
             chunk_size: Some(settings.chunk_size_bytes),
@@ -227,6 +227,12 @@ impl From<ConfigSettings> for TimeSeriesOptions {
             rounding: settings.rounding,
             on_duplicate: None,
         }
+    }
+}
+
+impl From<ConfigSettings> for TimeSeriesOptions {
+    fn from(settings: ConfigSettings) -> Self {
+        Self::from(&settings)
     }
 }
 

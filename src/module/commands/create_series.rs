@@ -75,7 +75,7 @@ pub fn parse_series_options(
         match token {
             CommandArgToken::ChunkSize => options.chunk_size = Some(parse_chunk_size(args)?),
             CommandArgToken::Encoding => {
-                options.chunk_compression = Some(parse_chunk_compression(args)?);
+                options.chunk_compression = parse_chunk_compression(args)?;
             }
             CommandArgToken::DecimalDigits => {
                 if options.rounding.is_some() {

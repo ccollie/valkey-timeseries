@@ -6,7 +6,7 @@ use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::{
-    DEFAULT_CHUNK_ENCODING, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD,
+    DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD,
 };
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
@@ -68,10 +68,7 @@ impl TimeSeries {
             res.chunk_size_bytes = chunk_size;
         }
 
-        res.chunk_compression = options
-            .chunk_compression
-            .unwrap_or(DEFAULT_CHUNK_ENCODING);
-
+        res.chunk_compression = options.chunk_compression;
         res.retention = options.retention.unwrap_or(DEFAULT_RETENTION_PERIOD);
         res.rounding = options.rounding;
         res.sample_duplicates = options.sample_duplicate_policy;

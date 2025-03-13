@@ -3,9 +3,11 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
-use crate::config::load_config;
+use crate::config::{load_config, register_config_handlers};
 use crate::module::VK_TIME_SERIES_TYPE;
-use valkey_module::{logging, valkey_module, Context, Status, ValkeyString};
+use valkey_module::{
+    logging, valkey_module, Context, Status, ValkeyString
+};
 use valkey_module_macros::config_changed_event_handler;
 
 pub mod aggregators;
@@ -36,6 +38,7 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         logging::log_warning("Failed to load configuration");
         return Status::Err;
     }
+    register_config_handlers(ctx);
 
     start_series_background_worker();
 
@@ -106,7 +109,7 @@ valkey_module! {
     ],
      event_handlers: [
         [@SET @STRING @GENERIC @EVICTED @EXPIRED : generic_key_event_handler]
-    ],
+    ]
 }
 
 // todo: handle @TRIMMED
