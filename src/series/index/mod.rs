@@ -128,7 +128,8 @@ pub fn swap_timeseries_index_dbs(from_db: i32, to_db: i32) {
 
 pub fn optimize_all_timeseries_indexes() {
     let guard = TIMESERIES_INDEX.guard();
-    let values: Vec<_> = TIMESERIES_INDEX.values(&guard).collect();
+    let values: Vec<_> = TIMESERIES_INDEX.values(&guard)
+        .filter(|x| x.is_empty()).collect();
     values.into_iter().par_bridge().for_each(|index| {
         index.optimize();
     });
