@@ -134,10 +134,6 @@ impl MemoryPostings {
         self.label_index.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.count() == 0
-    }
-
     pub fn all_postings(&self) -> &PostingsBitmap {
         self.label_index
             .get(&*ALL_POSTINGS_KEY)
@@ -257,6 +253,7 @@ impl MemoryPostings {
     }
 
 
+    #[allow(dead_code)]
     pub fn postings_without_labels<'a>(&'a self, labels: &[&str]) -> Cow<'a, PostingsBitmap> {
         match labels.len() {
             0 => Cow::Borrowed(self.all_postings()),     // bad boy !!
@@ -288,16 +285,6 @@ impl MemoryPostings {
             PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, matcher),
             PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, matcher),
         }
-    }
-
-    pub(crate) fn get_keys_by_iter(&self, iter: impl Iterator<Item = SeriesRef>) -> Vec<&KeyType> {
-        let mut keys = Vec::new();
-        for id in iter {
-            if let Some(key) = self.id_to_key.get(&id) {
-                keys.push(key);
-            }
-        }
-        keys
     }
 
     pub(super) fn get_key_range(&self) -> Option<(&IndexKey, &IndexKey)> {

@@ -1,9 +1,5 @@
-use super::index_key::{get_key_for_label_prefix, IndexKey};
 use ahash::AHashMap;
-use blart::AsBytes;
 use std::collections::hash_map::Entry;
-use std::collections::BTreeSet;
-use std::ops::ControlFlow;
 use std::sync::RwLock;
 
 use super::memory_postings::{
@@ -14,9 +10,8 @@ use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::{InternedLabel, Label, SeriesLabel};
 use crate::series::{SeriesRef, TimeSeries};
-use croaring::Bitmap64;
 use get_size::GetSize;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{ValkeyError, ValkeyResult};
 
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<MemoryPostings>,
@@ -81,125 +76,14 @@ impl TimeSeriesIndex {
         self.index_timeseries(series, key);
     }
 
-    pub fn set_timeseries_key(&mut self, id: SeriesRef, new_key: &[u8]) {
-        let mut inner = self.inner.write().unwrap();
-        inner.set_timeseries_key(id, new_key);
-    }
-
     pub fn remove_timeseries(&self, series: &TimeSeries) {
         let mut inner = self.inner.write().unwrap();
         inner.remove_timeseries(series);
     }
 
-    pub fn postings_for_all_label_values(&self, label_name: &str) -> PostingsBitmap {
-        let inner = self.inner.read().unwrap();
-        let prefix = get_key_for_label_prefix(label_name);
-        let mut result = PostingsBitmap::new();
-        for (_, map) in inner.label_index.prefix(prefix.as_bytes()) {
-            result |= map;
-        }
-        result
-    }
-
-    pub fn get_id_for_key(&self, key: &[u8]) -> Option<SeriesRef> {
-        let inner = self.inner.read().unwrap();
-        inner.get_id_for_key(key)
-    }
-
-    pub fn get_key_by_id(&self, ctx: &Context, id: SeriesRef) -> Option<ValkeyString> {
-        let inner = self.inner.read().unwrap();
-        inner
-            .get_key_by_id(id)
-            .map(|key| ctx.create_string(key.as_bytes()))
-    }
-
     pub fn has_id(&self, id: SeriesRef) -> bool {
         let inner = self.inner.read().unwrap();
         inner.has_id(id)
-    }
-
-    /// `postings` returns the postings list iterator for the label pairs.
-    /// The postings here contain the ids to the series inside the index.
-    pub fn postings(&self, name: &str, values: &[String]) -> PostingsBitmap {
-        let inner = self.inner.read().unwrap();
-        inner.postings(name, values)
-    }
-
-    pub fn postings_for_label_value(&self, name: &str, value: &str) -> PostingsBitmap {
-        let key = IndexKey::for_label_value(name, value);
-        let inner = self.inner.read().unwrap();
-        if let Some(bmp) = inner.label_index.get(&key) {
-            bmp.clone()
-        } else {
-            PostingsBitmap::default()
-        }
-    }
-
-    /// `postings_for_label_matching` returns postings having a label with the given name and a value
-    /// for which `match_fn` returns true. If no postings are found having at least one matching label,
-    /// an empty bitmap is returned.
-    pub fn postings_for_label_matching<F, STATE>(
-        &self,
-        name: &str,
-        state: &mut STATE,
-        match_fn: F,
-    ) -> PostingsBitmap
-    where
-        F: Fn(&str, &mut STATE) -> bool,
-    {
-        let inner = self.inner.read().unwrap();
-        inner.postings_for_label_matching(name, state, match_fn)
-    }
-
-    pub fn label_names_for(&self, postings: impl Iterator<Item = SeriesRef>) -> Vec<String> {
-        let inner = self.inner.read().unwrap();
-        let bitmap: Bitmap64 = Bitmap64::from_iter(postings);
-        // Slow
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        if !bitmap.is_empty() {
-            for (k, postings) in inner.label_index.iter() {
-                if let Some((key, _)) = k.split() {
-                    if key != ALL_POSTINGS_KEY_NAME
-                        && !set.contains(key)
-                        && postings.intersect(&bitmap)
-                    {
-                        set.insert(key.to_string());
-                    }
-                }
-            }
-        }
-        set.into_iter().collect::<Vec<_>>()
-    }
-
-    /// label_names returns all the unique label names.
-    pub fn label_names(&self) -> Vec<String> {
-        let mut set: BTreeSet<String> = BTreeSet::new();
-        let inner = self.inner.read().unwrap();
-
-        for key in inner.label_index.keys() {
-            if let Some((label, _)) = key.split() {
-                if !label.is_empty() {
-                    set.insert(label.to_string());
-                }
-            }
-        }
-        set.into_iter().collect()
-    }
-
-    pub fn label_values(&self, name: &str) -> Vec<String> {
-        let mut values = Vec::new();
-        let _ = self.process_label_values(
-            name,
-            &mut values,
-            |_, _| true,
-            |values, value, _| {
-                values.push(value.to_string());
-                ControlFlow::<Option<()>>::Continue(())
-            },
-        );
-        values.sort();
-
-        values
     }
 
     /// Return all series ids corresponding to the given label value pairs
@@ -217,45 +101,7 @@ impl TimeSeriesIndex {
             _ => Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES)),
         }
     }
-
-    pub fn process_label_values<T, CONTEXT, F, PRED>(
-        &self,
-        label: &str,
-        ctx: &mut CONTEXT,
-        predicate: PRED,
-        f: F,
-    ) -> Option<T>
-    where
-        F: Fn(&mut CONTEXT, &str, &PostingsBitmap) -> ControlFlow<Option<T>>,
-        PRED: Fn(&str, &PostingsBitmap) -> bool,
-    {
-        let inner = self.inner.read().unwrap();
-        let prefix = get_key_for_label_prefix(label);
-        let start_pos = prefix.len();
-        for (key, map) in inner.label_index.prefix(prefix.as_bytes()) {
-            let value = key.sub_string(start_pos);
-            if predicate(value, map) {
-                match f(ctx, value, map) {
-                    ControlFlow::Break(v) => {
-                        return v;
-                    }
-                    ControlFlow::Continue(_) => continue,
-                }
-            }
-        }
-        None
-    }
-
-    pub fn label_value_for(&self, id: SeriesRef, label: &str) -> Option<String> {
-        let mut state = ();
-        self.process_label_values(
-            label,
-            &mut state,
-            |_, postings| postings.contains(id),
-            |_, value, _| ControlFlow::Break(Some(value.to_string())),
-        )
-    }
-
+    
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
         #[derive(Clone, Copy)]
         struct SizeAccumulator {
@@ -329,32 +175,6 @@ impl TimeSeriesIndex {
         }
     }
 
-    pub fn series_count_by_metric_name(
-        &self,
-        limit: usize,
-        prefix: Option<&str>,
-    ) -> Vec<(String, usize)> {
-        let mut metrics = StatsMaxHeap::new(limit);
-        let inner = self.inner.read().unwrap();
-
-        let prefix = IndexKey::for_label_value(METRIC_NAME_LABEL, prefix.unwrap_or(""));
-        for (key, bmp) in inner.label_index.prefix(prefix.as_bytes()) {
-            // keys and values are expected to be utf-8. If we panic, we have bigger issues
-            if let Some((_name, value)) = key.split() {
-                metrics.push(PostingStat {
-                    name: value.to_string(),
-                    count: bmp.cardinality(),
-                });
-            }
-        }
-        let items = metrics.into_vec();
-        let mut result = Vec::new();
-        for item in items {
-            result.push((item.name, item.count as usize));
-        }
-        result
-    }
-
     pub fn count(&self) -> usize {
         let inner = self.inner.read().unwrap();
         inner.count()
@@ -372,6 +192,7 @@ impl TimeSeriesIndex {
         f(&inner, state)
     }
 
+    #[cfg(test)]
     pub fn with_postings_mut<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
         F: FnOnce(&mut MemoryPostings, &mut STATE) -> R,
@@ -379,7 +200,7 @@ impl TimeSeriesIndex {
         let mut inner = self.inner.write().unwrap();
         f(&mut inner, state)
     }
-
+    
     pub fn slow_rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
         // this is split in two parts because we need to do a linear scan on the id->key
         // map to find the id for the old key. We hold a write lock only for the update
@@ -558,50 +379,6 @@ mod tests {
 
         assert_eq!(index.count(), 0);
         assert_eq!(label_count(&index), 0);
-    }
-
-    #[test]
-    fn test_get_label_values() {
-        let index = TimeSeriesIndex::new();
-        let ts1 = create_series(
-            "latency",
-            vec![
-                Label {
-                    name: "region".to_string(),
-                    value: "us-east1".to_string(),
-                },
-                Label {
-                    name: "env".to_string(),
-                    value: "dev".to_string(),
-                },
-            ],
-        );
-        let ts2 = create_series(
-            "latency",
-            vec![
-                Label {
-                    name: "region".to_string(),
-                    value: "us-east2".to_string(),
-                },
-                Label {
-                    name: "env".to_string(),
-                    value: "qa".to_string(),
-                },
-            ],
-        );
-
-        index.index_timeseries(&ts1, b"time-series-1");
-        index.index_timeseries(&ts2, b"time-series-2");
-
-        let values = index.label_values("region");
-        assert_eq!(values.len(), 2);
-        assert!(contains(&values, "us-east1"));
-        assert!(contains(&values, "us-east2"));
-
-        let values = index.label_values("env");
-        assert_eq!(values.len(), 2);
-        assert!(contains(&values, "dev"));
-        assert!(contains(&values, "qa"));
     }
 
     #[test]

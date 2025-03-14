@@ -30,6 +30,8 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
         let mut data = HashMap::with_capacity(4);
         data.insert("numSeries".into(), series_count.into());
+        data.insert("numLabels".into(), stats.num_labels.into());
+        data.insert("numLabelPairs".into(), stats.num_label_pairs.into());
         data.insert(
             "seriesCountByMetricName".into(),
             stats_slice_to_value(&stats.cardinality_metrics_stats),

@@ -1,6 +1,4 @@
-use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::InternedLabel;
-use enquote::enquote;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
@@ -100,41 +98,4 @@ fn hash_label<H: Hasher>(state: &mut H, name: &str, value: &str) {
     state.write(name.as_bytes());
     state.write_u8(SEP);
     state.write(value.as_bytes());
-}
-
-// Note - assumes that labels is sorted
-pub fn format_labels<T: SeriesLabel>(labels: &[T]) -> String {
-    let name = if let Some(label) = labels.iter().find(|l| l.name() == METRIC_NAME_LABEL) {
-        label.value()
-    } else {
-        ""
-    };
-
-    let mut full_name = String::with_capacity(name.len() + labels.len() * 16);
-    full_name.push_str(name);
-    if !labels.is_empty() {
-        full_name.push('{');
-        for (i, label) in labels.iter().enumerate() {
-            let name = label.name();
-            if label.name() == METRIC_NAME_LABEL {
-                continue;
-            }
-            let value = label.value();
-            full_name.push_str(name);
-            full_name.push_str("=\"");
-            // avoid allocation if possible
-            if value.contains('"') {
-                let quoted_value = enquote('\"', value);
-                full_name.push_str(&quoted_value);
-            } else {
-                full_name.push_str(value);
-            }
-            full_name.push('"');
-            if i < labels.len() - 1 {
-                full_name.push(',');
-            }
-        }
-        full_name.push('}');
-    }
-    full_name
 }
