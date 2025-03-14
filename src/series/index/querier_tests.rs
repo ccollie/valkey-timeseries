@@ -18,7 +18,7 @@ mod tests {
     use crate::labels::matchers::{MatchOp, Matcher, Matchers};
     use crate::labels::Label;
     use crate::series::index::{postings_for_matchers, TimeSeriesIndex};
-    use crate::series::{SeriesRef, TimeSeries};
+    use crate::series::SeriesRef;
     use std::collections::{HashMap, HashSet};
 
     fn labels_from_strings<S: Into<String> + Clone>(ss: &[S]) -> Vec<Label> {

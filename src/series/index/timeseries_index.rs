@@ -101,7 +101,7 @@ impl TimeSeriesIndex {
             _ => Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES)),
         }
     }
-    
+
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
         #[derive(Clone, Copy)]
         struct SizeAccumulator {
@@ -200,7 +200,7 @@ impl TimeSeriesIndex {
         let mut inner = self.inner.write().unwrap();
         f(&mut inner, state)
     }
-    
+
     pub fn slow_rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
         // this is split in two parts because we need to do a linear scan on the id->key
         // map to find the id for the old key. We hold a write lock only for the update
@@ -320,10 +320,6 @@ mod tests {
     use crate::parser::metric_name::parse_metric_name;
     use crate::series::time_series::TimeSeries;
 
-    fn contains(set: &[String], needle: &str) -> bool {
-        set.iter().any(|s| s == needle)
-    }
-
     fn label_count(index: &TimeSeriesIndex) -> usize {
         let stats = index.stats("", 10);
         stats.num_label_pairs // num_labels
@@ -332,12 +328,6 @@ mod tests {
     fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
         let mut ts = TimeSeries::new();
         let labels = parse_metric_name(prometheus_name).unwrap();
-        ts.labels = InternedMetricName::new(&labels);
-        ts
-    }
-
-    fn create_series(metric_name: &str, labels: Vec<Label>) -> TimeSeries {
-        let mut ts = TimeSeries::new();
         ts.labels = InternedMetricName::new(&labels);
         ts
     }
