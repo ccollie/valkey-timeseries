@@ -37,18 +37,6 @@ mod tests {
         labels
     }
 
-    fn create_series(
-        series_map: &mut HashMap<SeriesRef, TimeSeries>,
-        series_ref: SeriesRef,
-        labels: &[Label],
-    ) {
-        let mut ts = TimeSeries::default();
-        ts.id = series_ref;
-        for label in labels.iter() {
-            ts.labels.set_label(&label.name, &label.value);
-        }
-    }
-
     fn add_series(
         ix: &mut TimeSeriesIndex,
         labels_map: &mut HashMap<SeriesRef, Vec<Label>>,

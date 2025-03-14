@@ -2,7 +2,7 @@ use crate::aggregators::Aggregator;
 use crate::common::Timestamp;
 use crate::iterators::aggregator::AggregationOptions;
 use crate::labels::matchers::Matchers;
-use crate::series::{TimestampRange, TimestampValue, ValueFilter};
+use crate::series::{TimestampRange, ValueFilter};
 
 #[derive(Default)]
 pub struct MatchFilterOptions {
@@ -52,22 +52,6 @@ pub struct RangeOptions {
     pub with_labels: bool,
     pub selected_labels: Vec<String>,
     pub grouping: Option<RangeGroupingOptions>,
-}
-
-impl RangeOptions {
-    pub fn new(start: Timestamp, end: Timestamp) -> Self {
-        Self {
-            date_range: TimestampRange {
-                start: TimestampValue::Specific(start),
-                end: TimestampValue::Specific(end),
-            },
-            ..Default::default()
-        }
-    }
-
-    pub fn is_aggregation(&self) -> bool {
-        self.aggregation.is_some()
-    }
 }
 
 #[cfg(test)]

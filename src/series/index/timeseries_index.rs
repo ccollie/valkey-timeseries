@@ -44,7 +44,7 @@ impl TimeSeriesIndex {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&self) {
         let mut inner = self.inner.write().unwrap();
         inner.clear();
     }
@@ -522,9 +522,9 @@ mod tests {
     #[test]
     fn test_index_time_series() {
         let index = TimeSeriesIndex::new();
-        let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
 
-        index.index_timeseries(&mut ts, b"time-series-1");
+        index.index_timeseries(&ts, b"time-series-1");
 
         assert_eq!(index.count(), 1);
         assert_eq!(label_count(&index), 3); // metric_name + region + env
