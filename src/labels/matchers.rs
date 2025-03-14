@@ -98,6 +98,19 @@ impl PredicateValue {
         }
     }
 
+    fn text(&self) -> Option<&str> {
+        match self {
+            PredicateValue::Empty => None,
+            PredicateValue::String(s) => Some(&s),
+            PredicateValue::List(list) => {
+                if list.len() == 1 {
+                    return list.first().map(|x| x.as_str());
+                }
+                None
+            },
+        }
+    }
+
     fn cost(&self) -> usize {
         match self {
             PredicateValue::Empty => 0,
@@ -256,6 +269,13 @@ impl PredicateMatch {
             PredicateMatch::RegexNotEqual(_) => 50,
         }
     }
+
+    fn text(&self) -> Option<&str> {
+        match self {
+            PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => value.text(),
+            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(&re.value),
+        }
+    }
 }
 
 impl Hash for PredicateMatch {
@@ -377,6 +397,10 @@ impl Matcher {
     pub(crate) fn cost(&self) -> usize {
         self.matcher.cost()
     }
+
+    fn text(&self) -> Option<&str> {
+        self.matcher.text()
+    }
 }
 
 impl Display for Matcher {
@@ -459,7 +483,7 @@ impl MatcherSetEnum {
                 if !or_matchers.is_empty() {
                     if let Some(metric_name) = Self::normalize_matcher_list(or_matchers) {
                         if name.is_none() {
-                            name = Some(metric_name.to_string());
+                            name = Some(metric_name);
                         }
                         if or_matchers.len() == 1 {
                             let and_matchers = or_matchers.pop().expect("or_matchers is not empty");
@@ -486,7 +510,7 @@ impl MatcherSetEnum {
             let first = matchers.first()?;
             for (i, m) in first.iter().enumerate() {
                 if m.is_metric_name_filter() {
-                    metric_name = m.regex_text().unwrap_or(EMPTY_TEXT);
+                    metric_name = m.text().unwrap_or(EMPTY_TEXT);
                     to_remove.push((0, i, first.len() == 1));
                     break;
                 }
@@ -502,7 +526,7 @@ impl MatcherSetEnum {
                 let mut found = false;
                 for (j, m) in match_list.iter().enumerate() {
                     if m.is_metric_name_filter() {
-                        let value = m.regex_text().unwrap_or(EMPTY_TEXT);
+                        let value = m.text().unwrap_or(EMPTY_TEXT);
                         if value != metric_name {
                             return None;
                         }
@@ -511,7 +535,7 @@ impl MatcherSetEnum {
                         break;
                     }
                 }
-                if !found {
+                if !found && metric_name.is_empty() {
                     return None;
                 }
                 i += 1;
