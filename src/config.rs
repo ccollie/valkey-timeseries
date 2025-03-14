@@ -104,7 +104,7 @@ fn get_duration_config_value_ms(
 ) -> ValkeyResult<Option<i64>> {
     if let Some(config_str) = find_config_value(args, name) {
         let config_str = config_str.try_as_str()?;
-        let v = parse_duration_in_range(name, &config_str, min_value, max_value)?;
+        let v = parse_duration_in_range(name, config_str, min_value, max_value)?;
         return Ok(Some(v));
     }
     Ok(None)

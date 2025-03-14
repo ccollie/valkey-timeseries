@@ -1,4 +1,3 @@
-use crate::common::constants::METRIC_NAME_LABEL;
 use blart::{AsBytes, NoPrefixesBytes};
 use get_size::GetSize;
 use std::borrow::Borrow;
@@ -13,10 +12,6 @@ pub struct IndexKey(Box<[u8]>);
 const SENTINEL: u8 = 0;
 
 impl IndexKey {
-    pub fn for_metric_name(metric_name: &str) -> Self {
-        Self::for_label_value(METRIC_NAME_LABEL, metric_name)
-    }
-
     pub fn for_label_value(label_name: &str, value: &str) -> Self {
         Self::from(format!("{label_name}={value}"))
     }
@@ -35,10 +30,6 @@ impl IndexKey {
     pub(crate) fn sub_string(&self, start: usize) -> &str {
         let buf = &self.0[start..self.0.len() - 1];
         std::str::from_utf8(buf).expect("invalid utf8")
-    }
-
-    pub fn into_vec(self) -> Vec<u8> {
-        self.0.into_vec()
     }
 
     pub fn len(&self) -> usize {
@@ -134,12 +125,6 @@ pub(crate) fn get_key_for_label_prefix(label_name: &str) -> String {
     value
 }
 
-pub(crate) fn get_key_for_label_value(label_name: &str, value: &str) -> String {
-    let mut res = String::with_capacity(label_name.len() + value.len() + 1);
-    format_key_for_label_value(&mut res, label_name, value);
-    res
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,12 +134,6 @@ mod tests {
     fn test_new() {
         let key = IndexKey::from("test_key");
         assert_eq!(key.as_str(), "test_key");
-    }
-
-    #[test]
-    fn test_for_metric_name() {
-        let key = IndexKey::for_metric_name("metric");
-        assert_eq!(key.as_str(), "__name__=metric");
     }
 
     #[test]
@@ -181,12 +160,6 @@ mod tests {
     fn test_sub_string() {
         let key = IndexKey::from("label=value");
         assert_eq!(key.sub_string(6), "value");
-    }
-
-    #[test]
-    fn test_into_vec() {
-        let key = IndexKey::from("test_key");
-        assert_eq!(key.into_vec(), b"test_key\0".to_vec());
     }
 
     #[test]
@@ -256,19 +229,19 @@ mod tests {
         }
 
         for region in regions.iter() {
-            let search_key = get_key_for_label_value("region", region);
+            let search_key = IndexKey::for_label_value("region", region);
             let value = tree.get(search_key.as_bytes()).map(|v| v.as_str());
             assert_eq!(value, Some(*region));
         }
 
         for service in services.iter() {
-            let search_key = get_key_for_label_value("service", service);
+            let search_key = IndexKey::for_label_value("service", service);
             let value = tree.get(search_key.as_bytes()).map(|v| v.as_str());
             assert_eq!(value, Some(*service));
         }
 
         for environment in environments.iter() {
-            let search_key = get_key_for_label_value("environment", environment);
+            let search_key = IndexKey::for_label_value("environment", environment);
             let value = tree.get(search_key.as_bytes()).map(|v| v.as_str());
             assert_eq!(value, Some(*environment));
         }

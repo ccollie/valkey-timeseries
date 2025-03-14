@@ -16,25 +16,6 @@ use std::cmp::Ordering;
 use std::str;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
-pub fn query_index(
-    ctx: &Context,
-    ix: &TimeSeriesIndex,
-    matchers: &Matchers,
-    range: Option<TimestampRange>,
-) -> ValkeyResult<Vec<ValkeyString>> {
-    let mut state = ();
-
-    ix.with_postings(&mut state, move |inner, _| {
-        match postings_for_matchers(ix, matchers) {
-            Ok(postings) => {
-                let keys = collect_series_keys(ctx, inner, postings.iter(), range);
-                Ok(keys)
-            }
-            Err(e) => Err(e),
-        }
-    })
-}
-
 pub fn get_keys_by_matchers(
     ctx: &Context,
     ix: &TimeSeriesIndex,

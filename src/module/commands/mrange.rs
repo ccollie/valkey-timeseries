@@ -113,15 +113,15 @@ fn handle_aggregation_and_grouping(
 ) -> Vec<MRangeResultRow> {
     let grouped_series = group_series_by_label(metas, groupings);
 
-    fn process_group<'a>(
-        group: &GroupedSeries<'a>,
+    fn process_group(
+        group: &GroupedSeries<'_>,
         options: &RangeOptions,
         groupings: &RangeGroupingOptions,
         aggregations: &AggregationOptions,
     ) -> MRangeResultRow {
         let key = format!("{}={}", groupings.group_label, group.label_value);
         let aggregator = aggregations.aggregator.clone();
-        let aggregates = aggregate_grouped_samples(&group, options, aggregator);
+        let aggregates = aggregate_grouped_samples(group, options, aggregator);
         let samples = group_samples_internal(aggregates.into_iter(), groupings);
         MRangeResultRow {
             key,
@@ -151,7 +151,7 @@ fn handle_aggregation_and_grouping(
                     join(|| process(first, options, groupings, aggregations),
                          || process(rest, options, groupings, aggregations));
 
-                first_samples.extend(rest_samples.into_iter());
+                first_samples.extend(rest_samples);
                 first_samples
             }
         }
@@ -401,7 +401,7 @@ fn get_all_series_samples(
                     join(|| get_raw_internal(first, range_options),
                          || get_raw_internal(rest, range_options));
 
-                first_samples.extend(rest_samples.into_iter());
+                first_samples.extend(rest_samples);
                 first_samples
             }
         }

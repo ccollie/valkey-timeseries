@@ -189,12 +189,10 @@ impl UncompressedChunk {
 
 fn binary_search_samples_by_timestamp(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
     match samples.binary_search_by(|probe| {
-        if ts < probe.timestamp {
-            std::cmp::Ordering::Greater
-        } else if ts > probe.timestamp {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Equal
+        match ts.cmp(&probe.timestamp) {
+            std::cmp::Ordering::Less => std::cmp::Ordering::Greater,
+            std::cmp::Ordering::Greater => std::cmp::Ordering::Less,
+            std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
         }
     }) {
         Ok(pos) => (pos, true),

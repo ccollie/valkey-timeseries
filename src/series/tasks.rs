@@ -161,7 +161,7 @@ pub(crate) fn remove_stale_series(ctx: &Context, ids: &[SeriesRef]) {
                 entry.get_mut().extend(ids.iter().copied());
             }
             Entry::Vacant(entry) => {
-                entry.insert(ids.iter().copied().collect());
+                entry.insert(ids.to_vec());
             }
         }
     }
