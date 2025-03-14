@@ -7,3 +7,7 @@ pub const SOURCE_KEY: &str = "__source__";
 
 pub const MILLIS_PER_SEC: u64 = 1000;
 pub const MILLIS_PER_MIN: u64 = 60 * MILLIS_PER_SEC;
+pub const MILLIS_PER_HOUR: u64 = 60 * MILLIS_PER_MIN;
+pub const MILLIS_PER_DAY: u64 = 24 * MILLIS_PER_HOUR;
+pub const MILLIS_PER_WEEK: u64 = 7 * MILLIS_PER_DAY;
+pub const MILLIS_PER_YEAR: u64 = 365 * MILLIS_PER_DAY;
