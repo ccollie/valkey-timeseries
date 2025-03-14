@@ -6,65 +6,20 @@ use crate::series::{SeriesRef, TimeSeries};
 use ahash::HashMapExt;
 use blart::AsBytes;
 use num_traits::Zero;
-use papaya::{Guard, HashMap};
-use std::sync::atomic::{AtomicI32, AtomicU64};
-use std::sync::{LazyLock, Mutex};
+use std::collections::hash_map::Entry;
+use std::sync::atomic::AtomicI32;
+use std::sync::{LazyLock, Mutex, RwLock};
 use valkey_module::{Context, DetachedContext, Status, ValkeyString};
+use crate::common::parallel::join;
 
 const BATCH_SIZE: usize = 500;
 
 /// Per-db task metadata
-pub struct TaskMeta {
-    pub(crate) last_processed_id: AtomicU64,
-    pub(crate) stale_ids: Mutex<Vec<SeriesRef>>,
-}
+type IdleSeriesMap = IntMap<i32, Vec<SeriesRef>>;
+type SeriesCursorMap = IntMap<i32, SeriesRef>;
+static SERIES_TRIM_CURSORS: LazyLock<RwLock<SeriesCursorMap>> = LazyLock::new(|| RwLock::new(SeriesCursorMap::new()));
+static STALE_SERIES: LazyLock<Mutex<IdleSeriesMap>> = LazyLock::new(|| Mutex::new(IdleSeriesMap::new()));
 
-impl TaskMeta {
-    pub fn new() -> Self {
-        Self {
-            last_processed_id: AtomicU64::new(0),
-            stale_ids: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn reset(&self) {
-        self.last_processed_id
-            .store(0, std::sync::atomic::Ordering::SeqCst);
-        self.stale_ids.lock().unwrap().clear();
-    }
-
-    pub fn add_stale_id(&self, id: SeriesRef) {
-        self.add_stale_ids(&[id])
-    }
-
-    pub fn add_stale_ids(&self, ids: &[SeriesRef]) {
-        self.stale_ids.lock().unwrap().extend(ids);
-    }
-
-    pub fn get_stale_ids(&self) -> Vec<SeriesRef> {
-        self.stale_ids.lock().unwrap().clone()
-    }
-
-    pub fn take_stale_ids(&self) -> Vec<SeriesRef> {
-        let mut ids = self.stale_ids.lock().unwrap();
-        std::mem::take(&mut ids)
-    }
-
-    pub fn mark_processed(&self, id: SeriesRef) {
-        self.last_processed_id
-            .fetch_max(id, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub fn last_processed_id(&self) -> u64 {
-        self.last_processed_id
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-/// Map from db to TaskMeta
-type TaskMetaMap = HashMap<i32, TaskMeta>;
-
-pub(crate) static DB_TASK_METAS: LazyLock<TaskMetaMap> = LazyLock::new(TaskMetaMap::new);
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 
@@ -92,10 +47,21 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
         ctx.log_warning(&format!("Failed to select db {}", db));
         return 0;
     }
-
-    let last_id = with_db_task_meta(ctx, |meta| meta.last_processed_id());
+    
+    let cursor  = {
+        let mut map = SERIES_TRIM_CURSORS.write().unwrap();
+        match map.entry(db) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let cursor = 0;
+                entry.insert(cursor);
+                cursor
+            }
+        }
+    };
+    
     let mut processed = 0;
-    let mut last_processed = last_id;
+    let mut last_processed = cursor;
     let mut keys = IntMap::with_capacity(BATCH_SIZE);
     let mut to_delete = Vec::with_capacity(BATCH_SIZE);
     let mut total_deletes: usize = 0;
@@ -128,12 +94,11 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
         last_processed = 0;
     }
 
-    with_db_task_meta(ctx, |meta| {
-        meta.mark_processed(last_processed);
-        if !to_delete.is_empty() {
-            meta.add_stale_ids(&to_delete);
-        }
-    });
+    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
+    map.insert(db, last_processed);
+    if !to_delete.is_empty() {
+        remove_stale_series(ctx, &to_delete);
+    }
 
     if processed.is_zero() {
         ctx.log_debug("No series to trim");
@@ -172,35 +137,34 @@ fn fetch_keys_batch(
     })
 }
 
-pub fn remove_stale_series_task(ctx: &Context) {
-    let stale_ids = with_db_task_meta(ctx, |meta| meta.take_stale_ids());
-    remove_stale_series(ctx, &stale_ids);
+fn remove_stale_series_internal(db: i32) {
+    let series = {
+        let mut map = STALE_SERIES.lock().unwrap();
+        map.remove(&db).unwrap_or_default()
+    };
+
+    if series.is_empty() {
+        return;
+    }
+    
+    if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
+        index.slow_remove_series_by_ids(&series);
+    }
 }
 
 pub(crate) fn remove_stale_series(ctx: &Context, ids: &[SeriesRef]) {
     if !ids.is_empty() {
-        with_timeseries_index(ctx, |index| {
-            let removed = index.slow_remove_series_by_ids(ids);
-            ctx.log_notice(&format!("Removed {} stale series", removed));
-        });
+        let id = get_current_db(ctx);
+        let mut map = STALE_SERIES.lock().unwrap();
+        match map.entry(id) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().extend(ids.iter().copied());
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(ids.iter().copied().collect());
+            }
+        }
     }
-}
-
-fn with_db_task_meta<F, R>(ctx: &Context, f: F) -> R
-where
-    F: FnOnce(&TaskMeta) -> R,
-{
-    let db = get_current_db(ctx);
-    let guard = DB_TASK_METAS.guard();
-    let index = get_task_meta_for_db(db, &guard);
-    let res = f(index);
-    drop(guard);
-    res
-}
-
-#[inline]
-fn get_task_meta_for_db(db: i32, guard: &impl Guard) -> &TaskMeta {
-    DB_TASK_METAS.get_or_insert_with(db, TaskMeta::new, guard)
 }
 
 pub fn process_expires_task() {
@@ -224,4 +188,41 @@ pub fn process_expires_task() {
             break;
         }
     }
+}
+
+pub fn process_remove_stale_series() {
+    let db_ids = {
+        let map = STALE_SERIES.lock().unwrap();
+        map.iter()
+            .filter_map(|(db, series)| if !series.is_empty() {
+                Some(*db)
+            } else {
+                None
+            })
+            .collect::<Vec<_>>()
+    };
+    
+    if db_ids.is_empty() {
+        return;
+    }
+    
+    fn run_internal(db_ids: &[i32]) {
+        match db_ids {
+            [] => {}
+            [db] => remove_stale_series_internal(*db),
+            [first, second] => {
+                let _ = join(
+                    || remove_stale_series_internal(*first),
+                    || remove_stale_series_internal(*second)
+                );
+            }
+            _=> {
+                let (db, rest) = db_ids.split_first().unwrap();
+                remove_stale_series_internal(*db);
+                run_internal(rest);
+            }
+        }
+    }
+    
+    run_internal(&db_ids);
 }

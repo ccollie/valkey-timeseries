@@ -2,7 +2,7 @@ use crate::common::rounding::RoundingStrategy;
 use crate::config::{CONFIG_SETTINGS, DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_SERIES_WORKER_INTERVAL};
 use crate::series::chunks::ChunkEncoding;
 use crate::series::index::optimize_all_timeseries_indexes;
-use crate::series::tasks::process_expires_task;
+use crate::series::tasks::{process_expires_task, process_remove_stale_series};
 use crate::series::SampleDuplicatePolicy;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -62,6 +62,8 @@ pub(crate) fn stop_series_background_worker() {
 fn series_worker_callback(ctx: &Context, _ignore: usize) {
     ctx.log_debug("[series worker callback]: optimizing series indexes");
     // use rayon threadpool to run off the main thread
+    // todo: run these on a dedicated schedule
     rayon::spawn(optimize_all_timeseries_indexes);
     rayon::spawn(process_expires_task);
+    rayon::spawn(process_remove_stale_series);
 }
