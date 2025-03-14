@@ -1,3 +1,4 @@
+use crate::common::constants::MILLIS_PER_YEAR;
 use crate::common::humanize::humanize_duration_ms;
 use crate::common::rounding::RoundingStrategy;
 use crate::error_consts;
@@ -15,7 +16,6 @@ use valkey_module::configuration::{
 use valkey_module::{
     ConfigurationValue, Context, ValkeyError, ValkeyGILGuard, ValkeyResult, ValkeyString,
 };
-use crate::common::constants::MILLIS_PER_YEAR;
 // See https://redis.io/docs/latest/develop/data-types/timeseries/configuration/
 
 pub const SPLIT_FACTOR: f64 = 1.2;
@@ -39,65 +39,55 @@ pub const SIGNIFICANT_DIGITS_MIN: i64 = 0;
 
 pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 4 * 1024;
 pub const DEFAULT_CHUNK_ENCODING: ChunkEncoding = ChunkEncoding::Gorilla;
-pub(super) const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
-pub(super) const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
+const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
+const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 pub const DEFAULT_DUPLICATE_POLICY: DuplicatePolicy = DuplicatePolicy::Block;
-pub(super) const DUPLICATE_POLICY_DEFAULT_STRING: &str = DEFAULT_DUPLICATE_POLICY.as_str();
+const DUPLICATE_POLICY_DEFAULT_STRING: &str = DEFAULT_DUPLICATE_POLICY.as_str();
 
 pub const DEFAULT_RETENTION_PERIOD: Duration = Duration::ZERO;
-pub(super) const RETENTION_POLICY_DEFAULT_STRING: &str = "0";
+const RETENTION_POLICY_DEFAULT_STRING: &str = "0";
 pub const DEFAULT_SERIES_WORKER_INTERVAL: Duration = Duration::from_secs(60);
 
 const IGNORE_MAX_TIME_DIFF_KEY: &str = "IGNORE_MAX_TIME_DIFF";
-pub(super) const IGNORE_MAX_TIME_DIFF_DEFAULT_STRING: &str = "0";
-pub(super) const IGNORE_MAX_TIME_DIFF_MIN: i64 = 0;
-pub(super) const IGNORE_MAX_TIME_DIFF_MAX: i64 = i64::MAX;
+const IGNORE_MAX_TIME_DIFF_DEFAULT_STRING: &str = "0";
+pub const IGNORE_MAX_TIME_DIFF_MIN: i64 = 0;
+pub const IGNORE_MAX_TIME_DIFF_MAX: i64 = i64::MAX;
 
 const IGNORE_MAX_VALUE_DIFF_KEY: &str = "IGNORE_MAX_VALUE_DIFF";
-pub(super) const IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING: &str = "0";
-pub(super) const IGNORE_MAX_VALUE_DIFF_MIN: f64 = 0.0;
-pub(super) const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
+const IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING: &str = "0";
+pub const IGNORE_MAX_VALUE_DIFF_MIN: f64 = 0.0;
+pub const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
 
-pub const DEFAULT_DECIMAL_DIGITS: i64 = 3;
-pub const DEFAULT_SIGNIFICANT_DIGITS: i64 = 3;
-pub(super) const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
-pub(super) const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
+const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
+const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
 
 const ONE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const ONE_YEAR_MS: i64 = 365 * ONE_DAY_MS;
 const RETENTION_POLICY_MIN: i64 = 0;
-const RETENTION_POLICY_MAX: i64 = 10 * ONE_YEAR_MS; //
+pub const RETENTION_POLICY_MAX: i64 = 10 * ONE_YEAR_MS; //
 
 lazy_static! {
     pub static ref CONFIG_SETTINGS: RwLock<ConfigSettings> = RwLock::new(ConfigSettings::default());
-    pub(super) static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
+    static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
-    pub(super) static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
+    static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()));
-    pub(super) static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(
-            None,
-            DEFAULT_DUPLICATE_POLICY.as_str()
-        ));
-    pub(super) static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
+    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, DEFAULT_DUPLICATE_POLICY.as_str())
+    );
+    static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
-    pub(super) static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(
-            None,
-            IGNORE_MAX_TIME_DIFF_DEFAULT_STRING
-        ));
-    pub(super) static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(
-            None,
-            IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING
-        ));
-    pub(super) static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
+    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING)
+    );
+    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING)
+    );
+    static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING));
-    pub(super) static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(
-            None,
-            SIGNIFICANT_DIGITS_DEFAULT_STRING
-        ));
+    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
+    );
 }
 
 fn find_config_value<'a>(args: &'a [ValkeyString], name: &str) -> Option<&'a ValkeyString> {
@@ -245,7 +235,9 @@ fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
         SIGNIFICANT_DIGITS_MIN as f64,
         SIGNIFICANT_DIGITS_MAX as f64,
     )? {
-        config.rounding = Some(RoundingStrategy::SignificantDigits(significant_digits as i32));
+        config.rounding = Some(RoundingStrategy::SignificantDigits(
+            significant_digits as i32,
+        ));
     }
 
     if let Some(decimal_digits) = get_number_in_range(
@@ -283,8 +275,7 @@ pub fn load_config(_ctx: &Context, args: &[ValkeyString]) -> ValkeyResult<()> {
 
 const SETTINGS_EXPECT_MSG: &str = "We expect the CONFIG_SETTINGS static to exist.";
 
-/// This is a config set handler for the False Positive Rate and Tightening Ratio configs.
-pub fn on_string_config_set(
+fn on_string_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
     val: &'static ValkeyGILGuard<ValkeyString>,
@@ -392,10 +383,7 @@ fn on_rounding_config_set(
 ) -> Result<(), ValkeyError> {
     let value_str = val.get(config_ctx).to_string_lossy();
     if value_str.eq_ignore_ascii_case("none") {
-        CONFIG_SETTINGS
-            .write()
-            .expect(SETTINGS_EXPECT_MSG)
-            .rounding = None;
+        CONFIG_SETTINGS.write().expect(SETTINGS_EXPECT_MSG).rounding = None;
         return Ok(());
     }
     let value = parse_number(&value_str)
@@ -408,10 +396,8 @@ fn on_rounding_config_set(
                 DECIMAL_DIGITS_MIN as f64,
                 DECIMAL_DIGITS_MAX as f64,
             )?;
-            CONFIG_SETTINGS
-                .write()
-                .expect(SETTINGS_EXPECT_MSG)
-                .rounding = Some(RoundingStrategy::DecimalDigits(value as i32));
+            CONFIG_SETTINGS.write().expect(SETTINGS_EXPECT_MSG).rounding =
+                Some(RoundingStrategy::DecimalDigits(value as i32));
             Ok(())
         }
         "ts-significant-digits" => {
@@ -421,10 +407,8 @@ fn on_rounding_config_set(
                 SIGNIFICANT_DIGITS_MIN as f64,
                 SIGNIFICANT_DIGITS_MAX as f64,
             )?;
-            CONFIG_SETTINGS
-                .write()
-                .expect(SETTINGS_EXPECT_MSG)
-                .rounding = Some(RoundingStrategy::SignificantDigits(value as i32));
+            CONFIG_SETTINGS.write().expect(SETTINGS_EXPECT_MSG).rounding =
+                Some(RoundingStrategy::SignificantDigits(value as i32));
             Ok(())
         }
         _ => Err(ValkeyError::Str("Unknown configuration parameter")),
