@@ -23,12 +23,13 @@ use crate::series::TimeSeries;
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
+use crate::common::hash::BuildNoHashHasher;
 
 /// Map from db to TimeseriesIndex
-pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex>;
+pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
 
 pub(crate) static TIMESERIES_INDEX: LazyLock<TimeSeriesIndexMap> =
-    LazyLock::new(TimeSeriesIndexMap::new);
+    LazyLock::new(TimeSeriesIndexMap::default);
 
 pub(crate) static TIMESERIES_ID: AtomicU64 = AtomicU64::new(1);
 
