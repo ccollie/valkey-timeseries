@@ -1,4 +1,4 @@
-use super::index_key::{get_key_for_label_prefix, get_key_for_label_value, IndexKey};
+use super::index_key::{get_key_for_label_prefix, IndexKey};
 use ahash::AHashMap;
 use blart::AsBytes;
 use std::collections::hash_map::Entry;
@@ -52,8 +52,10 @@ impl TimeSeriesIndex {
     // swap the inner value with some other value
     // this is specifically to handle the `swapdb` event callback
     // todo: can this deadlock ?
-    pub fn swap(&mut self, other: &mut Self) {
-        std::mem::swap(&mut self.inner, &mut other.inner);
+    pub fn swap(&self, other: &Self) {
+        let mut self_inner = self.inner.write().unwrap();
+        let mut other_inner = other.inner.write().unwrap();
+        self_inner.swap(&mut other_inner);
     }
 
     pub fn index_timeseries(&self, ts: &TimeSeries, key: &[u8]) {
@@ -335,7 +337,7 @@ impl TimeSeriesIndex {
         let mut metrics = StatsMaxHeap::new(limit);
         let inner = self.inner.read().unwrap();
 
-        let prefix = get_key_for_label_value(METRIC_NAME_LABEL, prefix.unwrap_or(""));
+        let prefix = IndexKey::for_label_value(METRIC_NAME_LABEL, prefix.unwrap_or(""));
         for (key, bmp) in inner.label_index.prefix(prefix.as_bytes()) {
             // keys and values are expected to be utf-8. If we panic, we have bigger issues
             if let Some((_name, value)) = key.split() {

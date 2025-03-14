@@ -45,6 +45,7 @@ pub fn get_timeseries_index_for_db(db: i32, guard: &impl Guard) -> &TimeSeriesIn
     TIMESERIES_INDEX.get_or_insert_with(db, TimeSeriesIndex::new, guard)
 }
 
+
 pub fn with_timeseries_index<F, R>(ctx: &Context, f: F) -> R
 where
     F: FnOnce(&TimeSeriesIndex) -> R,
@@ -118,17 +119,11 @@ pub fn clear_all_timeseries_indexes() {
 }
 
 pub fn swap_timeseries_index_dbs(from_db: i32, to_db: i32) {
-    let map = TIMESERIES_INDEX.pin();
-    let from = map.remove(&from_db);
-    let to = map.remove(&from_db);
+    let guard = TIMESERIES_INDEX.guard();
 
-    // change this if https://github.com/ibraheemdev/papaya/issues/29 is resolved
-    if let Some(to) = to {
-        map.insert(from_db, to.clone());
-    }
-    if let Some(from) = from {
-        map.insert(to_db, from.clone());
-    }
+    let first = get_timeseries_index_for_db(from_db, &guard);
+    let second = get_timeseries_index_for_db(to_db, &guard);
+    first.swap(second)
 }
 
 pub fn optimize_all_timeseries_indexes() {

@@ -35,6 +35,13 @@ impl MemoryPostings {
         self.label_index.clear();
         self.id_to_key.clear();
     }
+
+    // swap the inner value with some other value
+    // this is specifically to handle the `swapdb` event callback
+    pub fn swap(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.label_index, &mut other.label_index);
+        std::mem::swap(&mut self.id_to_key, &mut other.id_to_key);
+    }
     
     pub(super) fn remove_posting_for_label_value(
         &mut self,
@@ -249,6 +256,7 @@ impl MemoryPostings {
         }
     }
 
+
     pub fn postings_without_labels<'a>(&'a self, labels: &[&str]) -> Cow<'a, PostingsBitmap> {
         match labels.len() {
             0 => Cow::Borrowed(self.all_postings()),     // bad boy !!
@@ -409,16 +417,6 @@ mod tests {
     use super::*;
     use crate::labels::{InternedMetricName, Label};
     use crate::series::time_series::TimeSeries;
-
-    fn contains(set: &[String], needle: &str) -> bool {
-        set.iter().any(|s| s == needle)
-    }
-
-    fn create_series(metric_name: &str, labels: Vec<Label>) -> TimeSeries {
-        let mut ts = TimeSeries::new();
-        ts.labels = InternedMetricName::new(&labels);
-        ts
-    }
 
     #[test]
     fn test_memory_postings_add_and_remove() {
