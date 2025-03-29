@@ -3,8 +3,9 @@ name = "valkey-timeseries"
 version = "0.1.0"
 description = "A Timeseries data type for Valkey"
 requires-python=">=3.11,<3.12"
+keywords = ["timeseries", "gorilla", "compression"]
 dependencies = [
     "valkey",
-    "pytest",
+    "pytest==6.2.5",
     "pytest-html",
 ]

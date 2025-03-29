@@ -464,7 +464,7 @@ class ValkeyTestCaseBase:
         port_tracker_fixture using resource_port_tracker.
         '''
         # Inject port tracker
-        print ("port tracker")
+        print (">>>> port tracker")
         self.args = {}
         self.port_tracker = resource_port_tracker
 
@@ -561,7 +561,8 @@ class ValkeyTestCase(ValkeyTestCaseBase):
         self.server_list = []
 
 
-    def setup(self):
+    @pytest.fixture(autouse=True)
+    def setup(self, port_tracker_fixture):
         self.common_setup()
         args = self._get_valkey_args()
         self.server = self.create_server(testdir = self.testdir,  server_path=self.server_path)

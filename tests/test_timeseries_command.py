@@ -1,7 +1,14 @@
+import pytest
+
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 from valkeytests.conftest import resource_port_tracker
 
 class TestTimeSeriesCommand(ValkeyTimeSeriesTestCaseBase):
+
+    @pytest.fixture(autouse=True)
+    def setup(self, resource_port_tracker):
+        self.port_tracker = resource_port_tracker
+        super().setup(resource_port_tracker)
 
     def verify_command_arity(self, command, expected_arity): 
         command_info = self.client.execute_command('COMMAND', 'INFO', command)

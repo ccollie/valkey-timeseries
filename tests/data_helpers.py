@@ -244,7 +244,12 @@ def ingest_temperature_data(valkey_conn):
         if key not in added_keys:
             added_keys.add(key)
             metric = row.metric()
-            valkey_conn.execute_command('TS.CREATE', key, metric, 'DECIMAL_DIGITS', 1)
+            valkey_conn.execute_command('TS.CREATE', key,
+                                        'ENCODING', 'COMPRESSED',
+                                        'CHUNK_SIZE_BYTES', '8ki',
+                                        'DECIMAL_DIGITS', 2,
+                                        'LABELS', 'sensor_id', row.sensor_id, 'borough', row.borough,
+                                        'install_type', row.install_type, 'nta_code', row.nta_code)
             print(f"Created series: {key}, metric={metric}")
 
         r.execute_command('TS.ADD', key, row.timestamp, temperature)
@@ -263,7 +268,7 @@ def ingest_power_consumption_data(valkey_conn):
     for key, values in load_power_consumption_data().items():
         region, location_type = key.split(':')
         metric = 'power_consumption{{region="{}",location_type="{}"}}'.format(region, location_type)
-        valkey_conn.execute_command('TS.CREATE', key, metric, 'DECIMAL_DIGITS', 1)
+        valkey_conn.execute_command('TS.CREATE', key, metric, 'DECIMAL_DIGITS', 1, 'LABELS', 'region', region, 'location_type', location_type)
         print(f"Created series: {key}, metric={metric}")
 
         for ts, consumption in values:
