@@ -101,7 +101,7 @@ impl PredicateValue {
     pub fn text(&self) -> Option<&str> {
         match self {
             PredicateValue::Empty => None,
-            PredicateValue::String(s) => Some(&s),
+            PredicateValue::String(s) => Some(s),
             PredicateValue::List(list) => {
                 if list.len() == 1 {
                     return list.first().map(|x| x.as_str());
