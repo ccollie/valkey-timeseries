@@ -26,6 +26,11 @@ impl SeriesLabel for InternedLabel<'_> {
     }
 }
 
+/// A time series is optionally identified by a series of label-value pairs used to retrieve the 
+/// series in queries. Given that these label are used to group semantically similar time series, 
+/// they are necessarily duplicated. We take advantage of this fact to intern label-value pairs, 
+/// meaning that only a single allocation is made per unique pair, irrespective of the number of 
+/// series it occurs in.
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
 pub struct InternedMetricName(Vec<InternedString>);
 
@@ -75,14 +80,10 @@ impl InternedMetricName {
     }
 
     pub fn get_value(&self, key: &str) -> Option<&str> {
-        for interned in &self.0 {
-            if let Some((k, v)) = interned.split_once(VALUE_SEPARATOR) {
-                if k == key {
-                    return Some(v);
-                }
-            }
-        }
-        None
+        self.0.iter()
+            .filter_map(|interned| interned.split_once(VALUE_SEPARATOR))
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v)
     }
 
     pub fn remove_label(&mut self, key: &str) {
