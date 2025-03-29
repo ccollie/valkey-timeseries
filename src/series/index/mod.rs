@@ -136,3 +136,8 @@ pub fn optimize_all_timeseries_indexes() {
     });
     guard.flush();
 }
+
+pub(crate) fn init_croaring_allocator() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| unsafe { croaring::configure_rust_alloc() });
+}

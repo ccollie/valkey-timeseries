@@ -9,6 +9,7 @@ use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::SeriesLabel;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::Bitmap64;
+use crate::series::index::init_croaring_allocator;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -23,11 +24,21 @@ pub type PostingsIndex = TreeMap<IndexKey, PostingsBitmap>;
 /// Type for the key of the index.
 pub type KeyType = Box<[u8]>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct MemoryPostings {
     /// Map from label name and (label name,  label value) to set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     pub(super) id_to_key: IntMap<SeriesRef, KeyType>,
+}
+
+impl Default for MemoryPostings {
+    fn default() -> Self {
+        init_croaring_allocator();
+        MemoryPostings {
+            label_index: PostingsIndex::new(),
+            id_to_key: IntMap::default(),
+        }
+    }
 }
 
 impl MemoryPostings {
@@ -212,7 +223,6 @@ impl MemoryPostings {
         for (key, map) in self.label_index.prefix(prefix.as_bytes()) {
             let value = key.sub_string(start_pos);
             if match_fn(value, state) {
-                println!("matched {value}");
                 result |= map;
             }
         }
@@ -388,13 +398,14 @@ pub(super) fn handle_regex_not_equal_match<'a>(
     postings: &'a MemoryPostings,
     matcher: &Matcher,
 ) -> Cow<'a, PostingsBitmap> {
-    if matcher.is_empty_matcher() {
+    let matches_empty = matcher.is_empty_matcher();
+    if matches_empty {
         return with_label(postings, &matcher.label);
     }
     let mut state = matcher;
     let postings =
         postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
-            !matcher.matches(value)
+            matcher.matches(value)
         });
     Cow::Owned(postings)
 }

@@ -10,12 +10,12 @@ description = "A Timeseries data type for Valkey"
 [dependencies]
 ahash = { version = "0.8", features = ["std", "serde"] }
 blart = "0.3"
-bon = "3.4"
+bon = "3.5"
 byte-pool = "0.2"
 cfg-if = "1.0.0"
 chili = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
-croaring = "2.2.0"
+croaring = "2.3"
 enquote = "1.1"
 get-size = { version = "^0.1", features = ["derive"] }
 hashify = { version = "^0.2" }
@@ -30,7 +30,7 @@ pco = "0.4"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-smallvec = { version = "2.0.0-alpha.10", features = ["std"] }
+smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
 thiserror = "2.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"
@@ -41,6 +41,8 @@ strum_macros = "0.27"
 yasi = "0.1.5"
 
 [dev-dependencies]
+anyhow = "1.0.97"
+redis = "0.29"
 test-case = "3.3.1"
 
 [lib]
@@ -53,7 +55,7 @@ debug = 2
 debug-assertions = true
 
 [features]
-default = ["min-valkey-compatibility-version-8-0"]
+default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = []
 valkey_8_0 = []  # Valkey-bloom is intended to be loaded on server versions >= Valkey 8.1 and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
