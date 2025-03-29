@@ -114,8 +114,6 @@ pub fn postings_for_matchers(
     let mut state = ();
     ix.with_postings(&mut state, move |inner, _| {
         let postings = postings_for_matchers_internal(inner, matchers)?;
-        #[cfg(test)]
-        debug_bitmap("first", &postings);
         let res = postings.into_owned();
         Ok(res)
     })
@@ -178,7 +176,6 @@ fn process_or_matchers<'a>(
             .expect("Out of bounds error running matchers");
         process_and_matchers(ix, m)
     } else {
-        // todo: use chili here
         let mut result = PostingsBitmap::new();
         // maybe chili here to run in parallel
         for matcher in matchers {
@@ -193,19 +190,12 @@ fn process_and_matchers<'a>(
     ix: &'a MemoryPostings,
     matchers: &[Matcher],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    if matchers.len() == 1 {
-        let m = matchers
-            .first()
-            .expect("Out of bounds error running matchers");
-        Ok(ix.postings_for_matcher(m))
-    } else {
-        postings_for_matcher_slice(ix, matchers)
-    }
+    postings_for_matcher_slice(ix, matchers)
 }
 
 /// `postings_for_matchers` assembles a single postings iterator against the index
 /// based on the given matchers.
-fn postings_for_matcher_slice<'a>(
+pub(super) fn postings_for_matcher_slice<'a>(
     ix: &'a MemoryPostings,
     ms: &[Matcher],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
@@ -220,7 +210,7 @@ fn postings_for_matcher_slice<'a>(
     }
 
     let mut its: SmallVec<_, 4> = SmallVec::new();
-    let mut not_its: SmallVec<_, 4> = SmallVec::new();
+    let mut not_its: SmallVec<Cow<PostingsBitmap>, 4> = SmallVec::new();
 
     let mut has_subtracting_matchers = false;
     let mut has_intersecting_matchers = false;
@@ -267,8 +257,6 @@ fn postings_for_matcher_slice<'a>(
     for (m, matches_empty, _is_subtracting) in sorted_matchers {
         //let value = &m.value;
         let name = &m.label;
-        let typ = m.op();
-        let regex_value = m.regex_text().unwrap_or("");
 
         if name.is_empty() && matches_empty {
             // We already handled the case at the top of the function,
@@ -276,80 +264,91 @@ fn postings_for_matcher_slice<'a>(
             return Err(ValkeyError::Str(MISSING_FILTER));
         }
 
-        if typ == MatchOp::RegexEqual && regex_value == ".*" {
-            // .* regexp matches any string: do nothing.
-            continue;
-        }
+        let typ = m.op();
+        let regex_value = m.regex_text().unwrap_or("");
 
-        if typ == MatchOp::RegexNotEqual && regex_value == ".*" {
-            return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
-        }
+        match (typ, regex_value) {
+            // .* regexp matches any string: do nothing
+            (MatchOp::RegexEqual, ".*") => continue,
 
-        if typ == MatchOp::RegexEqual && regex_value == ".+" {
-            // .+ regexp matches any non-empty string: get postings for all label values.
-            let it = ix.postings_for_all_label_values(&m.label);
-            its.push(Cow::Owned(it));
-        } else if typ == MatchOp::RegexNotEqual && regex_value == ".+" {
-            // .+ regexp matches any non-empty string: get postings for all label values and remove them.
-            let it = ix.postings_for_all_label_values(name);
-            not_its.push(Cow::Owned(it));
-        } else if label_must_be_set.contains(name.as_str()) {
-            // If this matcher must be non-empty, we can be smarter.
-            let is_not = matches!(typ, MatchOp::NotEqual | MatchOp::RegexNotEqual);
-
-            if is_not {
-                let inverse = m.clone().inverse();
-
-                // If the label can't be empty and is a Not, then subtract it out at the end.
-                if matches_empty {
-                    // l!="foo"
-                    // If the label can't be empty and is a Not and the inner matcher
-                    // doesn't match empty, then subtract it out at the end.
-                    // NOTE: we resolve immediately here to avoid borrowing issue with inverse
-                    let it = ix.postings_for_matcher(&inverse);
-                    not_its.push(it);
-                } else {
-                    // l!=""
-                    // If the label can't be empty and is a Not, but the inner matcher can
-                    // be empty we need to use inverse_postings_for_matcher.
-                    let it = inverse_postings_for_matcher(ix, &inverse);
-                    its.push(it);
-                }
-            } else {
-                // l="a", l=~"a|b", l=~"a.b", etc.
-                // Non-Not matcher, use normal `postings_for_matcher`.
-                let it = ix.postings_for_matcher(m);
-                #[cfg(test)]
-                debug_bitmap(&format!("ids for matcher: {}", &m), &it);
-                its.push(it);
+            // .* regexp does not match any string: return empty
+            (MatchOp::RegexNotEqual, ".*") => {
+                return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
             }
-        } else {
-            // l=""
-            // If the matchers for a label name selects an empty value, it selects all
-            // the series which don't have the label name set too. See:
-            // https://github.com/prometheus/prometheus/issues/3575 and
-            // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
-            let it = inverse_postings_for_matcher(ix, m);
 
-            #[cfg(test)]
-            debug_bitmap(&format!("ids for matcher: {}", &m), &it);
+            // .+ regexp matches any non-empty string
+            (MatchOp::RegexEqual, ".+") => {
+                // .+ regexp matches any non-empty string: get postings for all label values.
+                let it = ix.postings_for_all_label_values(&m.label);
+                its.push(Cow::Owned(it));
+            }
 
-            not_its.push(it)
+            // .+ regexp does not match any non-empty string
+            (MatchOp::RegexNotEqual, ".+") => {
+                let it = ix.postings_for_all_label_values(&m.label);
+                not_its.push(Cow::Owned(it));
+            }
+            _ if label_must_be_set.contains(name.as_str()) => {
+                // If this matcher must be non-empty, we can be smarter.
+                let is_not = matches!(typ, MatchOp::NotEqual | MatchOp::RegexNotEqual);
+                match (is_not, matches_empty) {
+                    // l!="foo"
+                    (true, true) => {
+                        // If the label can't be empty and is a Not and the inner matcher
+                        // doesn't match empty, then subtract it out at the end.
+                        let inverse = m.clone().inverse();
+                        let it = ix.postings_for_matcher(&inverse);
+                        not_its.push(it);
+                    }
+                    // l!=""
+                    (true, false) => {
+                        // If the label can't be empty and is a Not, but the inner matcher can
+                        // be empty we need to use inverse_postings_for_matcher.
+                        let inverse = m.clone().inverse();
+                        let it = inverse_postings_for_matcher(ix, &inverse);
+                        if it.is_empty() {
+                            return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+                        }
+                        its.push(it);
+                    }
+                    // l="a", l=~"a|b", etc.
+                    _ => {
+                        // Non-Not matcher, use normal postings_for_matcher.
+                        let it = ix.postings_for_matcher(m);
+                        if it.is_empty() {
+                            return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+                        }
+                        its.push(it);
+                    }
+                }
+            }
+            _ => {
+                // l=""
+                // If the matchers for a label name selects an empty value, it selects all
+                // the series which don't have the label name set too. See:
+                // https://github.com/prometheus/prometheus/issues/3575 and
+                // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
+                let it = inverse_postings_for_matcher(ix, m);
+
+                not_its.push(it)
+            }
         }
     }
 
     // sort by cardinality first to reduce the amount of work
     its.sort_by_key(|a| a.cardinality());
 
-    let mut it = intersection(its);
+    let mut result = if its.is_empty() {
+        ix.all_postings().clone()
+    } else {
+        intersection(its)
+    };
 
     for not in not_its {
-        #[cfg(test)]
-        debug_bitmap("not-its", &not);
-        it.andnot_inplace(&not)
+        result.andnot_inplace(&not)
     }
 
-    Ok(Cow::Owned(it))
+    Ok(Cow::Owned(result))
 }
 
 #[inline]
@@ -366,19 +365,22 @@ fn inverse_postings_for_matcher<'a>(
 ) -> Cow<'a, PostingsBitmap> {
     match &m.matcher {
         PredicateMatch::NotEqual(pv) => handle_equal_match(ix, &m.label, pv),
+        // If the matcher being inverted is ="", we just want all the values.
         PredicateMatch::Equal(PredicateValue::String(s)) if s.is_empty() => {
             Cow::Owned(ix.postings_for_all_label_values(&m.label))
         }
+        // If the matcher being inverted is =~"", we just want all the values.
+        PredicateMatch::RegexEqual(re) if matches!(re.regex.as_str(), "" | ".*") => {
+            Cow::Owned(ix.postings_for_all_label_values(&m.label))
+        }
         _ => {
-            let op = m.op();
-            if matches!(op, MatchOp::RegexEqual)
-                && matches!(m.regex_text().unwrap_or(""), "" | ".*")
-            {
-                return Cow::Owned(ix.postings_for_all_label_values(&m.label));
-            }
             let mut state = m;
             let postings =
-                ix.postings_for_label_matching(&m.label, &mut state, |s, state| !state.matches(s));
+                ix.postings_for_label_matching(&m.label, &mut state, 
+                                               |s, state| {
+                                                   let valid = state.matches(s);
+                                                   !valid
+                                               });
             Cow::Owned(postings)
         }
     }
@@ -390,23 +392,16 @@ where
 {
     let mut its = its.into_iter();
     if let Some(it) = its.next() {
-        #[cfg(test)]
-        debug_bitmap("first", &it);
-
         let mut result = it.into_owned();
 
         for it in its {
-            #[cfg(test)]
-            debug_bitmap("item", &it);
+            if it.is_empty() {
+                result.clear();
+                return result;
+            }
 
             result.and_inplace(&it);
-
-            #[cfg(test)]
-            debug_bitmap("and_inplace", &result);
         }
-
-        #[cfg(test)]
-        debug_bitmap("intersect", &result);
 
         result
     } else {

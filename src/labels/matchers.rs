@@ -98,7 +98,7 @@ impl PredicateValue {
         }
     }
 
-    fn text(&self) -> Option<&str> {
+    pub fn text(&self) -> Option<&str> {
         match self {
             PredicateValue::Empty => None,
             PredicateValue::String(s) => Some(&s),
@@ -169,44 +169,35 @@ impl Hash for PredicateValue {
 
 #[derive(Clone, Debug)]
 pub struct RegexMatcher {
-    regex: Regex,
-    negate: bool,
-    value: String, // original (possibly unanchored) string
+    pub(crate) regex: Regex,
+    pub value: String, // original (possibly unanchored) string
 }
 
 impl Hash for RegexMatcher {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.regex.as_str().hash(state);
-        self.negate.hash(state);
         self.value.hash(state);
     }
 }
 
 impl RegexMatcher {
-    fn new(regex: Regex, negate: bool, value: String) -> Self {
+    fn new(regex: Regex, value: String) -> Self {
         Self {
             regex,
-            negate,
             value,
         }
     }
 
-    pub fn create(value: &str, negate: bool) -> Result<Self, ParseError> {
+    pub fn create(value: &str) -> Result<Self, ParseError> {
         let (regex, unanchored) = parse_regex_anchored(value)?;
-        Ok(Self::new(regex, negate, unanchored.to_string()))
+        Ok(Self::new(regex, unanchored.to_string()))
     }
 
     pub fn is_match(&self, other: &str) -> bool {
         if other.is_empty() {
-            return is_empty_regex_matcher(&self.regex, self.negate);
+            return is_empty_regex_matcher(&self.regex);
         }
-
-        let matches = self.regex.is_match(other);
-        if self.negate {
-            !matches
-        } else {
-            matches
-        }
+        self.regex.is_match(other)
     }
 }
 
@@ -246,8 +237,11 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(value) => value.matches(other),
             PredicateMatch::NotEqual(value) => !value.matches(other),
-            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
+            PredicateMatch::RegexEqual(re) => {
                 re.is_match(other)
+            }
+            PredicateMatch::RegexNotEqual(re) => {
+                !re.is_match(other)
             }
         }
     }
@@ -266,7 +260,7 @@ impl PredicateMatch {
             PredicateMatch::Equal(value) => value.cost(),
             PredicateMatch::NotEqual(value) => value.cost(),
             PredicateMatch::RegexEqual(_) => 50,
-            PredicateMatch::RegexNotEqual(_) => 50,
+            PredicateMatch::RegexNotEqual(_) => 55,
         }
     }
 
@@ -334,14 +328,14 @@ impl Matcher {
             MatchOp::Equal => Ok(Self::equals(label, &value)),
             MatchOp::NotEqual => Ok(Self::not_equals(label, &value)),
             MatchOp::RegexEqual => {
-                let re = RegexMatcher::create(&value, true)?;
+                let re = RegexMatcher::create(&value)?;
                 Ok(Self {
                     label,
                     matcher: PredicateMatch::RegexEqual(re),
                 })
             }
             MatchOp::RegexNotEqual => {
-                let re = RegexMatcher::create(&value, false)?;
+                let re = RegexMatcher::create(&value)?;
                 Ok(Self {
                     label,
                     matcher: PredicateMatch::RegexNotEqual(re),
@@ -424,7 +418,7 @@ impl Hash for Matcher {
     }
 }
 
-fn is_empty_regex_matcher(re: &Regex, negative: bool) -> bool {
+fn is_empty_regex_matcher(re: &Regex) -> bool {
     // cheap check
     let value = re.as_str();
     let matches_empty = match value.len() {
@@ -435,16 +429,7 @@ fn is_empty_regex_matcher(re: &Regex, negative: bool) -> bool {
         4 => value == "^.*$" || value == "^?:$",
         _ => false,
     };
-
-    if negative {
-        if !matches_empty {
-            true
-        } else {
-            !re.is_match("")
-        }
-    } else {
-        matches_empty || re.is_match("")
-    }
+    matches_empty || re.is_match("")
 }
 
 #[derive(Debug, Clone, Hash)]

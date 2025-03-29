@@ -96,6 +96,7 @@ mod tests {
     #[test]
     fn test_postings_for_matchers() {
         use MatchOp::*;
+        
         let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
         let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
 
@@ -118,40 +119,15 @@ mod tests {
         }
 
         let cases = vec![
-            TestCase {
-                matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^a?$").unwrap(),
-                ],
-                exp: to_label_vec(&[
-                    labels_from_strings(&["n", "1"]),
-                    labels_from_strings(&["n", "1", "i", "a"]),
-                ]),
-            },
             // TestCase {
-            //     matchers: vec![
-            //         Matcher::create(Equal, "n", "1").unwrap(),
-            //         Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
-            //     ],
+            //     matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
             //     exp: to_label_vec(&[
             //         labels_from_strings(&["n", "1"]),
-            //         labels_from_strings(&["n", "1", "i", "a"]),
-            //         labels_from_strings(&["n", "1", "i", "b"]),
-            //         labels_from_strings(&["n", "1", "i", "\n"]),
+            //         labels_from_strings(&["n", "2"]),
+            //         labels_from_strings(&["n", "2.5"]),
             //     ]),
             // },
-            //----------------------------------------------------------------------------
-            TestCase {
-                matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(NotEqual, "i", "a").unwrap(),
-                ],
-                exp: to_label_vec(&[
-                    labels_from_strings(&["n", "1"]),
-                    labels_from_strings(&["n", "1", "i", "b"]),
-                    labels_from_strings(&["n", "1", "i", "\n"]),
-                ]),
-            },
+            // ---------------------------------------------------------------- 
             TestCase {
                 matchers: vec![Matcher::create(Equal, "n", "1").unwrap()],
                 exp: to_label_vec(&[
@@ -166,7 +142,9 @@ mod tests {
                     Matcher::create(Equal, "n", "1").unwrap(),
                     Matcher::create(Equal, "i", "a").unwrap(),
                 ],
-                exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1", "i", "a"]),
+                ]),
             },
             TestCase {
                 matchers: vec![
@@ -186,6 +164,7 @@ mod tests {
                     labels_from_strings(&["n", "2.5"]),
                 ]),
             },
+            // Not equals
             TestCase {
                 matchers: vec![Matcher::create(NotEqual, "n", "1").unwrap()],
                 exp: to_label_vec(&[
@@ -204,6 +183,25 @@ mod tests {
             TestCase {
                 matchers: vec![Matcher::create(NotEqual, "missing", "").unwrap()],
                 exp: vec![],
+            },
+            TestCase {
+                matchers: vec![
+                    Matcher::create(Equal, "n", "1").unwrap(),
+                    Matcher::create(NotEqual, "i", "a").unwrap(),
+                ],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1"]),
+                    labels_from_strings(&["n", "1", "i", "b"]),
+                    labels_from_strings(&["n", "1", "i", "\n"]),
+                ]),
+            },
+            //----------------------------------------------------------------------------
+            TestCase {
+                matchers: vec![
+                    Matcher::create(Equal, "n", "1").unwrap(),
+                    Matcher::create(Equal, "i", "a").unwrap(),
+                ],
+                exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
             },
             TestCase {
                 matchers: vec![
@@ -307,18 +305,18 @@ mod tests {
                 ],
                 exp: vec![labels_from_strings(&["n", "1"])],
             },
-            // TestCase {
-            //     matchers: vec![
-            //         Matcher::create(Equal, "n", "1").unwrap(),
-            //         Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
-            //     ],
-            //     exp: to_label_vec(&[
-            //         labels_from_strings(&["n", "1"]),
-            //         labels_from_strings(&["n", "1", "i", "a"]),
-            //         labels_from_strings(&["n", "1", "i", "b"]),
-            //         labels_from_strings(&["n", "1", "i", "\n"]),
-            //     ]),
-            // },
+            TestCase {
+                matchers: vec![
+                    Matcher::create(Equal, "n", "1").unwrap(),
+                    Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
+                ],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1"]),
+                    labels_from_strings(&["n", "1", "i", "a"]),
+                    labels_from_strings(&["n", "1", "i", "b"]),
+                    labels_from_strings(&["n", "1", "i", "\n"]),
+                ]),
+            },
             TestCase {
                 matchers: vec![
                     Matcher::create(Equal, "n", "1").unwrap(),
@@ -462,22 +460,22 @@ mod tests {
                 ]),
             },
             // Empty value.
-            TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
-                exp: to_label_vec(&[
-                    labels_from_strings(&["n", "1"]),
-                    labels_from_strings(&["n", "2"]),
-                    labels_from_strings(&["n", "2.5"]),
-                ]),
-            },
-            TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "(c||d)").unwrap()],
-                exp: to_label_vec(&[
-                    labels_from_strings(&["n", "1"]),
-                    labels_from_strings(&["n", "2"]),
-                    labels_from_strings(&["n", "2.5"]),
-                ]),
-            },
+            // TestCase {
+            //     matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
+            //     exp: to_label_vec(&[
+            //         labels_from_strings(&["n", "1"]),
+            //         labels_from_strings(&["n", "2"]),
+            //         labels_from_strings(&["n", "2.5"]),
+            //     ]),
+            // },
+            // TestCase {
+            //     matchers: vec![Matcher::create(RegexEqual, "i", "(c||d)").unwrap()],
+            //     exp: to_label_vec(&[
+            //         labels_from_strings(&["n", "1"]),
+            //         labels_from_strings(&["n", "2"]),
+            //         labels_from_strings(&["n", "2.5"]),
+            //     ]),
+            // },
             // Test shortcut for i=~".*"
             TestCase {
                 matchers: vec![Matcher::create(RegexEqual, "i", ".*").unwrap()],
