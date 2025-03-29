@@ -180,6 +180,11 @@ impl TimeSeriesIndex {
         inner.count()
     }
 
+    pub fn label_count(&self) -> usize {
+        let inner = self.inner.read().unwrap();
+        inner.label_index.len().saturating_sub(1)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.count() == 0
     }
@@ -315,18 +320,16 @@ fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::series::index::next_timeseries_id;
     use super::*;
     use crate::labels::InternedMetricName;
     use crate::parser::metric_name::parse_metric_name;
     use crate::series::time_series::TimeSeries;
 
-    fn label_count(index: &TimeSeriesIndex) -> usize {
-        let stats = index.stats("", 10);
-        stats.num_label_pairs // num_labels
-    }
-
     fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
         let mut ts = TimeSeries::new();
+        ts.id = next_timeseries_id();
+
         let labels = parse_metric_name(prometheus_name).unwrap();
         ts.labels = InternedMetricName::new(&labels);
         ts
@@ -340,7 +343,7 @@ mod tests {
         index.index_timeseries(&ts, b"time-series-1");
 
         assert_eq!(index.count(), 1);
-        assert_eq!(label_count(&index), 3); // metric_name + region + env
+        assert_eq!(index.label_count(), 3); // metric_name + region + env
     }
 
     #[test]
@@ -349,12 +352,14 @@ mod tests {
         let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
 
         index.index_timeseries(&mut ts, b"time-series-1");
-
-        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="prod"}"#);
+        
+        ts.labels.add_label("service", "web");
+        ts.labels.add_label("pod", "pod-1");
+        
         index.reindex_timeseries(&ts, b"time-series-1");
 
-        assert_eq!(index.count(), 2);
-        assert_eq!(label_count(&index), 3); // metric_name + region + env
+        assert_eq!(index.count(), 1);
+        assert_eq!(index.label_count(), 5); // metric_name + region + env
     }
 
     #[test]
@@ -368,7 +373,7 @@ mod tests {
         index.remove_timeseries(&ts);
 
         assert_eq!(index.count(), 0);
-        assert_eq!(label_count(&index), 0);
+        assert_eq!(index.label_count(), 0);
     }
 
     #[test]

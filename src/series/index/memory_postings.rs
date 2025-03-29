@@ -139,10 +139,11 @@ impl MemoryPostings {
         let labels = series.labels.iter().collect::<Vec<_>>();
         self.remove_posting_by_id_and_labels(id, &labels);
         self.remove_id_from_all_postings(id);
+        self.id_to_key.remove(&id);
     }
 
     pub fn count(&self) -> usize {
-        self.label_index.len()
+        self.id_to_key.len()
     }
 
     pub fn all_postings(&self) -> &PostingsBitmap {
