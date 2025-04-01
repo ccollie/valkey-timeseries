@@ -1157,7 +1157,7 @@ mod tests {
             assert_eq!(result_samples, expected_samples);
 
             // Test with timestamps that are not present
-            let missing_timestamps = vec![2000, 3000, 4000];
+            let missing_timestamps = vec![-2000, -3000, -4000];
             let result_samples = chunk.samples_by_timestamps(&missing_timestamps).unwrap();
             assert!(result_samples.is_empty());
 

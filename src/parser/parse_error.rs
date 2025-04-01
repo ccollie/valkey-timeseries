@@ -26,6 +26,8 @@ pub enum ParseError {
     InvalidRegex(String),
     #[error("Invalid match operator: {0}")]
     InvalidMatchOperator(String),
+    #[error("Empty series selector")]
+    EmptySeriesSelector,
     #[default]
     #[error("Parse error")]
     Other,

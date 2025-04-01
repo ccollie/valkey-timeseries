@@ -4,7 +4,7 @@ use crate::labels::matchers::{
 use crate::parser::lex::{expect_one_of_tokens, expect_token, Token};
 use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
-use crate::parser::ParseResult;
+use crate::parser::{ParseError, ParseResult};
 use logos::{Lexer, Logos};
 
 const INITIAL_TOKENS: &[Token] = &[Token::Identifier, Token::OpOr, Token::LeftBrace];
@@ -32,6 +32,9 @@ const SECONDARY_TOKENS: &[Token] = &[
 ///
 ///  Produces a list of matchers, where each matcher is a label filter.
 pub fn parse_series_selector(s: &str) -> ParseResult<Matchers> {
+    if s.is_empty() {
+        return Err(ParseError::EmptySeriesSelector);
+    }
     let mut lex = Token::lexer(s);
     let result = parse_series_selector_internal(&mut lex)?;
     expect_token(&mut lex, Token::Eof)?;

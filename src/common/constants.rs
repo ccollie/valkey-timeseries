@@ -1,5 +1,6 @@
 pub(crate) const VEC_BASE_SIZE: usize = 24;
-pub const MAX_TIMESTAMP: i64 = 253402300799;
+/// Mon Dec 31 4192 05:00:00 GMT+0000
+pub const MAX_TIMESTAMP: i64 = 70151115600;
 pub const METRIC_NAME_LABEL: &str = "__name__";
 
 pub const REDUCER_KEY: &str = "__reducer__";

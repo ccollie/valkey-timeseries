@@ -186,7 +186,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "FILTER_BY_TS" => CommandArgToken::FilterByTs,
         "FILTER_BY_VALUE" => CommandArgToken::FilterByValue,
         "FULL" => CommandArgToken::Full,
-        "GROUP_BY" => CommandArgToken::GroupBy,
+        "GROUPBY" => CommandArgToken::GroupBy,
         "IGNORE" => CommandArgToken::Ignore,
         "INNER" => CommandArgToken::Inner,
         "LABELS" => CommandArgToken::Labels,
