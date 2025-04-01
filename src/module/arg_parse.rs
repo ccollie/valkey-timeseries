@@ -10,7 +10,10 @@ use crate::join::join_reducer::JoinReducer;
 use crate::labels::matchers::Matchers;
 use crate::labels::{parse_series_selector, Label};
 use crate::parser::number::parse_number;
-use crate::parser::{metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal, parse_positive_duration_value, timestamp::parse_timestamp as parse_timestamp_internal};
+use crate::parser::{
+    metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal,
+    parse_positive_duration_value, timestamp::parse_timestamp as parse_timestamp_internal,
+};
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
@@ -286,7 +289,8 @@ pub fn parse_duration(arg: &str) -> ValkeyResult<Duration> {
 }
 
 pub fn parse_duration_ms(arg: &str) -> ValkeyResult<i64> {
-    parse_positive_duration_value(arg, 1).map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
+    parse_positive_duration_value(arg, 1)
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
 }
 
 pub fn parse_number_with_unit(arg: &str) -> TsdbResult<f64> {

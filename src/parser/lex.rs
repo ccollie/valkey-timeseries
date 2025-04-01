@@ -22,7 +22,7 @@ pub enum Token {
 
     #[regex("'(?s:[^'\\\\]|\\\\.)*'")]
     #[regex("`(?s:[^`\\\\]|\\\\.)*`")]
-    #[regex("\"(?s:[^\"\\\\]|\\\\.)*\"")]
+    #[regex(r#""(?s:[^"\\\\]|\\\\.)*""#)]
     StringLiteral,
 
     #[token("{")]
@@ -344,7 +344,12 @@ mod tests {
         // String with whitespace
         let s = "  \n\t\r ";
         test_success(s, &[]);
+        test_success(r#"''"#, &["''"]);
+        test_success(r#"``"#, &["``"]);
+        // test_success(r#""""#, &[""]);
 
+        test_success(r#""super""#, &["super"]);
+        test_success(r#"`cali`"#, &["cali"]);
         // Strings
         let s = r#""''"#.to_owned() + "``" + r#"\\"  '\\'  "\"" '\''"\\\"\\""#;
         let expected = vec![

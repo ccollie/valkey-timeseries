@@ -1,3 +1,4 @@
+use crate::parser::timestamp::parse_numeric_timestamp;
 use std::str;
 
 use crate::parser::{ParseError, ParseResult};
@@ -68,13 +69,11 @@ pub fn parse_duration_value(s: &str, step: i64) -> ParseResult<i64> {
     if s.is_empty() {
         return Err(ParseError::General("duration cannot be empty".to_string()));
     }
+
     // Try parser floating-point duration
-    match s.parse::<f64>() {
+    match parse_numeric_timestamp(s) {
         // Convert the duration to milliseconds.
-        Ok(d) => {
-            let val = (d * 1000_f64) as i64;
-            Ok(val)
-        }
+        Ok(d) => Ok(d),
         Err(_) => scan_value(s, step),
     }
 }
@@ -254,7 +253,7 @@ mod tests {
 
         // Floating-point durations without suffix.
         f("123", 45, 123000);
-        f("1.23", 45, 1230);
+        f("1.23", 1, 1230);
         f("-0.56", 12, -560);
         f("-.523e2", 21, -52300)
     }
