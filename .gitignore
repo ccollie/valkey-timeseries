@@ -29,4 +29,5 @@ tests/test-data
 __pycache__
 test-data
 .attach_pid*
-
+tests/build
+.pytest_cache
