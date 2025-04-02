@@ -16,7 +16,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
                 module_loaded = True
                 break
         assert (module_loaded)
-        # Validate that all the BF.* commands are supported on the server.
+        # Validate that all the TS.* commands are supported on the server.
         command_cmd_result = client.execute_command('COMMAND')
         ts_cmds = ["TS.CREATE", "TS.ALTER", "TS.ADD", "TS.MADD", "TS.DEL", "TS.GET", "TS.MGET", "TS.RANGE", "TS.MRANGE",
                    "TS.CARD", "TS.QUERYINDEX", "TS.STATS", "TS.LABELNAMES", "TS.LABELVALUES", "TS.INFO"]

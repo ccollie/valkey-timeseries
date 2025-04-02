@@ -24,7 +24,7 @@ if [ -z "$SERVER_VERSION" ]; then
     export SERVER_VERSION="unstable"
 fi
 
-if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.0.0" ] ; then
+if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.0" ] && [ "$SERVER_VERSION" != "8.1" ]; then
   echo "ERROR: Unsupported version - $SERVER_VERSION"
   exit 1
 fi
@@ -59,16 +59,25 @@ else
     rm -rf valkey-test-framework
 fi
 
-REQUIREMENTS_FILE="pyproject.toml"
+REQUIREMENTS_FILE="requirements.txt"
 
 # Check if uv is available
 if command -v uv > /dev/null 2>&1; then
     echo "Using uv to install packages..."
     uv sync
+    # Check if pip is available
+elif command -v pip > /dev/null 2>&1; then
+    echo "Using pip to install packages..."
+    pip install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
+# Check if pip3 is available
+elif command -v pip3 > /dev/null 2>&1; then
+    echo "Using pip3 to install packages..."
+    pip3 install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
 else
-    echo "Error: uv is not available. Please install uv."
+    echo "Error: Neither uv, pip nor pip3 is available. Please install Python package installer."
     exit 1
 fi
+
 
 os_type=$(uname)
 MODULE_EXT=".so"
