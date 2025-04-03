@@ -7,7 +7,7 @@ use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
 use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::{SeriesRef, TimeSeries, TimestampRange};
+use crate::series::{has_key_read_permission, SeriesRef, TimeSeries, TimestampRange};
 use ahash::AHashSet;
 use blart::AsBytes;
 use smallvec::SmallVec;
@@ -99,9 +99,9 @@ fn collect_series_keys(
     keys
 }
 
-fn check_key_is_allowed_to_read(_ctx: &Context, _key: &[u8]) -> bool {
-    // todo: implement permission checking
-    true
+fn check_key_is_allowed_to_read(ctx: &Context, _key: &[u8]) -> bool {
+    let key = ctx.create_string(_key);
+    has_key_read_permission(ctx, &key)
 }
 
 /// `postings_for_matchers` assembles a single postings iterator against the series index

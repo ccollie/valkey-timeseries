@@ -88,7 +88,7 @@ fn add_samples_internal(
     key: &ValkeyString,
     input: &Vec<ParsedInput>,
 ) -> TsdbResult<Vec<(usize, SampleAddResult)>> {
-    if let Ok(Some(series)) = get_timeseries_mut(ctx, key, true) {
+    if let Ok(Some(mut guard)) = get_timeseries_mut(ctx, key, true) {
         let samples: SmallVec<Sample, 6> = input
             .iter()
             .map(|input| Sample {
@@ -97,6 +97,7 @@ fn add_samples_internal(
             })
             .collect();
 
+        let series = &mut guard;
         let add_results = series.merge_samples(&samples, None)?;
         let mut results = Vec::with_capacity(input.len());
         let mut replication_args = Vec::with_capacity(input.len());

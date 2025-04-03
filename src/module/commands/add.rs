@@ -27,8 +27,9 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let timestamp = parse_timestamp(timestamp_str)?;
     let value = args[3].parse_float()?;
 
-    if let Some(series) = get_timeseries_mut(ctx, &args[1], false)? {
+    if let Some(mut guard) = get_timeseries_mut(ctx, &args[1], false)? {
         // args.done()?;
+        let series = guard.get_series_mut();
         return match series.add(timestamp, value, None) {
             SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
                 let timestamp = if timestamp_str == "*" { Some(ts) } else { None };

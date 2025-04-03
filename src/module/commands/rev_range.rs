@@ -18,7 +18,7 @@ pub fn rev_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     args.done()?;
 
-    with_timeseries(ctx, &key, |series| {
+    with_timeseries(ctx, &key, true, |series| {
         let samples = get_range(series, &options, false)
             .into_iter()
             .rev()

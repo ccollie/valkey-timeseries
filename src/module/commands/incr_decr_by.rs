@@ -26,8 +26,8 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     let timestamp = handle_parse_timestamp(&mut args)?;
 
     let key_name = args[1].clone();
-    if let Some(series) = get_timeseries_mut(ctx, &key_name, false)? {
-        handle_update(ctx, series, &key_name, timestamp, delta, is_increment)
+    if let Some(mut series) = get_timeseries_mut(ctx, &key_name, false)? {
+        handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
     } else {
         let mut args = args.into_iter().skip(3).peekable();
         let options = parse_series_options(&mut args, TimeSeriesOptions::default(), &[])?;
