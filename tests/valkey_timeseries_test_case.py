@@ -49,36 +49,8 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         random_string = ''.join(random.choice(characters) for _ in range(length))
         return random_string
 
-
-    def add_items_till_capacity(self, client, filter_name, capacity_needed, starting_item_idx, rand_prefix, batch_size=1000):
-        """
-        Adds items to the provided bloom filter object (filter_name) until the specified capacity is reached.
-        Item names will start with the provided prefix (rand_prefix) followed by a counter (starting_item_idx onwards).
-        """
-        new_item_idx = starting_item_idx
-        fp_count = 0
-        cardinality = client.execute_command(f'BF.CARD {filter_name}')
-        while cardinality < capacity_needed:
-            # Calculate how many more items we need to add.
-            remaining_capacity = capacity_needed - cardinality
-            batch_to_add = min(batch_size, remaining_capacity)
-            # Prepare a batch of items
-            items = [f"{rand_prefix}{new_item_idx + i}" for i in range(batch_to_add)]
-            new_item_idx += batch_to_add
-            result = client.execute_command(f'BF.MADD {filter_name} ' + ' '.join(items))
-            # Process results
-            for res in result:
-                if res == 0:
-                    fp_count += 1
-                elif res == 1:
-                    cardinality += 1
-                else:
-                    raise RuntimeError(f"Unexpected return value from add_item: {res}")
-        return fp_count, new_item_idx - 1
-
-
     def validate_copied_series_correctness(self, client, original_filter_name, item_prefix, add_operation_idx, expected_fp_rate, fp_margin, original_info_dict):
-        """ Validate correctness on a copy of the provided bloom filter.
+        """ Validate correctness on a copy of the provided timeseries.
         """
         copy_filter_name = "filter_copy"
         assert client.execute_command(f'COPY {original_filter_name} {copy_filter_name}') == 1

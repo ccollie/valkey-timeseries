@@ -11,7 +11,7 @@ use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
 use valkey_module::raw;
 
-/// Bloom Module data type RDB encoding version.
+/// TimeSeries Module data type RDB encoding version.
 const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
 
 pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
