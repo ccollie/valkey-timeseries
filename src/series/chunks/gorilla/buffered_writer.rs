@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn write_f64() {
         let mut b = BufferedWriter::new();
-        let expected = 3.14;
+        let expected = std::f64::consts::PI;
         b.write_f64(expected);
 
         let mut reader = BufferedReader::new(&b.buf);

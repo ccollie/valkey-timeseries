@@ -289,8 +289,7 @@ pub fn parse_duration(arg: &str) -> ValkeyResult<Duration> {
 }
 
 pub fn parse_duration_ms(arg: &str) -> ValkeyResult<i64> {
-    parse_positive_duration_value(arg, 1)
-        .map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
+    parse_positive_duration_value(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
 }
 
 pub fn parse_number_with_unit(arg: &str) -> TsdbResult<f64> {

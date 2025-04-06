@@ -1,3 +1,4 @@
+use crate::error_consts;
 use crate::join::asof::AsOfJoinStrategy;
 use crate::join::{process_join, JoinOptions, JoinType};
 use crate::module::arg_parse::{
@@ -10,7 +11,6 @@ use crate::module::{invalid_series_key_error, VK_TIME_SERIES_TYPE};
 use crate::series::TimeSeries;
 use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::error_consts;
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
 ///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PRIOR | NEXT] tolerance]]

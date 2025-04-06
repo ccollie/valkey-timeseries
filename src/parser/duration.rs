@@ -16,8 +16,8 @@ const MILLIS_PER_YEAR: f64 = 365.0 * MILLIS_PER_DAY;
 /// Duration in s may be combined, i.e. 2h5m or 2h-5m.
 ///
 /// Error is returned if the duration in s is negative.
-pub fn parse_positive_duration_value(s: &str, step: i64) -> Result<i64, ParseError> {
-    let d = parse_duration_value(s, step)?;
+pub fn parse_positive_duration_value(s: &str) -> Result<i64, ParseError> {
+    let d = parse_duration_value(s)?;
     if d < 0 {
         return Err(ParseError::InvalidDuration(format!(
             "duration cannot be negative; got {}",
@@ -33,8 +33,8 @@ pub fn parse_positive_duration_value(s: &str, step: i64) -> Result<i64, ParseErr
 /// Duration in s may be combined, i.e. 2h5m, -2h5m or 2h-5m.
 ///
 /// The returned duration value can be negative.
-pub fn parse_duration_value(s: &str, step: i64) -> ParseResult<i64> {
-    fn scan_value(s: &str, step: i64) -> ParseResult<i64> {
+pub fn parse_duration_value(s: &str) -> ParseResult<i64> {
+    fn scan_value(s: &str) -> ParseResult<i64> {
         let mut is_minus = false;
         let mut cursor: &str = s;
         let mut d = 0.0;
@@ -45,7 +45,7 @@ pub fn parse_duration_value(s: &str, step: i64) -> ParseResult<i64> {
                 return Err(ParseError::InvalidDuration(s.to_string()));
             }
             let ds = &cursor[0..n as usize];
-            let mut d_local = parse_single_duration(ds, step)?;
+            let mut d_local = parse_single_duration(ds)?;
             if is_minus && (d_local > 0.0) {
                 d_local = -d_local
             }
@@ -74,11 +74,11 @@ pub fn parse_duration_value(s: &str, step: i64) -> ParseResult<i64> {
     match parse_numeric_timestamp(s) {
         // Convert the duration to milliseconds.
         Ok(d) => Ok(d),
-        Err(_) => scan_value(s, step),
+        Err(_) => scan_value(s),
     }
 }
 
-fn parse_single_duration(s: &str, step: i64) -> Result<f64, ParseError> {
+fn parse_single_duration(s: &str) -> Result<f64, ParseError> {
     let mut num_part = &s[0..s.len() - 1];
     if num_part.ends_with('m') {
         // Duration in ms
@@ -98,7 +98,6 @@ fn parse_single_duration(s: &str, step: i64) -> Result<f64, ParseError> {
         "d" => mp = MILLIS_PER_DAY,
         "w" => mp = MILLIS_PER_WEEK,
         "y" => mp = MILLIS_PER_YEAR,
-        "i" => mp = step as f64,
         _ => {
             return Err(ParseError::General(format!(
                 "invalid duration suffix in {s}"
@@ -188,7 +187,7 @@ fn scan_single_duration(s: &str, can_be_negative: bool) -> i32 {
             // duration in minutes
             (i + 1) as i32
         }
-        's' | 'h' | 'd' | 'w' | 'y' | 'i' => (i + 1) as i32,
+        's' | 'h' | 'd' | 'w' | 'y' => (i + 1) as i32,
         _ => -1,
     }
 }
@@ -207,8 +206,8 @@ mod tests {
 
     #[test]
     fn test_duration_success() {
-        fn f(s: &str, step: i64, expected: i64) {
-            let d = parse_duration_value(s, step).unwrap();
+        fn f(s: &str, expected: i64) {
+            let d = parse_duration_value(s).unwrap();
             assert_eq!(
                 d, expected,
                 "unexpected duration; got {}; want {}; expr {}",
@@ -216,52 +215,50 @@ mod tests {
             )
         }
 
+        f("1.23", 1230);
+
         // Integer durations
-        f("123ms", 42, 123);
-        f("-123ms", 42, -123);
-        f("123s", 42, 123 * 1000);
-        f("-123s", 42, -123 * 1000);
-        f("4236579305ms", 42, 4236579305);
-        f("123m", 42, 123 * MINUTE);
-        f("1h", 42, HOUR);
-        f("2d", 42, 2 * DAY);
-        f("3w", 42, 3 * WEEK);
-        f("4y", 42, 4 * YEAR);
-        f("1i", 42 * 1000, 42 * 1000);
-        f("3i", 42, 3 * 42);
-        f("-3i", 42, -3 * 42);
-        f("1m34s24ms", 42, 94024);
-        f("1m-34s24ms", 42, 25976);
-        f("-1m34s24ms", 42, -94024);
-        f("-1m-34s24ms", 42, -94024);
+        f("123ms", 123);
+        f("-123ms", -123);
+        f("123s", 123 * 1000);
+        f("-123s", -123 * 1000);
+        f("4236579305ms", 4236579305);
+        f("123m", 123 * MINUTE);
+        f("1h", HOUR);
+        f("2d", 2 * DAY);
+        f("3w", 3 * WEEK);
+        f("4y", 4 * YEAR);
+        f("1m34s24ms", 94024);
+        f("1m-34s24ms", 25976);
+        f("-1m34s24ms", -94024);
+        f("-1m-34s24ms", -94024);
 
         // Float durations
-        f("34.54ms", 42, 34);
-        f("-34.34ms", 42, -34);
-        f("0.234s", 42, 234);
-        f("-0.234s", 42, -234);
-        f("1.5s", 42, (1.5 * SECOND as f64) as i64);
-        f("1.5m", 42, (1.5 * MINUTE as f64) as i64);
-        f("1.2h", 42, (1.2 * HOUR as f64) as i64);
-        f("1.1d", 42, (1.1 * DAY as f64) as i64);
-        f("1.1w", 42, (1.1 * WEEK as f64) as i64);
-        f("1.3y", 42, (1.3 * YEAR as f64).floor() as i64);
-        f("-1.3y", 42, (-1.3 * YEAR as f64).floor() as i64);
-        f("0.1i", 12340, (0.1 * 12340.0) as i64);
-        f("1.5m3.4s2.4ms", 42, 93402);
-        f("-1.5m3.4s2.4ms", 42, -93402);
+        f("34.54ms", 34);
+        f("-34.34ms", -34);
+        f("0.234s", 234);
+        f("-0.234s", -234);
+        f("1.5s", (1.5 * SECOND as f64) as i64);
+        f("1.5m", (1.5 * MINUTE as f64) as i64);
+        f("1.2h", (1.2 * HOUR as f64) as i64);
+        f("1.1d", (1.1 * DAY as f64) as i64);
+        f("1.1w", (1.1 * WEEK as f64) as i64);
+        f("1.3y", (1.3 * YEAR as f64).floor() as i64);
+        f("-1.3y", (-1.3 * YEAR as f64).floor() as i64);
+        f("1.5m3.4s2.4ms", 93402);
+        f("-1.5m3.4s2.4ms", -93402);
 
         // Floating-point durations without suffix.
-        f("123", 45, 123000);
-        f("1.23", 1, 1230);
-        f("-0.56", 12, -560);
-        f("-.523e2", 21, -52300)
+        f("123", 123000);
+        f("1.23", 1230);
+        f("-0.56", -560);
+        f("-.523e2", -52300)
     }
 
     #[test]
     fn test_complex() {
         fn f(s: &str) {
-            let _ = parse_duration_value(s, 1).unwrap();
+            let _ = parse_duration_value(s).unwrap();
         }
 
         f("5w4h-3.4m13.4ms");
@@ -270,7 +267,7 @@ mod tests {
     #[test]
     fn test_duration_error() {
         fn f(s: &str) {
-            if let Ok(d) = parse_duration_value(s, 42) {
+            if let Ok(d) = parse_duration_value(s) {
                 panic!("Expected error, got {} for expr {}", d, s)
             }
         }
@@ -296,7 +293,7 @@ mod tests {
     #[test]
     fn test_positive_duration_error() {
         fn f(s: &str) {
-            if parse_positive_duration_value(s, 42).is_ok() {
+            if parse_positive_duration_value(s).is_ok() {
                 panic!("Expecting an error for duration {}", s)
             }
         }

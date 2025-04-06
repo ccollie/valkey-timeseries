@@ -125,7 +125,7 @@ fn get_number_in_range(
 }
 
 fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> ValkeyResult<i64> {
-    let duration = parse_duration_value(value, 1).map_err(|_e| {
+    let duration = parse_duration_value(value).map_err(|_e| {
         ValkeyError::String(format!(
             "error parsing \"{name}\". Expected duration, got {value}"
         ))

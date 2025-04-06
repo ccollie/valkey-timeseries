@@ -161,12 +161,10 @@ pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
     }
 
     timestamps
-        .iter().cloned()
+        .iter()
+        .cloned()
         .zip(values.iter().cloned())
-        .map(|(timestamp, value)| Sample {
-            timestamp,
-            value,
-        })
+        .map(|(timestamp, value)| Sample { timestamp, value })
         .collect::<Vec<Sample>>()
 }
 

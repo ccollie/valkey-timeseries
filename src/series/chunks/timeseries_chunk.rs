@@ -60,7 +60,7 @@ impl TimeSeriesChunk {
     pub fn utilization(&self) -> f64 {
         let used = self.size();
         let total = self.max_size();
-        used as f64 / total as f64
+        (used / total) as f64
     }
 
     /// Get an estimate of the remaining capacity in number of samples
@@ -120,7 +120,7 @@ impl TimeSeriesChunk {
         }
     }
 
-    // NOTE! this function assumes that timestamps are sorted ascending and deduped
+    // NOTE! this function assumes that timestamps are sorted ascending and de-duped
     pub fn samples_by_timestamps(&self, timestamps: &[Timestamp]) -> TsdbResult<Vec<Sample>> {
         if self.len() == 0 || timestamps.is_empty() {
             return Ok(vec![]);

@@ -41,7 +41,7 @@ mod tests {
         ix: &mut TimeSeriesIndex,
         labels_map: &mut HashMap<SeriesRef, Vec<Label>>,
         series_ref: SeriesRef,
-        labels: &Vec<Label>,
+        labels: &[Label],
     ) {
         let mut state = ();
         ix.with_postings_mut(&mut state, |p, _| {
@@ -51,7 +51,7 @@ mod tests {
             p.add_id_to_all_postings(series_ref);
         });
 
-        labels_map.insert(series_ref, labels.clone());
+        labels_map.insert(series_ref, labels.to_vec());
     }
 
     fn to_label_vec(labels: &[Vec<Label>]) -> Vec<Vec<Label>> {
@@ -70,7 +70,7 @@ mod tests {
         matchers: &[Matcher],
         series_data: &HashMap<SeriesRef, Vec<Label>>,
     ) -> Vec<Vec<Label>> {
-        let copy = matchers.iter().map(|x| x.clone()).collect();
+        let copy = matchers.to_vec().clone();
         let filter = Matchers::with_matchers(None, copy);
         let p = postings_for_matchers(ix, &filter).unwrap();
         let actual: Vec<_> = p
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_postings_for_matchers() {
         use MatchOp::*;
-        
+
         let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
         let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
 
@@ -127,7 +127,7 @@ mod tests {
             //         labels_from_strings(&["n", "2.5"]),
             //     ]),
             // },
-            // ---------------------------------------------------------------- 
+            // ----------------------------------------------------------------
             TestCase {
                 matchers: vec![Matcher::create(Equal, "n", "1").unwrap()],
                 exp: to_label_vec(&[
@@ -142,9 +142,7 @@ mod tests {
                     Matcher::create(Equal, "n", "1").unwrap(),
                     Matcher::create(Equal, "i", "a").unwrap(),
                 ],
-                exp: to_label_vec(&[
-                    labels_from_strings(&["n", "1", "i", "a"]),
-                ]),
+                exp: to_label_vec(&[labels_from_strings(&["n", "1", "i", "a"])]),
             },
             TestCase {
                 matchers: vec![

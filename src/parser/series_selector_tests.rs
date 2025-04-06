@@ -61,10 +61,7 @@ mod tests {
     fn test_parse_series_selector_empty_input() {
         let result = parse_series_selector("");
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Empty series selector"
-        );
+        assert_eq!(result.unwrap_err().to_string(), "Empty series selector");
     }
 
     #[test]
@@ -190,10 +187,10 @@ mod tests {
             assert_eq!(and_matchers.len(), 2);
 
             let method_matcher = &and_matchers[0];
-            assert_matcher(&method_matcher, "method", MatchOp::Equal, "GET");
+            assert_matcher(method_matcher, "method", MatchOp::Equal, "GET");
 
             let status_matcher = &and_matchers[1];
-            assert_matcher(&status_matcher, "status", MatchOp::Equal, "200");
+            assert_matcher(status_matcher, "status", MatchOp::Equal, "200");
         });
     }
 
@@ -208,7 +205,7 @@ mod tests {
 
             let method_matcher = &matchers[0];
             assert_list_matcher(
-                &method_matcher,
+                method_matcher,
                 "method",
                 MatchOp::Equal,
                 &["GET", "SET", "POST"],
@@ -274,7 +271,7 @@ mod tests {
 
             let matcher = &matchers[0];
             assert_list_matcher(
-                &matcher,
+                matcher,
                 "flavor",
                 MatchOp::NotEqual,
                 &["original", "cajun", "extra spicy"],

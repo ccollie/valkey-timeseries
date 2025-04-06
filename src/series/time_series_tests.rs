@@ -258,7 +258,7 @@ mod tests {
         chunk1.add_sample(&sample1).unwrap();
         chunk2.add_sample(&sample2).unwrap();
         chunk2.add_sample(&sample3).unwrap();
-        
+
         time_series.chunks.push(chunk1);
         time_series.chunks.push(chunk2);
 

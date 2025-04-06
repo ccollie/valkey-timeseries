@@ -5,15 +5,17 @@ use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::iterators::aggregator::AggregationOptions;
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
+use crate::labels::Label;
 use crate::module::commands::range_arg_parse::parse_range_options;
-use crate::module::commands::range_utils::{aggregate_samples, get_series_labels, group_samples_internal};
+use crate::module::commands::range_utils::{
+    aggregate_samples, get_series_labels, group_samples_internal,
+};
 use crate::module::result::sample_to_value;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::{series_keys_by_matchers, with_timeseries_index};
 use crate::series::{SeriesSampleIterator, TimeSeries};
 use ahash::AHashMap;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::labels::Label;
 
 pub(super) struct MRangeSeriesMeta<'a> {
     series: &'a TimeSeries,
@@ -91,7 +93,10 @@ pub struct MRangeResultRow {
     samples: Vec<Sample>,
 }
 
-pub(super) fn process_mrange_command(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRangeResultRow> {
+pub(super) fn process_mrange_command(
+    metas: Vec<MRangeSeriesMeta>,
+    options: &RangeOptions,
+) -> Vec<MRangeResultRow> {
     match (&options.grouping, &options.aggregation) {
         (Some(groupings), Some(aggr_options)) => {
             handle_aggregation_and_grouping(metas, options, groupings, aggr_options)
@@ -130,26 +135,30 @@ fn handle_aggregation_and_grouping(
         }
     }
 
-    fn process(groups: &[GroupedSeries<'_>],
-               options: &RangeOptions,
-               groupings: &RangeGroupingOptions,
-               aggregations: &AggregationOptions) -> Vec<MRangeResultRow> {
+    fn process(
+        groups: &[GroupedSeries<'_>],
+        options: &RangeOptions,
+        groupings: &RangeGroupingOptions,
+        aggregations: &AggregationOptions,
+    ) -> Vec<MRangeResultRow> {
         match groups {
             [] => vec![],
             [group] => {
                 vec![process_group(group, options, groupings, aggregations)]
             }
             [first, second] => {
-                let (first_row, second_row) =
-                    join(|| process_group(first, options, groupings, aggregations),
-                         || process_group(second, options, groupings, aggregations));
+                let (first_row, second_row) = join(
+                    || process_group(first, options, groupings, aggregations),
+                    || process_group(second, options, groupings, aggregations),
+                );
                 vec![first_row, second_row]
             }
-            _=> {
+            _ => {
                 let (first, rest) = groups.split_at(groups.len() / 2);
-                let (mut first_samples, rest_samples) =
-                    join(|| process(first, options, groupings, aggregations),
-                         || process(rest, options, groupings, aggregations));
+                let (mut first_samples, rest_samples) = join(
+                    || process(first, options, groupings, aggregations),
+                    || process(rest, options, groupings, aggregations),
+                );
 
                 first_samples.extend(rest_samples);
                 first_samples
@@ -183,7 +192,7 @@ fn handle_grouping(
 
 fn handle_aggregation(
     metas: Vec<MRangeSeriesMeta<'_>>,
-    options: &RangeOptions
+    options: &RangeOptions,
 ) -> Vec<MRangeResultRow> {
     let data = get_all_series_samples(&metas, options);
     data.into_iter()
@@ -221,12 +230,16 @@ fn handle_raw(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRang
 
 fn result_row_to_value(row: MRangeResultRow) -> ValkeyValue {
     let samples: Vec<_> = row.samples.into_iter().map(sample_to_value).collect();
-    let labels: Vec<_> = row.labels.into_iter().map(|label| {
-        ValkeyValue::Array(vec![
-            ValkeyValue::from(label.name),
-            ValkeyValue::from(label.value),
-        ])
-    }).collect();
+    let labels: Vec<_> = row
+        .labels
+        .into_iter()
+        .map(|label| {
+            ValkeyValue::Array(vec![
+                ValkeyValue::from(label.name),
+                ValkeyValue::from(label.value),
+            ])
+        })
+        .collect();
     ValkeyValue::Array(vec![
         ValkeyValue::from(row.key),
         ValkeyValue::Array(labels),
@@ -325,10 +338,12 @@ fn aggregate_grouped_samples(
     res
 }
 
-fn get_raw_samples(series: &TimeSeries,
-                   start_ts: Timestamp,
-                   end_ts: Timestamp,
-                   options: &RangeOptions) -> Vec<Sample> {
+fn get_raw_samples(
+    series: &TimeSeries,
+    start_ts: Timestamp,
+    end_ts: Timestamp,
+    options: &RangeOptions,
+) -> Vec<Sample> {
     series.get_range_filtered(
         start_ts,
         end_ts,
@@ -336,7 +351,6 @@ fn get_raw_samples(series: &TimeSeries,
         options.value_filter,
     )
 }
-
 
 fn get_series_iterator<'a>(
     meta: &MRangeSeriesMeta<'a>,
@@ -363,13 +377,9 @@ fn get_sample_iterators<'a>(
 
 fn get_all_series_samples(
     meta: &[MRangeSeriesMeta],
-    range_options: &RangeOptions
+    range_options: &RangeOptions,
 ) -> Vec<Vec<Sample>> {
-
-    fn fetch_one(
-        meta: &MRangeSeriesMeta,
-        range_options: &RangeOptions,
-    ) -> Vec<Sample> {
+    fn fetch_one(meta: &MRangeSeriesMeta, range_options: &RangeOptions) -> Vec<Sample> {
         let start_ts = meta.start_ts;
         let end_ts = meta.end_ts;
         if let Some(agg_options) = &range_options.aggregation {
@@ -390,16 +400,18 @@ fn get_all_series_samples(
                 vec![samples]
             }
             [first, second] => {
-                let (first_samples, second_samples) =
-                    join(|| fetch_one(first, range_options),
-                         || fetch_one(second, range_options));
+                let (first_samples, second_samples) = join(
+                    || fetch_one(first, range_options),
+                    || fetch_one(second, range_options),
+                );
                 vec![first_samples, second_samples]
             }
-            _=> {
+            _ => {
                 let (first, rest) = series.split_at(series.len() / 2);
-                let (mut first_samples, rest_samples) =
-                    join(|| get_raw_internal(first, range_options),
-                         || get_raw_internal(rest, range_options));
+                let (mut first_samples, rest_samples) = join(
+                    || get_raw_internal(first, range_options),
+                    || get_raw_internal(rest, range_options),
+                );
 
                 first_samples.extend(rest_samples);
                 first_samples
@@ -477,7 +489,7 @@ fn group_series_by_label<'a>(
                 Label {
                     name: SOURCE_KEY.into(),
                     value: sources,
-                }
+                },
             ];
             GroupedSeries {
                 label_value,

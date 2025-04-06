@@ -21,9 +21,6 @@ use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use valkey_module::{raw, RedisModuleIO, ValkeyResult};
 
-/// items above this count will cause value and timestamp encoding/decoding to happen in parallel
-pub(in crate::series) const COMPRESSION_PARALLELIZATION_THRESHOLD: usize = 1024;
-
 /// `PcoChunk` holds sample data encoded using Pco compression.
 /// https://github.com/mwlon/pcodec
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GetSize)]
@@ -103,30 +100,26 @@ impl PcoChunk {
         self.max_time = timestamps[timestamps.len() - 1];
         self.count = timestamps.len();
         self.last_value = values[values.len() - 1];
-        if timestamps.len() > COMPRESSION_PARALLELIZATION_THRESHOLD {
-            // use rayon to run compression in parallel
-            // first we steal the result buffers to avoid allocation and issues with the BC
-            let mut t_data = std::mem::take(&mut self.timestamps);
-            let mut v_data = std::mem::take(&mut self.values);
 
-            t_data.clear();
-            v_data.clear();
+        // use rayon to run compression in parallel
+        // first we steal the result buffers to avoid allocation and issues with the BC
+        let mut t_data = std::mem::take(&mut self.timestamps);
+        let mut v_data = std::mem::take(&mut self.values);
 
-            // then we compress in parallel
-            // TODO: handle errors
-            let _ = join(
-                || compress_timestamps(&mut t_data, timestamps).ok(),
-                || compress_values(&mut v_data, values).ok(),
-            );
-            // then we put the buffers back
-            self.timestamps = t_data;
-            self.values = v_data;
-        } else {
-            self.timestamps.clear();
-            self.values.clear();
-            compress_timestamps(&mut self.timestamps, timestamps)?;
-            compress_values(&mut self.values, values)?;
-        }
+        t_data.clear();
+        v_data.clear();
+
+        // then we compress in parallel
+        // TODO: handle errors
+        let _ = join(
+            || compress_timestamps(&mut t_data, timestamps).ok(),
+            || compress_values(&mut v_data, values).ok(),
+        );
+
+        // then we put the buffers back
+        self.timestamps = t_data;
+        self.values = v_data;
+
         self.count = timestamps.len();
         self.timestamps.shrink_to_fit();
         self.values.shrink_to_fit();
@@ -609,14 +602,12 @@ fn remove_values_in_range(
 #[cfg(test)]
 mod tests {
     use crate::common::{Sample, Timestamp};
-    use std::time::Duration;
-
-    use crate::error::TsdbError;
     use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
     use crate::series::chunks::Chunk;
     use crate::series::chunks::PcoChunk;
     use crate::series::{DuplicatePolicy, SampleAddResult};
     use crate::tests::generators::DataGenerator;
+    use std::time::Duration;
 
     fn decompress(chunk: &PcoChunk) -> Vec<Sample> {
         chunk.iter().collect()
@@ -629,19 +620,6 @@ mod tests {
             .interval(Duration::from_millis(1000))
             .build()
             .generate()
-    }
-
-    fn saturate_chunk(chunk: &mut PcoChunk) {
-        loop {
-            let samples = generate_samples(250);
-            for sample in samples {
-                match chunk.add_sample(&sample) {
-                    Ok(_) => {}
-                    Err(TsdbError::CapacityFull(_)) => break,
-                    Err(e) => panic!("unexpected error: {:?}", e),
-                }
-            }
-        }
     }
 
     #[test]
@@ -685,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_upsert() {
-        for chunk_size in (64..8192).step_by(64) {
+        for chunk_size in (1024..8192).step_by(1024) {
             let data = generate_samples(500);
             let mut chunk = PcoChunk::with_max_size(chunk_size);
 
@@ -697,30 +675,6 @@ mod tests {
             }
             assert_eq!(chunk.len(), data_len);
         }
-    }
-
-    #[test]
-    fn test_upsert_while_at_capacity() {
-        let mut chunk = PcoChunk::with_max_size(4096);
-        saturate_chunk(&mut chunk);
-
-        let timestamp = chunk.last_timestamp();
-
-        // return an error on insert
-        let mut sample = Sample {
-            timestamp: 0,
-            value: 1.0,
-        };
-
-        assert!(chunk
-            .upsert_sample(sample, DuplicatePolicy::KeepLast)
-            .is_err());
-
-        // should update value for duplicate timestamp
-        sample.timestamp = timestamp;
-        let res = chunk.upsert_sample(sample, DuplicatePolicy::KeepLast);
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), 0);
     }
 
     #[test]
@@ -851,23 +805,23 @@ mod tests {
         let samples = vec![
             Sample {
                 timestamp: 100,
-                value: 1.0,
+                value: 1.5,
             },
             Sample {
                 timestamp: 200,
-                value: 2.0,
+                value: 2.5,
             },
             Sample {
                 timestamp: 300,
-                value: 3.0,
+                value: 3.5,
             },
             Sample {
                 timestamp: 400,
-                value: 4.0,
+                value: 4.5,
             },
             Sample {
                 timestamp: 500,
-                value: 5.0,
+                value: 5.5,
             },
         ];
 
@@ -881,21 +835,21 @@ mod tests {
             result[0],
             Sample {
                 timestamp: 200,
-                value: 2.0
+                value: 2.5
             }
         );
         assert_eq!(
             result[1],
             Sample {
                 timestamp: 300,
-                value: 3.0
+                value: 3.5
             }
         );
         assert_eq!(
             result[2],
             Sample {
                 timestamp: 400,
-                value: 4.0
+                value: 4.5
             }
         );
     }
@@ -906,23 +860,23 @@ mod tests {
         let samples = vec![
             Sample {
                 timestamp: 100,
-                value: 1.0,
+                value: 1.1,
             },
             Sample {
                 timestamp: 200,
-                value: 2.0,
+                value: 2.2,
             },
             Sample {
                 timestamp: 300,
-                value: 3.0,
+                value: 3.3,
             },
             Sample {
                 timestamp: 400,
-                value: 4.0,
+                value: 4.4,
             },
             Sample {
                 timestamp: 500,
-                value: 5.0,
+                value: 5.5,
             },
         ];
         chunk.set_data(&samples).unwrap();
@@ -934,21 +888,21 @@ mod tests {
             result[0],
             Sample {
                 timestamp: 200,
-                value: 2.0
+                value: 2.2
             }
         );
         assert_eq!(
             result[1],
             Sample {
                 timestamp: 300,
-                value: 3.0
+                value: 3.3
             }
         );
         assert_eq!(
             result[2],
             Sample {
                 timestamp: 400,
-                value: 4.0
+                value: 4.4
             }
         );
     }

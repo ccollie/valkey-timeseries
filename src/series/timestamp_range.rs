@@ -50,7 +50,7 @@ impl TimestampValue {
             Relative(delta) => now
                 .unwrap_or_else(current_time_millis)
                 .saturating_add(*delta)
-                .min(MAX_TIMESTAMP)
+                .min(MAX_TIMESTAMP),
         }
     }
 }
@@ -69,10 +69,12 @@ impl TryFrom<&str> for TimestampValue {
                 // ergonomics. Support something like TS.RANGE key -6hrs -3hrs
                 if let Some(ch) = value.chars().next() {
                     if ch == '-' || ch == '+' {
+                        let value = &value[1..];
                         let delta = if ch == '+' {
-                            parse_duration_ms(&value[1..])?
-                        } else {
                             parse_duration_ms(value)?
+                        } else {
+                            let positive = parse_duration_ms(value)?;
+                            -positive
                         };
                         return Ok(Relative(delta));
                     }
@@ -93,7 +95,7 @@ impl TryFrom<&str> for TimestampValue {
 }
 
 fn parse_duration_ms(arg: &str) -> ValkeyResult<i64> {
-    parse_duration_value(arg, 1).map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
+    parse_duration_value(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
 }
 impl TryFrom<String> for TimestampValue {
     type Error = ValkeyError;
@@ -281,6 +283,7 @@ impl RangeBounds<TimestampValue> for TimestampValue {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::constants::MAX_TIMESTAMP;
     use crate::common::time::current_time_millis;
     use crate::common::Sample;
     use crate::error_consts::INVALID_TIMESTAMP;
@@ -288,7 +291,6 @@ mod tests {
     use crate::series::{TimeSeries, TimestampRange};
     use std::cmp::Ordering;
     use valkey_module::ValkeyError;
-    use crate::common::constants::MAX_TIMESTAMP;
 
     #[test]
     fn test_timestamp_range_value_try_from_earliest() {
@@ -460,7 +462,7 @@ mod tests {
         let positive_delta = 5000; // 5 seconds
         let relative = TimestampValue::Relative(positive_delta);
         let current_time = current_time_millis();
-        let result = relative.as_series_timestamp(&series, None);
+        let result = relative.as_series_timestamp(&series, Some(current_time));
         assert_eq!(
             result,
             current_time.wrapping_add(positive_delta),
@@ -483,7 +485,7 @@ mod tests {
         let negative_delta = -5000; // -5 seconds
         let relative = TimestampValue::Relative(negative_delta);
         let current_time = current_time_millis();
-        let result = relative.as_series_timestamp(&series, None);
+        let result = relative.as_series_timestamp(&series, Some(current_time));
         assert_eq!(
             result,
             current_time.wrapping_add(negative_delta),
@@ -506,7 +508,11 @@ mod tests {
         let large_delta = i64::MAX; // A large positive delta that will cause overflow
         let relative = TimestampValue::Relative(large_delta);
         let result = relative.as_series_timestamp(&series, None);
-        assert_eq!(result, MAX_TIMESTAMP, "Expected {}, got {}", MAX_TIMESTAMP, result);
+        assert_eq!(
+            result, MAX_TIMESTAMP,
+            "Expected {}, got {}",
+            MAX_TIMESTAMP, result
+        );
     }
 
     #[test]

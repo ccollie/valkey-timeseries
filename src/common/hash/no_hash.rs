@@ -104,6 +104,7 @@ pub type BuildNoHashHasher<T> = BuildHasherDefault<NoHashHasher<T>>;
 /// assert_eq!(Some(&'b'), m.get(&1));
 /// ```
 #[cfg(debug_assertions)]
+#[derive(Clone, Copy)]
 pub struct NoHashHasher<T>(u64, bool, PhantomData<T>);
 
 #[cfg(not(debug_assertions))]
@@ -136,19 +137,19 @@ impl<T> Default for NoHashHasher<T> {
     }
 }
 
-impl<T> Clone for NoHashHasher<T> {
-    #[cfg(debug_assertions)]
-    fn clone(&self) -> Self {
-        *self
-    }
+// impl<T> Clone for NoHashHasher<T> {
+//     #[cfg(debug_assertions)]
+//     fn clone(&self) -> Self {
+//         *self
+//     }
+//
+//     #[cfg(not(debug_assertions))]
+//     fn clone(&self) -> Self {
+//         NoHashHasher(self.0, self.1)
+//     }
+// }
 
-    #[cfg(not(debug_assertions))]
-    fn clone(&self) -> Self {
-        NoHashHasher(self.0, self.1)
-    }
-}
-
-impl<T> Copy for NoHashHasher<T> {}
+// impl<T> Copy for NoHashHasher<T> {}
 
 /// Types which are safe to use with `NoHashHasher`.
 ///

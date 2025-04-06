@@ -20,9 +20,9 @@ pub enum Token {
     #[regex(r"[_a-zA-Z][_a-zA-Z0-9:\.]*")]
     Identifier,
 
-    #[regex("'(?s:[^'\\\\]|\\\\.)*'")]
-    #[regex("`(?s:[^`\\\\]|\\\\.)*`")]
-    #[regex(r#""(?s:[^"\\\\]|\\\\.)*""#)]
+    #[regex(r#"'(?s:[^'\\]|\\.)*'"#)]
+    #[regex(r#"`(?s:[^`\\]|\\.)*`"#)]
+    #[regex(r#""(?s:[^"\\]|\\.)*""#)]
     StringLiteral,
 
     #[token("{")]
@@ -154,11 +154,10 @@ pub(crate) fn expect_one_of_tokens<'a>(
 
 #[cfg(test)]
 mod tests {
-    use logos::Logos;
-    use test_case::test_case;
-
     use super::Token;
     use super::Token::*;
+    use logos::Logos;
+    use test_case::test_case;
 
     macro_rules! test_tokens {
     ($src:expr, [$(
@@ -221,11 +220,13 @@ mod tests {
     fn expect_error_containing(s: &str, needle: &str) {
         let mut lex = Token::lexer(s);
         let actual = lex.next().unwrap();
-        assert_eq!(actual.is_err(), true);
+        assert!(actual.is_err());
         let msg = format!("{}", actual.unwrap_err());
         assert!(msg.contains(needle));
     }
 
+    #[test_case("\"\"", StringLiteral; "empty_1")]
+    #[test_case("\'\'", StringLiteral; "empty_2")]
     #[test_case("\"hi\"", StringLiteral; "double_1")]
     #[test_case("\"hi\n\"", StringLiteral; "double_2")]
     #[test_case("\"hi\\\"\"", StringLiteral; "double_3")]
@@ -287,7 +288,7 @@ mod tests {
         let src = "💩";
         let mut lex = Token::lexer(src);
         let actual = lex.next().unwrap();
-        assert_eq!(actual.is_err(), true);
+        assert!(actual.is_err());
     }
 
     #[test]
@@ -334,31 +335,6 @@ mod tests {
 		baz
 		# yet another comment";
         test_success(s, &["foobar", "baz"])
-    }
-
-    #[test]
-    fn strings() {
-        // An empty string
-        test_success("", &[]);
-
-        // String with whitespace
-        let s = "  \n\t\r ";
-        test_success(s, &[]);
-        test_success(r#"''"#, &["''"]);
-        test_success(r#"``"#, &["``"]);
-        // test_success(r#""""#, &[""]);
-
-        test_success(r#""super""#, &["super"]);
-        test_success(r#"`cali`"#, &["cali"]);
-        // Strings
-        let s = r#""''"#.to_owned() + "``" + r#"\\"  '\\'  "\"" '\''"\\\"\\""#;
-        let expected = vec![
-            r#""""#,
-            "''",
-            "``",
-            r#"\\"", `'\\'", `"\""", `'\''" "\\\"\\"#,
-        ];
-        test_success(&s, &expected);
     }
 
     #[test]

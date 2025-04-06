@@ -1,5 +1,6 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::IntMap;
+use crate::common::parallel::join;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::{with_timeseries_index, TIMESERIES_INDEX};
 use crate::series::{SeriesRef, TimeSeries};
@@ -10,15 +11,16 @@ use std::collections::hash_map::Entry;
 use std::sync::atomic::AtomicI32;
 use std::sync::{LazyLock, Mutex, RwLock};
 use valkey_module::{Context, DetachedContext, Status, ValkeyString};
-use crate::common::parallel::join;
 
 const BATCH_SIZE: usize = 500;
 
 /// Per-db task metadata
 type IdleSeriesMap = IntMap<i32, Vec<SeriesRef>>;
 type SeriesCursorMap = IntMap<i32, SeriesRef>;
-static SERIES_TRIM_CURSORS: LazyLock<RwLock<SeriesCursorMap>> = LazyLock::new(|| RwLock::new(SeriesCursorMap::new()));
-static STALE_SERIES: LazyLock<Mutex<IdleSeriesMap>> = LazyLock::new(|| Mutex::new(IdleSeriesMap::new()));
+static SERIES_TRIM_CURSORS: LazyLock<RwLock<SeriesCursorMap>> =
+    LazyLock::new(|| RwLock::new(SeriesCursorMap::new()));
+static STALE_SERIES: LazyLock<Mutex<IdleSeriesMap>> =
+    LazyLock::new(|| Mutex::new(IdleSeriesMap::new()));
 
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
@@ -47,8 +49,8 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
         ctx.log_warning(&format!("Failed to select db {}", db));
         return 0;
     }
-    
-    let cursor  = {
+
+    let cursor = {
         let mut map = SERIES_TRIM_CURSORS.write().unwrap();
         match map.entry(db) {
             Entry::Occupied(entry) => *entry.get(),
@@ -59,7 +61,7 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
             }
         }
     };
-    
+
     let mut processed = 0;
     let mut last_processed = cursor;
     let mut keys = IntMap::with_capacity(BATCH_SIZE);
@@ -146,7 +148,7 @@ fn remove_stale_series_internal(db: i32) {
     if series.is_empty() {
         return;
     }
-    
+
     if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
         index.slow_remove_series_by_ids(&series);
     }
@@ -194,18 +196,14 @@ pub fn process_remove_stale_series() {
     let db_ids = {
         let map = STALE_SERIES.lock().unwrap();
         map.iter()
-            .filter_map(|(db, series)| if !series.is_empty() {
-                Some(*db)
-            } else {
-                None
-            })
+            .filter_map(|(db, series)| if !series.is_empty() { Some(*db) } else { None })
             .collect::<Vec<_>>()
     };
-    
+
     if db_ids.is_empty() {
         return;
     }
-    
+
     fn run_internal(db_ids: &[i32]) {
         match db_ids {
             [] => {}
@@ -213,16 +211,16 @@ pub fn process_remove_stale_series() {
             [first, second] => {
                 let _ = join(
                     || remove_stale_series_internal(*first),
-                    || remove_stale_series_internal(*second)
+                    || remove_stale_series_internal(*second),
                 );
             }
-            _=> {
+            _ => {
                 let (db, rest) = db_ids.split_first().unwrap();
                 remove_stale_series_internal(*db);
                 run_internal(rest);
             }
         }
     }
-    
+
     run_internal(&db_ids);
 }

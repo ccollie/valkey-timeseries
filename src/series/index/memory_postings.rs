@@ -7,9 +7,9 @@ use std::sync::LazyLock;
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::SeriesLabel;
+use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::Bitmap64;
-use crate::series::index::init_croaring_allocator;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -53,7 +53,7 @@ impl MemoryPostings {
         std::mem::swap(&mut self.label_index, &mut other.label_index);
         std::mem::swap(&mut self.id_to_key, &mut other.id_to_key);
     }
-    
+
     pub(super) fn remove_posting_for_label_value(
         &mut self,
         label: &str,
@@ -253,7 +253,7 @@ impl MemoryPostings {
         acc
     }
 
-    pub fn postings_without_label<'a>(&'a self, label: &str) -> Cow<'a, PostingsBitmap> {
+    pub fn postings_without_label(&self, label: &str) -> Cow<PostingsBitmap> {
         let all = self.all_postings();
         let to_remove = self.postings_for_all_label_values(label);
         if to_remove.is_empty() {
@@ -262,7 +262,6 @@ impl MemoryPostings {
             Cow::Owned(all.andnot(&to_remove))
         }
     }
-
 
     #[allow(dead_code)]
     pub fn postings_without_labels<'a>(&'a self, labels: &[&str]) -> Cow<'a, PostingsBitmap> {
@@ -732,7 +731,7 @@ mod tests {
         let result = postings.postings_without_labels(&["label1", "label2"]);
 
         // Verify the result
-        assert_eq!(result.cardinality(), 2);
+        assert_eq!(result.cardinality(), 1);
         assert!(!result.contains(1)); // Has both label1 and label2
         assert!(!result.contains(2)); // Has label1
         assert!(!result.contains(3)); // Has label2

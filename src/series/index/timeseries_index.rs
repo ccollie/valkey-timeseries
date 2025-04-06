@@ -180,6 +180,7 @@ impl TimeSeriesIndex {
         inner.count()
     }
 
+    #[allow(dead_code)]
     pub fn label_count(&self) -> usize {
         let inner = self.inner.read().unwrap();
         inner.label_index.len().saturating_sub(1)
@@ -320,10 +321,10 @@ fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::series::index::next_timeseries_id;
     use super::*;
     use crate::labels::InternedMetricName;
     use crate::parser::metric_name::parse_metric_name;
+    use crate::series::index::next_timeseries_id;
     use crate::series::time_series::TimeSeries;
 
     fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
@@ -351,11 +352,11 @@ mod tests {
         let index = TimeSeriesIndex::new();
         let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
 
-        index.index_timeseries(&mut ts, b"time-series-1");
-        
+        index.index_timeseries(&ts, b"time-series-1");
+
         ts.labels.add_label("service", "web");
         ts.labels.add_label("pod", "pod-1");
-        
+
         index.reindex_timeseries(&ts, b"time-series-1");
 
         assert_eq!(index.count(), 1);

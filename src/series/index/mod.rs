@@ -15,6 +15,7 @@ use std::sync::LazyLock;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
 use crate::arg_types::MatchFilterOptions;
+use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
 use crate::error_consts;
 use crate::labels::matchers::Matchers;
@@ -23,7 +24,6 @@ use crate::series::TimeSeries;
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
-use crate::common::hash::BuildNoHashHasher;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
@@ -45,7 +45,6 @@ pub fn reset_timeseries_id(id: u64) {
 pub fn get_timeseries_index_for_db(db: i32, guard: &impl Guard) -> &TimeSeriesIndex {
     TIMESERIES_INDEX.get_or_insert_with(db, TimeSeriesIndex::new, guard)
 }
-
 
 pub fn with_timeseries_index<F, R>(ctx: &Context, f: F) -> R
 where
@@ -129,8 +128,10 @@ pub fn swap_timeseries_index_dbs(from_db: i32, to_db: i32) {
 
 pub fn optimize_all_timeseries_indexes() {
     let guard = TIMESERIES_INDEX.guard();
-    let values: Vec<_> = TIMESERIES_INDEX.values(&guard)
-        .filter(|x| x.is_empty()).collect();
+    let values: Vec<_> = TIMESERIES_INDEX
+        .values(&guard)
+        .filter(|x| x.is_empty())
+        .collect();
     values.into_iter().par_bridge().for_each(|index| {
         index.optimize();
     });

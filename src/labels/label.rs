@@ -1,8 +1,8 @@
 use crate::labels::InternedLabel;
+use enquote::enquote;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use enquote::enquote;
 
 pub trait SeriesLabel: Sized {
     fn name(&self) -> &str;

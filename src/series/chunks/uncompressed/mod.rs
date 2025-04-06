@@ -188,12 +188,10 @@ impl UncompressedChunk {
 }
 
 fn binary_search_samples_by_timestamp(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
-    match samples.binary_search_by(|probe| {
-        match ts.cmp(&probe.timestamp) {
-            std::cmp::Ordering::Less => std::cmp::Ordering::Greater,
-            std::cmp::Ordering::Greater => std::cmp::Ordering::Less,
-            std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
-        }
+    match samples.binary_search_by(|probe| match ts.cmp(&probe.timestamp) {
+        std::cmp::Ordering::Less => std::cmp::Ordering::Greater,
+        std::cmp::Ordering::Greater => std::cmp::Ordering::Less,
+        std::cmp::Ordering::Equal => std::cmp::Ordering::Equal,
     }) {
         Ok(pos) => (pos, true),
         Err(pos) => (pos, false),
@@ -322,8 +320,8 @@ impl Chunk for UncompressedChunk {
             sample_set.insert(sample.timestamp);
         }
 
-        let left_iter = SampleIter::Slice(samples.iter());
-        let right_iter = SampleIter::Slice(self.samples.iter());
+        let left_iter = SampleIter::Slice(self.samples.iter());
+        let right_iter = SampleIter::Slice(samples.iter());
 
         let max_len = self.max_elements;
 
@@ -334,7 +332,7 @@ impl Chunk for UncompressedChunk {
             &mut state,
             |state, sample, duplicate| {
                 let is_new = sample_set.remove(&sample.timestamp);
-                if state.dest.len() > max_len {
+                if state.dest.len() >= max_len {
                     return Err(TsdbError::CapacityFull(max_len));
                 }
                 state.dest.push(sample);

@@ -4,6 +4,7 @@ use crate::iterators::{SampleIter, SampleMergeIterator};
 use crate::series::chunks::{Chunk, TimeSeriesChunk};
 use crate::series::DuplicatePolicy;
 
+#[allow(dead_code)]
 pub fn merge_samples<'a, F, STATE>(
     left: SampleIter<'a>,
     right: SampleIter<'a>,
@@ -18,15 +19,14 @@ where
 
     let mut merge_iterator = SampleMergeIterator::new(left, right, dp_policy);
 
-    loop {
-        if let Some((sample, blocked)) = merge_iterator.next_internal() {
-            f(state, sample, blocked)?;
-        } else {
-            return Ok(());
-        }
+    while let Some((sample, blocked)) = merge_iterator.next_internal() {
+        f(state, sample, blocked)?;
     }
+
+    Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn merge_by_capacity(
     dest: &mut TimeSeriesChunk,
     src: &mut TimeSeriesChunk,

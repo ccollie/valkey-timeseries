@@ -18,15 +18,14 @@ where
 
     let mut merge_iterator = SampleMergeIterator::new(left, right, dp_policy);
 
-    loop {
-        if let Some((sample, blocked)) = merge_iterator.next_internal() {
-            f(state, sample, blocked)?;
-        } else {
-            return Ok(());
-        }
+    while let Some((sample, blocked)) = merge_iterator.next_internal() {
+        f(state, sample, blocked)?;
     }
+
+    Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn merge_by_capacity(
     dest: &mut TimeSeriesChunk,
     src: &mut TimeSeriesChunk,

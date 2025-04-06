@@ -375,12 +375,10 @@ fn inverse_postings_for_matcher<'a>(
         }
         _ => {
             let mut state = m;
-            let postings =
-                ix.postings_for_label_matching(&m.label, &mut state, 
-                                               |s, state| {
-                                                   let valid = state.matches(s);
-                                                   !valid
-                                               });
+            let postings = ix.postings_for_label_matching(&m.label, &mut state, |s, state| {
+                let valid = state.matches(s);
+                !valid
+            });
             Cow::Owned(postings)
         }
     }
@@ -407,23 +405,4 @@ where
     } else {
         PostingsBitmap::new()
     }
-}
-
-#[cfg(test)]
-fn debug_bitmap(context: &str, bitmap: &PostingsBitmap) {
-    let s = bitmap_to_string(bitmap);
-    println!("{context}: {s}");
-}
-
-// for debugging purposes
-#[cfg(test)]
-fn bitmap_to_string(bitmap: &PostingsBitmap) -> String {
-    let mut s = String::with_capacity((bitmap.cardinality() * 4) as usize);
-    for (i, id) in bitmap.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push_str(&format!("{}", id));
-    }
-    s
 }

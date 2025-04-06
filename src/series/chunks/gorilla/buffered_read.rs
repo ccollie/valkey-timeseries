@@ -162,22 +162,22 @@ mod tests {
         let bytes = vec![0b01101100, 0b11101001];
         let mut b = BufferedReader::new(&bytes);
 
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
-        assert_eq!(b.read_bit().unwrap(), false);
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
+        assert!(!b.read_bit().unwrap());
 
         assert!(b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
-        assert_eq!(b.read_bit().unwrap(), false);
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
+        assert!(!b.read_bit().unwrap());
         assert!(b.read_bit().unwrap());
 
         assert_eq!(b.read_bit().err().unwrap(), Error::Eof);
@@ -221,11 +221,11 @@ mod tests {
         let bytes = vec![0b01101101, 0b01101101];
         let mut b = BufferedReader::new(&bytes);
 
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
         assert_eq!(b.read_bits(3).unwrap(), 0b110);
         assert_eq!(b.read_byte().unwrap(), 0b11010110);
         assert_eq!(b.read_bits(2).unwrap(), 0b11);
-        assert_eq!(b.read_bit().unwrap(), false);
+        assert!(!b.read_bit().unwrap());
         assert_eq!(b.read_bits(1).unwrap(), 0b1);
         assert_eq!(b.read_bit().err().unwrap(), Error::Eof);
     }

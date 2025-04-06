@@ -5,9 +5,7 @@ use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
-use crate::config::{
-    DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD,
-};
+use crate::config::{DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::InternedMetricName;

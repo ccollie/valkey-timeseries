@@ -95,12 +95,43 @@ fi
 export MODULE_PATH="$SCRIPT_DIR/target/release/libvalkey_timeseries$MODULE_EXT"
 
 echo "Running the integration tests..."
-# TEST_PATTERN can be used to run specific tests or test patterns.
-if [[ -n "$TEST_PATTERN" ]]; then
-    python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN
+if [ ! -z "${ASAN_BUILD}" ]; then
+    # TEST_PATTERN can be used to run specific tests or test patterns.
+    if [[ -n "$TEST_PATTERN" ]]; then
+        python3 -m pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN 2>&1 | tee test_output.tmp
+    else
+        echo "TEST_PATTERN is not set. Running all integration tests."
+        python3 -m pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" 2>&1 | tee test_output.tmp
+    fi
+
+    # Check for memory leaks in the output
+    if grep -q "LeakSanitizer: detected memory leaks" test_output.tmp; then
+        RED='\033[0;31m'
+        echo -e "${RED}Memory leaks detected in the following tests:"
+        LEAKING_TESTS=$(grep -B 2 "LeakSanitizer: detected memory leaks" test_output.tmp | \
+                        grep -v "LeakSanitizer" | \
+                        grep ".*\.py::")
+
+        LEAK_COUNT=$(echo "$LEAKING_TESTS" | wc -l)
+
+        # Output each leaking test
+        echo "$LEAKING_TESTS" | while read -r line; do
+            echo "::error::Test with leak: $line"
+        done
+
+        echo -e "\n$LEAK_COUNT python integration tests have leaks detected in them"
+        rm test_output.tmp
+        exit 1
+    fi
+    rm test_output.tmp
 else
-    echo "TEST_PATTERN is not set. Running all integration tests."
-    python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/"
+    # TEST_PATTERN can be used to run specific tests or test patterns.
+    if [[ -n "$TEST_PATTERN" ]]; then
+        python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN
+    else
+        echo "TEST_PATTERN is not set. Running all integration tests."
+        python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/"
+    fi
 fi
 
 echo "Build, Format Checks, Unit tests, and Integration Tests succeeded"

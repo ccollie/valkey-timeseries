@@ -107,7 +107,7 @@ impl PredicateValue {
                     return list.first().map(|x| x.as_str());
                 }
                 None
-            },
+            }
         }
     }
 
@@ -182,10 +182,7 @@ impl Hash for RegexMatcher {
 
 impl RegexMatcher {
     fn new(regex: Regex, value: String) -> Self {
-        Self {
-            regex,
-            value,
-        }
+        Self { regex, value }
     }
 
     pub fn create(value: &str) -> Result<Self, ParseError> {
@@ -237,12 +234,8 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(value) => value.matches(other),
             PredicateMatch::NotEqual(value) => !value.matches(other),
-            PredicateMatch::RegexEqual(re) => {
-                re.is_match(other)
-            }
-            PredicateMatch::RegexNotEqual(re) => {
-                !re.is_match(other)
-            }
+            PredicateMatch::RegexEqual(re) => re.is_match(other),
+            PredicateMatch::RegexNotEqual(re) => !re.is_match(other),
         }
     }
 

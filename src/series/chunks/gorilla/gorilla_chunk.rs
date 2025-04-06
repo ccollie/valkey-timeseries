@@ -11,6 +11,7 @@ use crate::iterators::SampleIter;
 use crate::series::chunks::chunk::Chunk;
 use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
+use ahash::AHashSet;
 use get_size::GetSize;
 use std::mem::size_of;
 use valkey_module::{RedisModuleIO, ValkeyResult};
@@ -264,20 +265,23 @@ impl Chunk for GorillaChunk {
             return Ok(result);
         }
 
+        let mut sample_set: AHashSet<Timestamp> = AHashSet::with_capacity(samples.len());
+        for sample in samples.iter() {
+            sample_set.insert(sample.timestamp);
+        }
+
         struct MergeState {
-            count: usize,
             xor_encoder: GorillaEncoder,
             result: Vec<SampleAddResult>,
         }
 
         let mut merge_state = MergeState {
-            count: 0,
             xor_encoder: GorillaEncoder::new(),
             result: Vec::with_capacity(samples.len()),
         };
 
-        let left = SampleIter::Slice(samples.iter());
-        let right = self.iter();
+        let left = self.iter();
+        let right = SampleIter::Slice(samples.iter());
 
         merge_samples(
             left,
@@ -285,16 +289,26 @@ impl Chunk for GorillaChunk {
             dp_policy,
             &mut merge_state,
             |state, sample, is_duplicate| {
-                if !is_duplicate {
-                    state.count += 1;
-                    push_sample(&mut state.xor_encoder, &sample)?;
-                    state.result.push(SampleAddResult::Ok(sample.timestamp));
-                } else {
-                    state.result.push(SampleAddResult::Duplicate);
+                push_sample(&mut state.xor_encoder, &sample)?;
+                if sample_set.remove(&sample.timestamp) {
+                    if is_duplicate {
+                        state.result.push(SampleAddResult::Duplicate);
+                    } else {
+                        state.result.push(SampleAddResult::Ok(sample.timestamp));
+                    }
                 }
                 Ok(())
             },
         )?;
+
+        // find first timestamp
+        self.first_ts = 0;
+        for res in merge_state.result.iter() {
+            if let SampleAddResult::Ok(ts) = res {
+                self.first_ts = *ts;
+                break;
+            }
+        }
 
         self.encoder = merge_state.xor_encoder;
         Ok(merge_state.result)
@@ -395,11 +409,13 @@ impl<'a> GorillaChunkIterator<'a> {
                 }
                 Some(sample)
             }
+            #[cfg(debug_assertions)]
             Some(Err(err)) => {
-                #[cfg(debug_assertions)]
                 eprintln!("Error decoding sample: {:?}", err);
                 None
             }
+            #[cfg(not(debug_assertions))]
+            Some(Err(_)) => None,
             None => None,
         }
     }

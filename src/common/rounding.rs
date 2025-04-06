@@ -160,7 +160,6 @@ mod tests {
         let result = round_to_sig_figs(value, digits);
         assert_eq!(result, expected);
     }
-    
 
     #[test]
     fn test_round_to_sig_figs_special_cases() {

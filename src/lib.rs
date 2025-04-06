@@ -5,9 +5,7 @@ extern crate valkey_module_macros;
 
 use crate::config::{load_config, register_config_handlers};
 use crate::module::VK_TIME_SERIES_TYPE;
-use valkey_module::{
-    logging, valkey_module, Context, Status, ValkeyString
-};
+use valkey_module::{logging, valkey_module, Context, Status, ValkeyString};
 use valkey_module_macros::config_changed_event_handler;
 
 pub mod aggregators;
@@ -25,9 +23,9 @@ mod series;
 mod tests;
 
 use crate::module::server_events::{generic_key_event_handler, register_server_events};
+use crate::series::index::init_croaring_allocator;
 use crate::series::settings::{start_series_background_worker, stop_series_background_worker};
 use module::*;
-use crate::series::index::init_croaring_allocator;
 
 pub const VKMETRICS_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
@@ -36,7 +34,7 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     logging::log_debug("initialize");
 
     init_croaring_allocator();
-    
+
     if load_config(ctx, args).is_err() {
         logging::log_warning("Failed to load configuration");
         return Status::Err;
@@ -79,7 +77,6 @@ macro_rules! get_allocator {
         std::alloc::System
     };
 }
-
 
 // https://github.com/redis/redis/blob/a38c29b6c861ee59637acdb1618f8f84645061d5/src/module.c
 valkey_module! {

@@ -85,6 +85,14 @@ pub trait Chunk: Sized {
 
     fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<usize>;
 
+    /// Efficiently merge a slice of Sample objects into the chunk.
+    ///
+    /// * `samples` - A slice of Sample objects to be merged into the chunk.
+    /// * `dp_policy` - An optional DuplicatePolicy that specifies how to handle duplicate samples.
+    ///
+    /// ### Returns
+    /// The method returns a TsdbResult containing a vector of SampleAddResult objects, which indicate
+    /// the result of adding each sample.
     fn merge_samples(
         &mut self,
         samples: &[Sample],

@@ -177,3 +177,114 @@ fn decode_unicode(code_point: &str) -> Result<char, ParseError> {
         Ok(n) => std::char::from_u32(n).ok_or(ParseError::General("invalid unicode".to_string())),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_string_value_empty_string() {
+        let result = extract_string_value("\"\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_extract_string_value_simple_string() {
+        let result = extract_string_value("\"hello\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_extract_string_value_string_with_escaped_quote() {
+        let result = extract_string_value("\"hello\\\"world\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello\"world");
+    }
+
+    #[test]
+    fn test_extract_string_value_string_with_newline() {
+        let result = extract_string_value("\"hello\\nworld\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello\nworld");
+    }
+
+    #[test]
+    fn test_extract_string_value_string_with_backslash() {
+        let result = extract_string_value("\"hello\\\\world\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello\\world");
+    }
+
+    #[test]
+    fn test_extract_string_value_unterminated_string() {
+        let result = extract_string_value("\"hello");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_string_value_invalid_quote_character() {
+        let result = extract_string_value("hello");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_string_value_backquoted_string() {
+        let result = extract_string_value("`hello`");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_extract_string_value_single_quoted_string() {
+        let result = extract_string_value("'hello'");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_extract_string_value_string_with_invalid_escape() {
+        let result = extract_string_value("\"hello\\xworld\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_string_value_hex_escape() {
+        let result = extract_string_value("\"hello\\x20world\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_extract_string_value_unicode_escape() {
+        let result = extract_string_value("\"hello\\u0020world\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_extract_string_value_unicode_escape_long() {
+        let result = extract_string_value("\"hello\\U00000020world\"");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_extract_string_value_invalid_hex_escape() {
+        let result = extract_string_value("\"hello\\x2Gworld\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_string_value_invalid_unicode_escape() {
+        let result = extract_string_value("\"hello\\u002Gworld\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_string_value_invalid_unicode_escape_long() {
+        let result = extract_string_value("\"hello\\U0000002Gworld\"");
+        assert!(result.is_err());
+    }
+}

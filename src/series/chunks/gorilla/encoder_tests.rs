@@ -37,8 +37,6 @@ mod tests {
                 encoder.add_sample(point).unwrap();
             }
 
-            let buf = encoder.buf();
-
             let got = encoder.iter().collect::<Result<Vec<_>, _>>().unwrap();
             assert_eq!(input, got, "{name}: Wanted {:?}, got {:?}", input, got);
         }
