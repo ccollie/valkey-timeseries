@@ -1,14 +1,23 @@
 import os
 import pytest
-from valkeytests.valkey_test_case import ValkeyTestCase
+from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkey import ResponseError
 import random
 import string
+import logging
 
 class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
 
     # Global Parameterized Configs
     use_random_seed = 'no'
+
+    @pytest.fixture(autouse=True)
+    def setup_test(self, setup):
+        args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH'),'bf.bloom-use-random-seed': self.use_random_seed}
+        server_path = f"{os.path.dirname(os.path.realpath(__file__))}/build/binaries/{os.environ['SERVER_VERSION']}/valkey-server"
+
+        self.server, self.client = self.create_server(testdir = self.testdir,  server_path=server_path, args=args)
+        logging.info("startup args are: %s", args)
 
     def get_custom_args(self):
         self.set_server_version(os.environ['SERVER_VERSION'])
@@ -80,3 +89,65 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
                 key, value = line.split(':', 1)
                 stats_dict[key.strip()] = value.strip()
         return stats_dict
+
+
+class ValkeyInfo:
+    """Contains information about a point in time of Valkey"""
+    def __init__(self, info):
+        self.info = info
+
+    def is_save_in_progress(self):
+        """Return True if there is a save in progress."""
+        return self.info['rdb_bgsave_in_progress'] == 1
+
+    def is_aof_rewrite_in_progress(self):
+        """Return True if there is a aof rewrite in progress."""
+        return self.info['aof_rewrite_in_progress'] == 1
+
+    def num_keys(self, db=0):
+        if 'db{}'.format(db) in self.info:
+            return self.info['db{}'.format(db)]['keys']
+        return 0
+
+    def get_master_repl_offset(self):
+        return self.info['master_repl_offset']
+
+    def get_master_replid(self):
+        return self.info['master_replid']
+
+    def get_replica_repl_offset(self):
+        return self.info['slave_repl_offset']
+
+    def is_master_link_up(self):
+        """Returns True if role is slave and master_link_status is up"""
+        if self.info['role'] == 'slave' and self.info['master_link_status'] == 'up':
+            return True
+        return False
+
+    def num_replicas(self):
+        return self.info['connected_slaves']
+
+    def num_replicas_online(self):
+        count=0
+        for k,v in self.info.items():
+            if re.match('^slave[0-9]', k) and v['state'] == 'online':
+                count += 1
+        return count
+
+    def was_save_successful(self):
+        return self.info['rdb_last_bgsave_status'] == 'ok'
+
+    def was_aofrewrite_successful(self):
+        return self.info['aof_last_bgrewrite_status'] == 'ok'
+
+    def used_memory(self):
+        return self.info['used_memory']
+
+    def maxmemory(self):
+        return self.info['maxmemory']
+
+    def maxmemory_policy(self):
+        return self.info['maxmemory_policy']
+
+    def uptime_in_secs(self):
+        return self.info['uptime_in_seconds']

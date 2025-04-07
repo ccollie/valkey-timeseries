@@ -213,5 +213,4 @@ fn merge_asof_fwd(look_fwd: i64) -> MergeAsOfCompareFn {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

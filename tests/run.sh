@@ -25,7 +25,7 @@ BUILD=${BUILD:-debug}
 VALKEY_VERSION=${VALKEY_VERSION:-unstable}
 PROGNAME="${BASH_SOURCE[0]}"
 CWD="$(cd "$(dirname "$PROGNAME")" &>/dev/null && pwd)"
-BINARY_PATH="$CWD/.build/binaries/$VALKEY_VERSION/valkey-server"
+BINARY_PATH="$CWD/build/binaries/$VALKEY_VERSION/valkey-server"
 PORT=${PORT:-6379}
 ROOT=$(cd $CWD/.. && pwd)
 
@@ -44,7 +44,7 @@ if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
     echo "valkey-server binary '$BINARY_PATH' found."
 else
     echo "valkey-server binary '$BINARY_PATH' not found."
-    mkdir -p ".build/binaries/$SERVER_VERSION"
+    mkdir -p "build/binaries/$SERVER_VERSION"
     cd .build
     rm -rf valkey
     git clone "$REPO_URL"

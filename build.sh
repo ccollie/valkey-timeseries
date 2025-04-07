@@ -30,14 +30,14 @@ if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.0" ] && [ "$
 fi
 
 REPO_URL="https://github.com/valkey-io/valkey.git"
-BINARY_PATH="tests/.build/binaries/$SERVER_VERSION/valkey-server"
+BINARY_PATH="tests/build/binaries/$SERVER_VERSION/valkey-server"
 
 if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
     echo "valkey-server binary '$BINARY_PATH' found."
 else
     echo "valkey-server binary '$BINARY_PATH' not found."
-    mkdir -p "tests/.build/binaries/$SERVER_VERSION"
-    cd tests/.build
+    mkdir -p "tests/build/binaries/$SERVER_VERSION"
+    cd tests/build
     rm -rf valkey
     git clone "$REPO_URL"
     cd valkey

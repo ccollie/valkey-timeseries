@@ -21,7 +21,8 @@ Cargo.lock
 #.idea/
 
 # Added by cargo
-
+venv
+.venv
 /target
 tests/.build
 tests/.venv
