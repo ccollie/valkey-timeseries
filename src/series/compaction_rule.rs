@@ -1,5 +1,5 @@
 use crate::aggregators::Aggregator;
-use crate::common::Timestamp;
+use crate::common::{Sample, Timestamp};
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::with_timeseries_index;
 use crate::series::TimeSeries;
