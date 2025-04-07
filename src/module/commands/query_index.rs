@@ -1,5 +1,5 @@
 use crate::labels::parse_series_selector;
-use crate::series::index::{get_keys_by_matchers, with_timeseries_index};
+use crate::series::index::series_keys_by_matchers;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -13,9 +13,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if matcher_list.is_empty() {
         return Err(WrongArity);
     }
-    let keys = with_timeseries_index(ctx, move |index| {
-        get_keys_by_matchers(ctx, index, &matcher_list, None)
-    })?;
+    let keys = series_keys_by_matchers(ctx, &matcher_list, None)?;
 
     Ok(ValkeyValue::from(keys))
 }

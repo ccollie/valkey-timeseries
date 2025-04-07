@@ -61,7 +61,7 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         index += 3;
     }
 
-    // todo! Parallelize this if we involve multiple chunks
+    // todo! Parallelize this if we involve multiple keys/chunks
 
     let mut temp = group(inputs.into_iter().map(|input| (input.key_buf, input)))
         .into_iter()
@@ -110,7 +110,7 @@ fn add_samples_internal(
             results.push((input.index, *res));
         }
         if !replication_args.is_empty() {
-            ctx.replicate("TS.MADD", &*replication_args); // ?????????
+            ctx.replicate("TS.MADD", &*replication_args);
             let mut idx = 0;
             while idx < replication_args.len() {
                 ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.ADD", replication_args[idx]);

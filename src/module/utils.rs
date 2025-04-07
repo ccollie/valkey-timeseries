@@ -1,22 +1,18 @@
+use crate::error_consts;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::TimeSeries;
 use std::ops::{Deref, DerefMut};
+use valkey_module::key::ValkeyKey;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
-use valkey_module::key::{ValkeyKey, ValkeyKeyWritable};
-use crate::error_consts;
-
 
 pub struct SeriesGuard {
-    key: ValkeyKey
+    key: ValkeyKey,
 }
 
 impl SeriesGuard {
-    pub fn new(key: ValkeyKey) -> Self {
-        SeriesGuard { key }
-    }
-
     pub fn get_series(&self) -> &TimeSeries {
-        self.key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)
+        self.key
+            .get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)
             .expect("Key existence should be checked before deref")
             .unwrap()
     }
@@ -36,10 +32,8 @@ impl AsRef<TimeSeries> for SeriesGuard {
     }
 }
 
-
 pub struct SeriesGuardMut<'a> {
     series: &'a mut TimeSeries,
-    key: ValkeyKeyWritable
 }
 
 impl<'a> SeriesGuardMut<'a> {
@@ -63,19 +57,13 @@ impl<'a> DerefMut for SeriesGuardMut<'a> {
 }
 
 #[inline]
-fn has_key_permissions(
-    ctx: &Context,
-    key: &ValkeyString,
-    permissions: AclPermissions,
-) -> bool {
+fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
     let user = ctx.get_current_user();
-    ctx.acl_check_key_permission(&user, &key, &permissions).is_ok()
+    ctx.acl_check_key_permission(&user, &key, &permissions)
+        .is_ok()
 }
 
-pub fn has_key_read_permission(
-    ctx: &Context,
-    key: &ValkeyString,
-) -> bool {
+pub fn check_key_read_permission(ctx: &Context, key: &ValkeyString) -> bool {
     has_key_permissions(ctx, key, AclPermissions::ACCESS)
 }
 
@@ -86,7 +74,10 @@ pub fn check_key_permissions(
     permissions: AclPermissions,
 ) -> ValkeyResult<()> {
     let user = ctx.get_current_user();
-    if ctx.acl_check_key_permission(&user, &key, &permissions).is_ok() {
+    if ctx
+        .acl_check_key_permission(&user, &key, &permissions)
+        .is_ok()
+    {
         Ok(())
     } else {
         if permissions.contains(AclPermissions::DELETE) {
@@ -126,7 +117,7 @@ pub fn with_timeseries_mut<R>(
     f(&mut series)
 }
 
-
+#[allow(dead_code)]
 pub fn get_timeseries(
     ctx: &Context,
     key: &ValkeyString,
@@ -139,12 +130,12 @@ pub fn get_timeseries(
     let redis_key = ctx.open_key(key);
     match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
         Err(_) => Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY)),
-        Ok(Some(_)) => Ok(SeriesGuard::new(redis_key)),
-        Ok(None) => Err(not_found_error())
+        Ok(Some(_)) => Ok(SeriesGuard { key: redis_key }),
+        Ok(None) => Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
     }
 }
 
-pub fn get_timeseries_mut<'a> (
+pub fn get_timeseries_mut<'a>(
     ctx: &'a Context,
     key: &ValkeyString,
     must_exist: bool,
@@ -153,10 +144,7 @@ pub fn get_timeseries_mut<'a> (
     match value_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
         Ok(Some(series)) => {
             check_key_permissions(ctx, key, AclPermissions::UPDATE)?;
-            Ok(Some(SeriesGuardMut {
-                series,
-                key: value_key,
-            }))
+            Ok(Some(SeriesGuardMut { series }))
         }
         Ok(None) => {
             if must_exist {
@@ -164,15 +152,10 @@ pub fn get_timeseries_mut<'a> (
             }
             Ok(None)
         }
-        Err(_e) => {
-            Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY))
-        }
+        Err(_e) => Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY)),
     }
 }
 
 pub(crate) fn invalid_series_key_error() -> ValkeyError {
-    ValkeyError::Str(error_consts::KEY_NOT_FOUND)
-}
-fn not_found_error() -> ValkeyError {
     ValkeyError::Str(error_consts::KEY_NOT_FOUND)
 }

@@ -1,5 +1,5 @@
 use super::memory_postings::{handle_equal_match, MemoryPostings, PostingsBitmap, EMPTY_BITMAP};
-use super::TimeSeriesIndex;
+use super::{with_timeseries_index, TimeSeriesIndex};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
 use crate::error_consts::MISSING_FILTER;
@@ -7,7 +7,7 @@ use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
 use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::{has_key_read_permission, SeriesRef, TimeSeries, TimestampRange};
+use crate::series::{check_key_read_permission, SeriesRef, TimeSeries, TimestampRange};
 use ahash::AHashSet;
 use blart::AsBytes;
 use smallvec::SmallVec;
@@ -16,9 +16,8 @@ use std::cmp::Ordering;
 use std::str;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
-pub fn get_keys_by_matchers(
+pub fn series_keys_by_matchers(
     ctx: &Context,
-    ix: &TimeSeriesIndex,
     matchers: &[Matchers],
     range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<ValkeyString>> {
@@ -26,22 +25,24 @@ pub fn get_keys_by_matchers(
         return Ok(Vec::new());
     }
 
-    let mut state = ();
+    with_timeseries_index(ctx, |index| {
+        let mut state = ();
 
-    ix.with_postings(&mut state, move |inner, _| {
-        let first = postings_for_matchers_internal(inner, &matchers[0])?;
-        if matchers.len() == 1 {
-            let keys = collect_series_keys(ctx, inner, first.iter(), range);
-            return Ok(keys);
-        }
-        // todo: use chili here ?
-        let mut result = first.into_owned();
-        for matcher in &matchers[1..] {
-            let postings = postings_for_matchers_internal(inner, matcher)?;
-            result.and_inplace(&postings);
-        }
-        let keys = collect_series_keys(ctx, inner, result.iter(), range);
-        Ok(keys)
+        index.with_postings(&mut state, move |inner, _| {
+            let first = postings_for_matchers_internal(inner, &matchers[0])?;
+            if matchers.len() == 1 {
+                let keys = collect_series_keys(ctx, inner, first.iter(), range);
+                return Ok(keys);
+            }
+            // todo: use chili here ?
+            let mut result = first.into_owned();
+            for matcher in &matchers[1..] {
+                let postings = postings_for_matchers_internal(inner, matcher)?;
+                result.and_inplace(&postings);
+            }
+            let keys = collect_series_keys(ctx, inner, result.iter(), range);
+            Ok(keys)
+        })
     })
 }
 
@@ -79,15 +80,15 @@ fn collect_series_keys(
 ) -> Vec<ValkeyString> {
     let mut keys = Vec::new();
     for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
-        if check_key_is_allowed_to_read(ctx, key.as_bytes()) {
-            let real_key = ctx.create_string(key.as_bytes());
+        let real_key = ctx.create_string(key.as_bytes());
+        if check_key_read_permission(ctx, &real_key) {
             keys.push(real_key);
         }
     }
     if let Some(date_range) = date_range {
         let now = Some(current_time_millis());
         keys.retain(|key| {
-            let redis_key = ctx.open_key_writable(key);
+            let redis_key = ctx.open_key(key);
             if let Ok(Some(series)) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
                 let (start, end) = date_range.get_series_range(series, now, true);
                 series.overlaps(start, end)
@@ -99,10 +100,6 @@ fn collect_series_keys(
     keys
 }
 
-fn check_key_is_allowed_to_read(ctx: &Context, _key: &[u8]) -> bool {
-    let key = ctx.create_string(_key);
-    has_key_read_permission(ctx, &key)
-}
 
 /// `postings_for_matchers` assembles a single postings iterator against the series index
 /// based on the given matchers.
