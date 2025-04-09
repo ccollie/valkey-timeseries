@@ -1,4 +1,4 @@
-# ValkeyTimeSeries
+# valkey-timeseries
 
 ValkeyTimeSeries is a Rust based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
 
