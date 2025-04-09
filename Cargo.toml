@@ -41,8 +41,6 @@ strum_macros = "0.27"
 yasi = "0.1.5"
 
 [dev-dependencies]
-anyhow = "1.0.97"
-redis = "0.29"
 test-case = "3.3.1"
 
 [lib]
