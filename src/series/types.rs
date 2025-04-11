@@ -260,10 +260,10 @@ impl ValueFilter {
 #[cfg(test)]
 mod tests {
     use super::DuplicatePolicy;
-    use crate::error::TsdbError;
-    use std::str::FromStr;
     use crate::common::Sample;
+    use crate::error::TsdbError;
     use crate::series::SampleDuplicatePolicy;
+    use std::str::FromStr;
 
     #[test]
     fn test_duplicate_policy_parse() {
@@ -354,7 +354,6 @@ mod tests {
             assert_eq!(policy.duplicate_value(ts, f64::NAN, 8.0).unwrap(), 8.0);
         }
     }
-
 
     #[test]
     fn test_sample_duplicate_policy_is_duplicate_keep_last() {
