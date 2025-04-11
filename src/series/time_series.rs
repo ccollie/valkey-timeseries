@@ -258,6 +258,19 @@ impl TimeSeries {
         }
     }
 
+    /// Merges a collection of samples into the time series.
+    ///
+    /// This function efficiently groups samples by the chunks they would belong to
+    /// and applies the appropriate duplicate policy when merging.
+    ///
+    /// # Arguments
+    ///
+    /// * `samples` - A slice of samples to merge into the time series
+    /// * `policy_override` - Optional override for the duplicate policy to use when merging
+    ///
+    /// # Returns
+    ///
+    /// A result containing a vector of `SampleAddResult` with the outcome for each sample
     pub fn merge_samples(
         &mut self,
         samples: &[Sample],
@@ -626,12 +639,12 @@ impl TimeSeries {
 
     /// Finds the start and end chunk indices (inclusive) for a date range.
     ///
-    /// #### Parameters
+    /// # Parameters
     ///
     /// * `start`: The lower bound of the range to search for.
     /// * `end`: The upper bound of the range to search for.
     ///
-    /// #### Returns
+    /// # Returns
     ///
     /// Returns `Option<(usize, usize)>`:
     /// * `Some((start_idx, end_idx))` if valid indices are found within the range.
