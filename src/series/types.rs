@@ -67,14 +67,20 @@ impl FromStr for DuplicatePolicy {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use DuplicatePolicy::*;
 
-        match s.to_ascii_lowercase().as_str() {
-            "block" => Ok(Block),
-            "first" => Ok(KeepFirst),
-            "last" => Ok(KeepLast),
-            "min" => Ok(Min),
-            "max" => Ok(Max),
-            "sum" => Ok(Sum),
-            _ => Err(ValkeyError::Str(error_consts::INVALID_DUPLICATE_POLICY)),
+        let res = hashify::tiny_map_ignore_case! {
+            s.as_bytes(),
+            "block" => Block,
+            "first"  => KeepFirst,
+            "last"   => KeepLast,
+            "min"    => Min,
+            "max"    => Max,
+            "sum"    => Sum,
+        };
+
+        if let Some(policy) = res {
+            Ok(policy)
+        } else {
+            Err(ValkeyError::Str(error_consts::INVALID_DUPLICATE_POLICY))
         }
     }
 }
