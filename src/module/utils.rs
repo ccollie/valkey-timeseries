@@ -36,13 +36,13 @@ pub struct SeriesGuardMut<'a> {
     series: &'a mut TimeSeries,
 }
 
-impl<'a> SeriesGuardMut<'a> {
+impl SeriesGuardMut<'_> {
     pub fn get_series_mut(&mut self) -> &mut TimeSeries {
         self.deref_mut()
     }
 }
 
-impl<'a> Deref for SeriesGuardMut<'a> {
+impl Deref for SeriesGuardMut<'_> {
     type Target = TimeSeries;
 
     fn deref(&self) -> &Self::Target {
@@ -50,16 +50,16 @@ impl<'a> Deref for SeriesGuardMut<'a> {
     }
 }
 
-impl<'a> DerefMut for SeriesGuardMut<'a> {
+impl DerefMut for SeriesGuardMut<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.series
+        self.series
     }
 }
 
 #[inline]
 fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
     let user = ctx.get_current_user();
-    ctx.acl_check_key_permission(&user, &key, &permissions)
+    ctx.acl_check_key_permission(&user, key, &permissions)
         .is_ok()
 }
 
@@ -75,7 +75,7 @@ pub fn check_key_permissions(
 ) -> ValkeyResult<()> {
     let user = ctx.get_current_user();
     if ctx
-        .acl_check_key_permission(&user, &key, &permissions)
+        .acl_check_key_permission(&user, key, &permissions)
         .is_ok()
     {
         Ok(())

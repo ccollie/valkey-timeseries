@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::excessive_precision)] // TODO: Audit test values for truncation
 mod tests {
     use crate::common::Sample;
     use crate::config::SPLIT_FACTOR;
@@ -2299,7 +2300,6 @@ mod tests {
             let mut chunk = TimeSeriesChunk::new(chunk_type, 16384);
 
             for test in tests.iter() {
-
                 for (i, value) in test.input.iter().enumerate() {
                     let sample = Sample {
                         timestamp: 1000 + (i * 1000) as i64,
@@ -2360,9 +2360,16 @@ mod tests {
                 let v = sample.value;
                 let orig = src[i];
                 if v.is_nan() || v.is_infinite() {
-                    assert_eq!(orig.to_bits(), v.to_bits(), "{chunk_type}: Error encoding value {orig}");
+                    assert_eq!(
+                        orig.to_bits(),
+                        v.to_bits(),
+                        "{chunk_type}: Error encoding value {orig}"
+                    );
                 } else {
-                    assert!(approximately_equal(orig, v), "{chunk_type}: Error encoding value {orig}");
+                    assert!(
+                        approximately_equal(orig, v),
+                        "{chunk_type}: Error encoding value {orig}"
+                    );
                 }
             }
         }
