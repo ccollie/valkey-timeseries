@@ -64,8 +64,8 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     Status::Ok
 }
 
-fn deinitialize(_ctx: &Context) -> Status {
-    logging::log_notice("deinitialize");
+fn deinitialize(ctx: &Context) -> Status {
+    ctx.log_notice("deinitialize");
     stop_series_background_worker();
     Status::Ok
 }
