@@ -262,6 +262,8 @@ mod tests {
     use super::DuplicatePolicy;
     use crate::error::TsdbError;
     use std::str::FromStr;
+    use crate::common::Sample;
+    use crate::series::SampleDuplicatePolicy;
 
     #[test]
     fn test_duplicate_policy_parse() {
@@ -351,5 +353,124 @@ mod tests {
             assert_eq!(policy.duplicate_value(ts, 10.0, f64::NAN).unwrap(), 10.0);
             assert_eq!(policy.duplicate_value(ts, f64::NAN, 8.0).unwrap(), 8.0);
         }
+    }
+
+
+    #[test]
+    fn test_sample_duplicate_policy_is_duplicate_keep_last() {
+        let policy = SampleDuplicatePolicy {
+            policy: DuplicatePolicy::KeepLast,
+            max_time_delta: 10,
+            max_value_delta: 0.001,
+        };
+
+        // Test time delta check - within threshold
+        let last_sample = Sample {
+            timestamp: 100,
+            value: 10.0,
+        };
+        let current_sample = Sample {
+            timestamp: 105,
+            value: 10.0,
+        };
+        assert!(policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // Test time delta check - outside threshold
+        let current_sample = Sample {
+            timestamp: 120,
+            value: 100.0,
+        };
+        assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // Test value delta check - within threshold
+        let current_sample = Sample {
+            timestamp: 105,
+            value: 10.0005,
+        };
+        assert!(policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // Test value delta check - outside threshold
+        let current_sample = Sample {
+            timestamp: 205,
+            value: 10.1,
+        };
+        assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // Test older timestamp - should return false regardless of deltas
+        let current_sample = Sample {
+            timestamp: 95,
+            value: 10.0,
+        };
+        assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
+    }
+
+    #[test]
+    fn test_sample_duplicate_policy_is_duplicate_with_override_policy() {
+        let policy = SampleDuplicatePolicy {
+            policy: DuplicatePolicy::Block,
+            max_time_delta: 10,
+            max_value_delta: 0.001,
+        };
+
+        let last_sample = Sample {
+            timestamp: 100,
+            value: 10.0,
+        };
+        let current_sample = Sample {
+            timestamp: 105,
+            value: 10.0,
+        };
+
+        // With original Block policy - should not be considered duplicate
+        assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // With override to KeepLast - should be considered duplicate
+        assert!(policy.is_duplicate(
+            &current_sample,
+            &last_sample,
+            Some(DuplicatePolicy::KeepLast)
+        ));
+    }
+
+    #[test]
+    fn test_sample_duplicate_policy_is_duplicate_with_zero_deltas() {
+        let policy = SampleDuplicatePolicy {
+            policy: DuplicatePolicy::KeepLast,
+            max_time_delta: 0, // Zero time delta
+            max_value_delta: 0.001,
+        };
+
+        let last_sample = Sample {
+            timestamp: 100,
+            value: 10.0,
+        };
+        let current_sample = Sample {
+            timestamp: 105,
+            value: 30.0,
+        };
+
+        // With zero time delta, should not detect as duplicate based on time
+        assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // But still should detect as duplicate based on value
+        let policy = SampleDuplicatePolicy {
+            policy: DuplicatePolicy::KeepLast,
+            max_time_delta: 10,
+            max_value_delta: 0.0, // Zero value delta
+        };
+
+        // With exact same values
+        let current_sample = Sample {
+            timestamp: 105,
+            value: 10.0,
+        };
+        assert!(policy.is_duplicate(&current_sample, &last_sample, None));
+
+        // With slight value difference
+        let current_sample = Sample {
+            timestamp: 125,
+            value: 10.00001,
+        };
+        assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
     }
 }
