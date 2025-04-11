@@ -1,6 +1,5 @@
-use crate::aggregators::Aggregator;
+use crate::aggregators::{AggregationOptions, Aggregator};
 use crate::common::Timestamp;
-use crate::iterators::aggregator::AggregationOptions;
 use crate::labels::matchers::Matchers;
 use crate::series::{TimestampRange, ValueFilter};
 

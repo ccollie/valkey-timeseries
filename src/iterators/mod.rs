@@ -1,4 +1,3 @@
-pub mod aggregator;
 mod multi_series_sample_iter;
 mod sample_iter;
 mod sample_merge_iterator;

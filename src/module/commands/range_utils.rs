@@ -1,7 +1,6 @@
-use crate::aggregators::AggOp;
+use crate::aggregators::{AggOp, AggregationHelper, AggregationOptions};
 use crate::arg_types::{RangeGroupingOptions, RangeOptions};
 use crate::common::{Sample, Timestamp};
-use crate::iterators::aggregator::{AggrIterator, AggregationOptions};
 use crate::labels::InternedLabel;
 use crate::series::TimeSeries;
 
@@ -37,7 +36,7 @@ fn get_series_aggregator(
     args: &RangeOptions,
     aggr_options: &AggregationOptions,
     check_retention: bool,
-) -> AggrIterator {
+) -> AggregationHelper {
     let (start_timestamp, end_timestamp) =
         args.date_range
             .get_series_range(series, None, check_retention);
@@ -45,7 +44,7 @@ fn get_series_aggregator(
         .alignment
         .get_aligned_timestamp(start_timestamp, end_timestamp);
 
-    AggrIterator::new(aggr_options, aligned_timestamp, args.count)
+    AggregationHelper::new(aggr_options, aligned_timestamp)
 }
 
 pub(crate) fn aggregate_samples(
@@ -53,12 +52,11 @@ pub(crate) fn aggregate_samples(
     start_ts: Timestamp,
     end_ts: Timestamp,
     aggr_options: &AggregationOptions,
-    count: Option<usize>,
 ) -> Vec<Sample> {
     let aligned_timestamp = aggr_options
         .alignment
         .get_aligned_timestamp(start_ts, end_ts);
-    let mut aggr = AggrIterator::new(aggr_options, aligned_timestamp, count);
+    let mut aggr = AggregationHelper::new(aggr_options, aligned_timestamp);
     aggr.calculate(iter)
 }
 

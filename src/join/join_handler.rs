@@ -1,11 +1,11 @@
 use crate::common::binop::BinopFunc;
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
-use crate::iterators::aggregator::aggregate;
 use crate::join::{JoinIterator, JoinOptions, JoinValue};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
+use crate::aggregators::aggregate;
 
 // naming is hard :-)
 /// Result of a join operation
@@ -61,7 +61,7 @@ fn join_internal(left: &[Sample], right: &[Sample], options: &JoinOptions) -> Jo
                 .alignment
                 .get_aligned_timestamp(start_timestamp, end_timestamp);
 
-            let result = aggregate(aggr_options, aligned_timestamp, iter, options.count)
+            let result = aggregate(aggr_options, aligned_timestamp, iter)
                 .into_iter()
                 .collect::<Vec<_>>();
             JoinResultType::Samples(result)

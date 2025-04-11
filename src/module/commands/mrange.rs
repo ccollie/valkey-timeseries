@@ -1,9 +1,8 @@
-use crate::aggregators::{AggOp, Aggregator};
+use crate::aggregators::{AggOp, Aggregator, AggregationOptions};
 use crate::arg_types::{RangeGroupingOptions, RangeOptions};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
-use crate::iterators::aggregator::AggregationOptions;
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::module::commands::range_arg_parse::parse_range_options;
@@ -433,7 +432,6 @@ fn get_series_sample_aggregates(
         start_ts,
         end_ts,
         aggregation_options,
-        range_options.count,
     )
 }
 

@@ -1,11 +1,10 @@
-use crate::aggregators::Aggregator;
 use crate::arg_types::{MatchFilterOptions, RangeGroupingOptions};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::iterators::aggregator::{AggregationOptions, BucketAlignment, BucketTimestamp};
+use crate::aggregators::{Aggregator, AggregationOptions, BucketAlignment, BucketTimestamp};
 use crate::join::join_reducer::JoinReducer;
 use crate::labels::matchers::Matchers;
 use crate::labels::{parse_series_selector, Label};
@@ -528,7 +527,7 @@ pub fn parse_aggregation_options(
         timestamp_output: BucketTimestamp::Start,
         alignment: BucketAlignment::default(),
         time_delta: 0,
-        empty: false,
+        report_empty: false,
     };
 
     let mut arg_count: usize = 0;
@@ -542,7 +541,7 @@ pub fn parse_aggregation_options(
     while let Some(token) = advance_if_next_token_one_of(args, &valid_tokens) {
         match token {
             CommandArgToken::Empty => {
-                aggr.empty = true;
+                aggr.report_empty = true;
                 arg_count += 1;
             }
             CommandArgToken::BucketTimestamp => {
