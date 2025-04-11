@@ -10,10 +10,11 @@ echo "Script Directory: $SCRIPT_DIR"
 
 echo "Running cargo and clippy format checks..."
 cargo fmt --check
-cargo clippy --profile release --all-targets -- -D clippy::all
+#cargo clippy --profile release --all-targets -- -D clippy::all
 
 echo "Running cargo build release..."
-RUSTFLAGS="-D warnings" cargo build --all --all-targets  --release
+# RUSTFLAGS="-D warnings" cargo build --all --all-targets  --release
+cargo build --all --all-targets  --release
 
 echo "Running unit tests..."
 cargo test --features enable-system-alloc

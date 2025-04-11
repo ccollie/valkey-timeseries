@@ -35,22 +35,33 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
 
     init_croaring_allocator();
 
-    if load_config(ctx, args).is_err() {
-        logging::log_warning("Failed to load configuration");
-        return Status::Err;
-    }
-    register_config_handlers(ctx);
+    // if load_config(ctx, args).is_err() {
+    //     logging::log_warning("Failed to load configuration");
+    //     return Status::Err;
+    // }
 
-    start_series_background_worker();
+    // logging::log_debug("Before registering config handlers");
+    // register_config_handlers(ctx);
+    // logging::log_debug("After registering config handlers");
 
-    match register_server_events(ctx) {
-        Ok(_) => Status::Ok,
-        Err(e) => {
-            let msg = format!("Failed to register server events: {}", e);
-            logging::log_warning(msg);
-            Status::Err
-        }
-    }
+    // logging::log_debug("Before initializing series");
+    // start_series_background_worker();
+    // logging::log_debug("After initializing series");
+
+    // logging::log_debug("Before initializing server events");
+    // match register_server_events(ctx) {
+    //     Ok(_) => {
+    //         logging::log_debug("After initializing server events");
+    //         Status::Ok
+    //     }
+    //     Err(e) => {
+    //         let msg = format!("Failed to register server events: {}", e);
+    //         logging::log_warning(msg);
+    //         Status::Err
+    //     }
+    // }
+
+    Status::Ok
 }
 
 fn deinitialize(_ctx: &Context) -> Status {
