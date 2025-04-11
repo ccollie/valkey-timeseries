@@ -70,11 +70,10 @@ impl AggOp for AggMin {
         self.0 = serde_json::from_str::<Option<Value>>(buf).unwrap();
     }
     fn update(&mut self, value: Value) {
-        match self.0 {
-            None => self.0 = Some(value),
-            Some(v) if v > value => self.0 = Some(value),
-            _ => {}
-        }
+        self.0 = Some(match self.0 {
+            None => value,
+            Some(v) => v.min(value),
+        });
     }
     fn reset(&mut self) {
         self.0 = None;
@@ -94,11 +93,10 @@ impl AggOp for AggMax {
         self.0 = serde_json::from_str::<Option<Value>>(buf).unwrap();
     }
     fn update(&mut self, value: Value) {
-        match self.0 {
-            None => self.0 = Some(value),
-            Some(v) if v < value => self.0 = Some(value),
-            _ => {}
-        }
+        self.0 = Some(match self.0 {
+            None => value,
+            Some(v) => v.max(value),
+        });
     }
     fn reset(&mut self) {
         self.0 = None;
