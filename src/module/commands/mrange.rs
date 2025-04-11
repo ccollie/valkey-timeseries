@@ -1,4 +1,4 @@
-use crate::aggregators::{AggOp, Aggregator, AggregationOptions};
+use crate::aggregators::{AggOp, AggregationOptions, Aggregator};
 use crate::arg_types::{RangeGroupingOptions, RangeOptions};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::parallel::join;
@@ -427,12 +427,7 @@ fn get_series_sample_aggregates(
     aggregation_options: &AggregationOptions,
 ) -> Vec<Sample> {
     let samples = get_raw_samples(meta.series, start_ts, end_ts, range_options);
-    aggregate_samples(
-        samples.into_iter(),
-        start_ts,
-        end_ts,
-        aggregation_options,
-    )
+    aggregate_samples(samples.into_iter(), start_ts, end_ts, aggregation_options)
 }
 
 struct GroupedSeries<'a> {

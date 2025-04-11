@@ -21,7 +21,9 @@ pub fn info(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     args.done()?;
 
-    with_timeseries(ctx, &key, true,|series| Ok(get_ts_info(series, debugging, None)))
+    with_timeseries(ctx, &key, true, |series| {
+        Ok(get_ts_info(series, debugging, None))
+    })
 }
 
 fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> ValkeyValue {

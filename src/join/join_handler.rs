@@ -1,3 +1,4 @@
+use crate::aggregators::aggregate;
 use crate::common::binop::BinopFunc;
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
@@ -5,7 +6,6 @@ use crate::join::{JoinIterator, JoinOptions, JoinValue};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
-use crate::aggregators::aggregate;
 
 // naming is hard :-)
 /// Result of a join operation

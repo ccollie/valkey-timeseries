@@ -663,7 +663,10 @@ mod tests {
 
     #[test]
     fn test_aggregator_avg_save_load() {
-        let agg = Aggregator::Avg(AggAvg { count: 5, sum: 50.0 });
+        let agg = Aggregator::Avg(AggAvg {
+            count: 5,
+            sum: 50.0,
+        });
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "avg");
@@ -681,7 +684,11 @@ mod tests {
 
     #[test]
     fn test_aggregator_range_save_load() {
-        let agg = Aggregator::Range(AggRange { min: 10.0, max: 20.0, init: true });
+        let agg = Aggregator::Range(AggRange {
+            min: 10.0,
+            max: 20.0,
+            init: true,
+        });
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "range");
@@ -692,7 +699,7 @@ mod tests {
         if let Aggregator::Range(range) = new_agg {
             assert_eq!(range.min, 10.0);
             assert_eq!(range.max, 20.0);
-            assert_eq!(range.init, true);
+            assert!(range.init);
         } else {
             panic!("Wrong aggregator type after loading");
         }
@@ -700,7 +707,11 @@ mod tests {
 
     #[test]
     fn test_aggregator_stdp_save_load() {
-        let agg = Aggregator::StdP(AggStdP(AggStd { sum: 100.0, sum_2: 1050.0, count: 10 }));
+        let agg = Aggregator::StdP(AggStdP(AggStd {
+            sum: 100.0,
+            sum_2: 1050.0,
+            count: 10,
+        }));
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "std.p");
@@ -719,7 +730,11 @@ mod tests {
 
     #[test]
     fn test_aggregator_stds_save_load() {
-        let agg = Aggregator::StdS(AggStdS(AggStd { sum: 200.0, sum_2: 4100.0, count: 20 }));
+        let agg = Aggregator::StdS(AggStdS(AggStd {
+            sum: 200.0,
+            sum_2: 4100.0,
+            count: 20,
+        }));
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "std.s");
@@ -738,7 +753,11 @@ mod tests {
 
     #[test]
     fn test_aggregator_varp_save_load() {
-        let agg = Aggregator::VarP(AggVarP(AggStd { sum: 150.0, sum_2: 2350.0, count: 15 }));
+        let agg = Aggregator::VarP(AggVarP(AggStd {
+            sum: 150.0,
+            sum_2: 2350.0,
+            count: 15,
+        }));
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "var.p");
@@ -757,7 +776,11 @@ mod tests {
 
     #[test]
     fn test_aggregator_vars_save_load() {
-        let agg = Aggregator::VarS(AggVarS(AggStd { sum: 250.0, sum_2: 6350.0, count: 25 }));
+        let agg = Aggregator::VarS(AggVarS(AggStd {
+            sum: 250.0,
+            sum_2: 6350.0,
+            count: 25,
+        }));
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "var.s");
@@ -792,7 +815,7 @@ mod tests {
             Aggregator::VarP(AggVarP::default()),
         ];
 
-        for mut agg in aggregator_types {
+        for agg in aggregator_types {
             let (name, serialized) = agg.save();
             assert!(!name.is_empty());
             assert!(!serialized.is_empty());

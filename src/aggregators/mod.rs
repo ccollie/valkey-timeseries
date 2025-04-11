@@ -1,13 +1,13 @@
-use valkey_module::{ValkeyError, ValkeyString};
 use crate::common::Timestamp;
 use crate::error_consts;
 use crate::parser::timestamp::parse_timestamp;
+use valkey_module::{ValkeyError, ValkeyString};
 
-mod iterator;
 mod handlers;
+mod iterator;
 
-pub use iterator::*;
 pub use handlers::*;
+pub use iterator::*;
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
 pub enum BucketTimestamp {

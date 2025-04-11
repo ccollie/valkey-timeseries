@@ -100,7 +100,6 @@ fn collect_series_keys(
     keys
 }
 
-
 /// `postings_for_matchers` assembles a single postings iterator against the series index
 /// based on the given matchers.
 #[allow(dead_code)]

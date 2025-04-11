@@ -15,6 +15,7 @@ pub(crate) mod join_reducer;
 mod join_right_exclusive_iter;
 mod join_right_iter;
 
+use crate::aggregators::AggregationOptions;
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
 use crate::join::asof::AsOfJoinStrategy;
@@ -22,7 +23,6 @@ use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
-use crate::aggregators::AggregationOptions;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {

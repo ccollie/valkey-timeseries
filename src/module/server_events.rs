@@ -35,7 +35,7 @@ fn remove_key_from_index(ctx: &Context, key: &[u8]) {
 
 fn handle_loaded(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
-    let _ = with_timeseries(ctx, &_key, false,|series| {
+    let _ = with_timeseries(ctx, &_key, false, |series| {
         with_timeseries_index(ctx, |index| {
             if !index.has_id(series.id) {
                 index.index_timeseries(series, key);

@@ -1,10 +1,10 @@
+use crate::aggregators::{AggregationOptions, Aggregator, BucketAlignment, BucketTimestamp};
 use crate::arg_types::{MatchFilterOptions, RangeGroupingOptions};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::aggregators::{Aggregator, AggregationOptions, BucketAlignment, BucketTimestamp};
 use crate::join::join_reducer::JoinReducer;
 use crate::labels::matchers::Matchers;
 use crate::labels::{parse_series_selector, Label};
