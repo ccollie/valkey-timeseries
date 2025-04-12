@@ -1,16 +1,13 @@
-use crate::aggregators::Aggregator;
-use crate::common::{Sample, Timestamp};
+use crate::aggregators::AggregationOptions;
+use crate::common::Sample;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::with_timeseries_index;
 use crate::series::TimeSeries;
 use valkey_module::{Context, ValkeyString};
 
 pub struct CompactionRule {
-    pub dest: ValkeyString,
-    pub aggregate: Aggregator,
-    pub bucket_duration: u64, // ms
-    pub ts_alignment: Timestamp,
-    pub bucket_start: Timestamp //
+    pub dest_key: ValkeyString,
+    pub aggregate: AggregationOptions,
 }
 
 
@@ -22,7 +19,7 @@ fn run_compaction_internal(dest: &TimeSeries, rule: &mut CompactionRule, sample:
 
 }
 
-fn run_compactions(ctx: &Context, rules: &[&mut CompactionRule], value: f64) {
+fn run_compactions(ctx: &Context, rules: &[&mut CompactionRule], value: Sample) {
     // collect all dest keys
     let mut dest_keys = Vec::new();
     with_timeseries_index(ctx, move |index| {
