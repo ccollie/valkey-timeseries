@@ -523,10 +523,9 @@ pub fn parse_aggregation_options(
 
     let mut aggr: AggregationOptions = AggregationOptions {
         aggregator,
-        bucket_duration,
+        bucket_duration: bucket_duration.as_millis() as u64,
         timestamp_output: BucketTimestamp::Start,
         alignment: BucketAlignment::default(),
-        time_delta: 0,
         report_empty: false,
     };
 

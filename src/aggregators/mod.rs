@@ -18,11 +18,11 @@ pub enum BucketTimestamp {
 }
 
 impl BucketTimestamp {
-    pub fn calculate(&self, ts: Timestamp, time_delta: i64) -> Timestamp {
+    pub fn calculate(&self, ts: Timestamp, time_delta: u64) -> Timestamp {
         match self {
             Self::Start => ts,
-            Self::Mid => ts + time_delta / 2,
-            Self::End => ts + time_delta,
+            Self::Mid => ts.saturating_add_unsigned(time_delta / 2),
+            Self::End => ts.saturating_add_unsigned(time_delta),
         }
     }
 }

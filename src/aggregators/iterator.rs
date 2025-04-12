@@ -1,21 +1,21 @@
 use crate::aggregators::{AggOp, Aggregator, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
-use std::time::Duration;
+use smallvec::{smallvec, SmallVec};
 
 #[derive(Debug, Clone)]
 pub struct AggregationOptions {
     pub aggregator: Aggregator,
-    pub bucket_duration: Duration,
+    pub bucket_duration: u64,
     pub timestamp_output: BucketTimestamp,
     pub alignment: BucketAlignment,
-    pub time_delta: i64,
     pub report_empty: bool,
 }
 
+/// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]
 pub struct AggregationHelper {
     aggregator: Aggregator,
-    time_delta: i64,
+    bucket_duration: u64,
     bucket_ts: BucketTimestamp,
     bucket_range_start: Timestamp,
     bucket_range_end: Timestamp,
@@ -30,7 +30,7 @@ impl AggregationHelper {
             aligned_timestamp,
             report_empty: options.report_empty,
             aggregator: options.aggregator.clone(),
-            time_delta: options.time_delta,
+            bucket_duration: options.bucket_duration,
             bucket_ts: options.timestamp_output,
             bucket_range_start: 0,
             bucket_range_end: 0,
@@ -40,7 +40,7 @@ impl AggregationHelper {
 
     fn add_empty_buckets(
         &self,
-        samples: &mut Vec<Sample>,
+        samples: &mut SmallVec<Sample, 6>,
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
@@ -53,23 +53,25 @@ impl AggregationHelper {
         let count = self.buckets_in_range(start, end);
         samples.reserve(count);
 
-        for timestamp in (start..end).step_by(self.time_delta as usize) {
+        for timestamp in (start..end).step_by(self.bucket_duration as usize) {
             samples.push(Sample { timestamp, value });
         }
     }
 
     fn buckets_in_range(&self, start_ts: Timestamp, end_ts: Timestamp) -> usize {
-        (((end_ts - start_ts) / self.time_delta) + 1) as usize
+        (((end_ts - start_ts) / self.bucket_duration as i64) + 1) as usize
     }
 
     fn calculate_bucket_start(&self) -> Timestamp {
         self.bucket_ts
-            .calculate(self.bucket_range_start, self.time_delta)
+            .calculate(self.bucket_range_start, self.bucket_duration)
     }
 
     fn advance_current_bucket(&mut self) {
         self.bucket_range_start = self.bucket_range_end;
-        self.bucket_range_end += self.time_delta;
+        self.bucket_range_end = self
+            .bucket_range_start
+            .saturating_add_unsigned(self.bucket_duration);
     }
 
     fn finalize_internal(&mut self) -> Sample {
@@ -82,7 +84,7 @@ impl AggregationHelper {
     fn finalize_bucket(
         &mut self,
         last_ts: Option<Timestamp>,
-        empty_buckets: &mut Vec<Sample>,
+        empty_buckets: &mut SmallVec<Sample, 6>,
     ) -> Sample {
         let bucket = self.finalize_internal();
         if self.report_empty {
@@ -104,44 +106,20 @@ impl AggregationHelper {
         self.last_value = value;
     }
 
-    pub fn calculate(&mut self, iterator: impl Iterator<Item = Sample>) -> Vec<Sample> {
-        let mut buckets = Vec::new();
-        let mut iterator = iterator;
-
-        if let Some(first) = iterator.by_ref().next() {
-            self.update_bucket_timestamps(first.timestamp);
-            self.update(first.value);
-        } else {
-            return buckets;
-        }
-
-        for sample in iterator {
-            if sample.timestamp >= self.bucket_range_end {
-                let bucket = self.finalize_bucket(Some(sample.timestamp), &mut buckets);
-                buckets.push(bucket);
-            }
-            self.update(sample.value);
-        }
-
-        // todo: handle last bucket
-        let last = self.finalize_internal();
-        buckets.push(last);
-
-        buckets
-    }
-
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
         timestamp >= self.bucket_range_end
     }
 
     fn update_bucket_timestamps(&mut self, timestamp: Timestamp) {
         self.bucket_range_start = self.calc_bucket_start(timestamp).max(0) as Timestamp;
-        self.bucket_range_end = self.bucket_range_start + self.time_delta;
+        self.bucket_range_end = self
+            .bucket_range_start
+            .saturating_add_unsigned(self.bucket_duration);
     }
 
     fn calc_bucket_start(&self, ts: Timestamp) -> Timestamp {
         let diff = ts - self.aligned_timestamp;
-        let delta = self.time_delta;
+        let delta = self.bucket_duration as i64;
         ts - ((diff % delta + delta) % delta)
     }
 }
@@ -151,25 +129,25 @@ pub fn aggregate(
     aligned_timestamp: Timestamp,
     iter: impl Iterator<Item = Sample>,
 ) -> Vec<Sample> {
-    let mut aggr_iter = AggregationHelper::new(options, aligned_timestamp);
-    aggr_iter.calculate(iter)
+    let iterator = AggregateIterator::new(iter, options, aligned_timestamp);
+    iterator.collect()
 }
 
 pub struct AggregateIterator<T: Iterator<Item = Sample>> {
     inner: T,
     aggregator: AggregationHelper,
-    empty_buckets: Vec<Sample>,
+    empty_buckets: SmallVec<Sample, 6>,
     init: bool,
     count: usize,
 }
 
 impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
-    pub fn new(inner: T, options: AggregationOptions, aligned_timestamp: Timestamp) -> Self {
-        let aggregator = AggregationHelper::new(&options, aligned_timestamp);
+    pub fn new(inner: T, options: &AggregationOptions, aligned_timestamp: Timestamp) -> Self {
+        let aggregator = AggregationHelper::new(options, aligned_timestamp);
         Self {
             inner,
             aggregator,
-            empty_buckets: vec![],
+            empty_buckets: smallvec![],
             init: false,
             count: 0,
         }
@@ -236,7 +214,6 @@ mod tests {
     use super::*;
     use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
-    use std::time::Duration;
 
     fn create_test_samples() -> Vec<Sample> {
         vec![
@@ -253,10 +230,9 @@ mod tests {
     fn create_options(aggregator: Aggregator) -> AggregationOptions {
         AggregationOptions {
             aggregator,
-            bucket_duration: Duration::from_secs(10),
+            bucket_duration: 10,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
-            time_delta: 10,
             report_empty: false,
         }
     }
@@ -266,7 +242,7 @@ mod tests {
         let samples = create_test_samples();
         let options = create_options(Aggregator::Sum(Default::default()));
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -290,7 +266,7 @@ mod tests {
         let samples = create_test_samples();
         let options = create_options(Aggregator::Avg(Default::default()));
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -304,7 +280,7 @@ mod tests {
         let samples = create_test_samples();
         let options = create_options(Aggregator::Max(Default::default()));
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -318,7 +294,7 @@ mod tests {
         let samples = create_test_samples();
         let options = create_options(Aggregator::Min(Default::default()));
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -332,7 +308,7 @@ mod tests {
         let samples = create_test_samples();
         let options = create_options(Aggregator::Count(Default::default()));
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -356,7 +332,7 @@ mod tests {
         let mut options = create_options(Aggregator::Sum(Default::default()));
         options.report_empty = true;
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -386,7 +362,7 @@ mod tests {
         let mut options = create_options(Aggregator::Last(Default::default()));
         options.report_empty = true;
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -408,7 +384,7 @@ mod tests {
         let mut options = create_options(Aggregator::Sum(Default::default()));
         options.timestamp_output = BucketTimestamp::End;
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -423,7 +399,7 @@ mod tests {
         let mut options = create_options(Aggregator::Sum(Default::default()));
         options.timestamp_output = BucketTimestamp::Mid;
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 
@@ -437,7 +413,7 @@ mod tests {
         let samples: Vec<Sample> = vec![];
         let options = create_options(Aggregator::Sum(Default::default()));
 
-        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
         let result: Vec<Sample> = iterator.collect();
 

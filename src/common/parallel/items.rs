@@ -39,7 +39,7 @@ where
     }
 }
 
-/// This is considered as a private type and it's NOT A PUBLIC API.
+/// This is considered as a private type, and it's NOT A PUBLIC API.
 #[allow(clippy::len_without_is_empty)]
 pub trait Items: Sized + IntoIterator<Item = Self::Elem> + Send + Sealed {
     type Elem: Send + Sync;
