@@ -20,6 +20,7 @@ pub struct AggregationHelper {
     bucket_range_start: Timestamp,
     bucket_range_end: Timestamp,
     aligned_timestamp: Timestamp,
+    last_value: f64,
     report_empty: bool,
 }
 
@@ -33,6 +34,7 @@ impl AggregationHelper {
             bucket_ts: options.timestamp_output,
             bucket_range_start: 0,
             bucket_range_end: 0,
+            last_value: f64::NAN,
         }
     }
 
@@ -42,7 +44,10 @@ impl AggregationHelper {
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
-        let value = self.aggregator.empty_value();
+        let value = match self.aggregator {
+            Aggregator::Last(_) => self.last_value,
+            _ => self.aggregator.empty_value(),
+        };
         let start = self.calc_bucket_start(first_bucket_ts);
         let end = self.calc_bucket_start(end_bucket_ts);
         let count = self.buckets_in_range(start, end);
@@ -96,6 +101,7 @@ impl AggregationHelper {
 
     fn update(&mut self, value: f64) {
         self.aggregator.update(value);
+        self.last_value = value;
     }
 
     pub fn calculate(&mut self, iterator: impl Iterator<Item = Sample>) -> Vec<Sample> {
@@ -367,6 +373,35 @@ mod tests {
         assert_eq!(result[4].value, 6.0);
     }
 
+    #[test]
+    fn test_empty_buckets_last() {
+        let samples = vec![
+            Sample::new(10, 1.0),
+            Sample::new(15, 99.0),
+            // Gap at 20-30
+            Sample::new(40, 5.0),
+            Sample::new(50, 6.0),
+        ];
+
+        let mut options = create_options(Aggregator::Last(Default::default()));
+        options.report_empty = true;
+
+        let iterator = AggregateIterator::new(samples.into_iter(), options, 0);
+
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 99.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 99.0); // Empty bucket with value 0 for sum
+        assert_eq!(result[2].timestamp, 30);
+        assert_eq!(result[2].value, 99.0); // Empty bucket
+        assert_eq!(result[3].timestamp, 40);
+        assert_eq!(result[3].value, 5.0);
+        assert_eq!(result[4].timestamp, 50);
+        assert_eq!(result[4].value, 6.0);
+    }
     #[test]
     fn test_bucket_timestamp_end() {
         let samples = create_test_samples();
