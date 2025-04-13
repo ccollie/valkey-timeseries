@@ -145,12 +145,20 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
             Left => {
                 check_join_type_set(&mut join_type_set)?;
                 let exclusive = possibly_parse_exclusive(args);
-                options.join_type = JoinType::Left(exclusive);
+                options.join_type = if exclusive {
+                    JoinType::LeftExclusive
+                } else {
+                    JoinType::Left
+                };
             }
             Right => {
                 check_join_type_set(&mut join_type_set)?;
                 let exclusive = possibly_parse_exclusive(args);
-                options.join_type = JoinType::Right(exclusive);
+                options.join_type = if exclusive {
+                    JoinType::RightExclusive
+                } else {
+                    JoinType::Right
+                };
             }
             Reduce => {
                 let arg = args.next_str()?;

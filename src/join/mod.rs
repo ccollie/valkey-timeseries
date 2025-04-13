@@ -14,6 +14,7 @@ mod join_left_iter;
 pub(crate) mod join_reducer;
 mod join_right_exclusive_iter;
 mod join_right_iter;
+mod join_handler_tests;
 
 use crate::aggregators::AggregationOptions;
 use crate::common::humanize::humanize_duration;
@@ -78,8 +79,10 @@ impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
 
 #[derive(Debug, Default, Copy, Clone)]
 pub enum JoinType {
-    Left(bool),
-    Right(bool),
+    Left,
+    LeftExclusive,
+    Right,
+    RightExclusive,
     #[default]
     Inner,
     Full,
@@ -89,17 +92,17 @@ pub enum JoinType {
 impl Display for JoinType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JoinType::Left(exclusive) => {
+            JoinType::Left => {
                 write!(f, "LEFT OUTER JOIN")?;
-                if *exclusive {
-                    write!(f, " EXCLUSIVE")?;
-                }
             }
-            JoinType::Right(exclusive) => {
+            JoinType::LeftExclusive => {
+                write!(f, "LEFT EXCLUSIVE JOIN")?;
+            }
+            JoinType::Right => {
                 write!(f, "RIGHT OUTER JOIN")?;
-                if *exclusive {
-                    write!(f, " EXCLUSIVE")?;
-                }
+            }
+            JoinType::RightExclusive => {
+                write!(f, "RIGHT EXCLUSIVE JOIN")?;
             }
             JoinType::Inner => {
                 write!(f, "INNER JOIN")?;

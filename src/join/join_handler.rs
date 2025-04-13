@@ -42,7 +42,7 @@ pub fn process_join(
     join_internal(&left_samples, &right_samples, options)
 }
 
-fn join_internal(left: &[Sample], right: &[Sample], options: &JoinOptions) -> JoinResultType {
+pub(super) fn join_internal(left: &[Sample], right: &[Sample], options: &JoinOptions) -> JoinResultType {
     let join_iter = JoinIterator::new(left, right, options.join_type);
 
     if let Some(op) = options.reducer {

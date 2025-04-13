@@ -24,19 +24,17 @@ impl<'a> JoinIterator<'a> {
             JoinType::AsOf(dir, tolerance) => {
                 Self::AsOf(JoinAsOfIter::new(left, right, dir, tolerance))
             }
-            JoinType::Left(exclusive) => {
-                if exclusive {
-                    Self::LeftExclusive(JoinLeftExclusiveIter::new(left, right))
-                } else {
-                    Self::Left(JoinLeftIter::new(left, right))
-                }
+            JoinType::Left => {
+                Self::Left(JoinLeftIter::new(left, right))
             }
-            JoinType::Right(exclusive) => {
-                if exclusive {
-                    Self::RightExclusive(JoinRightExclusiveIter::new(left, right))
-                } else {
-                    Self::Right(JoinRightIter::new(left, right))
-                }
+            JoinType::LeftExclusive => {
+                Self::LeftExclusive(JoinLeftExclusiveIter::new(left, right))
+            }
+            JoinType::Right => {
+                Self::Right(JoinRightIter::new(left, right))
+            }
+            JoinType::RightExclusive => {
+                Self::RightExclusive(JoinRightExclusiveIter::new(left, right))
             }
             JoinType::Inner => Self::Inner(JoinInnerIter::new(left, right)),
             JoinType::Full => Self::Full(JoinFullIter::new(left, right)),
