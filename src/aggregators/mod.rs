@@ -26,25 +26,23 @@ impl BucketTimestamp {
         }
     }
 }
+
 impl TryFrom<&str> for BucketTimestamp {
     type Error = ValkeyError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if value.len() == 1 {
-            let c = value.chars().next().unwrap();
-            match c {
-                '-' => return Ok(BucketTimestamp::Start),
-                '+' => return Ok(BucketTimestamp::End),
-                '~' => return Ok(BucketTimestamp::Mid),
-                _ => {}
-            }
+        let ts = hashify::tiny_map_ignore_case! {
+            value.as_bytes(),
+            "-" => BucketTimestamp::Start,
+            "+" => BucketTimestamp::End,
+            "~" => BucketTimestamp::Mid,
+            "start" => BucketTimestamp::Start,
+            "end" => BucketTimestamp::End,
+            "mid" => BucketTimestamp::Mid,
+        };
+        match ts {
+            Some(ts) => Ok(ts),
+            None => Err(ValkeyError::Str("TSDB: invalid BUCKETTIMESTAMP value"))
         }
-        match value {
-            value if value.eq_ignore_ascii_case("start") => return Ok(BucketTimestamp::Start),
-            value if value.eq_ignore_ascii_case("end") => return Ok(BucketTimestamp::End),
-            value if value.eq_ignore_ascii_case("mid") => return Ok(BucketTimestamp::Mid),
-            _ => {}
-        }
-        Err(ValkeyError::Str("TSDB: invalid BUCKETTIMESTAMP parameter"))
     }
 }
 
