@@ -6,6 +6,7 @@ use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
 use crate::parser::{ParseError, ParseResult};
 use logos::{Lexer, Logos};
+use crate::common::constants::METRIC_NAME_LABEL;
 
 const INITIAL_TOKENS: &[Token] = &[
     Token::Identifier,
@@ -182,8 +183,16 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
     let mut metric_name_seen = false;
 
     loop {
-        let matcher = parse_label_filter(p, !metric_name_seen)?;
+        let (matcher, tok) = parse_label_filter(p, !metric_name_seen)?;
         if matcher.is_metric_name_filter() {
+            if metric_name_seen {
+                return Err(unexpected(
+                    "metric name",
+                    matcher.label.as_str(),
+                    "only one metric name allowed",
+                    None,
+                ));
+            }
             metric_name_seen = true;
             if matchers.is_empty() {
                 matchers.push(matcher);
@@ -194,7 +203,14 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
             matchers.push(matcher);
         }
 
-        let (tok, _) = expect_one_of_tokens(p, &[Comma, RightBrace, OpOr])?;
+        let tok = match tok {
+            Some(tok) => tok,
+            None => {
+                let (tok, _) = expect_one_of_tokens(p, &[Comma, RightBrace, OpOr])?;
+                tok
+            }
+        };
+
         if tok == RightBrace || tok == OpOr {
             return Ok((matchers, tok));
         }
@@ -205,28 +221,37 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
 ///
 ///   <label_name> <match_op> <match_string> | <identifier> | <quoted_string>
 ///
-fn parse_label_filter(p: &mut Lexer<Token>, accept_single: bool) -> ParseResult<Matcher> {
+fn parse_label_filter(p: &mut Lexer<Token>, accept_single: bool) -> ParseResult<(Matcher, Option<Token>)> {
     use Token::*;
 
     let label = expect_label_name(p)?;
 
-    let (tok, _) = expect_one_of_tokens(p, &[Equal, OpNotEqual, RegexEqual, RegexNotEqual])?;
+    let (tok, _) = if accept_single {
+        expect_one_of_tokens(p, &[Equal, OpNotEqual, RegexEqual, RegexNotEqual, Comma, RightBrace, OpOr])
+    } else {
+        expect_one_of_tokens(p, &[Equal, OpNotEqual, RegexEqual, RegexNotEqual, Comma, RightBrace])
+    }?;
+
+    match tok {
+        Comma | RightBrace | OpOr => {
+            let matcher = Matcher {
+                label: METRIC_NAME_LABEL.into(),
+                matcher: PredicateMatch::Equal(PredicateValue::String(label)),
+            };
+            return Ok((matcher, Some(tok)));
+        }
+        _ => {}
+    }
     let op: MatchOp = tok.try_into()?;
 
     if op.is_regex() {
         let value = parse_string_literal(p)?;
-        Matcher::create(op, label, value)
+        Ok((Matcher::create(op, label, value)?, None))
     } else {
         let value = parse_matcher_value(p)?;
         match op {
-            MatchOp::Equal => Ok(Matcher {
-                label,
-                matcher: PredicateMatch::Equal(value),
-            }),
-            MatchOp::NotEqual => Ok(Matcher {
-                label,
-                matcher: PredicateMatch::NotEqual(value),
-            }),
+            MatchOp::Equal => Ok((Matcher { label, matcher: PredicateMatch::Equal(value) }, None)),
+            MatchOp::NotEqual => Ok((Matcher { label, matcher: PredicateMatch::NotEqual(value) }, None)),
             _ => unreachable!("parse_label_filter: unexpected operator"),
         }
     }

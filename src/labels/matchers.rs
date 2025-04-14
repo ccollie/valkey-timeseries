@@ -449,7 +449,7 @@ impl MatcherSetEnum {
                     for (i, matcher) in and_matchers.iter_mut().enumerate() {
                         if matcher.is_metric_name_filter() {
                             if name.is_none() {
-                                name = matcher.regex_text().map(|text| text.to_string())
+                                name = matcher.text().map(|text| text.to_string())
                             }
                             and_matchers.remove(i);
                             break;
