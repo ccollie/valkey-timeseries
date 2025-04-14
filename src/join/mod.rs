@@ -5,7 +5,6 @@ use std::time::Duration;
 
 pub mod asof;
 mod join_handler;
-mod join_handler_tests;
 mod join_iter;
 pub(crate) mod join_reducer;
 mod join_right_iter;
@@ -18,6 +17,9 @@ use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
+
+#[cfg(test)]
+mod join_handler_tests;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {

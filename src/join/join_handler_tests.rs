@@ -37,7 +37,7 @@ mod tests {
         let (left, right) = create_basic_samples();
         let options = create_basic_options();
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1); // Only timestamp 20 exists in both series
@@ -60,7 +60,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::Left;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // All left timestamps
@@ -103,7 +103,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::Right;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // All right timestamps
@@ -147,7 +147,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::Full;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 5); // All unique timestamps from both series
@@ -195,7 +195,7 @@ mod tests {
         let mut options = create_basic_options();
         options.reducer = Some(JoinReducer::Add);
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples.len(), 1); // Only timestamp 20 exists in both series
@@ -213,7 +213,7 @@ mod tests {
         options.join_type = JoinType::Left;
         options.reducer = Some(JoinReducer::Add);
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples.len(), 3); // All left timestamps
@@ -245,7 +245,7 @@ mod tests {
             report_empty: false,
         });
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
             // With bucket size 15, we should get buckets [10-25), [25-40)
@@ -264,7 +264,7 @@ mod tests {
         options.join_type = JoinType::Full;
         options.count = Some(3);
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // Limited to 3 values
@@ -283,28 +283,28 @@ mod tests {
 
         // Test Plus reducer
         options.reducer = Some(JoinReducer::Add);
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples[0].value, 22.0); // 2.0 + 20.0 = 22.0
         }
 
         // Test Minus reducer
         options.reducer = Some(JoinReducer::Sub);
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples[0].value, -18.0); // 2.0 - 20.0 = -18.0
         }
 
         // Test Mul reducer
         options.reducer = Some(JoinReducer::Mul);
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples[0].value, 40.0); // 2.0 * 20.0 = 40.0
         }
 
         // Test Div reducer
         options.reducer = Some(JoinReducer::Div);
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples[0].value, 0.1); // 2.0 / 20.0 = 0.1
         }
@@ -316,7 +316,7 @@ mod tests {
         let right: Vec<Sample> = vec![];
         let options = create_basic_options();
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 0);
@@ -333,7 +333,7 @@ mod tests {
         // right outer join
         options.join_type = JoinType::Right;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2);
@@ -357,7 +357,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::Left;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2);
@@ -380,7 +380,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2); // All left timestamps except the matching one at 20
@@ -415,7 +415,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::RightExclusive;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2); // All right timestamps except the matching one at 20
@@ -452,7 +452,7 @@ mod tests {
         options.join_type = JoinType::LeftExclusive;
         options.reducer = Some(JoinReducer::Add);
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples.len(), 2); // All left timestamps except the matching one at 20
@@ -477,7 +477,7 @@ mod tests {
         options.join_type = JoinType::RightExclusive;
         options.reducer = Some(JoinReducer::Add);
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples.len(), 2); // All right timestamps except the matching one at 20
@@ -513,7 +513,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // All left samples should be returned
             for (i, value) in values.iter().enumerate() {
@@ -532,7 +532,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::RightExclusive;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // All right samples should be returned
             for (i, value) in values.iter().enumerate() {
@@ -557,7 +557,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 0); // No left samples, so no results
         } else {
@@ -571,7 +571,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::RightExclusive;
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 0); // No right samples, so no results
         } else {
@@ -593,7 +593,7 @@ mod tests {
             report_empty: false,
         });
 
-        let result = join_internal(&left, &right, &options);
+        let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
             // Should have one bucket [0-30) with NaN value
