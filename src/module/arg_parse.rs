@@ -53,8 +53,10 @@ const CMD_ARG_LIMIT: &str = "LIMIT";
 const CMD_ARG_MATCH: &str = "MATCH";
 const CMD_ARG_METRIC: &str = "METRIC";
 const CMD_ARG_NAME: &str = "NAME";
+const CMD_ARG_NEAREST: &str = "NEAREST";
 const CMD_ARG_NEXT: &str = "NEXT";
 const CMD_ARG_ON_DUPLICATE: &str = "ON_DUPLICATE";
+const CMD_ARG_PREVIOUS: &str = "PREVIOUS";
 const CMD_ARG_PRIOR: &str = "PRIOR";
 const CMD_ARG_REDUCE: &str = "REDUCE";
 const CMD_ARG_RETENTION: &str = "RETENTION";
@@ -98,8 +100,10 @@ pub enum CommandArgToken {
     Match,
     Metric,
     Name,
+    Nearest,
     Next,
     OnDuplicate,
+    Previous,
     Prior,
     Reduce,
     Retention,
@@ -156,7 +160,9 @@ impl CommandArgToken {
             CommandArgToken::Step => CMD_ARG_STEP,
             CommandArgToken::WithLabels => CMD_ARG_WITH_LABELS,
             CommandArgToken::BucketTimestamp => CMD_ARG_BUCKET_TIMESTAMP,
+            CommandArgToken::Nearest => CMD_ARG_NEAREST,
             CommandArgToken::Next => CMD_ARG_NEXT,
+            CommandArgToken::Previous => CMD_ARG_PREVIOUS,
             CommandArgToken::Prior => CMD_ARG_PRIOR,
             CommandArgToken::Reduce => CMD_ARG_REDUCE,
             CommandArgToken::Uncompressed => CMD_ARG_UNCOMPRESSED,
@@ -198,8 +204,10 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "MATCH" => CommandArgToken::Match,
         "METRIC" => CommandArgToken::Metric,
         "NAME" => CommandArgToken::Name,
+        "NEAREST" => CommandArgToken::Nearest,
         "NEXT" => CommandArgToken::Next,
         "ON_DUPLICATE" => CommandArgToken::OnDuplicate,
+        "PREVIOUS" => CommandArgToken::Previous,
         "PRIOR" => CommandArgToken::Prior,
         "REDUCE" => CommandArgToken::Reduce,
         "RETENTION" => CommandArgToken::Retention,

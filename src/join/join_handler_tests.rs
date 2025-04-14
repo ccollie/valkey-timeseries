@@ -328,10 +328,7 @@ mod tests {
     #[test]
     fn test_join_empty_left_input() {
         let left: Vec<Sample> = vec![];
-        let right = vec![
-            Sample::new(15, 10.0),
-            Sample::new(20, 20.0),
-        ];
+        let right = vec![Sample::new(15, 10.0), Sample::new(20, 20.0)];
         let mut options = create_basic_options();
         // right outer join
         options.join_type = JoinType::Right;
@@ -355,10 +352,7 @@ mod tests {
 
     #[test]
     fn test_join_empty_right_input() {
-        let left = vec![
-            Sample::new(10, 1.0),
-            Sample::new(20, 2.0),
-        ];
+        let left = vec![Sample::new(10, 1.0), Sample::new(20, 2.0)];
         let right: Vec<Sample> = vec![];
         let mut options = create_basic_options();
         options.join_type = JoinType::Left;
@@ -470,7 +464,7 @@ mod tests {
             assert_eq!(samples[1].timestamp, 30);
             assert!(samples[1].value.is_nan()); // 3.0 + NaN = NaN
 
-            // The timestamp 20 should not be present since it exists in both left and right
+        // The timestamp 20 should not be present since it exists in both left and right
         } else {
             panic!("Expected Samples result type");
         }
@@ -495,7 +489,7 @@ mod tests {
             assert_eq!(samples[1].timestamp, 25);
             assert!(samples[1].value.is_nan()); // NaN + 30.0 = NaN
 
-            // The timestamp 20 should not be present since it exists in both left and right
+        // The timestamp 20 should not be present since it exists in both left and right
         } else {
             panic!("Expected Samples result type");
         }
@@ -558,10 +552,7 @@ mod tests {
     fn test_join_exclusive_with_empty_inputs() {
         // Test with empty left input for LeftExclusive
         let left: Vec<Sample> = vec![];
-        let right = vec![
-            Sample::new(15, 10.0),
-            Sample::new(20, 20.0),
-        ];
+        let right = vec![Sample::new(15, 10.0), Sample::new(20, 20.0)];
 
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;
@@ -574,10 +565,7 @@ mod tests {
         }
 
         // Test with empty right input for RightExclusive
-        let left = vec![
-            Sample::new(10, 1.0),
-            Sample::new(20, 2.0),
-        ];
+        let left = vec![Sample::new(10, 1.0), Sample::new(20, 2.0)];
         let right: Vec<Sample> = vec![];
 
         let mut options = create_basic_options();
@@ -599,7 +587,7 @@ mod tests {
         options.reducer = Some(JoinReducer::Add);
         options.aggregation = Some(AggregationOptions {
             aggregator: Aggregator::Sum(Default::default()),
-            bucket_duration: 30,  // Bucket size 30 to combine samples at 10 and 30
+            bucket_duration: 30, // Bucket size 30 to combine samples at 10 and 30
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
             report_empty: false,

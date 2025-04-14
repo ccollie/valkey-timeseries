@@ -1,5 +1,5 @@
 use crate::error_consts;
-use crate::join::asof::AsOfJoinStrategy;
+use crate::join::asof::AsofJoinStrategy;
 use crate::join::{process_join, JoinOptions, JoinType};
 use crate::module::arg_parse::{
     advance_if_next_token, advance_if_next_token_one_of, parse_aggregation_options,
@@ -13,7 +13,7 @@ use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
-///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PRIOR | NEXT] tolerance]]
+///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] tolerance]]
 ///   [FILTER_BY_TS ts...]
 ///   [FILTER_BY_VALUE min max]
 ///   [COUNT count]
@@ -58,15 +58,16 @@ fn parse_asof(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
 
     // ASOF already seen
     let mut tolerance = Duration::default();
-    let mut direction = AsOfJoinStrategy::Prior;
+    let mut strategy = AsofJoinStrategy::Backward;
 
-    // ASOF [PRIOR | NEXT] [tolerance]
-    if let Some(next) = advance_if_next_token_one_of(args, &[Prior, Next]) {
-        if next == Prior {
-            direction = AsOfJoinStrategy::Prior;
-        } else if next == Next {
-            direction = AsOfJoinStrategy::Next;
-        }
+    // ASOF [PREVIOUS | NEXT | NEAREST] [tolerance]
+    if let Some(next) = advance_if_next_token_one_of(args, &[Previous, Next, Nearest]) {
+        strategy = match next {
+            Previous => AsofJoinStrategy::Backward,
+            Next => AsofJoinStrategy::Forward,
+            Nearest => AsofJoinStrategy::Nearest,
+            _ => unreachable!("BUG: invalid match arm for AsofJoinStrategy"),
+        };
     }
 
     if let Some(next_arg) = args.peek() {
@@ -85,7 +86,7 @@ fn parse_asof(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
         }
     }
 
-    Ok(JoinType::AsOf(direction, tolerance))
+    Ok(JoinType::AsOf(strategy, tolerance))
 }
 
 fn possibly_parse_exclusive(args: &mut CommandArgIterator) -> bool {

@@ -4,22 +4,16 @@ use std::fmt::Display;
 use std::time::Duration;
 
 pub mod asof;
-mod join_asof_iter;
-mod join_full_iter;
 mod join_handler;
-mod join_inner_iter;
-mod join_iter;
-mod join_left_exclusive_iter;
-mod join_left_iter;
-pub(crate) mod join_reducer;
-mod join_right_exclusive_iter;
-mod join_right_iter;
 mod join_handler_tests;
+mod join_iter;
+pub(crate) mod join_reducer;
+mod join_right_iter;
 
 use crate::aggregators::AggregationOptions;
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
-use crate::join::asof::AsOfJoinStrategy;
+use crate::join::asof::AsofJoinStrategy;
 use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
@@ -57,8 +51,8 @@ impl JoinValue {
     }
 }
 
-impl From<&EitherOrBoth<&Sample, &Sample>> for JoinValue {
-    fn from(value: &EitherOrBoth<&Sample, &Sample>) -> Self {
+impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
+    fn from(value: EitherOrBoth<&Sample, &Sample>) -> Self {
         match value {
             EitherOrBoth::Both(l, r) => {
                 let mut value = Self::both(l.timestamp, l.value, r.value);
@@ -71,9 +65,9 @@ impl From<&EitherOrBoth<&Sample, &Sample>> for JoinValue {
     }
 }
 
-impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
-    fn from(value: EitherOrBoth<&Sample, &Sample>) -> Self {
-        (&value).into()
+impl From<EitherOrBoth<Sample, Sample>> for JoinValue {
+    fn from(value: EitherOrBoth<Sample, Sample>) -> Self {
+        convert_join_item(value)
     }
 }
 
@@ -86,7 +80,7 @@ pub enum JoinType {
     #[default]
     Inner,
     Full,
-    AsOf(AsOfJoinStrategy, Duration),
+    AsOf(AsofJoinStrategy, Duration),
 }
 
 impl Display for JoinType {
@@ -111,11 +105,7 @@ impl Display for JoinType {
                 write!(f, "FULL JOIN")?;
             }
             JoinType::AsOf(dir, tolerance) => {
-                write!(f, "ASOF JOIN")?;
-                match dir {
-                    AsOfJoinStrategy::Next => write!(f, " NEXT")?,
-                    AsOfJoinStrategy::Prior => write!(f, " PRIOR")?,
-                }
+                write!(f, "ASOF JOIN {}", dir)?;
                 if !tolerance.is_zero() {
                     write!(f, " TOLERANCE {}", humanize_duration(tolerance))?;
                 }
@@ -136,7 +126,7 @@ pub struct JoinOptions {
     pub aggregation: Option<AggregationOptions>,
 }
 
-pub(crate) fn convert_join_item(item: EitherOrBoth<&Sample, &Sample>) -> JoinValue {
+pub(crate) fn convert_join_item(item: EitherOrBoth<Sample, Sample>) -> JoinValue {
     match item {
         EitherOrBoth::Both(l, r) => JoinValue::both(l.timestamp, l.value, r.value),
         EitherOrBoth::Left(l) => JoinValue::left(l.timestamp, l.value),

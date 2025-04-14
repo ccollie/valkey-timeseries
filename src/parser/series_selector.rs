@@ -11,7 +11,7 @@ const INITIAL_TOKENS: &[Token] = &[
     Token::Identifier,
     Token::OpOr,
     Token::LeftBrace,
-    Token::StringLiteral
+    Token::StringLiteral,
 ];
 
 const SECONDARY_TOKENS: &[Token] = &[
@@ -240,7 +240,9 @@ fn expect_label_name(lex: &mut Lexer<Token>) -> ParseResult<String> {
             let value = extract_string_value(text)?;
             Ok(value.to_string())
         }
-        _ => unreachable!("expect_label_name: unexpected token. Need an identifier or quoted string"),
+        _ => {
+            unreachable!("expect_label_name: unexpected token. Need an identifier or quoted string")
+        }
     }
 }
 

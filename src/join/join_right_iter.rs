@@ -2,19 +2,23 @@ use crate::common::Sample;
 use crate::join::JoinValue;
 use joinkit::{EitherOrBoth, Joinkit};
 use std::collections::VecDeque;
-// todo: this seems inefficient
 
-pub struct JoinRightIter<'a> {
+pub struct JoinRightIter {
     buf: VecDeque<JoinValue>,
-    inner: Box<dyn Iterator<Item = EitherOrBoth<&'a Sample, Vec<&'a Sample>>> + 'a>,
+    inner: Box<dyn Iterator<Item = EitherOrBoth<Sample, Vec<Sample>>>>,
 }
 
-impl<'a> JoinRightIter<'a> {
-    // todo: pass in impl Iterator<Item=Sample>
-    pub(crate) fn new(left: &'a [Sample], right: &'a [Sample]) -> Self {
-        let left_iter = left.iter().map(|sample| (sample.timestamp, sample));
-        let right_iter = right.iter().map(|sample| (sample.timestamp, sample));
-        let iter = left_iter.into_iter().hash_join_right_outer(right_iter);
+impl JoinRightIter {
+    pub(crate) fn new<L, R, IL, IR>(left: IL, right: IR) -> Self
+    where
+        L: Iterator<Item = Sample> + 'static,
+        R: Iterator<Item = Sample>,
+        IL: IntoIterator<IntoIter = L, Item = Sample>,
+        IR: IntoIterator<IntoIter = R, Item = Sample>,
+    {
+        let left_iter = left.into_iter().map(|sample| (sample.timestamp, sample));
+        let right_iter = right.into_iter().map(|sample| (sample.timestamp, sample));
+        let iter = left_iter.hash_join_right_outer(right_iter);
 
         Self {
             buf: Default::default(),
@@ -26,10 +30,7 @@ impl<'a> JoinRightIter<'a> {
         self.buf.pop_front()
     }
 
-    fn process_item(
-        &mut self,
-        item: EitherOrBoth<&'a Sample, Vec<&'a Sample>>,
-    ) -> Option<JoinValue> {
+    fn process_item(&mut self, item: EitherOrBoth<Sample, Vec<Sample>>) -> Option<JoinValue> {
         match item {
             EitherOrBoth::Left(_) => {
                 // should not happen
@@ -59,7 +60,7 @@ impl<'a> JoinRightIter<'a> {
     }
 }
 
-impl Iterator for JoinRightIter<'_> {
+impl Iterator for JoinRightIter {
     type Item = JoinValue;
 
     fn next(&mut self) -> Option<Self::Item> {

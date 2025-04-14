@@ -1,8 +1,8 @@
 use crate::aggregators::aggregate;
 use crate::common::binop::BinopFunc;
 use crate::common::parallel::join;
-use crate::common::{Sample, Timestamp};
-use crate::join::{JoinIterator, JoinOptions, JoinValue};
+use crate::common::Sample;
+use crate::join::{create_join_iter, JoinOptions, JoinValue};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
@@ -39,11 +39,21 @@ pub fn process_join(
         || fetch_samples(left_series, options),
         || fetch_samples(right_series, options),
     );
-    join_internal(&left_samples, &right_samples, options)
+    join_internal(left_samples, right_samples, options)
 }
 
-pub(super) fn join_internal(left: &[Sample], right: &[Sample], options: &JoinOptions) -> JoinResultType {
-    let join_iter = JoinIterator::new(left, right, options.join_type);
+pub(super) fn join_internal<L, R, IR, IL>(
+    left: IL,
+    right: IR,
+    options: &JoinOptions,
+) -> JoinResultType
+where
+    L: Iterator<Item = Sample> + 'static, // icky, but this is internal
+    R: Iterator<Item = Sample> + 'static, // icky, but this is internal
+    IL: IntoIterator<IntoIter = L, Item = Sample>,
+    IR: IntoIterator<IntoIter = R, Item = Sample>,
+{
+    let join_iter = create_join_iter(left, right, options.join_type);
 
     if let Some(op) = options.reducer {
         let transform = op.get_handler();
@@ -52,10 +62,7 @@ pub(super) fn join_internal(left: &[Sample], right: &[Sample], options: &JoinOpt
 
         return if let Some(aggr_options) = &options.aggregation {
             // Aggregation is valid only for transforms (all other options return multiple values per row)
-            let (l_min, l_max) = get_sample_ts_range(left);
-            let (r_min, r_max) = get_sample_ts_range(right);
-            let start_timestamp = l_min.min(r_min);
-            let end_timestamp = l_max.max(r_max);
+            let (start_timestamp, end_timestamp) = options.date_range.get_timestamps(None);
 
             let aligned_timestamp = aggr_options
                 .alignment
@@ -74,15 +81,6 @@ pub(super) fn join_internal(left: &[Sample], right: &[Sample], options: &JoinOpt
     let count = options.count.unwrap_or(usize::MAX);
 
     JoinResultType::Values(join_iter.take(count).collect::<Vec<_>>())
-}
-
-fn get_sample_ts_range(samples: &[Sample]) -> (Timestamp, Timestamp) {
-    if samples.is_empty() {
-        return (0, i64::MAX - 1);
-    }
-    let first = &samples[0];
-    let last = &samples[samples.len() - 1];
-    (first.timestamp, last.timestamp)
 }
 
 pub(super) fn transform_join_value_to_sample(item: &JoinValue, f: BinopFunc) -> Sample {

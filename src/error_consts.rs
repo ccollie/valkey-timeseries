@@ -20,6 +20,7 @@ pub const INVALID_JOIN_KEY: &str = "TSDB: invalid join key";
 pub const DUPLICATE_JOIN_KEY: &str = "TSDB: duplicate join key";
 pub const MISSING_JOIN_REDUCER: &str = "TSDB: join aggregation requires a reducer";
 pub const INVALID_ASOF_TOLERANCE: &str = "TSDB: negative ASOF tolerance not valid";
+pub const INVALID_ASOF_STRATEGY: &str = "TSDB: invalid ASOF strategy";
 pub const INVALID_METRIC_NAME: &str = "ERR invalid metric name";
 pub const INVALID_OR_MISSING_METRIC_NAME: &str = "ERR invalid or missing metric name";
 pub const METRIC_ALREADY_SET: &str = "ERR metric already set";
