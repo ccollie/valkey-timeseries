@@ -133,12 +133,12 @@ impl Iterator for GorillaIterator<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx >= self.num_samples {
             return None;
-        } else if self.idx == self.num_samples - 1 {
-            return Some(self.read_last_sample());
         }
+
         Some(match self.idx {
             0 => self.read_first_sample(),
             1 => self.read_second_sample(),
+            _ if self.idx == self.num_samples - 1 => self.read_last_sample(),
             _ => self.read_nth_sample(),
         })
     }
