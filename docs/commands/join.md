@@ -74,7 +74,7 @@ there are no matching rows for the sample in the right series.
 
 </details>
 
-<details open><summary><code>ASOF [PREVIOUS | NEXT | NEAREST] tolerance</code></summary>
+<details open><summary><code>ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]</code></summary>
 
 `ASOF` joins match each sample in the left series with the closest preceding or following sample in the right series based on 
 timestamps. They are particularly useful for analyzing time-series data where records from different sources may not have 
@@ -90,6 +90,9 @@ For each sample in the left table, the join finds the closest matching value fro
 The tolerance can be specified as:
  - An integer representing milliseconds
  - A duration specified as a string, e.g. 2m
+
+`ALLOW_EXACT_MATCH` is a boolean flag that determines whether to allow exact matches between the left and right series.
+
 
 If not specified, there is no tolerance limit (equivalent to an infinite tolerance). When set, JOIN ASOF will only match 
 keys within the specified tolerance range. Any potential matches outside this range will be treated as no match.

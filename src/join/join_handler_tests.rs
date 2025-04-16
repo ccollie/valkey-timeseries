@@ -3,7 +3,7 @@ mod tests {
     use crate::aggregators::{AggregationOptions, Aggregator, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
     use crate::join::join_handler::join_internal;
-    use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType};
+    use crate::join::{create_join_iter, JoinOptions, JoinReducer, JoinResultType, JoinType};
     use joinkit::EitherOrBoth;
 
     fn create_basic_samples() -> (Vec<Sample>, Vec<Sample>) {
@@ -587,16 +587,19 @@ mod tests {
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
             aggregator: Aggregator::Sum(Default::default()),
-            bucket_duration: 30, // Bucket size 30 to combine samples at 10 and 30
+            bucket_duration: 35, // Bucket size 35 to combine samples at 10 and 30
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
             report_empty: false,
         });
 
+        let join_iter = create_join_iter(left.clone(), right.clone(), options.join_type);
+        let items = join_iter.collect::<Vec<_>>();
+
         let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
-            // Should have one bucket [0-30) with NaN value
+            // Should have one bucket [0-35) with NaN value
             // (since both values within bucket are NaN from not having matching right values)
             assert_eq!(samples.len(), 1);
             assert_eq!(samples[0].timestamp, 0);

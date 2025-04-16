@@ -305,7 +305,7 @@ mod tests {
 
             assert_matcher(&matchers[0], "metric.name", MatchOp::Equal, "value");
             assert_matcher(&matchers[1], "label-with-dash", MatchOp::Equal, "foo");
-            assert_matcher(&matchers[2], "quoted.label", MatchOp::RegexEqual, r#"val\".*"#);
+            assert_matcher(&matchers[2], "quoted.label", MatchOp::RegexEqual, r##"val".*"##);
         });
     }
 
