@@ -1,6 +1,6 @@
 use crate::aggregators::{AggOp, Aggregator, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
-use smallvec::{smallvec, SmallVec};
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
 pub struct AggregationOptions {
@@ -40,7 +40,7 @@ impl AggregationHelper {
 
     fn add_empty_buckets(
         &self,
-        samples: &mut SmallVec<Sample, 6>,
+        samples: &mut VecDeque<Sample>,
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
@@ -54,7 +54,7 @@ impl AggregationHelper {
         samples.reserve(count);
 
         for timestamp in (start..end).step_by(self.bucket_duration as usize) {
-            samples.push(Sample { timestamp, value });
+            samples.push_back(Sample { timestamp, value });
         }
     }
 
@@ -84,7 +84,7 @@ impl AggregationHelper {
     fn finalize_bucket(
         &mut self,
         last_ts: Option<Timestamp>,
-        empty_buckets: &mut SmallVec<Sample, 6>,
+        empty_buckets: &mut VecDeque<Sample>,
     ) -> Sample {
         let bucket = self.finalize_internal();
         if self.report_empty {
@@ -136,7 +136,7 @@ pub fn aggregate(
 pub struct AggregateIterator<T: Iterator<Item = Sample>> {
     inner: T,
     aggregator: AggregationHelper,
-    empty_buckets: SmallVec<Sample, 6>,
+    empty_buckets: VecDeque<Sample>,
     init: bool,
     count: usize,
 }
@@ -147,7 +147,7 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
         Self {
             inner,
             aggregator,
-            empty_buckets: smallvec![],
+            empty_buckets: VecDeque::new(),
             init: false,
             count: 0,
         }
@@ -162,9 +162,6 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
         let bucket = self
             .aggregator
             .finalize_bucket(last_ts, &mut self.empty_buckets);
-        if !self.empty_buckets.is_empty() {
-            self.empty_buckets.reverse();
-        }
         self.count = 0;
         bucket
     }
@@ -175,7 +172,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // First return any empty buckets if available
-        if let Some(sample) = self.empty_buckets.pop() {
+        if let Some(sample) = self.empty_buckets.pop_front() {
             return Some(sample);
         }
 
