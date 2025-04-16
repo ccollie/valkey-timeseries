@@ -408,7 +408,9 @@ mod test {
         }
 
         // With allow_eq = false
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, false);
+        // Note that we specify a tolerance here otherwise the test would fail. This is because
+        // otherwise the algorithm would simply scan backwards and therefore find a non-equal match.
+        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, Some(5), false);
         assert_eq!(result.len(), 0); // No matches because exact equality is not allowed
     }
 

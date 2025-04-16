@@ -1,5 +1,5 @@
 use crate::error_consts;
-use crate::join::{process_join, AsofJoinStrategy, JoinOptions, JoinType};
+use crate::join::{process_join, AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
 use crate::module::arg_parse::{
     advance_if_next_token, advance_if_next_token_one_of, parse_aggregation_options,
     parse_command_arg_token, parse_count, parse_duration_ms, parse_join_operator,
@@ -12,7 +12,7 @@ use std::time::Duration;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
-///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] tolerance]]
+///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]]
 ///   [FILTER_BY_TS ts...]
 ///   [FILTER_BY_VALUE min max]
 ///   [COUNT count]
@@ -52,14 +52,14 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
 }
 
-fn parse_asof(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
+fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
     use CommandArgToken::*;
 
     // ASOF already seen
     let mut tolerance = Duration::default();
     let mut strategy = AsofJoinStrategy::Backward;
 
-    // ASOF [PREVIOUS | NEXT | NEAREST] [tolerance]
+    // ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] [ALLOW_EXACT_MATCH [true|false]]
     if let Some(next) = advance_if_next_token_one_of(args, &[Previous, Next, Nearest]) {
         strategy = match next {
             Previous => AsofJoinStrategy::Backward,
@@ -69,6 +69,7 @@ fn parse_asof(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
         };
     }
 
+    let mut allow_exact_match = true;
     if let Some(next_arg) = args.peek() {
         if let Ok(arg_str) = next_arg.try_as_str() {
             // see if we have a duration expression
@@ -83,9 +84,20 @@ fn parse_asof(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
                 let _ = args.next_arg()?;
             }
         }
+        if advance_if_next_token_one_of(args, &[AllowExactMatch]).is_some() {
+            match advance_if_next_token_one_of(args, &[True, False]) {
+                Some(True) => allow_exact_match = true,
+                Some(False) => allow_exact_match = false,
+                _ => {},
+            }
+        }
     }
 
-    Ok(JoinType::AsOf(strategy, tolerance))
+    Ok(JoinType::AsOf(AsOfJoinOptions {
+        strategy,
+        tolerance,
+        allow_exact_match,
+    }))
 }
 
 fn possibly_parse_exclusive(args: &mut CommandArgIterator) -> bool {
@@ -123,7 +135,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
             Aggregation => options.aggregation = Some(parse_aggregation_options(args)?),
             AsOf => {
                 check_join_type_set(&mut join_type_set)?;
-                options.join_type = parse_asof(args)?;
+                options.join_type = parse_asof_join_options(args)?;
             }
             Count => {
                 options.count = Some(parse_count(args)?);

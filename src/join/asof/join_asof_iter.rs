@@ -14,6 +14,7 @@ where
     right: R,
     strategy: AsofJoinStrategy,
     tolerance: Duration,
+    allow_eq: bool,
     items: Vec<(Sample, Sample)>,
     idx: usize,
 }
@@ -23,7 +24,7 @@ where
     L: Iterator<Item = Sample>,
     R: Iterator<Item = Sample>,
 {
-    pub fn new<IL, IR>(left: IL, right: IR, strategy: AsofJoinStrategy, tolerance: Duration) -> Self
+    pub fn new<IL, IR>(left: IL, right: IR, strategy: AsofJoinStrategy, tolerance: Duration, allow_eq: bool) -> Self
     where
         IL: IntoIterator<IntoIter = L, Item = Sample>,
         IR: IntoIterator<IntoIter = R, Item = Sample>,
@@ -34,6 +35,7 @@ where
             right: right.into_iter(),
             strategy,
             tolerance,
+            allow_eq,
             items: vec![],
             idx: 0,
         }
@@ -44,7 +46,7 @@ where
         let tolerance = self.tolerance.as_millis() as i64;
         let left: Vec<Sample> = self.left.by_ref().collect();
         let right: Vec<Sample> = self.right.by_ref().collect();
-        self.items = join_asof_samples(&left, &right, self.strategy, Some(tolerance), true);
+        self.items = join_asof_samples(&left, &right, self.strategy, Some(tolerance), self.allow_eq);
     }
 }
 

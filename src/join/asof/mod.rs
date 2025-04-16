@@ -33,8 +33,8 @@ use crate::error_consts;
 pub type IdxSize = usize;
 
 #[inline]
-fn ge_allow_eq<T: PartialOrd>(l: &T, r: &T, allow_eq: bool) -> bool {
-    match l.partial_cmp(r) {
+fn ge_allow_eq<T: PartialOrd + Copy>(l: T, r: T, allow_eq: bool) -> bool {
+    match l.partial_cmp(&r) {
         Some(Ordering::Equal) => allow_eq,
         Some(Ordering::Greater) => true,
         _ => false,
@@ -42,8 +42,8 @@ fn ge_allow_eq<T: PartialOrd>(l: &T, r: &T, allow_eq: bool) -> bool {
 }
 
 #[inline]
-fn lt_allow_eq<T: PartialOrd>(l: &T, r: &T, allow_eq: bool) -> bool {
-    match l.partial_cmp(r) {
+fn lt_allow_eq<T: PartialOrd + Copy>(l: T, r: T, allow_eq: bool) -> bool {
+    match l.partial_cmp(&r) {
         Some(Ordering::Equal) => allow_eq,
         Some(Ordering::Less) => true,
         _ => false,
@@ -84,7 +84,7 @@ impl AsofJoinState for AsofJoinForwardState {
     ) -> Option<IdxSize> {
         while self.scan_offset < n_right {
             if let Some(right_val) = right(self.scan_offset) {
-                if ge_allow_eq(&right_val, left_val, self.allow_eq) {
+                if ge_allow_eq(right_val.timestamp, left_val.timestamp, self.allow_eq) {
                     return Some(self.scan_offset);
                 }
             }
@@ -120,7 +120,7 @@ impl AsofJoinState for AsofJoinBackwardState {
     ) -> Option<IdxSize> {
         while self.scan_offset < n_right {
             if let Some(right_val) = right(self.scan_offset) {
-                if lt_allow_eq(&right_val, left_val, self.allow_eq) {
+                if lt_allow_eq(right_val.timestamp, left_val.timestamp, self.allow_eq) {
                     self.best_bound = Some(self.scan_offset);
                 } else {
                     break;
@@ -161,7 +161,7 @@ impl AsofJoinState for AsofJoinNearestState {
         // cheaper than computing differences.
         while self.scan_offset < n_right {
             if let Some(scan_right_val) = right(self.scan_offset) {
-                if lt_allow_eq(&scan_right_val, left_val, self.allow_eq) {
+                if lt_allow_eq(scan_right_val.timestamp, left_val.timestamp, self.allow_eq) {
                     self.best_bound = Some(self.scan_offset);
                 } else {
                     // Now we must compute a difference to see if scan_right_val
@@ -173,7 +173,7 @@ impl AsofJoinState for AsofJoinNearestState {
                         let best_diff = left_ts.abs_diff(best_right_val.timestamp);
                         let scan_diff = left_ts.abs_diff(scan_right_val.timestamp);
 
-                        lt_allow_eq(&scan_diff, &best_diff, self.allow_eq)
+                        lt_allow_eq(scan_diff, best_diff, self.allow_eq)
                     } else {
                         true
                     };

@@ -11,6 +11,7 @@ pub const ERROR_FETCHING_SAMPLE: &str = "ERR fetching sample";
 pub const INTERNAL_ERROR: &str = "ERR internal error";
 pub const INVALID_ALIGN: &str = "ERR invalid ALIGN argument";
 pub const INVALID_ARGUMENT: &str = "ERR invalid argument";
+pub const INVALID_BOOLEAN: &str = "ERR invalid boolean argument";
 pub const INVALID_CHUNK_ENCODING: &str = "ERR invalid chunk encoding method";
 pub const INVALID_CHUNK_SIZE: &str = "ERR invalid chunk size";
 pub const INVALID_DUPLICATE_POLICY: &str = "ERR invalid duplicate policy";

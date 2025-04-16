@@ -17,8 +17,8 @@ where
     IR: IntoIterator<IntoIter = R, Item = Sample>,
 {
     match join_type {
-        JoinType::AsOf(dir, tolerance) => {
-            let iter = JoinAsOfIter::new(left, right, dir, tolerance);
+        JoinType::AsOf(ref options) => {
+            let iter = JoinAsOfIter::new(left, right, options.strategy, options.tolerance, options.allow_exact_match);
             Box::new(iter)
         }
         JoinType::Left => Box::new(

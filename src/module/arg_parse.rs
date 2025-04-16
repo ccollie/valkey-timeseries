@@ -27,6 +27,7 @@ use valkey_module::{NextArg, ValkeyError, ValkeyResult, ValkeyString};
 const MAX_TS_VALUES_FILTER: usize = 128;
 const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
 const CMD_ARG_ALIGN: &str = "ALIGN";
+const CMD_ARG_ALLOW_EXACT_MATCH: &str = "ALLOW_EXACT_MATCH";
 const CMD_ARG_ASOF: &str = "ASOF";
 const CMD_ARG_BUCKET_TIMESTAMP: &str = "BUCKETTIMESTAMP";
 const CMD_ARG_CHUNK_SIZE: &str = "CHUNK_SIZE";
@@ -39,6 +40,7 @@ const CMD_ARG_EMPTY: &str = "EMPTY";
 const CMD_ARG_ENCODING: &str = "ENCODING";
 const CMD_ARG_END: &str = "END";
 const CMD_ARG_EXCLUSIVE: &str = "EXCLUSIVE";
+const CMD_ARG_FALSE: &str = "FALSE";
 const CMD_ARG_FILTER: &str = "FILTER";
 const CMD_ARG_FILTER_BY_TS: &str = "FILTER_BY_TS";
 const CMD_ARG_FILTER_BY_VALUE: &str = "FILTER_BY_VALUE";
@@ -67,6 +69,7 @@ const CMD_ARG_STEP: &str = "STEP";
 const CMD_ARG_SIGNIFICANT_DIGITS: &str = "SIGNIFICANT_DIGITS";
 const CMD_ARG_START: &str = "START";
 const CMD_ARG_TIMESTAMP: &str = "TIMESTAMP";
+const CMD_ARG_TRUE: &str = "TRUE";
 const CMD_ARG_UNCOMPRESSED: &str = "UNCOMPRESSED";
 const CMD_ARG_WITH_LABELS: &str = "WITHLABELS";
 
@@ -75,6 +78,7 @@ pub enum CommandArgToken {
     AsOf,
     Aggregation,
     Align,
+    AllowExactMatch,
     BucketTimestamp,
     ChunkSize,
     Compressed,
@@ -86,6 +90,7 @@ pub enum CommandArgToken {
     Encoding,
     End,
     Exclusive,
+    False,
     Filter,
     FilterByTs,
     FilterByValue,
@@ -114,6 +119,7 @@ pub enum CommandArgToken {
     Start,
     Step,
     Timestamp,
+    True,
     Uncompressed,
     WithLabels,
     #[default]
@@ -126,6 +132,7 @@ impl CommandArgToken {
         match self {
             CommandArgToken::Aggregation => CMD_ARG_AGGREGATION,
             CommandArgToken::Align => CMD_ARG_ALIGN,
+            CommandArgToken::AllowExactMatch => CMD_ARG_ALLOW_EXACT_MATCH,
             CommandArgToken::AsOf => CMD_ARG_ASOF,
             CommandArgToken::ChunkSize => CMD_ARG_CHUNK_SIZE,
             CommandArgToken::Compressed => CMD_ARG_COMPRESSED,
@@ -137,6 +144,7 @@ impl CommandArgToken {
             CommandArgToken::Encoding => CMD_ARG_ENCODING,
             CommandArgToken::End => CMD_ARG_END,
             CommandArgToken::Exclusive => CMD_ARG_EXCLUSIVE,
+            CommandArgToken::False => CMD_ARG_FALSE,
             CommandArgToken::Filter => CMD_ARG_FILTER,
             CommandArgToken::FilterByTs => CMD_ARG_FILTER_BY_TS,
             CommandArgToken::FilterByValue => CMD_ARG_FILTER_BY_VALUE,
@@ -168,6 +176,7 @@ impl CommandArgToken {
             CommandArgToken::Uncompressed => CMD_ARG_UNCOMPRESSED,
             CommandArgToken::SelectedLabels => CMD_ARG_SELECTED_LABELS,
             CommandArgToken::Timestamp => CMD_ARG_TIMESTAMP,
+            CommandArgToken::True => CMD_ARG_TRUE,
             CommandArgToken::Invalid => "INVALID",
         }
     }
@@ -178,6 +187,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         arg,
         "AGGREGATION" => CommandArgToken::Aggregation,
         "ALIGN" => CommandArgToken::Align,
+        "ALLOW_EXACT_MATCH" => CommandArgToken::AllowExactMatch,
         "ASOF" => CommandArgToken::AsOf,
         "BUCKETTIMESTAMP" => CommandArgToken::BucketTimestamp,
         "CHUNK_SIZE" => CommandArgToken::ChunkSize,
@@ -190,6 +200,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "END" => CommandArgToken::End,
         "ENCODING" => CommandArgToken::Encoding,
         "EXCLUSIVE" => CommandArgToken::Exclusive,
+        "FALSE" => CommandArgToken::False,
         "FILTER" => CommandArgToken::Filter,
         "FILTER_BY_TS" => CommandArgToken::FilterByTs,
         "FILTER_BY_VALUE" => CommandArgToken::FilterByValue,
@@ -218,6 +229,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "START" => CommandArgToken::Start,
         "STEP" => CommandArgToken::Step,
         "TIMESTAMP" => CommandArgToken::Timestamp,
+        "TRUE" => CommandArgToken::True,
         "UNCOMPRESSED" => CommandArgToken::Uncompressed,
         "WITHLABELS" => CommandArgToken::WithLabels,
     }

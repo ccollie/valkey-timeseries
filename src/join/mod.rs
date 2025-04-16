@@ -90,6 +90,13 @@ impl Ord for JoinValue {
 
 impl Eq for JoinValue {}
 
+#[derive(Clone, Debug, Copy)]
+pub struct AsOfJoinOptions {
+    pub strategy: AsofJoinStrategy,
+    pub tolerance: Duration,
+    pub allow_exact_match: bool,
+}
+
 #[derive(Debug, Default, Copy, Clone)]
 pub enum JoinType {
     Left,
@@ -99,7 +106,7 @@ pub enum JoinType {
     #[default]
     Inner,
     Full,
-    AsOf(AsofJoinStrategy, Duration),
+    AsOf(AsOfJoinOptions),
 }
 
 impl Display for JoinType {
@@ -123,10 +130,13 @@ impl Display for JoinType {
             JoinType::Full => {
                 write!(f, "FULL JOIN")?;
             }
-            JoinType::AsOf(dir, tolerance) => {
-                write!(f, "ASOF JOIN {}", dir)?;
-                if !tolerance.is_zero() {
-                    write!(f, " TOLERANCE {}", humanize_duration(tolerance))?;
+            JoinType::AsOf(ref options) => {
+                write!(f, "ASOF JOIN {}", options.strategy)?;
+                if !options.tolerance.is_zero() {
+                    write!(f, " TOLERANCE {}", humanize_duration(&options.tolerance))?;
+                }
+                if options.allow_exact_match {
+                    write!(f, " ALLOW EXACT MATCH")?;
                 }
             }
         }

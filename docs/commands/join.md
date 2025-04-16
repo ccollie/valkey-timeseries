@@ -1,10 +1,11 @@
 ```
 TS.JOIN leftKey rightKey fromTimestamp toTimestamp
-    [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] [tolerance]]]
+    [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] ALLOW_EXACT_MATCH]]
     [FILTER_BY_TS ts...]
     [FILTER_BY_VALUE min max]
     [COUNT count]
     [REDUCE operator]
+    [AGGREGATION aggregator bucketDuration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
 ```
 
 Join 2 time series on sample timestamps. Performs an INNER join by default.
@@ -94,7 +95,7 @@ If not specified, there is no tolerance limit (equivalent to an infinite toleran
 keys within the specified tolerance range. Any potential matches outside this range will be treated as no match.
 
 The tolerance works in conjunction with the 'direction' parameter. 
- - For example, with direction= `PREVIOUS` (the default), it looks for the nearest timestamp within the tolerance range that is less 
+ - For example, with strategy = `PREVIOUS` (the default), it looks for the nearest timestamp within the tolerance range that is less 
  than or equal to the timestamp of the left sample.
 
 
@@ -131,31 +132,31 @@ performs an operation on the value in each returned row.
 
  `operator` takes one of the following types:
 
-  | `operator`    | Description                                                             |
-  |---------------|-------------------------------------------------------------------------| 
-  | `abs_diff`    | abs(`left` - `right`)                                                   |
-  | `add` or `+`  | `left` + `right`                                                        |
-  | `and`         | Returns `left` if either value is NAN, `right` otherwise                |
-  | `avg`         | Arithmetic mean of both mut values                                      |
-  | `default`     | If `left` is is NaN, return `right`, else `left`                        | 
-  | `div` or `/`  | `left` / `right`                                                        |
-  | `eq` or `=`   | Returns 1 if `left` == `right`, 0 otherwise                             |
-  | `gt` or `>`   | Returns 1 if `left` > `right`, otherwise returns 0                      |
-  | `gte` or `>=` | Returns 1 if left is greater than or equals right, otherwise returns 0  |
-  | `if`          | Returns `left` if `right` is not NaN. Otherwise, NaN is returned.       |
-  | `ifnot`       | returns `left` if `right` is NaN. Otherwise, NaN is returned.           |
-  | `lt` or `<`   | Returns 1 if `left` > `right`, otherwise returns 0                      |
-  | `lte` or `<=` | Returns 1 if `left` is less than or equals `right`, otherwise returns 0 |
-  | `min`         | Minimum value                                                           |
-  | `max`         | Maximum value                                                           | 
-  | `mul` or `*`  | `left` * `right`                                                        |
-  | `ne` or `!=`  | Returns 1 if `left` equals `right`, otherwise returns 0                 |
-  | `pct_change`  | The percentage change of `right` over `left`                            |
-  | `pow`         | `left` ^ `right`                                                        |
-  | `sgn_diff`    | sgn(`left` - `right`)                                                   |
-  | `sub` or `-`  | `left` - `right`                                                        |
-  | `or`          | return the first non-NaN item. If both are NaN, it returns NaN.         |
-  | `unless`      | Returns Null unless `left` equals `right`                               |
+  | `operator`   | Description                                                             |
+  |--------------|-------------------------------------------------------------------------| 
+  | `abs_diff`   | abs(`left` - `right`)                                                   |
+  | `and`        | Returns `left` if either value is NAN, `right` otherwise                |
+  | `avg`        | Arithmetic mean of both mut values                                      |
+  | `default`    | If `left` is is NaN, return `right`, else `left`                        | 
+  | `div`        | `left` / `right`                                                        |
+  | `eq`         | Returns 1 if `left` == `right`, 0 otherwise                             |
+  | `gt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
+  | `gte`        | Returns 1 if left is greater than or equals right, otherwise returns 0  |
+  | `if`         | Returns `left` if `right` is not NaN. Otherwise, NaN is returned.       |
+  | `ifnot`      | returns `left` if `right` is NaN. Otherwise, NaN is returned.           |
+  | `lt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
+  | `lte`        | Returns 1 if `left` is less than or equals `right`, otherwise returns 0 |
+  | `min`        | Minimum value                                                           |
+  | `max`        | Maximum value                                                           | 
+  | `mul`        | `left` * `right`                                                        |
+  | `ne`         | Returns 1 if `left` equals `right`, otherwise returns 0                 |
+  | `pct_change` | The percentage change of `right` over `left`                            |
+  | `pow`        | `left` ^ `right`                                                        |
+  | `sgn_diff`   | sgn(`left` - `right`)                                                   |
+  | `sub`        | `left` - `right`                                                        |
+  | `sum`        | `left` + `right`                                                        |
+  | `or`         | return the first non-NaN item. If both are NaN, it returns NaN.         |
+  | `unless`     | Returns Null unless `left` equals `right`                               |
 
 </details>
 

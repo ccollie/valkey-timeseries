@@ -193,7 +193,7 @@ mod tests {
     fn test_join_with_reducer() {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
 
         let result = join_internal(left, right, &options);
 
@@ -211,7 +211,7 @@ mod tests {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
         options.join_type = JoinType::Left;
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
 
         let result = join_internal(left, right, &options);
 
@@ -236,7 +236,7 @@ mod tests {
     fn test_join_with_reducer_and_aggregation() {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
             aggregator: Aggregator::Sum(Default::default()),
             bucket_duration: 15,
@@ -282,7 +282,7 @@ mod tests {
         let mut options = create_basic_options();
 
         // Test Plus reducer
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
         let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Samples(samples) = result {
             assert_eq!(samples[0].value, 22.0); // 2.0 + 20.0 = 22.0
@@ -450,7 +450,7 @@ mod tests {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
 
         let result = join_internal(left, right, &options);
 
@@ -475,7 +475,7 @@ mod tests {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
         options.join_type = JoinType::RightExclusive;
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
 
         let result = join_internal(left, right, &options);
 
@@ -584,7 +584,7 @@ mod tests {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;
-        options.reducer = Some(JoinReducer::Add);
+        options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
             aggregator: Aggregator::Sum(Default::default()),
             bucket_duration: 30, // Bucket size 30 to combine samples at 10 and 30
