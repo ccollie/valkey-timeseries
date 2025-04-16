@@ -1,6 +1,5 @@
 use crate::error_consts;
-use crate::join::asof::AsofJoinStrategy;
-use crate::join::{process_join, JoinOptions, JoinType};
+use crate::join::{process_join, AsofJoinStrategy, JoinOptions, JoinType};
 use crate::module::arg_parse::{
     advance_if_next_token, advance_if_next_token_one_of, parse_aggregation_options,
     parse_command_arg_token, parse_count, parse_duration_ms, parse_join_operator,

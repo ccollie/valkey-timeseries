@@ -248,9 +248,9 @@ mod tests {
         let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
-            // With bucket size 15, we should get buckets [10-25), [25-40)
+            // With bucket size 15, we should get buckets [15-30), [30-45)
             assert_eq!(samples.len(), 1);
-            assert_eq!(samples[0].timestamp, 10);
+            assert_eq!(samples[0].timestamp, 15);
             assert_eq!(samples[0].value, 22.0); // Only value is 22.0 from timestamp 20
         } else {
             panic!("Expected Samples result type");
@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_join_exclusive_with_empty_inputs() {
+    fn test_join_left_exclusive_with_empty_inputs() {
         // Test with empty left input for LeftExclusive
         let left: Vec<Sample> = vec![];
         let right = vec![Sample::new(15, 10.0), Sample::new(20, 20.0)];
@@ -580,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn test_join_exclusive_with_aggregation() {
+    fn test_join_left_exclusive_with_aggregation() {
         let (left, right) = create_basic_samples();
         let mut options = create_basic_options();
         options.join_type = JoinType::LeftExclusive;

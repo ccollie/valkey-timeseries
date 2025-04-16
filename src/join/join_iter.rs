@@ -1,8 +1,9 @@
 use super::{convert_join_item, JoinType, JoinValue};
 use crate::common::Sample;
-use crate::join::asof::JoinAsOfIter;
-use crate::join::join_right_iter::JoinRightIter;
+use super::JoinAsOfIter;
 use joinkit::Joinkit;
+use super::join_right_iter::JoinRightIter;
+use super::join_right_exclusive_iter::JoinRightExclusiveIter;
 
 pub fn create_join_iter<L, R, IL, IR>(
     left: IL,
@@ -38,14 +39,7 @@ where
             Box::new(iter)
         }
         JoinType::RightExclusive => {
-            let left_iter = left.into_iter().map(|sample| (sample.timestamp, sample));
-            let right_iter = right.into_iter().map(|sample| (sample.timestamp, sample));
-            let iter = left_iter
-                .into_iter()
-                .hash_join_right_excl(right_iter)
-                .flatten()
-                .map(|sample| JoinValue::right(sample.timestamp, sample.value));
-
+            let iter = JoinRightExclusiveIter::new(left, right);
             Box::new(iter)
         }
         JoinType::Inner => {

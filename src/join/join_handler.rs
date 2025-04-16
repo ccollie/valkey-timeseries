@@ -42,14 +42,10 @@ pub fn process_join(
     join_internal(left_samples, right_samples, options)
 }
 
-pub(super) fn join_internal<L, R, IR, IL>(
-    left: IL,
-    right: IR,
-    options: &JoinOptions,
-) -> JoinResultType
+pub(super) fn join_internal<L, R, IR, IL>(left: IL, right: IR, options: &JoinOptions) -> JoinResultType
 where
-    L: Iterator<Item = Sample> + 'static, // icky, but this is internal
-    R: Iterator<Item = Sample> + 'static, // icky, but this is internal
+    L: Iterator<Item = Sample> + 'static,
+    R: Iterator<Item = Sample> + 'static,
     IL: IntoIterator<IntoIter = L, Item = Sample>,
     IR: IntoIterator<IntoIter = R, Item = Sample>,
 {
@@ -57,30 +53,22 @@ where
 
     if let Some(op) = options.reducer {
         let transform = op.get_handler();
-
         let iter = join_iter.map(|x| transform_join_value_to_sample(&x, transform));
 
-        return if let Some(aggr_options) = &options.aggregation {
-            // Aggregation is valid only for transforms (all other options return multiple values per row)
-            let (start_timestamp, end_timestamp) = options.date_range.get_timestamps(None);
-
-            let aligned_timestamp = aggr_options
-                .alignment
-                .get_aligned_timestamp(start_timestamp, end_timestamp);
-
+        if let Some(aggr_options) = &options.aggregation {
+            let (start, end) = options.date_range.get_timestamps(None);
+            let aligned_timestamp = aggr_options.alignment.get_aligned_timestamp(start, end);
             let result = aggregate(aggr_options, aligned_timestamp, iter)
                 .into_iter()
-                .collect::<Vec<_>>();
-            JoinResultType::Samples(result)
-        } else {
-            let result = iter.collect::<Vec<_>>();
-            JoinResultType::Samples(result)
-        };
+                .collect();
+            return JoinResultType::Samples(result);
+        }
+
+        return JoinResultType::Samples(iter.collect());
     }
 
     let count = options.count.unwrap_or(usize::MAX);
-
-    JoinResultType::Values(join_iter.take(count).collect::<Vec<_>>())
+    JoinResultType::Values(join_iter.take(count).collect())
 }
 
 pub(super) fn transform_join_value_to_sample(item: &JoinValue, f: BinopFunc) -> Sample {
@@ -109,41 +97,31 @@ fn join_value_to_valkey_value(row: &JoinValue, is_transform: bool) -> ValkeyValu
     let timestamp = ValkeyValue::from(row.timestamp);
 
     match row.value {
-        EitherOrBoth::Both(left, right) => {
-            let r_value = ValkeyValue::from(right);
-            let l_value = ValkeyValue::from(left);
-            let res = if let Some(other_timestamp) = row.other_timestamp {
-                vec![
-                    timestamp,
-                    ValkeyValue::from(other_timestamp),
-                    l_value,
-                    r_value,
-                ]
-            } else {
-                vec![timestamp, l_value, r_value]
-            };
-            ValkeyValue::Array(res)
-        }
-        EitherOrBoth::Left(left) => {
-            let value = ValkeyValue::from(left);
-            if is_transform {
-                ValkeyValue::Array(vec![timestamp, value])
-            } else {
-                ValkeyValue::Array(vec![timestamp, value, ValkeyValue::Null])
-            }
-        }
-        EitherOrBoth::Right(right) => ValkeyValue::Array(vec![
+        EitherOrBoth::Both(left, right) => ValkeyValue::Array(vec![
             timestamp,
-            ValkeyValue::Null,
-            ValkeyValue::Float(right),
+            ValkeyValue::from(left),
+            row.other_timestamp.map_or(ValkeyValue::from(right), |t| {
+                ValkeyValue::Array(vec![ValkeyValue::from(t), ValkeyValue::from(right)])
+            }),
         ]),
+        EitherOrBoth::Left(left) => ValkeyValue::Array(vec![
+            timestamp,
+            ValkeyValue::from(left),
+            if is_transform {
+                ValkeyValue::Null
+            } else {
+                ValkeyValue::Null
+            },
+        ]),
+        EitherOrBoth::Right(right) => {
+            ValkeyValue::Array(vec![timestamp, ValkeyValue::Null, ValkeyValue::from(right)])
+        }
     }
 }
 
 fn sample_to_value(sample: Sample) -> ValkeyValue {
-    let row = vec![
+    ValkeyValue::Array(vec![
         ValkeyValue::from(sample.timestamp),
         ValkeyValue::from(sample.value),
-    ];
-    ValkeyValue::from(row)
+    ])
 }

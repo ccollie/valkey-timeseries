@@ -3,23 +3,26 @@ use joinkit::EitherOrBoth;
 use std::fmt::Display;
 use std::time::Duration;
 
-pub mod asof;
+mod asof;
 mod join_handler;
 mod join_iter;
-pub(crate) mod join_reducer;
+pub mod join_reducer;
 mod join_right_iter;
+mod join_right_exclusive_iter;
+
+#[cfg(test)]
+mod join_handler_tests;
 
 use crate::aggregators::AggregationOptions;
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
-use crate::join::asof::AsofJoinStrategy;
+pub(crate) use crate::join::asof::AsofJoinStrategy;
 use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
 
-#[cfg(test)]
-mod join_handler_tests;
+pub(super) use asof::JoinAsOfIter;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {
@@ -72,6 +75,20 @@ impl From<EitherOrBoth<Sample, Sample>> for JoinValue {
         convert_join_item(value)
     }
 }
+
+impl PartialOrd for JoinValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.timestamp.cmp(&other.timestamp))
+    }
+}
+
+impl Ord for JoinValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp.cmp(&other.timestamp)
+    }
+}
+
+impl Eq for JoinValue {}
 
 #[derive(Debug, Default, Copy, Clone)]
 pub enum JoinType {
