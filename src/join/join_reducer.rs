@@ -10,7 +10,6 @@ use valkey_module::ValkeyError;
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum JoinReducer {
     AbsDiff,
-    Add,
     And,
     Avg,
     Cmp,
@@ -34,29 +33,14 @@ pub enum JoinReducer {
     Or,
     PctChange,
     SgnDiff,
+    Sum,
     Unless,
 }
 
 fn join_reducer_get(key: &str) -> Option<JoinReducer> {
     hashify::tiny_map_ignore_case! {
         key.as_bytes(),
-        "+" => JoinReducer::Add,
-        "-" => JoinReducer::Sub,
-        "*" => JoinReducer::Mul,
-        "/" => JoinReducer::Div,
-        "%" => JoinReducer::Mod,
-        "^" => JoinReducer::Pow,
-
-        // cmp ops
-        "==" => JoinReducer::Eql,
-        "!=" => JoinReducer::NotEq,
-        "<" => JoinReducer::Lt,
-        ">" => JoinReducer::Gt,
-        "<=" => JoinReducer::Lte,
-        ">=" => JoinReducer::Gte,
-
         "abs_diff" => JoinReducer::AbsDiff,
-        "add" => JoinReducer::Add,
         "cmp" => JoinReducer::Cmp,
         "eq" => JoinReducer::Eql,
         "gt" => JoinReducer::Gt,
@@ -81,6 +65,7 @@ fn join_reducer_get(key: &str) -> Option<JoinReducer> {
         "ifnot" => JoinReducer::IfNot,
         "default" => JoinReducer::Default,
 
+        "sum" => JoinReducer::Sum,
         "avg" => JoinReducer::Avg,
         "max" => JoinReducer::Max,
         "min" => JoinReducer::Min
@@ -92,7 +77,7 @@ impl JoinReducer {
         use JoinReducer::*;
         match self {
             AbsDiff => "abs_diff",
-            Add => "+",
+            Sum => "+",
             And => "and",
             Cmp => "cmp",
             Default => "default",
@@ -126,7 +111,7 @@ impl JoinReducer {
             Min => min,
             Avg => avg,
             AbsDiff => abs_diff,
-            Add => op_plus,
+            Sum => op_plus,
             And => op_and,
             Cmp => cmp,
             Default => op_default,
