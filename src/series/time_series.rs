@@ -8,7 +8,7 @@ use crate::common::{Sample, Timestamp};
 use crate::config::{DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::labels::InternedMetricName;
+use crate::labels::{InternedLabel, InternedMetricName};
 use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::index::next_timeseries_id;
 use crate::series::DuplicatePolicy;
@@ -105,6 +105,10 @@ impl TimeSeries {
 
     pub fn label_value(&self, name: &str) -> Option<&str> {
         self.labels.get_value(name)
+    }
+
+    pub fn get_label(&self, name: &str) -> Option<InternedLabel> {
+        self.labels.get_tag(name)
     }
 
     #[inline]

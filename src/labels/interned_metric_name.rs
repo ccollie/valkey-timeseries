@@ -79,6 +79,21 @@ impl InternedMetricName {
         }
     }
 
+    pub fn get_tag(&self, key: &str) -> Option<InternedLabel> {
+        if let Some(label) = self.0.iter().find(|x| {
+            if let Some((k, _)) = x.split_once(VALUE_SEPARATOR) {
+                k == key
+            } else {
+                false
+            }
+        }) {
+            if let Some((name, value)) = label.split_once(VALUE_SEPARATOR) {
+                return Some(InternedLabel { name, value });
+            }
+        }
+        None
+    }
+
     pub fn get_value(&self, key: &str) -> Option<&str> {
         self.0
             .iter()

@@ -84,9 +84,10 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     Ok(ValkeyValue::from(result))
 }
 
-pub struct MRangeResultRow {
+#[derive(Default)]
+pub(super) struct MRangeResultRow {
     key: String,
-    labels: Vec<Label>,
+    labels: Vec<Option<Label>>,
     samples: Vec<Sample>,
 }
 
@@ -197,7 +198,10 @@ fn handle_aggregation(
         .map(|(samples, meta)| {
             let labels =
                 get_series_labels(meta.series, options.with_labels, &options.selected_labels);
-            let labels = labels.into_iter().map(|x| x.into()).collect::<Vec<Label>>();
+            let labels = labels
+                .into_iter()
+                .map(|x| x.map(|x| Label::new(x.name, x.value)))
+                .collect::<Vec<Option<Label>>>();
             MRangeResultRow {
                 key: meta.source_key,
                 labels,
@@ -215,7 +219,11 @@ fn handle_raw(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRang
         .map(|(samples, meta)| {
             let labels =
                 get_series_labels(meta.series, options.with_labels, &options.selected_labels);
-            let labels = labels.into_iter().map(|x| x.into()).collect::<Vec<Label>>();
+            let labels = labels
+                .into_iter()
+                .map(|x| x.map(|x| Label::new(x.name, x.value)))
+                .collect::<Vec<Option<Label>>>();
+
             MRangeResultRow {
                 key: meta.source_key,
                 labels,
@@ -230,11 +238,12 @@ fn result_row_to_value(row: MRangeResultRow) -> ValkeyValue {
     let labels: Vec<_> = row
         .labels
         .into_iter()
-        .map(|label| {
-            ValkeyValue::Array(vec![
+        .map(|label| match label {
+            Some(label) => ValkeyValue::Array(vec![
                 ValkeyValue::from(label.name),
                 ValkeyValue::from(label.value),
-            ])
+            ]),
+            None => ValkeyValue::Null,
         })
         .collect();
     ValkeyValue::Array(vec![
@@ -433,7 +442,7 @@ fn get_series_sample_aggregates(
 struct GroupedSeries<'a> {
     label_value: String,
     series: Vec<MRangeSeriesMeta<'a>>,
-    labels: Vec<Label>,
+    labels: Vec<Option<Label>>,
 }
 
 fn group_series_by_label<'a>(
@@ -468,19 +477,19 @@ fn group_series_by_label<'a>(
                     sources.push(',');
                 }
             }
-            let labels: Vec<Label> = vec![
-                Label {
+            let labels = vec![
+                Some(Label {
                     name: label.into(),
                     value: label_value.clone(),
-                },
-                Label {
+                }),
+                Some(Label {
                     name: REDUCER_KEY.into(),
                     value: reducer.into(),
-                },
-                Label {
+                }),
+                Some(Label {
                     name: SOURCE_KEY.into(),
                     value: sources,
-                },
+                }),
             ];
             GroupedSeries {
                 label_value,

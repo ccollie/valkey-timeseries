@@ -52,27 +52,22 @@ pub fn get_series_labels<'a>(
     series: &'a TimeSeries,
     with_labels: bool,
     selected_labels: &[String],
-) -> Vec<InternedLabel<'a>> {
+) -> Vec<Option<InternedLabel<'a>>> {
     if !with_labels || selected_labels.is_empty() {
         return vec![];
     }
 
-    let mut dest = Vec::new();
-
-    if !selected_labels.is_empty() {
-        for label in series.labels.iter() {
-            if selected_labels.iter().any(|name| name == label.name) {
-                dest.push(label)
-            }
-        }
-        return dest;
+    if selected_labels.is_empty() {
+        series.labels
+            .iter()
+            .map(|label| Some(label))
+            .collect::<Vec<_>>()
+    } else  {
+        selected_labels
+            .iter()
+            .map(|name| series.get_label(&name))
+            .collect::<Vec<_>>()
     }
-
-    for label in series.labels.iter() {
-        dest.push(label);
-    }
-
-    dest
 }
 
 pub(super) fn group_samples_internal(
