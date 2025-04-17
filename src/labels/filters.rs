@@ -812,3 +812,26 @@ mod tests {
         assert!(!matcher.is_match("dev"));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::labels::matchers::RegexMatcher;
+
+    #[test]
+    fn test_match_anchoring() {
+        // Test anchoring behavior - should match full string only
+        let matcher = RegexMatcher::create("abc.*").unwrap();
+        assert!(matcher.is_match("abc123"));
+        assert!(!matcher.is_match("xabc123"));
+
+        let matcher = RegexMatcher::create(".*xyz$").unwrap();
+        assert!(matcher.is_match("123xyz"));
+        assert!(!matcher.is_match("123xyzx"));
+
+        let matcher = RegexMatcher::create("abc").unwrap();
+
+        assert!(matcher.is_match("abc"));
+        assert!(!matcher.is_match("xabc"));
+        assert!(!matcher.is_match("abcx"));
+    }
+}
