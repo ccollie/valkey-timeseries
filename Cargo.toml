@@ -10,7 +10,7 @@ description = "A Timeseries data type for Valkey"
 [dependencies]
 ahash = { version = "0.8", features = ["std", "serde"] }
 blart = "0.3"
-bon = "3.5"
+bon = "3.6"
 byte-pool = "0.2"
 cfg-if = "1.0.0"
 chili = "0.2"
