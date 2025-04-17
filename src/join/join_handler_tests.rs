@@ -593,9 +593,6 @@ mod tests {
             report_empty: false,
         });
 
-        let join_iter = create_join_iter(left.clone(), right.clone(), options.join_type);
-        let items = join_iter.collect::<Vec<_>>();
-
         let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {

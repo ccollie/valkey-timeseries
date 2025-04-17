@@ -75,12 +75,25 @@ pub fn try_escape_for_repeat_re(re: &str) -> String {
     result
 }
 
+/// Parse and potentially transform the regex.
+///
+/// Go and Rust handle the repeat pattern differently,
+/// in Go the following is valid: `aaa{bbb}ccc` but
+/// in Rust {bbb} is seen as an invalid repeat and must be escaped as \{bbb}.
+/// This escapes the opening { if its not followed by valid repeat pattern (e.g. 4,6).
+///
+/// Regex used in PromQL are fully anchored.
+fn try_parse_re(original_re: &str) -> Result<Regex, ParseError> {
+    let re = format!("^{original_re}$");
+    Regex::new(&re)
+        .or_else(|_| Regex::new(&try_escape_for_repeat_re(&re)))
+        .map_err(|_| ParseError::InvalidRegex(original_re.to_string()))
+}
+
 pub fn parse_regex_anchored(value: &str) -> Result<(Regex, &str), ParseError> {
     // ensure all regexes are anchored
     let unanchored = remove_start_end_anchors(value);
-    let modified = try_escape_for_repeat_re(unanchored);
-    let regex_str = format!("^{modified}$");
-    let regex = Regex::new(&regex_str).map_err(|_| ParseError::InvalidRegex(value.to_string()))?;
+    let regex = try_parse_re(value)?;
     Ok((regex, unanchored))
 }
 
