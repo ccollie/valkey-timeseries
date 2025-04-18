@@ -44,7 +44,7 @@ pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(
     let aligned_timestamp = aggr_options
         .alignment
         .get_aligned_timestamp(start_ts, end_ts);
-    let iter = AggregateIterator::new(iter, &aggr_options, aligned_timestamp);
+    let iter = AggregateIterator::new(iter, aggr_options, aligned_timestamp);
     iter.collect::<Vec<_>>()
 }
 
@@ -60,12 +60,12 @@ pub fn get_series_labels<'a>(
     if selected_labels.is_empty() {
         series.labels
             .iter()
-            .map(|label| Some(label))
+            .map(Some)
             .collect::<Vec<_>>()
     } else  {
         selected_labels
             .iter()
-            .map(|name| series.get_label(&name))
+            .map(|name| series.get_label(name))
             .collect::<Vec<_>>()
     }
 }

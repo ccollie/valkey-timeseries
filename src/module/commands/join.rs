@@ -190,7 +190,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
 
 fn join_internal(left: &TimeSeries, right: &TimeSeries, options: &JoinOptions) -> ValkeyValue {
     let result = process_join(left, right, options);
-    result.to_valkey_value(false)
+    result.to_valkey_value()
 }
 
 #[cfg(test)]

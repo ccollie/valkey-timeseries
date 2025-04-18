@@ -3,7 +3,7 @@ mod tests {
     use crate::aggregators::{AggregationOptions, Aggregator, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
     use crate::join::join_handler::join_internal;
-    use crate::join::{create_join_iter, JoinOptions, JoinReducer, JoinResultType, JoinType};
+    use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType};
     use joinkit::EitherOrBoth;
 
     fn create_basic_samples() -> (Vec<Sample>, Vec<Sample>) {

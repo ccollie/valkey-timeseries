@@ -15,14 +15,14 @@ pub enum JoinResultType {
 }
 
 impl JoinResultType {
-    pub fn to_valkey_value(&self, is_transform: bool) -> ValkeyValue {
+    pub fn to_valkey_value(&self) -> ValkeyValue {
         let arr = match self {
             JoinResultType::Samples(samples) => {
                 samples.iter().map(|x| sample_to_value(*x)).collect()
             }
             JoinResultType::Values(values) => values
                 .iter()
-                .map(|x| join_value_to_valkey_value(x, is_transform))
+                .map(join_value_to_valkey_value)
                 .collect(),
         };
 
@@ -93,7 +93,7 @@ fn fetch_samples(ts: &TimeSeries, options: &JoinOptions) -> Vec<Sample> {
     samples
 }
 
-fn join_value_to_valkey_value(row: &JoinValue, is_transform: bool) -> ValkeyValue {
+fn join_value_to_valkey_value(row: &JoinValue) -> ValkeyValue {
     let timestamp = ValkeyValue::from(row.timestamp);
 
     match row.value {
@@ -107,11 +107,7 @@ fn join_value_to_valkey_value(row: &JoinValue, is_transform: bool) -> ValkeyValu
         EitherOrBoth::Left(left) => ValkeyValue::Array(vec![
             timestamp,
             ValkeyValue::from(left),
-            if is_transform {
-                ValkeyValue::Null
-            } else {
-                ValkeyValue::Null
-            },
+            ValkeyValue::Null
         ]),
         EitherOrBoth::Right(right) => {
             ValkeyValue::Array(vec![timestamp, ValkeyValue::Null, ValkeyValue::from(right)])

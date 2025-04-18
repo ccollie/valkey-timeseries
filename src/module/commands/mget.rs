@@ -55,7 +55,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                             ValkeyValue::from(label.value),
                         ])
                     },
-                    None => return ValkeyValue::Null,
+                    None => ValkeyValue::Null,
                 }
             })
             .collect();

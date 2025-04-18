@@ -109,7 +109,7 @@ impl TimeSeriesChunk {
         if !self.overlaps(start_time, end_time) {
             return false;
         }
-        for _ in self.range_iter(start_time, end_time) {
+        if self.range_iter(start_time, end_time).next().is_some() {
             return true
         }
         false

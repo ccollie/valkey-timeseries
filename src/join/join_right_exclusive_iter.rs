@@ -39,7 +39,7 @@ impl Iterator for JoinRightExclusiveIter {
     fn next(&mut self) -> Option<Self::Item> {
         if !self.init {
             self.init = true;
-            while let Some(value) = self.iter.next() {
+            for value in self.iter.by_ref() {
                 self.heap.push(value);
             }
         }

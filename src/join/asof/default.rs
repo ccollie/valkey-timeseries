@@ -42,11 +42,11 @@ where
         if let Some(r_idx) = state.next(
             left_val,
             // SAFETY: next() only calls with indices < right.len().
-            |j| Some(unsafe { *right.get_unchecked(j as usize) }),
+            |j| Some(unsafe { *right.get_unchecked(j) }),
             right.len() as IdxSize,
         ) {
             // SAFETY: r_idx is non-null and valid.
-            let right_val = unsafe { right.get_unchecked(r_idx as usize) };
+            let right_val = unsafe { right.get_unchecked(r_idx) };
             if filter(left_val, right_val) {
                 out.push((*left_val, *right_val));
             }
