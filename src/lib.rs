@@ -31,14 +31,14 @@ pub const VKMETRICS_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
 fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
-    ctx.log_verbose("initialize");
+    logging::log_debug("initialize");
 
     init_croaring_allocator();
 
-    if load_config(ctx, args).is_err() {
-        ctx.log_warning("Failed to load configuration");
-        return Status::Err;
-    }
+    // if load_config(ctx, args).is_err() {
+    //     logging::log_warning("Failed to load configuration");
+    //     return Status::Err;
+    // }
 
     // logging::log_debug("Before registering config handlers");
     // register_config_handlers(ctx);
@@ -60,7 +60,7 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     //         Status::Err
     //     }
     // }
-    ctx.log_verbose("here");
+
     Status::Ok
 }
 
