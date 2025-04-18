@@ -218,7 +218,7 @@ impl TimeSeries {
         self.chunks.last_mut().unwrap()
     }
 
-    fn upsert_sample(
+fn upsert_sample(
         &mut self,
         sample: Sample,
         duplicate_policy_override: Option<DuplicatePolicy>,
@@ -228,6 +228,7 @@ impl TimeSeries {
         let is_last = pos + 1 == self.chunks.len();
         let chunk = self.chunks.get_mut(pos).unwrap();
 
+        // Try to upsert in the existing chunk if it doesn't need splitting
         if !chunk.should_split() {
             let (size, res) = chunk.upsert(sample, dp_policy);
             if res.is_ok() {
@@ -239,26 +240,33 @@ impl TimeSeries {
             return res;
         }
 
-        if let Ok(mut new_chunk) = chunk.split() {
-            let (size, res) = new_chunk.upsert(sample, dp_policy);
-            if res.is_ok() {
-                // todo: handle this in the background so that we don't slow down ingestion
-                if let Err(_e) = self.trim() {
-                    logging::log_warning(format!("Error trimming time series: {:?}", _e));
+        // Handle the case where we need to split the chunk
+        match chunk.split() {
+            Ok(mut new_chunk) => {
+                let (size, res) = new_chunk.upsert(sample, dp_policy);
+                if !res.is_ok() {
+                    return res;
                 }
-                let insert_at = self.chunks.partition_point(|chunk| {
-                    chunk.first_timestamp() <= new_chunk.first_timestamp()
-                });
+
+                // Try to trim time series and log any errors
+                if let Err(e) = self.trim() {
+                    logging::log_warning(format!("Error trimming time series: {:?}", e));
+                }
+
+                // Insert the new chunk at the correct position
+                let insert_at = self.chunks.partition_point(|c|
+                    c.first_timestamp() <= new_chunk.first_timestamp()
+                );
                 self.chunks.insert(insert_at, new_chunk);
+
                 self.total_samples += size;
                 if is_last {
                     self.update_last_sample();
                 }
-                return SampleAddResult::Ok(sample.timestamp);
+
+                SampleAddResult::Ok(sample.timestamp)
             }
-            res
-        } else {
-            SampleAddResult::Error(error_consts::CHUNK_SPLIT)
+            Err(_) => SampleAddResult::Error(error_consts::CHUNK_SPLIT)
         }
     }
 
@@ -275,55 +283,53 @@ impl TimeSeries {
     /// # Returns
     ///
     /// A result containing a vector of `SampleAddResult` with the outcome for each sample
-    pub fn merge_samples(
+pub fn merge_samples(
         &mut self,
         samples: &[Sample],
         policy_override: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
         let dp_policy = policy_override.unwrap_or(self.sample_duplicates.policy);
         let earliest_ts = self.get_min_timestamp();
-        let mut res = Vec::with_capacity(samples.len());
+        let mut results = Vec::with_capacity(samples.len());
 
-        #[derive(Default)]
-        struct GroupingState {
-            chunk_index: usize,
-            samples: SmallVec<Sample, 6>,
-            indexes: SmallVec<usize, 6>,
-        }
+        // Initialize with placeholder results
+        results.resize(samples.len(), SampleAddResult::Ok(0));
 
-        let mut grouping: IntMap<usize, GroupingState> = IntMap::default();
+        // Group samples by chunk
+        let mut chunk_groups: IntMap<usize, Vec<(usize, Sample)>> = IntMap::default();
 
-        for (index, &sample) in samples.iter().enumerate() {
+        for (idx, &sample) in samples.iter().enumerate() {
             if sample.timestamp < earliest_ts {
-                res.push(SampleAddResult::TooOld);
-            } else {
-                let sample = Sample {
-                    value: self.adjust_value(sample.value),
-                    timestamp: sample.timestamp,
-                };
-                let (chunk_index, _) = find_last_ge_index(&self.chunks, sample.timestamp);
-                let entry = grouping.entry(chunk_index).or_default();
-                entry.samples.push(sample);
-                entry.indexes.push(index);
-                entry.chunk_index = chunk_index;
-                res.push(SampleAddResult::Ok(sample.timestamp));
+                results[idx] = SampleAddResult::TooOld;
+                continue;
             }
+
+            let adjusted_sample = Sample {
+                value: self.adjust_value(sample.value),
+                timestamp: sample.timestamp,
+            };
+
+            let (chunk_idx, _) = find_last_ge_index(&self.chunks, sample.timestamp);
+            chunk_groups.entry(chunk_idx)
+                .or_default()
+                .push((idx, adjusted_sample));
         }
 
-        // todo: chili/rayon
-
-        for group in grouping.values() {
-            let chunk = self
-                .chunks
-                .get_mut(group.chunk_index)
+        // Process each chunk group
+        for (&chunk_idx, group) in &chunk_groups {
+            let chunk = self.chunks.get_mut(chunk_idx)
                 .expect("merge_samples: Bad chunk index");
-            let results = chunk.merge_samples(&group.samples, Some(dp_policy))?;
-            for (&i, result) in group.indexes.iter().zip(results) {
-                res[i] = result;
+
+            let samples_only: Vec<_> = group.iter().map(|(_, s)| *s).collect();
+            let chunk_results = chunk.merge_samples(&samples_only, Some(dp_policy))?;
+
+            // Update results with actual outcomes
+            for ((orig_idx, _), result) in group.iter().zip(chunk_results) {
+                results[*orig_idx] = result;
             }
         }
 
-        Ok(res)
+        Ok(results)
     }
 
     /// Get the time series between given start and end time (both inclusive).
@@ -559,6 +565,39 @@ impl TimeSeries {
         Ok(deleted_samples)
     }
 
+    /// Checks if the time series has at least one sample in the given time range.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_time` - Start timestamp (inclusive)
+    /// * `end_time` - End timestamp (inclusive)
+    ///
+    /// # Returns
+    ///
+    /// `true` if at least one sample exists in the given range, `false` otherwise
+    pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
+        // Check if the time series could possibly have samples in the range
+        if !self.overlaps(start_time, end_time) || self.is_empty() {
+            return false;
+        }
+
+        // Find the actual min timestamp accounting for retention
+        let min_timestamp = self.get_min_timestamp().max(start_time);
+
+        // Get chunk index bounds for the range
+        if let Some((start_index, end_index)) = self.get_chunk_index_bounds(min_timestamp, end_time) {
+            // Check if any chunk in the range has samples within the time range
+            for index in start_index..=end_index {
+                let chunk = &self.chunks[index];
+                if chunk.has_samples_in_range(min_timestamp, end_time) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     pub fn increment_sample_value(
         &mut self,
         timestamp: Option<Timestamp>,
@@ -608,20 +647,10 @@ impl TimeSeries {
 
     pub(crate) fn get_min_timestamp(&self) -> Timestamp {
         if self.retention.is_zero() {
-            return self.first_timestamp;
-        }
-        if let Some(last_sample) = self.last_sample {
-            let x = last_sample
-                .timestamp
-                .saturating_sub(self.retention.as_millis() as i64);
-
-            if x < 0 {
-                0
-            } else {
-                x
-            }
+            self.first_timestamp
         } else {
-            0
+            self.last_sample
+                .map_or(0, |last| last.timestamp.saturating_sub(self.retention.as_millis() as i64))
         }
     }
 

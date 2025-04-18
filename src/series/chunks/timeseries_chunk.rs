@@ -101,6 +101,20 @@ impl TimeSeriesChunk {
         first_time <= end_time && last_time >= start_time
     }
 
+    pub fn has_samples_in_range(
+        &self,
+        start_time: Timestamp,
+        end_time: Timestamp,
+    ) -> bool {
+        if !self.overlaps(start_time, end_time) {
+            return false;
+        }
+        for _ in self.range_iter(start_time, end_time) {
+            return true
+        }
+        false
+    }
+
     // todo: make this a trait method
     pub fn iter(&self) -> Box<dyn Iterator<Item = Sample> + '_> {
         use TimeSeriesChunk::*;
