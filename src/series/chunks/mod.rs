@@ -16,3 +16,4 @@ pub use pco::*;
 // pub use serialization::*;
 pub use timeseries_chunk::*;
 pub use uncompressed::*;
+pub use merge::*;
