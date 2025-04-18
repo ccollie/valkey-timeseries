@@ -104,8 +104,12 @@ pub struct SampleDuplicatePolicy {
 
 impl Default for SampleDuplicatePolicy {
     fn default() -> Self {
-        let config = CONFIG_SETTINGS.read().unwrap();
-        config.duplicate_policy
+        // let config = CONFIG_SETTINGS.read().unwrap();
+        Self {
+            policy: DuplicatePolicy::Block,
+            max_time_delta: 0,
+            max_value_delta: 0.0,
+        }
     }
 }
 

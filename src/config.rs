@@ -8,6 +8,7 @@ use crate::series::chunks::{validate_chunk_size, ChunkEncoding};
 use crate::series::settings::ConfigSettings;
 use crate::series::DuplicatePolicy;
 use lazy_static::lazy_static;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::RwLock;
 use std::time::Duration;
 use valkey_module::configuration::{
@@ -88,6 +89,27 @@ lazy_static! {
     static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
         ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
     );
+    pub static ref DECIMAL_DIGITS: AtomicI32 = AtomicI32::new(DECIMAL_DIGITS_MAX as i32);
+    pub static ref SIGNIFICANT_DIGITS: AtomicI32 = AtomicI32::new(SIGNIFICANT_DIGITS_MAX as i32);
+    pub static ref CHUNK_SIZE: AtomicUsize = AtomicUsize::new(CHUNK_SIZE_DEFAULT as usize);
+}
+
+fn get_default_decimal_digits() -> Option<i32> {
+    let digits = DECIMAL_DIGITS.load(Ordering::Relaxed);
+    if digits == DECIMAL_DIGITS_MAX as i32 {
+        None
+    } else {
+        Some(digits)
+    }
+}
+
+fn get_default_significant_digits() -> Option<i32> {
+    let digits = SIGNIFICANT_DIGITS.load(Ordering::Relaxed);
+    if digits == SIGNIFICANT_DIGITS_MAX as i32 {
+        None
+    } else {
+        Some(digits)
+    }
 }
 
 fn find_config_value<'a>(args: &'a [ValkeyString], name: &str) -> Option<&'a ValkeyString> {
@@ -284,12 +306,14 @@ fn on_string_config_set(
     let value_str = v.to_string_lossy();
     match name {
         "ts-chunk-size" => {
-            let chunk_size = parse_number(&value_str)?;
-            validate_chunk_size(chunk_size as usize)?;
+            let chunk_size = parse_number(&value_str)? as usize;
+            validate_chunk_size(chunk_size)?;
+            CHUNK_SIZE.store(chunk_size, Ordering::SeqCst);
+
             CONFIG_SETTINGS
                 .write()
                 .expect(SETTINGS_EXPECT_MSG)
-                .chunk_size_bytes = chunk_size as usize;
+                .chunk_size_bytes = chunk_size;
             Ok(())
         }
         "ts-duplicate-policy" => DuplicatePolicy::try_from(value_str)
