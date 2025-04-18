@@ -13,3 +13,4 @@ pub use gorilla::*;
 pub use pco::*;
 pub use timeseries_chunk::*;
 pub use uncompressed::*;
+pub use merge::*;

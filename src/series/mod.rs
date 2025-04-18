@@ -1,7 +1,6 @@
 pub mod chunks;
 mod defrag;
 pub mod index;
-mod merge;
 pub mod serialization;
 pub mod settings;
 mod tasks;
