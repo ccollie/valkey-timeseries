@@ -26,9 +26,9 @@ use valkey_module::ValkeyError;
 mod default;
 mod join_asof_iter;
 
+use crate::error_consts;
 pub(crate) use default::*;
 pub(crate) use join_asof_iter::*;
-use crate::error_consts;
 
 pub type IdxSize = usize;
 

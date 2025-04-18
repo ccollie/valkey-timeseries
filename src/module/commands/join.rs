@@ -88,7 +88,7 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
             match advance_if_next_token_one_of(args, &[True, False]) {
                 Some(True) => allow_exact_match = true,
                 Some(False) => allow_exact_match = false,
-                _ => {},
+                _ => {}
             }
         }
     }

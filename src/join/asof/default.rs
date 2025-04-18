@@ -403,8 +403,8 @@ mod test {
         let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, true);
 
         assert_eq!(result.len(), 3);
-        for i in 0..3 {
-            assert_eq!(result[i].0.timestamp, result[i].1.timestamp);
+        for res in result.iter() {
+            assert_eq!(res.0.timestamp, res.1.timestamp);
         }
 
         // With allow_eq = false

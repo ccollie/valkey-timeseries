@@ -58,11 +58,8 @@ pub fn get_series_labels<'a>(
     }
 
     if selected_labels.is_empty() {
-        series.labels
-            .iter()
-            .map(Some)
-            .collect::<Vec<_>>()
-    } else  {
+        series.labels.iter().map(Some).collect::<Vec<_>>()
+    } else {
         selected_labels
             .iter()
             .map(|name| series.get_label(name))

@@ -1,3 +1,4 @@
+use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::matchers::{
     MatchOp, Matcher, Matchers, PredicateMatch, PredicateValue, ValueList,
 };
@@ -6,7 +7,6 @@ use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
 use crate::parser::{ParseError, ParseResult};
 use logos::{Lexer, Logos};
-use crate::common::constants::METRIC_NAME_LABEL;
 
 const INITIAL_TOKENS: &[Token] = &[
     Token::Identifier,
@@ -221,15 +221,39 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
 ///
 ///   <label_name> <match_op> <match_string> | <identifier> | <quoted_string>
 ///
-fn parse_label_filter(p: &mut Lexer<Token>, accept_single: bool) -> ParseResult<(Matcher, Option<Token>)> {
+fn parse_label_filter(
+    p: &mut Lexer<Token>,
+    accept_single: bool,
+) -> ParseResult<(Matcher, Option<Token>)> {
     use Token::*;
 
     let label = expect_label_name(p)?;
 
     let (tok, _) = if accept_single {
-        expect_one_of_tokens(p, &[Equal, OpNotEqual, RegexEqual, RegexNotEqual, Comma, RightBrace, OpOr])
+        expect_one_of_tokens(
+            p,
+            &[
+                Equal,
+                OpNotEqual,
+                RegexEqual,
+                RegexNotEqual,
+                Comma,
+                RightBrace,
+                OpOr,
+            ],
+        )
     } else {
-        expect_one_of_tokens(p, &[Equal, OpNotEqual, RegexEqual, RegexNotEqual, Comma, RightBrace])
+        expect_one_of_tokens(
+            p,
+            &[
+                Equal,
+                OpNotEqual,
+                RegexEqual,
+                RegexNotEqual,
+                Comma,
+                RightBrace,
+            ],
+        )
     }?;
 
     match tok {
@@ -250,8 +274,20 @@ fn parse_label_filter(p: &mut Lexer<Token>, accept_single: bool) -> ParseResult<
     } else {
         let value = parse_matcher_value(p)?;
         match op {
-            MatchOp::Equal => Ok((Matcher { label, matcher: PredicateMatch::Equal(value) }, None)),
-            MatchOp::NotEqual => Ok((Matcher { label, matcher: PredicateMatch::NotEqual(value) }, None)),
+            MatchOp::Equal => Ok((
+                Matcher {
+                    label,
+                    matcher: PredicateMatch::Equal(value),
+                },
+                None,
+            )),
+            MatchOp::NotEqual => Ok((
+                Matcher {
+                    label,
+                    matcher: PredicateMatch::NotEqual(value),
+                },
+                None,
+            )),
             _ => unreachable!("parse_label_filter: unexpected operator"),
         }
     }

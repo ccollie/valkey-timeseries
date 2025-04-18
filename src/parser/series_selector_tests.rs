@@ -296,7 +296,8 @@ mod tests {
 
     #[test]
     fn test_parse_series_selector_with_escaped_quotes() {
-        let input = r#"{"metric.name"="value", "label-with-dash"="foo", "quoted.label"=~"val\".*"}"#;
+        let input =
+            r#"{"metric.name"="value", "label-with-dash"="foo", "quoted.label"=~"val\".*"}"#;
         let result = parse_series_selector(input).unwrap();
 
         assert!(result.name.is_none());
@@ -305,7 +306,12 @@ mod tests {
 
             assert_matcher(&matchers[0], "metric.name", MatchOp::Equal, "value");
             assert_matcher(&matchers[1], "label-with-dash", MatchOp::Equal, "foo");
-            assert_matcher(&matchers[2], "quoted.label", MatchOp::RegexEqual, r##"val".*"##);
+            assert_matcher(
+                &matchers[2],
+                "quoted.label",
+                MatchOp::RegexEqual,
+                r##"val".*"##,
+            );
         });
     }
 

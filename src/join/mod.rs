@@ -7,8 +7,8 @@ mod asof;
 mod join_handler;
 mod join_iter;
 pub mod join_reducer;
-mod join_right_iter;
 mod join_right_exclusive_iter;
+mod join_right_iter;
 
 #[cfg(test)]
 mod join_handler_tests;

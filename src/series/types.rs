@@ -99,20 +99,13 @@ impl TryFrom<String> for DuplicatePolicy {
     }
 }
 
-#[derive(Copy, Clone, Debug, GetSize, PartialEq)]
+#[derive(Copy, Clone, Default, Debug, GetSize, PartialEq)]
 pub struct SampleDuplicatePolicy {
     pub policy: DuplicatePolicy,
     /// The maximum difference between the new and existing timestamp to consider them duplicates
     pub max_time_delta: u64,
     /// The maximum difference between the new and existing value to consider them duplicates
     pub max_value_delta: f64,
-}
-
-impl Default for SampleDuplicatePolicy {
-    fn default() -> Self {
-        let config = CONFIG_SETTINGS.read().unwrap();
-        config.duplicate_policy
-    }
 }
 
 impl SampleDuplicatePolicy {

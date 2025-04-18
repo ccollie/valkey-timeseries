@@ -1,9 +1,9 @@
+use super::join_right_exclusive_iter::JoinRightExclusiveIter;
+use super::join_right_iter::JoinRightIter;
+use super::JoinAsOfIter;
 use super::{convert_join_item, JoinType, JoinValue};
 use crate::common::Sample;
-use super::JoinAsOfIter;
 use joinkit::Joinkit;
-use super::join_right_iter::JoinRightIter;
-use super::join_right_exclusive_iter::JoinRightExclusiveIter;
 
 pub fn create_join_iter<L, R, IL, IR>(
     left: IL,
@@ -18,7 +18,13 @@ where
 {
     match join_type {
         JoinType::AsOf(ref options) => {
-            let iter = JoinAsOfIter::new(left, right, options.strategy, options.tolerance, options.allow_exact_match);
+            let iter = JoinAsOfIter::new(
+                left,
+                right,
+                options.strategy,
+                options.tolerance,
+                options.allow_exact_match,
+            );
             Box::new(iter)
         }
         JoinType::Left => Box::new(

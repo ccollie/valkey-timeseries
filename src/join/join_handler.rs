@@ -20,10 +20,9 @@ impl JoinResultType {
             JoinResultType::Samples(samples) => {
                 samples.iter().map(|x| sample_to_value(*x)).collect()
             }
-            JoinResultType::Values(values) => values
-                .iter()
-                .map(join_value_to_valkey_value)
-                .collect(),
+            JoinResultType::Values(values) => {
+                values.iter().map(join_value_to_valkey_value).collect()
+            }
         };
 
         ValkeyValue::Array(arr)
@@ -42,7 +41,11 @@ pub fn process_join(
     join_internal(left_samples, right_samples, options)
 }
 
-pub(super) fn join_internal<L, R, IR, IL>(left: IL, right: IR, options: &JoinOptions) -> JoinResultType
+pub(super) fn join_internal<L, R, IR, IL>(
+    left: IL,
+    right: IR,
+    options: &JoinOptions,
+) -> JoinResultType
 where
     L: Iterator<Item = Sample> + 'static,
     R: Iterator<Item = Sample> + 'static,
@@ -104,11 +107,9 @@ fn join_value_to_valkey_value(row: &JoinValue) -> ValkeyValue {
                 ValkeyValue::Array(vec![ValkeyValue::from(t), ValkeyValue::from(right)])
             }),
         ]),
-        EitherOrBoth::Left(left) => ValkeyValue::Array(vec![
-            timestamp,
-            ValkeyValue::from(left),
-            ValkeyValue::Null
-        ]),
+        EitherOrBoth::Left(left) => {
+            ValkeyValue::Array(vec![timestamp, ValkeyValue::from(left), ValkeyValue::Null])
+        }
         EitherOrBoth::Right(right) => {
             ValkeyValue::Array(vec![timestamp, ValkeyValue::Null, ValkeyValue::from(right)])
         }

@@ -218,7 +218,7 @@ impl TimeSeries {
         self.chunks.last_mut().unwrap()
     }
 
-fn upsert_sample(
+    fn upsert_sample(
         &mut self,
         sample: Sample,
         duplicate_policy_override: Option<DuplicatePolicy>,
@@ -254,9 +254,9 @@ fn upsert_sample(
                 }
 
                 // Insert the new chunk at the correct position
-                let insert_at = self.chunks.partition_point(|c|
-                    c.first_timestamp() <= new_chunk.first_timestamp()
-                );
+                let insert_at = self
+                    .chunks
+                    .partition_point(|c| c.first_timestamp() <= new_chunk.first_timestamp());
                 self.chunks.insert(insert_at, new_chunk);
 
                 self.total_samples += size;
@@ -266,7 +266,7 @@ fn upsert_sample(
 
                 SampleAddResult::Ok(sample.timestamp)
             }
-            Err(_) => SampleAddResult::Error(error_consts::CHUNK_SPLIT)
+            Err(_) => SampleAddResult::Error(error_consts::CHUNK_SPLIT),
         }
     }
 
@@ -283,7 +283,7 @@ fn upsert_sample(
     /// # Returns
     ///
     /// A result containing a vector of `SampleAddResult` with the outcome for each sample
-pub fn merge_samples(
+    pub fn merge_samples(
         &mut self,
         samples: &[Sample],
         policy_override: Option<DuplicatePolicy>,
@@ -310,14 +310,17 @@ pub fn merge_samples(
             };
 
             let (chunk_idx, _) = find_last_ge_index(&self.chunks, sample.timestamp);
-            chunk_groups.entry(chunk_idx)
+            chunk_groups
+                .entry(chunk_idx)
                 .or_default()
                 .push((idx, adjusted_sample));
         }
 
         // Process each chunk group
         for (&chunk_idx, group) in &chunk_groups {
-            let chunk = self.chunks.get_mut(chunk_idx)
+            let chunk = self
+                .chunks
+                .get_mut(chunk_idx)
                 .expect("merge_samples: Bad chunk index");
 
             let samples_only: Vec<_> = group.iter().map(|(_, s)| *s).collect();
@@ -585,7 +588,8 @@ pub fn merge_samples(
         let min_timestamp = self.get_min_timestamp().max(start_time);
 
         // Get chunk index bounds for the range
-        if let Some((start_index, end_index)) = self.get_chunk_index_bounds(min_timestamp, end_time) {
+        if let Some((start_index, end_index)) = self.get_chunk_index_bounds(min_timestamp, end_time)
+        {
             // Check if any chunk in the range has samples within the time range
             for index in start_index..=end_index {
                 let chunk = &self.chunks[index];
@@ -649,8 +653,10 @@ pub fn merge_samples(
         if self.retention.is_zero() {
             self.first_timestamp
         } else {
-            self.last_sample
-                .map_or(0, |last| last.timestamp.saturating_sub(self.retention.as_millis() as i64))
+            self.last_sample.map_or(0, |last| {
+                last.timestamp
+                    .saturating_sub(self.retention.as_millis() as i64)
+            })
         }
     }
 

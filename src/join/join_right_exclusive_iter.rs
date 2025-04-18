@@ -1,7 +1,7 @@
-use min_max_heap::MinMaxHeap;
 use super::JoinValue;
 use crate::common::Sample;
 use joinkit::Joinkit;
+use min_max_heap::MinMaxHeap;
 
 pub(super) struct JoinRightExclusiveIter {
     init: bool,

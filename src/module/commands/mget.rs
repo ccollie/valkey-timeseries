@@ -47,16 +47,12 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         let labels = get_series_labels(series, acc.with_labels, &acc.selected_labels);
         let labels: Vec<_> = labels
             .into_iter()
-            .map(|label| {
-                match label {
-                    Some(label) => {
-                        ValkeyValue::Array(vec![
-                            ValkeyValue::from(label.name),
-                            ValkeyValue::from(label.value),
-                        ])
-                    },
-                    None => ValkeyValue::Null,
-                }
+            .map(|label| match label {
+                Some(label) => ValkeyValue::Array(vec![
+                    ValkeyValue::from(label.name),
+                    ValkeyValue::from(label.value),
+                ]),
+                None => ValkeyValue::Null,
             })
             .collect();
         acc.series.push(SeriesData {
