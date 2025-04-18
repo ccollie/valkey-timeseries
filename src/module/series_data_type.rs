@@ -27,11 +27,11 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         digest: None,
         aux_load: None,
         aux_save: None,
-        aux_save_triggers: REDISMODULE_AUX_BEFORE_RDB as i32,
+        aux_save_triggers: 0,
         free_effort: None,
         unlink: Some(unlink),
         copy: Some(copy),
-        defrag: Some(defrag),
+        defrag: None, // ?????
         mem_usage2: None,
         free_effort2: None,
         unlink2: None,
