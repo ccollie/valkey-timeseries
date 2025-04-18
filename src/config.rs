@@ -8,28 +8,20 @@ use crate::series::chunks::{validate_chunk_size, ChunkEncoding};
 use crate::series::settings::ConfigSettings;
 use crate::series::DuplicatePolicy;
 use lazy_static::lazy_static;
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::RwLock;
 use std::time::Duration;
-use valkey_module::configuration::{
-    register_string_configuration, ConfigurationContext, ConfigurationFlags,
-};
-use valkey_module::{
-    ConfigurationValue, Context, ValkeyError, ValkeyGILGuard, ValkeyResult, ValkeyString,
-};
+use valkey_module::configuration::ConfigurationContext;
+use valkey_module::{ConfigurationValue, ValkeyError, ValkeyGILGuard, ValkeyResult, ValkeyString};
 // See https://redis.io/docs/latest/develop/data-types/timeseries/configuration/
 
+/// Minimal Valkey version that supports the TimeSeries Module
+pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
 pub const SPLIT_FACTOR: f64 = 1.2;
-const SERIES_RETENTION_KEY: &str = "RETENTION_POLICY";
-const SERIES_CHUNK_ENCODING_KEY: &str = "ENCODING";
-const SERIES_CHUNK_SIZE_KEY: &str = "CHUNK_SIZE_BYTES";
-const SERIES_DECIMAL_DIGITS_KEY: &str = "DECIMAL_DIGITS";
-const SERIES_SIGNIFICANT_DIGITS_KEY: &str = "SIGNIFICANT_DIGITS";
-const SERIES_WORKER_INTERVAL_KEY: &str = "WORKER_INTERVAL";
 const SERIES_WORKER_INTERVAL_MIN: i64 = 5000;
 const SERIES_WORKER_INTERVAL_MAX: i64 = 60 * 60 * 1000 * 24;
 
-const SERIES_DUPLICATE_POLICY_KEY: &str = "DUPLICATE_POLICY";
+pub(super) const SERIES_WORKER_INTERVAL_DEFAULT: &str = "5000";
+
 pub const CHUNK_SIZE_MIN: i64 = 64;
 pub const CHUNK_SIZE_MAX: i64 = 1024 * 1024;
 pub const CHUNK_SIZE_DEFAULT: i64 = 4 * 1024;
@@ -40,27 +32,23 @@ pub const SIGNIFICANT_DIGITS_MIN: i64 = 0;
 
 pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 4 * 1024;
 pub const DEFAULT_CHUNK_ENCODING: ChunkEncoding = ChunkEncoding::Gorilla;
-const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
-const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
+pub(super) const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
+pub(super) const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 pub const DEFAULT_DUPLICATE_POLICY: DuplicatePolicy = DuplicatePolicy::Block;
-const DUPLICATE_POLICY_DEFAULT_STRING: &str = DEFAULT_DUPLICATE_POLICY.as_str();
+pub(super) const DUPLICATE_POLICY_DEFAULT_STRING: &str = DEFAULT_DUPLICATE_POLICY.as_str();
 
 pub const DEFAULT_RETENTION_PERIOD: Duration = Duration::ZERO;
-const RETENTION_POLICY_DEFAULT_STRING: &str = "0";
+pub(super) const RETENTION_POLICY_DEFAULT_STRING: &str = "0";
 pub const DEFAULT_SERIES_WORKER_INTERVAL: Duration = Duration::from_secs(60);
-
-const IGNORE_MAX_TIME_DIFF_KEY: &str = "IGNORE_MAX_TIME_DIFF";
-const IGNORE_MAX_TIME_DIFF_DEFAULT_STRING: &str = "0";
+pub(super) const IGNORE_MAX_TIME_DIFF_DEFAULT_STRING: &str = "0";
 pub const IGNORE_MAX_TIME_DIFF_MIN: i64 = 0;
 pub const IGNORE_MAX_TIME_DIFF_MAX: i64 = i64::MAX;
-
-const IGNORE_MAX_VALUE_DIFF_KEY: &str = "IGNORE_MAX_VALUE_DIFF";
-const IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING: &str = "0";
+pub(super) const IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING: &str = "0";
 pub const IGNORE_MAX_VALUE_DIFF_MIN: f64 = 0.0;
 pub const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
 
-const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
-const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
+pub(super) const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
+pub(super) const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
 
 const ONE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const ONE_YEAR_MS: i64 = 365 * ONE_DAY_MS;
@@ -69,81 +57,36 @@ pub const RETENTION_POLICY_MAX: i64 = 10 * ONE_YEAR_MS; //
 
 lazy_static! {
     pub static ref CONFIG_SETTINGS: RwLock<ConfigSettings> = RwLock::new(ConfigSettings::default());
-    static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
+    pub(super) static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
-    static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
+    pub(super) static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()));
-    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, DEFAULT_DUPLICATE_POLICY.as_str())
-    );
-    static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
+    pub(super) static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            DEFAULT_DUPLICATE_POLICY.as_str()
+        ));
+    pub(super) static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
-    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING)
-    );
-    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING)
-    );
-    static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
+    pub(super) static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            IGNORE_MAX_TIME_DIFF_DEFAULT_STRING
+        ));
+    pub(super) static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING
+        ));
+    pub(super) static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING));
-    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
-    );
-    pub static ref DECIMAL_DIGITS: AtomicI32 = AtomicI32::new(DECIMAL_DIGITS_MAX as i32);
-    pub static ref SIGNIFICANT_DIGITS: AtomicI32 = AtomicI32::new(SIGNIFICANT_DIGITS_MAX as i32);
-    pub static ref CHUNK_SIZE: AtomicUsize = AtomicUsize::new(CHUNK_SIZE_DEFAULT as usize);
-}
-
-fn get_default_decimal_digits() -> Option<i32> {
-    let digits = DECIMAL_DIGITS.load(Ordering::Relaxed);
-    if digits == DECIMAL_DIGITS_MAX as i32 {
-        None
-    } else {
-        Some(digits)
-    }
-}
-
-fn get_default_significant_digits() -> Option<i32> {
-    let digits = SIGNIFICANT_DIGITS.load(Ordering::Relaxed);
-    if digits == SIGNIFICANT_DIGITS_MAX as i32 {
-        None
-    } else {
-        Some(digits)
-    }
-}
-
-fn find_config_value<'a>(args: &'a [ValkeyString], name: &str) -> Option<&'a ValkeyString> {
-    args.iter()
-        .skip_while(|item| !item.as_slice().eq(name.as_bytes()))
-        .nth(1)
-}
-
-fn get_duration_config_value_ms(
-    args: &[ValkeyString],
-    name: &str,
-    min_value: i64,
-    max_value: i64,
-) -> ValkeyResult<Option<i64>> {
-    if let Some(config_str) = find_config_value(args, name) {
-        let config_str = config_str.try_as_str()?;
-        let v = parse_duration_in_range(name, config_str, min_value, max_value)?;
-        return Ok(Some(v));
-    }
-    Ok(None)
-}
-
-fn get_number_in_range(
-    args: &[ValkeyString],
-    name: &str,
-    min: f64,
-    max: f64,
-) -> ValkeyResult<Option<f64>> {
-    if let Some(value) = find_config_value(args, name) {
-        let value_string = value.to_string_lossy();
-        let value = parse_number_in_range(name, &value_string, min, max)?;
-        return Ok(Some(value));
-    }
-    Ok(None)
+    pub(super) static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            SIGNIFICANT_DIGITS_DEFAULT_STRING
+        ));
+    pub(super) static ref SERIES_WORKER_INTERVAL: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, SERIES_WORKER_INTERVAL_DEFAULT));
 }
 
 fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> ValkeyResult<i64> {
@@ -172,16 +115,6 @@ fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> Valke
     Ok(duration)
 }
 
-fn parse_number_in_range(name: &str, string_value: &str, min: f64, max: f64) -> ValkeyResult<f64> {
-    let value = parse_number(name).map_err(|_e| {
-        ValkeyError::String(format!(
-            "error parsing \"{name}\". Expected number, got {string_value}"
-        ))
-    })?;
-    validate_number_range(name, value, min, max)?;
-    Ok(value)
-}
-
 fn validate_number_range(name: &str, value: f64, min: f64, max: f64) -> ValkeyResult<()> {
     if value < min || value > max {
         return Err(ValkeyError::String(format!(
@@ -191,113 +124,9 @@ fn validate_number_range(name: &str, value: f64, min: f64, max: f64) -> ValkeyRe
     Ok(())
 }
 
-#[allow(clippy::field_reassign_with_default)]
-fn load_series_config(args: &[ValkeyString]) -> ValkeyResult<()> {
-    let mut config = ConfigSettings::default();
-
-    if let Some(v) = get_duration_config_value_ms(
-        args,
-        SERIES_RETENTION_KEY,
-        RETENTION_POLICY_MIN,
-        RETENTION_POLICY_MAX,
-    )? {
-        config.duplicate_policy.max_time_delta = v as u64;
-    }
-
-    if let Some(v) = get_number_in_range(
-        args,
-        SERIES_CHUNK_SIZE_KEY,
-        CHUNK_SIZE_MIN as f64,
-        CHUNK_SIZE_MAX as f64,
-    )? {
-        let chunk_size = v as usize;
-        validate_chunk_size(chunk_size)?;
-        config.chunk_size_bytes = chunk_size;
-    }
-
-    if let Some(v) = get_duration_config_value_ms(
-        args,
-        IGNORE_MAX_TIME_DIFF_KEY,
-        IGNORE_MAX_TIME_DIFF_MIN,
-        IGNORE_MAX_TIME_DIFF_MAX,
-    )? {
-        config.duplicate_policy.max_time_delta = v as u64;
-    }
-
-    if let Some(v) = get_number_in_range(
-        args,
-        IGNORE_MAX_VALUE_DIFF_KEY,
-        IGNORE_MAX_VALUE_DIFF_MIN,
-        IGNORE_MAX_VALUE_DIFF_MAX,
-    )? {
-        config.duplicate_policy.max_value_delta = v;
-    }
-
-    if let Some(policy) = find_config_value(args, SERIES_DUPLICATE_POLICY_KEY) {
-        let temp = policy.try_as_str()?;
-        if let Ok(policy) = DuplicatePolicy::try_from(temp) {
-            config.duplicate_policy.policy = policy;
-        } else {
-            return Err(ValkeyError::Str(error_consts::INVALID_DUPLICATE_POLICY));
-        }
-    }
-
-    if let Some(compression) = find_config_value(args, SERIES_CHUNK_ENCODING_KEY) {
-        let temp = compression.try_as_str()?;
-        if let Ok(encoding) = ChunkEncoding::try_from(temp) {
-            config.chunk_encoding = encoding;
-        } else {
-            return Err(ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING));
-        }
-    }
-
-    if let Some(significant_digits) = get_number_in_range(
-        args,
-        SERIES_SIGNIFICANT_DIGITS_KEY,
-        SIGNIFICANT_DIGITS_MIN as f64,
-        SIGNIFICANT_DIGITS_MAX as f64,
-    )? {
-        config.rounding = Some(RoundingStrategy::SignificantDigits(
-            significant_digits as i32,
-        ));
-    }
-
-    if let Some(decimal_digits) = get_number_in_range(
-        args,
-        SERIES_DECIMAL_DIGITS_KEY,
-        DECIMAL_DIGITS_MIN as f64,
-        DECIMAL_DIGITS_MAX as f64,
-    )? {
-        config.rounding = Some(RoundingStrategy::DecimalDigits(decimal_digits as i32));
-    }
-
-    if let Some(v) = get_duration_config_value_ms(
-        args,
-        SERIES_WORKER_INTERVAL_KEY,
-        SERIES_WORKER_INTERVAL_MIN,
-        SERIES_WORKER_INTERVAL_MAX,
-    )? {
-        config.worker_interval = Duration::from_millis(v as u64);
-    }
-
-    let mut res = CONFIG_SETTINGS
-        .write()
-        .expect("mutex lock error setting series config");
-
-    *res = config;
-
-    Ok(())
-}
-
-pub fn load_config(_ctx: &Context, args: &[ValkeyString]) -> ValkeyResult<()> {
-    load_series_config(args)?;
-
-    Ok(())
-}
-
 const SETTINGS_EXPECT_MSG: &str = "We expect the CONFIG_SETTINGS static to exist.";
 
-fn on_string_config_set(
+pub(crate) fn on_string_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
     val: &'static ValkeyGILGuard<ValkeyString>,
@@ -308,7 +137,6 @@ fn on_string_config_set(
         "ts-chunk-size" => {
             let chunk_size = parse_number(&value_str)? as usize;
             validate_chunk_size(chunk_size)?;
-            CHUNK_SIZE.store(chunk_size, Ordering::SeqCst);
 
             CONFIG_SETTINGS
                 .write()
@@ -337,7 +165,7 @@ fn on_string_config_set(
     }
 }
 
-fn on_duration_config_set(
+pub(crate) fn on_duration_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
     val: &'static ValkeyGILGuard<ValkeyString>,
@@ -368,11 +196,25 @@ fn on_duration_config_set(
                 .max_time_delta = duration;
             Ok(())
         }
+        "series-worker-interval" => {
+            let duration = parse_duration_in_range(
+                name,
+                &v,
+                SERIES_WORKER_INTERVAL_MIN,
+                SERIES_WORKER_INTERVAL_MAX,
+            )?;
+            let interval = Duration::from_millis(duration as u64);
+            CONFIG_SETTINGS
+                .write()
+                .expect(SETTINGS_EXPECT_MSG)
+                .worker_interval = interval;
+            Ok(())
+        }
         _ => Err(ValkeyError::Str("Unknown configuration parameter")),
     }
 }
 
-fn on_float_config_set(
+pub(crate) fn on_float_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
     val: &'static ValkeyGILGuard<ValkeyString>,
@@ -400,7 +242,7 @@ fn on_float_config_set(
     }
 }
 
-fn on_rounding_config_set(
+pub(super) fn on_rounding_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
     val: &'static ValkeyGILGuard<ValkeyString>,
@@ -437,79 +279,4 @@ fn on_rounding_config_set(
         }
         _ => Err(ValkeyError::Str("Unknown configuration parameter")),
     }
-}
-
-pub(super) fn register_config_handlers(ctx: &Context) {
-    register_string_configuration(
-        ctx,
-        "ts-duplicate-policy",
-        &*DUPLICATE_POLICY_STRING,
-        DUPLICATE_POLICY_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_string_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-chunk-size",
-        &*CHUNK_SIZE_STRING,
-        CHUNK_SIZE_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_string_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-chunk-encoding",
-        &*CHUNK_ENCODING_STRING,
-        CHUNK_ENCODING_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_string_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-retention-policy",
-        &*RETENTION_POLICY_STRING,
-        RETENTION_POLICY_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_duration_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-ignore-max-time-diff",
-        &*IGNORE_MAX_TIME_DIFF_STRING,
-        IGNORE_MAX_TIME_DIFF_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_duration_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-ignore-max-value-diff",
-        &*IGNORE_MAX_VALUE_DIFF_STRING,
-        IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_float_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-significant-digits",
-        &*SIGNIFICANT_DIGITS_STRING,
-        SIGNIFICANT_DIGITS_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_rounding_config_set)),
-    );
-    register_string_configuration(
-        ctx,
-        "ts-decimal-digits",
-        &*DECIMAL_DIGITS_STRING,
-        DECIMAL_DIGITS_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_rounding_config_set)),
-    );
 }

@@ -22,7 +22,7 @@ cargo test --features enable-system-alloc
 # Ensure SERVER_VERSION environment variable is set
 if [ -z "$SERVER_VERSION" ]; then
     echo "ERROR: SERVER_VERSION environment variable is not set. Defaulting to unstable."
-    export SERVER_VERSION="unstable"
+    export SERVER_VERSION="8.0"
 fi
 
 if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.0" ] && [ "$SERVER_VERSION" != "8.1" ]; then
