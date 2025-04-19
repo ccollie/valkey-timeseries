@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_exact_match_one_chunk() {
-        // Setup a TimeSeries instance with a single chunk containing specific timestamps
+        // Set up a TimeSeries instance with a single chunk containing specific timestamps
         let mut time_series = TimeSeries::default();
         let mut chunk = TimeSeriesChunk::Gorilla(GorillaChunk::with_max_size(4096));
         let timestamps = vec![1000, 2000, 3000];
@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_multiple_chunks() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
 
         // Assume create_chunk_with_samples is a helper function to create a chunk with given samples
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_with_duplicates_in_same_chunk() {
-        // Setup a TimeSeries instance with a single chunk containing duplicate timestamps
+        // Set up a TimeSeries instance with a single chunk containing duplicate timestamps
         let mut time_series = TimeSeries::default();
         let timestamp = 1000;
         let sample1 = Sample {
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_across_multiple_chunks() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
 
         let chunk1 = create_chunk(None);
@@ -272,7 +272,7 @@ mod tests {
 
         // Check that all chunks are removed
         assert_eq!(deleted_count, 2);
-        assert!(time_series.chunks.len() == 1);
+        assert_eq!(time_series.chunks.len(), 1);
         assert_eq!(time_series.total_samples, 1);
         assert_eq!(time_series.first_timestamp, 60);
         assert_eq!(time_series.last_sample, Some(sample3));
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_trim_partial_chunks() {
-        // Setup a TimeSeries with chunks such that some are before the min_timestamp
+        // Set up a TimeSeries with chunks such that some are before the min_timestamp
         let mut time_series = TimeSeries::default();
 
         // Assume we have a helper function to create a chunk with given timestamps
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_remove_range_partial_overlap_multiple_chunks() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
 
         // Create and add samples to the time series
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_remove_range_updates_total_samples_correctly() {
-        // Setup a TimeSeries with multiple chunks and samples
+        // Set up a TimeSeries with multiple chunks and samples
         let mut time_series = TimeSeries::default();
         let sample1 = Sample {
             timestamp: 1,
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_remove_range_exactly_matches_chunk_boundaries() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries {
             // Assume each chunk can hold 2 samples for simplicity
             chunk_size_bytes: 2 * size_of::<Sample>(),
