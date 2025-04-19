@@ -249,6 +249,7 @@ impl TimeSeries {
                 }
 
                 // Try to trim time series and log any errors
+                // TODO: do this in a separate thread to avoid blocking ingestion
                 if let Err(e) = self.trim() {
                     logging::log_warning(format!("Error trimming time series: {:?}", e));
                 }
@@ -316,6 +317,8 @@ impl TimeSeries {
                 .push((idx, adjusted_sample));
         }
 
+        let mut samples_only: SmallVec<Sample, 8> = SmallVec::new();
+
         // Process each chunk group
         for (&chunk_idx, group) in &chunk_groups {
             let chunk = self
@@ -323,13 +326,15 @@ impl TimeSeries {
                 .get_mut(chunk_idx)
                 .expect("merge_samples: Bad chunk index");
 
-            let samples_only: Vec<_> = group.iter().map(|(_, s)| *s).collect();
+            samples_only.extend(group.iter().map(|(_, s)| *s));
             let chunk_results = chunk.merge_samples(&samples_only, Some(dp_policy))?;
 
             // Update results with actual outcomes
             for ((orig_idx, _), result) in group.iter().zip(chunk_results) {
                 results[*orig_idx] = result;
             }
+
+            samples_only.clear();
         }
 
         Ok(results)
