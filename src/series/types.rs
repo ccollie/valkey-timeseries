@@ -1,12 +1,14 @@
 use crate::common::rounding::RoundingStrategy;
 use crate::common::serialization::rdb_load_string;
 use crate::common::{Sample, Timestamp};
-use crate::config::CONFIG_SETTINGS;
+use crate::config::{
+    ConfigSettings, CHUNK_ENCODING, CHUNK_SIZE, CHUNK_SIZE_DEFAULT, DUPLICATE_POLICY,
+    IGNORE_MAX_TIME_DIFF, IGNORE_MAX_VALUE_DIFF, RETENTION_PERIOD, ROUNDING_STRATEGY,
+};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::chunks::ChunkEncoding;
-use crate::series::settings::ConfigSettings;
 use get_size::GetSize;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
@@ -206,12 +208,59 @@ impl TimeSeriesOptions {
     pub fn retention(&mut self, retention: Duration) {
         self.retention = Some(retention);
     }
+
+    pub fn from_config() -> Self {
+        let policy = *DUPLICATE_POLICY
+            .lock()
+            .expect("error unlocking duplicate policy");
+        let rounding = *ROUNDING_STRATEGY
+            .lock()
+            .expect("error unlocking rounding strategy");
+        let chunk_size = CHUNK_SIZE.load(std::sync::atomic::Ordering::SeqCst) as usize;
+        let chunk_encoding = *CHUNK_ENCODING
+            .lock()
+            .expect("error unlocking chunk encoding");
+
+        let max_time_delta = IGNORE_MAX_TIME_DIFF.load(std::sync::atomic::Ordering::SeqCst) as u64;
+
+        let max_value_delta = *IGNORE_MAX_VALUE_DIFF
+            .lock()
+            .expect("error unlocking max value diff");
+
+        let retention_period = *RETENTION_PERIOD
+            .lock()
+            .expect("error unlocking retention period");
+
+        TimeSeriesOptions {
+            retention: if retention_period.as_millis() > 0 {
+                Some(retention_period)
+            } else {
+                None
+            },
+            chunk_compression: chunk_encoding,
+            chunk_size: Some(chunk_size),
+            rounding,
+            sample_duplicate_policy: SampleDuplicatePolicy {
+                policy,
+                max_time_delta,
+                max_value_delta,
+            },
+            ..Default::default()
+        }
+    }
 }
 
 impl Default for TimeSeriesOptions {
     fn default() -> Self {
-        let config = &*CONFIG_SETTINGS.read().unwrap();
-        config.into()
+        Self {
+            chunk_compression: ChunkEncoding::default(),
+            chunk_size: Some(CHUNK_SIZE_DEFAULT as usize),
+            retention: None,
+            sample_duplicate_policy: SampleDuplicatePolicy::default(),
+            labels: vec![],
+            rounding: None,
+            on_duplicate: None,
+        }
     }
 }
 
