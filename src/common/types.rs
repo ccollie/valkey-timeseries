@@ -77,11 +77,11 @@ impl Display for Sample {
     }
 }
 
-impl Into<ValkeyValue> for Sample {
-    fn into(self) -> ValkeyValue {
+impl From<Sample> for ValkeyValue {
+    fn from(sample: Sample) -> Self {
         let row = vec![
-            ValkeyValue::from(self.timestamp),
-            ValkeyValue::from(self.value),
+            ValkeyValue::from(sample.timestamp),
+            ValkeyValue::from(sample.value),
         ];
         ValkeyValue::from(row)
     }
