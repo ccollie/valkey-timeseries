@@ -17,6 +17,7 @@ use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyStrin
 ///     [METRIC metric | LABELS labelName labelValue ...]
 ///     [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
+///     [LABELS label1=value1 label2=value2 ...]
 ///
 pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 4 {
