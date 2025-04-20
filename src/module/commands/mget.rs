@@ -6,7 +6,6 @@ use crate::module::arg_parse::{
     parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
 };
 use crate::module::commands::range_utils::get_series_labels;
-use crate::module::result::sample_to_value;
 use crate::series::index::with_matched_series;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -66,8 +65,8 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         .series
         .into_iter()
         .map(|s| {
-            let sample_value = if let Some(sample) = s.sample {
-                sample_to_value(sample)
+            let sample_value: ValkeyValue = if let Some(sample) = s.sample {
+                sample.into()
             } else {
                 ValkeyValue::Array(vec![])
             };

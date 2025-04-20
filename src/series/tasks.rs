@@ -14,7 +14,9 @@ use std::collections::hash_map::Entry;
 use std::sync::atomic::AtomicI32;
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
-use valkey_module::{Context, DetachedContext, RedisModuleTimerID, Status, ValkeyGILGuard, ValkeyString};
+use valkey_module::{
+    Context, DetachedContext, RedisModuleTimerID, Status, ValkeyGILGuard, ValkeyString,
+};
 
 const BATCH_SIZE: usize = 500;
 

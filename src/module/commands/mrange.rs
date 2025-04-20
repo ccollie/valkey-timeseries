@@ -9,7 +9,6 @@ use crate::module::commands::range_arg_parse::parse_range_options;
 use crate::module::commands::range_utils::{
     aggregate_samples, get_series_labels, group_samples_internal,
 };
-use crate::module::result::sample_to_value;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::series_keys_by_matchers;
 use crate::series::{SeriesSampleIterator, TimeSeries};
@@ -234,7 +233,7 @@ fn handle_raw(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRang
 }
 
 fn result_row_to_value(row: MRangeResultRow) -> ValkeyValue {
-    let samples: Vec<_> = row.samples.into_iter().map(sample_to_value).collect();
+    let samples: Vec<ValkeyValue> = row.samples.into_iter().map(|x| x.into()).collect();
     let labels: Vec<_> = row
         .labels
         .into_iter()
