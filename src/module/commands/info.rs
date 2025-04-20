@@ -1,3 +1,4 @@
+use crate::common::constants::META_KEY_LABEL;
 use crate::labels::InternedLabel;
 use crate::module::with_timeseries;
 use crate::series::{
@@ -7,7 +8,6 @@ use crate::series::{
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::common::constants::META_KEY_LABEL;
 
 pub fn info(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1);
