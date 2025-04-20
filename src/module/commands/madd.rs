@@ -100,7 +100,7 @@ fn add_samples_internal(
         let series = &mut guard;
         let add_results = series.merge_samples(&samples, None)?;
         let mut results = Vec::with_capacity(input.len());
-        let mut replication_args = Vec::with_capacity(input.len());
+        let mut replication_args: SmallVec<_, 16> = SmallVec::new();
         for (res, input) in add_results.iter().zip(input.iter()) {
             if res.is_ok() {
                 replication_args.push(input.key);
