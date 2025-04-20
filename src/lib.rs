@@ -25,7 +25,7 @@ mod tests;
 
 use crate::module::server_events::{generic_key_event_handler, register_server_events};
 use crate::series::index::init_croaring_allocator;
-use crate::series::settings::{start_series_background_worker, stop_series_background_worker};
+use crate::series::{start_series_background_worker, stop_series_background_worker};
 use module::*;
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;

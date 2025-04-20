@@ -2,7 +2,6 @@ pub mod chunks;
 mod defrag;
 pub mod index;
 pub mod serialization;
-pub mod settings;
 mod tasks;
 mod time_series;
 #[cfg(test)]
@@ -12,6 +11,7 @@ pub(crate) mod types;
 
 pub use crate::module::utils::*;
 pub use defrag::defrag_series;
+pub use tasks::*;
 pub use time_series::*;
 pub use timestamp_range::*;
 pub use types::*;
