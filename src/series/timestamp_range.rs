@@ -79,7 +79,7 @@ impl TryFrom<&str> for TimestampValue {
                         return Ok(Relative(delta));
                     }
                 }
-                let ts = parse_timestamp(value)
+                let ts = parse_timestamp(value, false)
                     .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
 
                 if ts < 0 {
@@ -326,29 +326,11 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_range_value_try_from_positive_seconds() {
-        let input = "12345678";
-        let result = TimestampValue::try_from(input);
-        assert!(result.is_ok());
-        let expected = TimestampValue::Specific(12345678000);
-        assert_eq!(result.unwrap(), expected);
-    }
-
-    #[test]
     fn test_timestamp_range_value_try_from_positive_number() {
         let input = "12345678900";
         let result = TimestampValue::try_from(input);
         assert!(result.is_ok());
         let expected = TimestampValue::Specific(12345678900);
-        assert_eq!(result.unwrap(), expected);
-    }
-
-    #[test]
-    fn test_timestamp_range_value_try_from_negative_seconds() {
-        let input = "-12345678";
-        let result = TimestampValue::try_from(input);
-        assert!(result.is_ok());
-        let expected = TimestampValue::Relative(-12345678000);
         assert_eq!(result.unwrap(), expected);
     }
 

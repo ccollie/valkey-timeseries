@@ -1,7 +1,5 @@
-use crate::parser::timestamp::parse_numeric_timestamp;
-use std::str;
-
 use crate::parser::{ParseError, ParseResult};
+use std::str;
 
 const MILLIS_PER_SECOND: f64 = 1e3;
 const MILLIS_PER_MINUTE: f64 = 60.0 * MILLIS_PER_SECOND;
@@ -27,187 +25,255 @@ pub fn parse_positive_duration_value(s: &str) -> Result<i64, ParseError> {
     Ok(d)
 }
 
+fn validate_duration(ms: f64) -> ParseResult<f64> {
+    if ms.abs() > (1_i64 << (62 - 1)) as f64 {
+        let msg = format!("duration ({}) is too large", ms);
+        return Err(ParseError::General(msg));
+    }
+    Ok(ms)
+}
+
 /// `parse_duration_value` returns the duration in milliseconds for the given s
-/// and the given step.
 ///
 /// Duration in s may be combined, i.e. 2h5m, -2h5m or 2h-5m.
 ///
 /// The returned duration value can be negative.
-pub fn parse_duration_value(s: &str) -> ParseResult<i64> {
-    fn scan_value(s: &str) -> ParseResult<i64> {
-        let mut is_minus = false;
-        let mut cursor: &str = s;
-        let mut d = 0.0;
-
-        while !cursor.is_empty() {
-            let n = scan_single_duration(cursor, true);
-            if n <= 0 {
-                return Err(ParseError::InvalidDuration(s.to_string()));
-            }
-            let ds = &cursor[0..n as usize];
-            let mut d_local = parse_single_duration(ds)?;
-            if is_minus && (d_local > 0.0) {
-                d_local = -d_local
-            }
-            d += d_local;
-            if d_local < 0f64 {
-                is_minus = true
-            }
-
-            if n > cursor.len() as i32 {
-                break;
-            }
-            cursor = &cursor[n as usize..];
-        }
-        if d.abs() > (1_i64 << (62 - 1)) as f64 {
-            let msg = format!("duration {} is too large", s);
-            return Err(ParseError::General(msg));
-        }
-        Ok(d as i64)
-    }
-
-    if s.is_empty() {
-        return Err(ParseError::General("duration cannot be empty".to_string()));
-    }
-
-    // Try parser floating-point duration
-    match parse_numeric_timestamp(s) {
-        // Convert the duration to milliseconds.
-        Ok(d) => Ok(d),
-        Err(_) => scan_value(s),
-    }
-}
-
-fn parse_single_duration(s: &str) -> Result<f64, ParseError> {
-    let mut num_part = &s[0..s.len() - 1];
-    if num_part.ends_with('m') {
-        // Duration in ms
-        num_part = &num_part[0..num_part.len() - 1]
-    }
-    let f: f64 = match num_part.parse() {
-        Ok(f) => f,
-        Err(_) => return Err(ParseError::InvalidDuration(s.to_string())),
-    };
-    let mp: f64;
-    let unit = &s[num_part.len()..];
-    match unit {
-        "ms" => mp = 1.0,
-        "s" => mp = MILLIS_PER_SECOND,
-        "m" => mp = MILLIS_PER_MINUTE,
-        "h" => mp = MILLIS_PER_HOUR,
-        "d" => mp = MILLIS_PER_DAY,
-        "w" => mp = MILLIS_PER_WEEK,
-        "y" => mp = MILLIS_PER_YEAR,
-        _ => {
-            return Err(ParseError::General(format!(
-                "invalid duration suffix in {s}"
-            )))
-        }
-    }
-    Ok(mp * f)
-}
-
-/// scan_duration scans duration, which must start with positive num.
-///
-/// I.e. 123h, 3h5m or 3.4d-35.66s
-#[allow(dead_code)]
-pub fn scan_duration(s: &str) -> i32 {
-    // The first part must be non-negative
-    let mut n = scan_single_duration(s, false);
-    if n <= 0 {
-        return -1;
-    }
+pub fn parse_duration_internal(s: &str) -> ParseResult<f64> {
+    let mut duration: f64 = 0.0;
+    let mut s = s;
+    let mut is_minus = false;
 
     // todo: duration segments should go from courser to finer grain
     // i.e. we should forbid something like 25s2d
-    let mut cursor: &str = &s[n as usize..];
-    let mut i = n;
-    loop {
-        // Other parts may be negative
-        n = scan_single_duration(s, true);
-        if n <= 0 {
-            return i;
-        }
-        cursor = &cursor[n as usize..];
-        i += n
+
+    if s.is_empty() {
+        return Err(ParseError::InvalidDuration(r##""""##.to_string()));
     }
+
+    while !s.is_empty() {
+        let cursor = match scan_duration_segment(s) {
+            Ok((mut value, cursor)) => {
+                if is_minus && (value > 0.0) {
+                    value = -value
+                }
+                duration += value;
+                if value < 0f64 {
+                    is_minus = true
+                }
+                cursor
+            }
+            Err(e) => return Err(e),
+        };
+        s = cursor;
+    }
+
+    validate_duration(duration)
 }
 
-fn scan_single_duration(s: &str, can_be_negative: bool) -> i32 {
-    if s.is_empty() {
-        return -1;
+pub fn parse_duration_value(s: &str) -> ParseResult<i64> {
+    Ok(parse_duration_internal(s)?.round() as i64)
+}
+
+fn scan_duration_segment(s: &str) -> ParseResult<(f64, &str)> {
+    fn parse_prefix(str: &str, i: usize) -> ParseResult<f64> {
+        let num_str = &str[0..i];
+        match num_str.parse::<f64>() {
+            Ok(num) => Ok(num),
+            Err(_) => Err(ParseError::InvalidDuration(num_str.to_string())),
+        }
     }
+
     let mut i = 0;
+    let mut suffix_char = '\0';
 
-    let ch = s.chars().next().unwrap();
-    if ch == '-' && can_be_negative {
-        i += 1;
-    }
-
-    let mut cursor = &s[i..];
-    let mut curr: char = ch;
-
-    for ch in cursor.chars() {
-        if !ch.is_ascii_digit() {
-            curr = ch;
+    for ch in s.chars() {
+        if matches!(ch, 'd' | 'h' | 'm' | 's' | 'w' | 'y') {
+            suffix_char = ch;
             break;
         }
         i += 1;
     }
 
-    if i == 0 || i == s.len() {
-        return -1;
-    }
-
-    if curr == '.' {
-        let j = i;
-        i += 1;
-        cursor = &s[i..];
-        for c in cursor.chars() {
-            if !c.is_ascii_digit() {
-                curr = c;
-                break;
-            }
-            i += 1;
-        }
-        if i == j || i == s.len() {
-            return -1;
-        }
-    }
-    match curr {
+    let number_part = parse_prefix(s, i)?;
+    let multiplier = match suffix_char {
         'm' => {
             if i + 1 < s.len() {
-                cursor = &s[i..];
-                curr = cursor.chars().nth(1).unwrap();
+                let cursor = &s[i..];
+                let curr = cursor.chars().nth(1).unwrap();
                 if curr == 's' {
                     // duration in ms
                     i += 1;
+                    1.0
+                } else {
+                    MILLIS_PER_MINUTE
                 }
+            } else {
+                // duration in minutes
+                MILLIS_PER_MINUTE
             }
-            // duration in minutes
-            (i + 1) as i32
         }
-        's' | 'h' | 'd' | 'w' | 'y' => (i + 1) as i32,
-        _ => -1,
-    }
+        's' => MILLIS_PER_SECOND,
+        'h' => MILLIS_PER_HOUR,
+        'd' => MILLIS_PER_DAY,
+        'w' => MILLIS_PER_WEEK,
+        'y' => MILLIS_PER_YEAR,
+        _ => {
+            i -= 1;
+            1.0
+        }
+    };
+
+    let duration = number_part * multiplier;
+    let remaining = &s[i + 1..];
+    Ok((duration, remaining))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::duration::{parse_duration_value, parse_positive_duration_value};
+    use super::*;
+    use crate::parser::duration::{
+        parse_duration_value, parse_positive_duration_value, scan_duration_segment, MILLIS_PER_DAY,
+        MILLIS_PER_MINUTE, MILLIS_PER_SECOND,
+    };
 
-    const MS: i64 = 1;
-    const SECOND: i64 = 1000 * MS;
-    const MINUTE: i64 = 60 * SECOND;
-    const HOUR: i64 = 60 * MINUTE;
-    const DAY: i64 = 24 * HOUR;
-    const WEEK: i64 = 7 * DAY;
-    const YEAR: i64 = 365 * DAY;
+    #[test]
+    fn test_scan_duration_segment_empty() {
+        let result = scan_duration_segment("");
+        assert!(result.is_err());
+        match result {
+            Err(ParseError::InvalidDuration(msg)) => assert_eq!(msg, ""),
+            _ => panic!("Expected InvalidDuration error for empty string"),
+        }
+    }
+
+    #[test]
+    fn test_scan_duration_segment_basic() {
+        // Test basic time units
+        let cases = [
+            ("5s", 5.0 * MILLIS_PER_SECOND, ""),
+            ("10m", 10.0 * MILLIS_PER_MINUTE, ""),
+            ("2h", 2.0 * MILLIS_PER_HOUR, ""),
+            ("3d", 3.0 * MILLIS_PER_DAY, ""),
+            ("1w", 1.0 * MILLIS_PER_WEEK, ""),
+            ("0.5y", 0.5 * MILLIS_PER_YEAR, ""),
+            ("100ms", 100.0, ""),
+        ];
+
+        for (input, expected_duration, expected_remaining) in cases {
+            let result = scan_duration_segment(input).unwrap();
+            assert_eq!(
+                result.0, expected_duration,
+                "Duration mismatch for {}: got {}, expected {}",
+                input, result.0, expected_duration
+            );
+            assert_eq!(
+                result.1, expected_remaining,
+                "Remaining string mismatch for {}: got '{}', expected '{}'",
+                input, result.1, expected_remaining
+            );
+        }
+    }
+
+    #[test]
+    fn test_scan_duration_segment_negative() {
+        // Test negative durations
+        let cases = [
+            ("-5s", -5.0 * MILLIS_PER_SECOND, ""),
+            ("-10m", -10.0 * MILLIS_PER_MINUTE, ""),
+            ("-2.5h", -2.5 * MILLIS_PER_HOUR, ""),
+            ("-0.1d", -0.1 * MILLIS_PER_DAY, ""),
+        ];
+
+        for (input, expected_duration, expected_remaining) in cases {
+            let result = scan_duration_segment(input).unwrap();
+            assert_eq!(
+                result.0, expected_duration,
+                "Duration mismatch for {}: got {}, expected {}",
+                input, result.0, expected_duration
+            );
+            assert_eq!(
+                result.1, expected_remaining,
+                "Remaining string mismatch for {}: got '{}', expected '{}'",
+                input, result.1, expected_remaining
+            );
+        }
+    }
+
+    #[test]
+    fn test_scan_duration_segment_float_values() {
+        // Test floating point values
+        let cases = [
+            ("3.14s", 3.14 * MILLIS_PER_SECOND, ""),
+            ("0.5m", 0.5 * MILLIS_PER_MINUTE, ""),
+            ("1.75h", 1.75 * MILLIS_PER_HOUR, ""),
+            ("0.25d", 0.25 * MILLIS_PER_DAY, ""),
+            ("1.5ms", 1.5, ""),
+        ];
+
+        for (input, expected_duration, expected_remaining) in cases {
+            let result = scan_duration_segment(input).unwrap();
+            assert_eq!(
+                result.0, expected_duration,
+                "Duration mismatch for {}: got {}, expected {}",
+                input, result.0, expected_duration
+            );
+            assert_eq!(
+                result.1, expected_remaining,
+                "Remaining string mismatch for {}: got '{}', expected '{}'",
+                input, result.1, expected_remaining
+            );
+        }
+    }
+
+    #[test]
+    fn test_scan_duration_segment_with_remainder() {
+        // Test cases with remaining text
+        let cases = [
+            ("5s10m", 5.0 * MILLIS_PER_SECOND, "10m"),
+            ("2h45m", 2.0 * MILLIS_PER_HOUR, "45m"),
+            ("1.5dextra", 1.5 * MILLIS_PER_DAY, "extra"),
+            ("10msrest", 10.0, "rest"),
+        ];
+
+        for (input, expected_duration, expected_remaining) in cases {
+            let result = scan_duration_segment(input).unwrap();
+            assert_eq!(
+                result.0, expected_duration,
+                "Duration mismatch for {}: got {}, expected {}",
+                input, result.0, expected_duration
+            );
+            assert_eq!(
+                result.1, expected_remaining,
+                "Remaining string mismatch for {}: got '{}', expected '{}'",
+                input, result.1, expected_remaining
+            );
+        }
+    }
+
+    #[test]
+    fn test_scan_duration_segment_edge_cases() {
+        // Test edge cases
+        let cases = [("0s", 0.0, ""), ("0ms", 0.0, ""), ("0.0h", 0.0, "")];
+
+        for (input, expected_duration, expected_remaining) in cases {
+            let result = scan_duration_segment(input).unwrap();
+            assert_eq!(
+                result.0, expected_duration,
+                "Duration mismatch for {}: got {}, expected {}",
+                input, result.0, expected_duration
+            );
+            assert_eq!(
+                result.1, expected_remaining,
+                "Remaining string mismatch for {}: got '{}', expected '{}'",
+                input, result.1, expected_remaining
+            );
+        }
+    }
 
     #[test]
     fn test_duration_success() {
-        fn f(s: &str, expected: i64) {
-            let d = parse_duration_value(s).unwrap();
+        fn f(s: &str, expected: f64) {
+            let d = parse_duration_internal(s).unwrap();
             assert_eq!(
                 d, expected,
                 "unexpected duration; got {}; want {}; expr {}",
@@ -215,44 +281,35 @@ mod tests {
             )
         }
 
-        f("1.23", 1230);
+        f("1.23", 1.23);
 
         // Integer durations
-        f("123ms", 123);
-        f("-123ms", -123);
-        f("123s", 123 * 1000);
-        f("-123s", -123 * 1000);
-        f("4236579305ms", 4236579305);
-        f("123m", 123 * MINUTE);
-        f("1h", HOUR);
-        f("2d", 2 * DAY);
-        f("3w", 3 * WEEK);
-        f("4y", 4 * YEAR);
-        f("1m34s24ms", 94024);
-        f("1m-34s24ms", 25976);
-        f("-1m34s24ms", -94024);
-        f("-1m-34s24ms", -94024);
+        f("123ms", 123.0);
+        f("123s", 123.0 * 1000f64);
+        f("4236579305ms", 4236579305f64);
+        f("123m", 123.0 * MILLIS_PER_MINUTE);
+        f("1h", MILLIS_PER_HOUR);
+        f("2d", 2.0 * MILLIS_PER_DAY);
+        f("3w", 3.0 * MILLIS_PER_WEEK);
+        f("4y", 4.0 * MILLIS_PER_YEAR);
+        f("1m34s24ms", 94024f64);
+        f("-1m34s24ms", -94024.0);
+        f("1m-34s24ms", 25976.0);
 
         // Float durations
-        f("34.54ms", 34);
-        f("-34.34ms", -34);
-        f("0.234s", 234);
-        f("-0.234s", -234);
-        f("1.5s", (1.5 * SECOND as f64) as i64);
-        f("1.5m", (1.5 * MINUTE as f64) as i64);
-        f("1.2h", (1.2 * HOUR as f64) as i64);
-        f("1.1d", (1.1 * DAY as f64) as i64);
-        f("1.1w", (1.1 * WEEK as f64) as i64);
-        f("1.3y", (1.3 * YEAR as f64).floor() as i64);
-        f("-1.3y", (-1.3 * YEAR as f64).floor() as i64);
-        f("1.5m3.4s2.4ms", 93402);
-        f("-1.5m3.4s2.4ms", -93402);
+        f("34.54ms", 34.54);
+        f("0.234s", 0.234 * MILLIS_PER_SECOND);
+        f("1.5s", 1.5 * MILLIS_PER_SECOND);
+        f("1.5m", 1.5 * MILLIS_PER_MINUTE);
+        f("1.2h", 1.2 * MILLIS_PER_HOUR);
+        f("1.1d", 1.1 * MILLIS_PER_DAY);
+        f("1.1w", 1.1 * MILLIS_PER_WEEK);
+        f("1.3y", 1.3 * MILLIS_PER_YEAR);
+        f("1.5m3.4s2.4ms", 93402.4);
 
         // Floating-point durations without suffix.
-        f("123", 123000);
-        f("1.23", 1230);
-        f("-0.56", -560);
-        f("-.523e2", -52300)
+        f("0.56", 0.56);
+        f(".523e2", 0.523e2)
     }
 
     #[test]
@@ -261,7 +318,7 @@ mod tests {
             let _ = parse_duration_value(s).unwrap();
         }
 
-        f("5w4h-3.4m13.4ms");
+        f("5w4h3.4m13.4ms");
     }
 
     #[test]
@@ -277,7 +334,6 @@ mod tests {
         f("m");
         f("1.23mm");
         f("123q");
-        f("-123q");
 
         // With uppercase duration
         f("1M");

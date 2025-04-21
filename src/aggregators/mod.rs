@@ -88,7 +88,7 @@ impl TryFrom<&str> for BucketAlignment {
                 }
             }
             _ => {
-                let timestamp = parse_timestamp(value)
+                let timestamp = parse_timestamp(value, false)
                     .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGN))?;
                 BucketAlignment::Timestamp(timestamp)
             }

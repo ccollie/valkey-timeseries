@@ -276,7 +276,8 @@ pub fn parse_timestamp(arg: &str) -> ValkeyResult<Timestamp> {
     if arg == "*" {
         return Ok(current_time_millis());
     }
-    parse_timestamp_internal(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))
+    parse_timestamp_internal(arg, false)
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))
 }
 
 pub fn parse_timestamp_arg(arg: &str, name: &str) -> Result<TimestampValue, ValkeyError> {
@@ -347,17 +348,21 @@ pub fn parse_chunk_size(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
 }
 
 pub fn parse_chunk_compression(args: &mut CommandArgIterator) -> ValkeyResult<ChunkEncoding> {
-    args.next_str().and_then(|next| {
+    if let Ok(next) = args.next_str() {
         ChunkEncoding::try_from(next)
             .map_err(|_| ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING))
-    })
+    } else {
+        Err(ValkeyError::Str(error_consts::MISSING_CHUNK_ENCODING))
+    }
 }
 
 pub fn parse_duplicate_policy(args: &mut CommandArgIterator) -> ValkeyResult<DuplicatePolicy> {
-    args.next_str().and_then(|next| {
+    if let Ok(next) = args.next_str() {
         DuplicatePolicy::try_from(next)
             .map_err(|_| ValkeyError::Str(error_consts::INVALID_DUPLICATE_POLICY))
-    })
+    } else {
+        Err(ValkeyError::Str(error_consts::MISSING_DUPLICATE_POLICY))
+    }
 }
 
 pub fn parse_timestamp_range(args: &mut CommandArgIterator) -> ValkeyResult<TimestampRange> {
@@ -412,12 +417,12 @@ pub fn parse_timestamp_filter(
 
 pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFilter> {
     let min = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str("ERR cannot parse filter min parameter"))?;
+        .map_err(|_| ValkeyError::Str("TSDB cannot parse filter min parameter"))?;
     let max = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str("ERR cannot parse filter max parameter"))?;
+        .map_err(|_| ValkeyError::Str("TSDB cannot parse filter max parameter"))?;
     if max < min {
         return Err(ValkeyError::Str(
-            "ERR filter min parameter is greater than max",
+            "TSDB filter min parameter is greater than max",
         ));
     }
     ValueFilter::new(min, max)
@@ -428,7 +433,7 @@ pub fn parse_count(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     let count = parse_integer_arg(&next, CMD_ARG_COUNT, false)
         .map_err(|_| ValkeyError::Str(error_consts::NEGATIVE_COUNT))?;
     if count > usize::MAX as i64 {
-        return Err(ValkeyError::Str("ERR COUNT value is too large"));
+        return Err(ValkeyError::Str("TSDB COUNT value is too large"));
     }
     Ok(count as usize)
 }
@@ -487,7 +492,7 @@ pub fn parse_label_list(
 
         let label = args.next_str()?;
         if labels.contains(label) {
-            let msg = format!("ERR: duplicate label: {label}");
+            let msg = format!("TSDB: duplicate label: {label}");
             return Err(ValkeyError::String(msg));
         }
         labels.insert(label.to_string());
@@ -504,23 +509,22 @@ pub fn parse_label_value_pairs(
     let mut labels: AHashMap<String, String> = AHashMap::new();
 
     loop {
-        let label = args.next_string()?;
+        if args.peek().is_some() {
+            let name = args.next().unwrap().to_string_lossy();
+            if name.is_empty() {
+                return Err(ValkeyError::Str("TSDB invalid label key"));
+            }
 
-        if label.is_empty() {
-            return Err(ValkeyError::Str("ERR invalid label key"));
+            let value = args
+                .next_string()
+                .map_err(|_| ValkeyError::Str("TSDB invalid label value"))?;
+
+            if labels.insert(name, value).is_some() {
+                return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
+            }
+        } else {
+            break;
         }
-
-        if labels.contains_key(&label) {
-            let msg = format!("ERR: duplicate label: {label}");
-            return Err(ValkeyError::String(msg));
-        }
-
-        // todo: regex validation
-        let value = args
-            .next_string()
-            .map_err(|_| ValkeyError::Str("ERR invalid label value"))?;
-
-        labels.insert(label, value);
 
         if is_stop_token_or_end(args, stop_tokens) {
             break;
