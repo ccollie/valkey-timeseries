@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn test_add_duplicate_timestamp() {
         let mut ts = TimeSeries::new();
-        ts.sample_duplicates.policy = DuplicatePolicy::KeepLast;
+        ts.sample_duplicates.policy = Some(DuplicatePolicy::KeepLast);
 
         // Add first sample
         assert!(ts.add(100, 200.0, None).is_ok());
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn test_add_duplicate_with_override_policy() {
         let mut ts = TimeSeries::new();
-        ts.sample_duplicates.policy = DuplicatePolicy::Block;
+        ts.sample_duplicates.policy = Some(DuplicatePolicy::Block);
 
         // Add first sample
         assert!(ts.add(100, 200.0, None).is_ok());
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_add_ignores_duplicate_per_policy() {
         let mut ts = TimeSeries::new();
-        ts.sample_duplicates.policy = DuplicatePolicy::Block;
+        ts.sample_duplicates.policy = Some(DuplicatePolicy::Block);
 
         // Add first sample
         assert!(ts.add(100, 200.0, None).is_ok());

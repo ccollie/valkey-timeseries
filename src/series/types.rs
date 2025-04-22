@@ -103,7 +103,7 @@ impl TryFrom<String> for DuplicatePolicy {
 
 #[derive(Copy, Clone, Default, Debug, GetSize, PartialEq)]
 pub struct SampleDuplicatePolicy {
-    pub policy: DuplicatePolicy,
+    pub policy: Option<DuplicatePolicy>,
     /// The maximum difference between the new and existing timestamp to consider them duplicates
     pub max_time_delta: u64,
     /// The maximum difference between the new and existing value to consider them duplicates
@@ -117,7 +117,7 @@ impl SampleDuplicatePolicy {
         last_sample: &Sample,
         override_policy: Option<DuplicatePolicy>,
     ) -> bool {
-        let policy = override_policy.unwrap_or(self.policy);
+        let policy = self.resolve_policy(override_policy);
         let last_ts = last_sample.timestamp;
 
         if current_sample.timestamp >= last_ts && policy == DuplicatePolicy::KeepLast {
@@ -133,9 +133,20 @@ impl SampleDuplicatePolicy {
         false
     }
 
+    pub fn resolve_policy(&self, override_policy: Option<DuplicatePolicy>) -> DuplicatePolicy {
+        override_policy.or(self.policy).unwrap_or_else(|| {
+            *DUPLICATE_POLICY
+                .lock()
+                .expect("error unlocking duplicate policy")
+        })
+    }
+
     pub(crate) fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
-        let tmp = self.policy.as_str();
-        raw::save_string(rdb, tmp);
+        if let Some(policy) = self.policy {
+            raw::save_string(rdb, policy.as_str());
+        } else {
+            raw::save_string(rdb, "-");
+        }
         raw::save_unsigned(rdb, self.max_time_delta);
         raw::save_double(rdb, self.max_value_delta);
     }
@@ -144,7 +155,11 @@ impl SampleDuplicatePolicy {
         let policy = rdb_load_string(rdb)?;
         let max_time_delta = raw::load_unsigned(rdb)?;
         let max_value_delta = raw::load_double(rdb)?;
-        let duplicate_policy = DuplicatePolicy::try_from(policy)?;
+        let duplicate_policy = if policy == "-" {
+            None
+        } else {
+            Some(DuplicatePolicy::from_str(&policy)?)
+        };
         Ok(SampleDuplicatePolicy {
             policy: duplicate_policy,
             max_time_delta,
@@ -241,7 +256,7 @@ impl TimeSeriesOptions {
             chunk_size: Some(chunk_size),
             rounding,
             sample_duplicate_policy: SampleDuplicatePolicy {
-                policy,
+                policy: Some(policy),
                 max_time_delta,
                 max_value_delta,
             },
@@ -400,7 +415,7 @@ mod tests {
     #[test]
     fn test_sample_duplicate_policy_is_duplicate_keep_last() {
         let policy = SampleDuplicatePolicy {
-            policy: DuplicatePolicy::KeepLast,
+            policy: Some(DuplicatePolicy::KeepLast),
             max_time_delta: 10,
             max_value_delta: 0.001,
         };
@@ -448,7 +463,7 @@ mod tests {
     #[test]
     fn test_sample_duplicate_policy_is_duplicate_with_override_policy() {
         let policy = SampleDuplicatePolicy {
-            policy: DuplicatePolicy::Block,
+            policy: Some(DuplicatePolicy::Block),
             max_time_delta: 10,
             max_value_delta: 0.001,
         };
@@ -476,7 +491,7 @@ mod tests {
     #[test]
     fn test_sample_duplicate_policy_is_duplicate_with_zero_deltas() {
         let policy = SampleDuplicatePolicy {
-            policy: DuplicatePolicy::KeepLast,
+            policy: Some(DuplicatePolicy::KeepLast),
             max_time_delta: 0, // Zero time delta
             max_value_delta: 0.001,
         };
@@ -495,7 +510,7 @@ mod tests {
 
         // But still should detect as duplicate based on value
         let policy = SampleDuplicatePolicy {
-            policy: DuplicatePolicy::KeepLast,
+            policy: Some(DuplicatePolicy::KeepLast),
             max_time_delta: 10,
             max_value_delta: 0.0, // Zero value delta
         };

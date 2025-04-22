@@ -170,7 +170,7 @@ fn handle_config_update() {
         rounding,
         worker_interval: Duration::from_millis(series_worker_interval),
         duplicate_policy: SampleDuplicatePolicy {
-            policy,
+            policy: Some(policy),
             max_time_delta,
             max_value_delta,
         },

@@ -48,6 +48,10 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
         map.insert("chunkType".into(), "uncompressed".into());
     }
 
+    if let Some(policy) = ts.sample_duplicates.policy {
+        map.insert("duplicatePolicy".into(), policy.as_str().into());
+    }
+
     if let Some(key) = key {
         map.insert(
             ValkeyValueKey::String(META_KEY_LABEL.into()),
@@ -69,9 +73,11 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
         map.insert("labels".into(), ValkeyValue::from(labels_value));
     }
 
+    // todo: Rounding
     if debug {
         map.insert("keySelfName".into(), ValkeyValue::from(key));
-        map.insert("chunks".into(), get_chunks_info(ts));
+        // yes I know it's title case, but that's what redis does
+        map.insert("Chunks".into(), get_chunks_info(ts));
     }
 
     ValkeyValue::Map(map)

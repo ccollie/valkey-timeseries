@@ -86,7 +86,7 @@ pub fn parse_series_options(
                 options.rounding = Some(rounding);
             }
             CommandArgToken::DuplicatePolicy => {
-                options.sample_duplicate_policy.policy = parse_duplicate_policy(args)?
+                options.sample_duplicate_policy.policy = Option::from(parse_duplicate_policy(args)?)
             }
             CommandArgToken::OnDuplicate => {
                 options.on_duplicate = Some(parse_duplicate_policy(args)?);

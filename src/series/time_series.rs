@@ -218,7 +218,9 @@ impl TimeSeries {
         sample: Sample,
         duplicate_policy_override: Option<DuplicatePolicy>,
     ) -> SampleAddResult {
-        let dp_policy = duplicate_policy_override.unwrap_or(self.sample_duplicates.policy);
+        let dp_policy = self
+            .sample_duplicates
+            .resolve_policy(duplicate_policy_override);
         let chunks_len = self.chunks.len();
         let (chunk, is_last) = if sample.timestamp <= self.first_timestamp {
             if self.is_older_than_retention(sample.timestamp) {
@@ -299,7 +301,7 @@ impl TimeSeries {
         samples: &[Sample],
         policy_override: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
-        let dp_policy = policy_override.unwrap_or(self.sample_duplicates.policy);
+        let dp_policy = self.sample_duplicates.resolve_policy(policy_override);
         let earliest_ts = self.get_min_timestamp();
         let mut results = Vec::with_capacity(samples.len());
 
@@ -779,11 +781,7 @@ impl Default for TimeSeries {
             id: 0,
             labels: Default::default(),
             retention: Default::default(),
-            sample_duplicates: SampleDuplicatePolicy {
-                policy: DuplicatePolicy::default(),
-                max_time_delta: 0,
-                max_value_delta: 0.0,
-            },
+            sample_duplicates: Default::default(),
             chunk_compression: Default::default(),
             chunk_size_bytes: DEFAULT_CHUNK_SIZE_BYTES,
             chunks: vec![],
