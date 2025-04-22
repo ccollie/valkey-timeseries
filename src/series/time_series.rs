@@ -146,9 +146,6 @@ impl TimeSeries {
         last_sample: &Sample,
         on_duplicate: Option<DuplicatePolicy>,
     ) -> SampleAddResult {
-        if self.is_older_than_retention(sample.timestamp) {
-            return SampleAddResult::TooOld;
-        }
         if self
             .sample_duplicates
             .is_duplicate(sample, last_sample, on_duplicate)
@@ -163,7 +160,7 @@ impl TimeSeries {
         let chunk = self.get_last_chunk();
         match chunk.add_sample(&sample) {
             Ok(_) => {
-                self.update_after_sample_add(&sample);
+                self.update_after_sample_add(sample);
                 SampleAddResult::Ok(sample.timestamp)
             }
             Err(TsdbError::CapacityFull(_)) => self.handle_full_chunk(sample),
@@ -172,12 +169,13 @@ impl TimeSeries {
     }
 
     /// (Possibly) add a new chunk and append the given sample.
-    fn add_chunk_with_sample(&mut self, sample: &Sample) -> TsdbResult<()> {
+    fn add_chunk_with_sample(&mut self, sample: Sample) -> TsdbResult<()> {
         let mut chunk = self.create_chunk();
-        chunk.add_sample(sample)?;
+        chunk.add_sample(&sample)?;
         self.chunks.push(chunk);
         // trim chunks to keep memory usage in check
         self.chunks.shrink_to_fit();
+        self.update_after_sample_add(sample);
 
         Ok(())
     }
@@ -192,9 +190,9 @@ impl TimeSeries {
     }
 
     fn handle_full_chunk(&mut self, sample: Sample) -> SampleAddResult {
-        match self.add_chunk_with_sample(&sample) {
+        match self.add_chunk_with_sample(sample) {
             Ok(_) => {
-                self.update_after_sample_add(&sample);
+                self.update_after_sample_add(sample);
                 SampleAddResult::Ok(sample.timestamp)
             }
             Err(TsdbError::DuplicateSample(_)) => SampleAddResult::Duplicate,
@@ -202,11 +200,11 @@ impl TimeSeries {
         }
     }
 
-    fn update_after_sample_add(&mut self, sample: &Sample) {
+    fn update_after_sample_add(&mut self, sample: Sample) {
         if self.is_empty() {
             self.first_timestamp = sample.timestamp;
         }
-        self.last_sample = Some(*sample);
+        self.last_sample = Some(sample);
         self.total_samples += 1;
     }
 
@@ -224,18 +222,32 @@ impl TimeSeries {
         duplicate_policy_override: Option<DuplicatePolicy>,
     ) -> SampleAddResult {
         let dp_policy = duplicate_policy_override.unwrap_or(self.sample_duplicates.policy);
-        let (pos, _) = get_chunk_index(&self.chunks, sample.timestamp);
-        let is_last = pos + 1 == self.chunks.len();
-        let chunk = self.chunks.get_mut(pos).unwrap();
+        let chunks_len = self.chunks.len();
+        let (chunk, is_last) = if sample.timestamp <= self.first_timestamp {
+            if self.is_older_than_retention(sample.timestamp) {
+                return SampleAddResult::TooOld;
+            }
+            let chunk = self.chunks.get_mut(0).expect("chunks.is_empty() in upsert");
+            (chunk, chunks_len == 1)
+        } else {
+            let (pos, _found) = get_chunk_index(&self.chunks, sample.timestamp);
+            let chunk = self
+                .chunks
+                .get_mut(pos)
+                .expect("index out of range in upsert");
+            (chunk, pos + 1 == chunks_len)
+        };
 
         // Try to upsert in the existing chunk if it doesn't need splitting
         if !chunk.should_split() {
+            let old_size = chunk.len();
             let (size, res) = chunk.upsert(sample, dp_policy);
             if res.is_ok() {
-                self.total_samples += size;
+                self.total_samples += size - old_size;
                 if is_last {
                     self.update_last_sample();
                 }
+                self.first_timestamp = sample.timestamp.min(self.first_timestamp);
             }
             return res;
         }
@@ -264,6 +276,7 @@ impl TimeSeries {
                 if is_last {
                     self.update_last_sample();
                 }
+                self.first_timestamp = sample.timestamp.min(self.first_timestamp);
 
                 SampleAddResult::Ok(sample.timestamp)
             }
@@ -477,6 +490,9 @@ impl TimeSeries {
     }
 
     pub fn is_older_than_retention(&self, timestamp: Timestamp) -> bool {
+        if self.retention.is_zero() {
+           return false;
+        }
         let min_ts = self.get_min_timestamp();
         timestamp < min_ts
     }
@@ -980,7 +996,6 @@ fn get_range_parallel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::generators::DataGenerator;
 
     #[test]
     fn test_one_entry() {
@@ -997,29 +1012,5 @@ mod tests {
         assert_eq!(ts.total_samples, 1);
         assert_eq!(ts.first_timestamp, 100);
         assert_eq!(ts.last_timestamp(), 100);
-    }
-
-    #[test]
-    fn test_1000_entries() {
-        let mut ts = TimeSeries::new();
-        let data = DataGenerator::builder()
-            .samples(1000)
-            .start(0)
-            .interval(Duration::from_millis(1000))
-            .build()
-            .generate();
-
-        for sample in data.iter() {
-            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
-        }
-
-        assert_eq!(ts.total_samples, 1000);
-        assert_eq!(ts.first_timestamp, data[0].timestamp);
-        assert_eq!(ts.last_timestamp(), data[data.len() - 1].timestamp);
-
-        for (sample, orig) in ts.iter().zip(data.iter()) {
-            assert_eq!(sample.timestamp, orig.timestamp);
-            assert_eq!(sample.value, orig.value);
-        }
     }
 }

@@ -27,14 +27,14 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Basic timeseries create, item add and item exists validation.
         ts_add_result = client.execute_command('TS.ADD series1 1000 102')
         assert ts_add_result == 1000
-        exists_result = client.execute_command('TS.GET series1 1000')
+        exists_result = client.execute_command('TS.GET series1')
         assert exists_result == 102
 
     def test_timeseries_create_cmd(self):
         client = self.server.get_new_client()
         # cmd create
         assert client.execute_command(
-            'TS.CREATE temperature:2:32 RETENTION 60000 DUPLICATE_POLICY MAX LABELS sensor_id 2 area_id 32') == "OK"
+            'TS.CREATE temperature:2:32 RETENTION 60000 DUPLICATE_POLICY MAX LABELS sensor_id 2 area_id 32') == b'OK'
         assert client.execute_command('TS.ADD temperature:2:32 1000 72.5') == 1000
 
     def test_module_data_type(self):

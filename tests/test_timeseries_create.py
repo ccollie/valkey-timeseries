@@ -1,3 +1,4 @@
+import pytest
 from valkeytestframework.util.waiters import *
 from valkey import ResponseError
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -5,20 +6,151 @@ from valkeytestframework.conftest import resource_port_tracker
 
 class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
     def test_create_basic(self):
+        """Test basic TS.CREATE functionality"""
         client = self.server.get_new_client()
-        assert client.execute_command("ts.create 1") == "OK"
-        assert client.execute_command("ts.create 2 retention 5ms") == "OK"
-        assert client.execute_command("ts.create 3 labels Redis Labs") == "OK"
-        assert client.execute_command("ts.create 4 retention 20ms labels Time Series") == "OK"
-        info = client.execute_command("info 4")
+        # Basic create with no parameters
+        assert client.execute_command("TS.CREATE", "ts1") == b'OK'
 
-        # assert_resp_response(
-        #     client, 20, info.get("retention_msecs"), info.get("retentionTime")
-        # )
-        assert "Series" == info["labels"]["Time"]
+        # Verify the time series exists
+        info = self.ts_info(client, "ts1")
+        assert info[b'type'] == b"vktseries"
 
-        # Test for a chunk size of 128 Bytes
-        assert client.execute_command("create time-serie-1 chunk_size 128") == "OK"
-        info = client.execute_command("time-serie-1")
-        # todo
-        # assert_resp_response(client, 128, info.get("chunk_size"), info.get("chunkSize"))
+        # Create with retention
+        assert client.execute_command("TS.CREATE", "ts2", "RETENTION", "60000") == b'OK'
+        info = self.ts_info(client, "ts2")
+        assert info[b'retention_msecs'] == 60000
+
+        # Create with labels
+        assert client.execute_command("TS.CREATE", "ts3", "LABELS", "sensor_id", "2", "area_id", "32") == b'OK'
+        info = self.ts_info(client, "ts3")
+        assert info[b'labels'][b'sensor_id'] == b'2'
+        assert info[b'labels'][b'area_id'] == b'32'
+
+    def test_create_with_labels(self):
+        client = self.server.get_new_client()
+        assert client.execute_command("ts.create time-serie-2 labels hello world") == b'OK'
+        info = self.ts_info(client, "time-serie-2")
+        assert "hello" == info[b"labels"][b"hello"]
+        assert "world" == info[b"labels"][b"world"]
+
+
+    def test_create_with_duplicate_policy(self):
+        """Test creating time series with different duplicate policies"""
+        client = self.server.get_new_client()
+
+        policies = ["BLOCK", "FIRST", "LAST", "MIN", "MAX", "SUM"]
+        for i, policy in enumerate(policies):
+            key = f"ts_policy_{i}"
+            assert client.execute_command("TS.CREATE", key, "DUPLICATE_POLICY", policy) == b'OK'
+            info = self.ts_info(client, key)
+            assert info[b'duplicate_policy'] == policy.encode()
+
+    def test_create_with_encoding(self):
+        """Test creating time series with different encoding options"""
+        client = self.server.get_new_client()
+
+        encodings = ["UNCOMPRESSED", "COMPRESSED"]
+        for i, encoding in enumerate(encodings):
+            key = f"ts_encoding_{i}"
+            assert client.execute_command("TS.CREATE", key, "ENCODING", encoding) == b'OK'
+            info = self.ts_info(client, key)
+            # Check encoding in info response
+            if encoding == "UNCOMPRESSED":
+                assert info[b'chunk_type'] == b'uncompressed'
+            else:
+                assert info[b'chunk_type'] == b'compressed'
+
+    def test_create_with_chunk_size(self):
+        """Test creating time series with different chunk sizes"""
+        client = self.server.get_new_client()
+
+        # Test with valid chunk sizes (must be multiples of 2)
+        chunk_sizes = [128, 256, 512, 1024]
+        for i, size in enumerate(chunk_sizes):
+            key = f"ts_chunk_{i}"
+            assert client.execute_command("TS.CREATE", key, "CHUNK_SIZE", size) == b'OK'
+            info = self.ts_info(client, key)
+            assert info[b'chunk_size'] == size
+
+    def test_create_with_rounding(self):
+        """Test creating time series with rounding options"""
+        client = self.server.get_new_client()
+
+        # Test DECIMAL_DIGITS
+        assert client.execute_command("TS.CREATE", "ts_decimal", "DECIMAL_DIGITS", 2) == b'OK'
+        info = self.ts_info(client, "ts_decimal")
+        assert info[b'rounding'] == b'DECIMAL_DIGITS'
+        assert info[b'digits'] == 2
+
+        # Test SIGNIFICANT_DIGITS
+        assert client.execute_command("TS.CREATE", "ts_significant", "SIGNIFICANT_DIGITS", 3) == b'OK'
+        info = self.ts_info(client, "ts_significant")
+        assert info[b'rounding'] == b'SIGNIFICANT_DIGITS'
+        assert info[b'digits'] == 3
+
+    def test_create_metric_name(self):
+        """Test creating time series with metric name"""
+        client = self.server.get_new_client()
+
+        assert client.execute_command("TS.CREATE", "ts_metric", "METRIC", "temperature{city=CDMX}") == b'OK'
+        info = self.ts_info(client, "ts_metric")
+        # The metric should be parsed into labels
+        assert b'__name__' in info[b'labels']
+        assert info[b'labels'][b'__name__'] == b'temperature'
+
+    def test_create_errors(self):
+        """Test error cases for TS.CREATE"""
+        client = self.server.get_new_client()
+
+        # Create a time series first
+        assert client.execute_command("TS.CREATE", "ts_error") == b'OK'
+
+        # Attempt to create with the same key should fail
+        with pytest.raises(ResponseError) as excinfo:
+            client.execute_command("TS.CREATE", "ts_error")
+        assert "duplicate" in str(excinfo.value).lower()
+
+        # Invalid chunk size (not a multiple of 2)
+        with pytest.raises(ResponseError) as excinfo:
+            client.execute_command("TS.CREATE", "ts_invalid_chunk", "CHUNK_SIZE", 123)
+        assert "chunk_size" in str(excinfo.value).lower()
+
+        # Invalid duplicate policy
+        with pytest.raises(ResponseError) as excinfo:
+            client.execute_command("TS.CREATE", "ts_invalid_policy", "DUPLICATE_POLICY", "INVALID")
+        assert "duplicate_policy" in str(excinfo.value).lower()
+
+        # Both DECIMAL_DIGITS and SIGNIFICANT_DIGITS (only one allowed)
+        with pytest.raises(ResponseError) as excinfo:
+            client.execute_command("TS.CREATE", "ts_both_roundings",
+                                   "DECIMAL_DIGITS", 2, "SIGNIFICANT_DIGITS", 3)
+        assert "rounding" in str(excinfo.value).lower()
+
+    def test_create_with_ignore_options(self):
+        """Test creating time series with IGNORE options"""
+        client = self.server.get_new_client()
+
+        assert client.execute_command("TS.CREATE", "ts_ignore",
+                                      "IGNORE", "1000", "0.5") == b'OK'
+        info = self.ts_info(client, "ts_ignore")
+        assert info[b'max_time_delta'] == 1000
+        assert info[b'max_value_delta'] == 0.5
+
+    def test_create_multiple_series(self):
+        """Test creating many time series and verify they all exist"""
+        client = self.server.get_new_client()
+
+        # Create 10 time series
+        for i in range(10):
+            assert client.execute_command("TS.CREATE", f"multi_ts_{i}",
+                                          "LABELS", "idx", str(i)) == b'OK'
+
+        # Verify all time series exist
+        for i in range(10):
+            key = f"multi_ts_{i}"
+            assert client.execute_command("EXISTS", key) == 1
+            info = self.ts_info(client, key)
+            assert info[b'labels'][b'idx'] == str(i).encode()
+
+        # Verify count in database
+        assert client.execute_command("DBSIZE") == 10

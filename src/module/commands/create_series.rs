@@ -19,13 +19,13 @@ use valkey_module::{
 ///
 /// TS.CREATE-SERIES key
 ///   [METRIC metric]
-///   [LABELS label1=value1 label2=value2 ...]
 ///   [RETENTION retentionPeriod]
 ///   [ENCODING <pco|gorilla|uncompressed|compressed>]
 ///   [CHUNK_SIZE chunkSize]
 ///   [DUPLICATE_POLICY duplicatePolicy]
 ///   [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///   [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
+///   [LABELS label1=value1 label2=value2 ...]
 pub fn create(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let (parsed_key, options) = parse_create_options(args)?;
 
@@ -49,11 +49,11 @@ pub fn parse_create_options(
         &[CommandArgToken::OnDuplicate],
     )?;
 
-    if options.labels.is_empty() {
-        return Err(ValkeyError::Str(
-            error_consts::INVALID_OR_MISSING_METRIC_NAME,
-        ));
-    }
+    // if options.labels.is_empty() {
+    //     return Err(ValkeyError::Str(
+    //         error_consts::INVALID_OR_MISSING_METRIC_NAME,
+    //     ));
+    // }
 
     Ok((key, options))
 }

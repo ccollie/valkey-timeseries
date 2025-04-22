@@ -22,8 +22,8 @@ impl GorillaIterator<'_> {
     pub fn new(encoder: &GorillaEncoder) -> GorillaIterator {
         let buf = encoder.buf();
         let num_samples = encoder.num_samples;
-        let last_timestamp = encoder.timestamp;
-        let last_value = encoder.value;
+        let last_timestamp = encoder.last_ts;
+        let last_value = encoder.last_value;
         let reader = BufferedReader::new(buf);
 
         GorillaIterator {

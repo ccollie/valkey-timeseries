@@ -1,4 +1,6 @@
 import os
+import re
+
 import pytest
 from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkey import ResponseError
@@ -47,7 +49,7 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
             assert client.execute_command(f'EXISTS {key}') == 0, f"Item {key} {value} exists"
 
     def verify_server_key_count(self, client, expected_num_keys):
-        actual_num_keys = client.info_obj().num_keys()
+        actual_num_keys = self.server.num_keys()
         assert_num_key_error_msg = f"Actual key number {actual_num_keys} is different from expected key number {expected_num_keys}"
         assert actual_num_keys == expected_num_keys, assert_num_key_error_msg
 
@@ -58,15 +60,22 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         random_string = ''.join(random.choice(characters) for _ in range(length))
         return random_string
 
+    def ts_info(self, client, key):
+        """ Get the info of the given key.
+        """
+        info = client.execute_command(f'TS.INFO {key}')
+        it = iter(info)
+        info_dict = dict(zip(it, it))
+        return info_dict
+
     def validate_copied_series_correctness(self, client, original_filter_name, item_prefix, add_operation_idx, expected_fp_rate, fp_margin, original_info_dict):
         """ Validate correctness on a copy of the provided timeseries.
         """
         copy_filter_name = "filter_copy"
         assert client.execute_command(f'COPY {original_filter_name} {copy_filter_name}') == 1
         assert client.execute_command('DBSIZE') == 2
-        copy_info = client.execute_command(f'TS.INFO {copy_filter_name}')
-        copy_it = iter(copy_info)
-        copy_info_dict = dict(zip(copy_it, copy_it))
+        copy_info_dict = self.ts_info(client,  copy_filter_name)
+
         assert copy_info_dict[b'Capacity'] == original_info_dict[b'Capacity']
         assert copy_info_dict[b'Number of items inserted'] == original_info_dict[b'Number of items inserted']
         assert copy_info_dict[b'Number of filters'] == original_info_dict[b'Number of filters']
