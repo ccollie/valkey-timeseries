@@ -1,3 +1,4 @@
+use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::Label;
 use crate::module::arg_parse::{
@@ -166,11 +167,16 @@ pub(crate) fn create_series(
         ts.id = next_timeseries_id();
     }
     with_timeseries_index(ctx, |index| {
-        let labels = ts.labels.to_label_vec();
-        // will return an error if the series already exists
-        let existing_id = index.posting_by_labels(&labels)?;
-        if let Some(_id) = existing_id {
-            return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
+        // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
+        // We do this only in the case where we have a __name__ label, signalling that the user is
+        // opting in to Prometheus semantics, meaning a metric name is unique to a series.
+        if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
+            let labels = ts.labels.to_label_vec();
+            // will return an error if the series already exists
+            let existing_id = index.posting_by_labels(&labels)?;
+            if let Some(_id) = existing_id {
+                return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
+            }
         }
 
         index.index_timeseries(&ts, key.iter().as_slice());
