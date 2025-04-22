@@ -144,10 +144,7 @@ mod tests {
         // Add older sample
         let result = ts.add(100, 100.0, None);
 
-        assert!(match result {
-            SampleAddResult::Ok(_) => true,
-            _ => false,
-        });
+        assert!(result.is_ok());
 
         assert_eq!(ts.total_samples, 2);
         assert_eq!(ts.first_timestamp, 100); // First timestamp should update
