@@ -1,7 +1,8 @@
 use crate::module::arg_parse::parse_timestamp_range;
 use crate::series::with_timeseries_mut;
 use valkey_module::{
-    Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+    AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
+    ValkeyValue,
 };
 
 ///
@@ -12,12 +13,18 @@ pub fn del(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let key = args.next_arg()?;
 
     let date_range = parse_timestamp_range(&mut args)?;
-    let count = with_timeseries_mut(ctx, &key, |series| {
-        let (start_ts, end_ts) = date_range.get_series_range(series, None, true);
+    let count = with_timeseries_mut(ctx, &key, Some(AclPermissions::DELETE), |series| {
+        let (start_ts, end_ts) = date_range.get_series_range(series, None, false);
+
+        if series.is_older_than_retention(start_ts) {
+            return Err(ValkeyError::String(
+                "TSDB: cannot delete samples older than retention".to_string(),
+            ));
+        }
 
         let deleted = series
             .remove_range(start_ts, end_ts)
-            .map_err(|_e| ValkeyError::String("TS: error deleting range".to_string()))?; // todo: better error
+            .map_err(|_e| ValkeyError::String("TSDB: error deleting range".to_string()))?; // todo: better error
 
         Ok(deleted)
     })?;
