@@ -58,7 +58,7 @@ class TestTsDel(ValkeyTimeSeriesTestCaseBase):
         """Test attempting to delete from a nonexistent time series"""
         with pytest.raises(Exception) as excinfo:
             self.client.execute_command('TS.DEL', 'nonexistent', 0, 100)
-        assert "ERR" in str(excinfo.value)
+        assert "the key does not exist" in str(excinfo.value)
 
     def test_del_boundary_conditions(self):
         """Test deleting points at the boundaries of the specified range"""

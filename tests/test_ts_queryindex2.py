@@ -23,11 +23,11 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Basic filter matching all 'n=1' series
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n="1"'))
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4']
 
         # Match specific label combination
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i=a'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n="1"', 'i=a'))
         assert result == [b'ts2']
 
         # Non-existent value

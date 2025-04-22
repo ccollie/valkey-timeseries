@@ -1,4 +1,5 @@
 use crate::common::constants::META_KEY_LABEL;
+use crate::common::rounding::RoundingStrategy;
 use crate::module::with_timeseries;
 use crate::series::{
     chunks::{Chunk, TimeSeriesChunk},
@@ -73,7 +74,28 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
         map.insert("labels".into(), ValkeyValue::from(labels_value));
     }
 
+    map.insert(
+        "ignoreMaxTimeDiff".into(),
+        ValkeyValue::from(ts.sample_duplicates.max_time_delta.to_string()),
+    );
+    map.insert(
+        "ignoreMaxValDiff".into(),
+        ts.sample_duplicates.max_value_delta.into(),
+    );
+
     // todo: Rounding
+    if let Some(rounding) = ts.rounding {
+        let (name, digits) = match rounding {
+            RoundingStrategy::SignificantDigits(d) => ("significantDigits", d),
+            RoundingStrategy::DecimalDigits(d) => ("decimalDigits", d),
+        };
+        let result = ValkeyValue::Array(vec![
+            ValkeyValue::from(name),
+            ValkeyValue::from(digits as usize), // do we have negative digits?
+        ]);
+        map.insert("rounding".into(), result);
+    }
+
     if debug {
         map.insert("keySelfName".into(), ValkeyValue::from(key));
         // yes I know it's title case, but that's what redis does

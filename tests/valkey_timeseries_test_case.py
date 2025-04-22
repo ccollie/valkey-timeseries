@@ -2,6 +2,7 @@ import os
 import re
 
 import pytest
+from valkey.commands.timeseries.utils import list_to_dict
 from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkey import ResponseError
 import random
@@ -60,13 +61,31 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         random_string = ''.join(random.choice(characters) for _ in range(length))
         return random_string
 
-    def ts_info(self, client, key):
+    def ts_info(self, key):
         """ Get the info of the given key.
         """
-        info = client.execute_command(f'TS.INFO {key}')
+        info = self.client.execute_command(f'TS.INFO {key}')
         it = iter(info)
         info_dict = dict(zip(it, it))
+        if b'labels' in info_dict:
+            # Convert the labels from a list to a dictionary
+            labels = info_dict[b'labels']
+            if labels is None or len(labels) == 0:
+                info_dict[b'labels'] = {}
+            else:
+                info_dict[b'labels'] = list_to_dict(labels)
         return info_dict
+
+    def validate_ts_info_values(self, key, expected_info_dict):
+        """ Validate the values of the timeseries info.
+        """
+        info_dict = self.ts_info(key)
+        for k, v in expected_info_dict.items():
+            if k == b'labels':
+                assert info_dict[k] == v
+            else:
+                assert info_dict[k] == v, f"Expected {k} to be {v}, but got {info_dict[k]}"
+
 
     def validate_copied_series_correctness(self, client, original_filter_name, item_prefix, add_operation_idx, expected_fp_rate, fp_margin, original_info_dict):
         """ Validate correctness on a copy of the provided timeseries.

@@ -61,36 +61,43 @@ impl TryFrom<&str> for TimestampValue {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         use crate::error_consts;
         use TimestampValue::*;
-        match value {
-            "-" => Ok(Earliest),
-            "+" => Ok(Latest),
-            "*" => Ok(Now),
-            _ => {
-                // ergonomics. Support something like TS.RANGE key -6hrs -3hrs
-                if let Some(ch) = value.chars().next() {
-                    if ch == '-' || ch == '+' {
-                        let value = &value[1..];
-                        let delta = if ch == '+' {
-                            parse_duration_ms(value)?
-                        } else {
-                            let positive = parse_duration_ms(value)?;
-                            -positive
-                        };
-                        return Ok(Relative(delta));
-                    }
-                }
-                let ts = parse_timestamp(value, false)
-                    .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
 
-                if ts < 0 {
-                    return Err(ValkeyError::Str(
-                        "ERR: invalid timestamp, must be a non-negative integer",
-                    ));
-                }
+        let len = value.len();
 
-                Ok(Specific(ts))
+        if len == 0 {
+            return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP));
+        }
+
+        if len == 1 {
+            match value {
+                "-" => return Ok(Earliest),
+                "+" => return Ok(Latest),
+                "*" => return Ok(Now),
+                _ => {}
             }
         }
+
+        // ergonomics. Support something like TS.RANGE key -6hrs -3hrs
+        if let Some(ch) = value.chars().next() {
+            if ch == '-' || ch == '+' {
+                let value = &value[1..];
+                let mut ms = parse_duration_ms(value)?;
+
+                if ch == '-' {
+                    ms = -ms;
+                }
+                return Ok(Relative(ms));
+            }
+        }
+
+        let ts = parse_timestamp(value, false)
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
+
+        if ts < 0 {
+            return Err(ValkeyError::Str(error_consts::NEGATIVE_TIMESTAMP));
+        }
+
+        Ok(Specific(ts))
     }
 }
 

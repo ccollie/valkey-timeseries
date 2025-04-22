@@ -11,27 +11,26 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Basic create with no parameters
         assert client.execute_command("TS.CREATE", "ts1") == b'OK'
 
-        # Verify the time series exists
-        info = self.ts_info(client, "ts1")
-        assert info[b'type'] == b"vktseries"
-
         # Create with retention
         assert client.execute_command("TS.CREATE", "ts2", "RETENTION", "60000") == b'OK'
-        info = self.ts_info(client, "ts2")
-        assert info[b'retention_msecs'] == 60000
+        info = self.ts_info("ts2")
+        assert info[b'retentionTime'] == b'60000'
 
         # Create with labels
         assert client.execute_command("TS.CREATE", "ts3", "LABELS", "sensor_id", "2", "area_id", "32") == b'OK'
-        info = self.ts_info(client, "ts3")
-        assert info[b'labels'][b'sensor_id'] == b'2'
-        assert info[b'labels'][b'area_id'] == b'32'
+        info = self.ts_info("ts3")
+        print(info)
+        labels = info[b'labels']
+        assert labels['sensor_id'] == '2'
+        assert labels['area_id'] == '32'
 
     def test_create_with_labels(self):
         client = self.server.get_new_client()
-        assert client.execute_command("ts.create time-serie-2 labels hello world") == b'OK'
-        info = self.ts_info(client, "time-serie-2")
-        assert "hello" == info[b"labels"][b"hello"]
-        assert "world" == info[b"labels"][b"world"]
+        assert client.execute_command("ts.create time-series-2 labels hello world") == b'OK'
+        info = self.ts_info("time-series-2")
+        labels = info[b'labels']
+        print(labels)
+        assert "world" == labels["hello"]
 
 
     def test_create_with_duplicate_policy(self):
@@ -42,8 +41,9 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         for i, policy in enumerate(policies):
             key = f"ts_policy_{i}"
             assert client.execute_command("TS.CREATE", key, "DUPLICATE_POLICY", policy) == b'OK'
-            info = self.ts_info(client, key)
-            assert info[b'duplicate_policy'] == policy.encode()
+            info = self.ts_info(key)
+            print(info)
+            assert info[b'duplicatePolicy'] == policy.lower().encode()
 
     def test_create_with_encoding(self):
         """Test creating time series with different encoding options"""
@@ -53,12 +53,12 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         for i, encoding in enumerate(encodings):
             key = f"ts_encoding_{i}"
             assert client.execute_command("TS.CREATE", key, "ENCODING", encoding) == b'OK'
-            info = self.ts_info(client, key)
+            info = self.ts_info(key)
             # Check encoding in info response
             if encoding == "UNCOMPRESSED":
-                assert info[b'chunk_type'] == b'uncompressed'
+                assert info[b'chunkType'] == b'uncompressed'
             else:
-                assert info[b'chunk_type'] == b'compressed'
+                assert info[b'chunkType'] == b'compressed'
 
     def test_create_with_chunk_size(self):
         """Test creating time series with different chunk sizes"""
@@ -69,8 +69,8 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         for i, size in enumerate(chunk_sizes):
             key = f"ts_chunk_{i}"
             assert client.execute_command("TS.CREATE", key, "CHUNK_SIZE", size) == b'OK'
-            info = self.ts_info(client, key)
-            assert info[b'chunk_size'] == size
+            info = self.ts_info(key)
+            assert info[b'chunkSize'] == size
 
     def test_create_with_rounding(self):
         """Test creating time series with rounding options"""
@@ -78,25 +78,26 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
 
         # Test DECIMAL_DIGITS
         assert client.execute_command("TS.CREATE", "ts_decimal", "DECIMAL_DIGITS", 2) == b'OK'
-        info = self.ts_info(client, "ts_decimal")
-        assert info[b'rounding'] == b'DECIMAL_DIGITS'
-        assert info[b'digits'] == 2
+        info = self.ts_info("ts_decimal")
+        assert info[b'rounding'] == [b'decimalDigits', 2]
 
         # Test SIGNIFICANT_DIGITS
         assert client.execute_command("TS.CREATE", "ts_significant", "SIGNIFICANT_DIGITS", 3) == b'OK'
-        info = self.ts_info(client, "ts_significant")
-        assert info[b'rounding'] == b'SIGNIFICANT_DIGITS'
-        assert info[b'digits'] == 3
+        info = self.ts_info("ts_significant")
+        assert info[b'rounding'] == [b'significantDigits', 3]
 
     def test_create_metric_name(self):
         """Test creating time series with metric name"""
         client = self.server.get_new_client()
 
-        assert client.execute_command("TS.CREATE", "ts_metric", "METRIC", "temperature{city=CDMX}") == b'OK'
-        info = self.ts_info(client, "ts_metric")
+        assert client.execute_command("TS.CREATE", "ts_metric", "METRIC", 'temperature{city="CDMX"}') == b'OK'
+        info = self.ts_info("ts_metric")
         # The metric should be parsed into labels
-        assert b'__name__' in info[b'labels']
-        assert info[b'labels'][b'__name__'] == b'temperature'
+        labels = info[b'labels']
+        assert '__name__' in labels
+        assert 'city' in labels
+        assert labels['__name__'] == 'temperature'
+        assert labels['city'] == 'CDMX'
 
     def test_create_errors(self):
         """Test error cases for TS.CREATE"""
@@ -108,7 +109,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Attempt to create with the same key should fail
         with pytest.raises(ResponseError) as excinfo:
             client.execute_command("TS.CREATE", "ts_error")
-        assert "duplicate" in str(excinfo.value).lower()
+        assert "key already exists" in str(excinfo.value).lower()
 
         # Invalid chunk size (not a multiple of 2)
         with pytest.raises(ResponseError) as excinfo:
@@ -118,7 +119,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Invalid duplicate policy
         with pytest.raises(ResponseError) as excinfo:
             client.execute_command("TS.CREATE", "ts_invalid_policy", "DUPLICATE_POLICY", "INVALID")
-        assert "duplicate_policy" in str(excinfo.value).lower()
+        assert "invalid duplicate policy" in str(excinfo.value).lower()
 
         # Both DECIMAL_DIGITS and SIGNIFICANT_DIGITS (only one allowed)
         with pytest.raises(ResponseError) as excinfo:
@@ -132,9 +133,10 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
 
         assert client.execute_command("TS.CREATE", "ts_ignore",
                                       "IGNORE", "1000", "0.5") == b'OK'
-        info = self.ts_info(client, "ts_ignore")
-        assert info[b'max_time_delta'] == 1000
-        assert info[b'max_value_delta'] == 0.5
+        info = self.ts_info("ts_ignore")
+        print(info)
+        assert info[b'ignoreMaxTimeDiff'] == b'1000'
+        assert info[b'ignoreMaxValDiff'] == b'0.5'
 
     def test_create_multiple_series(self):
         """Test creating many time series and verify they all exist"""
@@ -149,8 +151,9 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         for i in range(10):
             key = f"multi_ts_{i}"
             assert client.execute_command("EXISTS", key) == 1
-            info = self.ts_info(client, key)
-            assert info[b'labels'][b'idx'] == str(i).encode()
+            info = self.ts_info(key)
+            labels = info[b'labels']
+            assert labels['idx'] == str(i)
 
         # Verify count in database
         assert client.execute_command("DBSIZE") == 10

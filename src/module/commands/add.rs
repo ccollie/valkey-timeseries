@@ -1,4 +1,5 @@
 use crate::common::Timestamp;
+use crate::error_consts;
 use crate::module::arg_parse::parse_timestamp;
 use crate::module::commands::create_series::create_series;
 use crate::module::commands::parse_series_options;
@@ -40,7 +41,11 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 replicate_and_notify(ctx, args, timestamp);
                 Ok(ValkeyValue::Integer(ts))
             }
-            _ => Ok(ValkeyValue::Null),
+            SampleAddResult::Duplicate => {
+                Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED))
+            }
+            SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
+            _ => Ok(ValkeyValue::Null), // todo: unreachable
         };
     }
 
@@ -60,6 +65,8 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             replicate_and_notify(ctx, original_args, Some(timestamp));
             Ok(ValkeyValue::Integer(ts))
         }
+        SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
+        SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
         _ => Ok(ValkeyValue::Null),
     }
 }
