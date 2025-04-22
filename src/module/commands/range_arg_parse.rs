@@ -5,7 +5,7 @@ use crate::module::arg_parse::{
     parse_label_list, parse_timestamp_filter, parse_timestamp_range, parse_value_filter,
     CommandArgIterator, CommandArgToken,
 };
-use valkey_module::{NextArg, ValkeyError, ValkeyResult};
+use valkey_module::{NextArg, ValkeyResult};
 
 pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
     const RANGE_OPTION_ARGS: [CommandArgToken; 10] = [
@@ -60,9 +60,9 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
         }
     }
 
-    if options.series_selector.is_empty() {
-        return Err(ValkeyError::Str("ERR no FILTER given"));
-    }
+    // if options.series_selector.is_empty() {
+    //     return Err(ValkeyError::Str("TSDB: no FILTER given"));
+    // }
 
     Ok(options)
 }

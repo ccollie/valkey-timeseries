@@ -1,8 +1,7 @@
-import time
 import pytest
-from valkeytestframework.valkey_test_case import ValkeyTestCase
-from valkey import ResponseError
+from valkeytestframework.util.waiters import *
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
+from valkeytestframework.conftest import resource_port_tracker
 
 class TestTsDel(ValkeyTimeSeriesTestCaseBase):
     def test_del_single_point(self):

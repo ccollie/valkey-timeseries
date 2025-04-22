@@ -1,15 +1,14 @@
 import pytest
 from valkey import ResponseError
-from valkeytestframework.valkey_test_case import ValkeyTestCase
-
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
+from valkeytestframework.conftest import resource_port_tracker
 
 
 class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
     def test_basic_add(self):
         """Test basic TS.ADD command functionality"""
         # Create a timeseries
-        assert self.client.execute_command("TS.CREATE", "ts1") == "OK"
+        assert self.client.execute_command("TS.CREATE", "ts1") == b"OK"
 
         # Add a sample
         timestamp = 1600000000000

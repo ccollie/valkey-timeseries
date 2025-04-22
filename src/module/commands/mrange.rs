@@ -13,7 +13,7 @@ use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::series_keys_by_matchers;
 use crate::series::{SeriesSampleIterator, TimeSeries};
 use ahash::AHashMap;
-use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 pub(super) struct MRangeSeriesMeta<'a> {
     series: &'a TimeSeries,
@@ -42,6 +42,10 @@ pub fn mrevrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let mut options = parse_range_options(&mut args)?;
+
+    if options.series_selector.is_empty() {
+        return Err(ValkeyError::Str("TSDB: no FILTER given"));
+    }
 
     args.done()?;
 

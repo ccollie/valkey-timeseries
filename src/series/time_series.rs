@@ -191,10 +191,7 @@ impl TimeSeries {
 
     fn handle_full_chunk(&mut self, sample: Sample) -> SampleAddResult {
         match self.add_chunk_with_sample(sample) {
-            Ok(_) => {
-                self.update_after_sample_add(sample);
-                SampleAddResult::Ok(sample.timestamp)
-            }
+            Ok(_) => SampleAddResult::Ok(sample.timestamp),
             Err(TsdbError::DuplicateSample(_)) => SampleAddResult::Duplicate,
             Err(_) => SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE),
         }
@@ -491,7 +488,7 @@ impl TimeSeries {
 
     pub fn is_older_than_retention(&self, timestamp: Timestamp) -> bool {
         if self.retention.is_zero() {
-           return false;
+            return false;
         }
         let min_ts = self.get_min_timestamp();
         timestamp < min_ts
