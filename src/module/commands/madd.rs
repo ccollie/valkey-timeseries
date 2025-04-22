@@ -6,7 +6,9 @@ use crate::module::get_timeseries_mut;
 use crate::series::SampleAddResult;
 use ahash::AHashMap;
 use smallvec::SmallVec;
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 struct ParsedInput<'a> {
     key: &'a ValkeyString,
@@ -88,7 +90,7 @@ fn add_samples_internal(
     key: &ValkeyString,
     input: &Vec<ParsedInput>,
 ) -> TsdbResult<Vec<(usize, SampleAddResult)>> {
-    if let Ok(Some(mut guard)) = get_timeseries_mut(ctx, key, true) {
+    if let Ok(Some(mut guard)) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::UPDATE)) {
         let samples: SmallVec<Sample, 6> = input
             .iter()
             .map(|input| Sample {

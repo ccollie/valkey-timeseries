@@ -3,7 +3,9 @@ use crate::module::arg_parse::parse_timestamp;
 use crate::module::commands::{create_series, parse_series_options};
 use crate::module::get_timeseries_mut;
 use crate::series::{SampleAddResult, TimeSeries, TimeSeriesOptions};
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 pub fn incrby(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     incr_decr(ctx, args, true)
@@ -26,7 +28,9 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     let timestamp = handle_parse_timestamp(&mut args)?;
 
     let key_name = args[1].clone();
-    if let Some(mut series) = get_timeseries_mut(ctx, &key_name, false)? {
+    if let Some(mut series) =
+        get_timeseries_mut(ctx, &key_name, false, Some(AclPermissions::UPDATE))?
+    {
         handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
     } else {
         let mut args = args.into_iter().skip(3).peekable();

@@ -5,7 +5,9 @@ use crate::module::commands::parse_series_options;
 use crate::module::{get_timeseries_mut, VK_TIME_SERIES_TYPE};
 use crate::series::{SampleAddResult, TimeSeriesOptions};
 use valkey_module::key::ValkeyKeyWritable;
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 ///
 /// TS.ADD key timestamp value
@@ -28,7 +30,8 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let timestamp = parse_timestamp(timestamp_str)?;
     let value = args[3].parse_float()?;
 
-    if let Some(mut guard) = get_timeseries_mut(ctx, &args[1], false)? {
+    if let Some(mut guard) = get_timeseries_mut(ctx, &args[1], false, Some(AclPermissions::UPDATE))?
+    {
         // args.done()?;
         let series = guard.get_series_mut();
         return match series.add(timestamp, value, None) {

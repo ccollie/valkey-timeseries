@@ -3,7 +3,9 @@ use crate::module::commands::parse_series_options;
 use crate::module::with_timeseries_mut;
 use crate::series::index::with_timeseries_index;
 use crate::series::{TimeSeries, TimeSeriesOptions};
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK};
+use valkey_module::{
+    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
+};
 
 pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
@@ -12,7 +14,7 @@ pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         .next()
         .ok_or(ValkeyError::Str("Err missing key argument"))?;
 
-    with_timeseries_mut(ctx, &key, |series| {
+    with_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE), |series| {
         let opts = options_from_series(series);
         let options = parse_series_options(
             &mut args,

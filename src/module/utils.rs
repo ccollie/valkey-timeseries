@@ -110,10 +110,13 @@ pub fn with_timeseries<R>(
 pub fn with_timeseries_mut<R>(
     ctx: &Context,
     key: &ValkeyString,
+    permissions: Option<AclPermissions>,
     f: impl FnOnce(&mut TimeSeries) -> ValkeyResult<R>,
 ) -> ValkeyResult<R> {
+    let perms = permissions.unwrap_or(AclPermissions::UPDATE);
     // expect should not panic, since must_exist will cause an error if the key is non-existent, and `?` will ensure it propagates
-    let mut series = get_timeseries_mut(ctx, key, true)?.expect("expected key to exist");
+    let mut series =
+        get_timeseries_mut(ctx, key, true, Some(perms))?.expect("expected key to exist");
     f(&mut series)
 }
 
@@ -139,11 +142,14 @@ pub fn get_timeseries_mut<'a>(
     ctx: &'a Context,
     key: &ValkeyString,
     must_exist: bool,
+    permissions: Option<AclPermissions>,
 ) -> ValkeyResult<Option<SeriesGuardMut<'a>>> {
     let value_key = ctx.open_key_writable(key);
     match value_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
         Ok(Some(series)) => {
-            check_key_permissions(ctx, key, AclPermissions::UPDATE)?;
+            if let Some(permissions) = permissions {
+                check_key_permissions(ctx, key, permissions)?;
+            }
             Ok(Some(SeriesGuardMut { series }))
         }
         Ok(None) => {
