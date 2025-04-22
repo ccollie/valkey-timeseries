@@ -1,5 +1,4 @@
 use crate::common::constants::META_KEY_LABEL;
-use crate::labels::InternedLabel;
 use crate::module::with_timeseries;
 use crate::series::{
     chunks::{Chunk, TimeSeriesChunk},
@@ -59,16 +58,15 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
     if ts.labels.is_empty() {
         map.insert("labels".into(), ValkeyValue::Null);
     } else {
-        let mut labels_map: HashMap<ValkeyValueKey, ValkeyValue> =
-            HashMap::with_capacity(ts.labels.len() + 1);
+        let mut labels = ts.labels.to_label_vec();
+        labels.sort();
 
-        for InternedLabel { name, value } in ts.labels.iter() {
-            labels_map.insert(
-                ValkeyValueKey::String(name.into()),
-                ValkeyValue::from(value),
-            );
-        }
-        map.insert("labels".into(), ValkeyValue::from(labels_map));
+        let labels_value = labels
+            .into_iter()
+            .map(|label| label.into())
+            .collect::<Vec<ValkeyValue>>();
+
+        map.insert("labels".into(), ValkeyValue::from(labels_value));
     }
 
     if debug {

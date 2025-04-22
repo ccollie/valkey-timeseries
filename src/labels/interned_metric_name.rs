@@ -5,7 +5,7 @@ use enquote::enquote;
 use get_size::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
-use valkey_module::{raw, ValkeyResult};
+use valkey_module::{raw, ValkeyResult, ValkeyValue};
 use yasi::InternedString;
 
 const VALUE_SEPARATOR: &str = "=";
@@ -14,6 +14,16 @@ const EMPTY_LABEL: &str = "";
 pub struct InternedLabel<'a> {
     pub name: &'a str,
     pub value: &'a str,
+}
+
+impl From<InternedLabel<'_>> for ValkeyValue {
+    fn from(label: InternedLabel) -> Self {
+        let row = vec![
+            ValkeyValue::from(label.name),
+            ValkeyValue::from(label.value),
+        ];
+        ValkeyValue::from(row)
+    }
 }
 
 impl SeriesLabel for InternedLabel<'_> {
