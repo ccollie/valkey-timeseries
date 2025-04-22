@@ -1,7 +1,5 @@
 use super::{GorillaEncoder, GorillaIterator};
-use crate::common::serialization::{
-    rdb_load_usize, rdb_save_usize,
-};
+use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
@@ -341,10 +339,7 @@ impl Chunk for GorillaChunk {
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
         let max_size = rdb_load_usize(rdb)?;
         let encoder = GorillaEncoder::rdb_load(rdb)?;
-        let chunk = GorillaChunk {
-            encoder,
-            max_size,
-        };
+        let chunk = GorillaChunk { encoder, max_size };
         Ok(chunk)
     }
 }

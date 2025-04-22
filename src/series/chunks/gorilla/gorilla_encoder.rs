@@ -98,7 +98,8 @@ impl GorillaEncoder {
 
         self.writer.write_uvarint(timestamp_delta as u64)?;
 
-        let (leading, trailing) = write_varbit_xor(value, self.last_value, 0xff, 0, &mut self.writer)?;
+        let (leading, trailing) =
+            write_varbit_xor(value, self.last_value, 0xff, 0, &mut self.writer)?;
 
         self.last_ts = timestamp;
         self.last_value = value;
