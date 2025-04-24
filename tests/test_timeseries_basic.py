@@ -26,7 +26,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         ts_add_result = client.execute_command('TS.ADD series1 1000 102')
         assert ts_add_result == 1000
         exists_result = client.execute_command('TS.GET series1')
-        assert exists_result == 102
+        assert exists_result == [1000, b'102']
 
     def test_timeseries_create_cmd(self):
         client = self.server.get_new_client()

@@ -8,6 +8,10 @@ use valkey_module::{
 };
 
 pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    if args.len() < 2 {
+        return Err(ValkeyError::WrongArity);
+    }
+
     let mut args = args.into_iter().skip(1).peekable();
 
     let key = args

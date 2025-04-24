@@ -192,13 +192,13 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         # Add with invalid value format
         self.verify_error_response(
             self.client, 'TS.MADD ts1 1000 invalid',
-            "Invalid value specified"
+            "TSDB: invalid value"
         )
 
         # Add to a regular string key
         self.verify_error_response(
             self.client, 'TS.MADD string_key 1000 10.0',
-            "WRONGTYPE Operation against a key holding the wrong kind of value"
+            "TSDB: the key is not a TSDB key"
         )
 
         # Not enough arguments

@@ -61,10 +61,11 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         random_string = ''.join(random.choice(characters) for _ in range(length))
         return random_string
 
-    def ts_info(self, key):
+    def ts_info(self, key, debug = False):
         """ Get the info of the given key.
         """
-        info = self.client.execute_command(f'TS.INFO {key}')
+        debug_str = 'DEBUG' if debug else ''
+        info = self.client.execute_command(f'TS.INFO {key} {debug_str}')
         it = iter(info)
         info_dict = dict(zip(it, it))
         if b'labels' in info_dict:
@@ -179,3 +180,35 @@ class ValkeyInfo:
 
     def uptime_in_secs(self):
         return self.info['uptime_in_seconds']
+
+
+def parse_info_response(response):
+    """Helper function to parse TS.INFO list response into a dictionary."""
+    info_dict = {}
+    it = iter(response)
+    for key in it:
+        key_str = key.decode('utf-8')
+        value = next(it)
+        if isinstance(value, list):
+            # Handle nested structures like labels and chunks
+            if key_str == 'labels':
+                labels = info_dict[key_str]
+                info_dict[key_str] = list_to_dict(labels)
+            elif key_str == 'rules':
+                info_dict[key_str] = [[r[0].decode('utf-8'), int(r[1])] for r in value]
+            elif key_str == 'chunks':
+                # Parse chunk details (structure might vary slightly)
+                info_dict[key_str] = []
+                for chunk_info_list in value:
+                    chunk_dict = {}
+                    chunk_it = iter(chunk_info_list)
+                    for chunk_key in chunk_it:
+                        chunk_dict[chunk_key.decode('utf-8')] = next(chunk_it)
+                    info_dict[key_str].append(chunk_dict)
+            else: # Fallback for unknown list types
+                info_dict[key_str] = value
+        elif isinstance(value, bytes):
+            info_dict[key_str] = value.decode('utf-8')
+        else:
+            info_dict[key_str] = value
+    return info_dict

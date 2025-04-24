@@ -41,7 +41,7 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let original_args = args.clone();
     let mut args = args.into_iter().skip(4).peekable();
 
-    let options = parse_series_options(&mut args, TimeSeriesOptions::default(), &[])?;
+    let options = parse_series_options(&mut args, TimeSeriesOptions::from_config(), &[])?;
 
     let key = &original_args[1];
     create_and_store_series(ctx, key, options)?; // todo: ACL ?
@@ -76,7 +76,7 @@ fn handle_add(
         }
         SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
         SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
-        _ => Ok(ValkeyValue::Null),
+        _ => unreachable!("BUG: invalid SampleAddResult in TS.ADD"),
     }
 }
 

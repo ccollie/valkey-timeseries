@@ -83,7 +83,6 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
         ts.sample_duplicates.max_value_delta.into(),
     );
 
-    // todo: Rounding
     if let Some(rounding) = ts.rounding {
         let (name, digits) = match rounding {
             RoundingStrategy::SignificantDigits(d) => ("significantDigits", d),

@@ -1,9 +1,8 @@
-import pytest
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
-class TestTsIncrby(ValkeyTimeSeriesTestCaseBase):
+class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
     def test_incrby_basic(self):
         """Test basic TS.INCRBY functionality with auto-creation"""
@@ -193,19 +192,19 @@ class TestTsIncrby(ValkeyTimeSeriesTestCaseBase):
         # Test with invalid increment
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_err xyz',
-            "could not convert string to float: xyz"
+            "TSDB: invalid value"
         )
 
         # Test with invalid timestamp
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_err 5 TIMESTAMP invalid',
-            "invalid timestamp: invalid"
+            "TSDB: invalid timestamp."
         )
 
         # Test with invalid policy
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_err 5 ON_DUPLICATE INVALID_POLICY',
-            "invalid ON_DUPLICATE policy: INVALID_POLICY"
+            "TSDB: invalid duplicate policy"
         )
 
     def test_incrby_existing_nonts_key(self):
@@ -216,7 +215,7 @@ class TestTsIncrby(ValkeyTimeSeriesTestCaseBase):
         # Try to increment it as a timeseries - should fail
         self.verify_error_response(
             self.client, 'TS.INCRBY string_key 5',
-            "WRONGTYPE Operation against a key holding the wrong kind of value"
+            "TSDB: the key is not a TSDB key"
         )
 
     def test_incrby_with_get(self):

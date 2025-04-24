@@ -37,7 +37,7 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     } else {
         let key_name = args.remove(1);
         let mut args = args.into_iter().skip(2).peekable();
-        let options = parse_series_options(&mut args, TimeSeriesOptions::default(), &[])?;
+        let options = parse_series_options(&mut args, TimeSeriesOptions::from_config(), &[])?;
         create_and_store_series(ctx, &key_name, options)?; // todo: ACL ?
 
         if let Some(mut series) =
@@ -75,10 +75,8 @@ fn handle_update(
     delta: f64,
     is_increment: bool,
 ) -> ValkeyResult {
-    let mut delta = delta;
-    if !series.is_empty() && !is_increment {
-        delta = -delta;
-    }
+    let delta = if !is_increment { -delta } else { delta };
+
     let result = series.increment_sample_value(timestamp, delta)?;
     match result {
         SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
@@ -93,6 +91,8 @@ fn handle_update(
         }
         SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
         SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
-        _ => Ok(ValkeyValue::Null),
+        _ => {
+            unreachable!("BUG: invalid return value from TimeSeries::add() in TS.INCRBY/TS.DECRBY")
+        }
     }
 }

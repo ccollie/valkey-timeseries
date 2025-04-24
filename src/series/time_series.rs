@@ -655,6 +655,7 @@ impl TimeSeries {
             ));
         }
 
+        // todo: should we add a flag to skip adjust_value()?
         Ok(self.add(timestamp, value, Some(DuplicatePolicy::KeepLast)))
     }
 

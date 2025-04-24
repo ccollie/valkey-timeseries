@@ -2,11 +2,15 @@ use crate::error_consts;
 use crate::module::arg_parse::parse_metadata_command_args;
 use crate::series::index::with_matched_series;
 use std::collections::BTreeSet;
+use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 // TS.LABELVALUES label [START fromTimestamp] [END fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
 pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    if args.len() < 3 {
+        return Err(WrongArity);
+    }
     let mut args = args.into_iter().skip(1).peekable();
     let label_name = args.next_arg()?.to_string_lossy();
     if label_name.is_empty() {

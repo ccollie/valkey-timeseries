@@ -128,6 +128,10 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             "TS.ADD", "ts_dup_first", timestamp, 30.0, "ON_DUPLICATE", "FIRST"
         )
 
+        info = self.ts_info("ts_dup_first")
+        print(info)
+        assert info[b"duplicatePolicy"] == b"first"
+
         self.client.execute_command(
             "TS.ADD", "ts_dup_first", timestamp, 40.0
         )

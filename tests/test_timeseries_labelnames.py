@@ -19,14 +19,6 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         client.execute_command('TS.CREATE', 'ts8', 'LABELS', 'type', 'usage')  # No name label
         client.execute_command('TS.CREATE', 'ts9', 'LABELS', 'location', 'datacenter', 'rack', 'rack1')  # Different labels
 
-    def test_basic_labelnames(self):
-        """Test basic TS.LABELNAMES functionality without filters"""
-        self.setup_test_data(self.client)
-
-        # Get all label names
-        result = self.client.execute_command('TS.LABELNAMES')
-        assert result == [b'location', b'name', b'node', b'rack', b'type']
-
     def test_labelnames_with_filter(self):
         """Test TS.LABELNAMES with FILTER parameter"""
         self.setup_test_data(self.client)

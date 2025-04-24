@@ -1,7 +1,7 @@
 use crate::arg_types::RangeOptions;
 use crate::labels::parse_series_selector;
 use crate::module::arg_parse::{
-    parse_aggregation_options, parse_command_arg_token, parse_count, parse_grouping_params,
+    parse_aggregation_options, parse_command_arg_token, parse_count_arg, parse_grouping_params,
     parse_label_list, parse_timestamp_filter, parse_timestamp_range, parse_value_filter,
     CommandArgIterator, CommandArgToken,
 };
@@ -35,7 +35,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
                 options.aggregation = Some(parse_aggregation_options(args)?);
             }
             CommandArgToken::Count => {
-                options.count = Some(parse_count(args)?);
+                options.count = Some(parse_count_arg(args)?);
             }
             CommandArgToken::Filter => {
                 let filter = args.next_str()?;

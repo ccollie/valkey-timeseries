@@ -440,12 +440,14 @@ pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFi
     ValueFilter::new(min, max)
 }
 
-pub fn parse_count(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
-    let next = args.next_arg()?;
+pub fn parse_count_arg(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
+    let next = args
+        .next_arg()
+        .map_err(|_| ValkeyError::Str(error_consts::MISSING_COUNT_VALUE))?;
     let count = parse_integer_arg(&next, CMD_ARG_COUNT, false)
         .map_err(|_| ValkeyError::Str(error_consts::NEGATIVE_COUNT))?;
     if count > usize::MAX as i64 {
-        return Err(ValkeyError::Str("TSDB COUNT value is too large"));
+        return Err(ValkeyError::Str(error_consts::INVALID_COUNT_VALUE));
     }
     Ok(count as usize)
 }
@@ -504,8 +506,7 @@ pub fn parse_label_list(
 
         let label = args.next_str()?;
         if labels.contains(label) {
-            let msg = format!("TSDB: duplicate label: {label}");
-            return Err(ValkeyError::String(msg));
+            return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
         }
         labels.insert(label.to_string());
     }
@@ -720,9 +721,13 @@ pub(crate) fn parse_metadata_command_args(
                 matchers.extend(m);
             }
             CommandArgToken::Limit => {
-                let next = args.next_u64()?;
-                if next > usize::MAX as u64 {
-                    return Err(ValkeyError::Str("TSDB: LIMIT too large"));
+                let next = args
+                    .next_str()
+                    .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?
+                    .parse::<i64>()
+                    .map_err(|_e| ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE))?;
+                if next < 0 {
+                    return Err(ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE));
                 }
                 limit = Some(next as usize);
             }

@@ -2,7 +2,7 @@ use crate::error_consts;
 use crate::join::{process_join, AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
 use crate::module::arg_parse::{
     advance_if_next_token, advance_if_next_token_one_of, parse_aggregation_options,
-    parse_command_arg_token, parse_count, parse_duration_ms, parse_join_operator,
+    parse_command_arg_token, parse_count_arg, parse_duration_ms, parse_join_operator,
     parse_timestamp_filter, parse_timestamp_range, parse_value_filter, CommandArgIterator,
     CommandArgToken,
 };
@@ -138,7 +138,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
                 options.join_type = parse_asof_join_options(args)?;
             }
             Count => {
-                options.count = Some(parse_count(args)?);
+                options.count = Some(parse_count_arg(args)?);
             }
             FilterByValue => {
                 options.value_filter = Some(parse_value_filter(args)?);
