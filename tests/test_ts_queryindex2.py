@@ -43,7 +43,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts1', b'ts5', b'ts6']
 
         # Find series with 'i' label
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~.+'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i="~.+"'))
         assert result == [b'ts2', b'ts3', b'ts4', b'ts7']
 
     def test_not_equal_matching(self):
@@ -67,19 +67,19 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Match with regex pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~^1$'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~"^1$"'))
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4']
 
         # Match with OR pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~1|2'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~"1|2"'))
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts5']
 
         # Match all with .* pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~.*'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n="~.*"'))
         assert len(result) == 6  # All series with label 'n'
 
         # Match non-empty values with .+
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~.+'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i="~.+"'))
         assert result == [b'ts2', b'ts3', b'ts4', b'ts7']
 
     def test_regex_not_matching(self):
@@ -87,15 +87,15 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Not matching regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!=~^1$'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~"^1$"'))
         assert result == [b'ts5', b'ts6', b'ts7', b'ts8']
 
         # Not matching OR pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!=~1|2'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n~="1|2"'))
         assert result == [b'ts6', b'ts7', b'ts8']
 
         # Not matching anything (should return empty set)
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!=~.*'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n~=".*"'))
         assert result == [b'ts7', b'ts8']  # Only series without 'n' label
 
     def test_complex_combinations(self):
@@ -103,7 +103,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Combination of equals, not equals and regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i!=a', 'i=~.*'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i!=a', 'i="~.*"'))
         assert result == [b'ts3', b'ts4']
 
         # Using multiple mutually exclusive conditions
@@ -111,7 +111,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == []
 
         # Complex regex pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~^[12].*$'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~"^[12].*$"'))
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts5', b'ts6']
 
     def test_special_characters(self):
@@ -123,11 +123,11 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts4']
 
         # Match with regex for special character
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~\\n'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~"\\n"'))
         assert result == [b'ts4']
 
         # Match ampersand in value
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'complex=val1&val2'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'complex="val1&val2"'))
         assert result == [b'ts8']
 
     def test_error_cases(self):
@@ -159,7 +159,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == []
 
         # Combination of regex patterns that can't be satisfied
-        result = self.client.execute_command('TS.QUERYINDEX', 'i=~a.*', 'i=~b.*')
+        result = self.client.execute_command('TS.QUERYINDEX', 'i=~"a.*"', 'i=~"b.*"')
         assert result == []
 
     def test_query_with_multiple_filters(self):
@@ -171,7 +171,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts2']
 
         # Multiple filters with regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~^[12]$', 'i=~[ab]'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~"^[12]$"', 'i=~"[ab]"'))
         assert result == [b'ts2', b'ts3']
 
         # Multiple filters with negation
@@ -183,17 +183,17 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Match all series with a wildcard
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~.*'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"'))
         assert len(result) == 6  # All series with n label
 
         # Match all and filter with another condition
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~.*', 'i=a'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"', 'i=a'))
         assert result == [b'ts2']
 
         # Using .+ to match non-empty values only
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~.+'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~".+"'))
         assert result == [b'ts2', b'ts3', b'ts4', b'ts7']
 
         # Not matching anything
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!=~.*', 'i!=~.*'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~".*"', 'i!~".*"'))
         assert result == []  # No series can satisfy this
