@@ -12,12 +12,11 @@ use crate::common::db::get_current_db;
 use papaya::{Guard, HashMap};
 use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{Context, ValkeyResult, ValkeyString};
 
 use crate::arg_types::MatchFilterOptions;
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
-use crate::error_consts;
 use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::TimeSeries;
 pub use posting_stats::*;
@@ -66,9 +65,10 @@ pub fn with_matched_series<F, STATE>(
 where
     F: FnMut(&mut STATE, &TimeSeries, ValkeyString),
 {
+    // todo: check ACLs
     let keys = series_keys_by_matchers(ctx, &filter.matchers, None)?;
     if keys.is_empty() {
-        return Err(ValkeyError::Str(error_consts::NO_SERIES_FOUND));
+        return Ok(());
     }
 
     let now = Some(current_time_millis());
@@ -80,7 +80,7 @@ where
             Ok(Some(series)) => {
                 if let Some(range) = filter.date_range {
                     let (start, end) = range.get_series_range(series, now, true);
-                    if series.overlaps(start, end) {
+                    if series.has_samples_in_range(start, end) {
                         f(acc, series, key);
                     }
                 } else {

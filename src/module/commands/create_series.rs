@@ -1,4 +1,3 @@
-use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::Label;
 use crate::module::arg_parse::{
@@ -7,14 +6,10 @@ use crate::module::arg_parse::{
     parse_label_value_pairs, parse_metric_name, parse_retention, parse_significant_digit_rounding,
     CommandArgIterator, CommandArgToken,
 };
-use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::index::{next_timeseries_id, with_timeseries_index};
-use crate::series::{TimeSeries, TimeSeriesOptions};
+use crate::module::create_and_store_series;
+use crate::series::TimeSeriesOptions;
 use smallvec::SmallVec;
-use valkey_module::key::ValkeyKeyWritable;
-use valkey_module::{
-    Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
-};
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK};
 
 /// Create a new time series
 ///
@@ -74,7 +69,10 @@ pub fn parse_series_options(
             return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
         }
         match token {
-            CommandArgToken::ChunkSize => options.chunk_size = Some(parse_chunk_size(args)?),
+            CommandArgToken::ChunkSize => {
+                let arg = args.next_str()?;
+                options.chunk_size = Some(parse_chunk_size(arg)?)
+            }
             CommandArgToken::Encoding => {
                 options.chunk_compression = parse_chunk_compression(args)?;
             }
@@ -155,52 +153,4 @@ fn parse_labels(
         labels.push(Label::new(label_name, label_value));
     }
     Ok(labels)
-}
-
-pub(crate) fn create_series(
-    key: &ValkeyString,
-    options: TimeSeriesOptions,
-    ctx: &Context,
-) -> ValkeyResult<TimeSeries> {
-    let mut ts = TimeSeries::with_options(options)?;
-    if ts.id == 0 {
-        ts.id = next_timeseries_id();
-    }
-    with_timeseries_index(ctx, |index| {
-        // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
-        // We do this only in the case where we have a __name__ label, signalling that the user is
-        // opting in to Prometheus semantics, meaning a metric name is unique to a series.
-        if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
-            let labels = ts.labels.to_label_vec();
-            // will return an error if the series already exists
-            let existing_id = index.posting_by_labels(&labels)?;
-            if let Some(_id) = existing_id {
-                return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
-            }
-        }
-
-        index.index_timeseries(&ts, key.iter().as_slice());
-        Ok(ts)
-    })
-}
-
-pub(crate) fn create_and_store_series(
-    ctx: &Context,
-    key: &ValkeyString,
-    options: TimeSeriesOptions,
-) -> ValkeyResult<()> {
-    let _key = ValkeyKeyWritable::open(ctx.ctx, key);
-    // check if this refers to an existing series
-    if !_key.is_empty() {
-        return Err(ValkeyError::Str(error_consts::DUPLICATE_KEY));
-    }
-
-    let ts = create_series(key, options, ctx)?;
-    _key.set_value(&VK_TIME_SERIES_TYPE, ts)?;
-
-    ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.CREATE", key);
-    ctx.log_verbose("series created");
-
-    Ok(())
 }

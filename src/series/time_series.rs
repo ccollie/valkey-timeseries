@@ -5,13 +5,13 @@ use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
-use crate::config::{DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_RETENTION_PERIOD};
+use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
-use crate::error_consts;
 use crate::labels::{InternedLabel, InternedMetricName};
 use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::index::next_timeseries_id;
 use crate::series::DuplicatePolicy;
+use crate::{config, error_consts};
 use get_size::GetSize;
 use smallvec::SmallVec;
 use std::hash::Hash;
@@ -67,9 +67,20 @@ impl TimeSeries {
         }
 
         res.chunk_compression = options.chunk_compression;
-        res.retention = options.retention.unwrap_or(DEFAULT_RETENTION_PERIOD);
+        res.retention = options.retention.unwrap_or_else(|| {
+            let retention = config::RETENTION_PERIOD
+                .lock()
+                .expect("failed to lock RETENTION_PERIOD mutex");
+            *retention
+        });
         res.rounding = options.rounding;
         res.sample_duplicates = options.sample_duplicate_policy;
+        if res.sample_duplicates.policy.is_some() {
+            let policy = config::DUPLICATE_POLICY
+                .lock()
+                .expect("failed to lock DUPLICATE_POLICY mutex");
+            res.sample_duplicates.policy = Some(*policy);
+        }
 
         // todo: make sure labels are sorted and dont contain __name__
         // if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
@@ -669,6 +680,7 @@ impl TimeSeries {
         size_of::<Self>() + self.get_heap_size()
     }
 
+    /// Returns the minimum timestamp of the time series, considering the retention period.
     pub(crate) fn get_min_timestamp(&self) -> Timestamp {
         if self.retention.is_zero() {
             self.first_timestamp

@@ -1,7 +1,10 @@
+use crate::error_consts;
 use crate::module::commands::range_arg_parse::parse_range_options;
 use crate::module::commands::range_utils::get_range;
-use crate::module::with_timeseries;
-use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::module::get_timeseries;
+use valkey_module::{
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 /// TS.RANGE key fromTimestamp toTimestamp
 //   [LATEST]
@@ -16,14 +19,17 @@ pub fn range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_range_options(&mut args)?;
 
     args.done()?;
-
-    with_timeseries(ctx, &key, true, |series| {
-        let samples = get_range(series, &options, false);
+    if let Some(series) = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)? {
+        let samples = get_range(&series, &options, false);
         let result = samples
             .into_iter()
             .map(|x| x.into())
             .collect::<Vec<ValkeyValue>>();
 
         Ok(ValkeyValue::from(result))
-    })
+    } else {
+        // essentially a dead branch, but satisfies the compiler
+        // since we have already checked the key existence
+        Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND))
+    }
 }

@@ -42,15 +42,16 @@ impl TimestampValue {
 
     pub fn as_series_timestamp(&self, series: &TimeSeries, now: Option<Timestamp>) -> Timestamp {
         use TimestampValue::*;
+
         match self {
-            Earliest => series.first_timestamp,
+            Earliest => series.get_min_timestamp(),
             Latest => series.last_timestamp(),
             Now => now.unwrap_or_else(current_time_millis),
             Specific(ts) => *ts,
-            Relative(delta) => now
-                .unwrap_or_else(current_time_millis)
-                .saturating_add(*delta)
-                .min(MAX_TIMESTAMP),
+            Relative(delta) => {
+                let now = now.unwrap_or_else(current_time_millis);
+                now.saturating_add(*delta).min(MAX_TIMESTAMP)
+            }
         }
     }
 }
@@ -237,8 +238,7 @@ impl TimestampRange {
         };
 
         if check_retention && !series.retention.is_zero() {
-            let retention_ms = series.retention.as_millis() as i64;
-            let earliest = series.last_timestamp().saturating_sub(retention_ms);
+            let earliest = series.get_min_timestamp();
             start_timestamp = start_timestamp.max(earliest);
         }
 

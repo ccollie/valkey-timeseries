@@ -312,6 +312,20 @@ impl ValueFilter {
         }
         Ok(Self { min, max })
     }
+
+    pub fn greater_than(value: f64) -> Self {
+        Self {
+            min: value,
+            max: f64::MAX,
+        }
+    }
+
+    pub fn less_than(value: f64) -> Self {
+        Self {
+            min: f64::MIN,
+            max: value,
+        }
+    }
 }
 
 #[cfg(test)]

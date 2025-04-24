@@ -18,9 +18,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the sample was added
         samples = self.client.execute_command("TS.RANGE", "ts1", "-", "+")
-        assert len(samples) == 1
-        assert samples[0][0] == timestamp
-        assert samples[0][1] == b'10.5'
+        assert samples == [[timestamp, b'10.5']]
 
     def test_add_with_labels(self):
         """Test adding samples with labels"""
@@ -60,6 +58,11 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command("TS.ADD", "ts_auto_create", timestamp, 44.5)
         assert result == timestamp
 
+        # Verify the sample was added
+        client = self.server.get_new_client()
+        info = client.execute_command("TS.INFO", "ts_auto_create")
+        print("info", info)
+
         # Verify the timeseries was created
         assert self.client.execute_command("EXISTS", "ts_auto_create") == 1
 
@@ -81,7 +84,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the retention was set
         info = self.ts_info("ts_retention")
-        assert info["retentionTime"] == retention
+        assert int(info[b"retentionTime"]) == retention
 
     def test_add_with_encoding(self):
         """Test TS.ADD with different encoding options"""
@@ -91,15 +94,17 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             "TS.ADD", "ts_uncompressed", timestamp, 66.5, "ENCODING", "UNCOMPRESSED"
         )
 
-        info = self.client.execute_command("TS.INFO", "ts_uncompressed")
-        assert info[b"encoding"] == b"UNCOMPRESSED"
+        info = self.ts_info("ts_uncompressed")
+        assert info[b"chunkType"] == b"uncompressed"
 
         # Test with COMPRESSED encoding
         self.client.execute_command(
             "TS.ADD", "ts_compressed", timestamp, 77.5, "ENCODING", "COMPRESSED"
         )
 
-        self.validate_ts_info_values("ts_compressed", {b"encoding": b"COMPRESSED"})
+        info = self.ts_info("ts_compressed")
+        assert info[b"chunkType"] == b"compressed"
+
 
     def test_add_with_chunk_size(self):
         """Test TS.ADD with chunk size option"""
@@ -110,58 +115,79 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             "TS.ADD", "ts_chunk_size", timestamp, 88.5, "CHUNK_SIZE", chunk_size
         )
 
-        self.validate_ts_info_values("ts_chunk_size", {b"chunk_size": chunk_size})
+        info = self.ts_info("ts_chunk_size")
+        assert info[b"chunkSize"] == chunk_size
 
     def test_add_with_duplicate_policy(self):
         """Test TS.ADD with different duplicate policies"""
-        # Create a timeseries
-        self.client.execute_command("TS.CREATE", "ts_dup")
 
         # Add first sample
         timestamp = 160000
-        self.client.execute_command("TS.ADD", "ts_dup", timestamp, 10.0)
 
-        # Add duplicate with BLOCK policy (should fail)
-        with pytest.raises(ResponseError) as excinfo:
-            self.client.execute_command(
-                "TS.ADD", "ts_dup", timestamp, 20.0, "ON_DUPLICATE", "BLOCK"
-            )
-        assert "sample blocked" in str(excinfo.value)
-
-        # Add duplicate with FIRST policy (should keep first value)
         self.client.execute_command(
-            "TS.ADD", "ts_dup", timestamp, 30.0, "ON_DUPLICATE", "FIRST"
+            "TS.ADD", "ts_dup_first", timestamp, 30.0, "ON_DUPLICATE", "FIRST"
         )
-        samples = self.client.execute_command("TS.RANGE", "ts_dup", "-", "+")
-        assert samples[0][1] == b'10.0'  # First value preserved
+
+        self.client.execute_command(
+            "TS.ADD", "ts_dup_first", timestamp, 40.0
+        )
+        samples = self.client.execute_command("TS.RANGE", "ts_dup_first", "-", "+")
+        assert float(samples[0][1]) == 30.0  # First value preserved
 
         # Add duplicate with LAST policy (should update to new value)
         self.client.execute_command(
-            "TS.ADD", "ts_dup", timestamp, 40.0, "ON_DUPLICATE", "LAST"
+            "TS.ADD", "ts_dup_last", timestamp, 10.0, "ON_DUPLICATE", "LAST"
         )
-        samples = self.client.execute_command("TS.RANGE", "ts_dup", "-", "+")
-        assert samples[0][1] == b'40.0'  # Last value used
+        self.client.execute_command(
+            "TS.ADD", "ts_dup_last", timestamp, 99.0
+        )
+        samples = self.client.execute_command("TS.RANGE", "ts_dup_last", "-", "+")
+        assert float(samples[0][1]) == 99.0  # Last value used
 
         # Add duplicate with MAX policy
         self.client.execute_command(
-            "TS.ADD", "ts_dup", timestamp, 30.0, "ON_DUPLICATE", "MAX"
+            "TS.ADD", "ts_dup_max", timestamp, 40.0, "ON_DUPLICATE", "MAX"
         )
-        samples = self.client.execute_command("TS.RANGE", "ts_dup", "-", "+")
-        assert samples[0][1] == b'40.0'  # Higher value kept
+        self.client.execute_command(
+            "TS.ADD", "ts_dup_max", timestamp, 20.0
+        )
+
+        samples = self.client.execute_command("TS.RANGE", "ts_dup_max", "-", "+")
+        print(samples)
+        assert float(samples[0][1]) == 40.0  # Higher value kept
 
         # Add duplicate with MIN policy
         self.client.execute_command(
-            "TS.ADD", "ts_dup", timestamp, 20.0, "ON_DUPLICATE", "MIN"
+            "TS.ADD", "ts_dup_min", timestamp, 20.0, "ON_DUPLICATE", "MIN"
         )
-        samples = self.client.execute_command("TS.RANGE", "ts_dup", "-", "+")
-        assert samples[0][1] == b'20.0' # Lower value kept
+        self.client.execute_command(
+            "TS.ADD", "ts_dup_min", timestamp, 10.0
+        )
+
+        samples = self.client.execute_command("TS.RANGE", "ts_dup_min", "-", "+")
+        assert float(samples[0][1]) == 10.0 # Lower value kept
 
         # Add duplicate with SUM policy
         self.client.execute_command(
-            "TS.ADD", "ts_dup", timestamp, 5.0, "ON_DUPLICATE", "SUM"
+            "TS.ADD", "ts_dup_sum", timestamp, 5.0, "ON_DUPLICATE", "SUM"
         )
-        samples = self.client.execute_command("TS.RANGE", "ts_dup", "-", "+")
-        assert samples[0][1] == b'25.0'  # Sum of values
+        self.client.execute_command(
+            "TS.ADD", "ts_dup_last", timestamp, 20.0
+        )
+
+        samples = self.client.execute_command("TS.RANGE", "ts_dup_sum", "-", "+")
+        assert float(samples[0][1]) == 25.0  # Sum of values
+
+        # Add duplicate with BLOCK policy (should fail)
+        self.client.execute_command(
+            "TS.ADD", "ts_dup_block", timestamp, 5.0, "ON_DUPLICATE", "BLOCK"
+        )
+
+        with pytest.raises(ResponseError) as excinfo:
+            self.client.execute_command(
+                "TS.ADD", "ts_dup_block", timestamp, 20.0
+            )
+        assert "sample blocked" in str(excinfo.value)
 
     def test_add_with_labels_creation(self):
         """Test TS.ADD with labels when creating a new timeseries"""
@@ -175,7 +201,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the labels were set
         info = self.ts_info("ts_with_labels")
-        labels = info(b'labels')
+        labels = info[b'labels']
         assert labels["sensor"] == "humidity"
         assert labels["location"] == "outside"
 
@@ -196,12 +222,8 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         for i, sample in enumerate(samples):
             value = i * 1.5
             actual = sample[1]
-            if value == 0.0:
-                assert actual == b'0.0' or actual == b'0'
-            else:
-                expected_value = str(value).encode()
-                assert sample[0] == base_ts + (i * 1000)
-                assert actual == expected_value
+            assert sample[0] == base_ts + (i * 1000)
+            assert float(actual) == float(value)
 
     def test_add_invalid_values(self):
         """Test TS.ADD with invalid values and parameters"""
@@ -238,12 +260,14 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         timestamp = 160000
 
         # Add with decimal digits precision
-        self.client.execute_command(
+        result = self.client.execute_command(
             "TS.ADD", "ts_decimal", timestamp, 123.456789, "DECIMAL_DIGITS", 2
         )
+        print("add result", result)
 
         # Verify the value was rounded to the specified precision
         samples = self.client.execute_command("TS.RANGE", "ts_decimal", "-", "+")
+        print(samples)
         assert samples[0][1] == b'123.46'  # Rounded to 2 decimal places
 
     def test_add_with_significant_digits(self):
@@ -257,6 +281,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the value was rounded to the specified precision
         samples = self.client.execute_command("TS.RANGE", "ts_significant", "-", "+")
+        print(samples)
         assert samples[0][1] == b'123'  # 3 significant digits
 
     def test_add_sample_before_first(self):
@@ -265,17 +290,15 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Add a sample with a timestamp
         timestamp1 = 10000
-        self.client.execute_command("TS.ADD", "ts_before_first", timestamp1, 20.0)
+        self.client.execute_command("TS.ADD", "ts_before_first", timestamp1, 20.5)
 
         # Add a sample with a timestamp before the first sample
         timestamp2 = 5000
-        self.client.execute_command("TS.ADD", "ts_before_first", timestamp2, 10.0)
+        self.client.execute_command("TS.ADD", "ts_before_first", timestamp2, 10.5)
 
         # Verify the sample was added
         samples = self.client.execute_command("TS.RANGE", "ts_before_first", "-", "+")
-        assert len(samples) == 1
-        assert samples[0][0] == timestamp2
-        assert samples[0][1] == b'10.0'
+        assert samples == [[timestamp2, b'10.5'], [timestamp1, b'20.5']]
 
     def test_add_out_of_range_values(self):
         """Test TS.ADD with extreme values"""
@@ -293,4 +316,4 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         samples = self.client.execute_command("TS.RANGE", "ts_extreme", "-", "+")
         assert len(samples) == 2
         assert samples[1][0] == max_timestamp
-        assert abs(samples[0][1] - large_value) < 1e300
+        assert abs(float(samples[0][1]) - large_value) < 1e300

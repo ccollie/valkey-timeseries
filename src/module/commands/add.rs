@@ -1,11 +1,9 @@
 use crate::common::Timestamp;
 use crate::error_consts;
-use crate::module::arg_parse::parse_timestamp;
-use crate::module::commands::create_series::create_series;
+use crate::module::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::module::commands::parse_series_options;
-use crate::module::{get_timeseries_mut, VK_TIME_SERIES_TYPE};
-use crate::series::{SampleAddResult, TimeSeriesOptions};
-use valkey_module::key::ValkeyKeyWritable;
+use crate::module::get_timeseries_mut;
+use crate::series::{create_and_store_series, SampleAddResult, TimeSeries, TimeSeriesOptions};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
@@ -29,40 +27,51 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let timestamp_str = args[2].try_as_str()?;
     let timestamp = parse_timestamp(timestamp_str)?;
-    let value = args[3].parse_float()?;
+
+    let value = parse_value_arg(&args[3])?;
 
     if let Some(mut guard) = get_timeseries_mut(ctx, &args[1], false, Some(AclPermissions::UPDATE))?
     {
         // args.done()?;
         let series = guard.get_series_mut();
-        return match series.add(timestamp, value, None) {
-            SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
-                let timestamp = if timestamp_str == "*" { Some(ts) } else { None };
-                replicate_and_notify(ctx, args, timestamp);
-                Ok(ValkeyValue::Integer(ts))
-            }
-            SampleAddResult::Duplicate => {
-                Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED))
-            }
-            SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
-            _ => Ok(ValkeyValue::Null), // todo: unreachable
-        };
+        return handle_add(ctx, series, args, timestamp, timestamp_str, value);
     }
 
+    // clones because of replicate_and_notify
     let original_args = args.clone();
     let mut args = args.into_iter().skip(4).peekable();
 
     let options = parse_series_options(&mut args, TimeSeriesOptions::default(), &[])?;
 
     let key = &original_args[1];
-    let mut ts = create_series(key, options, ctx)?;
+    create_and_store_series(ctx, key, options)?; // todo: ACL ?
 
-    match ts.add(timestamp, value, None) {
+    if let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? {
+        handle_add(
+            ctx,
+            &mut series,
+            original_args,
+            timestamp,
+            timestamp_str,
+            value,
+        )
+    } else {
+        Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND))
+    }
+}
+
+fn handle_add(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    args: Vec<ValkeyString>,
+    timestamp: Timestamp,
+    timestamp_str: &str,
+    value: f64,
+) -> ValkeyResult {
+    match series.add(timestamp, value, None) {
         SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
-            let redis_key = ValkeyKeyWritable::open(ctx.ctx, key);
-            redis_key.set_value(&VK_TIME_SERIES_TYPE, ts)?;
-
-            replicate_and_notify(ctx, original_args, Some(timestamp));
+            let timestamp = if timestamp_str == "*" { Some(ts) } else { None };
+            replicate_and_notify(ctx, args, timestamp);
             Ok(ValkeyValue::Integer(ts))
         }
         SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),

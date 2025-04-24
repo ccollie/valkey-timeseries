@@ -5,7 +5,8 @@ use crate::series::index::{
 use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
 pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
-    let options = parse_metadata_command_args(args, true)?;
+    let mut args = args.into_iter().skip(1).peekable();
+    let options = parse_metadata_command_args(&mut args, true)?;
     let mut counter: usize = 0;
 
     // if we don't have a date range, we can simply count postings...

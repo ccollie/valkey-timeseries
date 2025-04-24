@@ -170,7 +170,7 @@ pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
         Err(TsdbError::InvalidConfiguration(msg))
     }
 
-    if chunk_size_bytes < MIN_CHUNK_SIZE || chunk_size_bytes > MAX_CHUNK_SIZE {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size_bytes) {
         return get_error_result();
     }
 

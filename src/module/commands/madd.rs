@@ -1,7 +1,7 @@
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
-use crate::module::arg_parse::parse_timestamp;
+use crate::module::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::module::get_timeseries_mut;
 use crate::series::SampleAddResult;
 use ahash::AHashMap;
@@ -44,7 +44,7 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         let raw_value = &args[index + 2];
         let timestamp_str = raw_timestamp.try_as_str()?;
         let timestamp = parse_timestamp(timestamp_str)?;
-        let value = raw_value.parse_float()?;
+        let value = parse_value_arg(raw_value)?;
 
         if timestamp_str == "*" {
             raw_timestamp = &current_ts;

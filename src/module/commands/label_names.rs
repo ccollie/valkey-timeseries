@@ -4,8 +4,10 @@ use std::collections::BTreeSet;
 use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
+/// TS.LABELNAMES [START startTimestamp] [END endTimestamp] [LIMIT limit] FILTER seriesMatcher...
 pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
-    let options = parse_metadata_command_args(args, false)?;
+    let mut args = args.into_iter().skip(1).peekable();
+    let options = parse_metadata_command_args(&mut args, true)?;
     let limit = options.limit.unwrap_or(usize::MAX);
 
     let mut names: BTreeSet<String> = BTreeSet::new();

@@ -1,7 +1,8 @@
 use crate::common::Timestamp;
-use crate::module::arg_parse::parse_timestamp;
-use crate::module::commands::{create_series, parse_series_options};
-use crate::module::get_timeseries_mut;
+use crate::error_consts;
+use crate::module::arg_parse::{parse_timestamp, parse_value_arg};
+use crate::module::commands::parse_series_options;
+use crate::module::{create_and_store_series, get_timeseries_mut};
 use crate::series::{SampleAddResult, TimeSeries, TimeSeriesOptions};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -21,22 +22,31 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     }
 
     let mut args = args;
-    let delta = args[2]
-        .parse_float()
-        .map_err(|_e| ValkeyError::Str("TSDB: invalid delta value"))?;
 
+    let delta = parse_value_arg(&args[2])?;
     let timestamp = handle_parse_timestamp(&mut args)?;
+    let key_name = &args[1];
 
-    let key_name = args[1].clone();
-    if let Some(mut series) =
-        get_timeseries_mut(ctx, &key_name, false, Some(AclPermissions::UPDATE))?
-    {
-        handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
+    if let Some(mut series) = get_timeseries_mut(
+        ctx,
+        key_name,
+        false,
+        Some(AclPermissions::UPDATE | AclPermissions::ACCESS),
+    )? {
+        handle_update(ctx, &mut series, key_name, timestamp, delta, is_increment)
     } else {
-        let mut args = args.into_iter().skip(3).peekable();
+        let key_name = args.remove(1);
+        let mut args = args.into_iter().skip(2).peekable();
         let options = parse_series_options(&mut args, TimeSeriesOptions::default(), &[])?;
-        let mut series = create_series(&key_name, options, ctx)?;
-        handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
+        create_and_store_series(ctx, &key_name, options)?; // todo: ACL ?
+
+        if let Some(mut series) =
+            get_timeseries_mut(ctx, &key_name, true, Some(AclPermissions::INSERT))?
+        {
+            handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
+        } else {
+            Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND))
+        }
     }
 }
 
@@ -81,6 +91,8 @@ fn handle_update(
             ctx.notify_keyspace_event(NotifyEvent::MODULE, event, key_name);
             Ok(ValkeyValue::Integer(ts))
         }
+        SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
+        SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
         _ => Ok(ValkeyValue::Null),
     }
 }

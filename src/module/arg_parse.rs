@@ -313,6 +313,9 @@ pub fn parse_duration_ms(arg: &str) -> ValkeyResult<i64> {
 }
 
 pub fn parse_number_with_unit(arg: &str) -> TsdbResult<f64> {
+    if arg.is_empty() {
+        return Err(TsdbError::InvalidNumber(arg.to_string()));
+    }
     parse_number_internal(arg).map_err(|_e| TsdbError::InvalidNumber(arg.to_string()))
 }
 
@@ -320,14 +323,22 @@ pub fn parse_metric_name(arg: &str) -> ValkeyResult<Vec<Label>> {
     parse_metric(arg).map_err(|_e| ValkeyError::Str(error_consts::INVALID_METRIC_NAME))
 }
 
+/// Parse a float value for use in a command argument, specifically ADD, MADD, and INCRBY/DECRBY.
+pub fn parse_value_arg(arg: &ValkeyString) -> ValkeyResult<f64> {
+    // todo: error on NAN and Inf ?
+    arg.try_as_str()
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))?
+        .parse::<f64>()
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))
+}
+
 pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {
     JoinReducer::try_from(arg)
 }
 
-pub fn parse_chunk_size(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
-    let arg = args.next_str()?;
+pub fn parse_chunk_size(arg: &str) -> ValkeyResult<usize> {
     fn get_error_result() -> ValkeyResult<usize> {
-        let msg = format!("TSDB: CHUNK_SIZE value must be an integer multiple of 2 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
+        let msg = format!("TSDB: CHUNK_SIZE value must be an integer multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
         Err(ValkeyError::String(msg))
     }
 
@@ -337,11 +348,12 @@ pub fn parse_chunk_size(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     if chunk_size != chunk_size.floor() {
         return get_error_result();
     }
+
     if chunk_size < MIN_CHUNK_SIZE as f64 || chunk_size > MAX_CHUNK_SIZE as f64 {
         return get_error_result();
     }
     let chunk_size = chunk_size as usize;
-    if chunk_size % 2 != 0 {
+    if chunk_size % 8 != 0 {
         return get_error_result();
     }
     Ok(chunk_size)
@@ -656,10 +668,12 @@ pub fn parse_series_selector_list(
             if is_cmd_token(token) {
                 break;
             }
-        } else {
-            return Err(ValkeyError::Str("ERR: Invalid series selector"));
         }
-        let arg = next.try_as_str()?;
+
+        let arg = args.next_str()?;
+        if arg.is_empty() {
+            return Err(ValkeyError::Str(error_consts::INVALID_SERIES_SELECTOR));
+        }
 
         if let Ok(selector) = parse_series_selector(arg) {
             matchers.push(selector);
@@ -672,7 +686,7 @@ pub fn parse_series_selector_list(
 }
 
 pub(crate) fn parse_metadata_command_args(
-    args: Vec<ValkeyString>,
+    args: &mut CommandArgIterator,
     require_matchers: bool,
 ) -> ValkeyResult<MatchFilterOptions> {
     const ARG_TOKENS: [CommandArgToken; 3] = [
@@ -681,7 +695,6 @@ pub(crate) fn parse_metadata_command_args(
         CommandArgToken::Limit,
     ];
 
-    let mut args = args.into_iter().skip(1).peekable();
     let mut matchers = Vec::with_capacity(4);
     let mut start_value: Option<TimestampValue> = None;
     let mut end_value: Option<TimestampValue> = None;
@@ -702,14 +715,14 @@ pub(crate) fn parse_metadata_command_args(
                 let next = args.next_str()?;
                 end_value = Some(parse_timestamp_arg(next, "END")?);
             }
-            CommandArgToken::Match => {
-                let m = parse_series_selector_list(&mut args, is_cmd_token)?;
+            CommandArgToken::Filter => {
+                let m = parse_series_selector_list(args, is_cmd_token)?;
                 matchers.extend(m);
             }
             CommandArgToken::Limit => {
                 let next = args.next_u64()?;
                 if next > usize::MAX as u64 {
-                    return Err(ValkeyError::Str("ERR LIMIT too large"));
+                    return Err(ValkeyError::Str("TSDB: LIMIT too large"));
                 }
                 limit = Some(next as usize);
             }
@@ -767,5 +780,95 @@ mod tests {
             let parsed_lowercase = parse_command_arg_token(lower.as_bytes());
             assert_eq!(parsed_lowercase, Some(token));
         }
+    }
+
+    #[test]
+    fn test_parse_chunk_size_valid_chunk_sizes() {
+        // Test valid minimum size
+        assert_eq!(
+            parse_chunk_size(&MIN_CHUNK_SIZE.to_string()).unwrap(),
+            MIN_CHUNK_SIZE
+        );
+
+        // Test valid maximum size
+        assert_eq!(
+            parse_chunk_size(&MAX_CHUNK_SIZE.to_string()).unwrap(),
+            MAX_CHUNK_SIZE
+        );
+
+        // Test some typical values (multiples of 8)
+        assert_eq!(parse_chunk_size("1024").unwrap(), 1024);
+        assert_eq!(parse_chunk_size("4096").unwrap(), 4096);
+        assert_eq!(parse_chunk_size("8192").unwrap(), 8192);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_valid_chunk_sizes_with_units() {
+        // Test with units
+        assert_eq!(parse_chunk_size("1kb").unwrap(), 1000);
+        assert_eq!(parse_chunk_size("2Ki").unwrap(), 2048);
+        assert_eq!(parse_chunk_size("1mb").unwrap(), 1000 * 1000);
+        assert_eq!(parse_chunk_size("0.5Mi").unwrap(), 524288); // 0.5 * 1024 * 1024
+    }
+
+    #[test]
+    fn test_parse_chunk_size_invalid_non_integer_chunk_sizes() {
+        // Test non-integer values
+        assert!(parse_chunk_size("123.5").is_err());
+        assert!(parse_chunk_size("1.7kb").is_err());
+    }
+
+    #[test]
+    fn test_parse_chunk_size_invalid_chunk_sizes_below_minimum() {
+        // Test values below minimum
+        let too_small = MIN_CHUNK_SIZE - 8;
+        assert!(parse_chunk_size(&too_small.to_string()).is_err());
+        assert!(parse_chunk_size("8").is_err()); // Very small value
+    }
+
+    #[test]
+    fn test_parse_chunk_size_invalid_chunk_sizes_above_maximum() {
+        // Test values above maximum
+        let too_large = MAX_CHUNK_SIZE + 8;
+        assert!(parse_chunk_size(&too_large.to_string()).is_err());
+        assert!(parse_chunk_size("1tb").is_err()); // Very large value
+    }
+
+    #[test]
+    fn test_parse_chunk_size_invalid_non_multiple_of_eight() {
+        // Test values not multiple of 8
+        assert!(parse_chunk_size("1025").is_err());
+        assert!(parse_chunk_size("4097").is_err());
+        assert!(parse_chunk_size("1023").is_err());
+    }
+
+    #[test]
+    fn test_parse_chunk_size_invalid_format() {
+        // Test invalid formatting
+        assert!(parse_chunk_size("abc").is_err());
+        assert!(parse_chunk_size("").is_err());
+        assert!(parse_chunk_size("-1024").is_err());
+        assert!(parse_chunk_size("1024kb!").is_err());
+        assert!(parse_chunk_size("1024 kb").is_err());
+    }
+
+    #[test]
+    fn test_parse_chunk_size_edge_cases() {
+        // Exactly at boundaries of multiple of 8
+        let valid_near_min = MIN_CHUNK_SIZE;
+        let invalid_near_min = MIN_CHUNK_SIZE + 4;
+
+        assert_eq!(
+            parse_chunk_size(&valid_near_min.to_string()).unwrap(),
+            valid_near_min
+        );
+        assert!(parse_chunk_size(&invalid_near_min.to_string()).is_err());
+
+        // Test a value that's very close to max but valid
+        let valid_near_max = MAX_CHUNK_SIZE - 8;
+        assert_eq!(
+            parse_chunk_size(&valid_near_max.to_string()).unwrap(),
+            valid_near_max
+        );
     }
 }
