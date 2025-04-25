@@ -23,10 +23,10 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.ADD', self.key, 1000, 25)
 
         # Verify initial state (especially default chunk size)
-        info = self.ts_info(self.key)
+        info = self.ts_info(self.key, True)
         print(info)
-        self.initial_chunk_size = info[b'chunkSize'] # Get actual default
-        self.initial_retention = info[b'retentionTime']
+        self.initial_chunk_size = info['chunkSize'] # Get actual default
+        self.initial_retention = info['retentionTime']
 
     def test_alter_retention(self):
         """Test altering the retention period"""
@@ -36,8 +36,8 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'RETENTION', new_retention) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
-        assert info[b'retentionTime'] == str(new_retention).encode()
+        labels = info['labels']
+        assert info['retentionTime'] == new_retention
         # Other properties should remain unchanged
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'A1'
@@ -50,11 +50,11 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'CHUNK_SIZE', new_chunk_size) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
-        assert info[b'chunkSize'] == new_chunk_size
+        assert info['chunkSize'] == new_chunk_size
         # Other properties should remain unchanged
-        assert info[b'retentionTime'] == self.initial_retention
+        assert info['retentionTime'] == self.initial_retention
         # Other properties should remain unchanged
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'A1'
@@ -67,15 +67,15 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'LABELS', *new_labels) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'A1'
         assert labels['status'] == 'active'
 
         # Other properties should remain unchanged
-        assert info[b'retentionTime'] == self.initial_retention
-        assert info[b'chunkSize'] == self.initial_chunk_size
+        assert info['retentionTime'] == self.initial_retention
+        assert info['chunkSize'] == self.initial_chunk_size
 
     def test_alter_labels_remove(self):
         """Test altering labels by removing one"""
@@ -85,13 +85,13 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'LABELS', *new_labels) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
         assert labels['sensor'] == 'temp'
 
         # Other properties should remain unchanged
-        assert info[b'retentionTime'] == self.initial_retention
-        assert info[b'chunkSize'] == self.initial_chunk_size
+        assert info['retentionTime'] == self.initial_retention
+        assert info['chunkSize'] == self.initial_chunk_size
 
     def test_alter_labels_change_value(self):
         """Test altering labels by changing a value"""
@@ -101,7 +101,7 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'LABELS', *new_labels) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'B2'
@@ -113,9 +113,9 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'LABELS') == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
-        assert len(labels) == 0
+        assert labels is None or len(labels) == 0
 
     def test_alter_duplicate_policy(self):
         """Test altering the duplicate policy"""
@@ -127,12 +127,12 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command('TS.ALTER', self.key, 'DUPLICATE_POLICY', new_policy) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
-        assert info[b'duplicatePolicy'] == new_policy.lower().encode()
+        assert info['duplicatePolicy'] == new_policy.lower()
         # Other properties should remain unchanged
-        assert info[b'retentionTime'] == self.initial_retention
-        assert info[b'chunkSize'] == self.initial_chunk_size
+        assert info['retentionTime'] == self.initial_retention
+        assert info['chunkSize'] == self.initial_chunk_size
 
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'A1'
@@ -154,11 +154,11 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         ) == b'OK'
 
         info = self.ts_info(self.key)
-        labels = info[b'labels']
+        labels = info['labels']
 
-        assert info[b'retentionTime'] == str(new_retention).encode()
-        assert info[b'duplicatePolicy'] == new_policy.lower().encode()
-        assert info[b'chunkSize'] == self.initial_chunk_size
+        assert info['retentionTime'] == new_retention
+        assert info['duplicatePolicy'] == new_policy.lower()
+        assert info['chunkSize'] == self.initial_chunk_size
 
         assert labels['location'] == 'server_room'
 

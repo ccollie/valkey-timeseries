@@ -1,9 +1,10 @@
+use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
+use crate::commands::parse_series_options;
 use crate::common::Timestamp;
 use crate::error_consts;
-use crate::module::arg_parse::{parse_timestamp, parse_value_arg};
-use crate::module::commands::parse_series_options;
-use crate::module::get_timeseries_mut;
-use crate::series::{create_and_store_series, SampleAddResult, TimeSeries, TimeSeriesOptions};
+use crate::series::{
+    create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
+};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };

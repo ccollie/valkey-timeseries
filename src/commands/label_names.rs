@@ -1,4 +1,4 @@
-use crate::module::arg_parse::parse_metadata_command_args;
+use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::series::index::with_matched_series;
 use std::collections::BTreeSet;
 use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};

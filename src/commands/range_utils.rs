@@ -1,5 +1,5 @@
 use crate::aggregators::{AggOp, AggregateIterator, AggregationOptions};
-use crate::arg_types::{RangeGroupingOptions, RangeOptions};
+use crate::commands::arg_types::{RangeGroupingOptions, RangeOptions};
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::TimeSeries;
@@ -67,7 +67,7 @@ pub fn get_series_labels<'a>(
     }
 }
 
-pub(super) fn group_samples_internal(
+pub(crate) fn group_samples_internal(
     samples: impl Iterator<Item = Sample>,
     option: &RangeGroupingOptions,
 ) -> Vec<Sample> {

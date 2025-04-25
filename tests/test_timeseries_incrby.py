@@ -56,8 +56,8 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the key was created with specified options
         info = self.ts_info('ts_incr_create')
-        labels = info[b'labels']
-        assert info[b'retentionTime'] == b"10000"
+        labels = info['labels']
+        assert info['retentionTime'] == 10000
         assert labels['sensor'] == 'temp'
         assert labels['location'] == 'kitchen'
 
@@ -105,7 +105,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         # Verify it's uncompressed
         info = self.ts_info('ts_uncompressed')
         # In some versions this might be a different flag, adjust if needed
-        assert info.get(b'chunkType', info.get(b'memoryUsage')) is not None
+        assert info.get('chunkType', info.get('memoryUsage')) is not None
 
         # Should still increment normally
         for i in range(2, 6):
@@ -147,7 +147,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
         # Verify chunk size
         info = self.ts_info('ts_chunk')
-        assert info[b'chunkSize'] == 128
+        assert info['chunkSize'] == 128
 
         # Should increment normally
         self.client.execute_command('TS.INCRBY', 'ts_chunk', 2)

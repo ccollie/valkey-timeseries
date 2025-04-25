@@ -20,7 +20,7 @@ use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
-use crate::module::VK_TIME_SERIES_TYPE;
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{check_key_read_permission, SeriesRef, TimeSeries, TimestampRange};
 use ahash::AHashSet;
 use blart::AsBytes;

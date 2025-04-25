@@ -1,5 +1,5 @@
 use crate::aggregators::{AggregationOptions, Aggregator, BucketAlignment, BucketTimestamp};
-use crate::arg_types::{MatchFilterOptions, RangeGroupingOptions};
+use crate::commands::arg_types::{MatchFilterOptions, RangeGroupingOptions, RangeOptions};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
@@ -342,20 +342,22 @@ pub fn parse_chunk_size(arg: &str) -> ValkeyResult<usize> {
         Err(ValkeyError::String(msg))
     }
 
-    let chunk_size = parse_number_with_unit(arg)
+    if arg.is_empty() {
+        return Err(ValkeyError::Str(error_consts::INVALID_CHUNK_SIZE));
+    }
+
+    let chunk_size = parse_number_internal(arg)
         .map_err(|_e| ValkeyError::Str(error_consts::INVALID_CHUNK_SIZE))?;
 
     if chunk_size != chunk_size.floor() {
         return get_error_result();
     }
-
-    if chunk_size < MIN_CHUNK_SIZE as f64 || chunk_size > MAX_CHUNK_SIZE as f64 {
-        return get_error_result();
-    }
     let chunk_size = chunk_size as usize;
-    if chunk_size % 8 != 0 {
+
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || chunk_size % 8 != 0 {
         return get_error_result();
     }
+
     Ok(chunk_size)
 }
 
@@ -686,6 +688,66 @@ pub fn parse_series_selector_list(
     Ok(matchers)
 }
 
+pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
+    const RANGE_OPTION_ARGS: [CommandArgToken; 10] = [
+        CommandArgToken::Aggregation,
+        CommandArgToken::Count,
+        CommandArgToken::BucketTimestamp,
+        CommandArgToken::Filter,
+        CommandArgToken::FilterByTs,
+        CommandArgToken::FilterByValue,
+        CommandArgToken::GroupBy,
+        CommandArgToken::Reduce,
+        CommandArgToken::SelectedLabels,
+        CommandArgToken::WithLabels,
+    ];
+
+    let date_range = parse_timestamp_range(args)?;
+
+    let mut options = RangeOptions {
+        date_range,
+        ..Default::default()
+    };
+
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        match token {
+            CommandArgToken::Aggregation => {
+                options.aggregation = Some(parse_aggregation_options(args)?);
+            }
+            CommandArgToken::Count => {
+                options.count = Some(parse_count_arg(args)?);
+            }
+            CommandArgToken::Filter => {
+                let filter = args.next_str()?;
+                options.series_selector = parse_series_selector(filter)?;
+            }
+            CommandArgToken::FilterByValue => {
+                options.value_filter = Some(parse_value_filter(args)?);
+            }
+            CommandArgToken::FilterByTs => {
+                options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
+            }
+            CommandArgToken::GroupBy => {
+                options.grouping = Some(parse_grouping_params(args)?);
+            }
+            CommandArgToken::SelectedLabels => {
+                options.selected_labels = parse_label_list(args, &RANGE_OPTION_ARGS)?;
+            }
+            CommandArgToken::WithLabels => {
+                options.with_labels = true;
+            }
+            _ => {}
+        }
+    }
+
+    // if options.series_selector.is_empty() {
+    //     return Err(ValkeyError::Str("TSDB: no FILTER given"));
+    // }
+
+    Ok(options)
+}
+
 pub(crate) fn parse_metadata_command_args(
     args: &mut CommandArgIterator,
     require_matchers: bool,
@@ -821,6 +883,7 @@ mod tests {
         // Test non-integer values
         assert!(parse_chunk_size("123.5").is_err());
         assert!(parse_chunk_size("1.7kb").is_err());
+        assert!(parse_chunk_size("invalid").is_err());
     }
 
     #[test]

@@ -1,9 +1,8 @@
 use crate::common::constants::META_KEY_LABEL;
 use crate::common::rounding::RoundingStrategy;
-use crate::module::with_timeseries;
 use crate::series::{
     chunks::{Chunk, TimeSeriesChunk},
-    TimeSeries,
+    with_timeseries, TimeSeries,
 };
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
@@ -30,18 +29,41 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
     let mut map: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::with_capacity(ts.labels.len() + 1);
     let metric = ts.prometheus_metric_name();
     map.insert("metric".into(), metric.into());
-    map.insert("totalSamples".into(), ts.total_samples.into());
-    map.insert("memoryUsage".into(), ts.memory_usage().into());
-    map.insert("firstTimestamp".into(), ts.first_timestamp.into());
+    map.insert(
+        "totalSamples".into(),
+        ValkeyValue::Integer(ts.total_samples as i64), // return float instead ?
+    );
+    map.insert(
+        "memoryUsage".into(),
+        ValkeyValue::Integer(ts.memory_usage() as i64), // ?? return float instead ?
+    );
+    map.insert(
+        "firstTimestamp".into(),
+        ValkeyValue::Integer(ts.first_timestamp),
+    );
     if let Some(last_sample) = ts.last_sample {
-        map.insert("lastTimestamp".into(), last_sample.timestamp.into());
+        map.insert(
+            "lastTimestamp".into(),
+            ValkeyValue::Integer(last_sample.timestamp),
+        );
+    } else {
+        map.insert(
+            "lastTimestamp".into(),
+            ValkeyValue::Integer(ts.first_timestamp),
+        );
     }
     map.insert(
         "retentionTime".into(),
-        (ts.retention.as_millis() as f64).into(),
+        ValkeyValue::Integer(ts.retention.as_millis() as i64),
     );
-    map.insert("chunkCount".into(), (ts.chunks.len() as f64).into());
-    map.insert("chunkSize".into(), ts.chunk_size_bytes.into());
+    map.insert(
+        "chunkCount".into(),
+        ValkeyValue::Integer(ts.chunks.len() as i64),
+    );
+    map.insert(
+        "chunkSize".into(),
+        ValkeyValue::Integer(ts.chunk_size_bytes as i64),
+    );
 
     if ts.chunk_compression.is_compressed() {
         map.insert("chunkType".into(), "compressed".into());
@@ -76,11 +98,11 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
 
     map.insert(
         "ignoreMaxTimeDiff".into(),
-        ValkeyValue::from(ts.sample_duplicates.max_time_delta.to_string()),
+        ValkeyValue::Integer(ts.sample_duplicates.max_time_delta as i64),
     );
     map.insert(
         "ignoreMaxValDiff".into(),
-        ts.sample_duplicates.max_value_delta.into(),
+        ValkeyValue::Float(ts.sample_duplicates.max_value_delta),
     );
 
     if let Some(rounding) = ts.rounding {
@@ -90,7 +112,7 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
         };
         let result = ValkeyValue::Array(vec![
             ValkeyValue::from(name),
-            ValkeyValue::from(digits as usize), // do we have negative digits?
+            ValkeyValue::Integer(digits.into()), // do we have negative digits?
         ]);
         map.insert("rounding".into(), result);
     }
@@ -116,10 +138,19 @@ fn get_chunks_info(ts: &TimeSeries) -> ValkeyValue {
 
 fn get_one_chunk_info(chunk: &TimeSeriesChunk) -> ValkeyValue {
     let mut map: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::with_capacity(6);
-    map.insert("startTimestamp".into(), chunk.first_timestamp().into());
-    map.insert("endTimestamp".into(), chunk.last_timestamp().into());
-    map.insert("samples".into(), chunk.len().into());
+    map.insert(
+        "startTimestamp".into(),
+        ValkeyValue::Integer(chunk.first_timestamp()),
+    );
+    map.insert(
+        "endTimestamp".into(),
+        ValkeyValue::Integer(chunk.last_timestamp()),
+    );
+    map.insert("samples".into(), ValkeyValue::Integer(chunk.len() as i64));
     map.insert("size".into(), chunk.size().into());
-    map.insert("bytesPerSample".into(), chunk.bytes_per_sample().into());
+    map.insert(
+        "bytesPerSample".into(),
+        ValkeyValue::BulkString(chunk.bytes_per_sample().to_string()),
+    );
     ValkeyValue::Map(map)
 }

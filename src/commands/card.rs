@@ -1,4 +1,4 @@
-use crate::module::arg_parse::parse_metadata_command_args;
+use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::series::index::{
     get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
 };

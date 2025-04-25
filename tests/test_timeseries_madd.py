@@ -84,8 +84,9 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify labels are maintained
         info = self.ts_info('ts_labels')
-        assert info[b'labels'][b'sensor'] == b'temp'
-        assert info[b'labels'][b'location'] == b'room1'
+        labels = info['labels']
+        assert labels['sensor'] == 'temp'
+        assert labels['location'] == 'room1'
 
     def test_madd_duplicate_timestamp(self):
         """Test behavior with duplicate timestamps"""
@@ -176,7 +177,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify sample count
         info = self.ts_info('ts_large')
-        assert info[b'total_samples'] == 1000
+        assert info['totalSamples'] == 1000
 
     def test_madd_errors(self):
         """Test error cases for TS.MADD"""
@@ -245,4 +246,4 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify uncompressed flag in info
         info = self.ts_info('ts_uncompressed')
-        assert info[b'chunkType'] == b'uncompressed'
+        assert info['chunkType'] == b'uncompressed'

@@ -14,10 +14,10 @@ use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
-use crate::arg_types::MatchFilterOptions;
+use crate::commands::arg_types::MatchFilterOptions;
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
-use crate::module::VK_TIME_SERIES_TYPE;
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::TimeSeries;
 pub use posting_stats::*;
 pub use querier::*;

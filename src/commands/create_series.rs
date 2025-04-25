@@ -1,13 +1,12 @@
-use crate::error_consts;
-use crate::labels::Label;
-use crate::module::arg_parse::{
+use crate::commands::arg_parse::{
     parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
     parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options,
     parse_label_value_pairs, parse_metric_name, parse_retention, parse_significant_digit_rounding,
     CommandArgIterator, CommandArgToken,
 };
-use crate::module::create_and_store_series;
-use crate::series::TimeSeriesOptions;
+use crate::error_consts;
+use crate::labels::Label;
+use crate::series::{create_and_store_series, TimeSeriesOptions};
 use smallvec::SmallVec;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK};
 

@@ -1,5 +1,7 @@
 mod add;
 mod alter_series;
+pub mod arg_parse;
+pub mod arg_types;
 mod card;
 mod create_series;
 mod del;
@@ -14,10 +16,10 @@ mod mget;
 mod mrange;
 mod query_index;
 mod range;
-mod range_arg_parse;
 mod range_utils;
 mod rev_range;
 mod stats;
+pub use arg_parse::*;
 
 pub use add::*;
 pub use alter_series::*;

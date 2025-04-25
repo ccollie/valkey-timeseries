@@ -3,14 +3,13 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
-use crate::module::VK_TIME_SERIES_TYPE;
 use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
     Version,
 };
 
 pub mod aggregators;
-mod arg_types;
+pub(crate) mod commands;
 pub mod common;
 pub mod config;
 mod error;
@@ -18,15 +17,15 @@ pub mod error_consts;
 pub mod iterators;
 mod join;
 mod labels;
-mod module;
 mod parser;
 mod series;
+mod server_events;
 mod tests;
 
-use crate::module::server_events::{generic_key_event_handler, register_server_events};
 use crate::series::index::init_croaring_allocator;
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{start_series_background_worker, stop_series_background_worker};
-use module::*;
+use crate::server_events::{generic_key_event_handler, register_server_events};
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";

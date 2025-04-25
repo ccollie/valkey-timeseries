@@ -100,9 +100,9 @@ class TestTsDecrby(ValkeyTimeSeriesTestCaseBase):
 
         # Verify options were set
         info_dict = self.ts_info('ts_opts')
-        labels = info_dict[b'labels']
-        assert info_dict[b'retentionTime'] == str(retention_ms).encode()
-        assert info_dict[b'chunkSize'] == chunk_size
+        labels = info_dict['labels']
+        assert info_dict['retentionTime'] == retention_ms
+        assert info_dict['chunkSize'] == chunk_size
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'A1'
 

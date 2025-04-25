@@ -1,4 +1,4 @@
-use crate::module::with_timeseries;
+use crate::series::with_timeseries;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
 

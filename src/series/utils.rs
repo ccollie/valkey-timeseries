@@ -1,7 +1,7 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
-use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{TimeSeries, TimeSeriesOptions};
 use std::ops::{Deref, DerefMut};
 use valkey_module::key::{ValkeyKey, ValkeyKeyWritable};

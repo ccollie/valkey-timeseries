@@ -165,14 +165,14 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Verify initial state
-        result = sorted(self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'name=network'))
+        result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'name=network')
         assert b'network' in result
 
         # Delete a time series
         # self.client.execute_command('DEL', 'ts6')  # ts6 has name=network
 
         # Verify the deleted label value is no longer returned
-        result = sorted(self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'name=network'))
+        result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'name=network')
         assert b'network' not in result
 
     def test_label_values_with_nonexistent_label(self):

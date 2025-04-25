@@ -4,7 +4,7 @@ from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 
-class TestTsMget(ValkeyTimeSeriesTestCaseBase):
+class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""

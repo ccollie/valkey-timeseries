@@ -1,9 +1,8 @@
+use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
-use crate::module::arg_parse::{parse_timestamp, parse_value_arg};
-use crate::module::get_timeseries_mut;
-use crate::series::SampleAddResult;
+use crate::series::{get_timeseries_mut, SampleAddResult};
 use ahash::AHashMap;
 use smallvec::SmallVec;
 use valkey_module::{

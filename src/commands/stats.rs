@@ -1,4 +1,4 @@
-use crate::module::arg_parse::parse_integer_arg;
+use crate::commands::arg_parse::parse_integer_arg;
 use crate::series::index::{with_timeseries_index, PostingStat};
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;

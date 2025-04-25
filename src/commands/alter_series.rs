@@ -1,8 +1,7 @@
-use crate::module::arg_parse::CommandArgToken;
-use crate::module::commands::parse_series_options;
-use crate::module::with_timeseries_mut;
+use crate::commands::arg_parse::CommandArgToken;
+use crate::commands::parse_series_options;
 use crate::series::index::with_timeseries_index;
-use crate::series::{TimeSeries, TimeSeriesOptions};
+use crate::series::{with_timeseries_mut, TimeSeries, TimeSeriesOptions};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
 };

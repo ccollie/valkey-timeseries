@@ -14,13 +14,13 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Create with retention
         assert client.execute_command("TS.CREATE", "ts2", "RETENTION", "60000") == b'OK'
         info = self.ts_info("ts2")
-        assert info[b'retentionTime'] == b'60000'
+        assert info['retentionTime'] == 60000
 
         # Create with labels
         assert client.execute_command("TS.CREATE", "ts3", "LABELS", "sensor_id", "2", "area_id", "32") == b'OK'
         info = self.ts_info("ts3")
         print(info)
-        labels = info[b'labels']
+        labels = info['labels']
         assert labels['sensor_id'] == '2'
         assert labels['area_id'] == '32'
 
@@ -28,7 +28,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         client = self.server.get_new_client()
         assert client.execute_command("ts.create time-series-2 labels hello world") == b'OK'
         info = self.ts_info("time-series-2")
-        labels = info[b'labels']
+        labels = info['labels']
         print(labels)
         assert "world" == labels["hello"]
 
@@ -42,8 +42,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
             key = f"ts_policy_{i}"
             assert client.execute_command("TS.CREATE", key, "DUPLICATE_POLICY", policy) == b'OK'
             info = self.ts_info(key)
-            print(info)
-            assert info[b'duplicatePolicy'] == policy.lower().encode()
+            assert info['duplicatePolicy'] == policy.lower()
 
     def test_create_with_encoding(self):
         """Test creating time series with different encoding options"""
@@ -56,9 +55,9 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
             info = self.ts_info(key)
             # Check encoding in info response
             if encoding == "UNCOMPRESSED":
-                assert info[b'chunkType'] == b'uncompressed'
+                assert info['chunkType'] == 'uncompressed'
             else:
-                assert info[b'chunkType'] == b'compressed'
+                assert info['chunkType'] == 'compressed'
 
     def test_create_with_chunk_size(self):
         """Test creating time series with different chunk sizes"""
@@ -70,7 +69,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
             key = f"ts_chunk_{i}"
             assert client.execute_command("TS.CREATE", key, "CHUNK_SIZE", size) == b'OK'
             info = self.ts_info(key)
-            assert info[b'chunkSize'] == size
+            assert info['chunkSize'] == size
 
     def test_create_with_rounding(self):
         """Test creating time series with rounding options"""
@@ -79,12 +78,12 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         # Test DECIMAL_DIGITS
         assert client.execute_command("TS.CREATE", "ts_decimal", "DECIMAL_DIGITS", 2) == b'OK'
         info = self.ts_info("ts_decimal")
-        assert info[b'rounding'] == [b'decimalDigits', 2]
+        assert info['rounding'] == [b'decimalDigits', 2]
 
         # Test SIGNIFICANT_DIGITS
         assert client.execute_command("TS.CREATE", "ts_significant", "SIGNIFICANT_DIGITS", 3) == b'OK'
         info = self.ts_info("ts_significant")
-        assert info[b'rounding'] == [b'significantDigits', 3]
+        assert info['rounding'] == [b'significantDigits', 3]
 
     def test_create_metric_name(self):
         """Test creating time series with metric name"""
@@ -93,7 +92,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         assert client.execute_command("TS.CREATE", "ts_metric", "METRIC", 'temperature{city="CDMX"}') == b'OK'
         info = self.ts_info("ts_metric")
         # The metric should be parsed into labels
-        labels = info[b'labels']
+        labels = info['labels']
         assert '__name__' in labels
         assert 'city' in labels
         assert labels['__name__'] == 'temperature'
@@ -135,8 +134,8 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
                                       "IGNORE", "1000", "0.5") == b'OK'
         info = self.ts_info("ts_ignore")
         print(info)
-        assert info[b'ignoreMaxTimeDiff'] == b'1000'
-        assert info[b'ignoreMaxValDiff'] == b'0.5'
+        assert info['ignoreMaxTimeDiff'] == 1000
+        assert info['ignoreMaxValDiff'] == '0.5'
 
     def test_create_multiple_series(self):
         """Test creating many time series and verify they all exist"""
@@ -152,7 +151,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
             key = f"multi_ts_{i}"
             assert client.execute_command("EXISTS", key) == 1
             info = self.ts_info(key)
-            labels = info[b'labels']
+            labels = info['labels']
             assert labels['idx'] == str(i)
 
         # Verify count in database

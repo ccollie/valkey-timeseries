@@ -1,11 +1,11 @@
-use crate::arg_types::MatchFilterOptions;
+use crate::commands::arg_parse::{
+    parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
+};
+use crate::commands::arg_types::MatchFilterOptions;
+use crate::commands::range_utils::get_series_labels;
 use crate::common::Sample;
 use crate::error_consts;
 use crate::labels::parse_series_selector;
-use crate::module::arg_parse::{
-    parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
-};
-use crate::module::commands::range_utils::get_series_labels;
 use crate::series::index::with_matched_series;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 

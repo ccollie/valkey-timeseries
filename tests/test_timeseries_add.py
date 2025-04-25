@@ -32,7 +32,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the labels were preserved
         info = self.ts_info("ts2")
-        labels = info[b"labels"]
+        labels = info["labels"]
         assert labels["sensor"] == "temp"
         assert labels["location"] == "room1"
 
@@ -84,7 +84,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the retention was set
         info = self.ts_info("ts_retention")
-        assert int(info[b"retentionTime"]) == retention
+        assert int(info["retentionTime"]) == retention
 
     def test_add_with_encoding(self):
         """Test TS.ADD with different encoding options"""
@@ -95,7 +95,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         )
 
         info = self.ts_info("ts_uncompressed")
-        assert info[b"chunkType"] == b"uncompressed"
+        assert info["chunkType"] == "uncompressed"
 
         # Test with COMPRESSED encoding
         self.client.execute_command(
@@ -103,7 +103,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         )
 
         info = self.ts_info("ts_compressed")
-        assert info[b"chunkType"] == b"compressed"
+        assert info["chunkType"] == "compressed"
 
 
     def test_add_with_chunk_size(self):
@@ -116,7 +116,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         )
 
         info = self.ts_info("ts_chunk_size")
-        assert info[b"chunkSize"] == chunk_size
+        assert info["chunkSize"] == chunk_size
 
     def test_add_with_duplicate_policy(self):
         """Test TS.ADD with different duplicate policies"""
@@ -130,7 +130,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         info = self.ts_info("ts_dup_first")
         print(info)
-        assert info[b"duplicatePolicy"] == b"first"
+        assert info["duplicatePolicy"] == "first"
 
         self.client.execute_command(
             "TS.ADD", "ts_dup_first", timestamp, 40.0
@@ -205,7 +205,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the labels were set
         info = self.ts_info("ts_with_labels")
-        labels = info[b'labels']
+        labels = info['labels']
         assert labels["sensor"] == "humidity"
         assert labels["location"] == "outside"
 
@@ -264,10 +264,9 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         timestamp = 160000
 
         # Add with decimal digits precision
-        result = self.client.execute_command(
+        self.client.execute_command(
             "TS.ADD", "ts_decimal", timestamp, 123.456789, "DECIMAL_DIGITS", 2
         )
-        print("add result", result)
 
         # Verify the value was rounded to the specified precision
         samples = self.client.execute_command("TS.RANGE", "ts_decimal", "-", "+")

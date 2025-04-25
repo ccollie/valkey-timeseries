@@ -1,11 +1,10 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::IntMap;
 use crate::common::parallel::join;
-use crate::module::VK_TIME_SERIES_TYPE;
 use crate::series::index::{
     optimize_all_timeseries_indexes, with_timeseries_index, TIMESERIES_INDEX,
 };
-use crate::series::{SeriesRef, TimeSeries};
+use crate::series::{get_timeseries_mut, SeriesRef};
 use ahash::HashMapExt;
 use blart::AsBytes;
 use lazy_static::lazy_static;
@@ -78,8 +77,7 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
     if fetch_keys_batch(ctx, last_processed + 1, BATCH_SIZE, &mut keys) {
         // todo: can we use rayon here ?
         for (id, key) in keys.iter() {
-            let redis_key = ctx.open_key_writable(key);
-            if let Ok(Some(series)) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+            if let Ok(Some(mut series)) = get_timeseries_mut(ctx, key, false, None) {
                 match series.trim() {
                     Ok(deleted) => {
                         total_deletes += deleted;
