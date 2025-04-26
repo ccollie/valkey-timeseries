@@ -147,7 +147,7 @@ fn get_one_chunk_info(chunk: &TimeSeriesChunk) -> ValkeyValue {
         ValkeyValue::Integer(chunk.last_timestamp()),
     );
     map.insert("samples".into(), ValkeyValue::Integer(chunk.len() as i64));
-    map.insert("size".into(), chunk.size().into());
+    map.insert("size".into(), ValkeyValue::Integer(chunk.size() as i64));
     map.insert(
         "bytesPerSample".into(),
         ValkeyValue::BulkString(chunk.bytes_per_sample().to_string()),

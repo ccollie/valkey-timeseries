@@ -101,6 +101,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
                                              'ts_dup', 1000, 20.0,  # Duplicate
                                              'ts_dup', 2000, 30.0)  # New
 
+        print(result)
         # Verify timestamps (should fail for duplicate)
         assert result[0] == -1  # Error code for duplicate timestamp
         assert result[1] == 2000  # Success for new timestamp
@@ -232,7 +233,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
     def test_madd_with_uncompressed(self):
         """Test TS.MADD with uncompressed series"""
         # Create uncompressed time series
-        self.client.execute_command('TS.CREATE', 'ts_uncompressed', 'UNCOMPRESSED')
+        self.client.execute_command('TS.CREATE', 'ts_uncompressed', 'ENCODING', 'UNCOMPRESSED')
 
         # Add samples
         self.client.execute_command('TS.MADD',

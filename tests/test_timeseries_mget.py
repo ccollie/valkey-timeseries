@@ -38,6 +38,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         # Get all CPU metrics
         result = self.client.execute_command('TS.MGET', 'FILTER', 'name=cpu')
+        print(result)
         # Sort results by key name for consistent test results
         result.sort(key=lambda x: x[0])
 
@@ -70,6 +71,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         # Get all memory metrics with their labels
         result = self.client.execute_command('TS.MGET', 'WITHLABELS', 'FILTER', 'name=memory')
+        print(result)
         result.sort(key=lambda x: x[0])
 
         assert len(result) == 2
@@ -93,6 +95,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         # Get all CPU metrics with only selected labels
         result = self.client.execute_command('TS.MGET', 'SELECTEDLABELS', 'name', 'type', 'FILTER', 'name=cpu')
+        print(result)
         result.sort(key=lambda x: x[0])
 
         assert len(result) == 3
@@ -112,6 +115,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         # Get metrics that match multiple conditions
         result = self.client.execute_command('TS.MGET', 'FILTER', 'name=cpu', 'type=usage')
+        print(result)
         result.sort(key=lambda x: x[0])
 
         assert len(result) == 2

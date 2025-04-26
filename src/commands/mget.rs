@@ -7,7 +7,9 @@ use crate::common::Sample;
 use crate::error_consts;
 use crate::labels::parse_series_selector;
 use crate::series::index::with_matched_series;
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 struct MGetOptions {
     with_labels: bool,
@@ -41,22 +43,29 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         series: Vec::new(),
     };
 
-    with_matched_series(ctx, &mut state, &options.filter, |acc, series, key| {
-        let sample = series.last_sample;
-        let labels = get_series_labels(series, acc.with_labels, &acc.selected_labels);
-        let labels: Vec<_> = labels
-            .into_iter()
-            .map(|label| match label {
-                Some(label) => label.into(),
-                None => ValkeyValue::Null,
-            })
-            .collect();
-        acc.series.push(SeriesData {
-            sample,
-            labels,
-            series_key: key,
-        });
-    })?;
+    // NOTE: we currently don't support cross-cluster mget
+    with_matched_series(
+        ctx,
+        &mut state,
+        &options.filter,
+        Some(AclPermissions::ACCESS),
+        |acc, series, key| {
+            let sample = series.last_sample;
+            let labels = get_series_labels(series, acc.with_labels, &acc.selected_labels);
+            let labels: Vec<_> = labels
+                .into_iter()
+                .map(|label| match label {
+                    Some(label) => label.into(),
+                    None => ValkeyValue::Null,
+                })
+                .collect();
+            acc.series.push(SeriesData {
+                sample,
+                labels,
+                series_key: key,
+            });
+        },
+    )?;
 
     let result = state
         .series

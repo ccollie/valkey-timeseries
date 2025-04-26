@@ -12,13 +12,13 @@ use crate::common::db::get_current_db;
 use papaya::{Guard, HashMap};
 use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
-use valkey_module::{Context, ValkeyResult, ValkeyString};
+use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
 use crate::commands::arg_types::MatchFilterOptions;
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::TimeSeries;
+use crate::series::{check_key_permissions, TimeSeries};
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
@@ -60,15 +60,21 @@ pub fn with_matched_series<F, STATE>(
     ctx: &Context,
     acc: &mut STATE,
     filter: &MatchFilterOptions,
+    acls: Option<AclPermissions>,
     mut f: F,
 ) -> ValkeyResult<()>
 where
     F: FnMut(&mut STATE, &TimeSeries, ValkeyString),
 {
-    // todo: check ACLs
     let keys = series_keys_by_matchers(ctx, &filter.matchers, None)?;
     if keys.is_empty() {
         return Ok(());
+    }
+    if let Some(acls) = acls {
+        let perm = &acls;
+        for key in &keys {
+            check_key_permissions(ctx, key, perm)?;
+        }
     }
 
     let now = Some(current_time_millis());

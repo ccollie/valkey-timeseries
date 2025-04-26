@@ -58,3 +58,5 @@ pub const INVALID_COUNT_VALUE: &str = "TSDB: invalid COUNT value";
 pub const NEGATIVE_COUNT: &str = "TSDB: COUNT should be a positive number";
 pub const ROUNDING_ALREADY_SET: &str = "TSDB: rounding already set";
 pub const DUPLICATE_SAMPLE_BLOCKED: &str = "TSDB: Error at upsert, duplicate sample blocked";
+pub const PERMISSION_DENIED: &str =
+    "TSDB: the user does not have permission to access one or more keys";

@@ -11,7 +11,7 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let limit = match args.len() {
         0 => DEFAULT_LIMIT,
         1 => {
-            let next = parse_integer_arg(&args[0], "limit", false)?;
+            let next = parse_integer_arg(&args[0], "LIMIT", false)?;
             if next > usize::MAX as i64 {
                 return Err(ValkeyError::Str("ERR LIMIT too large"));
             } else if next == 0 {
@@ -29,9 +29,18 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         let stats = index.stats("", limit);
 
         let mut data = HashMap::with_capacity(4);
-        data.insert("numSeries".into(), series_count.into());
-        data.insert("numLabels".into(), stats.num_labels.into());
-        data.insert("numLabelPairs".into(), stats.num_label_pairs.into());
+        data.insert(
+            "numSeries".into(),
+            ValkeyValue::Integer(series_count as i64),
+        );
+        data.insert(
+            "numLabels".into(),
+            ValkeyValue::Integer(stats.num_labels as i64),
+        );
+        data.insert(
+            "numLabelPairs".into(),
+            ValkeyValue::Integer(stats.num_label_pairs as i64),
+        );
         data.insert(
             "seriesCountByMetricName".into(),
             stats_slice_to_value(&stats.cardinality_metrics_stats),
@@ -62,7 +71,7 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     let mut res: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::with_capacity(1);
     res.insert(
         ValkeyValueKey::from(&stat.name),
-        ValkeyValue::BigNumber(stat.count.to_string()),
+        ValkeyValue::Integer(stat.count as i64),
     );
     ValkeyValue::Map(res)
 }

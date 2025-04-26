@@ -75,11 +75,11 @@ pub fn check_key_read_permission(ctx: &Context, key: &ValkeyString) -> bool {
 pub fn check_key_permissions(
     ctx: &Context,
     key: &ValkeyString,
-    permissions: AclPermissions,
+    permissions: &AclPermissions,
 ) -> ValkeyResult<()> {
     let user = ctx.get_current_user();
     if ctx
-        .acl_check_key_permission(&user, key, &permissions)
+        .acl_check_key_permission(&user, key, permissions)
         .is_ok()
     {
         Ok(())
@@ -103,7 +103,7 @@ pub fn with_timeseries<R>(
     let redis_key = ctx.open_key(key);
     if let Some(series) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)? {
         if check_acl {
-            check_key_permissions(ctx, key, AclPermissions::ACCESS)?;
+            check_key_permissions(ctx, key, &AclPermissions::ACCESS)?;
         }
         f(series)
     } else {
@@ -132,7 +132,7 @@ pub fn get_timeseries(
     must_exist: bool,
 ) -> ValkeyResult<Option<SeriesGuard>> {
     if let Some(permissions) = permissions {
-        check_key_permissions(ctx, key, permissions)?;
+        check_key_permissions(ctx, key, &permissions)?;
     }
 
     let redis_key = ctx.open_key(key);
@@ -158,7 +158,7 @@ pub fn get_timeseries_mut<'a>(
     match value_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
         Ok(Some(series)) => {
             if let Some(permissions) = permissions {
-                check_key_permissions(ctx, key, permissions)?;
+                check_key_permissions(ctx, key, &permissions)?;
             }
             Ok(Some(SeriesGuardMut { series }))
         }

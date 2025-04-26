@@ -9,6 +9,7 @@ use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+#[derive(Debug)]
 struct ParsedInput<'a> {
     key: &'a ValkeyString,
     key_buf: &'a [u8],
@@ -19,6 +20,7 @@ struct ParsedInput<'a> {
     index: usize,
 }
 
+/// TS.MADD key timestamp value [key timestamp value ...]
 pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let arg_count = args.len() - 1;
 
@@ -90,6 +92,8 @@ fn add_samples_internal(
     input: &Vec<ParsedInput>,
 ) -> TsdbResult<Vec<(usize, SampleAddResult)>> {
     if let Ok(Some(mut guard)) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::UPDATE)) {
+        let series = &mut guard;
+
         let samples: SmallVec<Sample, 6> = input
             .iter()
             .map(|input| Sample {
@@ -98,7 +102,6 @@ fn add_samples_internal(
             })
             .collect();
 
-        let series = &mut guard;
         let add_results = series.merge_samples(&samples, None)?;
         let mut results = Vec::with_capacity(input.len());
         let mut replication_args: SmallVec<_, 16> = SmallVec::new();
