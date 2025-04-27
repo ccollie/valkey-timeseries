@@ -1,0 +1,70 @@
+
+table Label {
+  name:string;
+  value:string;
+}
+
+struct Sample {
+  timestamp:int64;
+  value:float64;
+}
+
+table MGetValue {
+  key:string;
+  value:Sample;
+  labels:[Label];
+}
+
+table SeriesResponse {
+  key:string;
+  samples:[Sample];
+  labels:[Label];
+}
+
+table MultiGetResponse {
+  values:[MGetValue];
+}
+
+table SeriesRangeResponse {
+  key:string;
+  samples:[Sample];
+}
+
+table RangeResponse {
+  series:[SeriesRangeResponse];
+}
+
+table MultiRangeResponse {
+  series:[SeriesResponse];
+}
+
+table IndexQueryResponse {
+  keys:[string];
+}
+
+table ErrorResponse {
+  error_code:int16;
+  error_message:string;
+}
+
+table LabelValuesResponse {
+  values:[string];
+}
+
+table LabelNamesResponse {
+  names:[string];
+}
+
+table CardinalityResponse {
+  count:uint64;
+}
+
+root_type MultiRangeResponse;
+root_type MultiGetResponse;
+root_type RangeResponse;
+root_type IndexQueryResponse;
+root_type ErrorResponse;
+root_type LabelValuesResponse;
+root_type LabelNamesResponse;
+root_type CardinalityResponse;
+root_type SeriesResponse;
