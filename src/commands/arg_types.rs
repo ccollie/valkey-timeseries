@@ -1,5 +1,6 @@
 use crate::aggregators::{AggregationOptions, Aggregator};
-use crate::common::Timestamp;
+use crate::common::{Sample, Timestamp};
+use crate::labels::Label;
 use crate::labels::matchers::Matchers;
 use crate::series::{TimestampRange, ValueFilter};
 
@@ -51,6 +52,26 @@ pub struct RangeOptions {
     pub with_labels: bool,
     pub selected_labels: Vec<String>,
     pub grouping: Option<RangeGroupingOptions>,
+}
+
+#[derive(Default)]
+pub(crate) struct MRangeResultRow {
+    pub(crate) key: String,
+    pub(crate) labels: Vec<Option<Label>>,
+    pub(crate) samples: Vec<Sample>, //maybe a gorilla encoded buffer for large values of samples
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct IndexQueryOptions {
+    pub date_range: TimestampRange,
+    pub series_selector: Matchers,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MGetOptions {
+    pub with_labels: bool,
+    pub filter: Matchers,
+    pub selected_labels: Vec<String>,
 }
 
 #[cfg(test)]
