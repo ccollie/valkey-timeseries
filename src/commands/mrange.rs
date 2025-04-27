@@ -13,7 +13,7 @@ use crate::series::{SeriesSampleIterator, TimeSeries};
 use ahash::AHashMap;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-pub(super) struct MRangeSeriesMeta<'a> {
+pub(crate) struct MRangeSeriesMeta<'a> {
     series: &'a TimeSeries,
     source_key: String,
     start_ts: Timestamp,
@@ -86,13 +86,13 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
 }
 
 #[derive(Default)]
-pub(super) struct MRangeResultRow {
+pub(crate) struct MRangeResultRow {
     key: String,
     labels: Vec<Option<Label>>,
     samples: Vec<Sample>,
 }
 
-pub(super) fn process_mrange_command(
+pub fn process_mrange_command(
     metas: Vec<MRangeSeriesMeta>,
     options: &RangeOptions,
 ) -> Vec<MRangeResultRow> {
@@ -123,6 +123,7 @@ fn handle_aggregation_and_grouping(
         groupings: &RangeGroupingOptions,
         aggregations: &AggregationOptions,
     ) -> MRangeResultRow {
+        // according to docs, the GROUPBY/REDUCE is applied post aggregation stage.
         let key = format!("{}={}", groupings.group_label, group.label_value);
         let aggregator = aggregations.aggregator.clone();
         let aggregates = aggregate_grouped_samples(group, options, aggregator);

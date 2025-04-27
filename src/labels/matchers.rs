@@ -198,6 +198,14 @@ impl RegexMatcher {
     }
 }
 
+impl TryFrom<&str> for RegexMatcher {
+    type Error = ParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::create(value)
+    }
+}
+
 impl Display for RegexMatcher {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", enquote('"', &self.value))
@@ -425,7 +433,7 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
     matches_empty || re.is_match("")
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, Hash, PartialEq)]
 pub enum MatcherSetEnum {
     Or(Vec<Vec<Matcher>>),
     And(Vec<Matcher>),
@@ -559,6 +567,7 @@ impl Default for MatcherSetEnum {
 }
 
 #[derive(Debug, Clone, Default)]
+#[derive(PartialEq)]
 pub struct Matchers {
     pub name: Option<String>,
     pub matchers: MatcherSetEnum,

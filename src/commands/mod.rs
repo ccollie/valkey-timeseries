@@ -19,6 +19,8 @@ mod range;
 mod range_utils;
 mod rev_range;
 mod stats;
+mod range_fetch;
+
 pub use arg_parse::*;
 
 pub use add::*;

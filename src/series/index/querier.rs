@@ -227,7 +227,7 @@ pub(super) fn postings_for_matcher_slice<'a>(
 
     let mut sorted_matchers: SmallVec<(&Matcher, bool, bool), 4> = SmallVec::new();
     // See which label must be non-empty.
-    // Optimization for case like {l=~".", l!="1"}.
+    // Optimization for a case like {l=~".", l!="1"}.
     let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(ms.len());
     for m in ms {
         let matches_empty = m.matches("");
@@ -244,13 +244,13 @@ pub(super) fn postings_for_matcher_slice<'a>(
 
     if has_subtracting_matchers && !has_intersecting_matchers {
         // If there's nothing to subtract from, add in everything and remove the not_its later.
-        // We prefer to get all_postings so that the base of subtraction (i.e. all_postings)
+        // We prefer to get all_postings so that the base of subtraction (i.e., all_postings)
         // doesn't include series that may be added to the index reader during this function call.
         its.push(Cow::Borrowed(ix.all_postings()));
     };
 
     // Sort matchers to have the intersecting matchers first.
-    // This way the base for subtraction is smaller and there is no chance that the set we subtract
+    // This way the base for subtraction is smaller, and there is no chance that the set we subtract
     // from contains postings of series that didn't exist when we constructed the set we subtract by.
     sorted_matchers.sort_by(|i, j| -> Ordering {
         let is_i_subtracting = i.2;

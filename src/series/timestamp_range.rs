@@ -221,6 +221,19 @@ impl TimestampRange {
         Ok(TimestampRange { start, end })
     }
 
+    pub fn from_timestamps(
+        start: Timestamp,
+        end: Timestamp,
+    ) -> ValkeyResult<Self> {
+        if start > end {
+            return Err(ValkeyError::Str("ERR invalid timestamp range: start > end"));
+        }
+        Ok(TimestampRange {
+            start: TimestampValue::Specific(start),
+            end: TimestampValue::Specific(end),
+        })
+    }
+    
     pub fn get_series_range(
         &self,
         series: &TimeSeries,

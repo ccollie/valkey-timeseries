@@ -1,5 +1,7 @@
+use crate::labels::matchers::Matchers;
 use crate::labels::parse_series_selector;
 use crate::series::index::series_keys_by_matchers;
+use crate::series::TimestampRange;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -16,4 +18,13 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let keys = series_keys_by_matchers(ctx, &matcher_list, None)?;
 
     Ok(ValkeyValue::from(keys))
+}
+
+
+pub fn handle_query_index(
+    ctx: &Context,
+    filters: &[Matchers],
+    range: Option<TimestampRange>,
+) -> ValkeyResult<Vec<ValkeyString>> {
+    series_keys_by_matchers(ctx, filters, range)
 }

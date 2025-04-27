@@ -7,6 +7,7 @@ use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
     Version,
 };
+use crate::fanout::register_cluster_message_handlers;
 
 pub mod aggregators;
 pub(crate) mod commands;
@@ -21,6 +22,7 @@ mod parser;
 mod series;
 mod server_events;
 mod tests;
+mod fanout;
 
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
@@ -72,6 +74,9 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 
     start_series_background_worker(ctx);
 
+    // todo: check if we're clustered first
+    register_cluster_message_handlers(ctx);
+    
     match register_server_events(ctx) {
         Ok(_) => {
             logging::log_debug("After initializing server events");
