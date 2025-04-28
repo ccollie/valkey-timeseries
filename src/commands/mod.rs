@@ -20,6 +20,8 @@ mod range_utils;
 mod rev_range;
 mod stats;
 
+mod test_cmd;
+
 pub use arg_parse::*;
 
 pub use add::*;

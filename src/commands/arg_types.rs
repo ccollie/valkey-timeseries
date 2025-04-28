@@ -54,6 +54,13 @@ pub struct RangeOptions {
     pub grouping: Option<RangeGroupingOptions>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MGetOptions {
+    pub with_labels: bool,
+    pub filter: Matchers,
+    pub selected_labels: Vec<String>,
+}
+
 #[derive(Default)]
 pub(crate) struct MRangeResultRow {
     pub(crate) key: String,
