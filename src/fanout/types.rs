@@ -94,7 +94,7 @@ impl TrackerEnum {
             TrackerEnum::Cardinality(_) => ClusterMessageType::Cardinality,
         }
     }
-    
+
     pub fn decrement(&self) -> bool {
         match self {
             TrackerEnum::IndexQuery(ref t) => t.decrement(),
@@ -143,6 +143,18 @@ impl InFlightRequest {
 
     pub fn request_type(&self) -> ClusterMessageType {
         self.responses.request_type()
+    }
+
+    pub fn response_type(&self) -> ClusterMessageType {
+        match self.responses {
+            TrackerEnum::IndexQuery(_) => ClusterMessageType::IndexQueryResponse,
+            TrackerEnum::RangeQuery(_) => ClusterMessageType::RangeQueryResponse,
+            TrackerEnum::MultiRangeQuery(_) => ClusterMessageType::MultiRangeQueryResponse,
+            TrackerEnum::MGetQuery(_) => ClusterMessageType::MultiGetResponse,
+            TrackerEnum::LabelNames(_) => ClusterMessageType::LabelNamesResponse,
+            TrackerEnum::LabelValues(_) => ClusterMessageType::LabelValuesResponse,
+            TrackerEnum::Cardinality(_) => ClusterMessageType::CardinalityResponse,
+        }
     }
     
     pub fn get_error_msg(&self) -> Option<String> {

@@ -5,7 +5,7 @@ use super::request_generated::{
 use crate::labels::matchers::{
     Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue, RegexMatcher, ValueList,
 };
-use flatbuffers::{FlatBufferBuilder, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{ValkeyError, ValkeyResult};
 
