@@ -38,7 +38,7 @@ pub trait Request<R: Response>: Sized {
     fn request_type() -> ClusterMessageType;
     fn serialize(&self, buf: &mut Vec<u8>);
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> where Self: Sized;
-    fn create_tracker<F>(ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
+    fn create_tracker<F>(&self, ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
         where F: FnOnce(&ThreadSafeContext<BlockedClient>, &[R]) + Send + 'static;
     fn exec(&self, _ctx: &Context) -> ValkeyResult<R> {
         unimplemented!("exec not implemented for this request type");

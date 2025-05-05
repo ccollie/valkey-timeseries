@@ -32,16 +32,13 @@ impl Request<RangeResponse> for RangeRequest {
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::RangeQuery
     }
-
     fn serialize<'a>(&self, buf: &mut Vec<u8>) {
         serialize_range_request(buf, self);
     }
-
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         deserialize_range_request(buf)
     }
-
-    fn create_tracker<F>(ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
+    fn create_tracker<F>(&self, ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
     where
         F: FnOnce(&ThreadSafeContext<BlockedClient>, &[RangeResponse]) + Send + 'static
     {

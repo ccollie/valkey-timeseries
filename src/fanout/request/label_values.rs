@@ -10,6 +10,8 @@ use crate::labels::matchers::Matchers;
 use crate::series::TimestampRange;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
+use crate::commands::process_label_values_request;
+use crate::series::request_types::MatchFilterOptions;
 
 #[derive(Clone, Debug, Default)]
 pub struct LabelValuesRequest {
@@ -28,7 +30,7 @@ impl Request<LabelValuesResponse> for LabelValuesRequest {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         deserialize_label_values_request(buf)
     }
-    fn create_tracker<F>(ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
+    fn create_tracker<F>(&self, ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
     where
         F: FnOnce(&ThreadSafeContext<BlockedClient>, &[LabelValuesResponse]) + Send + 'static
     {
@@ -40,6 +42,15 @@ impl Request<LabelValuesResponse> for LabelValuesRequest {
         );
 
         TrackerEnum::LabelValues(tracker)
+    }
+    fn exec(&self, ctx: &Context) -> ValkeyResult<LabelValuesResponse> {
+        let options = MatchFilterOptions {
+            date_range: self.range,
+            matchers: vec![self.filter.clone()], // todo: workaround clone
+            ..Default::default()
+        };
+        process_label_values_request(ctx, &self.label_name, &options)
+            .map(|values| LabelValuesResponse { values })
     }
 }
 

@@ -32,6 +32,7 @@ impl Request<IndexQueryResponse> for IndexQueryRequest {
         deserialize_index_query_request(buf)
     }
     fn create_tracker<F>(
+        &self,
         ctx: &Context,
         request_id: u64,
         expected_results: usize,
@@ -46,6 +47,7 @@ impl Request<IndexQueryResponse> for IndexQueryRequest {
         TrackerEnum::IndexQuery(tracker)
     }
     fn exec(&self, ctx: &Context) -> ValkeyResult<IndexQueryResponse> {
+        
         unimplemented!("exec not implemented for this request type");
     }
 }

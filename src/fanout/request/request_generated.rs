@@ -2262,74 +2262,205 @@ impl core::fmt::Debug for MultiRangeRequest<'_> {
       ds.finish()
   }
 }
+pub enum MetadataRequestOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct MetadataRequest<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for MetadataRequest<'a> {
+  type Inner = MetadataRequest<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> MetadataRequest<'a> {
+  pub const VT_RANGE: flatbuffers::VOffsetT = 4;
+  pub const VT_FILTERS: flatbuffers::VOffsetT = 6;
+  pub const VT_LIMIT: flatbuffers::VOffsetT = 8;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    MetadataRequest { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args MetadataRequestArgs<'args>
+  ) -> flatbuffers::WIPOffset<MetadataRequest<'bldr>> {
+    let mut builder = MetadataRequestBuilder::new(_fbb);
+    builder.add_limit(args.limit);
+    if let Some(x) = args.filters { builder.add_filters(x); }
+    if let Some(x) = args.range { builder.add_range(x); }
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn range(&self) -> Option<DateRange<'a>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<DateRange>>(MetadataRequest::VT_RANGE, None)}
+  }
+  #[inline]
+  pub fn filters(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>>>(MetadataRequest::VT_FILTERS, None)}
+  }
+  #[inline]
+  pub fn limit(&self) -> u32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u32>(MetadataRequest::VT_LIMIT, Some(0)).unwrap()}
+  }
+}
+
+impl flatbuffers::Verifiable for MetadataRequest<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<flatbuffers::ForwardsUOffset<DateRange>>("range", Self::VT_RANGE, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>>>("filters", Self::VT_FILTERS, false)?
+     .visit_field::<u32>("limit", Self::VT_LIMIT, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct MetadataRequestArgs<'a> {
+    pub range: Option<flatbuffers::WIPOffset<DateRange<'a>>>,
+    pub filters: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>>,
+    pub limit: u32,
+}
+impl<'a> Default for MetadataRequestArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    MetadataRequestArgs {
+      range: None,
+      filters: None,
+      limit: 0,
+    }
+  }
+}
+
+pub struct MetadataRequestBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> MetadataRequestBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_range(&mut self, range: flatbuffers::WIPOffset<DateRange<'b >>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<DateRange>>(MetadataRequest::VT_RANGE, range);
+  }
+  #[inline]
+  pub fn add_filters(&mut self, filters: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<Matchers<'b >>>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(MetadataRequest::VT_FILTERS, filters);
+  }
+  #[inline]
+  pub fn add_limit(&mut self, limit: u32) {
+    self.fbb_.push_slot::<u32>(MetadataRequest::VT_LIMIT, limit, 0);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> MetadataRequestBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    MetadataRequestBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<MetadataRequest<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for MetadataRequest<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("MetadataRequest");
+      ds.field("range", &self.range());
+      ds.field("filters", &self.filters());
+      ds.field("limit", &self.limit());
+      ds.finish()
+  }
+}
 #[inline]
-/// Verifies that a buffer of bytes contains a `CardinalityRequest`
+/// Verifies that a buffer of bytes contains a `MetadataRequest`
 /// and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_cardinality_request_unchecked`.
-pub fn root_as_cardinality_request(buf: &[u8]) -> Result<CardinalityRequest, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::root::<CardinalityRequest>(buf)
+/// `root_as_metadata_request_unchecked`.
+pub fn root_as_metadata_request(buf: &[u8]) -> Result<MetadataRequest, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root::<MetadataRequest>(buf)
 }
 #[inline]
 /// Verifies that a buffer of bytes contains a size prefixed
-/// `CardinalityRequest` and returns it.
+/// `MetadataRequest` and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `size_prefixed_root_as_cardinality_request_unchecked`.
-pub fn size_prefixed_root_as_cardinality_request(buf: &[u8]) -> Result<CardinalityRequest, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::size_prefixed_root::<CardinalityRequest>(buf)
+/// `size_prefixed_root_as_metadata_request_unchecked`.
+pub fn size_prefixed_root_as_metadata_request(buf: &[u8]) -> Result<MetadataRequest, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root::<MetadataRequest>(buf)
 }
 #[inline]
 /// Verifies, with the given options, that a buffer of bytes
-/// contains a `CardinalityRequest` and returns it.
+/// contains a `MetadataRequest` and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_cardinality_request_unchecked`.
-pub fn root_as_cardinality_request_with_opts<'b, 'o>(
+/// `root_as_metadata_request_unchecked`.
+pub fn root_as_metadata_request_with_opts<'b, 'o>(
   opts: &'o flatbuffers::VerifierOptions,
   buf: &'b [u8],
-) -> Result<CardinalityRequest<'b>, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::root_with_opts::<CardinalityRequest<'b>>(opts, buf)
+) -> Result<MetadataRequest<'b>, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root_with_opts::<MetadataRequest<'b>>(opts, buf)
 }
 #[inline]
 /// Verifies, with the given verifier options, that a buffer of
-/// bytes contains a size prefixed `CardinalityRequest` and returns
+/// bytes contains a size prefixed `MetadataRequest` and returns
 /// it. Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_cardinality_request_unchecked`.
-pub fn size_prefixed_root_as_cardinality_request_with_opts<'b, 'o>(
+/// `root_as_metadata_request_unchecked`.
+pub fn size_prefixed_root_as_metadata_request_with_opts<'b, 'o>(
   opts: &'o flatbuffers::VerifierOptions,
   buf: &'b [u8],
-) -> Result<CardinalityRequest<'b>, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::size_prefixed_root_with_opts::<CardinalityRequest<'b>>(opts, buf)
+) -> Result<MetadataRequest<'b>, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root_with_opts::<MetadataRequest<'b>>(opts, buf)
 }
 #[inline]
-/// Assumes, without verification, that a buffer of bytes contains a CardinalityRequest and returns it.
+/// Assumes, without verification, that a buffer of bytes contains a MetadataRequest and returns it.
 /// # Safety
-/// Callers must trust the given bytes do indeed contain a valid `CardinalityRequest`.
-pub unsafe fn root_as_cardinality_request_unchecked(buf: &[u8]) -> CardinalityRequest {
-  flatbuffers::root_unchecked::<CardinalityRequest>(buf)
+/// Callers must trust the given bytes do indeed contain a valid `MetadataRequest`.
+pub unsafe fn root_as_metadata_request_unchecked(buf: &[u8]) -> MetadataRequest {
+  flatbuffers::root_unchecked::<MetadataRequest>(buf)
 }
 #[inline]
-/// Assumes, without verification, that a buffer of bytes contains a size prefixed CardinalityRequest and returns it.
+/// Assumes, without verification, that a buffer of bytes contains a size prefixed MetadataRequest and returns it.
 /// # Safety
-/// Callers must trust the given bytes do indeed contain a valid size prefixed `CardinalityRequest`.
-pub unsafe fn size_prefixed_root_as_cardinality_request_unchecked(buf: &[u8]) -> CardinalityRequest {
-  flatbuffers::size_prefixed_root_unchecked::<CardinalityRequest>(buf)
+/// Callers must trust the given bytes do indeed contain a valid size prefixed `MetadataRequest`.
+pub unsafe fn size_prefixed_root_as_metadata_request_unchecked(buf: &[u8]) -> MetadataRequest {
+  flatbuffers::size_prefixed_root_unchecked::<MetadataRequest>(buf)
 }
 #[inline]
-pub fn finish_cardinality_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
+pub fn finish_metadata_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
     fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    root: flatbuffers::WIPOffset<CardinalityRequest<'a>>) {
+    root: flatbuffers::WIPOffset<MetadataRequest<'a>>) {
   fbb.finish(root, None);
 }
 
 #[inline]
-pub fn finish_size_prefixed_cardinality_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<CardinalityRequest<'a>>) {
+pub fn finish_size_prefixed_metadata_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<MetadataRequest<'a>>) {
   fbb.finish_size_prefixed(root, None);
 }
