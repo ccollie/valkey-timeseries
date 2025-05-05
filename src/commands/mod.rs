@@ -1,7 +1,6 @@
 mod add;
 mod alter_series;
 pub mod arg_parse;
-pub mod arg_types;
 mod card;
 mod create_series;
 mod del;

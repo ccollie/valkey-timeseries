@@ -28,7 +28,7 @@ impl Request<CardinalityResponse> for CardinalityRequest {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         deserialize_cardinality_request(buf)
     }
-    fn create_tracker<F>(ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
+    fn create_tracker<F>(&self, ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
     where
         F: FnOnce(&ThreadSafeContext<BlockedClient>, &[CardinalityResponse]) + Send + 'static
     {
@@ -41,12 +41,12 @@ impl Request<CardinalityResponse> for CardinalityRequest {
 
         TrackerEnum::Cardinality(tracker)
     }
-    fn exec(&self, ctx: &Context) -> ValkeyResult<CardinalityResponse> {
-        // let count = calculate_cardinality(ctx, self.range, &[self.filter])?;
-        // Ok(CardinalityResponse {
-        //     count
-        // })
-        unimplemented!("exec not implemented for this request type");
+    fn exec(&self, ctx: &Context) -> ValkeyResult<CardinalityResponse> { 
+        // todo: eliminate clone
+        let count = calculate_cardinality(ctx, self.range, &[self.filter.clone()])?;
+        Ok(CardinalityResponse {
+             count
+        })
     }
 }
 

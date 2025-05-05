@@ -1,6 +1,6 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::serialization::{rdb_load_string, rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
 use enquote::enquote;
 use get_size::GetSize;
 use std::collections::HashMap;

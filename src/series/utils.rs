@@ -10,15 +10,25 @@ use valkey_module::{
 };
 
 pub struct SeriesGuard {
+    key_inner: ValkeyString,
     key: ValkeyKey,
 }
 
 impl SeriesGuard {
+    pub(crate) fn open(ctx: &Context, key: ValkeyString) -> Self {
+        let key_ = ValkeyKey::open(ctx.ctx, &key);
+        SeriesGuard { key: key_, key_inner: key }
+    }
+    
     pub fn get_series(&self) -> &TimeSeries {
         self.key
             .get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)
             .expect("Key existence should be checked before deref")
             .unwrap()
+    }
+    
+    pub fn get_key(&self) -> &ValkeyString {
+        &self.key_inner
     }
 }
 
@@ -127,18 +137,18 @@ pub fn with_timeseries_mut<R>(
 #[allow(dead_code)]
 pub fn get_timeseries(
     ctx: &Context,
-    key: &ValkeyString,
+    key: ValkeyString,
     permissions: Option<AclPermissions>,
     must_exist: bool,
 ) -> ValkeyResult<Option<SeriesGuard>> {
     if let Some(permissions) = permissions {
-        check_key_permissions(ctx, key, &permissions)?;
+        check_key_permissions(ctx, &key, &permissions)?;
     }
 
-    let redis_key = ctx.open_key(key);
+    let redis_key = ctx.open_key(&key);
     match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
         Err(_) => Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY)),
-        Ok(Some(_)) => Ok(Some(SeriesGuard { key: redis_key })),
+        Ok(Some(_)) => Ok(Some(SeriesGuard { key: redis_key, key_inner: key })),
         Ok(None) => {
             if must_exist {
                 return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));

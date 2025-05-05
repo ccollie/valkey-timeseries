@@ -1,4 +1,4 @@
-use crate::common::serialization::*;
+use crate::common::rdb::*;
 use crate::common::Sample;
 use crate::labels::InternedMetricName;
 use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};

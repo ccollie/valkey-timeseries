@@ -1,5 +1,5 @@
 use crate::common::rounding::RoundingStrategy;
-use crate::common::serialization::rdb_load_string;
+use crate::common::rdb::rdb_load_string;
 use crate::common::{Sample, Timestamp};
 use crate::config::{
     ConfigSettings, CHUNK_ENCODING, CHUNK_SIZE, CHUNK_SIZE_DEFAULT, DUPLICATE_POLICY,

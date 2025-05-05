@@ -1,15 +1,7 @@
-use crate::aggregators::{AggOp, Aggregator, BucketAlignment, BucketTimestamp};
+use crate::aggregators::{AggOp, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use std::collections::VecDeque;
-
-#[derive(Debug, Clone)]
-pub struct AggregationOptions {
-    pub aggregator: Aggregator,
-    pub bucket_duration: u64,
-    pub timestamp_output: BucketTimestamp,
-    pub alignment: BucketAlignment,
-    pub report_empty: bool,
-}
+use crate::series::request_types::AggregationOptions;
 
 /// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]
@@ -171,7 +163,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // First return any empty buckets if available
+        // First, return any empty buckets if available
         if let Some(sample) = self.empty_buckets.pop_front() {
             return Some(sample);
         }

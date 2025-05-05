@@ -10,8 +10,8 @@ use super::response_generated::{
     MultiRangeResponseArgs, Sample as ResponseSample, SeriesResponse as FBSeriesResponse,
     SeriesResponseArgs,
 };
-use crate::aggregators::{AggregationOptions, Aggregator, BucketAlignment, BucketTimestamp};
-use crate::commands::arg_types::RangeGroupingOptions;
+use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
+use crate::series::request_types::{AggregationOptions, RangeGroupingOptions};
 use crate::common::{Sample, Timestamp};
 use crate::fanout::cluster::ClusterMessageType;
 use crate::fanout::coordinator::create_response_done_callback;
@@ -49,6 +49,7 @@ impl Request<MultiRangeResponse> for MultiRangeRequest {
         deserialize_multi_range_request(buf)
     }
     fn create_tracker<F>(
+        &self,
         ctx: &Context,
         request_id: u64,
         expected_results: usize,

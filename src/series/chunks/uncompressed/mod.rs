@@ -1,4 +1,4 @@
-use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp, SAMPLE_SIZE};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;

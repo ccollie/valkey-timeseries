@@ -15,7 +15,6 @@ use crate::fanout::request::{
     LabelNamesResponse,
     LabelValuesRequest,
     LabelValuesResponse,
-    MGetRequest,
     MessageHeader,
     MultiGetResponse,
     MultiRangeRequest,
@@ -32,6 +31,7 @@ use std::os::raw::{c_char, c_uchar};
 use std::sync::LazyLock;
 use valkey_module::RedisModuleCtx;
 use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyModuleCtx};
+use crate::series::request_types::MGetRequest;
 
 const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
@@ -53,6 +53,7 @@ pub(super) fn add_inflight_request(
 pub fn send_request<T: Request<R>, R: Response, F>(
     ctx: &Context,
     request: &T,
+    msg_type: ClusterMessageType,
     callback: F
 ) -> u64
 where
@@ -60,8 +61,7 @@ where
 {
     let id = flake_id();
     let db = get_current_db(ctx);
-
-    let msg_type = <T as Request<R>>::request_type();
+    
     let mut buf = get_pooled_buffer(512);
     let header = MessageHeader {
         request_id: id,
@@ -73,7 +73,7 @@ where
 
     let node_count = fanout_cluster_message(ctx, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
 
-    let tracker = T::create_tracker(ctx, id, node_count, callback);
+    let tracker = request.create_tracker(ctx, id, node_count, callback);
 
     let inflight_request = InFlightRequest::new(
         db,
@@ -177,14 +177,13 @@ fn parse_header(ctx: &Context, payload: *const c_uchar, len: u32) -> Option<(Mes
     )
 }
 
-
 pub fn process_request<T: Request<R>, R: Response>(
     ctx: &Context,
     header: &MessageHeader,
     sender_id: *const c_char,
     buf: &[u8]
 ) {
-    // Deserialize the index query request
+    // Deserialize the request
     let request = match T::deserialize(buf) {
         Ok(request) => request,
         Err(e) => {
@@ -346,7 +345,7 @@ extern "C" fn on_cluster_response_received(
         return;
     };
 
-    let msg_type = request.request_type();
+    let msg_type = request.response_type();
 
     if buf.is_empty() {
         let msg = format!("BUG: empty response payload for request type {msg_type}({request_id})");

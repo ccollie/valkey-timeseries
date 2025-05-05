@@ -21,7 +21,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 }
 
 
-pub fn handle_query_index(
+pub fn process_query_index_request(
     ctx: &Context,
     filters: &[Matchers],
     range: Option<TimestampRange>,

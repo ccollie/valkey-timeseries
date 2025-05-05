@@ -1,5 +1,5 @@
 use super::{GorillaEncoder, GorillaIterator};
-use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};

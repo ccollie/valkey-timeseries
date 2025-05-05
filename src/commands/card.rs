@@ -3,7 +3,7 @@ use crate::series::index::{
     get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
 };
 use valkey_module::{AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::commands::arg_types::MatchFilterOptions;
+use crate::series::request_types::MatchFilterOptions;
 use crate::fanout::{perform_card, CardinalityRequest, CardinalityResponse};
 use crate::fanout::cluster::is_cluster_mode;
 use crate::labels::matchers::Matchers;

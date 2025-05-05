@@ -13,7 +13,6 @@ mod join_right_iter;
 #[cfg(test)]
 mod join_handler_tests;
 
-use crate::aggregators::AggregationOptions;
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
 pub(crate) use crate::join::asof::AsofJoinStrategy;
@@ -23,6 +22,7 @@ pub use join_iter::*;
 use join_reducer::JoinReducer;
 
 pub(super) use asof::JoinAsOfIter;
+use crate::series::request_types::AggregationOptions;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {

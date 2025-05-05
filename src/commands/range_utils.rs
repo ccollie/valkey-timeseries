@@ -1,5 +1,5 @@
-use crate::aggregators::{AggOp, AggregateIterator, AggregationOptions};
-use crate::commands::arg_types::{RangeGroupingOptions, RangeOptions};
+use crate::aggregators::{AggOp, AggregateIterator};
+use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::TimeSeries;

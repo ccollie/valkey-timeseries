@@ -1,8 +1,18 @@
-use crate::aggregators::{AggregationOptions, Aggregator};
+use valkey_module::{ValkeyString, ValkeyValue};
+use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::labels::Label;
 use crate::labels::matchers::Matchers;
 use crate::series::{TimestampRange, ValueFilter};
+
+#[derive(Debug, Clone)]
+pub struct AggregationOptions {
+    pub aggregator: Aggregator,
+    pub bucket_duration: u64,
+    pub timestamp_output: BucketTimestamp,
+    pub alignment: BucketAlignment,
+    pub report_empty: bool,
+}
 
 #[derive(Default)]
 pub struct MatchFilterOptions {
@@ -54,13 +64,6 @@ pub struct RangeOptions {
     pub grouping: Option<RangeGroupingOptions>,
 }
 
-#[derive(Debug, Clone)]
-pub struct MGetOptions {
-    pub with_labels: bool,
-    pub filter: Matchers,
-    pub selected_labels: Vec<String>,
-}
-
 #[derive(Default)]
 pub(crate) struct MRangeResultRow {
     pub(crate) key: String,
@@ -75,10 +78,46 @@ pub struct IndexQueryOptions {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct MGetOptions {
+pub struct MGetRequest {
     pub with_labels: bool,
     pub filter: Matchers,
     pub selected_labels: Vec<String>,
+}
+
+pub struct MGetSeriesData {
+    pub series_key: ValkeyString,
+    pub labels: Vec<Option<Label>>,
+    pub sample: Option<Sample>,
+}
+
+impl From<MGetSeriesData> for ValkeyValue {
+    fn from(series: MGetSeriesData) -> Self {
+        let labels: Vec<_> = series.labels
+            .into_iter()
+            .map(|label| match label {
+                Some(label) => label.into(),
+                None => ValkeyValue::Null,
+            })
+            .collect();
+
+        let sample_value: ValkeyValue = if let Some(sample) = series.sample {
+            sample.into()
+        } else {
+            ValkeyValue::Array(vec![])
+        };
+        let series = vec![
+            ValkeyValue::from(series.series_key),
+            ValkeyValue::Array(labels),
+            sample_value,
+        ];
+        ValkeyValue::Array(series)
+    }
+}
+
+pub struct MGetResult {
+    pub with_labels: bool,
+    pub selected_labels: Vec<String>,
+    pub series: Vec<MGetSeriesData>,
 }
 
 #[cfg(test)]

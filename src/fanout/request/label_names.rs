@@ -12,6 +12,8 @@ use crate::labels::matchers::Matchers;
 use crate::series::TimestampRange;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
+use crate::commands::process_label_names_request;
+use crate::series::request_types::MatchFilterOptions;
 
 #[derive(Clone, Debug, Default)]
 pub struct LabelNamesRequest {
@@ -30,6 +32,7 @@ impl Request<LabelNamesResponse> for LabelNamesRequest {
         deserialize_label_names_request(buf)
     }
     fn create_tracker<F>(
+        &self,
         ctx: &Context,
         request_id: u64,
         expected_results: usize,
@@ -44,6 +47,15 @@ impl Request<LabelNamesResponse> for LabelNamesRequest {
             ResultsTracker::new(expected_results, cbk);
 
         TrackerEnum::LabelNames(tracker)
+    }
+    fn exec(&self, ctx: &Context) -> ValkeyResult<LabelNamesResponse> {
+        let options = MatchFilterOptions {
+            date_range: self.range,
+            matchers: vec![self.filter.clone()], // todo: workaround clone
+            ..Default::default()
+        };
+        process_label_names_request(ctx, &options)
+            .map(|names| LabelNamesResponse { names })
     }
 }
 

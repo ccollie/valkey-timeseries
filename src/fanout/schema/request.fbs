@@ -121,6 +121,12 @@ struct ValueRangeFilter {
   max:float64;
 }
 
+table MetadataRequest {
+    range:DateRange;
+    filters:[Matchers];
+    limit:uint32;
+}
+
 root_type RangeRequest;
 root_type MultiRangeRequest;
 root_type MultiGetRequest;
@@ -128,3 +134,4 @@ root_type IndexQueryRequest;
 root_type LabelNamesRequest;
 root_type LabelValuesRequest;
 root_type CardinalityRequest;
+root_type MetadataRequest;

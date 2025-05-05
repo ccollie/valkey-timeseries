@@ -2,7 +2,7 @@ use crate::common::binary_search::{find_last_ge_index, ExponentialSearch};
 use crate::common::constants::VEC_BASE_SIZE;
 use crate::common::parallel::join;
 use crate::common::pool::{get_pooled_vec_f64, get_pooled_vec_i64, PooledVecF64, PooledVecI64};
-use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};

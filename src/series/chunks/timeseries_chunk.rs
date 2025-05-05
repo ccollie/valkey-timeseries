@@ -1,4 +1,4 @@
-use crate::common::serialization::rdb_load_string;
+use crate::common::rdb::rdb_load_string;
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};

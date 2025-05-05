@@ -62,6 +62,7 @@ lto = true            # Link-time optimization
 codegen-units = 1     # Better optimization (slower compile)
 opt-level = 3         # Maximum optimization
 panic = "abort"       # Smaller binary size
+strip = true
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]

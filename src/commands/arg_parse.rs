@@ -1,5 +1,5 @@
-use crate::aggregators::{AggregationOptions, Aggregator, BucketAlignment, BucketTimestamp};
-use crate::commands::arg_types::{MatchFilterOptions, RangeGroupingOptions, RangeOptions};
+use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
+use crate::series::request_types::{AggregationOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;

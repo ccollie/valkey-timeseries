@@ -2,7 +2,7 @@ use super::common::decode_label;
 use super::matchers::{deserialize_matchers, serialize_matchers};
 use super::request_generated::{MultiGetRequest, MultiGetRequestArgs};
 use super::response_generated::{
-    Label as ResponseLabel, LabelArgs, MGetValue as FBMGetValue, MGetValueBuilder,
+    Label as FBLabel, LabelArgs, MGetValue as FBMGetValue, MGetValueBuilder,
     MultiGetResponse as FBMultiGetResponse, MultiGetResponseArgs, Sample as ResponseSample,
 };
 use crate::common::Sample;
@@ -10,18 +10,12 @@ use crate::fanout::coordinator::create_response_done_callback;
 use crate::fanout::request::{Request, Response};
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
 use crate::fanout::ResultsTracker;
-use crate::labels::matchers::Matchers;
 use crate::labels::Label;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
-
-#[derive(Debug, Clone, Default)]
-pub struct MGetRequest {
-    pub with_labels: bool,
-    pub selected_labels: Vec<String>,
-    pub filter: Matchers,
-}
+use crate::commands::handle_mget;
+use crate::series::request_types::MGetRequest;
 
 impl Request<MultiGetResponse> for MGetRequest {
     fn request_type() -> ClusterMessageType {
@@ -37,6 +31,7 @@ impl Request<MultiGetResponse> for MGetRequest {
     }
 
     fn create_tracker<F>(
+        &self,
         ctx: &Context,
         request_id: u64,
         expected_results: usize,
@@ -50,13 +45,32 @@ impl Request<MultiGetResponse> for MGetRequest {
         let tracker: ResultsTracker<MultiGetResponse> = ResultsTracker::new(expected_results, cbk);
         TrackerEnum::MGetQuery(tracker)
     }
+    
+    fn exec(
+        &self,
+        ctx: &Context,
+    ) -> ValkeyResult<MultiGetResponse> 
+    {
+        let res = handle_mget(ctx, self)?;
+        let values = res
+            .into_iter()
+            .map(|resp| {
+                MGetValue {
+                    key: resp.series_key.to_string_lossy(),
+                    value: resp.sample,
+                    labels: resp.labels,
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(MultiGetResponse { series: values })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct MGetValue {
     pub key: String,
     pub value: Option<Sample>,
-    pub labels: Vec<Label>,
+    pub labels: Vec<Option<Label>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -182,11 +196,19 @@ fn serialize_mget_value<'a>(
     let labels = if !value.labels.is_empty() {
         let mut items: SmallVec<_, 8> = SmallVec::new();
         for label in value.labels.iter() {
-            let name = Some(bldr.create_string(label.name.as_str()));
-            let value = Some(bldr.create_string(label.value.as_str()));
-            let args = LabelArgs { name, value };
-            let item = ResponseLabel::create(bldr, &args);
-            items.push(item);
+            if let Some(label) = label {
+                let name = Some(bldr.create_string(label.name.as_str()));
+                let value = Some(bldr.create_string(label.value.as_str()));
+                let args = LabelArgs { name, value };
+                let item = FBLabel::create(bldr, &args);
+                items.push(item);
+            } else {
+                let none_ = FBLabel::create(bldr, &LabelArgs {
+                    name: None,
+                    value: None,
+                });
+                items.push(none_);
+            }
         }
         Some(bldr.create_vector(&items))
     } else {
@@ -211,7 +233,14 @@ fn decode_mget_value(reader: &FBMGetValue) -> MGetValue {
         .labels()
         .unwrap_or_default()
         .iter()
-        .map(|label| decode_label(label))
+        .map(|label| {
+            let lbl = decode_label(label);
+            if lbl.name.is_empty() && lbl.value.is_empty() {
+                None
+            } else {
+                Some(lbl)
+            }
+        })
         .collect::<Vec<_>>();
 
     MGetValue { key, value, labels }
@@ -269,24 +298,24 @@ mod tests {
                     key: "series1".to_string(),
                     value: Some(Sample::new(1000, 42.5)),
                     labels: vec![
-                        Label::new("name", "series1"),
-                        Label::new("region", "us-west"),
+                        Some(Label::new("name", "series1")),
+                        Some(Label::new("region", "us-west")),
                     ],
                 },
                 MGetValue {
                     key: "series2".to_string(),
                     value: Some(Sample::new(1001, 17.8)),
                     labels: vec![
-                        Label::new("name", "series2"),
-                        Label::new("region", "us-east"),
+                        Some(Label::new("name", "series2")),
+                        Some(Label::new("region", "us-east")),
                     ],
                 },
                 MGetValue {
                     key: "series3".to_string(),
                     value: None, // Test missing value
                     labels: vec![
-                        Label::new("name", "series3"),
-                        Label::new("region", "eu-central"),
+                        Some(Label::new("name", "series3")),
+                        Some(Label::new("region", "eu-central")),
                     ],
                 },
             ],
@@ -303,12 +332,8 @@ mod tests {
         assert_eq!(resp.series[0].value, resp2.series[0].value);
         assert_eq!(resp.series[0].labels.len(), resp2.series[0].labels.len());
         assert_eq!(
-            resp.series[0].labels[0].name,
-            resp2.series[0].labels[0].name
-        );
-        assert_eq!(
-            resp.series[0].labels[0].value,
-            resp2.series[0].labels[0].value
+            resp.series[0].labels[0],
+            resp2.series[0].labels[0]
         );
 
         // Check the second series

@@ -39,7 +39,7 @@ pub fn range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_range_options(&mut args)?;
 
     args.done()?;
-    if let Some(series) = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)? {
+    if let Some(series) = get_timeseries(ctx, key, Some(AclPermissions::ACCESS), true)? {
         let samples = get_range(&series, &options, false);
         let result = samples
             .into_iter()

@@ -3,7 +3,7 @@ use super::serialization::{load_bitwriter_from_rdb, save_bitwriter_to_rdb};
 use super::varbit::write_varbit;
 use super::varbit_xor::write_varbit_xor;
 use super::GorillaIterator;
-use crate::common::serialization::{
+use crate::common::rdb::{
     rdb_load_timestamp, rdb_load_u8, rdb_load_usize, rdb_save_timestamp, rdb_save_u8,
     rdb_save_usize,
 };
