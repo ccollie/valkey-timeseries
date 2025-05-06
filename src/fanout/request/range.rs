@@ -1,73 +1,70 @@
-use super::matchers::{deserialize_matchers, serialize_matchers};
-use super::request_generated::{
-    DateRange,
-    DateRangeArgs,
-    RangeRequest as FBRangeRequest,
-    RangeRequestArgs
-};
 use super::response_generated::{
-    RangeResponse as FBRangeResponse, 
+    RangeResponse as FBRangeResponse,
     RangeResponseBuilder,
     Sample as ResponseSample,
-    SeriesRangeResponse, 
+    SeriesRangeResponse,
     SeriesRangeResponseArgs
 };
-use crate::common::{Sample, Timestamp};
-use crate::fanout::coordinator::create_response_done_callback;
-use crate::fanout::request::{Request, Response};
+use crate::commands::process_mrange_query;
+use crate::common::Sample;
+use crate::fanout::request::serialization::{Deserialized, Serialized};
+use crate::fanout::request::Response;
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ResultsTracker;
-use crate::labels::matchers::Matchers;
+use crate::fanout::ShardedCommand;
+use crate::series::request_types::{MatchFilterOptions, RangeOptions};
 use flatbuffers::FlatBufferBuilder;
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
+use valkey_module::{Context, ValkeyResult};
 
 #[derive(Clone, Debug, Default)]
-pub struct RangeRequest {
-    pub start_timestamp: Timestamp,
-    pub end_timestamp: Timestamp,
-    pub filter: Matchers,
-}
+pub struct RangeCommand;
 
-impl Request<RangeResponse> for RangeRequest {
+impl ShardedCommand for RangeCommand {
+    type REQ = MatchFilterOptions;
+    type RES = RangeResponse;
+
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::RangeQuery
     }
-    fn serialize<'a>(&self, buf: &mut Vec<u8>) {
-        serialize_range_request(buf, self);
-    }
-    fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        deserialize_range_request(buf)
-    }
-    fn create_tracker<F>(&self, ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
-    where
-        F: FnOnce(&ThreadSafeContext<BlockedClient>, &[RangeResponse]) + Send + 'static
-    {
-        let cbk = create_response_done_callback(ctx, request_id, callback);
-
-        let tracker: ResultsTracker<RangeResponse> = ResultsTracker::new(
-            expected_results,
-            cbk,
-        );
-
-        TrackerEnum::RangeQuery(tracker)
+    
+    fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<RangeResponse> {
+        let mut req = req;
+        let matchers = req.matchers.pop().unwrap(); // todo: !!!!!!
+        let options = RangeOptions {
+            date_range: req.date_range.unwrap_or_default(),
+            count: req.limit,
+            series_selector: matchers,
+            ..Default::default()
+        };
+        process_mrange_query(ctx, options, false)
+            .map(|series| {
+                let series = series
+                    .into_iter()
+                    .map(|s| RangeSeriesResponse { key: s.key, samples: s.samples })
+                    .collect::<Vec<_>>();
+                RangeResponse { series }
+            })
     }
 }
+
 
 #[derive(Clone, Debug, Default)]
 pub struct RangeResponse {
     pub series: Vec<RangeSeriesResponse>,
 }
 
-impl Response for RangeResponse {
+impl Serialized for  RangeResponse {
     fn serialize(&self, buf: &mut Vec<u8>) {
         serialize_range_response(buf, self);
     }
-    fn deserialize(buf: &[u8]) -> ValkeyResult<Self>
-    where
-        Self: Sized
-    {
+}
+
+impl Deserialized for RangeResponse {
+    fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         deserialize_range_response(buf)
     }
+}
+
+impl Response for RangeResponse {
     fn update_tracker(tracker: &TrackerEnum, res: RangeResponse) {
         if let TrackerEnum::RangeQuery(ref t) = tracker {
             t.update(res);
@@ -81,52 +78,6 @@ pub struct RangeSeriesResponse {
     pub samples: Vec<Sample>,
 }
 
-pub fn serialize_range_request(dest: &mut Vec<u8>, request: &RangeRequest) {
-    let mut bldr = FlatBufferBuilder::with_capacity(128);
-
-    let range = DateRange::create(&mut bldr, &DateRangeArgs {
-        start: request.start_timestamp,
-        end: request.end_timestamp,
-    });
-    let filter = serialize_matchers(&mut bldr, &request.filter);
-    let obj = FBRangeRequest::create(&mut bldr, &RangeRequestArgs {
-        range: Some(range),
-        filters: Some(filter),
-    });
-    
-    bldr.finish(obj, None);
-    
-    // Copy the serialized FlatBuffers data to our own byte buffer.
-    let finished_data = bldr.finished_data();
-    dest.extend_from_slice(finished_data);
-}
-
-// todo: FanoutError type
-pub fn deserialize_range_request(
-    buf: &[u8]
-) -> ValkeyResult<RangeRequest> {
-    // Get access to the root:
-    let req = flatbuffers::root::<FBRangeRequest>(buf)
-        .unwrap();
-
-    let (start_timestamp, end_timestamp) = if let Some(range) = req.range() {
-        (range.start(), range.end())
-    } else {
-        return Err(ValkeyError::Str("TSDB: missing range in request"));
-    };
-    
-    let filter = if let Some(filter) = req.filters() {
-        deserialize_matchers(&filter)?
-    } else {
-        return Err(ValkeyError::Str("TSDB: missing start timestamp"));
-    };
-
-    Ok(RangeRequest {
-        start_timestamp,
-        end_timestamp,
-        filter,
-    })
-}
 
 pub fn serialize_range_response(
     buf: &mut Vec<u8>,

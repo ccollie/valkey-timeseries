@@ -5,7 +5,7 @@ use super::request_generated::{
 use crate::labels::matchers::{
     Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue, RegexMatcher, ValueList,
 };
-use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -255,8 +255,9 @@ fn deserialize_matcher(request_matcher: &FBMatcher) -> ValkeyResult<Matcher> {
 
 #[cfg(test)]
 mod tests {
-    use super::*; // Import items from the parent module (where serialize/deserialize_matchers are)
-    use crate::labels::matchers::{Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+    use super::*;
+    // Import items from the parent module (where serialize/deserialize_matchers are)
+        use crate::labels::matchers::{Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
     use flatbuffers::FlatBufferBuilder;
 
     // Helper function to perform the serialize -> deserialize round trip
