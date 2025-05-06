@@ -19,16 +19,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-
 /// An enum value or union discriminant that was not found among those defined in a schema.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct NotInSchema(pub u16);
 
 impl core::fmt::Display for NotInSchema {
-    fn fmt(
-        &self,
-        fmt: &mut core::fmt::Formatter,
-    ) -> core::result::Result<(), core::fmt::Error> {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
         write!(
             fmt,
             "Enum value or union discriminant {} was not present in the schema.",
@@ -62,6 +58,7 @@ pub struct Error {
 /// but rather to describe how the client might want to respond to the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
+#[repr(u8)]
 pub enum ErrorKind {
     /// Something went wrong
     Failed,
@@ -78,49 +75,28 @@ pub enum ErrorKind {
     /// to re-establish connections and try again.
     Disconnected,
 
-    /// The requested method is not implemented. The caller may wish to revert to a fallback
-    /// approach based on other methods.
-    Unimplemented,
-
     /// Empty buffer
     EmptyBuffer,
-
-    /// Empty slice
-    EmptySlice,
-
-    /// field not found
-    FieldNotFound,
-
-    /// Message ends prematurely. Header claimed {header} words, but message only has {body} words,
-    MessageEndsPrematurely(usize, usize),
-
-    /// Message's size cannot be represented in usize
-    MessageSizeOverflow,
 
     /// Message is too large
     MessageTooLarge(usize),
 
-    /// Premature end of file
-    PrematureEndOfFile,
-
-    /// Premature end of packed input.
-    PrematureEndOfPackedInput,
-
-    /// Read limit exceeded
-    ReadLimitExceeded,
-
-    /// Text contains non-utf8 data
-    TextContainsNonUtf8Data(core::str::Utf8Error),
+    /// Premature end of stream
+    PrematureEndOfStream,
 
     /// type mismatch
     TypeMismatch,
 
-    /// Unknown pointer type.
-    UnknownPointerType,
-    
+    /// Unknown message type.
+    UnknownMessageType,
+
     PermissionDenied,
-    
+
     KeyPermissionDenied,
+
+    SerializationError,
+
+    BadRequestId,
 }
 
 impl Error {
@@ -130,7 +106,6 @@ impl Error {
         use core::fmt::Write;
         let _ = self.extra.write_fmt(fmt);
     }
-
 
     pub fn failed(description: String) -> Self {
         Self {
@@ -158,15 +133,7 @@ impl Error {
             kind: ErrorKind::Disconnected,
         }
     }
-
-    pub fn unimplemented(description: String) -> Self {
-        Self {
-            extra: description,
-            kind: ErrorKind::Unimplemented,
-        }
-    }
 }
-
 
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
@@ -178,7 +145,7 @@ impl From<std::io::Error> for Error {
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::NotConnected => ErrorKind::Disconnected,
-            io::ErrorKind::UnexpectedEof => ErrorKind::PrematureEndOfFile,
+            io::ErrorKind::UnexpectedEof => ErrorKind::PrematureEndOfStream,
             _ => ErrorKind::Failed,
         };
 
@@ -189,35 +156,23 @@ impl From<std::io::Error> for Error {
     }
 }
 
-
-impl From<core::str::Utf8Error> for Error {
-    fn from(err: core::str::Utf8Error) -> Self {
-        Self::from_kind(ErrorKind::TextContainsNonUtf8Data(err))
-    }
-}
-
-
 impl core::fmt::Display for ErrorKind {
     fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::result::Result<(), core::fmt::Error> {
         match self {
             Self::Failed => write!(fmt, "Failed"),
             Self::Overloaded => write!(fmt, "Overloaded"),
             Self::Disconnected => write!(fmt, "Disconnected"),
-            Self::Unimplemented => write!(fmt, "Unimplemented"),
             Self::EmptyBuffer => write!(fmt, "empty buffer"),
-            Self::EmptySlice => write!(fmt, "empty slice"),
-            Self::FieldNotFound => write!(fmt, "field not found"),
-            Self::MessageEndsPrematurely(header, body) => write!(fmt, "Message ends prematurely. Header claimed {header} words, but message only has {body} words"),
-            Self::MessageSizeOverflow => write!(fmt, "Message's size cannot be represented in usize"),
             Self::MessageTooLarge(val) => write!(fmt, "Message is too large: {val}"),
-            Self::PrematureEndOfFile => write!(fmt, "Premature end of file"),
-            Self::PrematureEndOfPackedInput => write!(fmt, "Premature end of packed input."),
-            Self::ReadLimitExceeded => write!(fmt, "Read limit exceeded"),
-            Self::TextContainsNonUtf8Data(e) => write!(fmt, "Text contains non-utf8 data: {e}"),
+            Self::PrematureEndOfStream => write!(fmt, "Premature end of stream"),
             Self::TypeMismatch => write!(fmt, "type mismatch"),
             Self::PermissionDenied => write!(fmt, "Permission denied"),
-            Self::KeyPermissionDenied => write!(fmt, "User does not have access to one or more keys"),
-            Self::UnknownPointerType => write!(fmt, "Unknown pointer type."),
+            Self::KeyPermissionDenied => {
+                write!(fmt, "User does not have access to one or more keys")
+            }
+            Self::UnknownMessageType => write!(fmt, "Unknown message type."),
+            Self::SerializationError => write!(fmt, "Serialization error"),
+            Self::BadRequestId => write!(fmt, "Bad request id"),
         }
     }
 }

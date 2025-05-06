@@ -1,9 +1,12 @@
 use super::matchers::{deserialize_matchers, serialize_matchers};
-use super::request_generated::{LabelValuesRequest as FBLabelValuesRequest, LabelValuesRequestArgs};
-use super::response_generated::{LabelValuesResponse as FBLabelValuesResponse, LabelValuesResponseArgs};
+use super::request_generated::{
+    LabelValuesRequest as FBLabelValuesRequest, LabelValuesRequestArgs,
+};
+use super::response_generated::{
+    LabelValuesResponse as FBLabelValuesResponse, LabelValuesResponseArgs,
+};
 use crate::commands::process_label_values_request;
 use crate::fanout::request::common::{deserialize_timestamp_range, serialize_timestamp_range};
-use crate::fanout::request::Response;
 use crate::fanout::serialization::{Deserialized, Serialized};
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
 use crate::fanout::ShardedCommand;
@@ -20,7 +23,6 @@ pub struct LabelValuesRequest {
     pub filter: Matchers,
 }
 
-
 pub struct LabelValuesCommand;
 
 impl Serialized for LabelValuesRequest {
@@ -31,11 +33,14 @@ impl Serialized for LabelValuesRequest {
         let range = serialize_timestamp_range(&mut bldr, self.range);
         let filter = serialize_matchers(&mut bldr, &self.filter);
 
-        let req = FBLabelValuesRequest::create(&mut bldr, &LabelValuesRequestArgs {
-            label: Some(name),
-            range,
-            filter: Some(filter),
-        });
+        let req = FBLabelValuesRequest::create(
+            &mut bldr,
+            &LabelValuesRequestArgs {
+                label: Some(name),
+                range,
+                filter: Some(filter),
+            },
+        );
 
         bldr.finish(req, None);
         // Copy the serialized FlatBuffers data to our own byte buffer.
@@ -47,8 +52,7 @@ impl Serialized for LabelValuesRequest {
 impl Deserialized for LabelValuesRequest {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         // Get access to the root:
-        let req = flatbuffers::root::<FBLabelValuesRequest>(buf)
-            .unwrap();
+        let req = flatbuffers::root::<FBLabelValuesRequest>(buf).unwrap();
 
         let range = deserialize_timestamp_range(req.range())?;
         let label_name = if let Some(label_name) = req.label() {
@@ -86,6 +90,12 @@ impl ShardedCommand for LabelValuesCommand {
         process_label_values_request(ctx, &req.label_name, &options)
             .map(|values| LabelValuesResponse { values })
     }
+
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
+        if let TrackerEnum::LabelValues(ref t) = tracker {
+            t.update(res);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -103,9 +113,12 @@ impl Serialized for LabelValuesResponse {
         }
         let values = bldr.create_vector(&values);
 
-        let obj = FBLabelValuesResponse::create(&mut bldr, &LabelValuesResponseArgs {
-            values: Some(values),
-        });
+        let obj = FBLabelValuesResponse::create(
+            &mut bldr,
+            &LabelValuesResponseArgs {
+                values: Some(values),
+            },
+        );
 
         bldr.finish(obj, None);
         let data = bldr.finished_data();
@@ -115,14 +128,10 @@ impl Serialized for LabelValuesResponse {
 
 impl Deserialized for LabelValuesResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBLabelValuesResponse>(buf)
-            .unwrap();
+        let req = flatbuffers::root::<FBLabelValuesResponse>(buf).unwrap();
 
         let values = if let Some(resp_rnames) = req.values() {
-            resp_rnames
-                .iter()
-                .map(|x| x.to_string())
-                .collect()
+            resp_rnames.iter().map(|x| x.to_string()).collect()
         } else {
             vec![]
         };
@@ -131,19 +140,12 @@ impl Deserialized for LabelValuesResponse {
     }
 }
 
-impl Response for LabelValuesResponse {
-    fn update_tracker(tracker: &TrackerEnum, res: Self) {
-        if let TrackerEnum::LabelValues(ref t) = tracker {
-            t.update(res);
-        }
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labels::matchers::{Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+    use crate::labels::matchers::{
+        Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
+    };
 
     fn make_sample_matchers() -> Matchers {
         Matchers {

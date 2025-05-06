@@ -59,6 +59,20 @@ table CardinalityResponse {
   count:uint64;
 }
 
+table PostingStat {
+  name:string;
+  count:uint64;
+}
+
+table PostingStats {
+  cardinality_metrics_stats:[PostingStat];
+  cardinality_label_stats:[PostingStat];
+  label_value_stats:[PostingStat];
+  label_value_pairs_stats:[PostingStat];
+  num_label_pairs:uint64;
+  num_labels:uint64;
+}
+
 root_type MultiRangeResponse;
 root_type MultiGetResponse;
 root_type RangeResponse;
@@ -68,3 +82,4 @@ root_type LabelValuesResponse;
 root_type LabelNamesResponse;
 root_type CardinalityResponse;
 root_type SeriesResponse;
+root_type PostingStats;

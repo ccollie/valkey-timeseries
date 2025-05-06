@@ -17,6 +17,6 @@ use valkey_module_macros::command;
         ]
     }
 )]
-pub fn test(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn test(_ctx: &Context, _args: Vec<ValkeyString>) -> ValkeyResult {
     VALKEY_OK
 }

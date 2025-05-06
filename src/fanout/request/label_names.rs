@@ -3,7 +3,6 @@ use super::response_generated::{
 };
 use crate::commands::process_label_names_request;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::request::Response;
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
 use crate::fanout::ShardedCommand;
 use crate::series::request_types::MatchFilterOptions;
@@ -20,24 +19,19 @@ impl ShardedCommand for LabelNamesCommand {
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::LabelNames
     }
-    
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<LabelNamesResponse> {
-        process_label_names_request(ctx, &req)
-            .map(|names| LabelNamesResponse { names })
+        process_label_names_request(ctx, &req).map(|names| LabelNamesResponse { names })
+    }
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
+        if let TrackerEnum::LabelNames(ref t) = tracker {
+            t.update(res);
+        }
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct LabelNamesResponse {
     pub names: Vec<String>,
-}
-
-impl Response for LabelNamesResponse {
-    fn update_tracker(tracker: &TrackerEnum, res: Self) {
-        if let TrackerEnum::LabelNames(ref t) = tracker {
-            t.update(res);
-        }
-    }
 }
 
 impl Serialized for LabelNamesResponse {
@@ -72,7 +66,6 @@ impl Deserialized for LabelNamesResponse {
         Ok(LabelNamesResponse { names })
     }
 }
-
 
 #[cfg(test)]
 mod tests {

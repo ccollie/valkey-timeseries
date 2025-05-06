@@ -257,7 +257,9 @@ fn deserialize_matcher(request_matcher: &FBMatcher) -> ValkeyResult<Matcher> {
 mod tests {
     use super::*;
     // Import items from the parent module (where serialize/deserialize_matchers are)
-        use crate::labels::matchers::{Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+    use crate::labels::matchers::{
+        Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
+    };
     use flatbuffers::FlatBufferBuilder;
 
     // Helper function to perform the serialize -> deserialize round trip
@@ -269,25 +271,29 @@ mod tests {
         bldr.finish(fb_matchers_offset, None); // Finish the buffer with FBMatchers as root
         let buf = bldr.finished_data();
 
-        let fb_matchers = flatbuffers::root::<crate::fanout::request::request_generated::Matchers>(buf)
-            .expect("Failed to get root FBMatchers");
+        let fb_matchers =
+            flatbuffers::root::<crate::fanout::request::request_generated::Matchers>(buf)
+                .expect("Failed to get root FBMatchers");
         // Deserialize
-        let deserialized_matchers = deserialize_matchers(&fb_matchers).expect("Deserialization failed");
+        let deserialized_matchers =
+            deserialize_matchers(&fb_matchers).expect("Deserialization failed");
 
         // Assert equality
-        assert_eq!(original_matchers, &deserialized_matchers, "Round trip failed for: {:?}", original_matchers);
+        assert_eq!(
+            original_matchers, &deserialized_matchers,
+            "Round trip failed for: {:?}",
+            original_matchers
+        );
     }
 
     #[test]
     fn test_serialize_deserialize_and_simple() {
         let matchers = Matchers {
             name: None,
-            matchers: MatcherSetEnum::And(vec![
-                Matcher {
-                    label: "job".to_string(),
-                    matcher: PredicateMatch::Equal(PredicateValue::String("node".to_string())),
-                },
-            ]),
+            matchers: MatcherSetEnum::And(vec![Matcher {
+                label: "job".to_string(),
+                matcher: PredicateMatch::Equal(PredicateValue::String("node".to_string())),
+            }]),
         };
         assert_round_trip(&matchers);
     }
@@ -303,7 +309,9 @@ mod tests {
                 },
                 Matcher {
                     label: "instance".to_string(),
-                    matcher: PredicateMatch::NotEqual(PredicateValue::String("localhost:9090".to_string())),
+                    matcher: PredicateMatch::NotEqual(PredicateValue::String(
+                        "localhost:9090".to_string(),
+                    )),
                 },
                 Matcher {
                     label: "region".to_string(),
@@ -318,14 +326,10 @@ mod tests {
     fn test_serialize_deserialize_or_simple() {
         let matchers = Matchers {
             name: None,
-            matchers: MatcherSetEnum::Or(vec![
-                vec![
-                    Matcher {
-                        label: "status".to_string(),
-                        matcher: PredicateMatch::Equal(PredicateValue::String("success".to_string())),
-                    },
-                ],
-            ]),
+            matchers: MatcherSetEnum::Or(vec![vec![Matcher {
+                label: "status".to_string(),
+                matcher: PredicateMatch::Equal(PredicateValue::String("success".to_string())),
+            }]]),
         };
         assert_round_trip(&matchers);
     }
@@ -335,25 +339,31 @@ mod tests {
         let matchers = Matchers {
             name: Some("my_or_matcher".to_string()),
             matchers: MatcherSetEnum::Or(vec![
-                vec![ // Group 1
-                      Matcher {
-                          label: "env".to_string(),
-                          matcher: PredicateMatch::Equal(PredicateValue::String("prod".to_string())),
-                      },
-                      Matcher {
-                          label: "dc".to_string(),
-                          matcher: PredicateMatch::Equal(PredicateValue::String("us-east-1".to_string())),
-                      },
+                vec![
+                    // Group 1
+                    Matcher {
+                        label: "env".to_string(),
+                        matcher: PredicateMatch::Equal(PredicateValue::String("prod".to_string())),
+                    },
+                    Matcher {
+                        label: "dc".to_string(),
+                        matcher: PredicateMatch::Equal(PredicateValue::String(
+                            "us-east-1".to_string(),
+                        )),
+                    },
                 ],
-                vec![ // Group 2
-                      Matcher {
-                          label: "env".to_string(),
-                          matcher: PredicateMatch::Equal(PredicateValue::String("staging".to_string())),
-                      },
-                      Matcher {
-                          label: "owner".to_string(),
-                          matcher: PredicateMatch::RegexNotEqual("test.*".try_into().unwrap()),
-                      },
+                vec![
+                    // Group 2
+                    Matcher {
+                        label: "env".to_string(),
+                        matcher: PredicateMatch::Equal(PredicateValue::String(
+                            "staging".to_string(),
+                        )),
+                    },
+                    Matcher {
+                        label: "owner".to_string(),
+                        matcher: PredicateMatch::RegexNotEqual("test.*".try_into().unwrap()),
+                    },
                 ],
             ]),
         };
@@ -377,12 +387,10 @@ mod tests {
         list.push("204".to_string());
         let matchers = Matchers {
             name: None,
-            matchers: MatcherSetEnum::And(vec![
-                Matcher {
-                    label: "code".to_string(),
-                    matcher: PredicateMatch::Equal(PredicateValue::List(list)),
-                },
-            ]),
+            matchers: MatcherSetEnum::And(vec![Matcher {
+                label: "code".to_string(),
+                matcher: PredicateMatch::Equal(PredicateValue::List(list)),
+            }]),
         };
         assert_round_trip(&matchers);
     }
