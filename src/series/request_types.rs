@@ -14,7 +14,7 @@ pub struct AggregationOptions {
     pub report_empty: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct MatchFilterOptions {
     pub date_range: Option<TimestampRange>,
     pub matchers: Vec<Matchers>,

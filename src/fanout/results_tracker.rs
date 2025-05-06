@@ -1,9 +1,18 @@
+use std::any::Any;
 use std::collections::BinaryHeap;
 use std::sync::{Mutex, MutexGuard};
-
+use enum_dispatch::enum_dispatch;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub type ResponseCallback<T> = Box<dyn FnOnce(ValkeyResult<Vec<T>>) + Send>;
+
+#[enum_dispatch]
+pub trait ResponseTracker<T>: Any {
+    fn update(&self, result: T) -> bool;
+    fn decrement(&self) -> bool;
+    fn completed(&self) -> bool;
+    fn raise_error(&self, error: &str);
+}
 
 struct ResultsTrackerInner<T> {
     results: Vec<T>,
@@ -79,9 +88,28 @@ impl<T> ResultsTracker<T> {
     
     pub fn raise_error(&self, error: &str) {
         let mut inner = self.inner.lock().unwrap();
+        inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
         if let Some(callback) = inner.callback.take() {
             callback(Err(ValkeyError::String(error.to_string())));
         }
+    }
+}
+
+impl<T: 'static> ResponseTracker<T> for ResultsTracker<T> {
+    fn update(&self, result: T) -> bool {
+        self.update(result)
+    }
+
+    fn decrement(&self) -> bool {
+        self.decrement()
+    }
+
+    fn completed(&self) -> bool {
+        self.completed()
+    }
+
+    fn raise_error(&self, error: &str) {
+        self.raise_error(error)
     }
 }
 
@@ -175,5 +203,23 @@ impl<T: PartialOrd + Ord> TopKResultsTracker<T> {
     pub fn completed(&self) -> bool {
         let inner = self.inner.lock().unwrap();
         inner.outstanding_requests == 0
+    }
+}
+
+impl<T: PartialOrd + 'static + Ord> ResponseTracker<T> for TopKResultsTracker<T> {
+    fn update(&self, result: T) -> bool {
+        TopKResultsTracker::update(self, result)
+    }
+
+    fn decrement(&self) -> bool {
+        TopKResultsTracker::decrement(self)
+    }
+
+    fn completed(&self) -> bool {
+        TopKResultsTracker::completed(self)
+    }
+
+    fn raise_error(&self, error: &str) {
+        TopKResultsTracker::raise_error(self, error)
     }
 }

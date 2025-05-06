@@ -5,53 +5,35 @@ use super::response_generated::{
     Label as FBLabel, LabelArgs, MGetValue as FBMGetValue, MGetValueBuilder,
     MultiGetResponse as FBMultiGetResponse, MultiGetResponseArgs, Sample as ResponseSample,
 };
+use crate::commands::handle_mget;
 use crate::common::Sample;
-use crate::fanout::coordinator::create_response_done_callback;
-use crate::fanout::request::{Request, Response};
+use crate::fanout::request::serialization::{Deserialized, Serialized};
+use crate::fanout::request::Response;
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ResultsTracker;
+use crate::fanout::ShardedCommand;
 use crate::labels::Label;
+use crate::series::request_types::MGetRequest;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
-use crate::commands::handle_mget;
-use crate::series::request_types::MGetRequest;
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
-impl Request<MultiGetResponse> for MGetRequest {
+
+pub struct MGetShardedCommand;
+
+impl ShardedCommand for MGetShardedCommand {
+    type REQ = MGetRequest;
+    type RES = MultiGetResponse;
+    
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::MGetQuery
     }
 
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        serialize_mget_request(buf, self);
-    }
-
-    fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        deserialize_mget_request(buf)
-    }
-
-    fn create_tracker<F>(
-        &self,
-        ctx: &Context,
-        request_id: u64,
-        expected_results: usize,
-        callback: F,
-    ) -> TrackerEnum
-    where
-        F: FnOnce(&ThreadSafeContext<BlockedClient>, &[MultiGetResponse]) + Send + 'static,
-    {
-        let cbk = create_response_done_callback(ctx, request_id, callback);
-
-        let tracker: ResultsTracker<MultiGetResponse> = ResultsTracker::new(expected_results, cbk);
-        TrackerEnum::MGetQuery(tracker)
-    }
-    
     fn exec(
-        &self,
         ctx: &Context,
-    ) -> ValkeyResult<MultiGetResponse> 
+        req: Self::REQ,
+    ) -> ValkeyResult<MultiGetResponse>
     {
-        let res = handle_mget(ctx, self)?;
+        let res = handle_mget(ctx, req)?;
         let values = res
             .into_iter()
             .map(|resp| {
@@ -63,6 +45,61 @@ impl Request<MultiGetResponse> for MGetRequest {
             })
             .collect::<Vec<_>>();
         Ok(MultiGetResponse { series: values })
+    }
+}
+
+impl Serialized for MGetRequest {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        let mut bldr = FlatBufferBuilder::with_capacity(1024);
+
+        let mut labels: SmallVec<_, 4> = SmallVec::new();
+        for label in self.selected_labels.iter() {
+            let name = bldr.create_string(label.as_str());
+            labels.push(name);
+        }
+        let selected_labels = bldr.create_vector(&labels);
+        let filter = serialize_matchers(&mut bldr, &self.filter);
+
+        let req = MultiGetRequest::create(
+            &mut bldr,
+            &MultiGetRequestArgs {
+                with_labels: self.with_labels,
+                filter: Some(filter),
+                selected_labels: Some(selected_labels),
+            },
+        );
+
+        bldr.finish(req, None);
+
+        let data = bldr.finished_data();
+        buf.extend_from_slice(data);
+    }
+}
+
+impl Deserialized for MGetRequest {
+    fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
+        // todo: verify the buffer
+        // Get access to the root:
+        let req = flatbuffers::root::<MultiGetRequest>(buf).unwrap();
+        let mut result: MGetRequest = MGetRequest {
+            with_labels: req.with_labels(),
+            ..MGetRequest::default()
+        };
+
+        if let Some(selected_labels) = req.selected_labels() {
+            for label in selected_labels.iter() {
+                let label = label.to_string();
+                result.selected_labels.push(label);
+            }
+        }
+
+        if let Some(filter) = req.filter() {
+            result.filter = deserialize_matchers(&filter)?;
+        } else {
+            return Err(ValkeyError::Str("TSDB: missing filter"));
+        }
+
+        Ok(result)
     }
 }
 
@@ -79,17 +116,6 @@ pub struct MultiGetResponse {
 }
 
 impl Response for MultiGetResponse {
-    fn serialize(&self, buf: &mut Vec<u8>) {
-        serialize_mget_response(buf, self);
-    }
-
-    fn deserialize(buf: &[u8]) -> ValkeyResult<Self>
-    where
-        Self: Sized,
-    {
-        deserialize_mget_response(buf)
-    }
-
     fn update_tracker(tracker: &TrackerEnum, res: MultiGetResponse) {
         if let TrackerEnum::MGetQuery(tracker) = tracker {
             tracker.update(res);
@@ -99,94 +125,47 @@ impl Response for MultiGetResponse {
     }
 }
 
-pub fn serialize_mget_request(dest: &mut Vec<u8>, request: &MGetRequest) {
-    let mut bldr = FlatBufferBuilder::with_capacity(1024);
-    
-    let mut labels: SmallVec<_, 4> = SmallVec::new();
-    for label in request.selected_labels.iter() {
-        let name = bldr.create_string(label.as_str());
-        labels.push(name);
-    }
-    let selected_labels = bldr.create_vector(&labels);
-    let filter = serialize_matchers(&mut bldr, &request.filter);
+impl Serialized for MultiGetResponse {
+    fn serialize(&self, buf: &mut Vec<u8>) {
+        let mut bldr = FlatBufferBuilder::with_capacity(1024);
 
-    let req = MultiGetRequest::create(
-        &mut bldr,
-        &MultiGetRequestArgs {
-            with_labels: request.with_labels,
-            filter: Some(filter),
-            selected_labels: Some(selected_labels),
-        },
-    );
-
-    bldr.finish(req, None);
-
-    let data = bldr.finished_data();
-    dest.extend_from_slice(data);
-}
-
-pub fn deserialize_mget_request(buf: &[u8]) -> ValkeyResult<MGetRequest> {
-    // todo: verify the buffer
-    // Get access to the root:
-    let req = flatbuffers::root::<MultiGetRequest>(buf).unwrap();
-    let mut result: MGetRequest = MGetRequest {
-        with_labels: req.with_labels(),
-        ..MGetRequest::default()
-    };
-    
-    if let Some(selected_labels) = req.selected_labels() {
-        for label in selected_labels.iter() {
-            let label = label.to_string();
-            result.selected_labels.push(label);
+        let mut values = Vec::with_capacity(self.series.len());
+        for item in self.series.iter() {
+            let value = serialize_mget_value(&mut bldr, item);
+            values.push(value);
         }
-    }
+        let values = bldr.create_vector(&values);
 
-    if let Some(filter) = req.filter() {
-        result.filter = deserialize_matchers(&filter)?;
-    } else {
-        return Err(ValkeyError::Str("TSDB: missing filter"));
+        // Create the response:
+        let obj = FBMultiGetResponse::create(
+            &mut bldr,
+            &MultiGetResponseArgs {
+                values: Some(values),
+            },
+        );
+        bldr.finish(obj, None);
+        // Serialize the response:
+        let data = bldr.finished_data();
+        buf.extend_from_slice(data);
     }
-
-    Ok(result)
 }
 
-pub fn serialize_mget_response(dest: &mut Vec<u8>, response: &MultiGetResponse) {
-    let mut bldr = FlatBufferBuilder::with_capacity(1024);
+impl Deserialized for MultiGetResponse {
+    fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
+        let req = flatbuffers::root::<FBMultiGetResponse>(buf).unwrap();
+        let mut result: MultiGetResponse = MultiGetResponse::default();
 
-    let mut values = Vec::with_capacity(response.series.len());
-    for item in response.series.iter() {
-        let value = serialize_mget_value(&mut bldr, item);
-        values.push(value);
-    }
-    let values = bldr.create_vector(&values);
-
-    // Create the response:
-    let obj = FBMultiGetResponse::create(
-        &mut bldr,
-        &MultiGetResponseArgs {
-            values: Some(values),
-        },
-    );
-    bldr.finish(obj, None);
-    // Serialize the response:
-    let data = bldr.finished_data();
-    dest.extend_from_slice(data);
-}
-
-pub fn deserialize_mget_response(buf: &[u8]) -> ValkeyResult<MultiGetResponse> {
-    // Get access to the root:
-    let req = flatbuffers::root::<FBMultiGetResponse>(buf).unwrap();
-    let mut result: MultiGetResponse = MultiGetResponse::default();
-
-    if let Some(values) = req.values() {
-        for item in values.iter() {
-            let value = decode_mget_value(&item);
-            result.series.push(value);
+        if let Some(values) = req.values() {
+            for item in values.iter() {
+                let value = decode_mget_value(&item);
+                result.series.push(value);
+            }
         }
-    }
 
-    Ok(result)
+        Ok(result)
+    }
 }
+
 
 fn serialize_mget_value<'a>(
     bldr: &mut FlatBufferBuilder<'a>,

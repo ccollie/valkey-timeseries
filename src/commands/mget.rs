@@ -19,7 +19,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_mget_options(&mut args)?;
 
     // NOTE: we currently don't support cross-cluster mget
-    let mget_results = handle_mget(ctx, &options)?;
+    let mget_results = handle_mget(ctx, options)?;
 
     let result = mget_results
         .into_iter()
@@ -59,7 +59,7 @@ pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetReq
     Ok(options)
 }
 
-pub fn handle_mget(ctx: &Context, options: &MGetRequest) -> ValkeyResult<Vec<MGetSeriesData>>{
+pub fn handle_mget(ctx: &Context, options: MGetRequest) -> ValkeyResult<Vec<MGetSeriesData>>{
     let with_labels = options.with_labels;
     let selected_labels = &options.selected_labels;
     let mut series = vec![];

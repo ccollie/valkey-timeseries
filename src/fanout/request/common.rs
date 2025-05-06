@@ -1,69 +1,20 @@
-use std::io::{Write, Read};
 use super::response_generated::{
-    ErrorResponse as FBErrorResponse, 
-    ErrorResponseArgs, 
-    Label as ResponseLabel, 
+    ErrorResponse as FBErrorResponse,
+    ErrorResponseArgs,
+    Label as ResponseLabel,
     LabelBuilder,
     Sample as ResponseSample,
 };
-use crate::common::{Sample, Serialized};
+use crate::common::Sample;
 use crate::fanout::request::request_generated::{
-    DateRange, 
-    DateRangeArgs,
-    MetadataRequest,
-    MetadataRequestArgs,
+    DateRange,
+    DateRangeArgs
 };
 use crate::fanout::types::ClusterMessageType;
 use crate::labels::Label;
 use crate::series::TimestampRange;
 use flatbuffers::{FlatBufferBuilder, Vector, WIPOffset};
 use valkey_module::{ValkeyError, ValkeyResult};
-use crate::fanout::request::matchers::{deserialize_matchers, serialize_matchers};
-use crate::series::request_types::MatchFilterOptions;
-
-impl Serialized<MatchFilterOptions> for MatchFilterOptions {
-    fn serialize<W: Write>(&self, buf: &mut W) {
-        let mut bldr = FlatBufferBuilder::with_capacity(512);
-
-        let range = serialize_timestamp_range(&mut bldr, self.date_range);
-        let matchers = self.matchers.iter()
-            .map(|m| serialize_matchers(&mut bldr, m))
-            .collect::<Vec<_>>();
-        
-        let filters = bldr.create_vector(&matchers);
-        let args = MetadataRequestArgs {
-            range,
-            filters: Some(filters),
-            limit: self.limit.unwrap_or_default() as u32,
-        };
-
-        let obj = MetadataRequest::create(&mut bldr, &args);
-        
-        bldr.finish(obj, None);
-        let data = bldr.finished_data();
-        buf.write_all(&data).unwrap();
-    }
-
-    fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<MetadataRequest>(buf).unwrap();
-        let range = deserialize_timestamp_range(req.range())?;
-        let limit = if req.limit() > 0 {
-            Some(req.limit() as usize)
-        } else {
-            None
-        };
-        let mut matchers = Vec::with_capacity(req.filters().unwrap_or_default().len());
-        for filter in req.filters().unwrap_or_default() {
-            let matcher = deserialize_matchers(&filter)?;
-            matchers.push(matcher);
-        }
-        Ok(MatchFilterOptions { 
-            date_range: range,
-            matchers,
-            limit,
-        })
-    }
-}
 
 pub struct MessageHeader {
     pub request_id: u64,

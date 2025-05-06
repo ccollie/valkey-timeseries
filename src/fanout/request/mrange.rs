@@ -11,64 +11,70 @@ use super::response_generated::{
     SeriesResponseArgs,
 };
 use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
-use crate::series::request_types::{AggregationOptions, RangeGroupingOptions};
+use crate::commands::process_mrange_query;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::cluster::ClusterMessageType;
-use crate::fanout::coordinator::create_response_done_callback;
-use crate::fanout::request::{Request, Response};
+use crate::fanout::request::serialization::{Deserialized, Serialized};
+use crate::fanout::request::Response;
 use crate::fanout::types::TrackerEnum;
-use crate::fanout::ResultsTracker;
-use crate::labels::matchers::Matchers;
-use crate::labels::Label;
-use crate::series::{TimestampRange, ValueFilter};
+use crate::fanout::ShardedCommand;
+use crate::labels::{Label, SeriesLabel};
+use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
+use crate::series::ValueFilter;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
-#[derive(Clone, Debug, Default)]
-pub struct MultiRangeRequest {
-    pub range: Option<TimestampRange>,
-    pub filter: Matchers,
-    pub with_labels: bool,
-    pub selected_labels: Vec<String>,
-    pub timestamp_filter: Option<Vec<Timestamp>>,
-    pub value_filter: Option<ValueFilter>,
-    pub aggregation: Option<AggregationOptions>,
-    pub grouping: Option<RangeGroupingOptions>,
-    pub count: Option<usize>,
-}
-
-impl Request<MultiRangeResponse> for MultiRangeRequest {
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::MultiRangeQuery
-    }
+impl Serialized for RangeOptions {
     fn serialize(&self, buf: &mut Vec<u8>) {
         serialize_multi_range_request(buf, self);
     }
+}
+
+impl Deserialized for RangeOptions {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         deserialize_multi_range_request(buf)
     }
-    fn create_tracker<F>(
-        &self,
-        ctx: &Context,
-        request_id: u64,
-        expected_results: usize,
-        callback: F,
-    ) -> TrackerEnum
-    where
-        F: FnOnce(&ThreadSafeContext<BlockedClient>, &[MultiRangeResponse]) + Send + 'static,
-    {
-        let cbk = create_response_done_callback(ctx, request_id, callback);
-        let tracker: ResultsTracker<MultiRangeResponse> =
-            ResultsTracker::new(expected_results, cbk);
-        TrackerEnum::MultiRangeQuery(tracker)
+}
+
+
+pub struct MultiRangeCommand;
+
+impl ShardedCommand for MultiRangeCommand {
+    type REQ = RangeOptions;
+    type RES = MultiRangeResponse;
+    
+    fn request_type() -> ClusterMessageType {
+        ClusterMessageType::MultiRangeQuery
+    }
+    
+    fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
+        // todo: how to avoid this clone?
+        match process_mrange_query(ctx, req, false) {
+            Ok(values) => {
+                let series = values.into_iter()
+                    .map(|x| {
+                        SeriesResponse {
+                            key: x.key,
+                            labels: x.labels,
+                            samples: x.samples,
+                        }
+                    }).collect();
+                Ok(MultiRangeResponse { series })
+            }
+            Err(e) => {
+                // Handle error
+                Err(e)
+            }
+        }
     }
 }
+
 
 #[derive(Clone, Debug, Default)]
 pub struct SeriesResponse {
     pub key: String,
-    pub labels: Vec<Label>,
+    pub labels: Vec<Option<Label>>,
     pub samples: Vec<Sample>,
 }
 
@@ -77,13 +83,48 @@ pub struct MultiRangeResponse {
     pub series: Vec<SeriesResponse>,
 }
 
-impl Response for MultiRangeResponse {
+impl Serialized for MultiRangeResponse {
     fn serialize(&self, buf: &mut Vec<u8>) {
-        serialize_multi_range_response(buf, self);
+        let mut bldr = FlatBufferBuilder::with_capacity(512);
+
+        let mut series = Vec::with_capacity(self.series.len());
+        for item in &self.series {
+            let value = encode_series_response(&mut bldr, item);
+            series.push(value);
+        }
+
+        // todo: use gorilla on samples
+        let sample_values = bldr.create_vector(&series);
+        let response_args = MultiRangeResponseArgs {
+            series: Some(sample_values),
+        };
+
+        let obj = FBMultiRangeResponse::create(&mut bldr, &response_args);
+        bldr.finish(obj, None);
+
+        let data = bldr.finished_data();
+        buf.extend_from_slice(data);
     }
+}
+
+impl Deserialized for MultiRangeResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        deserialize_multi_range_response(buf)
+        // Get access to the root:
+        let req = flatbuffers::root::<FBMultiRangeResponse>(buf).unwrap();
+        let mut result: MultiRangeResponse = MultiRangeResponse::default();
+
+        if let Some(values) = req.series() {
+            for item in values.iter() {
+                let value = decode_series_response(&item);
+                result.series.push(value);
+            }
+        }
+
+        Ok(result)
     }
+}
+
+impl Response for MultiRangeResponse {
     fn update_tracker(tracker: &TrackerEnum, res: MultiRangeResponse) {
         if let TrackerEnum::MultiRangeQuery(ref t) = tracker {
             t.update(res);
@@ -93,10 +134,10 @@ impl Response for MultiRangeResponse {
     }
 }
 
-pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &MultiRangeRequest) {
+pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOptions) {
     let mut bldr = FlatBufferBuilder::with_capacity(512);
     
-    let range = serialize_timestamp_range(&mut bldr, request.range);
+    let range = serialize_timestamp_range(&mut bldr, Some(request.date_range));
     let mut labels: SmallVec<_, 8> = SmallVec::new();
     for label in &request.selected_labels {
         let name = bldr.create_string(label.as_str());
@@ -139,7 +180,7 @@ pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &MultiRa
 
     let count = request.count.unwrap_or(0) as u32;
 
-    let filter = serialize_matchers(&mut bldr, &request.filter);
+    let filter = serialize_matchers(&mut bldr, &request.series_selector);
     let args = MultiRangeRequestArgs {
         range,
         with_labels: request.with_labels,
@@ -292,10 +333,11 @@ fn decode_grouping_options(reader: &GroupingOptions) -> RangeGroupingOptions {
     }
 }
 
-pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<MultiRangeRequest> {
+pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions> {
     let req = flatbuffers::root::<FBMultiRangeRequest>(buf).unwrap();
 
-    let range = deserialize_timestamp_range(req.range())?;
+    let date_range = deserialize_timestamp_range(req.range())?
+        .unwrap_or_default();
 
     let count = if req.count() > 0 {
         Some(req.count() as usize)
@@ -321,7 +363,7 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<MultiRangeReq
         max: filter.max(),
     });
 
-    let filter = if let Some(filter) = req.filter() {
+    let series_selector = if let Some(filter) = req.filter() {
         deserialize_matchers(&filter)?
     } else {
         // Default or error handling if filter is mandatory
@@ -346,55 +388,19 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<MultiRangeReq
         None
     };
 
-    Ok(MultiRangeRequest {
-        range,
+    Ok(RangeOptions {
+        date_range,
         count,
         aggregation,
         timestamp_filter,
         value_filter,
-        filter,
+        series_selector,
         with_labels,
         selected_labels,
         grouping,
     })
 }
 
-pub fn serialize_multi_range_response(buf: &mut Vec<u8>, response: &MultiRangeResponse) {
-    let mut bldr = FlatBufferBuilder::with_capacity(512);
-
-    let mut series = Vec::with_capacity(response.series.len());
-    for item in &response.series {
-        let value = encode_series_response(&mut bldr, item);
-        series.push(value);
-    }
-
-    // todo: use gorilla on samples
-    let sample_values = bldr.create_vector(&series);
-    let response_args = MultiRangeResponseArgs {
-        series: Some(sample_values),
-    };
-
-    let obj = FBMultiRangeResponse::create(&mut bldr, &response_args);
-    bldr.finish(obj, None);
-
-    let data = bldr.finished_data();
-    buf.extend_from_slice(data);
-}
-
-pub fn deserialize_multi_range_response(buf: &[u8]) -> ValkeyResult<MultiRangeResponse> {
-    // Get access to the root:
-    let req = flatbuffers::root::<FBMultiRangeResponse>(buf).unwrap();
-    let mut result: MultiRangeResponse = MultiRangeResponse::default();
-
-    if let Some(values) = req.series() {
-        for item in values.iter() {
-            let value = decode_series_response(&item);
-            result.series.push(value);
-        }
-    }
-
-    Ok(result)
-}
 
 fn encode_series_response<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
@@ -411,16 +417,28 @@ fn encode_series_response<'a>(
 
     let mut labels = Vec::with_capacity(response.labels.len());
     for label in &response.labels {
-        let name = bldr.create_string(label.name.as_str());
-        let value = bldr.create_string(label.value.as_str());
-        let label = ResponseLabel::create(
-            bldr,
-            &LabelArgs {
-                name: Some(name),
-                value: Some(value),
-            },
-        );
-        labels.push(label);
+        if let Some(label) = label {
+            let name = bldr.create_string(label.name.as_str());
+            let value = bldr.create_string(label.value.as_str());
+            let label = ResponseLabel::create(
+                bldr,
+                &LabelArgs {
+                    name: Some(name),
+                    value: Some(value),
+                },
+            );
+            labels.push(label);
+        } else {
+            labels.push(
+                ResponseLabel::create(
+                    bldr,
+                    &LabelArgs {
+                        name: None,
+                        value: None,
+                    },
+                ),
+            );
+        }
     }
 
     let labels = bldr.create_vector(&labels);
@@ -436,18 +454,24 @@ fn encode_series_response<'a>(
 
 fn decode_series_response(reader: &FBSeriesResponse) -> SeriesResponse {
     let key = reader.key().unwrap_or_default().to_string();
-    let samples = if let Some(s) = reader.samples() {
-        s.iter()
+    let samples = reader.samples().map(|sample| {
+        sample
+            .iter()
             .map(|x| Sample::new(x.timestamp(), x.value()))
             .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    let labels = if let Some(labels) = reader.labels() {
-        labels.iter().map(|x| decode_label(x)).collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    }).unwrap_or_default();
+    
+    let labels = reader.labels().map(|labels| {
+        labels.iter().map(|x| {
+            let label = decode_label(x);
+            if !label.name().is_empty() {
+                Some(label)
+            } else {
+                None
+            }
+        }).collect::<Vec<_>>()
+    }).unwrap_or_default();
+
 
     SeriesResponse {
         key,
@@ -460,7 +484,8 @@ fn decode_series_response(reader: &FBSeriesResponse) -> SeriesResponse {
 mod tests {
     use super::*;
     use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
-    use crate::labels::matchers::{Matcher, MatcherSetEnum, PredicateMatch, PredicateValue};
+    use crate::labels::matchers::{Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+    use crate::series::TimestampRange;
 
     fn make_sample_matchers() -> Matchers {
         Matchers {
@@ -479,10 +504,10 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_range_request_simple_serialize_deserialize() {
-        let req = MultiRangeRequest {
-            range: TimestampRange::from_timestamps(100, 200).ok(),
-            filter: make_sample_matchers(),
+    fn test_range_options_request_simple_serialize_deserialize() {
+        let req = RangeOptions {
+            date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
+            series_selector: make_sample_matchers(),
             with_labels: true,
             selected_labels: vec!["label1".to_string(), "label2".to_string()],
             timestamp_filter: None,
@@ -495,22 +520,22 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = MultiRangeRequest::deserialize(&buf).expect("deserialization failed");
-        assert_eq!(req.range, req2.range);
+        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
+        assert_eq!(req.date_range, req2.date_range);
         assert_eq!(req.with_labels, req2.with_labels);
         assert_eq!(req.selected_labels, req2.selected_labels);
         assert_eq!(req.timestamp_filter, req2.timestamp_filter);
         assert_eq!(req.count, req2.count);
-        assert_eq!(req.filter, req2.filter);
+        assert_eq!(req.series_selector, req2.series_selector);
         assert!(req2.aggregation.is_none());
         assert!(req2.grouping.is_none());
     }
 
     #[test]
     fn test_multi_range_request_with_filters_serialize_deserialize() {
-        let req = MultiRangeRequest {
-            range: TimestampRange::from_timestamps(100, 200).ok(),
-            filter: make_sample_matchers(),
+        let req = RangeOptions {
+            date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
+            series_selector: make_sample_matchers(),
             with_labels: true,
             selected_labels: vec!["label1".to_string(), "label2".to_string()],
             timestamp_filter: Some(vec![105, 110, 115]),
@@ -526,7 +551,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = MultiRangeRequest::deserialize(&buf).expect("deserialization failed");
+        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
         assert_eq!(
             req.timestamp_filter.as_ref().unwrap(),
             req2.timestamp_filter.as_ref().unwrap()
@@ -550,9 +575,9 @@ mod tests {
             report_empty: true,
         };
 
-        let req = MultiRangeRequest {
-            range: TimestampRange::from_timestamps(100, 200).ok(),
-            filter: make_sample_matchers(),
+        let req = RangeOptions {
+            date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
+            series_selector: make_sample_matchers(),
             with_labels: true,
             selected_labels: vec!["label1".to_string()],
             timestamp_filter: None,
@@ -565,7 +590,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = MultiRangeRequest::deserialize(&buf).expect("deserialization failed");
+        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
 
         let agg1 = req.aggregation.as_ref().unwrap();
         let agg2 = req2.aggregation.as_ref().unwrap();
@@ -592,9 +617,9 @@ mod tests {
             aggregator: Aggregator::Sum(Default::default()),
         };
 
-        let req = MultiRangeRequest {
-            range: TimestampRange::from_timestamps(100, 200).ok(),
-            filter: make_sample_matchers(),
+        let req = RangeOptions {
+            date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
+            series_selector: make_sample_matchers(),
             with_labels: true,
             selected_labels: vec!["label1".to_string()],
             timestamp_filter: None,
@@ -607,7 +632,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = MultiRangeRequest::deserialize(&buf).expect("deserialization failed");
+        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
 
         let grp1 = req.grouping.as_ref().unwrap();
         let grp2 = req2.grouping.as_ref().unwrap();
@@ -625,8 +650,8 @@ mod tests {
         let sample1 = SeriesResponse {
             key: "series1".to_string(),
             labels: vec![
-                Label::new("name", "series1"),
-                Label::new("region", "us-west"),
+                Some(Label::new("name", "series1")),
+                Some(Label::new("region", "us-west")),
             ],
             samples: vec![
                 Sample::new(100, 1.0),
@@ -638,8 +663,8 @@ mod tests {
         let sample2 = SeriesResponse {
             key: "series2".to_string(),
             labels: vec![
-                Label::new("name", "series2"),
-                Label::new("region", "us-east"),
+                Some(Label::new("name", "series2")),
+                Some(Label::new("region", "us-east")),
             ],
             samples: vec![
                 Sample::new(105, 10.0),
@@ -665,22 +690,14 @@ mod tests {
 
         // Check labels of first series
         assert_eq!(
-            resp.series[0].labels[0].name,
-            resp2.series[0].labels[0].name
-        );
-        assert_eq!(
-            resp.series[0].labels[0].value,
-            resp2.series[0].labels[0].value
+            resp.series[0].labels[0],
+            resp2.series[0].labels[0]
         );
 
         // Check samples of first series
         assert_eq!(
-            resp.series[0].samples[0].timestamp,
-            resp2.series[0].samples[0].timestamp
-        );
-        assert_eq!(
-            resp.series[0].samples[0].value,
-            resp2.series[0].samples[0].value
+            resp.series[0].samples,
+            resp2.series[0].samples
         );
 
         // Check second series

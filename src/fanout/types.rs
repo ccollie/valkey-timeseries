@@ -1,9 +1,8 @@
+use super::request::CardinalityResponse;
 use crate::common::time::current_time_millis;
 use crate::fanout::request::{IndexQueryResponse, LabelNamesResponse, LabelValuesResponse, MultiGetResponse, MultiRangeResponse, RangeResponse};
 use crate::fanout::ResultsTracker;
 use std::sync::Mutex;
-
-use super::request::CardinalityResponse;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +71,7 @@ impl std::fmt::Display for ClusterMessageType {
     }
 }
 
+
 pub enum TrackerEnum {
     IndexQuery(ResultsTracker<IndexQueryResponse>),
     RangeQuery(ResultsTracker<RangeResponse>),
@@ -120,11 +120,59 @@ impl TrackerEnum {
     }
 }
 
+impl From<ResultsTracker<IndexQueryResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<IndexQueryResponse>) -> Self {
+        TrackerEnum::IndexQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<RangeResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<RangeResponse>) -> Self {
+        TrackerEnum::RangeQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<MultiRangeResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<MultiRangeResponse>) -> Self {
+        TrackerEnum::MultiRangeQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<MultiGetResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<MultiGetResponse>) -> Self {
+        TrackerEnum::MGetQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<LabelNamesResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<LabelNamesResponse>) -> Self {
+        TrackerEnum::LabelNames(tracker)
+    }
+}
+
+impl From<ResultsTracker<LabelValuesResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<LabelValuesResponse>) -> Self {
+        TrackerEnum::LabelValues(tracker)
+    }
+}
+
+impl From<ResultsTracker<CardinalityResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<CardinalityResponse>) -> Self {
+        TrackerEnum::Cardinality(tracker)
+    }
+}
+
+struct InFlightRequestInner {
+    outstanding_responses: u32,
+    responses: TrackerEnum,
+}
+
 pub(super) struct InFlightRequest {
     pub db: i32,
     pub request_start: i64,
     pub responses: TrackerEnum,
     _error_msg: Mutex<Option<String>>,
+    _errors: Mutex<Vec<String>>,
 }
 
 impl InFlightRequest {
@@ -138,6 +186,7 @@ impl InFlightRequest {
             request_start,
             responses: tracker,
             _error_msg: Mutex::new(None),
+            _errors: Mutex::new(vec![]),
         }
     }
 
@@ -164,6 +213,9 @@ impl InFlightRequest {
     
     pub(crate) fn raise_error(&self, msg: String) {
         self.responses.raise_error(&msg);
+        self.responses.decrement();
+        let mut errors = self._errors.lock().unwrap();
+        errors.push(msg.clone());
         let mut guard = self._error_msg.lock().unwrap();
         *guard = Some(msg);
     }

@@ -1,13 +1,13 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
+use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::{perform_remote_card_request, CardinalityResponse};
+use crate::labels::matchers::Matchers;
 use crate::series::index::{
     get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
 };
-use valkey_module::{AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 use crate::series::request_types::MatchFilterOptions;
-use crate::fanout::{perform_card, CardinalityRequest, CardinalityResponse};
-use crate::fanout::cluster::is_cluster_mode;
-use crate::labels::matchers::Matchers;
 use crate::series::TimestampRange;
+use valkey_module::{AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 ///
 /// TS.CARD [START fromTimestamp] [END toTimestamp] [FILTER filter...]
@@ -15,7 +15,7 @@ use crate::series::TimestampRange;
 /// returns the number of unique time series that match a certain label set.
 pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
-    let mut options = parse_metadata_command_args(&mut args, false)?;
+    let options = parse_metadata_command_args(&mut args, false)?;
 
     if is_cluster_mode(ctx) {
         if options.matchers.is_empty() {
@@ -23,13 +23,8 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.CARD in cluster mode requires at least one matcher",
             ));
         }
-        let filter = options.matchers.pop().unwrap();
         // in cluster mode, we need to send the request to all nodes
-        let request = CardinalityRequest {
-            range: options.date_range,
-            filter,
-        };
-        perform_card(ctx, &request, on_cardinality_request_done);
+        perform_remote_card_request(ctx, &options, on_cardinality_request_done);
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
     }
