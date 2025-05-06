@@ -3,11 +3,11 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
+use crate::fanout::register_cluster_message_handlers;
 use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
     Version,
 };
-use crate::fanout::register_cluster_message_handlers;
 
 pub mod aggregators;
 pub(crate) mod commands;
@@ -15,6 +15,7 @@ pub mod common;
 pub mod config;
 mod error;
 pub mod error_consts;
+mod fanout;
 pub mod iterators;
 mod join;
 mod labels;
@@ -22,7 +23,6 @@ mod parser;
 mod series;
 mod server_events;
 mod tests;
-mod fanout;
 
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;

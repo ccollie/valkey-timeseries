@@ -17,16 +17,19 @@ pub struct SeriesGuard {
 impl SeriesGuard {
     pub(crate) fn open(ctx: &Context, key: ValkeyString) -> Self {
         let key_ = ValkeyKey::open(ctx.ctx, &key);
-        SeriesGuard { key: key_, key_inner: key }
+        SeriesGuard {
+            key: key_,
+            key_inner: key,
+        }
     }
-    
+
     pub fn get_series(&self) -> &TimeSeries {
         self.key
             .get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)
             .expect("Key existence should be checked before deref")
             .unwrap()
     }
-    
+
     pub fn get_key(&self) -> &ValkeyString {
         &self.key_inner
     }
@@ -148,7 +151,10 @@ pub fn get_timeseries(
     let redis_key = ctx.open_key(&key);
     match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
         Err(_) => Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY)),
-        Ok(Some(_)) => Ok(Some(SeriesGuard { key: redis_key, key_inner: key })),
+        Ok(Some(_)) => Ok(Some(SeriesGuard {
+            key: redis_key,
+            key_inner: key,
+        })),
         Ok(None) => {
             if must_exist {
                 return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));

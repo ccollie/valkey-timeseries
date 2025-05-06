@@ -21,8 +21,8 @@ pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
 
-pub(super) use asof::JoinAsOfIter;
 use crate::series::request_types::AggregationOptions;
+pub(super) use asof::JoinAsOfIter;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {

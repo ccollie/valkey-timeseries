@@ -15,7 +15,6 @@ use crate::commands::process_mrange_query;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::cluster::ClusterMessageType;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::request::Response;
 use crate::fanout::types::TrackerEnum;
 use crate::fanout::ShardedCommand;
 use crate::labels::{Label, SeriesLabel};
@@ -37,29 +36,28 @@ impl Deserialized for RangeOptions {
     }
 }
 
-
 pub struct MultiRangeCommand;
 
 impl ShardedCommand for MultiRangeCommand {
     type REQ = RangeOptions;
     type RES = MultiRangeResponse;
-    
+
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::MultiRangeQuery
     }
-    
+
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
         // todo: how to avoid this clone?
         match process_mrange_query(ctx, req, false) {
             Ok(values) => {
-                let series = values.into_iter()
-                    .map(|x| {
-                        SeriesResponse {
-                            key: x.key,
-                            labels: x.labels,
-                            samples: x.samples,
-                        }
-                    }).collect();
+                let series = values
+                    .into_iter()
+                    .map(|x| SeriesResponse {
+                        key: x.key,
+                        labels: x.labels,
+                        samples: x.samples,
+                    })
+                    .collect();
                 Ok(MultiRangeResponse { series })
             }
             Err(e) => {
@@ -68,8 +66,15 @@ impl ShardedCommand for MultiRangeCommand {
             }
         }
     }
-}
 
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
+        if let TrackerEnum::MultiRangeQuery(ref t) = tracker {
+            t.update(res);
+        } else {
+            panic!("BUG: Invalid MultiRangeRequest tracker type");
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct SeriesResponse {
@@ -124,19 +129,9 @@ impl Deserialized for MultiRangeResponse {
     }
 }
 
-impl Response for MultiRangeResponse {
-    fn update_tracker(tracker: &TrackerEnum, res: MultiRangeResponse) {
-        if let TrackerEnum::MultiRangeQuery(ref t) = tracker {
-            t.update(res);
-        } else {
-            panic!("BUG: Invalid MultiRangeRequest tracker type");
-        }
-    }
-}
-
 pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOptions) {
     let mut bldr = FlatBufferBuilder::with_capacity(512);
-    
+
     let range = serialize_timestamp_range(&mut bldr, Some(request.date_range));
     let mut labels: SmallVec<_, 8> = SmallVec::new();
     for label in &request.selected_labels {
@@ -144,11 +139,9 @@ pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOp
         labels.push(name);
     }
     let selected_labels = bldr.create_vector(&labels);
-    let timestamp_filter = if let Some(timestamps) = &request.timestamp_filter {
-        Some(bldr.create_vector(timestamps.as_slice()))
-    } else {
-        None
-    };
+    let timestamp_filter = request.timestamp_filter
+        .as_ref()
+        .map(|timestamps| bldr.create_vector(timestamps.as_slice()));
 
     let value_filter_value = if let Some(value_filter) = &request.value_filter {
         ValueRangeFilter::new(value_filter.min, value_filter.max)
@@ -157,7 +150,7 @@ pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOp
     };
 
     let aggregation = if let Some(agg) = &request.aggregation {
-        let aggregation = serialize_aggregation_options(&mut bldr, &agg);
+        let aggregation = serialize_aggregation_options(&mut bldr, agg);
         Some(aggregation)
     } else {
         None
@@ -336,8 +329,7 @@ fn decode_grouping_options(reader: &GroupingOptions) -> RangeGroupingOptions {
 pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions> {
     let req = flatbuffers::root::<FBMultiRangeRequest>(buf).unwrap();
 
-    let date_range = deserialize_timestamp_range(req.range())?
-        .unwrap_or_default();
+    let date_range = deserialize_timestamp_range(req.range())?.unwrap_or_default();
 
     let count = if req.count() > 0 {
         Some(req.count() as usize)
@@ -352,12 +344,9 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
         None
     };
 
-    let timestamp_filter = if let Some(filter) = req.timestamp_filter() {
-        Some(filter.iter().collect::<Vec<_>>())
-    } else {
-        None
-    };
-
+    let timestamp_filter = req.timestamp_filter()
+        .map(|filter| filter.iter().collect::<Vec<_>>());
+    
     let value_filter = req.value_filter().map(|filter| ValueFilter {
         min: filter.min(),
         max: filter.max(),
@@ -401,7 +390,6 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
     })
 }
 
-
 fn encode_series_response<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
     response: &SeriesResponse,
@@ -429,15 +417,13 @@ fn encode_series_response<'a>(
             );
             labels.push(label);
         } else {
-            labels.push(
-                ResponseLabel::create(
-                    bldr,
-                    &LabelArgs {
-                        name: None,
-                        value: None,
-                    },
-                ),
-            );
+            labels.push(ResponseLabel::create(
+                bldr,
+                &LabelArgs {
+                    name: None,
+                    value: None,
+                },
+            ));
         }
     }
 
@@ -454,24 +440,32 @@ fn encode_series_response<'a>(
 
 fn decode_series_response(reader: &FBSeriesResponse) -> SeriesResponse {
     let key = reader.key().unwrap_or_default().to_string();
-    let samples = reader.samples().map(|sample| {
-        sample
-            .iter()
-            .map(|x| Sample::new(x.timestamp(), x.value()))
-            .collect::<Vec<_>>()
-    }).unwrap_or_default();
-    
-    let labels = reader.labels().map(|labels| {
-        labels.iter().map(|x| {
-            let label = decode_label(x);
-            if !label.name().is_empty() {
-                Some(label)
-            } else {
-                None
-            }
-        }).collect::<Vec<_>>()
-    }).unwrap_or_default();
+    let samples = reader
+        .samples()
+        .map(|sample| {
+            sample
+                .iter()
+                .map(|x| Sample::new(x.timestamp(), x.value()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
+    let labels = reader
+        .labels()
+        .map(|labels| {
+            labels
+                .iter()
+                .map(|x| {
+                    let label = decode_label(x);
+                    if !label.name().is_empty() {
+                        Some(label)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     SeriesResponse {
         key,
@@ -484,7 +478,9 @@ fn decode_series_response(reader: &FBSeriesResponse) -> SeriesResponse {
 mod tests {
     use super::*;
     use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
-    use crate::labels::matchers::{Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue};
+    use crate::labels::matchers::{
+        Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
+    };
     use crate::series::TimestampRange;
 
     fn make_sample_matchers() -> Matchers {
@@ -689,16 +685,10 @@ mod tests {
         assert_eq!(resp.series[0].samples.len(), resp2.series[0].samples.len());
 
         // Check labels of first series
-        assert_eq!(
-            resp.series[0].labels[0],
-            resp2.series[0].labels[0]
-        );
+        assert_eq!(resp.series[0].labels[0], resp2.series[0].labels[0]);
 
         // Check samples of first series
-        assert_eq!(
-            resp.series[0].samples,
-            resp2.series[0].samples
-        );
+        assert_eq!(resp.series[0].samples, resp2.series[0].samples);
 
         // Check second series
         assert_eq!(resp.series[1].key, resp2.series[1].key);

@@ -1,5 +1,4 @@
 use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
-use crate::series::request_types::{AggregationOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
@@ -14,6 +13,9 @@ use crate::parser::{
     parse_positive_duration_value, timestamp::parse_timestamp as parse_timestamp_internal,
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
+use crate::series::request_types::{
+    AggregationOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions,
+};
 use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
 use ahash::AHashMap;

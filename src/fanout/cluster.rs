@@ -3,21 +3,13 @@ pub(crate) use crate::fanout::types::ClusterMessageType;
 use ahash::AHashMap;
 use blart::AsBytes;
 use rand::Rng;
-use std::ffi::CStr;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 use valkey_module::{
-    Context,
-    Status,
-    ValkeyModuleCtx,
-    ValkeyString,
-    REDISMODULE_NODE_MASTER,
-    VALKEYMODULE_NODE_FAIL,
-    VALKEYMODULE_NODE_ID_LEN,
-    VALKEYMODULE_NODE_PFAIL,
-    VALKEYMODULE_OK
+    Context, Status, ValkeyModuleCtx, ValkeyString, REDISMODULE_NODE_MASTER,
+    VALKEYMODULE_NODE_FAIL, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
 };
 
 // https://valkey.io/topics/modules-api-ref/#section-modules-cluster-api
@@ -58,7 +50,8 @@ pub fn send_cluster_message(
             msg_type,
             message_body.as_ptr().cast::<c_char>(),
             message_body.len() as u32,
-        ) == VALKEYMODULE_OK as c_int {
+        ) == VALKEYMODULE_OK as c_int
+        {
             Status::Ok
         } else {
             Status::Err
@@ -72,7 +65,7 @@ pub fn send_cluster_message(
 /// # Arguments
 ///
 /// * `receiver_func` - The function pointer matching the expected signature
-///                     `ValkeyModuleClusterMessageReceiverFunc`.
+///   `ValkeyModuleClusterMessageReceiverFunc`.
 ///
 /// # Safety
 ///
@@ -88,17 +81,21 @@ pub fn register_message_receiver(
             .expect("ValkeyModule_RegisterClusterMessageReceiver is not available")(
             ctx.ctx as *mut ValkeyModuleCtx,
             type_,
-            receiver_func
+            receiver_func,
         );
     }
 }
 
 fn acquire_cluster_nodes_lock(ctx: &Context) -> RwLockReadGuard<'static, ClusterMeta> {
-    let mut meta = CLUSTER_NODES.read().expect("Failed to get cluster info read lock");
+    let mut meta = CLUSTER_NODES
+        .read()
+        .expect("Failed to get cluster info read lock");
     if meta.should_refresh {
         drop(meta);
         refresh_cluster_nodes(ctx);
-        meta = CLUSTER_NODES.read().expect("Failed to get cluster info read lock");
+        meta = CLUSTER_NODES
+            .read()
+            .expect("Failed to get cluster info read lock");
     }
     meta
 }
@@ -106,7 +103,7 @@ fn acquire_cluster_nodes_lock(ctx: &Context) -> RwLockReadGuard<'static, Cluster
 pub fn fanout_cluster_message(ctx: &Context, msg_type: u8, payload: &[u8]) -> usize {
     let mut rng = rand::rng();
     let meta = acquire_cluster_nodes_lock(ctx);
-    
+
     let mut node_count = 0;
     let mut should_refresh = false;
     for (_, targets) in meta.nodes.iter() {
@@ -119,9 +116,10 @@ pub fn fanout_cluster_message(ctx: &Context, msg_type: u8, payload: &[u8]) -> us
     }
 
     if should_refresh {
-        let mut meta = CLUSTER_NODES.write().expect("Failed to get cluster info write lock");
+        let mut meta = CLUSTER_NODES
+            .write()
+            .expect("Failed to get cluster info write lock");
         if meta.should_refresh {
-
             // todo refresh the cluster nodes
             return node_count;
         }
@@ -130,11 +128,10 @@ pub fn fanout_cluster_message(ctx: &Context, msg_type: u8, payload: &[u8]) -> us
     node_count
 }
 
-
 // --- Helper methods  ---
 pub unsafe fn get_key_slot(key: &mut ValkeyString) -> u16 {
     valkey_module::ValkeyModule_ClusterKeySlot.unwrap()(
-        key.inner as *mut valkey_module::redisraw::bindings::ValkeyModuleString
+        key.inner as *mut valkey_module::redisraw::bindings::ValkeyModuleString,
     ) as u16
 }
 
@@ -157,14 +154,19 @@ fn refresh_cluster_nodes(ctx: &Context) {
     unsafe {
         load_targets_for_fanout(ctx, &mut shard_id_to_target);
     }
-    let mut meta = CLUSTER_NODES.write().expect("Failed to acquire cluster nodes RW lock");
+    let mut meta = CLUSTER_NODES
+        .write()
+        .expect("Failed to acquire cluster nodes RW lock");
     meta.nodes = shard_id_to_target;
     meta.should_refresh = false;
     meta.last_refresh = current_time_millis();
 }
 
 /// Retrieves information about the cluster nodes.
-unsafe fn load_targets_for_fanout(ctx: &Context, shard_id_to_target: &mut AHashMap<String, Vec<CString>>) {
+unsafe fn load_targets_for_fanout(
+    ctx: &Context,
+    shard_id_to_target: &mut AHashMap<String, Vec<CString>>,
+) {
     let mut num_nodes: usize = 0;
     let nodes_list = unsafe {
         valkey_module::ValkeyModule_GetClusterNodesList
@@ -185,7 +187,6 @@ unsafe fn load_targets_for_fanout(ctx: &Context, shard_id_to_target: &mut AHashM
     let mut master_id = String::new();
 
     for node_id in nodes {
-
         let mut master_buf: [u8; MASTER_ID_LEN] = [0; MASTER_ID_LEN];
         let mut flags_: c_int = 0;
 
@@ -235,13 +236,6 @@ unsafe fn load_targets_for_fanout(ctx: &Context, shard_id_to_target: &mut AHashM
 unsafe fn raw_to_cstring(ptr: *const c_char, len: usize) -> Result<CString, std::ffi::NulError> {
     let bytes = std::slice::from_raw_parts(ptr, len);
     CString::new(bytes.as_bytes())
-}
-
-fn raw_node_id_to_string(ptr: *const c_char) -> String {
-    unsafe {
-        let c_str = CStr::from_ptr(ptr);
-        c_str.to_string_lossy().into_owned()
-    }
 }
 
 pub fn cluster_refresh_time_callback(ctx: &Context, _data: String) {

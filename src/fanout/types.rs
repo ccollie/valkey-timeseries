@@ -1,7 +1,11 @@
 use super::request::CardinalityResponse;
 use crate::common::time::current_time_millis;
-use crate::fanout::request::{IndexQueryResponse, LabelNamesResponse, LabelValuesResponse, MultiGetResponse, MultiRangeResponse, RangeResponse};
+use crate::fanout::request::{
+    IndexQueryResponse, LabelNamesResponse, LabelValuesResponse, MultiGetResponse,
+    MultiRangeResponse, RangeResponse,
+};
 use crate::fanout::ResultsTracker;
+use crate::series::index::PostingsStats;
 use std::sync::Mutex;
 
 #[repr(u8)]
@@ -14,9 +18,9 @@ pub enum ClusterMessageType {
     LabelNames = 4,
     LabelValues = 5,
     Cardinality = 6,
+    Stats = 7,
     /// Response types
     /// These are the same as the request, but with a different value.
-
     IndexQueryResponse = 100,
     RangeQueryResponse = 101,
     MultiRangeQueryResponse = 102,
@@ -24,6 +28,7 @@ pub enum ClusterMessageType {
     LabelNamesResponse = 104,
     LabelValuesResponse = 105,
     CardinalityResponse = 106,
+    StatsResponse = 107,
     Error = 255,
 }
 
@@ -44,6 +49,7 @@ impl From<u8> for ClusterMessageType {
             104 => ClusterMessageType::LabelNamesResponse,
             105 => ClusterMessageType::LabelValuesResponse,
             106 => ClusterMessageType::CardinalityResponse,
+            107 => ClusterMessageType::StatsResponse,
             _ => ClusterMessageType::Error,
         }
     }
@@ -66,11 +72,12 @@ impl std::fmt::Display for ClusterMessageType {
             ClusterMessageType::LabelNamesResponse => write!(f, "LabelNamesResponse"),
             ClusterMessageType::LabelValuesResponse => write!(f, "LabelValuesResponse"),
             ClusterMessageType::CardinalityResponse => write!(f, "CardinalityResponse"),
+            ClusterMessageType::Stats => write!(f, "Stats"),
+            ClusterMessageType::StatsResponse => write!(f, "StatsResponse"),
             ClusterMessageType::Error => write!(f, "Error"),
         }
     }
 }
-
 
 pub enum TrackerEnum {
     IndexQuery(ResultsTracker<IndexQueryResponse>),
@@ -80,6 +87,7 @@ pub enum TrackerEnum {
     LabelNames(ResultsTracker<LabelNamesResponse>),
     LabelValues(ResultsTracker<LabelValuesResponse>),
     Cardinality(ResultsTracker<CardinalityResponse>),
+    Stats(ResultsTracker<PostingsStats>),
 }
 
 impl TrackerEnum {
@@ -92,6 +100,7 @@ impl TrackerEnum {
             TrackerEnum::LabelNames(_) => ClusterMessageType::LabelNames,
             TrackerEnum::LabelValues(_) => ClusterMessageType::LabelValues,
             TrackerEnum::Cardinality(_) => ClusterMessageType::Cardinality,
+            TrackerEnum::Stats(_) => ClusterMessageType::Stats,
         }
     }
 
@@ -104,9 +113,10 @@ impl TrackerEnum {
             TrackerEnum::LabelNames(ref t) => t.decrement(),
             TrackerEnum::LabelValues(ref t) => t.decrement(),
             TrackerEnum::Cardinality(ref t) => t.decrement(),
+            TrackerEnum::Stats(ref t) => t.decrement(),
         }
     }
-    
+
     pub fn raise_error(&self, error: &str) {
         match self {
             TrackerEnum::IndexQuery(ref t) => t.raise_error(error),
@@ -116,6 +126,7 @@ impl TrackerEnum {
             TrackerEnum::LabelNames(ref t) => t.raise_error(error),
             TrackerEnum::LabelValues(ref t) => t.raise_error(error),
             TrackerEnum::Cardinality(ref t) => t.raise_error(error),
+            TrackerEnum::Stats(ref t) => t.raise_error(error),
         }
     }
 }
@@ -162,30 +173,26 @@ impl From<ResultsTracker<CardinalityResponse>> for TrackerEnum {
     }
 }
 
-struct InFlightRequestInner {
-    outstanding_responses: u32,
-    responses: TrackerEnum,
+impl From<ResultsTracker<PostingsStats>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<PostingsStats>) -> Self {
+        TrackerEnum::Stats(tracker)
+    }
 }
 
 pub(super) struct InFlightRequest {
     pub db: i32,
     pub request_start: i64,
     pub responses: TrackerEnum,
-    _error_msg: Mutex<Option<String>>,
     _errors: Mutex<Vec<String>>,
 }
 
 impl InFlightRequest {
-    pub fn new(
-        db: i32,
-        tracker: TrackerEnum
-    ) -> Self {
+    pub fn new(db: i32, tracker: TrackerEnum) -> Self {
         let request_start = current_time_millis();
         Self {
             db,
             request_start,
             responses: tracker,
-            _error_msg: Mutex::new(None),
             _errors: Mutex::new(vec![]),
         }
     }
@@ -203,20 +210,14 @@ impl InFlightRequest {
             TrackerEnum::LabelNames(_) => ClusterMessageType::LabelNamesResponse,
             TrackerEnum::LabelValues(_) => ClusterMessageType::LabelValuesResponse,
             TrackerEnum::Cardinality(_) => ClusterMessageType::CardinalityResponse,
+            TrackerEnum::Stats(_) => ClusterMessageType::StatsResponse,
         }
     }
-    
-    pub fn get_error_msg(&self) -> Option<String> {
-        let guard = self._error_msg.lock().unwrap();
-        guard.clone()
-    }
-    
+
     pub(crate) fn raise_error(&self, msg: String) {
         self.responses.raise_error(&msg);
         self.responses.decrement();
         let mut errors = self._errors.lock().unwrap();
         errors.push(msg.clone());
-        let mut guard = self._error_msg.lock().unwrap();
-        *guard = Some(msg);
     }
 }

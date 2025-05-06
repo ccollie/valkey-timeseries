@@ -14,9 +14,9 @@ use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
-use crate::series::request_types::MatchFilterOptions;
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
+use crate::series::request_types::MatchFilterOptions;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{check_key_permissions, TimeSeries};
 pub use posting_stats::*;

@@ -4,8 +4,8 @@ use crate::commands::arg_parse::{
 use crate::commands::range_utils::get_series_labels;
 use crate::error_consts;
 use crate::labels::{parse_series_selector, Label};
-use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
 use crate::series::index::with_matched_series;
+use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
@@ -21,10 +21,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // NOTE: we currently don't support cross-cluster mget
     let mget_results = handle_mget(ctx, options)?;
 
-    let result = mget_results
-        .into_iter()
-        .map(|s| s.into())
-        .collect();
+    let result = mget_results.into_iter().map(|s| s.into()).collect();
 
     Ok(ValkeyValue::Array(result))
 }
@@ -59,11 +56,11 @@ pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetReq
     Ok(options)
 }
 
-pub fn handle_mget(ctx: &Context, options: MGetRequest) -> ValkeyResult<Vec<MGetSeriesData>>{
+pub fn handle_mget(ctx: &Context, options: MGetRequest) -> ValkeyResult<Vec<MGetSeriesData>> {
     let with_labels = options.with_labels;
     let selected_labels = &options.selected_labels;
     let mut series = vec![];
-    
+
     // how to eliminate the clone?
     let matcher = options.filter.clone();
     // NOTE: we currently don't support cross-cluster mget
@@ -75,7 +72,7 @@ pub fn handle_mget(ctx: &Context, options: MGetRequest) -> ValkeyResult<Vec<MGet
         Some(AclPermissions::ACCESS),
         move |acc, series, key| {
             let sample = series.last_sample;
-            let labels = get_series_labels(series, with_labels, &selected_labels)
+            let labels = get_series_labels(series, with_labels, selected_labels)
                 .into_iter()
                 .map(|label| label.map(|x| Label::new(x.name, x.value)))
                 .collect();

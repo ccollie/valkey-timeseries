@@ -1,7 +1,7 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::series::index::with_matched_series;
-use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString, ValkeyValue};
 use crate::series::request_types::MatchFilterOptions;
+use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
 /// TS.LABELNAMES [START startTimestamp] [END endTimestamp] [LIMIT limit] FILTER seriesMatcher...
@@ -12,17 +12,14 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut names = process_label_names_request(ctx, &options)?;
     names.sort();
 
-    let labels = names
-        .into_iter()
-        .map(ValkeyValue::from)
-        .collect::<Vec<_>>();
+    let labels = names.into_iter().map(ValkeyValue::from).collect::<Vec<_>>();
 
     Ok(ValkeyValue::Array(labels))
 }
 
 pub fn process_label_names_request(
     ctx: &Context,
-    options: &MatchFilterOptions
+    options: &MatchFilterOptions,
 ) -> ValkeyResult<Vec<String>> {
     let mut names: Vec<String> = vec![];
 
@@ -41,6 +38,6 @@ pub fn process_label_names_request(
     if let Some(limit) = options.limit {
         names.truncate(limit);
     }
-    
+
     Ok(names)
 }

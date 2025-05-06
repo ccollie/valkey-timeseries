@@ -7,7 +7,10 @@ use crate::series::index::{
 };
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::TimestampRange;
-use valkey_module::{AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult,
+    ValkeyString, ValkeyValue,
+};
 
 ///
 /// TS.CARD [START fromTimestamp] [END toTimestamp] [FILTER filter...]
@@ -32,7 +35,6 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     Ok(ValkeyValue::from(counter))
 }
-
 
 pub fn calculate_cardinality(
     ctx: &Context,
@@ -82,7 +84,10 @@ pub fn calculate_cardinality(
     Ok(count)
 }
 
-fn on_cardinality_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: &[CardinalityResponse]) {
+fn on_cardinality_request_done(
+    ctx: &ThreadSafeContext<BlockedClient>,
+    res: &[CardinalityResponse],
+) {
     let count: usize = res.iter().map(|r| r.count).sum();
     ctx.reply(Ok(ValkeyValue::from(count)));
 }

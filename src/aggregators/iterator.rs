@@ -1,7 +1,7 @@
 use crate::aggregators::{AggOp, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
-use std::collections::VecDeque;
 use crate::series::request_types::AggregationOptions;
+use std::collections::VecDeque;
 
 /// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]

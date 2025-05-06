@@ -1,20 +1,16 @@
-use super::response_generated::{CardinalityResponse as FBCardinalityResponse, CardinalityResponseArgs};
+use super::response_generated::{
+    CardinalityResponse as FBCardinalityResponse, CardinalityResponseArgs,
+};
 use crate::commands::calculate_cardinality;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::request::Response;
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
 use crate::fanout::ShardedCommand;
-use crate::labels::matchers::Matchers;
 use crate::series::request_types::MatchFilterOptions;
-use crate::series::TimestampRange;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
 
-#[derive(Clone, Debug, Default)]
-pub struct CardinalityCommand {
-    pub range: Option<TimestampRange>,
-    pub filter: Matchers,
-}
+
+pub struct CardinalityCommand;
 
 impl ShardedCommand for CardinalityCommand {
     type REQ = MatchFilterOptions;
@@ -25,9 +21,12 @@ impl ShardedCommand for CardinalityCommand {
     }
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<CardinalityResponse> {
         let count = calculate_cardinality(ctx, req.date_range, &req.matchers)?;
-        Ok(CardinalityResponse {
-            count
-        })
+        Ok(CardinalityResponse { count })
+    }
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
+        if let TrackerEnum::Cardinality(ref t) = tracker {
+            t.update(res);
+        }
     }
 }
 
@@ -36,20 +35,15 @@ pub struct CardinalityResponse {
     pub count: usize,
 }
 
-impl Response for CardinalityResponse {
-    fn update_tracker(tracker: &TrackerEnum, res: CardinalityResponse) {
-        if let TrackerEnum::Cardinality(ref t) = tracker {
-            t.update(res);
-        }
-    }
-}
-
 impl Serialized for CardinalityResponse {
     fn serialize(&self, buf: &mut Vec<u8>) {
         let mut bldr = FlatBufferBuilder::with_capacity(128);
-        let resp = FBCardinalityResponse::create(&mut bldr, &CardinalityResponseArgs {
-            count: self.count as u64,
-        });
+        let resp = FBCardinalityResponse::create(
+            &mut bldr,
+            &CardinalityResponseArgs {
+                count: self.count as u64,
+            },
+        );
         // Serialize the root of the object, without providing a file identifier.
         bldr.finish(resp, None);
 
@@ -61,8 +55,7 @@ impl Serialized for CardinalityResponse {
 
 impl Deserialized for CardinalityResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBCardinalityResponse>(buf)
-            .unwrap();
+        let req = flatbuffers::root::<FBCardinalityResponse>(buf).unwrap();
 
         let count = req.count() as usize;
 
@@ -74,13 +67,10 @@ impl Deserialized for CardinalityResponse {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_cardinality_response_serialization_deserialization() {
         // Create a test response
-        let original_response = CardinalityResponse {
-            count: 42,
-        };
+        let original_response = CardinalityResponse { count: 42 };
 
         // Serialize
         let mut buf = Vec::new();

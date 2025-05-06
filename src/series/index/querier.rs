@@ -16,12 +16,15 @@ use super::memory_postings::{handle_equal_match, MemoryPostings, PostingsBitmap,
 use super::{with_timeseries_index, TimeSeriesIndex};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
+use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{check_key_read_permission, SeriesGuard, SeriesRef, TimeSeries, TimestampRange};
+use crate::series::{
+    check_key_read_permission, SeriesGuard, SeriesRef, TimeSeries, TimestampRange,
+};
 use ahash::AHashSet;
 use blart::AsBytes;
 use smallvec::SmallVec;
@@ -29,7 +32,6 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::str;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
-use crate::error_consts;
 
 pub fn series_by_matchers(
     ctx: &Context,
@@ -48,7 +50,14 @@ pub fn series_by_matchers(
         index.with_postings(&mut state, move |inner, _| {
             let first = postings_for_matchers_internal(inner, &matchers[0])?;
             if matchers.len() == 1 {
-                return collect_series(ctx, inner, first.iter(), range, require_permissions, raise_permission_error);
+                return collect_series(
+                    ctx,
+                    inner,
+                    first.iter(),
+                    range,
+                    require_permissions,
+                    raise_permission_error,
+                );
             }
             // todo: use chili here ?
             let mut result = first.into_owned();
@@ -56,9 +65,16 @@ pub fn series_by_matchers(
                 let postings = postings_for_matchers_internal(inner, matcher)?;
                 result.and_inplace(&postings);
             }
-            collect_series(ctx, inner, result.iter(), range, require_permissions, raise_permission_error)
+            collect_series(
+                ctx,
+                inner,
+                result.iter(),
+                range,
+                require_permissions,
+                raise_permission_error,
+            )
         })
-    })    
+    })
 }
 
 pub fn series_keys_by_matchers(
@@ -154,7 +170,7 @@ fn collect_series(
     raise_permission_error: bool,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
     let (start, end, has_range) = if let Some(date_range) = date_range {
-      let (start, end) = date_range.get_timestamps(None);
+        let (start, end) = date_range.get_timestamps(None);
         (start, end, true)
     } else {
         (0, 0, false)
@@ -162,17 +178,15 @@ fn collect_series(
     let mut series = Vec::new();
     for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
         let real_key = ctx.create_string(key.as_bytes());
-        if require_permissions { 
-            if !check_key_read_permission(ctx, &real_key) {
-                if raise_permission_error {
-                    let msg = error_consts::PERMISSION_DENIED;
-                    return Err(ValkeyError::Str(msg));
-                } else {
-                    continue;
-                }
+        if require_permissions && !check_key_read_permission(ctx, &real_key) {
+            if raise_permission_error {
+                let msg = error_consts::PERMISSION_DENIED;
+                return Err(ValkeyError::Str(msg));
+            } else {
+                continue;
             }
         };
-  
+
         // NOTE: unless the index is out of sync, getting a valid series at this point should not fail
         let guard = SeriesGuard::open(ctx, real_key);
         if has_range {

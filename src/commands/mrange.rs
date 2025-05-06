@@ -1,4 +1,3 @@
-use crate::series::request_types::{AggregationOptions, MRangeResultRow, RangeGroupingOptions, RangeOptions};
 use super::parse_range_options;
 use super::range_utils::{aggregate_samples, get_series_labels, group_samples_internal};
 use crate::aggregators::{AggOp, Aggregator};
@@ -8,6 +7,9 @@ use crate::common::{Sample, Timestamp};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::index::series_by_matchers;
+use crate::series::request_types::{
+    AggregationOptions, MRangeResultRow, RangeGroupingOptions, RangeOptions,
+};
 use crate::series::{SeriesGuard, SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -50,7 +52,7 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
         .into_iter()
         .map(result_row_to_value)
         .collect::<Vec<_>>();
-    
+
     Ok(ValkeyValue::from(result))
 }
 
@@ -59,12 +61,11 @@ pub fn process_mrange_query(
     options: RangeOptions,
     reverse: bool,
 ) -> ValkeyResult<Vec<MRangeResultRow>> {
-
     if options.series_selector.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
     }
     let mut options = options;
-    
+
     let (start_ts, end_ts) = options.date_range.get_timestamps(None);
     options.date_range.start = TimestampValue::Specific(start_ts);
     options.date_range.end = TimestampValue::Specific(end_ts);
@@ -88,7 +89,7 @@ pub fn process_mrange_query(
     if reverse {
         result.reverse();
     }
-    
+
     Ok(result)
 }
 
@@ -116,8 +117,8 @@ fn handle_aggregation_and_grouping(
 ) -> Vec<MRangeResultRow> {
     let mut grouped_series = group_series_by_label(metas, groupings);
 
-    fn process_group<'a>(
-        group: &RawGroupedSeries<'a>,
+    fn process_group(
+        group: &RawGroupedSeries<'_>,
         options: &RangeOptions,
         groupings: &RangeGroupingOptions,
         aggregations: &AggregationOptions,
@@ -134,8 +135,8 @@ fn handle_aggregation_and_grouping(
         }
     }
 
-    fn process<'a>(
-        groups: &[RawGroupedSeries<'a>],
+    fn process(
+        groups: &[RawGroupedSeries<'_>],
         options: &RangeOptions,
         groupings: &RangeGroupingOptions,
         aggregations: &AggregationOptions,
@@ -164,7 +165,7 @@ fn handle_aggregation_and_grouping(
             }
         }
     }
-    
+
     let raw_series: SmallVec<RawGroupedSeries, 8> = grouped_series
         .iter_mut()
         .map(|group| {
@@ -181,7 +182,8 @@ fn handle_aggregation_and_grouping(
                 series,
                 labels: std::mem::take(&mut group.labels),
             }
-        }).collect();
+        })
+        .collect();
 
     process(&raw_series, options, groupings, aggregations)
 }
@@ -224,7 +226,8 @@ fn handle_basic(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRa
         .into_iter()
         .zip(metas)
         .map(|(samples, meta)| {
-            let labels = convert_labels(&meta.series, options.with_labels, &options.selected_labels);
+            let labels =
+                convert_labels(&meta.series, options.with_labels, &options.selected_labels);
             MRangeResultRow {
                 key: meta.source_key,
                 labels,
@@ -266,8 +269,8 @@ fn get_grouped_raw_samples(
     group_samples_internal(multi_iter, grouping_options)
 }
 
-fn aggregate_grouped_samples<'a>(
-    group: &RawGroupedSeries<'a>,
+fn aggregate_grouped_samples(
+    group: &RawGroupedSeries<'_>,
     options: &RangeOptions,
     aggr: Aggregator,
 ) -> Vec<Sample> {
@@ -299,7 +302,7 @@ fn aggregate_grouped_samples<'a>(
         });
         aggregator.reset()
     }
-    
+
     fn get_sample_iterators<'a>(
         series: &'a [(&TimeSeries, &str)],
         options: &'a RangeOptions,
@@ -407,10 +410,12 @@ fn get_all_series_samples(
     meta: &[MRangeSeriesMeta],
     range_options: &RangeOptions,
 ) -> Vec<Vec<Sample>> {
-    fn fetch_one(series: &TimeSeries,
-                 start_ts: Timestamp,
-                 end_ts: Timestamp,
-                 range_options: &RangeOptions) -> Vec<Sample> {
+    fn fetch_one(
+        series: &TimeSeries,
+        start_ts: Timestamp,
+        end_ts: Timestamp,
+        range_options: &RangeOptions,
+    ) -> Vec<Sample> {
         let samples = get_raw_samples(series, start_ts, end_ts, range_options);
         if let Some(agg_options) = &range_options.aggregation {
             aggregate_samples(samples.into_iter(), start_ts, end_ts, agg_options)
@@ -434,7 +439,7 @@ fn get_all_series_samples(
             [first, second] => {
                 let (first_samples, second_samples) = join(
                     || fetch_one(first, start_ts, end_ts, range_options),
-                    || fetch_one(second, start_ts, end_ts,  range_options),
+                    || fetch_one(second, start_ts, end_ts, range_options),
                 );
                 vec![first_samples, second_samples]
             }
@@ -459,7 +464,7 @@ fn get_all_series_samples(
             ts
         })
         .collect();
-    
+
     get_raw_internal(&series, start_ts, end_ts, range_options)
 }
 

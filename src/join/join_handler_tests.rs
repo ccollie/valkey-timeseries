@@ -4,8 +4,8 @@ mod tests {
     use crate::common::Sample;
     use crate::join::join_handler::join_internal;
     use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType};
-    use joinkit::EitherOrBoth;
     use crate::series::request_types::AggregationOptions;
+    use joinkit::EitherOrBoth;
 
     fn create_basic_samples() -> (Vec<Sample>, Vec<Sample>) {
         let left = vec![

@@ -1,7 +1,7 @@
 use crate::aggregators::{AggOp, AggregateIterator};
-use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
+use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::series::TimeSeries;
 
 pub(crate) fn get_range(

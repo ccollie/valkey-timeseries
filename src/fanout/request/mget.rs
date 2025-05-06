@@ -8,7 +8,6 @@ use super::response_generated::{
 use crate::commands::handle_mget;
 use crate::common::Sample;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::request::Response;
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
 use crate::fanout::ShardedCommand;
 use crate::labels::Label;
@@ -17,34 +16,35 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
-
 pub struct MGetShardedCommand;
 
 impl ShardedCommand for MGetShardedCommand {
     type REQ = MGetRequest;
     type RES = MultiGetResponse;
-    
+
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::MGetQuery
     }
 
-    fn exec(
-        ctx: &Context,
-        req: Self::REQ,
-    ) -> ValkeyResult<MultiGetResponse>
-    {
+    fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<MultiGetResponse> {
         let res = handle_mget(ctx, req)?;
         let values = res
             .into_iter()
-            .map(|resp| {
-                MGetValue {
-                    key: resp.series_key.to_string_lossy(),
-                    value: resp.sample,
-                    labels: resp.labels,
-                }
+            .map(|resp| MGetValue {
+                key: resp.series_key.to_string_lossy(),
+                value: resp.sample,
+                labels: resp.labels,
             })
             .collect::<Vec<_>>();
         Ok(MultiGetResponse { series: values })
+    }
+
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
+        if let TrackerEnum::MGetQuery(ref t) = tracker {
+            t.update(res);
+        } else {
+            panic!("BUG: Invalid tracker type");
+        }
     }
 }
 
@@ -115,16 +115,6 @@ pub struct MultiGetResponse {
     pub series: Vec<MGetValue>,
 }
 
-impl Response for MultiGetResponse {
-    fn update_tracker(tracker: &TrackerEnum, res: MultiGetResponse) {
-        if let TrackerEnum::MGetQuery(tracker) = tracker {
-            tracker.update(res);
-        } else {
-            panic!("BUG: Invalid tracker type");
-        }
-    }
-}
-
 impl Serialized for MultiGetResponse {
     fn serialize(&self, buf: &mut Vec<u8>) {
         let mut bldr = FlatBufferBuilder::with_capacity(1024);
@@ -166,7 +156,6 @@ impl Deserialized for MultiGetResponse {
     }
 }
 
-
 fn serialize_mget_value<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
     value: &MGetValue,
@@ -182,10 +171,13 @@ fn serialize_mget_value<'a>(
                 let item = FBLabel::create(bldr, &args);
                 items.push(item);
             } else {
-                let none_ = FBLabel::create(bldr, &LabelArgs {
-                    name: None,
-                    value: None,
-                });
+                let none_ = FBLabel::create(
+                    bldr,
+                    &LabelArgs {
+                        name: None,
+                        value: None,
+                    },
+                );
                 items.push(none_);
             }
         }
@@ -207,7 +199,9 @@ fn serialize_mget_value<'a>(
 }
 fn decode_mget_value(reader: &FBMGetValue) -> MGetValue {
     let key = reader.key().unwrap_or_default().to_string();
-    let value = reader.value().map(|value| Sample::new(value.timestamp(), value.value()));
+    let value = reader
+        .value()
+        .map(|value| Sample::new(value.timestamp(), value.value()));
     let labels = reader
         .labels()
         .unwrap_or_default()
@@ -310,10 +304,7 @@ mod tests {
         assert_eq!(resp.series[0].key, resp2.series[0].key);
         assert_eq!(resp.series[0].value, resp2.series[0].value);
         assert_eq!(resp.series[0].labels.len(), resp2.series[0].labels.len());
-        assert_eq!(
-            resp.series[0].labels[0],
-            resp2.series[0].labels[0]
-        );
+        assert_eq!(resp.series[0].labels[0], resp2.series[0].labels[0]);
 
         // Check the second series
         assert_eq!(resp.series[1].key, resp2.series[1].key);
@@ -327,9 +318,7 @@ mod tests {
 
     #[test]
     fn test_multiget_response_empty_serialize_deserialize() {
-        let resp = MultiGetResponse {
-            series: vec![],
-        };
+        let resp = MultiGetResponse { series: vec![] };
 
         let mut buf = Vec::new();
         resp.serialize(&mut buf);

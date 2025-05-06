@@ -566,8 +566,7 @@ impl Default for MatcherSetEnum {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Matchers {
     pub name: Option<String>,
     pub matchers: MatcherSetEnum,

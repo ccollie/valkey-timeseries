@@ -20,7 +20,6 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     Ok(ValkeyValue::from(keys))
 }
 
-
 pub fn process_query_index_request(
     ctx: &Context,
     filters: &[Matchers],

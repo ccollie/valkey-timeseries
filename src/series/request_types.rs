@@ -1,9 +1,9 @@
-use valkey_module::{ValkeyString, ValkeyValue};
 use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
-use crate::labels::Label;
 use crate::labels::matchers::Matchers;
+use crate::labels::Label;
 use crate::series::{TimestampRange, ValueFilter};
+use valkey_module::{ValkeyString, ValkeyValue};
 
 #[derive(Debug, Clone)]
 pub struct AggregationOptions {
@@ -19,12 +19,6 @@ pub struct MatchFilterOptions {
     pub date_range: Option<TimestampRange>,
     pub matchers: Vec<Matchers>,
     pub limit: Option<usize>,
-}
-
-impl MatchFilterOptions {
-    pub fn is_empty(&self) -> bool {
-        self.date_range.is_none() && self.matchers.is_empty()
-    }
 }
 
 impl From<Vec<Matchers>> for MatchFilterOptions {
@@ -72,12 +66,6 @@ pub(crate) struct MRangeResultRow {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct IndexQueryOptions {
-    pub date_range: TimestampRange,
-    pub series_selector: Matchers,
-}
-
-#[derive(Debug, Default, Clone)]
 pub struct MGetRequest {
     pub with_labels: bool,
     pub filter: Matchers,
@@ -92,7 +80,8 @@ pub struct MGetSeriesData {
 
 impl From<MGetSeriesData> for ValkeyValue {
     fn from(series: MGetSeriesData) -> Self {
-        let labels: Vec<_> = series.labels
+        let labels: Vec<_> = series
+            .labels
             .into_iter()
             .map(|label| match label {
                 Some(label) => label.into(),
@@ -112,12 +101,6 @@ impl From<MGetSeriesData> for ValkeyValue {
         ];
         ValkeyValue::Array(series)
     }
-}
-
-pub struct MGetResult {
-    pub with_labels: bool,
-    pub selected_labels: Vec<String>,
-    pub series: Vec<MGetSeriesData>,
 }
 
 #[cfg(test)]

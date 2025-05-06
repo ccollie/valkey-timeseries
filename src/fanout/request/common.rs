@@ -1,92 +1,85 @@
 use super::response_generated::{
-    ErrorResponse as FBErrorResponse,
-    ErrorResponseArgs,
-    Label as ResponseLabel,
-    LabelBuilder,
+    ErrorResponse as FBErrorResponse, ErrorResponseArgs, Label as ResponseLabel, LabelBuilder,
     Sample as ResponseSample,
 };
-use crate::common::Sample;
-use crate::fanout::request::request_generated::{
-    DateRange,
-    DateRangeArgs
+use crate::common::encoding::{
+    read_signed_varint, read_uvarint, write_signed_varint, write_uvarint,
 };
+use crate::common::Sample;
+use crate::fanout::request::request_generated::{DateRange, DateRangeArgs};
 use crate::fanout::types::ClusterMessageType;
 use crate::labels::Label;
 use crate::series::TimestampRange;
-use flatbuffers::{FlatBufferBuilder, Vector, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub struct MessageHeader {
     pub request_id: u64,
     pub db: i32,
     pub msg_type: ClusterMessageType,
+    pub reserved: u8, // Reserved for future use (e.g. for larger payloads, we may compress the data)
 }
 
 impl MessageHeader {
     pub fn serialize(&self, buf: &mut Vec<u8>) {
-        // Write request_id (u64) as little-endian
-        buf.extend_from_slice(&self.request_id.to_le_bytes());
+        // Encode request_id as uvarint
+        write_uvarint(buf, self.request_id);
 
-        // Write db (i32) as little-endian
-        buf.extend_from_slice(&self.db.to_le_bytes());
+        // Encode db as signed varint
+        write_signed_varint(buf, self.db as i64);
 
-        // Write msg_type (assuming it converts to u8)
-        // If ClusterMessageType is #[repr(u8)], you can cast:
-        // buf.push(self.msg_type as u8);
-        // If it implements Into<u8>:
         buf.push(self.msg_type as u8);
+        buf.push(self.reserved);
     }
 
-    /// Returns the size of the serialized header in bytes.
-    pub const fn serialized_size() -> usize {
-        size_of::<u64>() // request_id
-            + size_of::<i32>() // db
-            + size_of::<u8>() // msg_type (assuming u8 representation)
+    /// Returns the minimum size of the serialized header in bytes.
+    pub const fn min_serialized_size() -> usize {
+        1 + // request_id (minimum 1 byte with uvarint)
+            1 + // db (minimum 1 byte with signed varint)
+            1 + // msg_type (1 byte)
+            1 // reserved (1 byte)
     }
 
     /// Deserializes a MessageHeader from the beginning of the buffer.
     /// Returns the deserialized header and the number of bytes consumed.
     /// Returns None if the buffer is too small.
     pub fn deserialize(buf: &[u8]) -> Option<(Self, usize)> {
-        const U64_SIZE: usize = size_of::<u64>();
-        const I32_SIZE: usize = size_of::<i32>();
-        const U8_SIZE: usize = size_of::<u8>(); // For msg_type
+        let mut current_offset = 0;
 
-        let required_size = U64_SIZE + I32_SIZE + U8_SIZE;
-        if buf.len() < required_size {
+        if buf.len() < Self::min_serialized_size() {
+            return None; // Buffer too small
+        }
+
+        // Decode request_id as uvarint
+        let (request_id, bytes_read) = read_uvarint(buf, current_offset)?;
+        current_offset += bytes_read;
+
+        // Decode db as signed varint
+        let (db_i64, bytes_read) = read_signed_varint(buf, current_offset)?;
+        let db = db_i64 as i32; // Convert i64 to i32
+        current_offset += bytes_read;
+
+        // Need at least 2 more bytes for msg_type and reserved
+        if current_offset + 1 >= buf.len() {
             return None;
         }
 
-        let mut current_offset = 0;
-
-        // Read request_id (u64) as little-endian
-        let request_id_bytes: [u8; U64_SIZE] = buf[current_offset..current_offset + U64_SIZE]
-            .try_into()
-            .ok()?; // Error if slicing fails
-        let request_id = u64::from_le_bytes(request_id_bytes);
-        current_offset += U64_SIZE;
-
-        // Read db (i32) as little-endian
-        let db_bytes: [u8; I32_SIZE] = buf[current_offset..current_offset + I32_SIZE]
-            .try_into()
-            .ok()?; // Error if slicing fails
-        let db = i32::from_le_bytes(db_bytes);
-        current_offset += I32_SIZE;
-
-        // Read msg_type (u8)
+        // Read msg_type and reserved as direct bytes
         let msg_type_byte = buf[current_offset];
+        current_offset += 1;
+        let reserved = buf[current_offset];
+        current_offset += 1;
 
-        // Convert u8 back to ClusterMessageType
-        // This depends on how ClusterMessageType is defined (e.g., From<u8>)
-        let msg_type = ClusterMessageType::from(msg_type_byte); // Assuming From<u8> is implemented
+        let msg_type = ClusterMessageType::from(msg_type_byte);
 
         Some((
             MessageHeader {
                 request_id,
                 db,
                 msg_type,
+                reserved,
             },
-            required_size,
+            current_offset,
         ))
     }
 }
@@ -114,7 +107,9 @@ pub fn serialize_timestamp_range<'a>(
     None
 }
 
-pub fn deserialize_timestamp_range(range: Option<DateRange>) -> ValkeyResult<Option<TimestampRange>> {
+pub fn deserialize_timestamp_range(
+    range: Option<DateRange>,
+) -> ValkeyResult<Option<TimestampRange>> {
     if let Some(range) = range {
         let start = range.start();
         let end = range.end();
@@ -145,18 +140,6 @@ pub(super) fn decode_label(label: ResponseLabel) -> Label {
     let name = label.name().unwrap_or_default().to_string();
     let value = label.value().unwrap_or_default().to_string();
     Label { name, value }
-}
-
-#[inline]
-pub(super) fn serialize_sample_vec<'a>(
-    bldr: &mut FlatBufferBuilder<'a>,
-    samples: &[Sample],
-) -> WIPOffset<Vector<'a, ResponseSample>> {
-    bldr.create_vector_from_iter(
-        samples
-            .iter()
-            .map(|s| ResponseSample::new(s.timestamp, s.value)),
-    )
 }
 
 pub fn serialize_error_response(buf: &mut Vec<u8>, error: &str) {
@@ -190,91 +173,12 @@ mod tests {
     use crate::fanout::types::ClusterMessageType;
 
     #[test]
-    fn test_message_header_serialized_size() {
-        let expected_size = size_of::<u64>() + size_of::<i32>() + size_of::<u8>();
-        assert_eq!(
-            MessageHeader::serialized_size(),
-            expected_size,
-            "Serialized size calculation mismatch"
-        );
-    }
-
-    #[test]
-    fn test_message_header_serialize() {
-        // Byte representation for db = 16384
-        let buffer: Vec<u8> = vec![
-            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // request_id = 0x0102030405060708
-            0x00, 0x40, 0x00, 0x00, // db = 16384
-            0x01, // msg_type = Request
-            0xAA, 0xBB, // Extra bytes
-        ];
-
-        let expected_header = MessageHeader {
-            request_id: 0x0102030405060708,
-            db: 16384,
-            msg_type: ClusterMessageType::RangeQuery,
-        };
-        let expected_consumed = MessageHeader::serialized_size();
-
-        match MessageHeader::deserialize(&buffer) {
-            Some((deserialized_header, consumed)) => {
-                assert!(
-                    deserialized_header.db > 0,
-                    "Deserialized db should be positive"
-                );
-                assert!(
-                    deserialized_header.db <= 16384,
-                    "Deserialized db should be <= 16384"
-                );
-                assert_eq!(deserialized_header.request_id, expected_header.request_id);
-                assert_eq!(deserialized_header.db, expected_header.db);
-                assert_eq!(deserialized_header.msg_type, expected_header.msg_type);
-                assert_eq!(consumed, expected_consumed, "Bytes consumed mismatch");
-            }
-            None => {
-                panic!("Deserialization failed for a valid buffer with db=16384");
-            }
-        }
-    }
-
-    #[test]
-    fn test_message_header_deserialize_exact_size() {
-        // Buffer with exactly the required size
-        let buffer: Vec<u8> = vec![
-            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // request_id
-            0xF6, 0xFF, 0xFF, 0xFF, // db
-            0x01, // msg_type
-        ];
-
-        let expected_header = MessageHeader {
-            request_id: 0x0102030405060708,
-            db: -10,
-            msg_type: ClusterMessageType::RangeQuery, // Represents 1u8
-        };
-        let expected_consumed = MessageHeader::serialized_size();
-
-        match MessageHeader::deserialize(&buffer) {
-            Some((deserialized_header, consumed)) => {
-                assert_eq!(deserialized_header.request_id, expected_header.request_id);
-                assert_eq!(deserialized_header.db, expected_header.db);
-                assert_eq!(deserialized_header.msg_type, expected_header.msg_type);
-                assert_eq!(
-                    consumed, expected_consumed,
-                    "Bytes consumed mismatch for exact size buffer"
-                );
-            }
-            None => {
-                panic!("Deserialization failed for exact size valid buffer");
-            }
-        }
-    }
-
-    #[test]
     fn test_message_header_round_trip() {
         let original_header = MessageHeader {
             request_id: 9876543210123456789,
             db: 15,
             msg_type: ClusterMessageType::MultiRangeQuery,
+            reserved: 0xBA,
         };
 
         let mut buffer = Vec::new();
@@ -282,9 +186,8 @@ mod tests {
 
         match MessageHeader::deserialize(&buffer) {
             Some((deserialized_header, consumed)) => {
-                assert_eq!(
-                    consumed,
-                    MessageHeader::serialized_size(),
+                assert!(
+                    consumed >= MessageHeader::min_serialized_size(),
                     "Consumed size mismatch in round trip"
                 );
                 assert_eq!(
@@ -299,6 +202,10 @@ mod tests {
                     deserialized_header.msg_type, original_header.msg_type,
                     "msg_type mismatch in round trip"
                 );
+                assert_eq!(
+                    deserialized_header.reserved, original_header.reserved,
+                    "reserved mismatch in round trip"
+                );
             }
             None => {
                 panic!("Deserialization failed during round trip test");
@@ -308,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_message_header_deserialize_buffer_too_small() {
-        let size = MessageHeader::serialized_size();
+        let size = MessageHeader::min_serialized_size();
         // Create buffers slightly smaller than required
         for i in 0..size {
             let buffer: Vec<u8> = vec![0; i]; // Create buffer of size i
@@ -388,7 +295,8 @@ mod tests {
             error_message: "A detailed error message with Unicode 😊✅".to_string(),
         };
 
-        let buf = Vec::new();
+        let mut buf = Vec::new();
+        serialize_error_response(&mut buf, &original_response.error_message);
 
         let result = deserialize_error_response(&buf);
 
