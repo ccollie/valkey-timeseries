@@ -1,10 +1,10 @@
-use std::io::Write;
-use flatbuffers::FlatBufferBuilder;
-use valkey_module::ValkeyResult;
 use crate::fanout::request::common::{deserialize_timestamp_range, serialize_timestamp_range};
 use crate::fanout::request::matchers::{deserialize_matchers, serialize_matchers};
 use crate::fanout::request::request_generated::{MetadataRequest, MetadataRequestArgs};
 use crate::series::request_types::MatchFilterOptions;
+use flatbuffers::FlatBufferBuilder;
+use std::io::Write;
+use valkey_module::ValkeyResult;
 
 /// A trait for types that can be serialized to and deserialized from a byte stream.
 ///
@@ -25,7 +25,9 @@ impl Serialized for MatchFilterOptions {
         let mut bldr = FlatBufferBuilder::with_capacity(512);
 
         let range = serialize_timestamp_range(&mut bldr, self.date_range);
-        let matchers = self.matchers.iter()
+        let matchers = self
+            .matchers
+            .iter()
             .map(|m| serialize_matchers(&mut bldr, m))
             .collect::<Vec<_>>();
 
@@ -40,7 +42,7 @@ impl Serialized for MatchFilterOptions {
 
         bldr.finish(obj, None);
         let data = bldr.finished_data();
-        buf.write_all(&data).unwrap();
+        buf.write_all(data).unwrap();
     }
 }
 

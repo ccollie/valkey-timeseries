@@ -1,5 +1,5 @@
 use super::response_generated::IndexQueryResponse as FBIndexQueryResponse;
-use super::Response;
+use crate::commands::process_query_index_request;
 use crate::fanout::request::response_generated::IndexQueryResponseArgs;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
@@ -8,7 +8,6 @@ use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use smallvec::SmallVec;
 use valkey_module::{Context, ValkeyResult};
-use crate::commands::process_query_index_request;
 
 #[derive(Debug, Clone, Default)]
 pub struct IndexQueryCommand;
@@ -16,20 +15,22 @@ pub struct IndexQueryCommand;
 impl ShardedCommand for IndexQueryCommand {
     type REQ = MatchFilterOptions;
     type RES = IndexQueryResponse;
-    
+
     fn request_type() -> ClusterMessageType {
         ClusterMessageType::IndexQuery
     }
-    
+
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<IndexQueryResponse> {
-        process_query_index_request(ctx, &req.matchers, req.date_range)
-            .map(|keys| {
-                let keys = keys
-                    .into_iter()
-                    .map(|k| k.to_string())
-                    .collect::<Vec<_>>();
-                IndexQueryResponse { keys }
-            })
+        process_query_index_request(ctx, &req.matchers, req.date_range).map(|keys| {
+            let keys = keys.into_iter().map(|k| k.to_string()).collect::<Vec<_>>();
+            IndexQueryResponse { keys }
+        })
+    }
+
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
+        if let TrackerEnum::IndexQuery(ref t) = tracker {
+            t.add_result(res);
+        }
     }
 }
 
@@ -48,7 +49,8 @@ impl Serialized for IndexQueryResponse {
             .collect();
 
         let keys = bldr.create_vector(&_keys);
-        let obj = FBIndexQueryResponse::create(&mut bldr, &IndexQueryResponseArgs { keys: Some(keys) });
+        let obj =
+            FBIndexQueryResponse::create(&mut bldr, &IndexQueryResponseArgs { keys: Some(keys) });
         bldr.finish(obj, None);
 
         let data = bldr.finished_data();
@@ -65,19 +67,9 @@ impl Deserialized for IndexQueryResponse {
     }
 }
 
-impl Response for IndexQueryResponse {
-    fn update_tracker(tracker: &TrackerEnum, res: Self) {
-        if let TrackerEnum::IndexQuery(ref t) = tracker {
-            t.add_result(res);
-        }
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn test_index_query_response_serialize_deserialize() {
@@ -127,5 +119,4 @@ mod tests {
         assert_eq!(resp.keys[0], resp2.keys[0]);
         assert_eq!(resp.keys[999], resp2.keys[999]);
     }
-    
 }

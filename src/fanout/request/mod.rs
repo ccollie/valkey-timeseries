@@ -1,20 +1,35 @@
-mod mget;
-mod matchers;
-mod range;
 mod common;
 mod index_query;
 mod label_names;
+mod matchers;
+mod mget;
 mod mrange;
-#[allow(dead_code, unused_imports, unused_lifetimes, clippy::derivable_impls, clippy::needless_lifetimes, clippy::extra_unused_lifetimes)]
+mod range;
+#[allow(
+    dead_code,
+    unused_imports,
+    unused_lifetimes,
+    clippy::derivable_impls,
+    clippy::needless_lifetimes,
+    clippy::extra_unused_lifetimes
+)]
 #[path = "./request_generated.rs"]
 mod request_generated;
 
-#[allow(dead_code, unused_imports, unused_lifetimes, clippy::derivable_impls, clippy::needless_lifetimes, clippy::extra_unused_lifetimes)]
-#[path = "./response_generated.rs"]
-mod response_generated;
 mod cardinality;
 mod label_values;
+#[allow(
+    dead_code,
+    unused_imports,
+    unused_lifetimes,
+    clippy::derivable_impls,
+    clippy::needless_lifetimes,
+    clippy::extra_unused_lifetimes
+)]
+#[path = "./response_generated.rs"]
+mod response_generated;
 pub(crate) mod serialization;
+mod stats;
 
 use crate::fanout::types::ClusterMessageType;
 pub use cardinality::*;
@@ -24,24 +39,19 @@ pub use label_values::*;
 pub use mget::*;
 pub use mrange::*;
 pub use range::*;
+pub use stats::*;
 
 use super::types::TrackerEnum;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 pub use common::{
-    deserialize_error_response,
-    serialize_error_response,
-    ErrorResponse,
-    MessageHeader
+    deserialize_error_response, serialize_error_response, ErrorResponse, MessageHeader,
 };
 use valkey_module::{Context, ValkeyResult};
 
 pub trait ShardedCommand {
     type REQ: Serialized + Deserialized;
-    type RES: Response;
+    type RES: Serialized + Deserialized;
     fn request_type() -> ClusterMessageType;
-    fn exec(_ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES>;
-}
-
-pub trait Response: Serialized + Deserialized {
-    fn update_tracker(tracker: &TrackerEnum, res: Self);
+    fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES>;
+    fn update_tracker(tracker: &TrackerEnum, res: Self::RES);
 }
