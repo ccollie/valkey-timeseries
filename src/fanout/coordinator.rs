@@ -3,35 +3,34 @@ use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::ids::flake_id;
 use crate::common::pool::get_pooled_buffer;
+use crate::fanout::request::serialization::Deserialized;
+use crate::fanout::request::serialization::Serialized;
 use crate::fanout::request::{
     deserialize_error_response,
     serialize_error_response,
-    CardinalityRequest,
+    CardinalityCommand,
     CardinalityResponse,
     ErrorResponse,
-    IndexQueryRequest,
+    IndexQueryCommand,
     IndexQueryResponse,
-    LabelNamesRequest,
+    LabelNamesCommand,
     LabelNamesResponse,
-    LabelValuesRequest,
+    LabelValuesCommand,
     LabelValuesResponse,
     MessageHeader,
     MultiGetResponse,
-    MultiRangeRequest,
     MultiRangeResponse,
-    RangeRequest,
     RangeResponse,
-    Request,
     Response
 };
 use crate::fanout::results_tracker::ResponseCallback;
-use crate::fanout::types::{ClusterMessageType, InFlightRequest};
+use crate::fanout::types::{ClusterMessageType, InFlightRequest, TrackerEnum};
+use crate::fanout::{MGetShardedCommand, MultiRangeCommand, RangeCommand, ResultsTracker, ShardedCommand};
 use papaya::HashMap;
 use std::os::raw::{c_char, c_uchar};
 use std::sync::LazyLock;
 use valkey_module::RedisModuleCtx;
 use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyModuleCtx};
-use crate::series::request_types::MGetRequest;
 
 const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
@@ -50,19 +49,20 @@ pub(super) fn add_inflight_request(
     INFLIGHT_REQUEST_MAP.insert(request_id, request, &guard);
 }
 
-pub fn send_request<T: Request<R>, R: Response, F>(
+pub fn send_request<T: ShardedCommand, F>(
     ctx: &Context,
-    request: &T,
-    msg_type: ClusterMessageType,
+    request: &T::REQ,
     callback: F
 ) -> u64
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, &[R]) + Send + 'static,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, &[T::RES]) + Send + 'static, 
+    TrackerEnum: From<ResultsTracker<T::RES>>
 {
     let id = flake_id();
     let db = get_current_db(ctx);
     
     let mut buf = get_pooled_buffer(512);
+    let msg_type = T::request_type();
     let header = MessageHeader {
         request_id: id,
         msg_type,
@@ -73,7 +73,7 @@ where
 
     let node_count = fanout_cluster_message(ctx, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
 
-    let tracker = request.create_tracker(ctx, id, node_count, callback);
+    let tracker = create_tracker::<T, F>(ctx, id, node_count, callback);
 
     let inflight_request = InFlightRequest::new(
         db,
@@ -88,6 +88,21 @@ where
         // log error
         0
     }
+}
+
+fn create_tracker<T: ShardedCommand, F>(ctx: &Context, request_id: u64, expected_results: usize, callback: F) -> TrackerEnum
+where
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, &[T::RES]) + Send + 'static, 
+    TrackerEnum: From<ResultsTracker<T::RES>>
+{
+    let cbk = create_response_done_callback(ctx, request_id, callback);
+
+    let tracker: ResultsTracker<T::RES> = ResultsTracker::new(
+        expected_results,
+        cbk,
+    );
+    
+    TrackerEnum::from(tracker)
 }
 
 fn send_response_message(ctx: &Context, sender_id: *const c_char, buf: &[u8]) -> Status {
@@ -177,14 +192,14 @@ fn parse_header(ctx: &Context, payload: *const c_uchar, len: u32) -> Option<(Mes
     )
 }
 
-pub fn process_request<T: Request<R>, R: Response>(
+fn process_request<T: ShardedCommand>(
     ctx: &Context,
     header: &MessageHeader,
     sender_id: *const c_char,
     buf: &[u8]
 ) {
     // Deserialize the request
-    let request = match T::deserialize(buf) {
+    let request = match T::REQ::deserialize(buf) {
         Ok(request) => request,
         Err(e) => {
             let msg = format!("Failed to deserialize request: {:?}", e);
@@ -203,11 +218,8 @@ pub fn process_request<T: Request<R>, R: Response>(
         save_db
     };
 
-    match request.exec(ctx) {
+    match T::exec(ctx, request) {
         Ok(response) => {
-            if save_db != db {
-                set_current_db(ctx, save_db);
-            }
             let mut buf = get_pooled_buffer(1024);
             // Write request_id (u64) as little-endian
             buf.extend_from_slice(&request_id.to_le_bytes());
@@ -218,13 +230,14 @@ pub fn process_request<T: Request<R>, R: Response>(
             }
         }
         Err(e) => {
-            if save_db != db {
-                set_current_db(ctx, save_db);
-            }
             let msg = format!("Failed to execute request: {:?}", e);
             // should we send error response?
             ctx.log_warning(&msg);
         }
+    }
+    
+    if save_db != db {
+        set_current_db(ctx, save_db);
     }
 }
 
@@ -253,19 +266,19 @@ extern "C" fn on_request_received(
     // Handle the request based on the message type
     match header.msg_type {
         ClusterMessageType::IndexQuery =>
-            process_request::<IndexQueryRequest, IndexQueryResponse>(&ctx, &header, sender_id, buf),
+            process_request::<IndexQueryCommand>(&ctx, &header, sender_id, buf),
         ClusterMessageType::MGetQuery =>
-            process_request::<MGetRequest, MultiGetResponse>(&ctx, &header, sender_id, buf),
+            process_request::<MGetShardedCommand>(&ctx, &header, sender_id, buf),
         ClusterMessageType::MultiRangeQuery =>
-            process_request::<MultiRangeRequest, MultiRangeResponse>(&ctx, &header, sender_id, buf),
+            process_request::<MultiRangeCommand>(&ctx, &header, sender_id, buf),
         ClusterMessageType::LabelNames =>
-            process_request::<LabelNamesRequest, LabelNamesResponse>(&ctx, &header, sender_id, buf),
+            process_request::<LabelNamesCommand>(&ctx, &header, sender_id, buf),
         ClusterMessageType::LabelValues =>
-            process_request::<LabelValuesRequest, LabelValuesResponse>(&ctx, &header, sender_id, buf),
+            process_request::<LabelValuesCommand>(&ctx, &header, sender_id, buf),
         ClusterMessageType::RangeQuery =>
-            process_request::<RangeRequest, RangeResponse>(&ctx, &header, sender_id, buf),
+            process_request::<RangeCommand>(&ctx, &header, sender_id, buf),
         ClusterMessageType::Cardinality =>
-            process_request::<CardinalityRequest, CardinalityResponse>(&ctx, &header, sender_id, buf),
+            process_request::<CardinalityCommand>(&ctx, &header, sender_id, buf),
         _ => ctx.log_warning(&format!("Unknown message type: {:?}", header.msg_type)),
     }
 }
