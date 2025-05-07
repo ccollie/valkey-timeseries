@@ -19,8 +19,9 @@ use crate::fanout::{
 use papaya::HashMap;
 use std::os::raw::{c_char, c_uchar};
 use std::sync::LazyLock;
-use valkey_module::RedisModuleCtx;
+use valkey_module::{RedisModuleCtx, ValkeyError, ValkeyResult};
 use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyModuleCtx};
+use crate::error_consts;
 
 const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
@@ -29,19 +30,23 @@ type InFlightRequestMap = HashMap<u64, InFlightRequest, BuildNoHashHasher<u64>>;
 
 static INFLIGHT_REQUESTS: LazyLock<InFlightRequestMap> = LazyLock::new(InFlightRequestMap::default);
 
-pub fn send_request<T: ShardedCommand, F>(ctx: &Context, request: &T::REQ, callback: F) -> u64
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, &[T::RES]) + Send + 'static,
-    TrackerEnum: From<ResultsTracker<T::RES>>,
-{
+fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
     if !is_cluster_mode(ctx) {
-        // log error
-        return 0;
+        return Err(ValkeyError::Str("Cluster mode is not enabled"));
     }
     if is_multi_or_lua(ctx) {
-        // todo: trigger error
-        return 0;
+        return Err(ValkeyError::Str("Cannot execute in MULTI or Lua context"));
     }
+    Ok(())
+}
+
+pub fn send_request<T: ShardedCommand, F>(ctx: &Context, request: &T::REQ, callback: F) -> ValkeyResult<u64>
+where
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>) + Send + 'static,
+    TrackerEnum: From<ResultsTracker<T::RES>>,
+{
+    validate_cluster_exec(ctx)?;
+    
     let id = flake_id();
     let db = get_current_db(ctx);
 
@@ -65,11 +70,10 @@ where
     if node_count > 0 {
         let map = INFLIGHT_REQUESTS.pin();
         map.insert(id, inflight_request);
-        id
+        Ok(id)
     } else {
         // return error !
-        // log error
-        0
+        Err(ValkeyError::Str(error_consts::NO_CLUSTER_NODES_AVAILABLE))
     }
 }
 
@@ -80,7 +84,7 @@ fn create_tracker<T: ShardedCommand, F>(
     callback: F,
 ) -> TrackerEnum
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, &[T::RES]) + Send + 'static,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>) + Send + 'static,
     TrackerEnum: From<ResultsTracker<T::RES>>,
 {
     let cbk = create_response_done_callback(ctx, request_id, callback);
@@ -117,10 +121,10 @@ fn create_response_done_callback<T, F>(
     callback: F,
 ) -> ResponseCallback<T>
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, &[T]) + Send + 'static,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T>) + Send + 'static,
 {
     let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
-
+    
     let tracker_callback: ResponseCallback<T> = Box::new(move |res| {
         let map = INFLIGHT_REQUESTS.pin();
         match map.remove(&request_id) {
@@ -137,12 +141,14 @@ where
 
                 match res {
                     Ok(res) => {
-                        callback(&thread_ctx, &res);
+                        callback(&thread_ctx, res);
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         // Handle no response
                         let ctx_locked = thread_ctx.lock();
-                        ctx_locked.log_warning("No response received");
+                        let type_name = inflight_request.request_type();
+                        let msg = format!("No {type_name} response received for request ID {request_id}:  {:?}", e);
+                        ctx_locked.log_warning(&msg);
                     }
                 }
 
@@ -191,13 +197,10 @@ fn process_request<T: ShardedCommand>(
     buf: &[u8],
 ) {
     // Deserialize the request
-    let request = match T::REQ::deserialize(buf) {
-        Ok(request) => request,
-        Err(e) => {
-            let msg = format!("Failed to deserialize request: {:?}", e);
-            ctx.log_warning(&msg);
-            return;
-        }
+    let Ok(request) = T::REQ::deserialize(buf) else {
+        let msg = format!("{}: Failed to deserialize request", T::request_type());
+        ctx.log_warning(&msg);
+        return;
     };
 
     let request_id = header.request_id;
@@ -217,13 +220,12 @@ fn process_request<T: ShardedCommand>(
             buf.extend_from_slice(&request_id.to_le_bytes());
             response.serialize(&mut buf);
             if send_response_message(ctx, sender_id, &buf) == Status::Err {
-                let msg = format!("Failed to send response message to node {:?}", sender_id);
+                let msg = format!("Failed to send {} response message to node {:?}", T::request_type(), sender_id);
                 ctx.log_warning(&msg);
             }
         }
         Err(e) => {
-            let msg = format!("Failed to execute request: {:?}", e);
-            // should we send error response?
+            let msg = format!("Failed to execute {} request: {:?}", e, T::request_type());
             send_error_response(ctx, request_id, sender_id, &msg);
             let map = INFLIGHT_REQUESTS.pin();
             if let Some(request) = map.get(&request_id) {

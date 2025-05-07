@@ -15,10 +15,11 @@ pub struct PostingsStats {
     pub label_value_pairs_stats: Vec<PostingStat>,
     pub num_label_pairs: usize,
     pub num_labels: usize,
+    pub series_count: u64,
 }
 
 #[derive(Debug)]
-pub(super) struct StatsMaxHeap {
+pub(crate) struct StatsMaxHeap {
     max_length: usize,
     min_value: usize,
     min_index: usize,

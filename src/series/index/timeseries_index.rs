@@ -164,6 +164,8 @@ impl TimeSeriesIndex {
                 num_labels += 1;
             }
         }
+        
+        let series_count = self.count() as u64;
 
         PostingsStats {
             cardinality_metrics_stats: metrics.into_vec(),
@@ -172,6 +174,7 @@ impl TimeSeriesIndex {
             label_value_pairs_stats: label_value_pairs.into_vec(),
             num_label_pairs,
             num_labels,
+            series_count,
         }
     }
 

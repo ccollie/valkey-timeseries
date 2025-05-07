@@ -5,7 +5,7 @@ use super::response_generated::{
     Label as FBLabel, LabelArgs, MGetValue as FBMGetValue, MGetValueBuilder,
     MultiGetResponse as FBMultiGetResponse, MultiGetResponseArgs, Sample as ResponseSample,
 };
-use crate::commands::handle_mget;
+use crate::commands::process_mget_request;
 use crate::common::Sample;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::types::{ClusterMessageType, TrackerEnum};
@@ -14,7 +14,7 @@ use crate::labels::Label;
 use crate::series::request_types::MGetRequest;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
-use valkey_module::{Context, ValkeyError, ValkeyResult};
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
 
 pub struct MGetShardedCommand;
 
@@ -27,7 +27,7 @@ impl ShardedCommand for MGetShardedCommand {
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<MultiGetResponse> {
-        let res = handle_mget(ctx, req)?;
+        let res = process_mget_request(ctx, req)?;
         let values = res
             .into_iter()
             .map(|resp| MGetValue {
@@ -110,6 +110,23 @@ pub struct MGetValue {
     pub labels: Vec<Option<Label>>,
 }
 
+impl From<MGetValue> for ValkeyValue {
+    fn from(value: MGetValue) -> ValkeyValue {
+        let labels: Vec<_> = value
+            .labels
+            .into_iter()
+            .map(|label| match label {
+                Some(label) => label.into(),
+                None => ValkeyValue::Null,
+            })
+            .collect();
+        ValkeyValue::Array(vec![
+            ValkeyValue::SimpleString(value.key),
+            ValkeyValue::Array(labels),
+            value.value.map_or(ValkeyValue::Null, |s| s.into()),
+        ])
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct MultiGetResponse {
     pub series: Vec<MGetValue>,

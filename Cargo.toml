@@ -43,8 +43,6 @@ regex = "1.11.1"
 strum = { version = "0.27", features = ["derive"] }
 strum_macros = "0.27"
 yasi = "0.1.5"
-async-trait = "0.1.88"
-tracing = "0.1.41"
 
 [dev-dependencies]
 test-case = "3.3.1"

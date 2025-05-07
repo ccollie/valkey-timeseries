@@ -71,6 +71,7 @@ table PostingStats {
   label_value_pairs_stats:[PostingStat];
   num_label_pairs:uint64;
   num_labels:uint64;
+  series_count:uint64;
 }
 
 root_type MultiRangeResponse;

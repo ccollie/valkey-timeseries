@@ -23,7 +23,9 @@ impl ShardedCommand for StatsCommand {
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
         let limit = req.limit;
-        Ok(with_timeseries_index(ctx, |index| index.stats("", limit)))
+        Ok(with_timeseries_index(ctx, |index| {
+            index.stats("", limit)
+        }))
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
@@ -103,6 +105,7 @@ impl Serialized for PostingsStats {
                 label_value_stats: Some(label_value_stats),
                 num_label_pairs: self.num_label_pairs as u64,
                 num_labels: self.num_labels as u64,
+                series_count: self.series_count,
             },
         );
 
@@ -120,6 +123,7 @@ impl Deserialized for PostingsStats {
         let cardinality_label_stats = deserialize_posting_stat_list(root.cardinality_label_stats());
         let label_value_pairs_stats = deserialize_posting_stat_list(root.label_value_pairs_stats());
         let label_value_stats = deserialize_posting_stat_list(root.label_value_stats());
+        let series_count = root.series_count();
 
         Ok(PostingsStats {
             cardinality_metrics_stats,
@@ -128,6 +132,7 @@ impl Deserialized for PostingsStats {
             label_value_stats,
             num_label_pairs: root.num_label_pairs() as usize,
             num_labels: root.num_labels() as usize,
+            series_count,
         })
     }
 }
@@ -213,6 +218,7 @@ mod tests {
             ],
             num_label_pairs: 60,
             num_labels: 125,
+            series_count: 1000,
         };
 
         // Serialize the stats
@@ -285,6 +291,8 @@ mod tests {
             assert_eq!(original.name, deserialized_stat.name);
             assert_eq!(original.count, deserialized_stat.count);
         }
+        // Check series_count
+        assert_eq!(stats.series_count, deserialized.series_count);
     }
 
     #[test]
@@ -297,6 +305,7 @@ mod tests {
             label_value_pairs_stats: vec![],
             num_label_pairs: 0,
             num_labels: 0,
+            series_count: 0
         };
 
         // Serialize and deserialize
@@ -312,6 +321,7 @@ mod tests {
         assert_eq!(deserialized.label_value_pairs_stats.len(), 0);
         assert_eq!(deserialized.num_label_pairs, 0);
         assert_eq!(deserialized.num_labels, 0);
+        assert_eq!(deserialized.series_count, 0);
     }
 
     #[test]
@@ -331,6 +341,7 @@ mod tests {
             label_value_pairs_stats: vec![],
             num_label_pairs: 5000,
             num_labels: 1000,
+            series_count: 10000,
         };
 
         // Serialize and deserialize

@@ -3,12 +3,12 @@ use crate::commands::arg_parse::{
 };
 use crate::commands::range_utils::get_series_labels;
 use crate::error_consts;
+use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
 use crate::labels::{parse_series_selector, Label};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
-use valkey_module::{
-    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
-};
+use valkey_module::{AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue, VALKEY_OK};
 
 /// TS.MGET selector
 ///   [WITHLABELS]
@@ -18,8 +18,12 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let options = parse_mget_options(&mut args)?;
 
-    // NOTE: we currently don't support cross-cluster mget
-    let mget_results = handle_mget(ctx, options)?;
+    if is_cluster_mode(ctx) {
+        perform_remote_mget_request(ctx, &options, on_mget_request_done)?;
+        return Ok(ValkeyValue::NoReply);
+    }
+    
+    let mget_results = process_mget_request(ctx, options)?;
 
     let result = mget_results.into_iter().map(|s| s.into()).collect();
 
@@ -56,7 +60,10 @@ pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetReq
     Ok(options)
 }
 
-pub fn handle_mget(ctx: &Context, options: MGetRequest) -> ValkeyResult<Vec<MGetSeriesData>> {
+pub fn process_mget_request(
+    ctx: &Context,
+    options: MGetRequest,
+) -> ValkeyResult<Vec<MGetSeriesData>> {
     let with_labels = options.with_labels;
     let selected_labels = &options.selected_labels;
     let mut series = vec![];
@@ -86,4 +93,19 @@ pub fn handle_mget(ctx: &Context, options: MGetRequest) -> ValkeyResult<Vec<MGet
     )?;
 
     Ok(series)
+}
+
+fn on_mget_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<MultiGetResponse>) {
+    let count = res.iter().map(|s| s.series.len()).sum::<usize>();
+    let mut arr = Vec::with_capacity(count);
+
+    for s in res.into_iter() {
+        // Assuming we should filter by 'value' being present instead of 'sample'
+        for series in s.series.into_iter().filter(|s| s.value.is_some()) {
+            arr.push(series.into());
+        }
+    }
+
+    // Fix: Wrap the ValkeyValue in Ok() to match the expected ValkeyResult type
+    ctx.reply(Ok(ValkeyValue::Array(arr)));
 }

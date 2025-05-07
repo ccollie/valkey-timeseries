@@ -62,3 +62,5 @@ pub const PERMISSION_DENIED: &str =
     "TSDB: the user does not have permission to access one or more keys";
 pub const COMMAND_SERIALIZATION_ERROR: &str = "TSDB: command serialization error";
 pub const COMMAND_DESERIALIZATION_ERROR: &str = "TSDB: command deserialization error";
+pub const CLUSTER_MODE_ERROR: &str = "TSDB: cluster mode not supported";
+pub const NO_CLUSTER_NODES_AVAILABLE: &str = "TSDB: no cluster nodes available";
