@@ -1,10 +1,10 @@
 use enum_dispatch::enum_dispatch;
 use std::any::Any;
 use std::collections::BinaryHeap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use valkey_module::{ValkeyError, ValkeyResult};
 
-pub type ResponseCallback<T> = Box<dyn FnOnce(ValkeyResult<Vec<T>>) + Send>;
+pub type ResponseCallback<T> = Box<dyn FnOnce(Vec<T>, Vec<String>) + Send>;
 
 #[enum_dispatch]
 pub trait ResponseTracker<T>: Any {
@@ -16,6 +16,7 @@ pub trait ResponseTracker<T>: Any {
 
 struct ResultsTrackerInner<T> {
     results: Vec<T>,
+    errors: Vec<String>,
     callback: Option<ResponseCallback<T>>,
     outstanding_requests: u32,
 }
@@ -28,6 +29,7 @@ impl<T> ResultsTracker<T> {
     pub fn new(outstanding_requests: usize, callback: ResponseCallback<T>) -> Self {
         let inner = ResultsTrackerInner {
             results: Vec::new(),
+            errors: Vec::new(),
             callback: Some(callback),
             outstanding_requests: outstanding_requests as u32,
         };
@@ -54,17 +56,22 @@ impl<T> ResultsTracker<T> {
         self.decrement_internal(&mut inner)
     }
 
+    fn callback_if_needed(inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
+        if inner.outstanding_requests != 0 {
+            return false;
+        }
+        if let Some(callback) = inner.callback.take() {
+            let final_results: Vec<T> = std::mem::take(&mut inner.results);
+            let errors: Vec<String> = std::mem::take(&mut inner.errors);
+            callback(final_results, errors);
+        }
+        true
+    }
+
     fn decrement_internal(&self, inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
         inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
         // If no outstanding request, execute the callback
-        if inner.outstanding_requests == 0 {
-            if let Some(callback) = inner.callback.take() {
-                let final_results: Vec<T> = std::mem::take(&mut inner.results);
-                callback(Ok(final_results));
-                return true;
-            }
-        }
-        false
+        Self::callback_if_needed(inner)
     }
 
     pub fn completed(&self) -> bool {
@@ -74,10 +81,15 @@ impl<T> ResultsTracker<T> {
 
     pub fn raise_error(&self, error: &str) {
         let mut inner = self.inner.lock().unwrap();
+        inner.errors.push(error.to_string());
         inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
-        if let Some(callback) = inner.callback.take() {
-            callback(Err(ValkeyError::String(error.to_string())));
-        }
+        Self::callback_if_needed(&mut inner);
+    }
+
+    pub fn call_done(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.outstanding_requests = 0;
+        Self::callback_if_needed(&mut inner);
     }
 }
 
@@ -101,6 +113,7 @@ impl<T: 'static> ResponseTracker<T> for ResultsTracker<T> {
 
 struct TopKResultsTrackerInner<T> {
     data: BinaryHeap<T>,
+    errors: Vec<String>,
     callback: Option<ResponseCallback<T>>,
     outstanding_requests: u32,
 }
@@ -119,6 +132,7 @@ impl<T: PartialOrd + Ord> TopKResultsTracker<T> {
         let data = BinaryHeap::with_capacity(max_results);
         let inner = TopKResultsTrackerInner {
             data,
+            errors: Vec::new(),
             callback: Some(callback),
             outstanding_requests,
         };
@@ -158,7 +172,8 @@ impl<T: PartialOrd + Ord> TopKResultsTracker<T> {
         if inner.outstanding_requests == 0 {
             if let Some(callback) = inner.callback.take() {
                 let final_results: Vec<T> = inner.data.drain().collect();
-                callback(Ok(final_results));
+                let errors: Vec<String> = std::mem::take(&mut inner.errors);
+                callback(final_results, errors);
                 return true;
             }
         }
@@ -167,8 +182,14 @@ impl<T: PartialOrd + Ord> TopKResultsTracker<T> {
 
     pub fn raise_error(&self, error: &str) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(callback) = inner.callback.take() {
-            callback(Err(ValkeyError::String(error.to_string())));
+        inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
+        inner.errors.push(error.to_string());
+        if inner.outstanding_requests == 0 {
+            if let Some(callback) = inner.callback.take() {
+                let final_results: Vec<T> = inner.data.drain().collect();
+                let errors: Vec<String> = std::mem::take(&mut inner.errors);
+                callback(final_results, errors);
+            }
         }
     }
 

@@ -1,5 +1,4 @@
 use crate::common::time::current_time_millis;
-pub(crate) use crate::fanout::types::ClusterMessageType;
 use ahash::AHashMap;
 use blart::AsBytes;
 use rand::Rng;
