@@ -15,7 +15,7 @@ static TIMERS: LazyLock<HashMap<u64, RedisModuleTimerID>> = LazyLock::new(HashMa
 /// * `param` - Parameter to pass to the callback function
 ///
 /// # Returns
-/// A Timer handle that can be used to cancel the timer if needed
+/// A function that when called will cancel the timer if it hasn't fired yet
 ///
 /// # Example
 /// ```
@@ -26,7 +26,7 @@ static TIMERS: LazyLock<HashMap<u64, RedisModuleTimerID>> = LazyLock::new(HashMa
 /// }
 ///
 /// fn example(ctx: &Context) {
-///     let timer = create_one_shot_timer(
+///     let cancel_timer = create_one_shot_timer(
 ///         ctx,
 ///         Duration::from_secs(5),
 ///         timer_callback,
@@ -34,34 +34,41 @@ static TIMERS: LazyLock<HashMap<u64, RedisModuleTimerID>> = LazyLock::new(HashMa
 ///     );
 ///     
 ///     // If needed, can cancel the timer before it fires
-///     // ctx.stop_timer(timer);
+///     cancel_timer();
 /// }
 /// ```
-pub fn create_one_shot_timer<F, T>(
-    ctx: &Context,
-    delay: Duration,
-    callback: F,
-    arg: T,
-)
+pub fn create_one_shot_timer<F, T>(ctx: &Context, delay: Duration, callback: F, arg: T) -> u64
 where
     F: FnOnce(T) + Send + 'static,
     T: Send + 'static,
 {
-    // Boxing the closure and argument for move into timer
-    // We'll use Arc to guarantee the handler outlives the timer
     let id = flake_id();
+    let ctx = ctx.clone(); // Clone the context to avoid lifetime issues
 
     // Create a timer; store the handle to be able to stop it inside callback
-    let timer_handle = ctx.create_timer(delay,  move |ctx, arg| {
-        let (cb, v, id) = arg;
-        cb(v);
-            // Stop and cleanup this timer handle 
-        if let Some(timer_id) = TIMERS.pin().remove(&id) {
-            let _ = ctx.stop_timer::<T>(*timer_id); // Safety: Usually provided by Valkey API
-        } else {
-            ctx.log_debug("OneShotTimer: Timer not found");
-        }
-    }, (callback, arg, id));
+    let timer_handle = ctx.create_timer(
+        delay,
+        move |ctx, arg| {
+            let (cb, v, id) = arg;
+            cb(v);
+            // Stop and cleanup this timer handle
+            cancel_one_shot_timer(ctx, id)
+        },
+        (callback, arg, id),
+    );
 
     TIMERS.pin().insert(id, timer_handle);
+    id
+}
+
+/// Cancels a timer with the given ID.
+/// This function is safe to call even if the timer has already fired or was never created.
+/// It will not panic if the timer ID is not found in the map.
+pub fn cancel_one_shot_timer(ctx: &Context, id: u64) {
+    if let Some(timer_id) = TIMERS.pin().remove(&id) {
+        ctx.stop_timer(*timer_id).unwrap_or_else(|_| {
+            // Handle the error if needed
+            ctx.log_warning("Failed to stop one-shot timer");
+        });
+    }
 }

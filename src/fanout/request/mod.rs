@@ -31,7 +31,6 @@ mod response_generated;
 pub(crate) mod serialization;
 mod stats;
 
-use crate::fanout::types::ClusterMessageType;
 pub use cardinality::*;
 pub use index_query::*;
 pub use label_names::*;
@@ -41,14 +40,14 @@ pub use mrange::*;
 pub use range::*;
 pub use stats::*;
 
-use super::types::TrackerEnum;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
+use crate::fanout::{ClusterMessageType, TrackerEnum};
 pub use common::{
     deserialize_error_response, serialize_error_response, ErrorResponse, MessageHeader,
 };
 use valkey_module::{Context, ValkeyResult};
 
-pub trait ShardedCommand {
+pub trait MultiShardCommand {
     type REQ: Serialized + Deserialized;
     type RES: Serialized + Deserialized;
     fn request_type() -> ClusterMessageType;

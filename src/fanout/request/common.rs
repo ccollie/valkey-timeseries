@@ -7,7 +7,7 @@ use crate::common::encoding::{
 };
 use crate::common::Sample;
 use crate::fanout::request::request_generated::{DateRange, DateRangeArgs};
-use crate::fanout::types::ClusterMessageType;
+use crate::fanout::ClusterMessageType;
 use crate::labels::Label;
 use crate::series::TimestampRange;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
@@ -170,7 +170,6 @@ pub fn deserialize_error_response(buf: &[u8]) -> ValkeyResult<ErrorResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fanout::types::ClusterMessageType;
 
     #[test]
     fn test_message_header_round_trip() {

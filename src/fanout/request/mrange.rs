@@ -13,10 +13,8 @@ use super::response_generated::{
 use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
 use crate::commands::process_mrange_query;
 use crate::common::{Sample, Timestamp};
-use crate::fanout::cluster::ClusterMessageType;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::types::TrackerEnum;
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::{Label, SeriesLabel};
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::series::ValueFilter;
@@ -38,7 +36,7 @@ impl Deserialized for RangeOptions {
 
 pub struct MultiRangeCommand;
 
-impl ShardedCommand for MultiRangeCommand {
+impl MultiShardCommand for MultiRangeCommand {
     type REQ = RangeOptions;
     type RES = MultiRangeResponse;
 
@@ -138,7 +136,8 @@ pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOp
         labels.push(name);
     }
     let selected_labels = bldr.create_vector(&labels);
-    let timestamp_filter = request.timestamp_filter
+    let timestamp_filter = request
+        .timestamp_filter
         .as_ref()
         .map(|timestamps| bldr.create_vector(timestamps.as_slice()));
 
@@ -343,9 +342,10 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
         None
     };
 
-    let timestamp_filter = req.timestamp_filter()
+    let timestamp_filter = req
+        .timestamp_filter()
         .map(|filter| filter.iter().collect::<Vec<_>>());
-    
+
     let value_filter = req.value_filter().map(|filter| ValueFilter {
         min: filter.min(),
         max: filter.max(),
