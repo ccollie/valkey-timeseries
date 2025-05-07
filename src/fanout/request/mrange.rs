@@ -47,7 +47,6 @@ impl ShardedCommand for MultiRangeCommand {
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
-        // todo: how to avoid this clone?
         match process_mrange_query(ctx, req, false) {
             Ok(values) => {
                 let series = values
