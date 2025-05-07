@@ -198,7 +198,7 @@ unsafe fn load_targets_for_fanout(
                 master_buf.as_mut_ptr() as *mut c_char,
                 ptr::null_mut::<c_int>(),
                 &mut flags_,
-            ) != VALKEYMODULE_OK as c_int
+            ) == VALKEYMODULE_OK as c_int
         };
 
         if added {
