@@ -76,7 +76,7 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 
     // todo: check if we're clustered first
     register_cluster_message_handlers(ctx);
-    
+
     match register_server_events(ctx) {
         Ok(_) => {
             logging::log_debug("After initializing server events");
@@ -160,6 +160,7 @@ valkey_module! {
             ["ts-ignore-max-value-diff", &*config::IGNORE_MAX_VALUE_DIFF_STRING, config::IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_float_config_set))],
             ["ts-retention-policy", &*config::RETENTION_POLICY_STRING, config::RETENTION_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
             ["ts-significant-digits", &*config::SIGNIFICANT_DIGITS_STRING, config::SIGNIFICANT_DIGITS_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_rounding_config_set))],
+            ["ts-multi-shard-command-timeout", &*config::MULTI_SHARD_COMMAND_TIMEOUT_STRING, config::MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
         ],
         bool: [],
         enum: [],

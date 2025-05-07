@@ -2,8 +2,7 @@ use super::response_generated::IndexQueryResponse as FBIndexQueryResponse;
 use crate::commands::process_query_index_request;
 use crate::fanout::request::response_generated::IndexQueryResponseArgs;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use smallvec::SmallVec;
@@ -12,7 +11,7 @@ use valkey_module::{Context, ValkeyResult};
 #[derive(Debug, Clone, Default)]
 pub struct IndexQueryCommand;
 
-impl ShardedCommand for IndexQueryCommand {
+impl MultiShardCommand for IndexQueryCommand {
     type REQ = MatchFilterOptions;
     type RES = IndexQueryResponse;
 

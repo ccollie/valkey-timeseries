@@ -22,8 +22,11 @@ pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
 pub const SPLIT_FACTOR: f64 = 1.2;
 pub(super) const SERIES_WORKER_INTERVAL_MIN: i64 = 5000;
 pub(super) const SERIES_WORKER_INTERVAL_MAX: i64 = 60 * 60 * 1000 * 24;
-
 pub(super) const SERIES_WORKER_INTERVAL_DEFAULT: &str = "5000";
+
+const MULTI_SHARD_COMMAND_TIMEOUT_MIN: i64 = 500;
+const MULTI_SHARD_COMMAND_TIMEOUT_MAX: i64 = 10000;
+pub(super) const MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT: &str = "5000";
 
 pub const CHUNK_SIZE_MIN: i64 = 64;
 pub const CHUNK_SIZE_MAX: i64 = 1024 * 1024;
@@ -100,6 +103,8 @@ lazy_static! {
     pub static ref CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
     pub static ref SERIES_WORKER_INTERVAL: AtomicU64 =
         AtomicU64::new(SERIES_WORKER_INTERVAL_MIN as u64);
+    pub static ref MULTI_SHARD_COMMAND_TIMEOUT: AtomicU64 =
+        AtomicU64::new(3000); // ??? Move to const
     pub static ref DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
     pub static ref NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
     pub(super) static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
@@ -132,6 +137,8 @@ lazy_static! {
         ));
     pub(super) static ref SERIES_WORKER_INTERVAL_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, SERIES_WORKER_INTERVAL_DEFAULT));
+    pub(super) static ref MULTI_SHARD_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT));
 }
 
 #[allow(dead_code)]
@@ -291,6 +298,16 @@ pub(crate) fn on_duration_config_set(
             )?;
             SERIES_WORKER_INTERVAL.store(duration as u64, std::sync::atomic::Ordering::SeqCst);
 
+            Ok(())
+        }
+        "ts-multi-shard-command-timeout" => {
+            let duration = parse_duration_in_range(
+                name,
+                &v,
+                MULTI_SHARD_COMMAND_TIMEOUT_MIN,
+                MULTI_SHARD_COMMAND_TIMEOUT_MAX,
+            )?;
+            MULTI_SHARD_COMMAND_TIMEOUT.store(duration as u64, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
         _ => Err(ValkeyError::Str("Unknown configuration parameter")),

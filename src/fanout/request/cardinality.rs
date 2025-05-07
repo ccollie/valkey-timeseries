@@ -3,16 +3,14 @@ use super::response_generated::{
 };
 use crate::commands::calculate_cardinality;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
 
-
 pub struct CardinalityCommand;
 
-impl ShardedCommand for CardinalityCommand {
+impl MultiShardCommand for CardinalityCommand {
     type REQ = MatchFilterOptions;
     type RES = CardinalityResponse;
 

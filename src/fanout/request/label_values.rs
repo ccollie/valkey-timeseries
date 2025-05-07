@@ -8,8 +8,7 @@ use super::response_generated::{
 use crate::commands::process_label_values_request;
 use crate::fanout::request::common::{deserialize_timestamp_range, serialize_timestamp_range};
 use crate::fanout::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::matchers::Matchers;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::TimestampRange;
@@ -74,7 +73,7 @@ impl Deserialized for LabelValuesRequest {
         })
     }
 }
-impl ShardedCommand for LabelValuesCommand {
+impl MultiShardCommand for LabelValuesCommand {
     type REQ = LabelValuesRequest;
     type RES = LabelValuesResponse;
 

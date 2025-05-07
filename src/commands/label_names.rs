@@ -28,7 +28,10 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut names = process_label_names_request(ctx, &options)?;
     names.sort();
 
-    let labels = names.into_iter().map(ValkeyValue::BulkString).collect::<Vec<_>>();
+    let labels = names
+        .into_iter()
+        .map(ValkeyValue::BulkString)
+        .collect::<Vec<_>>();
 
     Ok(ValkeyValue::Array(labels))
 }
@@ -66,7 +69,6 @@ fn on_label_names_request_done(
     let mut names = Vec::with_capacity(count);
     for result in res.into_iter() {
         let list = result.names.into_iter().map(ValkeyValue::BulkString);
-        // Handle the results from the remote nodes
         names.extend(list);
     }
 

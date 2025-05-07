@@ -1,4 +1,7 @@
-use super::cluster::{fanout_cluster_message, is_cluster_mode, is_multi_or_lua, register_message_receiver, send_cluster_message};
+use super::cluster::{
+    fanout_cluster_message, is_cluster_mode, is_multi_or_lua, register_message_receiver,
+    send_cluster_message,
+};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::ids::flake_id;
@@ -6,22 +9,22 @@ use crate::common::pool::get_pooled_buffer;
 use crate::fanout::request::serialization::Deserialized;
 use crate::fanout::request::serialization::Serialized;
 use crate::fanout::request::{
-    deserialize_error_response, serialize_error_response, CardinalityCommand,
-    ErrorResponse, IndexQueryCommand, LabelNamesCommand,
-    LabelValuesCommand, MessageHeader
+    deserialize_error_response, serialize_error_response, CardinalityCommand, ErrorResponse,
+    IndexQueryCommand, LabelNamesCommand, LabelValuesCommand, MessageHeader,
 };
 use crate::fanout::results_tracker::ResponseCallback;
-use crate::fanout::types::{ClusterMessageType, InFlightRequest, TrackerEnum};
 use crate::fanout::{
-    MGetShardedCommand, MultiRangeCommand, RangeCommand, ResultsTracker, ShardedCommand,
-    StatsCommand,
+    ClusterMessageType, InFlightRequest, MGetShardedCommand, MultiRangeCommand, MultiShardCommand,
+    RangeCommand, ResultsTracker, StatsCommand, TrackerEnum,
 };
+use crate::{config, error_consts};
+use core::time::Duration;
 use papaya::HashMap;
 use std::os::raw::{c_char, c_uchar};
+use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
-use valkey_module::{RedisModuleCtx, ValkeyError, ValkeyResult};
 use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyModuleCtx};
-use crate::error_consts;
+use valkey_module::{RedisModuleCtx, ValkeyError, ValkeyResult};
 
 const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
@@ -40,13 +43,32 @@ fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
     Ok(())
 }
 
-pub fn send_request<T: ShardedCommand, F>(ctx: &Context, request: &T::REQ, callback: F) -> ValkeyResult<u64>
+fn on_command_timeout(ctx: &Context, id: u64) {
+    let map = INFLIGHT_REQUESTS.pin();
+    if let Some(request) = map.get(&id) {
+        let _ = ctx.stop_timer::<u64>(request.timer_id);
+        if !request.is_completed() {
+            request.time_out();
+        }
+    }
+}
+
+pub(crate) fn get_multi_shard_command_timeout() -> Duration {
+    let timeout = config::MULTI_SHARD_COMMAND_TIMEOUT.load(Ordering::Relaxed);
+    Duration::from_millis(timeout)
+}
+
+pub fn send_request<T: MultiShardCommand, F>(
+    ctx: &Context,
+    request: &T::REQ,
+    callback: F,
+) -> ValkeyResult<u64>
 where
     F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>) + Send + 'static,
     TrackerEnum: From<ResultsTracker<T::RES>>,
 {
     validate_cluster_exec(ctx)?;
-    
+
     let id = flake_id();
     let db = get_current_db(ctx);
 
@@ -65,9 +87,12 @@ where
 
     let tracker = create_tracker::<T, F>(ctx, id, node_count, callback);
 
-    let inflight_request = InFlightRequest::new(db, tracker);
+    let mut inflight_request = InFlightRequest::new(db, tracker);
 
     if node_count > 0 {
+        let timeout = get_multi_shard_command_timeout();
+        let timer_id = ctx.create_timer(timeout, on_command_timeout, id);
+        inflight_request.timer_id = timer_id;
         let map = INFLIGHT_REQUESTS.pin();
         map.insert(id, inflight_request);
         Ok(id)
@@ -77,7 +102,7 @@ where
     }
 }
 
-fn create_tracker<T: ShardedCommand, F>(
+fn create_tracker<T: MultiShardCommand, F>(
     ctx: &Context,
     request_id: u64,
     expected_results: usize,
@@ -124,38 +149,49 @@ where
     F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T>) + Send + 'static,
 {
     let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
-    
-    let tracker_callback: ResponseCallback<T> = Box::new(move |res| {
+
+    let tracker_callback: ResponseCallback<T> = Box::new(move |res, errors| {
         let map = INFLIGHT_REQUESTS.pin();
         match map.remove(&request_id) {
             Some(inflight_request) => {
-                let db = inflight_request.db;
-                let save_db = {
-                    let ctx_locked = thread_ctx.lock();
-                    let save_db = get_current_db(&ctx_locked);
-                    if save_db != db {
-                        set_current_db(&ctx_locked, inflight_request.db);
-                    }
-                    save_db
-                };
-
-                match res {
-                    Ok(res) => {
-                        callback(&thread_ctx, res);
-                    }
-                    Err(e) => {
-                        // Handle no response
-                        let ctx_locked = thread_ctx.lock();
-                        let type_name = inflight_request.request_type();
-                        let msg = format!("No {type_name} response received for request ID {request_id}:  {:?}", e);
-                        ctx_locked.log_warning(&msg);
-                    }
-                }
-
                 {
                     let ctx_locked = thread_ctx.lock();
+                    let _ = ctx_locked.stop_timer::<u64>(inflight_request.timer_id);
+                };
+
+                if errors.is_empty() {
+                    let db = inflight_request.db;
+                    let save_db = {
+                        let ctx_locked = thread_ctx.lock();
+                        let save_db = get_current_db(&ctx_locked);
+                        if save_db != db {
+                            set_current_db(&ctx_locked, inflight_request.db);
+                        }
+                        save_db
+                    };
+                    callback(&thread_ctx, res);
                     if save_db != db {
+                        let ctx_locked = thread_ctx.lock();
                         set_current_db(&ctx_locked, save_db);
+                    }
+                } else {
+                    let ctx_locked = thread_ctx.lock();
+                    if inflight_request.is_timed_out() {
+                        let msg = format!(
+                            "Multi-shard command {} timed out after {} ms",
+                            inflight_request.request_type(),
+                            get_multi_shard_command_timeout().as_millis()
+                        );
+                        ctx_locked.reply_error_string(&msg);
+                        ctx_locked.log_warning(&msg);
+                    } else {
+                        // get the first error and send it back
+                        let msg = &errors[0];
+                        ctx_locked.reply_error_string(msg);
+                        for error in errors.iter() {
+                            let msg = format!("Error: {}", error);
+                            ctx_locked.log_warning(&msg);
+                        }
                     }
                 }
             }
@@ -176,21 +212,21 @@ fn parse_header(
     len: u32,
 ) -> Option<(MessageHeader, &[u8])> {
     if payload.is_null() || len < MessageHeader::min_serialized_size() as u32 {
-        ctx.log_warning("Invalid payload");
+        ctx.log_warning(error_consts::COMMAND_DESERIALIZATION_ERROR);
         return None;
     }
     let buffer = unsafe { std::slice::from_raw_parts(payload, len as usize) };
     // Attempt to deserialize the header
     MessageHeader::deserialize(buffer).map_or_else(
         || {
-            ctx.log_warning("Failed to deserialize message header");
+            ctx.log_warning(error_consts::COMMAND_DESERIALIZATION_ERROR);
             None
         },
         |(header, consumed_bytes)| Some((header, &buffer[consumed_bytes..])),
     )
 }
 
-fn process_request<T: ShardedCommand>(
+fn process_request<T: MultiShardCommand>(
     ctx: &Context,
     header: &MessageHeader,
     sender_id: *const c_char,
@@ -220,16 +256,21 @@ fn process_request<T: ShardedCommand>(
             buf.extend_from_slice(&request_id.to_le_bytes());
             response.serialize(&mut buf);
             if send_response_message(ctx, sender_id, &buf) == Status::Err {
-                let msg = format!("Failed to send {} response message to node {:?}", T::request_type(), sender_id);
+                let msg = format!(
+                    "Failed to send {} response message to node {:?}",
+                    T::request_type(),
+                    sender_id
+                );
                 ctx.log_warning(&msg);
             }
         }
         Err(e) => {
-            let msg = format!("Failed to execute {} request: {:?}", e, T::request_type());
+            let msg = e.to_string();
             send_error_response(ctx, request_id, sender_id, &msg);
             let map = INFLIGHT_REQUESTS.pin();
             if let Some(request) = map.get(&request_id) {
-                request.raise_error(e.to_string());
+                let msg = e.to_string();
+                request.raise_error(&msg);
                 ctx.log_warning(&msg);
             } else {
                 ctx.log_warning("Failed to find inflight request");
@@ -315,12 +356,12 @@ fn parse_response_header<'a>(ctx: &'a Context, buffer: &'a [u8]) -> Option<(u64,
 /// Processes a valid error response by notifying the corresponding in-flight request.
 fn process_error_response(ctx: &Context, request: &InFlightRequest, buf: &[u8]) {
     match deserialize_error_response(buf) {
-        Ok(error_response) => request.raise_error(error_response.error_message),
+        Ok(error_response) => request.raise_error(&error_response.error_message),
         Err(_) => ctx.log_warning("Failed to deserialize error response"),
     }
 }
 
-fn process_response<T: ShardedCommand>(ctx: &Context, request: &InFlightRequest, buf: &[u8]) {
+fn process_response<T: MultiShardCommand>(ctx: &Context, request: &InFlightRequest, buf: &[u8]) {
     let response = match T::RES::deserialize(buf) {
         Ok(response) => response,
         Err(_) => {

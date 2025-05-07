@@ -1,11 +1,14 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
+use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::{perform_remote_label_values_request, LabelValuesRequest, LabelValuesResponse};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::ValkeyError::WrongArity;
-use valkey_module::{AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::fanout::cluster::is_cluster_mode;
-use crate::fanout::{perform_remote_label_values_request, LabelValuesRequest, LabelValuesResponse};
+use valkey_module::{
+    AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
+    ValkeyString, ValkeyValue,
+};
 
 // TS.LABELVALUES label [START fromTimestamp] [END fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
@@ -38,7 +41,10 @@ pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut names = process_label_values_request(ctx, &label_name, &label_args)?;
     names.sort();
 
-    let label_values = names.into_iter().map(ValkeyValue::BulkString).collect::<Vec<_>>();
+    let label_values = names
+        .into_iter()
+        .map(ValkeyValue::BulkString)
+        .collect::<Vec<_>>();
 
     Ok(ValkeyValue::Array(label_values))
 }
@@ -81,7 +87,7 @@ fn on_label_values_request_done(
     let mut values = Vec::with_capacity(count);
     for result in res.into_iter() {
         // Handle the results from the remote nodes
-        values.extend(result.values.into_iter().map(|x| ValkeyValue::BulkString(x)));
+        values.extend(result.values.into_iter().map(ValkeyValue::BulkString));
     }
     // Sort the values
     values.sort_by(|a, b| {

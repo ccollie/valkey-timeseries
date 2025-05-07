@@ -5,7 +5,9 @@ use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats, St
 use ahash::AHashMap;
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 pub const DEFAULT_STATS_RESULTS_LIMIT: usize = 10;
 
@@ -32,13 +34,12 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
     }
-    
+
     with_timeseries_index(ctx, |index| {
         let stats = index.stats("", limit);
         posting_stats_to_valkey_value(&stats)
     })
 }
-
 
 pub fn posting_stats_to_valkey_value(stats: &PostingsStats) -> ValkeyResult {
     let mut data = HashMap::with_capacity(4);
@@ -88,32 +89,35 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     ValkeyValue::Map(res)
 }
 
-fn on_stats_request_done(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    res: Vec<PostingsStats>,
-) {
+fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<PostingsStats>) {
     // todo: we need limit....
     let limit = 10;
-    
+
     let mut series_count = 0;
     let mut num_labels = 0;
     let mut num_label_pairs = 0;
-    
+
     let mut cardinality_metrics_map: AHashMap<String, PostingStat> = AHashMap::new();
     let mut cardinality_labels_map: AHashMap<String, PostingStat> = AHashMap::new();
     let mut label_values_map: AHashMap<String, PostingStat> = AHashMap::new();
     let mut pairs_map: AHashMap<String, PostingStat> = AHashMap::new();
-    
+
     for result in res.iter() {
         num_labels += result.num_labels;
         num_label_pairs += result.num_label_pairs;
         series_count += result.series_count;
-        collate_stats_values(&mut cardinality_metrics_map, &result.cardinality_label_stats);
-        collate_stats_values(&mut cardinality_labels_map, &result.cardinality_metrics_stats);
+        collate_stats_values(
+            &mut cardinality_metrics_map,
+            &result.cardinality_label_stats,
+        );
+        collate_stats_values(
+            &mut cardinality_labels_map,
+            &result.cardinality_metrics_stats,
+        );
         collate_stats_values(&mut label_values_map, &result.label_value_stats);
         collate_stats_values(&mut pairs_map, &result.label_value_pairs_stats);
     }
-    
+
     let result = PostingsStats {
         series_count,
         num_labels,
@@ -125,27 +129,21 @@ fn on_stats_request_done(
     };
 
     let stats = posting_stats_to_valkey_value(&result);
-    
+
     ctx.reply(stats);
 }
 
-fn collate_stats_values(
-    map: &mut AHashMap<String, PostingStat>,
-    values: &Vec<PostingStat>
-) {
+fn collate_stats_values(map: &mut AHashMap<String, PostingStat>, values: &Vec<PostingStat>) {
     for result in values.iter() {
         if let Some(stat) = map.get_mut(result.name.as_str()) {
-            stat.count += result.count;            
+            stat.count += result.count;
         } else {
             map.insert(result.name.clone(), result.clone());
         }
     }
 }
 
-fn collect_map_values(
-    map: AHashMap<String, PostingStat>,
-    limit: usize,
-) -> Vec<PostingStat> {
+fn collect_map_values(map: AHashMap<String, PostingStat>, limit: usize) -> Vec<PostingStat> {
     let mut map = map;
     let mut heap = StatsMaxHeap::new(limit);
     for stat in map.drain().map(|(_, v)| v) {

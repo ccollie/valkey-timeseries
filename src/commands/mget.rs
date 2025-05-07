@@ -8,7 +8,10 @@ use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
 use crate::labels::{parse_series_selector, Label};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
-use valkey_module::{AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue, VALKEY_OK};
+use valkey_module::{
+    AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
+    ValkeyString, ValkeyValue,
+};
 
 /// TS.MGET selector
 ///   [WITHLABELS]
@@ -22,7 +25,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         perform_remote_mget_request(ctx, &options, on_mget_request_done)?;
         return Ok(ValkeyValue::NoReply);
     }
-    
+
     let mget_results = process_mget_request(ctx, options)?;
 
     let result = mget_results.into_iter().map(|s| s.into()).collect();
@@ -68,10 +71,7 @@ pub fn process_mget_request(
     let selected_labels = &options.selected_labels;
     let mut series = vec![];
 
-    // how to eliminate the clone?
-    let matcher = options.filter.clone();
-    // NOTE: we currently don't support cross-cluster mget
-    let opts: MatchFilterOptions = matcher.into();
+    let opts: MatchFilterOptions = options.filter.into();
     with_matched_series(
         ctx,
         &mut series,
@@ -100,12 +100,10 @@ fn on_mget_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<MultiGe
     let mut arr = Vec::with_capacity(count);
 
     for s in res.into_iter() {
-        // Assuming we should filter by 'value' being present instead of 'sample'
         for series in s.series.into_iter().filter(|s| s.value.is_some()) {
             arr.push(series.into());
         }
     }
 
-    // Fix: Wrap the ValkeyValue in Ok() to match the expected ValkeyResult type
     ctx.reply(Ok(ValkeyValue::Array(arr)));
 }

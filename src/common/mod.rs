@@ -11,9 +11,9 @@ pub mod pool;
 pub mod rdb;
 pub mod rounding;
 pub mod time;
+pub mod timer;
 mod types;
 pub mod unit_vec;
 mod utils;
-pub mod timer;
 
 pub use types::*;

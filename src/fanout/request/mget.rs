@@ -8,8 +8,7 @@ use super::response_generated::{
 use crate::commands::process_mget_request;
 use crate::common::Sample;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::Label;
 use crate::series::request_types::MGetRequest;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
@@ -18,7 +17,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
 
 pub struct MGetShardedCommand;
 
-impl ShardedCommand for MGetShardedCommand {
+impl MultiShardCommand for MGetShardedCommand {
     type REQ = MGetRequest;
     type RES = MultiGetResponse;
 

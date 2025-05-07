@@ -5,15 +5,14 @@ use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::error_consts;
 use crate::fanout::request::ValkeyResult;
 use crate::fanout::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats};
 use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
 use valkey_module::{Context, ValkeyError};
 
 pub struct StatsCommand;
 
-impl ShardedCommand for StatsCommand {
+impl MultiShardCommand for StatsCommand {
     type REQ = StatsRequest;
     type RES = PostingsStats;
 
@@ -23,9 +22,7 @@ impl ShardedCommand for StatsCommand {
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
         let limit = req.limit;
-        Ok(with_timeseries_index(ctx, |index| {
-            index.stats("", limit)
-        }))
+        Ok(with_timeseries_index(ctx, |index| index.stats("", limit)))
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
@@ -305,7 +302,7 @@ mod tests {
             label_value_pairs_stats: vec![],
             num_label_pairs: 0,
             num_labels: 0,
-            series_count: 0
+            series_count: 0,
         };
 
         // Serialize and deserialize

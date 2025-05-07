@@ -164,7 +164,7 @@ impl TimeSeriesIndex {
                 num_labels += 1;
             }
         }
-        
+
         let series_count = self.count() as u64;
 
         PostingsStats {

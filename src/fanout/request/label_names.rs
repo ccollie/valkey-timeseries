@@ -3,8 +3,7 @@ use super::response_generated::{
 };
 use crate::commands::process_label_names_request;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
@@ -12,7 +11,7 @@ use valkey_module::{Context, ValkeyResult};
 #[derive(Clone, Debug, Default)]
 pub struct LabelNamesCommand;
 
-impl ShardedCommand for LabelNamesCommand {
+impl MultiShardCommand for LabelNamesCommand {
     type REQ = MatchFilterOptions;
     type RES = LabelNamesResponse;
 

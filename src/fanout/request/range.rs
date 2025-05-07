@@ -5,8 +5,7 @@ use super::response_generated::{
 use crate::commands::process_mrange_query;
 use crate::common::Sample;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::types::{ClusterMessageType, TrackerEnum};
-use crate::fanout::ShardedCommand;
+use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::{MatchFilterOptions, RangeOptions};
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
@@ -14,7 +13,7 @@ use valkey_module::{Context, ValkeyResult};
 #[derive(Clone, Debug, Default)]
 pub struct RangeCommand;
 
-impl ShardedCommand for RangeCommand {
+impl MultiShardCommand for RangeCommand {
     type REQ = MatchFilterOptions;
     type RES = RangeResponse;
 

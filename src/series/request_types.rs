@@ -62,7 +62,7 @@ pub struct RangeOptions {
 pub(crate) struct MRangeResultRow {
     pub(crate) key: String,
     pub(crate) labels: Vec<Option<Label>>,
-    pub(crate) samples: Vec<Sample>, //maybe a gorilla encoded buffer for large values of samples
+    pub(crate) samples: Vec<Sample>,
 }
 
 #[derive(Debug, Default, Clone)]
