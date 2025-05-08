@@ -43,9 +43,8 @@ where
     T: Send + 'static,
 {
     let id = flake_id();
-    let ctx = ctx.clone(); // Clone the context to avoid lifetime issues
 
-    // Create a timer; store the handle to be able to stop it inside callback
+    // Create a timer; store the handle to be able to stop it inside the callback
     let timer_handle = ctx.create_timer(
         delay,
         move |ctx, arg| {

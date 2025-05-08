@@ -6,11 +6,11 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{LazyLock, RwLock, RwLockReadGuard};
+use valkey_module::ContextFlags;
 use valkey_module::{
     Context, Status, ValkeyModuleCtx, ValkeyString, REDISMODULE_NODE_MASTER,
     VALKEYMODULE_NODE_FAIL, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
 };
-use valkey_module::ContextFlags;
 
 // todo: move to config.rs
 const CACHE_TIMEOUT: u64 = 5000;
@@ -24,7 +24,7 @@ struct ClusterMeta {
     last_refresh: i64,
     should_refresh: bool,
     /// map main cluster nodes to nodes in the shard
-    nodes: ClusterNodeMap, 
+    nodes: ClusterNodeMap,
 }
 
 static CLUSTER_NODES: LazyLock<RwLock<ClusterMeta>> = LazyLock::new(RwLock::default);
@@ -94,14 +94,14 @@ fn acquire_cluster_nodes_lock(ctx: &Context) -> RwLockReadGuard<'static, Cluster
     let mut meta = CLUSTER_NODES
         .read()
         .expect("Failed to get cluster info read lock");
-    
+
     let should_refresh = if !meta.should_refresh {
         let now = valkey_cached_time_millis();
-        now - meta.last_refresh > CACHE_TIMEOUT as i64 
+        now - meta.last_refresh > CACHE_TIMEOUT as i64
     } else {
         true
     };
-    
+
     if should_refresh {
         drop(meta);
         refresh_cluster_nodes(ctx);
