@@ -93,7 +93,7 @@ impl MultiShardCommand for LabelValuesCommand {
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::LabelValues(ref t) = tracker {
+        if let TrackerEnum::LabelValues(t) = tracker {
             t.update(res);
         }
     }

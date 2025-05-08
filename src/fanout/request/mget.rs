@@ -39,7 +39,7 @@ impl MultiShardCommand for MGetShardedCommand {
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::MGetQuery(ref t) = tracker {
+        if let TrackerEnum::MGetQuery(t) = tracker {
             t.update(res);
         } else {
             panic!("BUG: Invalid tracker type");

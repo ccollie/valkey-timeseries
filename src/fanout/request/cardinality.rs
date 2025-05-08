@@ -23,7 +23,7 @@ impl MultiShardCommand for CardinalityCommand {
         Ok(CardinalityResponse { count })
     }
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::Cardinality(ref t) = tracker {
+        if let TrackerEnum::Cardinality(t) = tracker {
             t.update(res);
         }
     }

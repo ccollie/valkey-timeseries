@@ -27,7 +27,7 @@ impl MultiShardCommand for StatsCommand {
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::Stats(ref t) = tracker {
+        if let TrackerEnum::Stats(t) = tracker {
             t.update(res);
         } else {
             panic!("BUG: Invalid tracker type");
