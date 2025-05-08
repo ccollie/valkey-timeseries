@@ -16,7 +16,7 @@ use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
 use crate::commands::process_mrange_query;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::{Label, SeriesLabel};
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::series::ValueFilter;
@@ -42,8 +42,8 @@ impl MultiShardCommand for MultiRangeCommand {
     type REQ = RangeOptions;
     type RES = MultiRangeResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::MultiRangeQuery
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::MultiRangeQuery
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {

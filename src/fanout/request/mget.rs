@@ -8,7 +8,7 @@ use super::response_generated::{
 use crate::commands::process_mget_request;
 use crate::common::Sample;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::Label;
 use crate::series::request_types::MGetRequest;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
@@ -21,8 +21,8 @@ impl MultiShardCommand for MGetShardedCommand {
     type REQ = MGetRequest;
     type RES = MultiGetResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::MGetQuery
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::MGetQuery
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<MultiGetResponse> {

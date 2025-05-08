@@ -4,7 +4,7 @@ use super::response_generated::{
 use crate::commands::process_label_names_request;
 use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
@@ -16,8 +16,8 @@ impl MultiShardCommand for LabelNamesCommand {
     type REQ = MatchFilterOptions;
     type RES = LabelNamesResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::LabelNames
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::LabelNames
     }
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<LabelNamesResponse> {
         process_label_names_request(ctx, &req).map(|names| LabelNamesResponse { names })
