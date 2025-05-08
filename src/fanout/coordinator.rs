@@ -87,7 +87,7 @@ where
 
     let tracker = create_tracker::<T, F>(ctx, id, node_count, callback);
 
-    let mut inflight_request = InFlightRequest::new(db, tracker);
+    let mut inflight_request = InFlightRequest::new(db, msg_type, tracker);
 
     if node_count > 0 {
         let timeout = get_multi_shard_command_timeout();
@@ -179,7 +179,7 @@ where
                     if inflight_request.is_timed_out() {
                         let msg = format!(
                             "Multi-shard command {} timed out after {} ms",
-                            inflight_request.request_type(),
+                            inflight_request.request_type,
                             get_multi_shard_command_timeout().as_millis()
                         );
                         ctx_locked.reply_error_string(&msg);
@@ -366,7 +366,7 @@ fn process_response<T: MultiShardCommand>(ctx: &Context, request: &InFlightReque
         Ok(response) => response,
         Err(_) => {
             // Handle deserialization error
-            let msg_type = request.request_type();
+            let msg_type = request.request_type;
             let msg = format!("BUG: Failed to deserialize response for type {msg_type}");
             ctx.log_warning(&msg);
             return;
