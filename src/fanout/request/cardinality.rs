@@ -2,6 +2,7 @@ use super::response_generated::{
     CardinalityResponse as FBCardinalityResponse, CardinalityResponseArgs,
 };
 use crate::commands::calculate_cardinality;
+use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
@@ -42,7 +43,7 @@ impl Serialized for CardinalityResponse {
                 count: self.count as u64,
             },
         );
-        // Serialize the root of the object, without providing a file identifier.
+        // Serialize the root of the object without providing a file identifier.
         bldr.finish(resp, None);
 
         let data = bldr.finished_data(); // Of type `&[u8]`
@@ -53,7 +54,7 @@ impl Serialized for CardinalityResponse {
 
 impl Deserialized for CardinalityResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBCardinalityResponse>(buf).unwrap();
+        let req = load_flatbuffers_object::<FBCardinalityResponse>(buf, "CardinalityResponse")?;
 
         let count = req.count() as usize;
 
@@ -83,7 +84,7 @@ mod tests {
 
     #[test]
     fn test_error_cases() {
-        // Test with empty buffer
+        // Test with an empty buffer
         let empty_buf: &[u8] = &[];
         assert!(CardinalityResponse::deserialize(empty_buf).is_err());
 

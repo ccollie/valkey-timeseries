@@ -53,7 +53,7 @@ fn on_query_index_request_done(
     let mut keys = Vec::with_capacity(count);
     for result in results.into_iter() {
         // Handle the results from the remote nodes
-        keys.extend(result.keys.into_iter().map(|x| ValkeyValue::BulkString(x)));
+        keys.extend(result.keys.into_iter().map(ValkeyValue::BulkString));
     }
     // Handle the results from the remote nodes
     ctx.reply(Ok(ValkeyValue::Array(keys)));

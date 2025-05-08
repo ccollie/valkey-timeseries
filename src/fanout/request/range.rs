@@ -4,6 +4,7 @@ use super::response_generated::{
 };
 use crate::commands::process_mrange_query;
 use crate::common::Sample;
+use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::{MatchFilterOptions, RangeOptions};
@@ -101,7 +102,7 @@ pub fn serialize_range_response(buf: &mut Vec<u8>, response: &RangeResponse) {
 }
 
 pub(super) fn deserialize_range_response(buf: &[u8]) -> ValkeyResult<RangeResponse> {
-    let req = flatbuffers::root::<FBRangeResponse>(buf).unwrap();
+    let req = load_flatbuffers_object::<FBRangeResponse>(buf, "RangeResponse")?;
 
     let mut series = Vec::new();
     if let Some(response_series) = req.series() {

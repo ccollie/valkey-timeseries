@@ -1,4 +1,4 @@
-use super::common::decode_label;
+use super::common::{decode_label, load_flatbuffers_object};
 use super::matchers::{deserialize_matchers, serialize_matchers};
 use super::request_generated::{MultiGetRequest, MultiGetRequestArgs};
 use super::response_generated::{
@@ -77,9 +77,7 @@ impl Serialized for MGetRequest {
 
 impl Deserialized for MGetRequest {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        // todo: verify the buffer
-        // Get access to the root:
-        let req = flatbuffers::root::<MultiGetRequest>(buf).unwrap();
+        let req = load_flatbuffers_object::<MultiGetRequest>(buf, "MGetRequest")?;
         let mut result: MGetRequest = MGetRequest {
             with_labels: req.with_labels(),
             ..MGetRequest::default()
@@ -158,7 +156,8 @@ impl Serialized for MultiGetResponse {
 
 impl Deserialized for MultiGetResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBMultiGetResponse>(buf).unwrap();
+        let req = load_flatbuffers_object::<FBMultiGetResponse>(buf, "MultiGetResponse")?;
+
         let mut result: MultiGetResponse = MultiGetResponse::default();
 
         if let Some(values) = req.values() {
@@ -280,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiget_response_serialize_deserialize() {
+    fn test_mget_response_serialize_deserialize() {
         let resp = MultiGetResponse {
             series: vec![
                 MGetValue {
@@ -333,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiget_response_empty_serialize_deserialize() {
+    fn test_mget_response_empty_serialize_deserialize() {
         let resp = MultiGetResponse { series: vec![] };
 
         let mut buf = Vec::new();
@@ -362,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiget_response_with_empty_labels_serialize_deserialize() {
+    fn test_mget_response_with_empty_labels_serialize_deserialize() {
         let resp = MultiGetResponse {
             series: vec![MGetValue {
                 key: "series1".to_string(),

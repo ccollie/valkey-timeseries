@@ -1,23 +1,21 @@
 use super::response_generated::{
-    ErrorResponse as FBErrorResponse, ErrorResponseArgs, Label as ResponseLabel, LabelBuilder,
-    Sample as ResponseSample,
+    ErrorResponse as FBErrorResponse, ErrorResponseArgs, Label as ResponseLabel,
 };
 use crate::common::encoding::{
     read_signed_varint, read_uvarint, write_signed_varint, write_uvarint,
 };
-use crate::common::Sample;
 use crate::fanout::request::request_generated::{DateRange, DateRangeArgs};
 use crate::fanout::ClusterMessageType;
 use crate::labels::Label;
 use crate::series::TimestampRange;
-use flatbuffers::{FlatBufferBuilder, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, Verifiable, WIPOffset};
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub struct MessageHeader {
     pub request_id: u64,
     pub db: i32,
     pub msg_type: ClusterMessageType,
-    pub reserved: u8, // Reserved for future use (e.g. for larger payloads, we may compress the data)
+    pub reserved: u8, // Reserved for future use (e.g., for larger payloads, we may compress the data)
 }
 
 impl MessageHeader {
@@ -89,11 +87,17 @@ pub struct ErrorResponse {
     pub error_message: String,
 }
 
-#[inline]
-pub(super) fn decode_sample(reader: ResponseSample) -> Sample {
-    let timestamp = reader.timestamp();
-    let value = reader.value();
-    Sample { timestamp, value }
+pub(super) fn load_flatbuffers_object<'buf, T>(
+    buf: &'buf [u8],
+    name: &'static str,
+) -> ValkeyResult<T::Inner>
+where
+    T: flatbuffers::Follow<'buf> + Verifiable + 'buf,
+{
+    flatbuffers::root::<T>(buf).map_err(|_e| {
+        let msg = format!("TSDB: failed to deserialize {}", name);
+        ValkeyError::String(msg)
+    })
 }
 
 pub fn serialize_timestamp_range<'a>(
@@ -123,17 +127,6 @@ pub fn deserialize_timestamp_range(
     } else {
         Ok(None)
     }
-}
-pub(super) fn serialize_label<'a>(
-    bldr: &mut FlatBufferBuilder<'a>,
-    label: &Label,
-) -> WIPOffset<ResponseLabel<'a>> {
-    let name = bldr.create_string(label.name.as_str());
-    let value = bldr.create_string(label.value.as_str());
-    let mut builder = LabelBuilder::new(bldr);
-    builder.add_name(name);
-    builder.add_value(value);
-    builder.finish()
 }
 
 pub(super) fn decode_label(label: ResponseLabel) -> Label {
@@ -217,7 +210,7 @@ mod tests {
         let size = MessageHeader::min_serialized_size();
         // Create buffers slightly smaller than required
         for i in 0..size {
-            let buffer: Vec<u8> = vec![0; i]; // Create buffer of size i
+            let buffer: Vec<u8> = vec![0; i]; // Create a buffer of size i
             assert!(
                 MessageHeader::deserialize(&buffer).is_none(),
                 "Deserialization should fail for buffer size {}",
@@ -267,7 +260,7 @@ mod tests {
 
         serialize_error_response(&mut buf, error_message);
 
-        // Basic check: Buffer should not be empty even with empty message
+        // Basic check: Buffer should not be empty even with an empty message
         assert!(
             !buf.is_empty(),
             "Serialization produced an empty buffer for empty message"
@@ -315,7 +308,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_error_invalid_buffer() {
-        // Create some random bytes that are unlikely to be a valid flatbuffer
+        // Create some random bytes that are unlikely to be a valid buffer
         let invalid_buf: &[u8] = &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
 
         let result = deserialize_error_response(invalid_buf);
@@ -335,7 +328,7 @@ mod tests {
                 );
             }
             // Handle other potential ValkeyError variants if necessary, though Str is expected here
-            _ => panic!("Expected ValkeyError::Str for invalid flatbuffer"),
+            _ => panic!("Expected ValkeyError::Str for invalid buffer"),
         }
     }
 

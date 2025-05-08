@@ -1,4 +1,6 @@
-use crate::fanout::request::common::{deserialize_timestamp_range, serialize_timestamp_range};
+use crate::fanout::request::common::{
+    deserialize_timestamp_range, load_flatbuffers_object, serialize_timestamp_range,
+};
 use crate::fanout::request::matchers::{deserialize_matchers, serialize_matchers};
 use crate::fanout::request::request_generated::{MetadataRequest, MetadataRequestArgs};
 use crate::series::request_types::MatchFilterOptions;
@@ -9,7 +11,7 @@ use valkey_module::ValkeyResult;
 /// A trait for types that can be serialized to and deserialized from a byte stream.
 ///
 /// The generic parameter `T` represents the type that will be produced when deserializing.
-/// This is typically the implementing type itself, but allows for flexibility when needed.
+/// This is typically the implementing type itself but allows for flexibility when needed.
 pub trait Serialized {
     /// Serializes the implementing type to the provided writer.
     fn serialize(&self, dest: &mut Vec<u8>);
@@ -48,7 +50,7 @@ impl Serialized for MatchFilterOptions {
 
 impl Deserialized for MatchFilterOptions {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<MetadataRequest>(buf).unwrap();
+        let req = load_flatbuffers_object::<MetadataRequest>(buf, "MatchFilterOptions")?;
         let range = deserialize_timestamp_range(req.range())?;
         let limit = if req.limit() > 0 {
             Some(req.limit() as usize)

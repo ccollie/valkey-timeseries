@@ -233,10 +233,13 @@ fn process_request<T: MultiShardCommand>(
     buf: &[u8],
 ) {
     // Deserialize the request
-    let Ok(request) = T::REQ::deserialize(buf) else {
-        let msg = format!("{}: Failed to deserialize request", T::request_type());
-        ctx.log_warning(&msg);
-        return;
+    let request = match T::REQ::deserialize(buf) {
+        Ok(request) => request,
+        Err(e) => {
+            let msg = e.to_string();
+            ctx.log_warning(&msg);
+            return;
+        }
     };
 
     let request_id = header.request_id;
@@ -364,10 +367,8 @@ fn process_error_response(ctx: &Context, request: &InFlightRequest, buf: &[u8]) 
 fn process_response<T: MultiShardCommand>(ctx: &Context, request: &InFlightRequest, buf: &[u8]) {
     let response = match T::RES::deserialize(buf) {
         Ok(response) => response,
-        Err(_) => {
-            // Handle deserialization error
-            let msg_type = request.request_type;
-            let msg = format!("BUG: Failed to deserialize response for type {msg_type}");
+        Err(e) => {
+            let msg = e.to_string();
             ctx.log_warning(&msg);
             return;
         }

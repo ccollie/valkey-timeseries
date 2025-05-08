@@ -2,6 +2,7 @@ use super::response_generated::{
     LabelNamesResponse as FBLabelNamesResponse, LabelNamesResponseArgs,
 };
 use crate::commands::process_label_names_request;
+use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
@@ -54,8 +55,7 @@ impl Serialized for LabelNamesResponse {
 
 impl Deserialized for LabelNamesResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBLabelNamesResponse>(buf).unwrap();
-
+        let req = load_flatbuffers_object::<FBLabelNamesResponse>(buf, "LabelNamesResponse")?;
         let names = if let Some(resp_rnames) = req.names() {
             resp_rnames.iter().map(|x| x.to_string()).collect()
         } else {

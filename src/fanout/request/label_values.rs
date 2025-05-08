@@ -6,7 +6,9 @@ use super::response_generated::{
     LabelValuesResponse as FBLabelValuesResponse, LabelValuesResponseArgs,
 };
 use crate::commands::process_label_values_request;
-use crate::fanout::request::common::{deserialize_timestamp_range, serialize_timestamp_range};
+use crate::fanout::request::common::{
+    deserialize_timestamp_range, load_flatbuffers_object, serialize_timestamp_range,
+};
 use crate::fanout::serialization::{Deserialized, Serialized};
 use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::matchers::Matchers;
@@ -51,7 +53,7 @@ impl Serialized for LabelValuesRequest {
 impl Deserialized for LabelValuesRequest {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         // Get access to the root:
-        let req = flatbuffers::root::<FBLabelValuesRequest>(buf).unwrap();
+        let req = load_flatbuffers_object::<FBLabelValuesRequest>(buf, "LabelValuesRequest")?;
 
         let range = deserialize_timestamp_range(req.range())?;
         let label_name = if let Some(label_name) = req.label() {
@@ -127,7 +129,7 @@ impl Serialized for LabelValuesResponse {
 
 impl Deserialized for LabelValuesResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBLabelValuesResponse>(buf).unwrap();
+        let req = load_flatbuffers_object::<FBLabelValuesResponse>(buf, "LabelValuesResponse")?;
 
         let values = if let Some(resp_rnames) = req.values() {
             resp_rnames.iter().map(|x| x.to_string()).collect()

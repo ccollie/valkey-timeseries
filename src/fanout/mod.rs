@@ -166,7 +166,7 @@ impl InFlightRequest {
             request_type,
         }
     }
-    
+
     pub fn response_type(&self) -> ClusterMessageType {
         match self.responses {
             TrackerEnum::IndexQuery(_) => ClusterMessageType::IndexQueryResponse,

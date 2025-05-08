@@ -133,7 +133,7 @@ fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<Postin
     ctx.reply(stats);
 }
 
-fn collate_stats_values(map: &mut AHashMap<String, PostingStat>, values: &Vec<PostingStat>) {
+fn collate_stats_values(map: &mut AHashMap<String, PostingStat>, values: &[PostingStat]) {
     for result in values.iter() {
         if let Some(stat) = map.get_mut(result.name.as_str()) {
             stat.count += result.count;
