@@ -1,4 +1,4 @@
-use crate::common::time::current_time_millis;
+use crate::common::time::valkey_cached_time_millis;
 use ahash::AHashMap;
 use blart::AsBytes;
 use rand::Rng;
@@ -10,6 +10,10 @@ use valkey_module::{
     Context, Status, ValkeyModuleCtx, ValkeyString, REDISMODULE_NODE_MASTER,
     VALKEYMODULE_NODE_FAIL, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
 };
+use valkey_module::ContextFlags;
+
+// todo: move to config.rs
+const CACHE_TIMEOUT: u64 = 5000;
 
 // https://valkey.io/topics/modules-api-ref/#section-modules-cluster-api
 
@@ -19,7 +23,8 @@ type ClusterNodeMap = AHashMap<String, Vec<CString>>;
 struct ClusterMeta {
     last_refresh: i64,
     should_refresh: bool,
-    nodes: ClusterNodeMap, // map master node to nodes in the shard
+    /// map main cluster nodes to nodes in the shard
+    nodes: ClusterNodeMap, 
 }
 
 static CLUSTER_NODES: LazyLock<RwLock<ClusterMeta>> = LazyLock::new(RwLock::default);
@@ -89,7 +94,15 @@ fn acquire_cluster_nodes_lock(ctx: &Context) -> RwLockReadGuard<'static, Cluster
     let mut meta = CLUSTER_NODES
         .read()
         .expect("Failed to get cluster info read lock");
-    if meta.should_refresh {
+    
+    let should_refresh = if !meta.should_refresh {
+        let now = valkey_cached_time_millis();
+        now - meta.last_refresh > CACHE_TIMEOUT as i64 
+    } else {
+        true
+    };
+    
+    if should_refresh {
         drop(meta);
         refresh_cluster_nodes(ctx);
         meta = CLUSTER_NODES
@@ -118,10 +131,6 @@ pub fn fanout_cluster_message(ctx: &Context, msg_type: u8, payload: &[u8]) -> us
         let mut meta = CLUSTER_NODES
             .write()
             .expect("Failed to get cluster info write lock");
-        if meta.should_refresh {
-            // todo refresh the cluster nodes
-            return node_count;
-        }
         meta.should_refresh = true;
     }
     node_count
@@ -134,8 +143,6 @@ pub unsafe fn get_key_slot(key: &mut ValkeyString) -> u16 {
     ) as u16
 }
 
-use valkey_module::ContextFlags;
-
 pub fn is_multi_or_lua(ctx: &Context) -> bool {
     let flags = ctx.get_flags();
     flags.contains(ContextFlags::MULTI) || flags.contains(ContextFlags::LUA)
@@ -145,8 +152,6 @@ pub fn is_cluster_mode(ctx: &Context) -> bool {
     let flags = ctx.get_flags();
     flags.contains(ContextFlags::CLUSTER)
 }
-
-const CACHE_TIMEOUT: u64 = 5000;
 
 fn refresh_cluster_nodes(ctx: &Context) {
     let mut shard_id_to_target = AHashMap::new();
@@ -158,7 +163,7 @@ fn refresh_cluster_nodes(ctx: &Context) {
         .expect("Failed to acquire cluster nodes RW lock");
     meta.nodes = shard_id_to_target;
     meta.should_refresh = false;
-    meta.last_refresh = current_time_millis();
+    meta.last_refresh = valkey_cached_time_millis();
 }
 
 /// Retrieves information about the cluster nodes.
@@ -235,8 +240,4 @@ unsafe fn load_targets_for_fanout(
 unsafe fn raw_to_cstring(ptr: *const c_char, len: usize) -> Result<CString, std::ffi::NulError> {
     let bytes = std::slice::from_raw_parts(ptr, len);
     CString::new(bytes.as_bytes())
-}
-
-pub fn cluster_refresh_time_callback(ctx: &Context, _data: String) {
-    refresh_cluster_nodes(ctx);
 }
