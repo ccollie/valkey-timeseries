@@ -1,20 +1,17 @@
-use enum_dispatch::enum_dispatch;
-use std::any::Any;
+use super::{
+    CardinalityResponse, IndexQueryResponse, LabelNamesResponse, LabelValuesResponse,
+    MultiGetResponse, MultiRangeResponse, RangeResponse,
+};
+use crate::fanout::error::Error;
+use crate::series::index::PostingsStats;
+use dtype_variant::{build_dtype_tokens, DType};
 use std::sync::{Mutex, MutexGuard};
 
-pub type ResponseCallback<T> = Box<dyn FnOnce(Vec<T>, Vec<String>) + Send>;
-
-#[enum_dispatch]
-pub trait ResponseTracker<T>: Any {
-    fn update(&self, result: T) -> bool;
-    fn decrement(&self) -> bool;
-    fn completed(&self) -> bool;
-    fn raise_error(&self, error: &str);
-}
+pub type ResponseCallback<T> = Box<dyn FnOnce(Vec<T>, Vec<Error>) + Send>;
 
 struct ResultsTrackerInner<T> {
     results: Vec<T>,
-    errors: Vec<String>,
+    errors: Vec<Error>,
     callback: Option<ResponseCallback<T>>,
     outstanding_requests: u32,
 }
@@ -47,20 +44,13 @@ impl<T> ResultsTracker<T> {
         self.decrement_internal(&mut inner)
     }
 
-    /// This is used only in the case of a node failure, so that the callback is still called
-    /// when the last request is received from the remaining nodes.
-    pub fn decrement(&self) -> bool {
-        let mut inner = self.inner.lock().unwrap();
-        self.decrement_internal(&mut inner)
-    }
-
     fn callback_if_needed(inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
         if inner.outstanding_requests != 0 {
             return false;
         }
         if let Some(callback) = inner.callback.take() {
             let final_results: Vec<T> = std::mem::take(&mut inner.results);
-            let errors: Vec<String> = std::mem::take(&mut inner.errors);
+            let errors: Vec<Error> = std::mem::take(&mut inner.errors);
             callback(final_results, errors);
         }
         true
@@ -77,9 +67,9 @@ impl<T> ResultsTracker<T> {
         inner.outstanding_requests == 0
     }
 
-    pub fn raise_error(&self, error: &str) {
+    pub fn raise_error(&self, error: Error) {
         let mut inner = self.inner.lock().unwrap();
-        inner.errors.push(error.to_string());
+        inner.errors.push(error);
         inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
         Self::callback_if_needed(&mut inner);
     }
@@ -91,20 +81,68 @@ impl<T> ResultsTracker<T> {
     }
 }
 
-impl<T: 'static> ResponseTracker<T> for ResultsTracker<T> {
-    fn update(&self, result: T) -> bool {
-        self.update(result)
+// Define types that your system can handle
+build_dtype_tokens!([
+    IndexQuery,
+    RangeQuery,
+    MultiRangeQuery,
+    MGetQuery,
+    LabelNames,
+    LabelValues,
+    Cardinality,
+    Stats,
+]);
+
+#[derive(DType)]
+#[dtype(tokens_path = self, container = ResultsTracker)]
+pub enum TrackerEnum {
+    IndexQuery(ResultsTracker<IndexQueryResponse>),
+    RangeQuery(ResultsTracker<RangeResponse>),
+    MultiRangeQuery(ResultsTracker<MultiRangeResponse>),
+    MGetQuery(ResultsTracker<MultiGetResponse>),
+    LabelNames(ResultsTracker<LabelNamesResponse>),
+    LabelValues(ResultsTracker<LabelValuesResponse>),
+    Cardinality(ResultsTracker<CardinalityResponse>),
+    Stats(ResultsTracker<PostingsStats>),
+}
+
+impl TrackerEnum {
+    pub fn raise_error(&self, error: Error) {
+        match self {
+            TrackerEnum::IndexQuery(t) => t.raise_error(error),
+            TrackerEnum::RangeQuery(t) => t.raise_error(error),
+            TrackerEnum::MultiRangeQuery(t) => t.raise_error(error),
+            TrackerEnum::MGetQuery(t) => t.raise_error(error),
+            TrackerEnum::LabelNames(t) => t.raise_error(error),
+            TrackerEnum::LabelValues(t) => t.raise_error(error),
+            TrackerEnum::Cardinality(t) => t.raise_error(error),
+            TrackerEnum::Stats(t) => t.raise_error(error),
+        }
     }
 
-    fn decrement(&self) -> bool {
-        self.decrement()
+    pub fn call_done(&self) {
+        match self {
+            TrackerEnum::IndexQuery(t) => t.call_done(),
+            TrackerEnum::RangeQuery(t) => t.call_done(),
+            TrackerEnum::MultiRangeQuery(t) => t.call_done(),
+            TrackerEnum::MGetQuery(t) => t.call_done(),
+            TrackerEnum::LabelNames(t) => t.call_done(),
+            TrackerEnum::LabelValues(t) => t.call_done(),
+            TrackerEnum::Cardinality(t) => t.call_done(),
+            TrackerEnum::Stats(t) => t.call_done(),
+        }
     }
 
-    fn completed(&self) -> bool {
-        self.completed()
-    }
-
-    fn raise_error(&self, error: &str) {
-        self.raise_error(error)
+    pub fn is_completed(&self) -> bool {
+        match self {
+            TrackerEnum::IndexQuery(t) => t.completed(),
+            TrackerEnum::RangeQuery(t) => t.completed(),
+            TrackerEnum::MultiRangeQuery(t) => t.completed(),
+            TrackerEnum::MGetQuery(t) => t.completed(),
+            TrackerEnum::LabelNames(t) => t.completed(),
+            TrackerEnum::LabelValues(t) => t.completed(),
+            TrackerEnum::Cardinality(t) => t.completed(),
+            TrackerEnum::Stats(t) => t.completed(),
+        }
     }
 }

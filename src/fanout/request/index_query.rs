@@ -3,7 +3,7 @@ use crate::commands::process_query_index_request;
 use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::response_generated::IndexQueryResponseArgs;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use smallvec::SmallVec;
@@ -16,8 +16,8 @@ impl MultiShardCommand for IndexQueryCommand {
     type REQ = MatchFilterOptions;
     type RES = IndexQueryResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::IndexQuery
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::IndexQuery
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<IndexQueryResponse> {

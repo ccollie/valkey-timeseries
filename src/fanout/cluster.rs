@@ -8,8 +8,8 @@ use std::ptr;
 use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 use valkey_module::ContextFlags;
 use valkey_module::{
-    Context, Status, ValkeyModuleCtx, ValkeyString, REDISMODULE_NODE_MASTER,
-    VALKEYMODULE_NODE_FAIL, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
+    Context, Status, ValkeyModuleCtx, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_FAIL,
+    VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
 };
 
 // todo: move to config.rs
@@ -137,12 +137,6 @@ pub fn fanout_cluster_message(ctx: &Context, msg_type: u8, payload: &[u8]) -> us
 }
 
 // --- Helper methods  ---
-pub unsafe fn get_key_slot(key: &mut ValkeyString) -> u16 {
-    valkey_module::ValkeyModule_ClusterKeySlot.unwrap()(
-        key.inner as *mut valkey_module::redisraw::bindings::ValkeyModuleString,
-    ) as u16
-}
-
 pub fn is_multi_or_lua(ctx: &Context) -> bool {
     let flags = ctx.get_flags();
     flags.contains(ContextFlags::MULTI) || flags.contains(ContextFlags::LUA)

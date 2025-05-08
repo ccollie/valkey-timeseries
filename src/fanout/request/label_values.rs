@@ -10,7 +10,7 @@ use crate::fanout::request::common::{
     deserialize_timestamp_range, load_flatbuffers_object, serialize_timestamp_range,
 };
 use crate::fanout::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::matchers::Matchers;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::TimestampRange;
@@ -79,8 +79,8 @@ impl MultiShardCommand for LabelValuesCommand {
     type REQ = LabelValuesRequest;
     type RES = LabelValuesResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::LabelValues
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::LabelValues
     }
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<LabelValuesResponse> {
         let options = MatchFilterOptions {

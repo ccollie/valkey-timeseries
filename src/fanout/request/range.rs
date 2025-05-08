@@ -6,7 +6,7 @@ use crate::commands::process_mrange_query;
 use crate::common::Sample;
 use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::{MatchFilterOptions, RangeOptions};
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
@@ -18,8 +18,8 @@ impl MultiShardCommand for RangeCommand {
     type REQ = MatchFilterOptions;
     type RES = RangeResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::RangeQuery
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::RangeQuery
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<RangeResponse> {

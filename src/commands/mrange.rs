@@ -4,6 +4,10 @@ use crate::aggregators::{AggOp, Aggregator};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
+use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::{
+    perform_remote_mrange_request, send_multi_shard_request, MultiRangeCommand, MultiRangeResponse,
+};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::index::series_by_matchers;
@@ -13,7 +17,10 @@ use crate::series::request_types::{
 use crate::series::{SeriesGuard, SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
 use smallvec::SmallVec;
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
+    ValkeyValue,
+};
 
 struct MRangeSeriesMeta {
     series: SeriesGuard,
@@ -47,6 +54,11 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
 
     args.done()?;
 
+    if is_cluster_mode(ctx) {
+        perform_remote_mrange_request(ctx, &options, on_mrange_request_done)?;
+        return Ok(ValkeyValue::NoReply);
+    }
+
     let result_rows = process_mrange_query(ctx, options, reverse)?;
     let result = result_rows
         .into_iter()
@@ -54,6 +66,24 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
         .collect::<Vec<_>>();
 
     Ok(ValkeyValue::from(result))
+}
+
+pub fn perform_multishard_mrange_request<F>(
+    ctx: &Context,
+    request: RangeOptions,
+    on_done: F,
+) -> ValkeyResult<u64>
+where
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<MultiRangeResponse>) + Send + 'static,
+{
+    send_multi_shard_request::<MultiRangeCommand, F>(ctx, &request, on_done)
+}
+
+fn on_mrange_request_done(
+    _ctx: &ThreadSafeContext<BlockedClient>,
+    _results: Vec<MultiRangeResponse>,
+) {
+    todo!()
 }
 
 pub fn process_mrange_query(
