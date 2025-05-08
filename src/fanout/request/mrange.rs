@@ -67,7 +67,7 @@ impl MultiShardCommand for MultiRangeCommand {
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::MultiRangeQuery(ref t) = tracker {
+        if let TrackerEnum::MultiRangeQuery(t) = tracker {
             t.update(res);
         } else {
             panic!("BUG: Invalid MultiRangeRequest tracker type");

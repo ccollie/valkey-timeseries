@@ -23,7 +23,7 @@ impl MultiShardCommand for LabelNamesCommand {
         process_label_names_request(ctx, &req).map(|names| LabelNamesResponse { names })
     }
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::LabelNames(ref t) = tracker {
+        if let TrackerEnum::LabelNames(t) = tracker {
             t.update(res);
         }
     }
