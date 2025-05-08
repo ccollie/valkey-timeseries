@@ -151,10 +151,11 @@ pub(super) struct InFlightRequest {
     pub responses: TrackerEnum,
     pub timer_id: RedisModuleTimerID,
     pub timed_out: AtomicBool,
+    pub request_type: ClusterMessageType,
 }
 
 impl InFlightRequest {
-    pub fn new(db: i32, tracker: TrackerEnum) -> Self {
+    pub fn new(db: i32, request_type: ClusterMessageType, tracker: TrackerEnum) -> Self {
         let request_start = current_time_millis();
         Self {
             db,
@@ -162,21 +163,10 @@ impl InFlightRequest {
             responses: tracker,
             timer_id: 0,
             timed_out: AtomicBool::new(false),
+            request_type,
         }
     }
-
-    pub fn request_type(&self) -> ClusterMessageType {
-        match self.responses {
-            TrackerEnum::IndexQuery(_) => ClusterMessageType::IndexQuery,
-            TrackerEnum::RangeQuery(_) => ClusterMessageType::RangeQuery,
-            TrackerEnum::MultiRangeQuery(_) => ClusterMessageType::MultiRangeQuery,
-            TrackerEnum::MGetQuery(_) => ClusterMessageType::MGetQuery,
-            TrackerEnum::LabelNames(_) => ClusterMessageType::LabelNames,
-            TrackerEnum::LabelValues(_) => ClusterMessageType::LabelValues,
-            TrackerEnum::Cardinality(_) => ClusterMessageType::Cardinality,
-            TrackerEnum::Stats(_) => ClusterMessageType::Stats,
-        }
-    }
+    
     pub fn response_type(&self) -> ClusterMessageType {
         match self.responses {
             TrackerEnum::IndexQuery(_) => ClusterMessageType::IndexQueryResponse,
