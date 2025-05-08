@@ -3,6 +3,7 @@ use super::response_generated::{
 };
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::error_consts;
+use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::ValkeyResult;
 use crate::fanout::serialization::{Deserialized, Serialized};
 use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
@@ -114,7 +115,7 @@ impl Serialized for PostingsStats {
 
 impl Deserialized for PostingsStats {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let root = flatbuffers::root::<FBPostingStats>(buf).unwrap();
+        let root = load_flatbuffers_object::<FBPostingStats>(buf, "PostingsStats")?;
         let cardinality_metrics_stats =
             deserialize_posting_stat_list(root.cardinality_metrics_stats());
         let cardinality_label_stats = deserialize_posting_stat_list(root.cardinality_label_stats());
@@ -229,7 +230,7 @@ mod tests {
         let deserialized =
             PostingsStats::deserialize(&buf).expect("Deserialization should succeed");
 
-        // Verify all fields match
+        // Verify that all fields match
         assert_eq!(stats.num_label_pairs, deserialized.num_label_pairs);
         assert_eq!(stats.num_labels, deserialized.num_labels);
 
@@ -347,7 +348,6 @@ mod tests {
         let deserialized =
             PostingsStats::deserialize(&buf).expect("Deserialization should succeed");
 
-        // Verify large list was properly handled
         assert_eq!(deserialized.cardinality_metrics_stats.len(), 1000);
         for (i, stat) in deserialized.cardinality_metrics_stats.iter().enumerate() {
             assert_eq!(stat.name, format!("metric{}", i));

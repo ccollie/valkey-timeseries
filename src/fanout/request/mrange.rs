@@ -1,4 +1,6 @@
-use super::common::{decode_label, deserialize_timestamp_range, serialize_timestamp_range};
+use super::common::{
+    decode_label, deserialize_timestamp_range, load_flatbuffers_object, serialize_timestamp_range,
+};
 use super::matchers::{deserialize_matchers, serialize_matchers};
 use super::request_generated::{
     AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder, AggregationType,
@@ -112,7 +114,7 @@ impl Serialized for MultiRangeResponse {
 impl Deserialized for MultiRangeResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         // Get access to the root:
-        let req = flatbuffers::root::<FBMultiRangeResponse>(buf).unwrap();
+        let req = load_flatbuffers_object::<FBMultiRangeResponse>(buf, "MultiRangeResponse")?;
         let mut result: MultiRangeResponse = MultiRangeResponse::default();
 
         if let Some(values) = req.series() {
@@ -325,7 +327,7 @@ fn decode_grouping_options(reader: &GroupingOptions) -> RangeGroupingOptions {
 }
 
 pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions> {
-    let req = flatbuffers::root::<FBMultiRangeRequest>(buf).unwrap();
+    let req = load_flatbuffers_object::<FBMultiRangeRequest>(buf, "MultiRangeRequest")?;
 
     let date_range = deserialize_timestamp_range(req.range())?.unwrap_or_default();
 
@@ -484,14 +486,14 @@ mod tests {
 
     fn make_sample_matchers() -> Matchers {
         Matchers {
-            name: Some("test".to_string()),
+            name: Some("mrange-test".to_string()),
             matchers: MatcherSetEnum::And(vec![
                 Matcher {
-                    label: "foo".to_string(),
+                    label: "mrange-foo".to_string(),
                     matcher: PredicateMatch::Equal(PredicateValue::String("bar".to_string())),
                 },
                 Matcher {
-                    label: "baz".to_string(),
+                    label: "mrange-baz".to_string(),
                     matcher: PredicateMatch::NotEqual(PredicateValue::String("qux".to_string())),
                 },
             ]),
@@ -678,19 +680,13 @@ mod tests {
         let resp2 = MultiRangeResponse::deserialize(&buf).expect("deserialization failed");
         assert_eq!(resp.series.len(), resp2.series.len());
 
-        // Check first series
         assert_eq!(resp.series[0].key, resp2.series[0].key);
-        assert_eq!(resp.series[0].labels.len(), resp2.series[0].labels.len());
-        assert_eq!(resp.series[0].samples.len(), resp2.series[0].samples.len());
-
-        // Check labels of first series
-        assert_eq!(resp.series[0].labels[0], resp2.series[0].labels[0]);
-
-        // Check samples of first series
+        assert_eq!(resp.series[0].labels, resp2.series[0].labels);
         assert_eq!(resp.series[0].samples, resp2.series[0].samples);
 
-        // Check second series
         assert_eq!(resp.series[1].key, resp2.series[1].key);
+        assert_eq!(resp.series[1].labels, resp2.series[1].labels);
+        assert_eq!(resp.series[1].samples, resp2.series[1].samples);
     }
 
     #[test]

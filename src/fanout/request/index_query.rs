@@ -1,5 +1,6 @@
 use super::response_generated::IndexQueryResponse as FBIndexQueryResponse;
 use crate::commands::process_query_index_request;
+use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::response_generated::IndexQueryResponseArgs;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
@@ -59,7 +60,7 @@ impl Serialized for IndexQueryResponse {
 
 impl Deserialized for IndexQueryResponse {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
-        let req = flatbuffers::root::<FBIndexQueryResponse>(buf).unwrap();
+        let req = load_flatbuffers_object::<FBIndexQueryResponse>(buf, "IndexQueryResponse")?;
         let keys = req.keys().unwrap_or_default();
         let keys = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
         Ok(IndexQueryResponse { keys })
