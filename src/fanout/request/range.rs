@@ -44,7 +44,7 @@ impl MultiShardCommand for RangeCommand {
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::RangeQuery(ref t) = tracker {
+        if let TrackerEnum::RangeQuery(t) = tracker {
             t.update(res);
         }
     }

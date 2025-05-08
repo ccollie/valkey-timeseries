@@ -28,7 +28,7 @@ impl MultiShardCommand for IndexQueryCommand {
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
-        if let TrackerEnum::IndexQuery(ref t) = tracker {
+        if let TrackerEnum::IndexQuery(t) = tracker {
             t.add_result(res);
         }
     }
