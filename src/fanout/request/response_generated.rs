@@ -8,6 +8,125 @@ use core::mem;
 extern crate flatbuffers;
 use self::flatbuffers::{EndianScalar, Follow};
 
+#[deprecated(
+    since = "2.0.0",
+    note = "Use associated constants instead. This will no longer be generated in 2021."
+)]
+pub const ENUM_MIN_ERROR_KIND: i8 = 0;
+#[deprecated(
+    since = "2.0.0",
+    note = "Use associated constants instead. This will no longer be generated in 2021."
+)]
+pub const ENUM_MAX_ERROR_KIND: i8 = 7;
+#[deprecated(
+    since = "2.0.0",
+    note = "Use associated constants instead. This will no longer be generated in 2021."
+)]
+#[allow(non_camel_case_types)]
+pub const ENUM_VALUES_ERROR_KIND: [ErrorKind; 8] = [
+    ErrorKind::Failed,
+    ErrorKind::NodeUnreachable,
+    ErrorKind::Timeout,
+    ErrorKind::UnknownMessageType,
+    ErrorKind::Permissions,
+    ErrorKind::KeyPermissions,
+    ErrorKind::Serialization,
+    ErrorKind::BadRequestId,
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct ErrorKind(pub i8);
+#[allow(non_upper_case_globals)]
+impl ErrorKind {
+    pub const Failed: Self = Self(0);
+    pub const NodeUnreachable: Self = Self(1);
+    pub const Timeout: Self = Self(2);
+    pub const UnknownMessageType: Self = Self(3);
+    pub const Permissions: Self = Self(4);
+    pub const KeyPermissions: Self = Self(5);
+    pub const Serialization: Self = Self(6);
+    pub const BadRequestId: Self = Self(7);
+
+    pub const ENUM_MIN: i8 = 0;
+    pub const ENUM_MAX: i8 = 7;
+    pub const ENUM_VALUES: &'static [Self] = &[
+        Self::Failed,
+        Self::NodeUnreachable,
+        Self::Timeout,
+        Self::UnknownMessageType,
+        Self::Permissions,
+        Self::KeyPermissions,
+        Self::Serialization,
+        Self::BadRequestId,
+    ];
+    /// Returns the variant's name or "" if unknown.
+    pub fn variant_name(self) -> Option<&'static str> {
+        match self {
+            Self::Failed => Some("Failed"),
+            Self::NodeUnreachable => Some("NodeUnreachable"),
+            Self::Timeout => Some("Timeout"),
+            Self::UnknownMessageType => Some("UnknownMessageType"),
+            Self::Permissions => Some("Permissions"),
+            Self::KeyPermissions => Some("KeyPermissions"),
+            Self::Serialization => Some("Serialization"),
+            Self::BadRequestId => Some("BadRequestId"),
+            _ => None,
+        }
+    }
+}
+impl core::fmt::Debug for ErrorKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        if let Some(name) = self.variant_name() {
+            f.write_str(name)
+        } else {
+            f.write_fmt(format_args!("<UNKNOWN {:?}>", self.0))
+        }
+    }
+}
+impl<'a> flatbuffers::Follow<'a> for ErrorKind {
+    type Inner = Self;
+    #[inline]
+    unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+        let b = flatbuffers::read_scalar_at::<i8>(buf, loc);
+        Self(b)
+    }
+}
+
+impl flatbuffers::Push for ErrorKind {
+    type Output = ErrorKind;
+    #[inline]
+    unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
+        flatbuffers::emplace_scalar::<i8>(dst, self.0);
+    }
+}
+
+impl flatbuffers::EndianScalar for ErrorKind {
+    type Scalar = i8;
+    #[inline]
+    fn to_little_endian(self) -> i8 {
+        self.0.to_le()
+    }
+    #[inline]
+    #[allow(clippy::wrong_self_convention)]
+    fn from_little_endian(v: i8) -> Self {
+        let b = i8::from_le(v);
+        Self(b)
+    }
+}
+
+impl<'a> flatbuffers::Verifiable for ErrorKind {
+    #[inline]
+    fn run_verifier(
+        v: &mut flatbuffers::Verifier,
+        pos: usize,
+    ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+        use self::flatbuffers::Verifiable;
+        i8::run_verifier(v, pos)
+    }
+}
+
+impl flatbuffers::SimpleToVerifyInSlice for ErrorKind {}
 // struct Sample, aligned to 8
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq)]
@@ -1232,8 +1351,8 @@ impl<'a> flatbuffers::Follow<'a> for ErrorResponse<'a> {
 }
 
 impl<'a> ErrorResponse<'a> {
-    pub const VT_ERROR_CODE: flatbuffers::VOffsetT = 4;
-    pub const VT_ERROR_MESSAGE: flatbuffers::VOffsetT = 6;
+    pub const VT_KIND: flatbuffers::VOffsetT = 4;
+    pub const VT_EXTRA: flatbuffers::VOffsetT = 6;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1245,32 +1364,32 @@ impl<'a> ErrorResponse<'a> {
         args: &'args ErrorResponseArgs<'args>,
     ) -> flatbuffers::WIPOffset<ErrorResponse<'bldr>> {
         let mut builder = ErrorResponseBuilder::new(_fbb);
-        if let Some(x) = args.error_message {
-            builder.add_error_message(x);
+        if let Some(x) = args.extra {
+            builder.add_extra(x);
         }
-        builder.add_error_code(args.error_code);
+        builder.add_kind(args.kind);
         builder.finish()
     }
 
     #[inline]
-    pub fn error_code(&self) -> i16 {
+    pub fn kind(&self) -> ErrorKind {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
             self._tab
-                .get::<i16>(ErrorResponse::VT_ERROR_CODE, Some(0))
+                .get::<ErrorKind>(ErrorResponse::VT_KIND, Some(ErrorKind::Failed))
                 .unwrap()
         }
     }
     #[inline]
-    pub fn error_message(&self) -> Option<&'a str> {
+    pub fn extra(&self) -> Option<&'a str> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
             self._tab
-                .get::<flatbuffers::ForwardsUOffset<&str>>(ErrorResponse::VT_ERROR_MESSAGE, None)
+                .get::<flatbuffers::ForwardsUOffset<&str>>(ErrorResponse::VT_EXTRA, None)
         }
     }
 }
@@ -1283,26 +1402,22 @@ impl flatbuffers::Verifiable for ErrorResponse<'_> {
     ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
-            .visit_field::<i16>("error_code", Self::VT_ERROR_CODE, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<&str>>(
-                "error_message",
-                Self::VT_ERROR_MESSAGE,
-                false,
-            )?
+            .visit_field::<ErrorKind>("kind", Self::VT_KIND, false)?
+            .visit_field::<flatbuffers::ForwardsUOffset<&str>>("extra", Self::VT_EXTRA, false)?
             .finish();
         Ok(())
     }
 }
 pub struct ErrorResponseArgs<'a> {
-    pub error_code: i16,
-    pub error_message: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub kind: ErrorKind,
+    pub extra: Option<flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for ErrorResponseArgs<'a> {
     #[inline]
     fn default() -> Self {
         ErrorResponseArgs {
-            error_code: 0,
-            error_message: None,
+            kind: ErrorKind::Failed,
+            extra: None,
         }
     }
 }
@@ -1313,16 +1428,14 @@ pub struct ErrorResponseBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
 }
 impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> ErrorResponseBuilder<'a, 'b, A> {
     #[inline]
-    pub fn add_error_code(&mut self, error_code: i16) {
+    pub fn add_kind(&mut self, kind: ErrorKind) {
         self.fbb_
-            .push_slot::<i16>(ErrorResponse::VT_ERROR_CODE, error_code, 0);
+            .push_slot::<ErrorKind>(ErrorResponse::VT_KIND, kind, ErrorKind::Failed);
     }
     #[inline]
-    pub fn add_error_message(&mut self, error_message: flatbuffers::WIPOffset<&'b str>) {
-        self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(
-            ErrorResponse::VT_ERROR_MESSAGE,
-            error_message,
-        );
+    pub fn add_extra(&mut self, extra: flatbuffers::WIPOffset<&'b str>) {
+        self.fbb_
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(ErrorResponse::VT_EXTRA, extra);
     }
     #[inline]
     pub fn new(
@@ -1344,8 +1457,8 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> ErrorResponseBuilder<'a, 'b, A>
 impl core::fmt::Debug for ErrorResponse<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("ErrorResponse");
-        ds.field("error_code", &self.error_code());
-        ds.field("error_message", &self.error_message());
+        ds.field("kind", &self.kind());
+        ds.field("extra", &self.extra());
         ds.finish()
     }
 }

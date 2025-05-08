@@ -6,7 +6,7 @@ use crate::error_consts;
 use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::ValkeyResult;
 use crate::fanout::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats};
 use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
 use valkey_module::{Context, ValkeyError};
@@ -17,8 +17,8 @@ impl MultiShardCommand for StatsCommand {
     type REQ = StatsRequest;
     type RES = PostingsStats;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::Stats
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::Stats
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {

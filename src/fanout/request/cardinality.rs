@@ -4,7 +4,7 @@ use super::response_generated::{
 use crate::commands::calculate_cardinality;
 use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
-use crate::fanout::{ClusterMessageType, MultiShardCommand, TrackerEnum};
+use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyResult};
@@ -15,8 +15,8 @@ impl MultiShardCommand for CardinalityCommand {
     type REQ = MatchFilterOptions;
     type RES = CardinalityResponse;
 
-    fn request_type() -> ClusterMessageType {
-        ClusterMessageType::Cardinality
+    fn request_type() -> CommandMessageType {
+        CommandMessageType::Cardinality
     }
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<CardinalityResponse> {
         let count = calculate_cardinality(ctx, req.date_range, &req.matchers)?;

@@ -42,9 +42,20 @@ table IndexQueryResponse {
   keys:[string];
 }
 
+enum ErrorKind: byte {
+  Failed = 0,
+  NodeUnreachable = 1,
+  Timeout = 2,
+  UnknownMessageType = 3,
+  Permissions = 4,
+  KeyPermissions = 5,
+  Serialization = 6,
+  BadRequestId = 7,
+}
+
 table ErrorResponse {
-  error_code:int16;
-  error_message:string;
+  kind:ErrorKind;
+  extra:string;
 }
 
 table LabelValuesResponse {
