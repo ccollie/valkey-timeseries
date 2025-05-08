@@ -1,4 +1,4 @@
-use valkey_module::RedisModule_Milliseconds;
+use valkey_module::{RedisModule_CachedMicroseconds, RedisModule_Milliseconds};
 
 /// Returns the time duration since UNIX_EPOCH in milliseconds.
 pub fn system_time_millis() -> i64 {
@@ -11,6 +11,16 @@ pub fn system_time_millis() -> i64 {
 
 pub fn valkey_current_time_millis() -> i64 {
     unsafe { RedisModule_Milliseconds.unwrap()() }
+}
+
+pub fn valkey_cached_time_micros() -> i64 {
+    unsafe {
+        RedisModule_CachedMicroseconds.unwrap()()
+    }
+}
+
+pub fn valkey_cached_time_millis() -> i64 {
+    valkey_cached_time_micros() / 1000
 }
 
 pub fn current_time_millis() -> i64 {
