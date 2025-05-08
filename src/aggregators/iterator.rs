@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 /// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]
-pub struct AggregationHelper {
+struct AggregationHelper {
     aggregator: Aggregator,
     bucket_duration: u64,
     bucket_ts: BucketTimestamp,
