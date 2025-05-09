@@ -1,5 +1,5 @@
 use super::cluster::{
-    fanout_cluster_message, is_cluster_mode, is_multi_or_lua, register_message_receiver,
+    fanout_cluster_message, is_clustered, is_multi_or_lua, register_message_receiver,
     send_cluster_message,
 };
 use crate::common::db::{get_current_db, set_current_db};
@@ -82,7 +82,7 @@ type InFlightRequestMap = HashMap<u64, InFlightRequest, BuildNoHashHasher<u64>>;
 static INFLIGHT_REQUESTS: LazyLock<InFlightRequestMap> = LazyLock::new(InFlightRequestMap::default);
 
 fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
-    if !is_cluster_mode(ctx) {
+    if !is_clustered(ctx) {
         return Err(ValkeyError::Str("Cluster mode is not enabled"));
     }
     if is_multi_or_lua(ctx) {
@@ -109,11 +109,12 @@ fn get_multi_shard_command_timeout() -> Duration {
 pub fn send_multi_shard_request<T: MultiShardCommand, F>(
     ctx: &Context,
     request: &T::REQ,
+    state: T::STATE,
     callback: F,
 ) -> ValkeyResult<u64>
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>) + Send + 'static,
-    TrackerEnum: From<ResultsTracker<T::RES>>,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>, T::STATE) + Send + 'static,
+    TrackerEnum: From<ResultsTracker<T::RES, T::STATE>>
 {
     validate_cluster_exec(ctx)?;
 
@@ -133,7 +134,7 @@ where
 
     let node_count = fanout_cluster_message(ctx, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
 
-    let tracker = create_tracker::<T, F>(ctx, id, node_count, callback);
+    let tracker = create_tracker::<T, F>(ctx, id, node_count, state, callback);
 
     let mut inflight_request = InFlightRequest::new(db, msg_type, tracker);
 
@@ -154,15 +155,16 @@ fn create_tracker<T: MultiShardCommand, F>(
     ctx: &Context,
     request_id: u64,
     expected_results: usize,
+    state: T::STATE,
     callback: F,
 ) -> TrackerEnum
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>) + Send + 'static,
-    TrackerEnum: From<ResultsTracker<T::RES>>,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>, T::STATE) + Send + 'static,
+    TrackerEnum: From<ResultsTracker<T::RES, T::STATE>>,
 {
-    let cbk = create_response_done_callback(ctx, request_id, callback);
+    let cbk = create_command_done_callback(ctx, request_id, callback);
 
-    let tracker: ResultsTracker<T::RES> = ResultsTracker::new(expected_results, cbk);
+    let tracker: ResultsTracker<T::RES, T::STATE> = ResultsTracker::new(expected_results, state, cbk);
 
     TrackerEnum::from(tracker)
 }
@@ -186,17 +188,19 @@ fn send_error_response(
     send_cluster_message(ctx, target_node, CLUSTER_ERROR_MESSAGE, &buf)
 }
 
-fn create_response_done_callback<T, F>(
+/// Creates a callback function that will be called when the command is done (after all responses
+/// are received from nodes in the cluster, or the command times out).
+fn create_command_done_callback<RES, STATE, F>(
     ctx: &Context,
     request_id: u64,
-    callback: F,
-) -> ResponseCallback<T>
+    callback: F
+) -> ResponseCallback<RES, STATE>
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T>) + Send + 'static,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<RES>, STATE) + Send + 'static,
 {
     let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
 
-    let tracker_callback: ResponseCallback<T> = Box::new(move |res, errors| {
+    let tracker_callback: ResponseCallback<RES, STATE> = Box::new(move |res, errors, state| {
         let map = INFLIGHT_REQUESTS.pin();
         match map.remove(&request_id) {
             Some(inflight_request) => {
@@ -215,7 +219,7 @@ where
                         }
                         save_db
                     };
-                    callback(&thread_ctx, res);
+                    callback(&thread_ctx, res, state);
                     if save_db != db {
                         let ctx_locked = thread_ctx.lock();
                         set_current_db(&ctx_locked, save_db);

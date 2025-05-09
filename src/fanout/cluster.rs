@@ -142,7 +142,7 @@ pub fn is_multi_or_lua(ctx: &Context) -> bool {
     flags.contains(ContextFlags::MULTI) || flags.contains(ContextFlags::LUA)
 }
 
-pub fn is_cluster_mode(ctx: &Context) -> bool {
+pub fn is_clustered(ctx: &Context) -> bool {
     let flags = ctx.get_flags();
     flags.contains(ContextFlags::CLUSTER)
 }
