@@ -1,10 +1,12 @@
+use crate::common::db::{get_current_db, set_current_db};
 use crate::series::index::*;
-use crate::series::{with_timeseries, TimeSeries};
+use crate::series::{get_timeseries, with_timeseries, TimeSeries};
 use std::os::raw::c_void;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
+static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);
 
 fn handle_key_restore(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
@@ -50,6 +52,23 @@ fn handle_loaded(ctx: &Context, key: &[u8]) {
     });
 }
 
+fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
+    let new_db = get_current_db(ctx);
+    // fetch the series from the old db
+    let valkey_key = ctx.create_string(key);
+    set_current_db(ctx, old_db);
+    let Ok(Some(series)) = get_timeseries(ctx, valkey_key, None, false) else {
+        return;
+    };
+    with_timeseries_index(ctx, |index| {
+        index.remove_timeseries(&series);
+    });
+    set_current_db(ctx, new_db);
+    with_timeseries_index(ctx, |index| {
+        index.index_timeseries(&series, key);
+    });
+}
+
 pub(crate) fn generic_key_event_handler(
     ctx: &Context,
     _event_type: NotifyEvent,
@@ -61,8 +80,19 @@ pub(crate) fn generic_key_event_handler(
         "loaded" => {
             handle_loaded(ctx, key);
         }
-        "del" | "evict" | "evicted" | "expire" | "expired" | "set" => {
+        "del" | "evict" | "evicted" | "expire" | "expired" | "set" | "trimmed" => {
             remove_key_from_index(ctx, key);
+        }
+        "move_from" => {
+            *MOVE_FROM_DB.lock().unwrap() = get_current_db(ctx);
+        }
+        "move_to" => {
+            let mut lock = MOVE_FROM_DB.lock().unwrap();
+            let old_db = *lock;
+            *lock = -1;
+            if old_db != -1 {
+                handle_key_move(ctx, key, old_db);
+            }
         }
         // SAFETY: This is safe because the key is only used in the closure and this function
         // is not called concurrently
