@@ -1,4 +1,4 @@
-use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_index_query_request, IndexQueryResponse};
 use crate::labels::matchers::Matchers;
 use crate::labels::parse_series_selector;
@@ -21,7 +21,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(WrongArity);
     }
 
-    if is_cluster_mode(ctx) {
+    if is_clustered(ctx) {
         let options = MatchFilterOptions {
             date_range: None,
             matchers: matcher_list,
@@ -48,6 +48,7 @@ pub fn process_query_index_request(
 fn on_query_index_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
     results: Vec<IndexQueryResponse>,
+    _: ()
 ) {
     let count = results.iter().map(|result| result.keys.len()).sum();
     let mut keys = Vec::with_capacity(count);

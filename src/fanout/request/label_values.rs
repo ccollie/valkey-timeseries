@@ -78,6 +78,7 @@ impl Deserialized for LabelValuesRequest {
 impl MultiShardCommand for LabelValuesCommand {
     type REQ = LabelValuesRequest;
     type RES = LabelValuesResponse;
+    type STATE = ();
 
     fn request_type() -> CommandMessageType {
         CommandMessageType::LabelValues

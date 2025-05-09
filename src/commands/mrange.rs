@@ -4,9 +4,9 @@ use crate::aggregators::{AggOp, Aggregator};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
-use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::cluster::is_clustered;
 use crate::fanout::{
-    perform_remote_mrange_request, send_multi_shard_request, MultiRangeCommand, MultiRangeResponse,
+    perform_remote_mrange_request, MultiRangeResponse,
 };
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
@@ -54,8 +54,8 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
 
     args.done()?;
 
-    if is_cluster_mode(ctx) {
-        perform_remote_mrange_request(ctx, &options, on_mrange_request_done)?;
+    if is_clustered(ctx) {
+        perform_remote_mrange_request(ctx, options, on_mrange_request_done)?;
         return Ok(ValkeyValue::NoReply);
     }
 
@@ -68,20 +68,10 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     Ok(ValkeyValue::from(result))
 }
 
-pub fn perform_multishard_mrange_request<F>(
-    ctx: &Context,
-    request: RangeOptions,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<MultiRangeResponse>) + Send + 'static,
-{
-    send_multi_shard_request::<MultiRangeCommand, F>(ctx, &request, on_done)
-}
-
 fn on_mrange_request_done(
     _ctx: &ThreadSafeContext<BlockedClient>,
     _results: Vec<MultiRangeResponse>,
+    _grouping: Option<RangeGroupingOptions>,
 ) {
     todo!()
 }

@@ -1,5 +1,5 @@
 use crate::commands::arg_parse::parse_integer_arg;
-use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::cluster::is_clustered;
 use crate::fanout::perform_remote_stats_request;
 use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats, StatsMaxHeap};
 use ahash::AHashMap;
@@ -29,7 +29,7 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
     };
 
-    if is_cluster_mode(ctx) {
+    if is_clustered(ctx) {
         perform_remote_stats_request(ctx, limit, on_stats_request_done)?;
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
@@ -89,7 +89,7 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     ValkeyValue::Map(res)
 }
 
-fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<PostingsStats>) {
+fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<PostingsStats>, limit: u64) {
     // todo: we need limit....
     let limit = 10;
 

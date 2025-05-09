@@ -4,28 +4,31 @@ use super::{
 };
 use crate::fanout::error::Error;
 use crate::series::index::PostingsStats;
-use dtype_variant::{build_dtype_tokens, DType};
+use crate::series::request_types::RangeGroupingOptions;
 use std::sync::{Mutex, MutexGuard};
 
-pub type ResponseCallback<T> = Box<dyn FnOnce(Vec<T>, Vec<Error>) + Send>;
+pub type ResponseCallback<T, S> = Box<dyn FnOnce(Vec<T>, Vec<Error>, S) + Send>;
 
-struct ResultsTrackerInner<T> {
+
+struct ResultsTrackerInner<T, S: Default = ()> {
     results: Vec<T>,
     errors: Vec<Error>,
-    callback: Option<ResponseCallback<T>>,
+    callback: Option<ResponseCallback<T, S>>,
+    state: S,
     outstanding_requests: u32,
 }
 
-pub struct ResultsTracker<T> {
-    inner: Mutex<ResultsTrackerInner<T>>,
+pub struct ResultsTracker<T, S: Default = ()> {
+    inner: Mutex<ResultsTrackerInner<T, S>>,
 }
 
-impl<T> ResultsTracker<T> {
-    pub fn new(outstanding_requests: usize, callback: ResponseCallback<T>) -> Self {
+impl<T, S: Default> ResultsTracker<T, S> {
+    pub fn new(outstanding_requests: usize, state: S, callback: ResponseCallback<T, S>) -> Self {
         let inner = ResultsTrackerInner {
             results: Vec::new(),
             errors: Vec::new(),
             callback: Some(callback),
+            state,
             outstanding_requests: outstanding_requests as u32,
         };
         Self {
@@ -44,19 +47,20 @@ impl<T> ResultsTracker<T> {
         self.decrement_internal(&mut inner)
     }
 
-    fn callback_if_needed(inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
+    fn callback_if_needed(inner: &mut MutexGuard<ResultsTrackerInner<T, S>>) -> bool {
         if inner.outstanding_requests != 0 {
             return false;
         }
         if let Some(callback) = inner.callback.take() {
             let final_results: Vec<T> = std::mem::take(&mut inner.results);
             let errors: Vec<Error> = std::mem::take(&mut inner.errors);
-            callback(final_results, errors);
+            let state = std::mem::take(&mut inner.state);
+            callback(final_results, errors, state);
         }
         true
     }
 
-    fn decrement_internal(&self, inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
+    fn decrement_internal(&self, inner: &mut MutexGuard<ResultsTrackerInner<T, S>>) -> bool {
         inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
         // If no outstanding request, execute the callback
         Self::callback_if_needed(inner)
@@ -81,29 +85,15 @@ impl<T> ResultsTracker<T> {
     }
 }
 
-// Define types that your system can handle
-build_dtype_tokens!([
-    IndexQuery,
-    RangeQuery,
-    MultiRangeQuery,
-    MGetQuery,
-    LabelNames,
-    LabelValues,
-    Cardinality,
-    Stats,
-]);
-
-#[derive(DType)]
-#[dtype(tokens_path = self, container = ResultsTracker)]
 pub enum TrackerEnum {
     IndexQuery(ResultsTracker<IndexQueryResponse>),
     RangeQuery(ResultsTracker<RangeResponse>),
-    MultiRangeQuery(ResultsTracker<MultiRangeResponse>),
+    MultiRangeQuery(ResultsTracker<MultiRangeResponse, Option<RangeGroupingOptions>>),
     MGetQuery(ResultsTracker<MultiGetResponse>),
     LabelNames(ResultsTracker<LabelNamesResponse>),
     LabelValues(ResultsTracker<LabelValuesResponse>),
     Cardinality(ResultsTracker<CardinalityResponse>),
-    Stats(ResultsTracker<PostingsStats>),
+    Stats(ResultsTracker<PostingsStats, u64>),
 }
 
 impl TrackerEnum {
@@ -144,5 +134,53 @@ impl TrackerEnum {
             TrackerEnum::Cardinality(t) => t.completed(),
             TrackerEnum::Stats(t) => t.completed(),
         }
+    }
+}
+
+impl From<ResultsTracker<IndexQueryResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<IndexQueryResponse>) -> Self {
+        TrackerEnum::IndexQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<RangeResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<RangeResponse>) -> Self {
+        TrackerEnum::RangeQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<MultiRangeResponse, Option<RangeGroupingOptions>>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<MultiRangeResponse, Option<RangeGroupingOptions>>) -> Self {
+        TrackerEnum::MultiRangeQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<MultiGetResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<MultiGetResponse>) -> Self {
+        TrackerEnum::MGetQuery(tracker)
+    }
+}
+
+impl From<ResultsTracker<LabelNamesResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<LabelNamesResponse>) -> Self {
+        TrackerEnum::LabelNames(tracker)
+    }
+}
+
+impl From<ResultsTracker<LabelValuesResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<LabelValuesResponse>) -> Self {
+        TrackerEnum::LabelValues(tracker)
+    }
+}
+
+impl From<ResultsTracker<CardinalityResponse>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<CardinalityResponse>) -> Self {
+        TrackerEnum::Cardinality(tracker)
+    }
+}
+
+impl From<ResultsTracker<PostingsStats, u64>> for TrackerEnum {
+    fn from(tracker: ResultsTracker<PostingsStats, u64>) -> Self {
+        TrackerEnum::Stats(tracker)
     }
 }

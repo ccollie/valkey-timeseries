@@ -16,6 +16,7 @@ pub struct StatsCommand;
 impl MultiShardCommand for StatsCommand {
     type REQ = StatsRequest;
     type RES = PostingsStats;
+    type STATE = u64;
 
     fn request_type() -> CommandMessageType {
         CommandMessageType::Stats
@@ -357,7 +358,6 @@ mod tests {
 
     #[test]
     fn test_statsrequest_serialization_deserialization() {
-        // Test the StatsRequest serialization and deserialization
         let request = StatsRequest { limit: 123 };
 
         // Serialize

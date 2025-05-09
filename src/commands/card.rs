@@ -1,5 +1,5 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_card_request, CardinalityResponse};
 use crate::labels::matchers::Matchers;
 use crate::series::index::{
@@ -20,7 +20,7 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, false)?;
 
-    if is_cluster_mode(ctx) {
+    if is_clustered(ctx) {
         if options.matchers.is_empty() {
             return Err(ValkeyError::Str(
                 "TS.CARD in cluster mode requires at least one matcher",
@@ -87,6 +87,7 @@ pub fn calculate_cardinality(
 fn on_cardinality_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
     res: Vec<CardinalityResponse>,
+    _: ()
 ) {
     let count: usize = res.iter().map(|r| r.count).sum();
     ctx.reply(Ok(ValkeyValue::from(count)));

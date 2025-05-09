@@ -14,7 +14,7 @@ pub struct CardinalityCommand;
 impl MultiShardCommand for CardinalityCommand {
     type REQ = MatchFilterOptions;
     type RES = CardinalityResponse;
-
+    type STATE = ();
     fn request_type() -> CommandMessageType {
         CommandMessageType::Cardinality
     }
@@ -43,11 +43,10 @@ impl Serialized for CardinalityResponse {
                 count: self.count as u64,
             },
         );
-        // Serialize the root of the object without providing a file identifier.
+        
         bldr.finish(resp, None);
 
         let data = bldr.finished_data(); // Of type `&[u8]`
-
         buf.extend_from_slice(data);
     }
 }

@@ -39,8 +39,8 @@ fn handle_loaded(ctx: &Context, key: &[u8]) {
         with_timeseries_index(ctx, |index| {
             if !index.has_id(series.id) {
                 index.index_timeseries(series, key);
-                // on module load, our series id generator would have been reset to zero. We have to ensure
-                // that after load the counter has the value of the highest series id
+                // On module load, our series id generator would have been reset to zero. We have to ensure
+                // that after a load the counter has the value of the highest series id
                 TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
             } else {
                 logging::log_warning("Trying to load a series that is already in the index");
@@ -61,7 +61,7 @@ pub(crate) fn generic_key_event_handler(
         "loaded" => {
             handle_loaded(ctx, key);
         }
-        "del" | "evict" | "evicted" | "expire" | "expired" | "trimmed" | "set" => {
+        "del" | "evict" | "evicted" | "expire" | "expired" | "set" => {
             remove_key_from_index(ctx, key);
         }
         // SAFETY: This is safe because the key is only used in the closure and this function

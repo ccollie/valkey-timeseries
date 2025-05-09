@@ -3,7 +3,7 @@ use crate::commands::arg_parse::{
 };
 use crate::commands::range_utils::get_series_labels;
 use crate::error_consts;
-use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
 use crate::labels::{parse_series_selector, Label};
 use crate::series::index::with_matched_series;
@@ -21,8 +21,8 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let options = parse_mget_options(&mut args)?;
 
-    if is_cluster_mode(ctx) {
-        perform_remote_mget_request(ctx, &options, on_mget_request_done)?;
+    if is_clustered(ctx) {
+        perform_remote_mget_request(ctx, &options,  on_mget_request_done)?;
         return Ok(ValkeyValue::NoReply);
     }
 
@@ -95,7 +95,7 @@ pub fn process_mget_request(
     Ok(series)
 }
 
-fn on_mget_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<MultiGetResponse>) {
+fn on_mget_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<MultiGetResponse>, _: ()) {
     let count = res.iter().map(|s| s.series.len()).sum::<usize>();
     let mut arr = Vec::with_capacity(count);
 

@@ -1,5 +1,5 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::cluster::is_cluster_mode;
+use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_label_names_request, LabelNamesResponse};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
@@ -14,7 +14,7 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, true)?;
 
-    if is_cluster_mode(ctx) {
+    if is_clustered(ctx) {
         if options.matchers.is_empty() {
             return Err(ValkeyError::Str(
                 "TS.LABELNAMES in cluster mode requires at least one matcher",
@@ -64,6 +64,7 @@ pub fn process_label_names_request(
 fn on_label_names_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
     res: Vec<LabelNamesResponse>,
+    _: ()
 ) {
     let count = res.iter().map(|result| result.names.len()).sum();
     let mut names = Vec::with_capacity(count);

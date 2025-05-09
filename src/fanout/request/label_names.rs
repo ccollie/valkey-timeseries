@@ -15,7 +15,7 @@ pub struct LabelNamesCommand;
 impl MultiShardCommand for LabelNamesCommand {
     type REQ = MatchFilterOptions;
     type RES = LabelNamesResponse;
-
+    type STATE = ();
     fn request_type() -> CommandMessageType {
         CommandMessageType::LabelNames
     }

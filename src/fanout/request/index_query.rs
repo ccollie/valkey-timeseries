@@ -15,7 +15,7 @@ pub struct IndexQueryCommand;
 impl MultiShardCommand for IndexQueryCommand {
     type REQ = MatchFilterOptions;
     type RES = IndexQueryResponse;
-
+    type STATE = ();
     fn request_type() -> CommandMessageType {
         CommandMessageType::IndexQuery
     }
