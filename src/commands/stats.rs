@@ -90,9 +90,7 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
 }
 
 fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<PostingsStats>, limit: u64) {
-    // todo: we need limit....
-    let limit = 10;
-
+    let limit = limit as usize;
     let mut series_count = 0;
     let mut num_labels = 0;
     let mut num_label_pairs = 0;
