@@ -207,23 +207,11 @@ where
                 {
                     let ctx_locked = thread_ctx.lock();
                     let _ = ctx_locked.stop_timer::<u64>(inflight_request.timer_id);
+                    set_current_db(&ctx_locked, inflight_request.db);
                 };
 
                 if errors.is_empty() {
-                    let db = inflight_request.db;
-                    let save_db = {
-                        let ctx_locked = thread_ctx.lock();
-                        let save_db = get_current_db(&ctx_locked);
-                        if save_db != db {
-                            set_current_db(&ctx_locked, inflight_request.db);
-                        }
-                        save_db
-                    };
                     callback(&thread_ctx, res, state);
-                    if save_db != db {
-                        let ctx_locked = thread_ctx.lock();
-                        set_current_db(&ctx_locked, save_db);
-                    }
                 } else {
                     let ctx_locked = thread_ctx.lock();
                     if inflight_request.is_timed_out() {
@@ -295,15 +283,8 @@ fn process_request<T: MultiShardCommand>(
             return;
         }
     };
-
-    let db = header.db;
-    let save_db = {
-        let save_db = get_current_db(ctx);
-        if save_db != db {
-            set_current_db(ctx, db);
-        }
-        save_db
-    };
+    
+    set_current_db(ctx, header.db);
 
     match T::exec(ctx, request) {
         Ok(response) => {
@@ -323,10 +304,6 @@ fn process_request<T: MultiShardCommand>(
         Err(err) => {
             send_error_response(ctx, request_id, sender_id, err.into());
         }
-    }
-
-    if save_db != db {
-        set_current_db(ctx, save_db);
     }
 }
 
