@@ -16,9 +16,7 @@ cfg-if = "1.0.0"
 chili = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 croaring = "2.3"
-dtype_variant = "0.0.12"
 enquote = "1.1"
-enum_dispatch = "0.3"
 flatbuffers = "25.2"
 get-size = { version = "^0.1", features = ["derive"] }
 hashify = { version = "^0.2" }
