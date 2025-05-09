@@ -43,16 +43,15 @@ impl MessageHeader {
         let mut current_offset = 0;
 
         if buf.len() < Self::min_serialized_size() {
-            return None; // Buffer too small
+            return None; 
         }
 
         // Decode request_id as uvarint
         let (request_id, bytes_read) = read_uvarint(buf, current_offset)?;
         current_offset += bytes_read;
-
-        // Decode db as signed varint
+        
         let (db_i64, bytes_read) = read_signed_varint(buf, current_offset)?;
-        let db = db_i64 as i32; // Convert i64 to i32
+        let db = db_i64 as i32;
         current_offset += bytes_read;
 
         // Need at least 2 more bytes for msg_type and reserved

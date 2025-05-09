@@ -41,12 +41,14 @@ pub struct MultiRangeCommand;
 impl MultiShardCommand for MultiRangeCommand {
     type REQ = RangeOptions;
     type RES = MultiRangeResponse;
+    type STATE = Option<RangeGroupingOptions>; // todo: GroupingOptions
 
     fn request_type() -> CommandMessageType {
         CommandMessageType::MultiRangeQuery
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
+        // execute mrange query w/o grouping
         match process_mrange_query(ctx, req, false) {
             Ok(values) => {
                 let series = values
