@@ -11,7 +11,7 @@ use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::request::{
     CardinalityCommand, IndexQueryCommand, LabelNamesCommand, LabelValuesCommand, MessageHeader,
 };
-use crate::fanout::results_tracker::ResponseCallback;
+use crate::fanout::results_tracker::{ResponseCallback, Tracker};
 use crate::fanout::{
     CommandMessageType, MGetShardedCommand, MultiRangeCommand, MultiShardCommand, RangeCommand,
     ResultsTracker, StatsCommand, TrackerEnum,
@@ -108,13 +108,12 @@ fn get_multi_shard_command_timeout() -> Duration {
 
 pub fn send_multi_shard_request<T: MultiShardCommand, F>(
     ctx: &Context,
-    request: &T::REQ,
-    state: T::STATE,
+    request: T::REQ,
     callback: F,
 ) -> ValkeyResult<u64>
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>, T::STATE) + Send + 'static,
-    TrackerEnum: From<ResultsTracker<T::RES, T::STATE>>
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, T::REQ, Vec<T::RES>) + Send + 'static,
+    TrackerEnum: From<ResultsTracker<T>>
 {
     validate_cluster_exec(ctx)?;
 
@@ -134,7 +133,7 @@ where
 
     let node_count = fanout_cluster_message(ctx, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
 
-    let tracker = create_tracker::<T, F>(ctx, id, node_count, state, callback);
+    let tracker = create_tracker::<T, F>(ctx, id, node_count, request, callback);
 
     let mut inflight_request = InFlightRequest::new(db, msg_type, tracker);
 
@@ -155,16 +154,16 @@ fn create_tracker<T: MultiShardCommand, F>(
     ctx: &Context,
     request_id: u64,
     expected_results: usize,
-    state: T::STATE,
+    request: T::REQ,
     callback: F,
 ) -> TrackerEnum
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<T::RES>, T::STATE) + Send + 'static,
-    TrackerEnum: From<ResultsTracker<T::RES, T::STATE>>,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, T::REQ, Vec<T::RES>) + Send + 'static,
+    TrackerEnum: From<ResultsTracker<T>>,
 {
     let cbk = create_command_done_callback(ctx, request_id, callback);
 
-    let tracker: ResultsTracker<T::RES, T::STATE> = ResultsTracker::new(expected_results, state, cbk);
+    let tracker: ResultsTracker<T> = ResultsTracker::new(expected_results, request, cbk);
 
     TrackerEnum::from(tracker)
 }
@@ -190,17 +189,17 @@ fn send_error_response(
 
 /// Creates a callback function that will be called when the command is done (after all responses
 /// are received from nodes in the cluster, or the command times out).
-fn create_command_done_callback<RES, STATE, F>(
+fn create_command_done_callback<REQ, RES, F>(
     ctx: &Context,
     request_id: u64,
     callback: F
-) -> ResponseCallback<RES, STATE>
+) -> ResponseCallback<REQ, RES>
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, Vec<RES>, STATE) + Send + 'static,
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, REQ, Vec<RES>) + Send + 'static,
 {
     let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
 
-    let tracker_callback: ResponseCallback<RES, STATE> = Box::new(move |res, errors, state| {
+    let tracker_callback: ResponseCallback<REQ, RES> = Box::new(move |req, res, errors| {
         let map = INFLIGHT_REQUESTS.pin();
         match map.remove(&request_id) {
             Some(inflight_request) => {
@@ -211,7 +210,7 @@ where
                 };
 
                 if errors.is_empty() {
-                    callback(&thread_ctx, res, state);
+                    callback(&thread_ctx, req, res);
                 } else {
                     let ctx_locked = thread_ctx.lock();
                     if inflight_request.is_timed_out() {

@@ -16,12 +16,9 @@ pub struct StatsCommand;
 impl MultiShardCommand for StatsCommand {
     type REQ = StatsRequest;
     type RES = PostingsStats;
-    type STATE = u64;
-
     fn request_type() -> CommandMessageType {
         CommandMessageType::Stats
     }
-
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
         let limit = req.limit;
         Ok(with_timeseries_index(ctx, |index| index.stats("", limit)))

@@ -41,8 +41,6 @@ pub struct MultiRangeCommand;
 impl MultiShardCommand for MultiRangeCommand {
     type REQ = RangeOptions;
     type RES = MultiRangeResponse;
-    type STATE = Option<RangeGroupingOptions>; // todo: GroupingOptions
-
     fn request_type() -> CommandMessageType {
         CommandMessageType::MultiRangeQuery
     }
@@ -380,11 +378,9 @@ fn encode_series_response<'a>(
     response: &MRangeSeriesResult,
 ) -> WIPOffset<super::response_generated::SeriesResponse<'a>> {
     let key = bldr.create_string(&response.key);
-    let group_label_value = if let Some(label_value) = &response.group_label_value {
-        Some(bldr.create_string(label_value.as_str()))
-    } else {
-        None
-    };
+    let group_label_value = response.group_label_value
+        .as_ref()
+        .map(|label_value| bldr.create_string(label_value.as_str()));
     // todo: use gorilla on samples and send the buffer
     let mut samples = Vec::with_capacity(response.labels.len());
     for sample in &response.samples {
