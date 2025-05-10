@@ -17,6 +17,7 @@ table MGetValue {
 
 table SeriesResponse {
   key:string;
+  group_label_value:string;
   samples:[Sample];
   labels:[Label];
 }
