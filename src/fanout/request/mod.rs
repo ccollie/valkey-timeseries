@@ -93,9 +93,8 @@ impl std::fmt::Display for CommandMessageType {
 }
 
 pub trait MultiShardCommand {
-    type REQ: Serialized + Deserialized;
-    type RES: Serialized + Deserialized;
-    type STATE: Default;
+    type REQ: Serialized + Deserialized + Default;
+    type RES: Serialized + Deserialized + Default;
     fn request_type() -> CommandMessageType;
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES>;
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES);

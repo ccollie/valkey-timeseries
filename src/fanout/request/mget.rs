@@ -20,8 +20,6 @@ pub struct MGetShardedCommand;
 impl MultiShardCommand for MGetShardedCommand {
     type REQ = MGetRequest;
     type RES = MultiGetResponse;
-    type STATE = ();
-
     fn request_type() -> CommandMessageType {
         CommandMessageType::MGetQuery
     }

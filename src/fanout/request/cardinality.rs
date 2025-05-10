@@ -14,7 +14,6 @@ pub struct CardinalityCommand;
 impl MultiShardCommand for CardinalityCommand {
     type REQ = MatchFilterOptions;
     type RES = CardinalityResponse;
-    type STATE = ();
     fn request_type() -> CommandMessageType {
         CommandMessageType::Cardinality
     }
