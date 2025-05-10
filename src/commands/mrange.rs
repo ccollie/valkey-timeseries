@@ -4,9 +4,7 @@ use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{
-    perform_remote_mrange_request, MultiRangeResponse,
-};
+use crate::fanout::{perform_remote_mrange_request, MultiRangeResponse};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::index::series_by_matchers;
@@ -15,8 +13,8 @@ use crate::series::request_types::{
 };
 use crate::series::{SeriesGuard, SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
-use rayon::iter::ParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use valkey_module::{
@@ -79,13 +77,13 @@ fn on_mrange_request_done(
         .into_iter()
         .flat_map(|result| result.series.into_iter())
         .collect::<Vec<_>>();
-    
+
     let series = if let Some(grouping) = req.grouping {
         group_sharded_series(all_series, &grouping)
     } else {
         all_series
     };
-    
+
     let result = ValkeyValue::Array(series.into_iter().map(|x| x.into()).collect());
     ctx.reply(Ok(result));
 }
@@ -159,7 +157,7 @@ fn handle_aggregation_and_grouping(
     ) -> MRangeSeriesResult {
         // according to docs, the GROUPBY/REDUCE is applied post-aggregation stage.
         let key = format!("{}={}", groupings.group_label, group.label_value);
-        let aggregates = aggregate_grouped_samples(group,options, aggregations);
+        let aggregates = aggregate_grouped_samples(group, options, aggregations);
         let samples = group_reduce(aggregates.into_iter(), groupings.aggregator.clone());
         MRangeSeriesResult {
             key,
@@ -314,7 +312,7 @@ fn aggregate_grouped_samples(
 
     // todo: maybe use rayon/chili rather than the multi iterator. Could significantly speed up
     // the process if we go beyond a small number of chunks
-    
+
     let iterators = get_sample_iterators(&group.series, options);
     let iter = MultiSeriesSampleIter::new(iterators);
     let (start_ts, end_ts) = options.date_range.get_timestamps(None);
@@ -488,13 +486,11 @@ fn group_series_by_label(
         .collect()
 }
 
-
 /// Apply GROUPBY/REDUCE to the series coming from remote nodes
 fn group_sharded_series(
     metas: Vec<MRangeSeriesResult>,
     grouping: &RangeGroupingOptions,
 ) -> Vec<MRangeSeriesResult> {
-
     fn handle_reducer(
         series: &[MRangeSeriesResult],
         grouping: &RangeGroupingOptions,
@@ -508,7 +504,7 @@ fn group_sharded_series(
         let aggregator = grouping.aggregator.clone();
         group_reduce(multi_iter, aggregator)
     }
-    
+
     let mut grouped: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
 
     for meta in metas.into_iter() {
@@ -526,7 +522,7 @@ fn group_sharded_series(
 
     let reducer = grouping.aggregator.name();
     let label = &grouping.group_label;
-    
+
     grouped
         .par_iter()
         .map(|(label_value, series)| {
@@ -538,10 +534,10 @@ fn group_sharded_series(
                     sources.push(',');
                 }
             }
-            
+
             // get the value of the label (the string past the =)
             let group_label_value = label_value.split('=').nth(1).unwrap_or("");
-            
+
             let samples = handle_reducer(series, grouping);
             let labels = vec![
                 Some(Label {

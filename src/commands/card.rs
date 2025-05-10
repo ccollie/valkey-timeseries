@@ -87,7 +87,7 @@ pub fn calculate_cardinality(
 fn on_cardinality_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
     _req: MatchFilterOptions,
-    res: Vec<CardinalityResponse>
+    res: Vec<CardinalityResponse>,
 ) {
     let count: usize = res.iter().map(|r| r.count).sum();
     ctx.reply(Ok(ValkeyValue::from(count)));

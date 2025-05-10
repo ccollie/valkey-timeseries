@@ -50,7 +50,7 @@ impl Error {
             kind: ErrorKind::Failed,
         }
     }
-    
+
     pub fn serialization(description: String) -> Self {
         Self {
             extra: description,

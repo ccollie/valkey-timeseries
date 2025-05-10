@@ -89,7 +89,11 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     ValkeyValue::Map(res)
 }
 
-fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, req: StatsRequest, res: Vec<PostingsStats>) {
+fn on_stats_request_done(
+    ctx: &ThreadSafeContext<BlockedClient>,
+    req: StatsRequest,
+    res: Vec<PostingsStats>,
+) {
     let limit = req.limit;
     let mut series_count = 0;
     let mut num_labels = 0;

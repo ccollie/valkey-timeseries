@@ -71,22 +71,21 @@ pub fn get_series_labels<'a>(
 /// aggregates non-NAN samples based on the specified aggregation options.
 pub(crate) fn group_reduce(
     samples: impl Iterator<Item = Sample>,
-    aggregator : Aggregator,
+    aggregator: Aggregator,
 ) -> Vec<Sample> {
-    let mut samples = samples.into_iter()
-        .filter(|sample| !sample.value.is_nan());
+    let mut samples = samples.into_iter().filter(|sample| !sample.value.is_nan());
     let mut aggregator = aggregator;
-    
+
     let mut current = if let Some(current) = samples.next() {
         aggregator.update(current.value);
         current
     } else {
         return vec![];
     };
-    
+
     let mut result = vec![];
 
-    for next in samples{
+    for next in samples {
         if next.timestamp == current.timestamp {
             aggregator.update(next.value);
         } else {

@@ -1,3 +1,4 @@
+extern crate enum_dispatch;
 extern crate get_size;
 extern crate strum;
 extern crate strum_macros;

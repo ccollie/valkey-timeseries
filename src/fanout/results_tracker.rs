@@ -1,8 +1,6 @@
 use super::{
-    CardinalityCommand, IndexQueryCommand,
-    LabelNamesCommand, LabelValuesCommand,
-    MGetShardedCommand, MultiRangeCommand, MultiShardCommand,
-    RangeCommand, StatsCommand,
+    CardinalityCommand, IndexQueryCommand, LabelNamesCommand, LabelValuesCommand,
+    MGetShardedCommand, MultiRangeCommand, MultiShardCommand, RangeCommand, StatsCommand,
 };
 use crate::fanout::error::Error;
 use enum_dispatch::enum_dispatch;

@@ -43,13 +43,13 @@ impl MessageHeader {
         let mut current_offset = 0;
 
         if buf.len() < Self::min_serialized_size() {
-            return None; 
+            return None;
         }
 
         // Decode request_id as uvarint
         let (request_id, bytes_read) = read_uvarint(buf, current_offset)?;
         current_offset += bytes_read;
-        
+
         let (db_i64, bytes_read) = read_signed_varint(buf, current_offset)?;
         let db = db_i64 as i32;
         current_offset += bytes_read;

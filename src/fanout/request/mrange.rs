@@ -18,7 +18,9 @@ use crate::common::{Sample, Timestamp};
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::SeriesLabel;
-use crate::series::request_types::{AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions};
+use crate::series::request_types::{
+    AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
+};
 use crate::series::ValueFilter;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
@@ -50,7 +52,7 @@ impl MultiShardCommand for MultiRangeCommand {
         // For grouping, all raw or aggregated data should be sent to the requesting node
         // since grouping is cross-series. However, we need to take care of the case where
         // we group by a label that is not selected either by WITH_LABELS or SELECTED_LABELS.
-        // 
+        //
         let series = process_mrange_query(ctx, req, false)?;
         Ok(MultiRangeResponse { series })
     }
@@ -378,7 +380,8 @@ fn encode_series_response<'a>(
     response: &MRangeSeriesResult,
 ) -> WIPOffset<super::response_generated::SeriesResponse<'a>> {
     let key = bldr.create_string(&response.key);
-    let group_label_value = response.group_label_value
+    let group_label_value = response
+        .group_label_value
         .as_ref()
         .map(|label_value| bldr.create_string(label_value.as_str()));
     // todo: use gorilla on samples and send the buffer
@@ -672,12 +675,18 @@ mod tests {
         assert_eq!(resp.series.len(), resp2.series.len());
 
         assert_eq!(resp.series[0].key, resp2.series[0].key);
-        assert_eq!(resp.series[0].group_label_value, resp2.series[0].group_label_value);
+        assert_eq!(
+            resp.series[0].group_label_value,
+            resp2.series[0].group_label_value
+        );
         assert_eq!(resp.series[0].labels, resp2.series[0].labels);
         assert_eq!(resp.series[0].samples, resp2.series[0].samples);
 
         assert_eq!(resp.series[1].key, resp2.series[1].key);
-        assert_eq!(resp.series[1].group_label_value, resp2.series[1].group_label_value);
+        assert_eq!(
+            resp.series[1].group_label_value,
+            resp2.series[1].group_label_value
+        );
         assert_eq!(resp.series[1].labels, resp2.series[1].labels);
         assert_eq!(resp.series[1].samples, resp2.series[1].samples);
     }
