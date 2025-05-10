@@ -1,7 +1,7 @@
 use crate::aggregators::{AggOp, AggregateIterator, Aggregator};
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
-use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
+use crate::series::request_types::{AggregationOptions, RangeOptions};
 use crate::series::TimeSeries;
 
 pub(crate) fn get_range(
@@ -74,7 +74,7 @@ pub(crate) fn group_reduce(
     aggregator : Aggregator,
 ) -> Vec<Sample> {
     let mut samples = samples.into_iter()
-        .filter(|sample| !sample.value.is_nan());;
+        .filter(|sample| !sample.value.is_nan());
     let mut aggregator = aggregator;
     
     let mut current = if let Some(current) = samples.next() {

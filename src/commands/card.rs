@@ -27,7 +27,7 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             ));
         }
         // in cluster mode, we need to send the request to all nodes
-        perform_remote_card_request(ctx, &options, on_cardinality_request_done)?;
+        perform_remote_card_request(ctx, options, on_cardinality_request_done)?;
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
     }
@@ -86,8 +86,8 @@ pub fn calculate_cardinality(
 
 fn on_cardinality_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
-    res: Vec<CardinalityResponse>,
-    _: ()
+    _req: MatchFilterOptions,
+    res: Vec<CardinalityResponse>
 ) {
     let count: usize = res.iter().map(|r| r.count).sum();
     ctx.reply(Ok(ValkeyValue::from(count)));

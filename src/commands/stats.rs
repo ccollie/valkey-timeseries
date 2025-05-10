@@ -1,6 +1,6 @@
 use crate::commands::arg_parse::parse_integer_arg;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::perform_remote_stats_request;
+use crate::fanout::{perform_remote_stats_request, StatsRequest};
 use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats, StatsMaxHeap};
 use ahash::AHashMap;
 use std::collections::HashMap;
@@ -89,8 +89,8 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     ValkeyValue::Map(res)
 }
 
-fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<PostingsStats>, limit: u64) {
-    let limit = limit as usize;
+fn on_stats_request_done(ctx: &ThreadSafeContext<BlockedClient>, req: StatsRequest, res: Vec<PostingsStats>) {
+    let limit = req.limit;
     let mut series_count = 0;
     let mut num_labels = 0;
     let mut num_label_pairs = 0;

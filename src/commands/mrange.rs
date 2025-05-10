@@ -72,15 +72,15 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
 
 fn on_mrange_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
+    req: RangeOptions,
     results: Vec<MultiRangeResponse>,
-    grouping: Option<RangeGroupingOptions>,
 ) {
     let all_series = results
         .into_iter()
         .flat_map(|result| result.series.into_iter())
         .collect::<Vec<_>>();
     
-    let series = if let Some(grouping) = grouping {
+    let series = if let Some(grouping) = req.grouping {
         group_sharded_series(all_series, &grouping)
     } else {
         all_series
@@ -318,9 +318,7 @@ fn aggregate_grouped_samples(
     let iterators = get_sample_iterators(&group.series, options);
     let iter = MultiSeriesSampleIter::new(iterators);
     let (start_ts, end_ts) = options.date_range.get_timestamps(None);
-    let samples = aggregate_samples(iter, start_ts, end_ts, aggregation_options);
-
-    samples
+    aggregate_samples(iter, start_ts, end_ts, aggregation_options)
 }
 
 fn get_raw_samples(
@@ -498,7 +496,7 @@ fn group_sharded_series(
 ) -> Vec<MRangeSeriesResult> {
 
     fn handle_reducer(
-        series: &Vec<MRangeSeriesResult>,
+        series: &[MRangeSeriesResult],
         grouping: &RangeGroupingOptions,
     ) -> Vec<Sample> {
         let mut iterators: Vec<SampleIter> = Vec::with_capacity(series.len());

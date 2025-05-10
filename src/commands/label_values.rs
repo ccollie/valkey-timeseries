@@ -34,7 +34,7 @@ pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             filter,
         };
         // in cluster mode, we need to send the request to all nodes
-        perform_remote_label_values_request(ctx, &options, on_label_values_request_done)?;
+        perform_remote_label_values_request(ctx, options, on_label_values_request_done)?;
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
     }
@@ -81,8 +81,8 @@ pub fn process_label_values_request(
 
 fn on_label_values_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
+    _req: LabelValuesRequest,
     res: Vec<LabelValuesResponse>,
-    _: ()
 ) {
     let count = res.iter().map(|result| result.values.len()).sum();
     let mut values = Vec::with_capacity(count);

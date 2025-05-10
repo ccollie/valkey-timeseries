@@ -1,34 +1,45 @@
 use super::{
-    CardinalityResponse, IndexQueryResponse, LabelNamesResponse, LabelValuesResponse,
-    MultiGetResponse, MultiRangeResponse, RangeResponse,
+    CardinalityCommand, IndexQueryCommand,
+    LabelNamesCommand, LabelValuesCommand,
+    MGetShardedCommand, MultiRangeCommand, MultiShardCommand,
+    RangeCommand, StatsCommand,
 };
 use crate::fanout::error::Error;
-use crate::series::index::PostingsStats;
-use crate::series::request_types::RangeGroupingOptions;
+use enum_dispatch::enum_dispatch;
 use std::sync::{Mutex, MutexGuard};
 
-pub type ResponseCallback<T, S> = Box<dyn FnOnce(Vec<T>, Vec<Error>, S) + Send>;
+pub type ResponseCallback<REQ, RES> = Box<dyn FnOnce(REQ, Vec<RES>, Vec<Error>) + Send>;
 
+#[enum_dispatch]
+pub trait Tracker {
+    fn raise_error(&self, error: Error);
+    fn call_done(&self);
+    fn is_completed(&self) -> bool;
+}
 
-struct ResultsTrackerInner<T, S: Default = ()> {
-    results: Vec<T>,
+struct ResultsTrackerInner<T: MultiShardCommand> {
+    request: T::REQ,
+    results: Vec<T::RES>,
     errors: Vec<Error>,
-    callback: Option<ResponseCallback<T, S>>,
-    state: S,
+    callback: Option<ResponseCallback<T::REQ, T::RES>>,
     outstanding_requests: u32,
 }
 
-pub struct ResultsTracker<T, S: Default = ()> {
-    inner: Mutex<ResultsTrackerInner<T, S>>,
+pub struct ResultsTracker<T: MultiShardCommand> {
+    inner: Mutex<ResultsTrackerInner<T>>,
 }
 
-impl<T, S: Default> ResultsTracker<T, S> {
-    pub fn new(outstanding_requests: usize, state: S, callback: ResponseCallback<T, S>) -> Self {
+impl<T: MultiShardCommand> ResultsTracker<T> {
+    pub fn new(
+        outstanding_requests: usize,
+        request: T::REQ,
+        callback: ResponseCallback<T::REQ, T::RES>,
+    ) -> Self {
         let inner = ResultsTrackerInner {
             results: Vec::new(),
             errors: Vec::new(),
             callback: Some(callback),
-            state,
+            request,
             outstanding_requests: outstanding_requests as u32,
         };
         Self {
@@ -36,31 +47,31 @@ impl<T, S: Default> ResultsTracker<T, S> {
         }
     }
 
-    pub fn add_result(&self, result: T) {
+    pub fn add_result(&self, result: T::RES) {
         let mut inner = self.inner.lock().unwrap();
         inner.results.push(result)
     }
 
-    pub fn update(&self, result: T) -> bool {
+    pub fn update(&self, result: T::RES) -> bool {
         let mut inner = self.inner.lock().unwrap();
         inner.results.push(result);
         self.decrement_internal(&mut inner)
     }
 
-    fn callback_if_needed(inner: &mut MutexGuard<ResultsTrackerInner<T, S>>) -> bool {
+    fn callback_if_needed(inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
         if inner.outstanding_requests != 0 {
             return false;
         }
         if let Some(callback) = inner.callback.take() {
-            let final_results: Vec<T> = std::mem::take(&mut inner.results);
+            let final_results: Vec<T::RES> = std::mem::take(&mut inner.results);
             let errors: Vec<Error> = std::mem::take(&mut inner.errors);
-            let state = std::mem::take(&mut inner.state);
-            callback(final_results, errors, state);
+            let request = std::mem::take(&mut inner.request);
+            callback(request, final_results, errors);
         }
         true
     }
 
-    fn decrement_internal(&self, inner: &mut MutexGuard<ResultsTrackerInner<T, S>>) -> bool {
+    fn decrement_internal(&self, inner: &mut MutexGuard<ResultsTrackerInner<T>>) -> bool {
         inner.outstanding_requests = inner.outstanding_requests.saturating_sub(1);
         // If no outstanding request, execute the callback
         Self::callback_if_needed(inner)
@@ -85,102 +96,28 @@ impl<T, S: Default> ResultsTracker<T, S> {
     }
 }
 
+impl<T: MultiShardCommand> Tracker for ResultsTracker<T> {
+    fn raise_error(&self, error: Error) {
+        self.raise_error(error);
+    }
+
+    fn call_done(&self) {
+        self.call_done();
+    }
+
+    fn is_completed(&self) -> bool {
+        self.completed()
+    }
+}
+
+#[enum_dispatch(Tracker)]
 pub enum TrackerEnum {
-    IndexQuery(ResultsTracker<IndexQueryResponse>),
-    RangeQuery(ResultsTracker<RangeResponse>),
-    MultiRangeQuery(ResultsTracker<MultiRangeResponse, Option<RangeGroupingOptions>>),
-    MGetQuery(ResultsTracker<MultiGetResponse>),
-    LabelNames(ResultsTracker<LabelNamesResponse>),
-    LabelValues(ResultsTracker<LabelValuesResponse>),
-    Cardinality(ResultsTracker<CardinalityResponse>),
-    Stats(ResultsTracker<PostingsStats, u64>),
-}
-
-impl TrackerEnum {
-    pub fn raise_error(&self, error: Error) {
-        match self {
-            TrackerEnum::IndexQuery(t) => t.raise_error(error),
-            TrackerEnum::RangeQuery(t) => t.raise_error(error),
-            TrackerEnum::MultiRangeQuery(t) => t.raise_error(error),
-            TrackerEnum::MGetQuery(t) => t.raise_error(error),
-            TrackerEnum::LabelNames(t) => t.raise_error(error),
-            TrackerEnum::LabelValues(t) => t.raise_error(error),
-            TrackerEnum::Cardinality(t) => t.raise_error(error),
-            TrackerEnum::Stats(t) => t.raise_error(error),
-        }
-    }
-
-    pub fn call_done(&self) {
-        match self {
-            TrackerEnum::IndexQuery(t) => t.call_done(),
-            TrackerEnum::RangeQuery(t) => t.call_done(),
-            TrackerEnum::MultiRangeQuery(t) => t.call_done(),
-            TrackerEnum::MGetQuery(t) => t.call_done(),
-            TrackerEnum::LabelNames(t) => t.call_done(),
-            TrackerEnum::LabelValues(t) => t.call_done(),
-            TrackerEnum::Cardinality(t) => t.call_done(),
-            TrackerEnum::Stats(t) => t.call_done(),
-        }
-    }
-
-    pub fn is_completed(&self) -> bool {
-        match self {
-            TrackerEnum::IndexQuery(t) => t.completed(),
-            TrackerEnum::RangeQuery(t) => t.completed(),
-            TrackerEnum::MultiRangeQuery(t) => t.completed(),
-            TrackerEnum::MGetQuery(t) => t.completed(),
-            TrackerEnum::LabelNames(t) => t.completed(),
-            TrackerEnum::LabelValues(t) => t.completed(),
-            TrackerEnum::Cardinality(t) => t.completed(),
-            TrackerEnum::Stats(t) => t.completed(),
-        }
-    }
-}
-
-impl From<ResultsTracker<IndexQueryResponse>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<IndexQueryResponse>) -> Self {
-        TrackerEnum::IndexQuery(tracker)
-    }
-}
-
-impl From<ResultsTracker<RangeResponse>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<RangeResponse>) -> Self {
-        TrackerEnum::RangeQuery(tracker)
-    }
-}
-
-impl From<ResultsTracker<MultiRangeResponse, Option<RangeGroupingOptions>>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<MultiRangeResponse, Option<RangeGroupingOptions>>) -> Self {
-        TrackerEnum::MultiRangeQuery(tracker)
-    }
-}
-
-impl From<ResultsTracker<MultiGetResponse>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<MultiGetResponse>) -> Self {
-        TrackerEnum::MGetQuery(tracker)
-    }
-}
-
-impl From<ResultsTracker<LabelNamesResponse>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<LabelNamesResponse>) -> Self {
-        TrackerEnum::LabelNames(tracker)
-    }
-}
-
-impl From<ResultsTracker<LabelValuesResponse>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<LabelValuesResponse>) -> Self {
-        TrackerEnum::LabelValues(tracker)
-    }
-}
-
-impl From<ResultsTracker<CardinalityResponse>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<CardinalityResponse>) -> Self {
-        TrackerEnum::Cardinality(tracker)
-    }
-}
-
-impl From<ResultsTracker<PostingsStats, u64>> for TrackerEnum {
-    fn from(tracker: ResultsTracker<PostingsStats, u64>) -> Self {
-        TrackerEnum::Stats(tracker)
-    }
+    IndexQuery(ResultsTracker<IndexQueryCommand>),
+    RangeQuery(ResultsTracker<RangeCommand>),
+    MultiRangeQuery(ResultsTracker<MultiRangeCommand>),
+    MGetQuery(ResultsTracker<MGetShardedCommand>),
+    LabelNames(ResultsTracker<LabelNamesCommand>),
+    LabelValues(ResultsTracker<LabelValuesCommand>),
+    Cardinality(ResultsTracker<CardinalityCommand>),
+    Stats(ResultsTracker<StatsCommand>),
 }

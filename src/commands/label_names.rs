@@ -21,7 +21,7 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             ));
         }
         // in cluster mode, we need to send the request to all nodes
-        perform_remote_label_names_request(ctx, &options, on_label_names_request_done)?;
+        perform_remote_label_names_request(ctx, options, on_label_names_request_done)?;
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
     }
@@ -63,8 +63,8 @@ pub fn process_label_names_request(
 
 fn on_label_names_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
+    _req: MatchFilterOptions,
     res: Vec<LabelNamesResponse>,
-    _: ()
 ) {
     let count = res.iter().map(|result| result.names.len()).sum();
     let mut names = Vec::with_capacity(count);

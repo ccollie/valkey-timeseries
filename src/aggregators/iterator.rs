@@ -163,10 +163,9 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
     }
 
     fn finalize_bucket(&mut self, last_ts: Option<Timestamp>) -> Sample {
-        let bucket = self
+        self
             .aggregator
-            .finalize_bucket(last_ts, &mut self.empty_buckets);
-        bucket
+            .finalize_bucket(last_ts, &mut self.empty_buckets)
     }
 }
 

@@ -22,7 +22,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_mget_options(&mut args)?;
 
     if is_clustered(ctx) {
-        perform_remote_mget_request(ctx, &options,  on_mget_request_done)?;
+        perform_remote_mget_request(ctx, options,  on_mget_request_done)?;
         return Ok(ValkeyValue::NoReply);
     }
 
@@ -95,7 +95,7 @@ pub fn process_mget_request(
     Ok(series)
 }
 
-fn on_mget_request_done(ctx: &ThreadSafeContext<BlockedClient>, res: Vec<MultiGetResponse>, _: ()) {
+fn on_mget_request_done(ctx: &ThreadSafeContext<BlockedClient>, _req: MGetRequest, res: Vec<MultiGetResponse>) {
     let count = res.iter().map(|s| s.series.len()).sum::<usize>();
     let mut arr = Vec::with_capacity(count);
 

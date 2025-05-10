@@ -28,7 +28,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             limit: None,
         };
         // in cluster mode, we need to send the request to all nodes
-        perform_remote_index_query_request(ctx, &options, on_query_index_request_done)?;
+        perform_remote_index_query_request(ctx, options, on_query_index_request_done)?;
         // We will reply later, from the thread
         return Ok(ValkeyValue::NoReply);
     }
@@ -47,8 +47,8 @@ pub fn process_query_index_request(
 
 fn on_query_index_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
+    _req: MatchFilterOptions,
     results: Vec<IndexQueryResponse>,
-    _: ()
 ) {
     let count = results.iter().map(|result| result.keys.len()).sum();
     let mut keys = Vec::with_capacity(count);

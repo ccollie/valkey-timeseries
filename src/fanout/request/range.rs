@@ -17,8 +17,6 @@ pub struct RangeCommand;
 impl MultiShardCommand for RangeCommand {
     type REQ = MatchFilterOptions;
     type RES = RangeResponse;
-    type STATE = ();
-
     fn request_type() -> CommandMessageType {
         CommandMessageType::RangeQuery
     }
