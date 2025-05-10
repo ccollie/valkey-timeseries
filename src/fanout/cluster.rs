@@ -2,15 +2,15 @@ use crate::common::time::valkey_cached_time_millis;
 use ahash::AHashMap;
 use blart::AsBytes;
 use rand::Rng;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{LazyLock, RwLock, RwLockReadGuard};
-use valkey_module::ContextFlags;
 use valkey_module::{
     Context, Status, ValkeyModuleCtx, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_FAIL,
     VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
 };
+use valkey_module::{ContextFlags, ValkeyModule_GetMyClusterID};
 
 // todo: move to config.rs
 const CACHE_TIMEOUT: u64 = 5000;
@@ -228,6 +228,16 @@ unsafe fn load_targets_for_fanout(
     if !nodes_list.is_null() {
         valkey_module::ValkeyModule_FreeClusterNodesList
             .expect("ValkeyModule_FreeClusterNodesList function does not exist")(nodes_list);
+    }
+}
+
+pub fn get_current_node() -> CString {
+    unsafe {
+        // C API: Get current node's cluster ID
+        let node_id = ValkeyModule_GetMyClusterID
+            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
+
+        CStr::from_ptr(node_id).to_owned()
     }
 }
 

@@ -1,5 +1,5 @@
-use crate::common::ids::flake_id;
 use papaya::HashMap;
+use rand::random;
 use std::sync::LazyLock;
 use std::time::Duration;
 use valkey_module::{Context, RedisModuleTimerID};
@@ -42,7 +42,7 @@ where
     F: FnOnce(T) + Send + 'static,
     T: Send + 'static,
 {
-    let id = flake_id();
+    let id = random();
 
     // Create a timer; store the handle to be able to stop it inside the callback
     let timer_handle = ctx.create_timer(
