@@ -1,4 +1,4 @@
-use crate::aggregators::{AggOp, AggregateIterator};
+use crate::aggregators::{AggOp, AggregateIterator, Aggregator};
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
@@ -67,22 +67,26 @@ pub fn get_series_labels<'a>(
     }
 }
 
-pub(crate) fn group_samples_internal(
+/// Perform the GROUP BY REDUCE operation on the samples. Specifically, it
+/// aggregates non-NAN samples based on the specified aggregation options.
+pub(crate) fn group_reduce(
     samples: impl Iterator<Item = Sample>,
-    option: &RangeGroupingOptions,
+    aggregator : Aggregator,
 ) -> Vec<Sample> {
-    let mut iter = samples;
-    let mut aggregator = option.aggregator.clone();
-    let mut current = if let Some(current) = iter.next() {
+    let mut samples = samples.into_iter()
+        .filter(|sample| !sample.value.is_nan());;
+    let mut aggregator = aggregator;
+    
+    let mut current = if let Some(current) = samples.next() {
         aggregator.update(current.value);
         current
     } else {
         return vec![];
     };
-
+    
     let mut result = vec![];
 
-    for next in iter {
+    for next in samples{
         if next.timestamp == current.timestamp {
             aggregator.update(next.value);
         } else {

@@ -13,6 +13,8 @@ struct AggregationHelper {
     bucket_range_end: Timestamp,
     aligned_timestamp: Timestamp,
     last_value: f64,
+    all_nans: bool,
+    count: usize,
     report_empty: bool,
 }
 
@@ -27,6 +29,8 @@ impl AggregationHelper {
             bucket_range_start: 0,
             bucket_range_end: 0,
             last_value: f64::NAN,
+            all_nans: true,
+            count: 0,
         }
     }
 
@@ -67,9 +71,19 @@ impl AggregationHelper {
     }
 
     fn finalize_internal(&mut self) -> Sample {
-        let value = self.aggregator.finalize();
+        let value = if self.all_nans {
+            // For sum, return NaN if all values are NaN. If we have no samples, then return 0
+            if self.count == 0 {
+                self.aggregator.empty_value()
+            } else {
+                f64::NAN
+            }
+        } else {
+            self.aggregator.finalize()
+        };
         let timestamp = self.calculate_bucket_start();
         self.aggregator.reset();
+        self.all_nans = true;
         Sample { timestamp, value }
     }
 
@@ -90,12 +104,17 @@ impl AggregationHelper {
         } else {
             self.advance_current_bucket();
         }
+        self.count = 0;
         bucket
     }
 
     fn update(&mut self, value: f64) {
-        self.aggregator.update(value);
-        self.last_value = value;
+        if !value.is_nan() {
+            self.aggregator.update(value);
+            self.last_value = value;
+            self.all_nans = false;
+        }
+        self.count += 1;
     }
 
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
@@ -130,7 +149,6 @@ pub struct AggregateIterator<T: Iterator<Item = Sample>> {
     aggregator: AggregationHelper,
     empty_buckets: VecDeque<Sample>,
     init: bool,
-    count: usize,
 }
 
 impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
@@ -141,20 +159,13 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
             aggregator,
             empty_buckets: VecDeque::new(),
             init: false,
-            count: 0,
         }
-    }
-
-    fn update(&mut self, value: f64) {
-        self.aggregator.update(value);
-        self.count += 1;
     }
 
     fn finalize_bucket(&mut self, last_ts: Option<Timestamp>) -> Sample {
         let bucket = self
             .aggregator
             .finalize_bucket(last_ts, &mut self.empty_buckets);
-        self.count = 0;
         bucket
     }
 }
@@ -173,7 +184,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
             if let Some(sample) = self.inner.next() {
                 self.init = true;
                 self.aggregator.update_bucket_timestamps(sample.timestamp);
-                self.update(sample.value);
+                self.aggregator.update(sample.value);
             } else {
                 return None; // Empty input stream
             }
@@ -183,14 +194,14 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
         while let Some(sample) = self.inner.next() {
             if self.aggregator.should_finalize_bucket(sample.timestamp) {
                 let bucket = self.finalize_bucket(Some(sample.timestamp));
-                self.update(sample.value);
+                self.aggregator.update(sample.value);
                 return Some(bucket);
             }
-            self.update(sample.value);
+            self.aggregator.update(sample.value);
         }
 
         // Handle the final bucket if we haven't processed it yet
-        if self.count > 0 {
+        if self.aggregator.count > 0 {
             return Some(self.finalize_bucket(None));
         }
 

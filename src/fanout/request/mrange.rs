@@ -17,8 +17,8 @@ use crate::commands::process_mrange_query;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
-use crate::labels::{Label, SeriesLabel};
-use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
+use crate::labels::SeriesLabel;
+use crate::series::request_types::{AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions};
 use crate::series::ValueFilter;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
@@ -48,24 +48,13 @@ impl MultiShardCommand for MultiRangeCommand {
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<Self::RES> {
-        // execute mrange query w/o grouping
-        match process_mrange_query(ctx, req, false) {
-            Ok(values) => {
-                let series = values
-                    .into_iter()
-                    .map(|x| SeriesResponse {
-                        key: x.key,
-                        labels: x.labels,
-                        samples: x.samples,
-                    })
-                    .collect();
-                Ok(MultiRangeResponse { series })
-            }
-            Err(e) => {
-                // Handle error
-                Err(e)
-            }
-        }
+        // Execute mrange query w/o grouping
+        // For grouping, all raw or aggregated data should be sent to the requesting node
+        // since grouping is cross-series. However, we need to take care of the case where
+        // we group by a label that is not selected either by WITH_LABELS or SELECTED_LABELS.
+        // 
+        let series = process_mrange_query(ctx, req, false)?;
+        Ok(MultiRangeResponse { series })
     }
 
     fn update_tracker(tracker: &TrackerEnum, res: Self::RES) {
@@ -78,15 +67,8 @@ impl MultiShardCommand for MultiRangeCommand {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct SeriesResponse {
-    pub key: String,
-    pub labels: Vec<Option<Label>>,
-    pub samples: Vec<Sample>,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct MultiRangeResponse {
-    pub series: Vec<SeriesResponse>,
+    pub series: Vec<MRangeSeriesResult>,
 }
 
 impl Serialized for MultiRangeResponse {
@@ -395,9 +377,14 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
 
 fn encode_series_response<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
-    response: &SeriesResponse,
+    response: &MRangeSeriesResult,
 ) -> WIPOffset<super::response_generated::SeriesResponse<'a>> {
     let key = bldr.create_string(&response.key);
+    let group_label_value = if let Some(label_value) = &response.group_label_value {
+        Some(bldr.create_string(label_value.as_str()))
+    } else {
+        None
+    };
     // todo: use gorilla on samples and send the buffer
     let mut samples = Vec::with_capacity(response.labels.len());
     for sample in &response.samples {
@@ -435,14 +422,16 @@ fn encode_series_response<'a>(
         bldr,
         &SeriesResponseArgs {
             key: Some(key),
+            group_label_value,
             samples: Some(samples),
             labels: Some(labels),
         },
     )
 }
 
-fn decode_series_response(reader: &FBSeriesResponse) -> SeriesResponse {
+fn decode_series_response(reader: &FBSeriesResponse) -> MRangeSeriesResult {
     let key = reader.key().unwrap_or_default().to_string();
+    let group_label_value = reader.group_label_value().map(|x| x.to_string());
     let samples = reader
         .samples()
         .map(|sample| {
@@ -470,8 +459,9 @@ fn decode_series_response(reader: &FBSeriesResponse) -> SeriesResponse {
         })
         .unwrap_or_default();
 
-    SeriesResponse {
+    MRangeSeriesResult {
         key,
+        group_label_value,
         samples,
         labels,
     }
@@ -484,6 +474,7 @@ mod tests {
     use crate::labels::matchers::{
         Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
     };
+    use crate::labels::Label;
     use crate::series::TimestampRange;
 
     fn make_sample_matchers() -> Matchers {
@@ -646,8 +637,9 @@ mod tests {
 
     #[test]
     fn test_multi_range_response_serialize_deserialize() {
-        let sample1 = SeriesResponse {
+        let sample1 = MRangeSeriesResult {
             key: "series1".to_string(),
+            group_label_value: Some("group1".to_string()),
             labels: vec![
                 Some(Label::new("name", "series1")),
                 Some(Label::new("region", "us-west")),
@@ -659,8 +651,9 @@ mod tests {
             ],
         };
 
-        let sample2 = SeriesResponse {
+        let sample2 = MRangeSeriesResult {
             key: "series2".to_string(),
+            group_label_value: None,
             labels: vec![
                 Some(Label::new("name", "series2")),
                 Some(Label::new("region", "us-east")),
@@ -683,10 +676,12 @@ mod tests {
         assert_eq!(resp.series.len(), resp2.series.len());
 
         assert_eq!(resp.series[0].key, resp2.series[0].key);
+        assert_eq!(resp.series[0].group_label_value, resp2.series[0].group_label_value);
         assert_eq!(resp.series[0].labels, resp2.series[0].labels);
         assert_eq!(resp.series[0].samples, resp2.series[0].samples);
 
         assert_eq!(resp.series[1].key, resp2.series[1].key);
+        assert_eq!(resp.series[1].group_label_value, resp2.series[1].group_label_value);
         assert_eq!(resp.series[1].labels, resp2.series[1].labels);
         assert_eq!(resp.series[1].samples, resp2.series[1].samples);
     }

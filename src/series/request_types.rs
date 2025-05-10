@@ -58,11 +58,33 @@ pub struct RangeOptions {
     pub grouping: Option<RangeGroupingOptions>,
 }
 
-#[derive(Default)]
-pub(crate) struct MRangeResultRow {
+#[derive(Default, Clone, Debug)]
+pub(crate) struct MRangeSeriesResult {
     pub(crate) key: String,
+    pub(crate) group_label_value: Option<String>,
     pub(crate) labels: Vec<Option<Label>>,
     pub(crate) samples: Vec<Sample>,
+}
+
+impl From<MRangeSeriesResult> for ValkeyValue {
+    fn from(series: MRangeSeriesResult) -> Self {
+        let labels: Vec<_> = series
+            .labels
+            .into_iter()
+            .map(|label| match label {
+                Some(label) => label.into(),
+                None => ValkeyValue::Null,
+            })
+            .collect();
+
+        let samples: Vec<_> = series.samples.into_iter().map(|s| s.into()).collect();
+        let series = vec![
+            ValkeyValue::BulkString(series.key),
+            ValkeyValue::Array(labels),
+            ValkeyValue::Array(samples),
+        ];
+        ValkeyValue::Array(series)
+    }
 }
 
 #[derive(Debug, Default, Clone)]

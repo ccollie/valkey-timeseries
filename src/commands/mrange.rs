@@ -1,6 +1,5 @@
 use super::parse_range_options;
-use super::range_utils::{aggregate_samples, get_series_labels, group_samples_internal};
-use crate::aggregators::{AggOp, Aggregator};
+use super::range_utils::{aggregate_samples, get_series_labels, group_reduce};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
@@ -12,11 +11,14 @@ use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::index::series_by_matchers;
 use crate::series::request_types::{
-    AggregationOptions, MRangeResultRow, RangeGroupingOptions, RangeOptions,
+    AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
 };
 use crate::series::{SeriesGuard, SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
+use rayon::iter::ParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
 use smallvec::SmallVec;
+use std::collections::BTreeMap;
 use valkey_module::{
     BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
     ValkeyValue,
@@ -62,25 +64,37 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     let result_rows = process_mrange_query(ctx, options, reverse)?;
     let result = result_rows
         .into_iter()
-        .map(result_row_to_value)
-        .collect::<Vec<_>>();
+        .map(|series| series.into())
+        .collect::<Vec<ValkeyValue>>();
 
     Ok(ValkeyValue::from(result))
 }
 
 fn on_mrange_request_done(
-    _ctx: &ThreadSafeContext<BlockedClient>,
-    _results: Vec<MultiRangeResponse>,
-    _grouping: Option<RangeGroupingOptions>,
+    ctx: &ThreadSafeContext<BlockedClient>,
+    results: Vec<MultiRangeResponse>,
+    grouping: Option<RangeGroupingOptions>,
 ) {
-    todo!()
+    let all_series = results
+        .into_iter()
+        .flat_map(|result| result.series.into_iter())
+        .collect::<Vec<_>>();
+    
+    let series = if let Some(grouping) = grouping {
+        group_sharded_series(all_series, &grouping)
+    } else {
+        all_series
+    };
+    
+    let result = ValkeyValue::Array(series.into_iter().map(|x| x.into()).collect());
+    ctx.reply(Ok(result));
 }
 
 pub fn process_mrange_query(
     ctx: &Context,
     options: RangeOptions,
     reverse: bool,
-) -> ValkeyResult<Vec<MRangeResultRow>> {
+) -> ValkeyResult<Vec<MRangeSeriesResult>> {
     if options.series_selector.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
     }
@@ -116,7 +130,7 @@ pub fn process_mrange_query(
 fn process_mrange_command(
     metas: Vec<MRangeSeriesMeta>,
     options: &RangeOptions,
-) -> Vec<MRangeResultRow> {
+) -> Vec<MRangeSeriesResult> {
     match (&options.grouping, &options.aggregation) {
         (Some(groupings), Some(aggr_options)) => {
             handle_aggregation_and_grouping(metas, options, groupings, aggr_options)
@@ -134,7 +148,7 @@ fn handle_aggregation_and_grouping(
     options: &RangeOptions,
     groupings: &RangeGroupingOptions,
     aggregations: &AggregationOptions,
-) -> Vec<MRangeResultRow> {
+) -> Vec<MRangeSeriesResult> {
     let mut grouped_series = group_series_by_label(metas, groupings);
 
     fn process_group(
@@ -142,14 +156,14 @@ fn handle_aggregation_and_grouping(
         options: &RangeOptions,
         groupings: &RangeGroupingOptions,
         aggregations: &AggregationOptions,
-    ) -> MRangeResultRow {
+    ) -> MRangeSeriesResult {
         // according to docs, the GROUPBY/REDUCE is applied post-aggregation stage.
         let key = format!("{}={}", groupings.group_label, group.label_value);
-        let aggregator = aggregations.aggregator.clone();
-        let aggregates = aggregate_grouped_samples(group, options, aggregator);
-        let samples = group_samples_internal(aggregates.into_iter(), groupings);
-        MRangeResultRow {
+        let aggregates = aggregate_grouped_samples(group,options, aggregations);
+        let samples = group_reduce(aggregates.into_iter(), groupings.aggregator.clone());
+        MRangeSeriesResult {
             key,
+            group_label_value: None,
             labels: group.labels.clone(),
             samples,
         }
@@ -160,7 +174,7 @@ fn handle_aggregation_and_grouping(
         options: &RangeOptions,
         groupings: &RangeGroupingOptions,
         aggregations: &AggregationOptions,
-    ) -> Vec<MRangeResultRow> {
+    ) -> Vec<MRangeSeriesResult> {
         match groups {
             [] => vec![],
             [group] => {
@@ -212,16 +226,18 @@ fn handle_grouping(
     metas: Vec<MRangeSeriesMeta>,
     options: &RangeOptions,
     grouping: &RangeGroupingOptions,
-) -> Vec<MRangeResultRow> {
+) -> Vec<MRangeSeriesResult> {
     // group raw samples
     let grouped_series = group_series_by_label(metas, grouping);
+    // todo par_iter
     grouped_series
         .into_iter()
         .map(|group| {
             let key = format!("{}={}", grouping.group_label, group.label_value);
             let samples = get_grouped_raw_samples(&group.series, options, grouping);
-            MRangeResultRow {
+            MRangeSeriesResult {
                 key,
+                group_label_value: None,
                 labels: group.labels,
                 samples,
             }
@@ -240,7 +256,7 @@ fn convert_labels(
         .collect::<Vec<Option<Label>>>()
 }
 
-fn handle_basic(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRangeResultRow> {
+fn handle_basic(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRangeSeriesResult> {
     let all_samples = get_all_series_samples(&metas, options);
     all_samples
         .into_iter()
@@ -248,33 +264,14 @@ fn handle_basic(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRa
         .map(|(samples, meta)| {
             let labels =
                 convert_labels(&meta.series, options.with_labels, &options.selected_labels);
-            MRangeResultRow {
+            MRangeSeriesResult {
+                group_label_value: None,
                 key: meta.source_key,
                 labels,
                 samples,
             }
         })
         .collect::<Vec<_>>()
-}
-
-fn result_row_to_value(row: MRangeResultRow) -> ValkeyValue {
-    let samples: Vec<ValkeyValue> = row.samples.into_iter().map(|x| x.into()).collect();
-    let labels: Vec<_> = row
-        .labels
-        .into_iter()
-        .map(|label| match label {
-            Some(label) => ValkeyValue::Array(vec![
-                ValkeyValue::from(label.name),
-                ValkeyValue::from(label.value),
-            ]),
-            None => ValkeyValue::Null,
-        })
-        .collect();
-    ValkeyValue::Array(vec![
-        ValkeyValue::from(row.key),
-        ValkeyValue::Array(labels),
-        ValkeyValue::from(samples),
-    ])
 }
 
 fn get_grouped_raw_samples(
@@ -286,43 +283,15 @@ fn get_grouped_raw_samples(
     // concurrently
     let iterators = get_sample_iterators(series, options);
     let multi_iter = MultiSeriesSampleIter::new(iterators);
-    group_samples_internal(multi_iter, grouping_options)
+    let aggregator = grouping_options.aggregator.clone();
+    group_reduce(multi_iter, aggregator)
 }
 
 fn aggregate_grouped_samples(
     group: &RawGroupedSeries<'_>,
     options: &RangeOptions,
-    aggr: Aggregator,
+    aggregation_options: &AggregationOptions,
 ) -> Vec<Sample> {
-    let mut aggregator = aggr;
-
-    #[inline]
-    fn update(aggr: &mut Aggregator, value: f64) -> bool {
-        if value.is_nan() {
-            false
-        } else {
-            aggr.update(value);
-            true
-        }
-    }
-
-    fn flush(
-        aggregator: &mut Aggregator,
-        timestamp: Timestamp,
-        is_nan: bool,
-        res: &mut Vec<Sample>,
-    ) {
-        res.push(Sample {
-            timestamp,
-            value: if is_nan {
-                f64::NAN
-            } else {
-                aggregator.finalize()
-            },
-        });
-        aggregator.reset()
-    }
-
     fn get_sample_iterators<'a>(
         series: &'a [(&TimeSeries, &str)],
         options: &'a RangeOptions,
@@ -345,47 +314,13 @@ fn aggregate_grouped_samples(
 
     // todo: maybe use rayon/chili rather than the multi iterator. Could significantly speed up
     // the process if we go beyond a small number of chunks
-
-    let mut count = options.count.unwrap_or(usize::MAX);
+    
     let iterators = get_sample_iterators(&group.series, options);
-    let mut iter = MultiSeriesSampleIter::new(iterators);
+    let iter = MultiSeriesSampleIter::new(iterators);
+    let (start_ts, end_ts) = options.date_range.get_timestamps(None);
+    let samples = aggregate_samples(iter, start_ts, end_ts, aggregation_options);
 
-    let mut res: Vec<Sample> = Vec::with_capacity(iter.size_hint().0);
-
-    let (mut sample, mut is_nan) = if let Some(sample) = iter.next() {
-        (sample, !update(&mut aggregator, sample.value))
-    } else {
-        return res;
-    };
-
-    let mut unsaved: usize = 0;
-
-    for next_sample in iter {
-        if sample.timestamp == next_sample.timestamp {
-            if !update(&mut aggregator, sample.value) {
-                is_nan = true;
-            }
-            unsaved += 1;
-        } else {
-            flush(&mut aggregator, sample.timestamp, is_nan, &mut res);
-            is_nan = !update(&mut aggregator, sample.value);
-            sample = next_sample;
-
-            unsaved = 1;
-            count -= 1;
-            if count == 0 {
-                // We have all the buckets we need. We don't add the last one
-                unsaved = 0;
-                break;
-            }
-        }
-    }
-
-    if unsaved > 0 {
-        flush(&mut aggregator, sample.timestamp, is_nan, &mut res);
-    }
-
-    res
+    samples
 }
 
 fn get_raw_samples(
@@ -553,4 +488,83 @@ fn group_series_by_label(
             }
         })
         .collect()
+}
+
+
+/// Apply GROUPBY/REDUCE to the series coming from remote nodes
+fn group_sharded_series(
+    metas: Vec<MRangeSeriesResult>,
+    grouping: &RangeGroupingOptions,
+) -> Vec<MRangeSeriesResult> {
+
+    fn handle_reducer(
+        series: &Vec<MRangeSeriesResult>,
+        grouping: &RangeGroupingOptions,
+    ) -> Vec<Sample> {
+        let mut iterators: Vec<SampleIter> = Vec::with_capacity(series.len());
+        for meta in series.iter() {
+            let iter = SampleIter::Slice(meta.samples.iter());
+            iterators.push(iter);
+        }
+        let multi_iter = MultiSeriesSampleIter::new(iterators);
+        let aggregator = grouping.aggregator.clone();
+        group_reduce(multi_iter, aggregator)
+    }
+    
+    let mut grouped: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
+
+    for meta in metas.into_iter() {
+        if let Some(label_value) = &meta.group_label_value {
+            let key = format!("{}={}", grouping.group_label, label_value);
+            // note that `grouped.entry()` is not used here because it would require a clone of
+            // the label_value even in the case where the key already exists
+            if let Some(list) = grouped.get_mut(&key) {
+                list.push(meta);
+            } else {
+                grouped.insert(key, vec![meta]);
+            }
+        }
+    }
+
+    let reducer = grouping.aggregator.name();
+    let label = &grouping.group_label;
+    
+    grouped
+        .par_iter()
+        .map(|(label_value, series)| {
+            let capacity = series.iter().map(|x| x.key.len()).sum::<usize>() + series.len();
+            let mut sources: String = String::with_capacity(capacity);
+            for (i, meta) in series.iter().enumerate() {
+                sources.push_str(&meta.key);
+                if i < series.len() - 1 {
+                    sources.push(',');
+                }
+            }
+            
+            // get the value of the label (the string past the =)
+            let group_label_value = label_value.split('=').nth(1).unwrap_or("");
+            
+            let samples = handle_reducer(series, grouping);
+            let labels = vec![
+                Some(Label {
+                    name: label.into(),
+                    value: group_label_value.to_string(),
+                }),
+                Some(Label {
+                    name: REDUCER_KEY.into(),
+                    value: reducer.into(),
+                }),
+                Some(Label {
+                    name: SOURCE_KEY.into(),
+                    value: sources,
+                }),
+            ];
+            MRangeSeriesResult {
+                group_label_value: None,
+                key: label_value.clone(),
+                samples,
+                labels,
+            }
+        })
+        .collect::<Vec<_>>()
 }
