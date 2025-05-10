@@ -11,8 +11,11 @@ mod time_series_tests;
 mod timestamp_range;
 pub(crate) mod types;
 mod utils;
+mod series_fetcher;
+mod guard;
 
 pub use defrag::defrag_series;
+pub use guard::*;
 pub use tasks::*;
 pub use time_series::*;
 pub use timestamp_range::*;
