@@ -73,7 +73,6 @@ pub fn with_timeseries_mut<R>(
     f(&mut series)
 }
 
-#[allow(dead_code)]
 pub fn get_timeseries(
     ctx: &Context,
     key: ValkeyString,
