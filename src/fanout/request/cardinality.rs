@@ -42,7 +42,7 @@ impl Serialized for CardinalityResponse {
                 count: self.count as u64,
             },
         );
-        
+
         bldr.finish(resp, None);
 
         let data = bldr.finished_data(); // Of type `&[u8]`
