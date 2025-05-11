@@ -50,24 +50,24 @@ https://tech.loveholidays.com/redis-cluster-multi-key-command-optimisation-with-
 The following commands are supported
 
 ```aiignore
-TS.CREATE
-TS.ALTER
 TS.ADD
-TS.MADD
+TS.ALTER
+TS.CARD
+TS.CREATE
 TS.DECRBY
 TS.DEL
-TS.JOIN
 TS.GET
 TS.INCRBY
+TS.JOIN
+TS.LABELNAMES
+TS.LABELVALUES
+TS.MADD
 TS.MGET
 TS.MRANGE
 TS.MREVRANGE
+TS.QUERYINDEX
 TS.RANGE
 TS.REVRANGE
-TS.QUERYINDEX
-TS.CARD
-TS.LABELNAMES
-TS.LABELVALUES
 TS.STATS
 ```
 
