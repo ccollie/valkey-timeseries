@@ -120,7 +120,7 @@ valkey_module! {
     init: initialize,
     deinit: deinitialize,
     acl_categories: [
-        "ts",
+        "timeseries",
     ]
     commands: [
         ["TS.CREATE", commands::create, "write deny-oom", 1, 1, 1, "write timeseries"],
