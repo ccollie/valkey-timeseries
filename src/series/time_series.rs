@@ -24,24 +24,31 @@ use valkey_module::{ValkeyError, ValkeyResult};
 pub type TimeseriesId = u64;
 pub type SeriesRef = u64;
 
-/// Represents a time series. The time series consists of time series blocks, each containing BLOCK_SIZE_FOR_TIME_SERIES
-/// data points.
+/// Represents a time series consisting of chunks of samples, each with a timestamp and value.
 #[derive(Clone, Debug, PartialEq, GetSize)]
 pub struct TimeSeries {
     /// fixed internal id used in indexing
     pub id: SeriesRef,
-
+    /// The label/value pairs
     pub labels: InternedMetricName,
-
+    /// How long data is kept before being removed
     pub retention: Duration,
+    /// Policy for handling duplicate samples
     pub sample_duplicates: SampleDuplicatePolicy,
+    /// The chunk compression algorithm used (Uncompressed, Gorilla, or Pco)
     pub chunk_compression: ChunkEncoding,
+    /// Optional strategy for rounding values (either by significant or decimal digits)
     pub rounding: Option<RoundingStrategy>,
+    /// Target size for chunks in bytes
     pub chunk_size_bytes: usize,
+    /// The time series chunks
     pub chunks: Vec<TimeSeriesChunk>,
     // meta
+    /// Total number of samples in the time series
     pub total_samples: usize,
+    /// The first timestamp in the time series
     pub first_timestamp: Timestamp,
+    /// The last timestamp in the time series
     pub last_sample: Option<Sample>,
     // stats
 }
