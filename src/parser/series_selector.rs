@@ -24,14 +24,14 @@ const SECONDARY_TOKENS: &[Token] = &[
     Token::Eof,
 ];
 
-/// parses a series selector, either using RedisTimeSeries or Prometheus syntax.
+/// Parses a series selector, either using RedisTimeSeries or Prometheus syntax.
 ///
-///    i.e, it handles queries of the form (RedisTimeSeries):
+///    I.e., it handles queries of the form (RedisTimeSeries):
 ///
 ///   * `region=(us-east-1,us-west-1)`
 ///   * `service="billing"`
 ///
-///   or (Prometheus):
+///   Or (Prometheus):
 ///
 ///   * `request_latency{service="billing", env=~"staging|production", region=~"us-east-.*"}`
 ///   * `{service="inference", metric="request-count", env="prod"}`
@@ -133,7 +133,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
     let mut matchers: Vec<Matcher> = Vec::new();
     let mut has_or_matchers = false;
 
-    // underscore here is ugly, but gets rid of the unused_assignment warning
+    // the underscore here is ugly but gets rid of the unused_assignment warning
     let mut _last_token = LeftBrace;
 
     loop {

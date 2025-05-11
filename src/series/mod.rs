@@ -13,6 +13,7 @@ pub(crate) mod types;
 mod utils;
 mod series_fetcher;
 mod guard;
+pub mod range_utils;
 
 pub use defrag::defrag_series;
 pub use guard::*;

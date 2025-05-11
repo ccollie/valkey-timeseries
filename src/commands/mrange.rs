@@ -1,30 +1,28 @@
 use super::parse_range_options;
-use super::range_utils::{aggregate_samples, get_series_labels, group_reduce};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
-use crate::common::parallel::join;
-use crate::common::{Sample, Timestamp};
+use crate::common::Sample;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mrange_request, MultiRangeResponse};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::index::series_by_matchers;
+use crate::series::range_utils::{aggregate_samples, get_multi_series_range, get_series_labels, group_reduce};
 use crate::series::request_types::{
     AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
 };
-use crate::series::{SeriesGuard, SeriesSampleIterator, TimeSeries, TimestampValue};
+use crate::series::{SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
-use smallvec::SmallVec;
+use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::collections::BTreeMap;
 use valkey_module::{
     BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
     ValkeyValue,
 };
 
-struct MRangeSeriesMeta {
-    series: SeriesGuard,
+struct SeriesMeta<'a> {
+    series: &'a TimeSeries,
     source_key: String,
+    group_label_value: Option<String>,
 }
 
 /// TS.MRANGE fromTimestamp toTimestamp
@@ -103,20 +101,18 @@ pub fn process_mrange_query(
     options.date_range.end = TimestampValue::Specific(end_ts);
 
     let matchers = std::mem::take(&mut options.series_selector);
-    let series = series_by_matchers(ctx, &[matchers], None, true, true)?;
-
-    let metas = series
-        .into_iter()
-        .map(|guard| {
-            let source_key = guard.get_key().to_string_lossy();
-            MRangeSeriesMeta {
-                series: guard,
-                source_key,
-            }
+    let series_guards = series_by_matchers(ctx, &[matchers], None, true, true)?;
+    
+    let series_metas: Vec<SeriesMeta> = series_guards
+        .iter()
+        .map(|guard| SeriesMeta {
+            series: guard,
+            source_key: guard.get_key().to_string(),
+            group_label_value: None,
         })
         .collect();
-
-    let mut result = process_mrange_command(metas, &options);
+    
+    let mut result = process_mrange_command(series_metas, &options);
 
     if reverse {
         result.reverse();
@@ -126,117 +122,117 @@ pub fn process_mrange_query(
 }
 
 fn process_mrange_command(
-    metas: Vec<MRangeSeriesMeta>,
+    metas: Vec<SeriesMeta>,
     options: &RangeOptions,
 ) -> Vec<MRangeSeriesResult> {
     match (&options.grouping, &options.aggregation) {
         (Some(groupings), Some(aggr_options)) => {
-            handle_aggregation_and_grouping(metas, options, groupings, aggr_options)
+            let mut metas_with_group_labels = metas;
+            collect_group_labels(&mut metas_with_group_labels, groupings);
+            handle_aggregation_and_grouping(metas_with_group_labels, options, groupings, aggr_options)
         }
         (Some(groupings), None) => {
-            // group raw samples
-            handle_grouping(metas, options, groupings)
+            let mut metas_with_group_labels = metas;
+            collect_group_labels(&mut metas_with_group_labels, groupings);
+            handle_grouping(metas_with_group_labels, options, groupings)
         }
-        (_, _) => handle_basic(metas, options), // also handles aggregation
+        (_, _) => handle_basic(metas, options),
     }
 }
 
+fn collect_group_labels(
+    metas: &mut Vec<SeriesMeta>,
+    grouping: &RangeGroupingOptions,
+) {
+    for meta in metas.iter_mut() {
+        meta.group_label_value = meta
+            .series
+            .label_value(&grouping.group_label)
+            .map(|s| s.to_string());
+    }
+}
+
+fn build_grouped_labels(
+    group_label_name: &str,
+    group_label_value: &str,
+    reducer_name_str: &str,
+    source_identifiers: &[String],
+) -> Vec<Option<Label>> {
+    let sources = source_identifiers.join(",");
+    vec![
+        Some(Label {
+            name: group_label_name.into(),
+            value: group_label_value.to_string(),
+        }),
+        Some(Label {
+            name: REDUCER_KEY.into(),
+            value: reducer_name_str.into(),
+        }),
+        Some(Label {
+            name: SOURCE_KEY.into(),
+            value: sources,
+        }),
+    ]
+}
+
 fn handle_aggregation_and_grouping(
-    metas: Vec<MRangeSeriesMeta>,
+    metas: Vec<SeriesMeta>,
     options: &RangeOptions,
     groupings: &RangeGroupingOptions,
     aggregations: &AggregationOptions,
 ) -> Vec<MRangeSeriesResult> {
-    let mut grouped_series = group_series_by_label(metas, groupings);
-
-    fn process_group(
-        group: &RawGroupedSeries<'_>,
-        options: &RangeOptions,
-        groupings: &RangeGroupingOptions,
-        aggregations: &AggregationOptions,
-    ) -> MRangeSeriesResult {
-        // according to docs, the GROUPBY/REDUCE is applied post-aggregation stage.
-        let key = format!("{}={}", groupings.group_label, group.label_value);
-        let aggregates = aggregate_grouped_samples(group, options, aggregations);
-        let samples = group_reduce(aggregates.into_iter(), groupings.aggregator.clone());
-        MRangeSeriesResult {
-            key,
-            group_label_value: None,
-            labels: group.labels.clone(),
-            samples,
-        }
-    }
-
-    fn process(
-        groups: &[RawGroupedSeries<'_>],
-        options: &RangeOptions,
-        groupings: &RangeGroupingOptions,
-        aggregations: &AggregationOptions,
-    ) -> Vec<MRangeSeriesResult> {
-        match groups {
-            [] => vec![],
-            [group] => {
-                vec![process_group(group, options, groupings, aggregations)]
-            }
-            [first, second] => {
-                let (first_row, second_row) = join(
-                    || process_group(first, options, groupings, aggregations),
-                    || process_group(second, options, groupings, aggregations),
-                );
-                vec![first_row, second_row]
-            }
-            _ => {
-                let (first, rest) = groups.split_at(groups.len() / 2);
-                let (mut first_samples, rest_samples) = join(
-                    || process(first, options, groupings, aggregations),
-                    || process(rest, options, groupings, aggregations),
-                );
-
-                first_samples.extend(rest_samples);
-                first_samples
-            }
-        }
-    }
-
-    let raw_series: SmallVec<RawGroupedSeries, 8> = grouped_series
-        .iter_mut()
-        .map(|group| {
-            let series = group
+    let grouped_series_map = group_series_by_label_internal(metas, groupings);
+    let raw_series_groups: Vec<RawGroupedSeries> = grouped_series_map
+        .into_iter()
+        .map(|(label_value, group_data)| {
+             let series_refs = group_data
                 .series
-                .iter()
-                .map(|meta| {
-                    let ts: &TimeSeries = &meta.series;
-                    (ts, meta.source_key.as_str())
-                })
+                .into_iter()
+                .map(|meta| (meta.series, meta.source_key))
                 .collect::<Vec<_>>();
             RawGroupedSeries {
-                label_value: std::mem::take(&mut group.label_value),
-                series,
-                labels: std::mem::take(&mut group.labels),
+                label_value,
+                series: series_refs,
+                labels: group_data.labels,
             }
         })
         .collect();
-
-    process(&raw_series, options, groupings, aggregations)
+    
+    // todo: chili
+    raw_series_groups
+        .par_iter()
+        .map(|group| {
+            let key = format!("{}={}", groupings.group_label, group.label_value);
+            let aggregates = aggregate_grouped_samples(group, options, aggregations);
+            let samples = group_reduce(aggregates.into_iter(), groupings.aggregator.clone());
+            MRangeSeriesResult {
+                key,
+                group_label_value: Some(group.label_value.clone()),
+                labels: group.labels.clone(),
+                samples,
+            }
+        })
+        .collect()
 }
 
+
 fn handle_grouping(
-    metas: Vec<MRangeSeriesMeta>,
+    metas: Vec<SeriesMeta>,
     options: &RangeOptions,
     grouping: &RangeGroupingOptions,
 ) -> Vec<MRangeSeriesResult> {
-    // group raw samples
-    let grouped_series = group_series_by_label(metas, grouping);
-    // todo par_iter
-    grouped_series
-        .into_iter()
-        .map(|group| {
-            let key = format!("{}={}", grouping.group_label, group.label_value);
-            let samples = get_grouped_raw_samples(&group.series, options, grouping);
+    let mut grouped_series_map = group_series_by_label_internal(metas, grouping);
+    
+    grouped_series_map
+        .par_iter_mut()
+        .map(|(label_value, group_data)| {
+            let key = format!("{}={}", grouping.group_label, label_value);
+            let samples = get_grouped_raw_samples(&group_data.series, options, grouping);
+            let labels = std::mem::take(&mut group_data.labels);
             MRangeSeriesResult {
                 key,
                 group_label_value: None,
-                labels: group.labels,
+                labels,
                 samples,
             }
         })
@@ -250,21 +246,28 @@ fn convert_labels(
 ) -> Vec<Option<Label>> {
     get_series_labels(series, with_labels, selected_labels)
         .into_iter()
-        .map(|x| x.map(|x| Label::new(x.name, x.value)))
+        .map(|x| x.map(|label_ref| Label::new(label_ref.name, label_ref.value)))
         .collect::<Vec<Option<Label>>>()
 }
 
-fn handle_basic(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRangeSeriesResult> {
-    let all_samples = get_all_series_samples(&metas, options);
+fn handle_basic(metas: Vec<SeriesMeta>, options: &RangeOptions) -> Vec<MRangeSeriesResult> {
+    let context_values: Vec<(String, Vec<Option<Label>>)> = metas
+        .iter()
+        .map(|meta| (
+            meta.source_key.clone(),
+            convert_labels(meta.series, options.with_labels, &options.selected_labels)
+        )).collect();
+    
+    let series_refs: Vec<&TimeSeries> = metas.iter().map(|meta| meta.series).collect();
+    let all_samples = get_all_series_samples(&series_refs, options);
+
     all_samples
         .into_iter()
-        .zip(metas)
-        .map(|(samples, meta)| {
-            let labels =
-                convert_labels(&meta.series, options.with_labels, &options.selected_labels);
+        .zip(context_values)
+        .map(|(samples, (key, labels))| {
             MRangeSeriesResult {
                 group_label_value: None,
-                key: meta.source_key,
+                key,
                 labels,
                 samples,
             }
@@ -273,13 +276,11 @@ fn handle_basic(metas: Vec<MRangeSeriesMeta>, options: &RangeOptions) -> Vec<MRa
 }
 
 fn get_grouped_raw_samples(
-    series: &[MRangeSeriesMeta],
+    series_metas: &[SeriesMeta],
     options: &RangeOptions,
     grouping_options: &RangeGroupingOptions,
 ) -> Vec<Sample> {
-    // todo: maybe use rayon/chili rather than the multi iterator to read multiple chunks
-    // concurrently
-    let iterators = get_sample_iterators(series, options);
+    let iterators = get_sample_iterators(series_metas, options);
     let multi_iter = MultiSeriesSampleIter::new(iterators);
     let aggregator = grouping_options.aggregator.clone();
     group_reduce(multi_iter, aggregator)
@@ -290,12 +291,12 @@ fn aggregate_grouped_samples(
     options: &RangeOptions,
     aggregation_options: &AggregationOptions,
 ) -> Vec<Sample> {
-    fn get_sample_iterators<'a>(
-        series: &'a [(&TimeSeries, &str)],
+    fn get_raw_group_sample_iterators<'a>(
+        series_refs: &'a [(&'a TimeSeries, String)],
         options: &'a RangeOptions,
     ) -> Vec<SampleIter<'a>> {
         let (start_ts, end_ts) = options.date_range.get_timestamps(None);
-        series
+        series_refs
             .iter()
             .map(|(ts, _)| {
                 SeriesSampleIterator::new(
@@ -310,180 +311,81 @@ fn aggregate_grouped_samples(
             .collect::<Vec<SampleIter<'a>>>()
     }
 
-    // todo: maybe use rayon/chili rather than the multi iterator. Could significantly speed up
-    // the process if we go beyond a small number of chunks
-
-    let iterators = get_sample_iterators(&group.series, options);
+    let iterators = get_raw_group_sample_iterators(&group.series, options);
     let iter = MultiSeriesSampleIter::new(iterators);
     let (start_ts, end_ts) = options.date_range.get_timestamps(None);
     aggregate_samples(iter, start_ts, end_ts, aggregation_options)
 }
 
-fn get_raw_samples(
-    series: &TimeSeries,
-    start_ts: Timestamp,
-    end_ts: Timestamp,
-    options: &RangeOptions,
-) -> Vec<Sample> {
-    series.get_range_filtered(
-        start_ts,
-        end_ts,
-        options.timestamp_filter.as_deref(),
-        options.value_filter,
-    )
-}
-
-fn get_series_iterator<'a>(
-    meta: &'a MRangeSeriesMeta,
-    options: &'a RangeOptions,
-) -> SeriesSampleIterator<'a> {
-    let (start_ts, end_ts) = options.date_range.get_timestamps(None);
-    SeriesSampleIterator::new(
-        &meta.series,
-        start_ts,
-        end_ts,
-        &options.value_filter,
-        &options.timestamp_filter,
-    )
-}
-
 fn get_sample_iterators<'a>(
-    series: &'a [MRangeSeriesMeta],
+    series_metas: &'a [SeriesMeta],
     range_options: &'a RangeOptions,
 ) -> Vec<SampleIter<'a>> {
-    series
+    let (start_ts, end_ts) = range_options.date_range.get_timestamps(None);
+    series_metas
         .iter()
-        .map(|meta| get_series_iterator(meta, range_options).into())
+        .map(|meta| {
+            SeriesSampleIterator::new(
+                meta.series,
+                start_ts,
+                end_ts,
+                &range_options.value_filter,
+                &range_options.timestamp_filter,
+            ).into()
+        })
         .collect::<Vec<SampleIter<'a>>>()
 }
 
 fn get_all_series_samples(
-    meta: &[MRangeSeriesMeta],
+    series_refs: &[&TimeSeries],
     range_options: &RangeOptions,
 ) -> Vec<Vec<Sample>> {
-    fn fetch_one(
-        series: &TimeSeries,
-        start_ts: Timestamp,
-        end_ts: Timestamp,
-        range_options: &RangeOptions,
-    ) -> Vec<Sample> {
-        let samples = get_raw_samples(series, start_ts, end_ts, range_options);
-        if let Some(agg_options) = &range_options.aggregation {
-            aggregate_samples(samples.into_iter(), start_ts, end_ts, agg_options)
-        } else {
-            samples
-        }
-    }
-
-    fn get_raw_internal(
-        series: &[&TimeSeries],
-        start_ts: Timestamp,
-        end_ts: Timestamp,
-        range_options: &RangeOptions,
-    ) -> Vec<Vec<Sample>> {
-        match series {
-            [] => vec![],
-            [meta] => {
-                let samples = fetch_one(meta, start_ts, end_ts, range_options);
-                vec![samples]
-            }
-            [first, second] => {
-                let (first_samples, second_samples) = join(
-                    || fetch_one(first, start_ts, end_ts, range_options),
-                    || fetch_one(second, start_ts, end_ts, range_options),
-                );
-                vec![first_samples, second_samples]
-            }
-            _ => {
-                let (first, rest) = series.split_at(series.len() / 2);
-                let (mut first_samples, rest_samples) = join(
-                    || get_raw_internal(first, start_ts, end_ts, range_options),
-                    || get_raw_internal(rest, start_ts, end_ts, range_options),
-                );
-
-                first_samples.extend(rest_samples);
-                first_samples
-            }
-        }
-    }
-
-    let (start_ts, end_ts) = range_options.date_range.get_timestamps(None);
-    let series: SmallVec<_, 8> = meta
-        .iter()
-        .map(|meta| {
-            let ts: &TimeSeries = &meta.series;
-            ts
-        })
-        .collect();
-
-    get_raw_internal(&series, start_ts, end_ts, range_options)
+    get_multi_series_range(series_refs, range_options)
 }
 
-struct GroupedSeries {
-    label_value: String,
-    series: Vec<MRangeSeriesMeta>,
+struct GroupedSeriesData<'a> {
+    series: Vec<SeriesMeta<'a>>,
     labels: Vec<Option<Label>>,
 }
 
 struct RawGroupedSeries<'a> {
     label_value: String,
-    series: Vec<(&'a TimeSeries, &'a str)>,
+    series: Vec<(&'a TimeSeries, String)>,
     labels: Vec<Option<Label>>,
 }
 
-fn group_series_by_label(
-    metas: Vec<MRangeSeriesMeta>,
+fn group_series_by_label_internal<'a>(
+    metas: Vec<SeriesMeta<'a>>,
     grouping: &RangeGroupingOptions,
-) -> Vec<GroupedSeries> {
-    let mut grouped: AHashMap<String, Vec<MRangeSeriesMeta>> = AHashMap::new();
-    let label = &grouping.group_label;
+) -> AHashMap<String, GroupedSeriesData<'a>> {
+    let mut grouped: AHashMap<String, GroupedSeriesData<'a>> = AHashMap::new();
+    let group_by_label_name = &grouping.group_label;
+    let reducer_name = grouping.aggregator.name();
 
     for meta in metas.into_iter() {
-        if let Some(label_value) = meta.series.label_value(label) {
-            // note that `grouped.entry()` is not used here because it would require a clone of
-            // the label_value even in the case where the key already exists
-            if let Some(list) = grouped.get_mut(label_value) {
-                list.push(meta);
-            } else {
-                grouped.insert(label_value.to_string(), vec![meta]);
-            }
+        if let Some(label_value_str) = &meta.group_label_value {
+            let entry = grouped
+                .entry(label_value_str.clone())
+                .or_insert_with(|| {
+                    GroupedSeriesData {
+                        series: Vec::new(),
+                        labels: Vec::new(),
+                    }
+                });
+            entry.series.push(meta);
         }
     }
-
-    let reducer = grouping.aggregator.name();
-
+    
+    for (label_value_str, group_data) in grouped.iter_mut() {
+        let source_keys: Vec<String> = group_data.series.iter().map(|m| m.source_key.clone()).collect();
+        group_data.labels = build_grouped_labels(
+            group_by_label_name,
+            label_value_str,
+            reducer_name,
+            &source_keys,
+        );
+    }
     grouped
-        .into_iter()
-        .map(|(label_value, series)| {
-            let capacity = series.iter().map(|x| x.source_key.len()).sum::<usize>() + series.len();
-            let mut sources: String = String::with_capacity(capacity);
-            for (i, meta) in series.iter().enumerate() {
-                sources.push_str(&meta.source_key);
-                if i < series.len() - 1 {
-                    sources.push(',');
-                }
-            }
-            let labels = vec![
-                Some(Label {
-                    name: label.into(),
-                    value: label_value.clone(),
-                }),
-                Some(Label {
-                    name: REDUCER_KEY.into(),
-                    value: reducer.into(),
-                }),
-                Some(Label {
-                    name: SOURCE_KEY.into(),
-                    value: sources,
-                }),
-            ];
-            GroupedSeries {
-                label_value,
-                series,
-                labels,
-            }
-        })
-        .collect()
 }
 
 /// Apply GROUPBY/REDUCE to the series coming from remote nodes
@@ -492,72 +394,53 @@ fn group_sharded_series(
     grouping: &RangeGroupingOptions,
 ) -> Vec<MRangeSeriesResult> {
     fn handle_reducer(
-        series: &[MRangeSeriesResult],
-        grouping: &RangeGroupingOptions,
+        series_results: &[MRangeSeriesResult],
+        grouping_opts: &RangeGroupingOptions,
     ) -> Vec<Sample> {
-        let mut iterators: Vec<SampleIter> = Vec::with_capacity(series.len());
-        for meta in series.iter() {
-            let iter = SampleIter::Slice(meta.samples.iter());
-            iterators.push(iter);
-        }
+        let iterators: Vec<SampleIter> = series_results
+            .iter()
+            .map(|meta| SampleIter::Slice(meta.samples.iter()))
+            .collect();
         let multi_iter = MultiSeriesSampleIter::new(iterators);
-        let aggregator = grouping.aggregator.clone();
+        let aggregator = grouping_opts.aggregator.clone();
         group_reduce(multi_iter, aggregator)
     }
 
-    let mut grouped: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
+    let mut grouped_by_key: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
 
     for meta in metas.into_iter() {
-        if let Some(label_value) = &meta.group_label_value {
-            let key = format!("{}={}", grouping.group_label, label_value);
-            // note that `grouped.entry()` is not used here because it would require a clone of
-            // the label_value even in the case where the key already exists
-            if let Some(list) = grouped.get_mut(&key) {
-                list.push(meta);
-            } else {
-                grouped.insert(key, vec![meta]);
-            }
+        if let Some(label_value_for_grouping) = &meta.group_label_value {
+             let key = format!("{}={}", grouping.group_label, label_value_for_grouping);
+            grouped_by_key.entry(key).or_default().push(meta);
         }
     }
 
-    let reducer = grouping.aggregator.name();
-    let label = &grouping.group_label;
+    let reducer_name_str = grouping.aggregator.name();
+    let group_by_label_name_str = &grouping.group_label;
 
-    grouped
+    // todo: chili
+    grouped_by_key
         .par_iter()
-        .map(|(label_value, series)| {
-            let capacity = series.iter().map(|x| x.key.len()).sum::<usize>() + series.len();
-            let mut sources: String = String::with_capacity(capacity);
-            for (i, meta) in series.iter().enumerate() {
-                sources.push_str(&meta.key);
-                if i < series.len() - 1 {
-                    sources.push(',');
-                }
-            }
+        .map(|(group_key_str, series_results_in_group)| {
+            let source_keys: Vec<String> = series_results_in_group.iter().map(|m| m.key.clone()).collect();
+            
+            let group_defining_val_str = group_key_str
+                .rsplit_once( '=')
+                .map(|(_, val)| val)
+                .unwrap_or("");
 
-            // get the value of the label (the string past the =)
-            let group_label_value = label_value.split('=').nth(1).unwrap_or("");
-
-            let samples = handle_reducer(series, grouping);
-            let labels = vec![
-                Some(Label {
-                    name: label.into(),
-                    value: group_label_value.to_string(),
-                }),
-                Some(Label {
-                    name: REDUCER_KEY.into(),
-                    value: reducer.into(),
-                }),
-                Some(Label {
-                    name: SOURCE_KEY.into(),
-                    value: sources,
-                }),
-            ];
+            let samples = handle_reducer(series_results_in_group, grouping);
+            let final_labels = build_grouped_labels(
+                group_by_label_name_str,
+                group_defining_val_str,
+                reducer_name_str,
+                &source_keys,
+            );
             MRangeSeriesResult {
                 group_label_value: None,
-                key: label_value.clone(),
+                key: group_key_str.clone(),
                 samples,
-                labels,
+                labels: final_labels,
             }
         })
         .collect::<Vec<_>>()

@@ -1,5 +1,5 @@
 use crate::commands::arg_parse::parse_range_options;
-use crate::commands::range_utils::get_range;
+use crate::series::range_utils::get_range;
 use crate::error_consts;
 use crate::series::get_timeseries;
 use valkey_module::{

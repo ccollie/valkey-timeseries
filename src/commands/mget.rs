@@ -1,7 +1,7 @@
 use crate::commands::arg_parse::{
     parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
 };
-use crate::commands::range_utils::get_series_labels;
+use crate::series::range_utils::get_series_labels;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mget_request, MultiGetResponse};

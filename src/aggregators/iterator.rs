@@ -72,7 +72,6 @@ impl AggregationHelper {
 
     fn finalize_internal(&mut self) -> Sample {
         let value = if self.all_nans {
-            // For sum, return NaN if all values are NaN. If we have no samples, then return 0
             if self.count == 0 {
                 self.aggregator.empty_value()
             } else {

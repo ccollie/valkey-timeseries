@@ -1,4 +1,5 @@
 use crate::aggregators::{AggOp, AggregateIterator, Aggregator};
+use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::request_types::{AggregationOptions, RangeOptions};
@@ -33,6 +34,37 @@ pub(crate) fn get_range(
         range
     }
     // group by
+}
+
+pub fn get_multi_series_range(
+    series: &[&TimeSeries],
+    range_options: &RangeOptions,
+) -> Vec<Vec<Sample>> {
+
+    fn get_samples_internal(
+        series: &[&TimeSeries],
+        range_options: &RangeOptions,
+    ) -> Vec<Vec<Sample>> {
+        match series {
+            [] => vec![],
+            [meta] => {
+                let samples = get_range(meta, range_options, true);
+                vec![samples]
+            }
+            _ => {
+                let (first, rest) = series.split_at(series.len() / 2);
+                let (mut first_samples, rest_samples) = join(
+                    || get_samples_internal(first, range_options),
+                    || get_samples_internal(rest, range_options),
+                );
+
+                first_samples.extend(rest_samples);
+                first_samples
+            }
+        }
+    }
+
+    get_samples_internal(series, range_options)
 }
 
 pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(

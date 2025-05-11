@@ -15,7 +15,6 @@ mod mget;
 mod mrange;
 mod query_index;
 mod range;
-mod range_utils;
 mod rev_range;
 mod stats;
 
