@@ -1,7 +1,7 @@
 use crate::commands::arg_parse::parse_range_options;
-use crate::series::range_utils::get_range;
 use crate::error_consts;
 use crate::series::get_timeseries;
+use crate::series::range_utils::get_range;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };

@@ -6,7 +6,7 @@ pub struct MultiSeriesRangeFetcher<'a> {
     start_timestamp: i64,
     end_timestamp: i64,
     options: &'a RangeOptions,
-    items: Vec<Vec<Sample>>
+    items: Vec<Vec<Sample>>,
 }
 
 impl MultiSeriesRangeFetcher<'_> {

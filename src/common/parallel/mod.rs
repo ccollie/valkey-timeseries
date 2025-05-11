@@ -1,7 +1,7 @@
+use crate::common::parallel::items::{IntoItems, Items};
 /// Copyright (c) 2023-present, The SWC authors. All rights reserved
 /// Licensed under the Apache License, Version 2.0 (the "License");
 use std::{cell::RefCell, mem::transmute};
-use crate::common::parallel::items::{IntoItems, Items};
 
 pub mod items;
 pub mod merge;
@@ -157,17 +157,16 @@ where
     (ra, rb)
 }
 
-
 pub trait Parallel: Send + Sync {
     /// Used to create visitor.
     fn create(&self) -> Self;
-    
+
     /// This can be called in anytime.
     fn merge(&mut self, other: Self);
 }
 
 pub trait ParallelExt {
-    /// Invoke `op` in parallel if the concurrent feature is enabled and `nodes.len()` is bigger than 
+    /// Invoke `op` in parallel if the concurrent feature is enabled and `nodes.len()` is bigger than
     /// a threshold.
     fn maybe_par<I, F>(&mut self, threshold: usize, nodes: I, op: F)
     where
@@ -177,7 +176,7 @@ pub trait ParallelExt {
         self.maybe_par_idx(threshold, nodes, |v, _, n| op(v, n))
     }
 
-    /// Invoke `op` in parallel, if compiled with the concurrent feature enabled and `nodes.len()` is 
+    /// Invoke `op` in parallel, if compiled with the concurrent feature enabled and `nodes.len()` is
     /// larger than a threshold.
     ///
     fn maybe_par_idx<I, F>(&mut self, threshold: usize, nodes: I, op: F)
@@ -195,7 +194,6 @@ pub trait ParallelExt {
         I: Items,
         F: Send + Sync + Fn(&mut Self, usize, I::Elem);
 }
-
 
 // #[cfg(feature = "concurrent")]
 impl<T> ParallelExt for T

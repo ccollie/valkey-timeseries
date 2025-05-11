@@ -40,7 +40,6 @@ pub fn get_multi_series_range(
     series: &[&TimeSeries],
     range_options: &RangeOptions,
 ) -> Vec<Vec<Sample>> {
-
     fn get_samples_internal(
         series: &[&TimeSeries],
         range_options: &RangeOptions,

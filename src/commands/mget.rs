@@ -1,12 +1,12 @@
 use crate::commands::arg_parse::{
     parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
 };
-use crate::series::range_utils::get_series_labels;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
 use crate::labels::{parse_series_selector, Label};
 use crate::series::index::with_matched_series;
+use crate::series::range_utils::get_series_labels;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
 use valkey_module::{
     AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,

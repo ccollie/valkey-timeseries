@@ -1,9 +1,12 @@
 pub mod chunks;
 mod defrag;
+mod guard;
 pub mod index;
+pub mod range_utils;
 pub mod request_types;
 pub mod serialization;
 pub mod series_data_type;
+mod series_fetcher;
 mod tasks;
 mod time_series;
 #[cfg(test)]
@@ -11,9 +14,6 @@ mod time_series_tests;
 mod timestamp_range;
 pub(crate) mod types;
 mod utils;
-mod series_fetcher;
-mod guard;
-pub mod range_utils;
 
 pub use defrag::defrag_series;
 pub use guard::*;

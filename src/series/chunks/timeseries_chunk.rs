@@ -178,7 +178,6 @@ impl TimeSeriesChunk {
         timestamp_filter: &Option<Vec<Timestamp>>,
         value_filter: &Option<ValueFilter>,
     ) -> Vec<Sample> {
-
         let mut samples = if let Some(ts_filter) = timestamp_filter {
             let filtered_ts = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
             self.samples_by_timestamps(&filtered_ts)

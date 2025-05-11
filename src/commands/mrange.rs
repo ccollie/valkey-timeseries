@@ -6,7 +6,9 @@ use crate::fanout::{perform_remote_mrange_request, MultiRangeResponse};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::index::series_by_matchers;
-use crate::series::range_utils::{aggregate_samples, get_multi_series_range, get_series_labels, group_reduce};
+use crate::series::range_utils::{
+    aggregate_samples, get_multi_series_range, get_series_labels, group_reduce,
+};
 use crate::series::request_types::{
     AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
 };
@@ -102,7 +104,7 @@ pub fn process_mrange_query(
 
     let matchers = std::mem::take(&mut options.series_selector);
     let series_guards = series_by_matchers(ctx, &[matchers], None, true, true)?;
-    
+
     let series_metas: Vec<SeriesMeta> = series_guards
         .iter()
         .map(|guard| SeriesMeta {
@@ -111,7 +113,7 @@ pub fn process_mrange_query(
             group_label_value: None,
         })
         .collect();
-    
+
     let is_clustered = is_clustered(ctx);
     let mut result = process_mrange_command(series_metas, options, is_clustered);
 
@@ -146,17 +148,12 @@ fn process_mrange_command(
         (Some(groupings), Some(aggr_options)) => {
             handle_aggregation_and_grouping(metas, &options, groupings, aggr_options)
         }
-        (Some(groupings), None) => {
-            handle_grouping(metas, &options, groupings)
-        }
+        (Some(groupings), None) => handle_grouping(metas, &options, groupings),
         (_, _) => handle_basic(metas, &options),
     }
 }
 
-fn collect_group_labels(
-    metas: &mut Vec<SeriesMeta>,
-    grouping: &RangeGroupingOptions,
-) {
+fn collect_group_labels(metas: &mut Vec<SeriesMeta>, grouping: &RangeGroupingOptions) {
     for meta in metas.iter_mut() {
         meta.group_label_value = meta
             .series
@@ -198,7 +195,7 @@ fn handle_aggregation_and_grouping(
     let raw_series_groups: Vec<RawGroupedSeries> = grouped_series_map
         .into_iter()
         .map(|(label_value, group_data)| {
-             let series_refs = group_data
+            let series_refs = group_data
                 .series
                 .into_iter()
                 .map(|meta| (meta.series, meta.source_key))
@@ -210,7 +207,7 @@ fn handle_aggregation_and_grouping(
             }
         })
         .collect();
-    
+
     // todo: chili
     raw_series_groups
         .par_iter()
@@ -228,14 +225,13 @@ fn handle_aggregation_and_grouping(
         .collect()
 }
 
-
 fn handle_grouping(
     metas: Vec<SeriesMeta>,
     options: &RangeOptions,
     grouping: &RangeGroupingOptions,
 ) -> Vec<MRangeSeriesResult> {
     let mut grouped_series_map = group_series_by_label_internal(metas, grouping);
-    
+
     grouped_series_map
         .par_iter_mut()
         .map(|(label_value, group_data)| {
@@ -267,26 +263,29 @@ fn handle_basic(metas: Vec<SeriesMeta>, options: &RangeOptions) -> Vec<MRangeSer
     let mut metas = metas;
     let context_values: Vec<(String, Option<String>, Vec<Option<Label>>)> = metas
         .iter_mut()
-        .map(|meta| (
-            std::mem::take(&mut meta.source_key),
-            std::mem::take(&mut meta.group_label_value),
-            convert_labels(meta.series, options.with_labels, &options.selected_labels)
-        )).collect();
-    
+        .map(|meta| {
+            (
+                std::mem::take(&mut meta.source_key),
+                std::mem::take(&mut meta.group_label_value),
+                convert_labels(meta.series, options.with_labels, &options.selected_labels),
+            )
+        })
+        .collect();
+
     let series_refs: Vec<&TimeSeries> = metas.iter().map(|meta| meta.series).collect();
-    let all_samples =  get_multi_series_range(&series_refs, options);
+    let all_samples = get_multi_series_range(&series_refs, options);
 
     all_samples
         .into_iter()
         .zip(context_values)
-        .map(|(samples, (key, group_label_value, labels))| {
-            MRangeSeriesResult {
+        .map(
+            |(samples, (key, group_label_value, labels))| MRangeSeriesResult {
                 group_label_value,
                 key,
                 labels,
                 samples,
-            }
-        })
+            },
+        )
         .collect::<Vec<_>>()
 }
 
@@ -346,7 +345,8 @@ fn get_sample_iterators<'a>(
                 end_ts,
                 &range_options.value_filter,
                 &range_options.timestamp_filter,
-            ).into()
+            )
+            .into()
         })
         .collect::<Vec<SampleIter<'a>>>()
 }
@@ -372,20 +372,23 @@ fn group_series_by_label_internal<'a>(
 
     for meta in metas.into_iter() {
         if let Some(label_value_str) = &meta.group_label_value {
-            let entry = grouped
-                .entry(label_value_str.clone())
-                .or_insert_with(|| {
-                    GroupedSeriesData {
+            let entry =
+                grouped
+                    .entry(label_value_str.clone())
+                    .or_insert_with(|| GroupedSeriesData {
                         series: Vec::new(),
                         labels: Vec::new(),
-                    }
-                });
+                    });
             entry.series.push(meta);
         }
     }
-    
+
     for (label_value_str, group_data) in grouped.iter_mut() {
-        let source_keys: Vec<String> = group_data.series.iter().map(|m| m.source_key.clone()).collect();
+        let source_keys: Vec<String> = group_data
+            .series
+            .iter()
+            .map(|m| m.source_key.clone())
+            .collect();
         group_data.labels = build_grouped_labels(
             group_by_label_name,
             label_value_str,
@@ -418,7 +421,7 @@ fn group_sharded_series(
 
     for meta in metas.into_iter() {
         if let Some(label_value_for_grouping) = &meta.group_label_value {
-             let key = format!("{}={}", grouping.group_label, label_value_for_grouping);
+            let key = format!("{}={}", grouping.group_label, label_value_for_grouping);
             grouped_by_key.entry(key).or_default().push(meta);
         }
     }
@@ -430,10 +433,13 @@ fn group_sharded_series(
     grouped_by_key
         .par_iter()
         .map(|(group_key_str, series_results_in_group)| {
-            let source_keys: Vec<String> = series_results_in_group.iter().map(|m| m.key.clone()).collect();
-            
+            let source_keys: Vec<String> = series_results_in_group
+                .iter()
+                .map(|m| m.key.clone())
+                .collect();
+
             let group_defining_val_str = group_key_str
-                .rsplit_once( '=')
+                .rsplit_once('=')
                 .map(|(_, val)| val)
                 .unwrap_or("");
 

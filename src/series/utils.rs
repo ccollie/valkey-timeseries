@@ -8,7 +8,6 @@ use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
 
-
 #[inline]
 fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
     let user = ctx.get_current_user();

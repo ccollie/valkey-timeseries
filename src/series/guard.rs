@@ -1,8 +1,8 @@
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
+use crate::series::TimeSeries;
 use std::ops::{Deref, DerefMut};
 use valkey_module::key::ValkeyKey;
 use valkey_module::{Context, ValkeyString};
-use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::TimeSeries;
 
 pub struct SeriesGuard {
     pub(super) key_inner: ValkeyString,

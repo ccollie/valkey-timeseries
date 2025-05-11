@@ -1,7 +1,7 @@
-use smallvec::SmallVec;
 use crate::common::binary_search::*;
 use crate::common::{Sample, Timestamp};
 use crate::series::types::ValueFilter;
+use smallvec::SmallVec;
 
 #[inline]
 pub(crate) fn filter_samples_by_value(samples: &mut Vec<Sample>, value_filter: &ValueFilter) {
@@ -34,7 +34,6 @@ pub(crate) fn get_timestamp_index_bounds(
 ) -> Option<(usize, usize)> {
     get_index_bounds(timestamps, &start_ts, &end_ts)
 }
-
 
 pub(crate) fn filter_timestamp_slice(
     ts_filter: &[Timestamp],
