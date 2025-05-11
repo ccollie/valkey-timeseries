@@ -112,7 +112,8 @@ pub fn process_mrange_query(
         })
         .collect();
     
-    let mut result = process_mrange_command(series_metas, &options);
+    let is_clustered = is_clustered(ctx);
+    let mut result = process_mrange_command(series_metas, options, is_clustered);
 
     if reverse {
         result.reverse();
@@ -123,20 +124,32 @@ pub fn process_mrange_query(
 
 fn process_mrange_command(
     metas: Vec<SeriesMeta>,
-    options: &RangeOptions,
+    options: RangeOptions,
+    is_clustered: bool,
 ) -> Vec<MRangeSeriesResult> {
+    let mut options = options;
+    let mut metas = metas;
+    if let Some(grouping) = &options.grouping {
+        collect_group_labels(&mut metas, grouping);
+        // Is_clustered here means that we are being called from a remote node. Since grouping
+        // is cross-series, it can only be done when all results are available in the caller node.
+        // However, we need to tag each series with the grouping label value (done above), so we can
+        // group them by the grouping label when they are returned to the client.
+        //
+        // We remove grouping from the options here. The full request options are available in the done
+        // handler, so we can use them to group the series.
+        if is_clustered {
+            options.grouping = None;
+        }
+    }
     match (&options.grouping, &options.aggregation) {
         (Some(groupings), Some(aggr_options)) => {
-            let mut metas_with_group_labels = metas;
-            collect_group_labels(&mut metas_with_group_labels, groupings);
-            handle_aggregation_and_grouping(metas_with_group_labels, options, groupings, aggr_options)
+            handle_aggregation_and_grouping(metas, &options, groupings, aggr_options)
         }
         (Some(groupings), None) => {
-            let mut metas_with_group_labels = metas;
-            collect_group_labels(&mut metas_with_group_labels, groupings);
-            handle_grouping(metas_with_group_labels, options, groupings)
+            handle_grouping(metas, &options, groupings)
         }
-        (_, _) => handle_basic(metas, options),
+        (_, _) => handle_basic(metas, &options),
     }
 }
 
@@ -251,22 +264,24 @@ fn convert_labels(
 }
 
 fn handle_basic(metas: Vec<SeriesMeta>, options: &RangeOptions) -> Vec<MRangeSeriesResult> {
-    let context_values: Vec<(String, Vec<Option<Label>>)> = metas
-        .iter()
+    let mut metas = metas;
+    let context_values: Vec<(String, Option<String>, Vec<Option<Label>>)> = metas
+        .iter_mut()
         .map(|meta| (
-            meta.source_key.clone(),
+            std::mem::take(&mut meta.source_key),
+            std::mem::take(&mut meta.group_label_value),
             convert_labels(meta.series, options.with_labels, &options.selected_labels)
         )).collect();
     
     let series_refs: Vec<&TimeSeries> = metas.iter().map(|meta| meta.series).collect();
-    let all_samples = get_all_series_samples(&series_refs, options);
+    let all_samples =  get_multi_series_range(&series_refs, options);
 
     all_samples
         .into_iter()
         .zip(context_values)
-        .map(|(samples, (key, labels))| {
+        .map(|(samples, (key, group_label_value, labels))| {
             MRangeSeriesResult {
-                group_label_value: None,
+                group_label_value,
                 key,
                 labels,
                 samples,
@@ -334,13 +349,6 @@ fn get_sample_iterators<'a>(
             ).into()
         })
         .collect::<Vec<SampleIter<'a>>>()
-}
-
-fn get_all_series_samples(
-    series_refs: &[&TimeSeries],
-    range_options: &RangeOptions,
-) -> Vec<Vec<Sample>> {
-    get_multi_series_range(series_refs, range_options)
 }
 
 struct GroupedSeriesData<'a> {

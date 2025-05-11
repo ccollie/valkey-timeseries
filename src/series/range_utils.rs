@@ -51,6 +51,13 @@ pub fn get_multi_series_range(
                 let samples = get_range(meta, range_options, true);
                 vec![samples]
             }
+            [first, second] => {
+                let (first_samples, second_samples) = join(
+                    || get_range(first, range_options, true),
+                    || get_range(second, range_options, true),
+                );
+                vec![first_samples, second_samples]
+            }
             _ => {
                 let (first, rest) = series.split_at(series.len() / 2);
                 let (mut first_samples, rest_samples) = join(
@@ -156,7 +163,7 @@ mod tests {
 
         let mut series = TimeSeries::with_options(options).unwrap();
 
-        // Add samples at 10ms intervals from 100 to 200
+        // Add samples at 10 ms intervals from 100 to 200
         for i in 0..11 {
             let ts = 100 + (i * 10);
             let value = i as f64 * 1.5;
