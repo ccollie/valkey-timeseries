@@ -1,4 +1,4 @@
-use super::chunks::utils::filter_samples_by_value;
+use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
 use crate::common::parallel::join;
@@ -46,7 +46,7 @@ pub struct TimeSeries {
     // stats
 }
 
-/// Hash based on metric name, which should be unique in the db
+/// Hash based on the metric name, which should be unique in the db
 impl Hash for TimeSeries {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.labels.hash(state);
@@ -108,7 +108,7 @@ impl TimeSeries {
     ///
     /// `http_requests_total{method="POST", status="500"}`
     ///
-    /// Note that for our internal purposes, we store the metric name and labels separately, and
+    /// Note that for our internal purposes, we store the metric name and labels separately and
     /// assume that the labels are sorted by name.
     pub fn prometheus_metric_name(&self) -> String {
         self.labels.to_string()
@@ -358,7 +358,7 @@ impl TimeSeries {
 
                 // Update metadata for successful additions
                 if let SampleAddResult::Ok(ts) = result {
-                    // First timestamp might need updating
+                    // The first timestamp might need updating
                     if *ts < self.first_timestamp || self.is_empty() {
                         self.first_timestamp = *ts;
                     }
@@ -774,7 +774,7 @@ impl TimeSeries {
     /// * `None` if the series is empty, if all samples are less than `start`,
     ///   or if `start` and `end` are equal and greater than the sample at the found index.
     ///
-    /// Used to get an inclusive bounds for series chunks (all chunks containing samples in the range [start_index...=end_index])
+    /// Used to get an inclusive bound for series chunks (all chunks containing samples in the range [start_index...=end_index])
     pub(crate) fn get_chunk_index_bounds(
         &self,
         start: Timestamp,
@@ -997,28 +997,6 @@ impl Iterator for SeriesSampleIterator<'_> {
             self.sample_iter.next()
         }
     }
-}
-
-fn filter_timestamp_slice(
-    ts_filter: &[Timestamp],
-    start: Timestamp,
-    end: Timestamp,
-) -> SmallVec<Timestamp, 32> {
-    let mut filtered: SmallVec<Timestamp, 32> = ts_filter
-        .iter()
-        .filter_map(|ts| {
-            let ts = *ts;
-            if ts >= start && ts <= end {
-                Some(ts)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    filtered.sort();
-    filtered.dedup();
-    filtered
 }
 
 fn get_range_parallel(
