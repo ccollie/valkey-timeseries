@@ -6,10 +6,9 @@ use crate::commands::arg_parse::{
 };
 use crate::error_consts;
 use crate::join::{process_join, AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
-use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{invalid_series_key_error, TimeSeries};
+use crate::series::{get_timeseries, invalid_series_key_error, TimeSeries};
 use std::time::Duration;
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
 ///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]]
@@ -35,16 +34,14 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if left_key == right_key {
         return Err(ValkeyError::Str(error_consts::DUPLICATE_JOIN_KEY));
     }
-
-    let left_db_key = ctx.open_key(&left_key);
-    let right_db_key = ctx.open_key(&right_key);
-
-    let left_series = left_db_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)?;
-    let right_series = right_db_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)?;
-
+    
+    
+    let left_series = get_timeseries(ctx, left_key, Some(AclPermissions::ACCESS), true)?;
+    let right_series = get_timeseries(ctx, right_key, Some(AclPermissions::ACCESS), true)?;
+    
     match (left_series, right_series) {
         (Some(left_series), Some(right_series)) => {
-            Ok(join_internal(left_series, right_series, &options))
+            Ok(join_internal(&left_series, &right_series, &options))
         }
         (Some(_), None) => Err(invalid_series_key_error()),
         (None, Some(_)) => Err(invalid_series_key_error()),
@@ -73,7 +70,7 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
     if let Some(next_arg) = args.peek() {
         if let Ok(arg_str) = next_arg.try_as_str() {
             // see if we have a duration expression
-            // durations in all cases start with an ascii digit, e.g. 1000 or 40ms
+            // durations in all cases start with an ascii digit, e.g., 1000 or 40 ms
             let ch = arg_str.chars().next().unwrap();
             if ch.is_ascii_digit() {
                 let tolerance_ms = parse_duration_ms(arg_str)?;
