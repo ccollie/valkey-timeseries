@@ -1,6 +1,8 @@
 # valkey-timeseries
 
-ValkeyTimeSeries is a Rust based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
+**valkey-timeseries** (Apache-2.0) is a Rust-based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
+The goal of this module is to provide a simple, efficient, and easy-to-use time series data type for Valkey, as
+well as provide a superset of the _RedisTimeSeries_ API.
 
 ### WARNING !!!!
 This is a work in progress and a moving target. It is not yet ready for production or even casual use. It probably doesn't work. 
@@ -14,6 +16,23 @@ On any day of the week it may not even build :-)
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
 - Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
+## Scaling
+
+**valkey-timeseries** offers two deployment modes: 
+- **Standalone Mode**: Processing scales vertically with CPU cores
+- **Cluster Mode**: Enables horizontal scaling across nodes for larger datasets
+
+**Query Scaling Options:**
+- For read-heavy workloads, you can direct queries to replicas if your application can tolerate some replication lag
+
+
+## Performance
+
+valkey-timeseries achieves high performance by storing series data in-memory and applying optimizations throughout the stack to efficiently use the host resources, such as:
+
+- **Parallelism:** Low-overhead threading model that enables concurrent lock-free reads across series and chunks.
+- **CPU Cache Efficiency:** Modern, cache-friendly algorithms for data and index storage.
+- **Memory Efficiency:** Uses string interning for label-value pairs.
 ## Commands
 
 Command names and option names are case-insensitive.
@@ -116,4 +135,4 @@ cargo build --release --features valkey_8_0
 This can also be done by specifying SERVER_VERSION=8.0.0 and then running `./build.sh`
 
 ## License
-ValkeyTimeSeries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+valkey-timeseries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
