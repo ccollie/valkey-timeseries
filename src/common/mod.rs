@@ -13,6 +13,5 @@ pub mod time;
 pub mod timer;
 mod types;
 pub mod unit_vec;
-mod utils;
 
 pub use types::*;
