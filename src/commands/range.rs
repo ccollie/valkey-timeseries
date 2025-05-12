@@ -5,7 +5,6 @@ use crate::series::range_utils::get_range;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
-use valkey_module_macros::command;
 
 /// TS.RANGE key fromTimestamp toTimestamp
 //   [LATEST]
@@ -13,21 +12,6 @@ use valkey_module_macros::command;
 //   [FILTER_BY_VALUE min max]
 //   [COUNT count]
 //   [[ALIGN align] AGGREGATION aggregator bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
-#[command(
-    {
-        name: "TS.RANGE",
-        flags: [ReadOnly],
-        arity: -4,
-        key_spec: [
-            {
-                notes: "Get a range of values from a time series",
-                flags: [ReadOnly, Access],
-                begin_search: Index({ index : 1 }),
-                find_keys: Keynum({ key_num_idx : 0, first_key : 1, key_step : 0 }),
-            }
-        ]
-    }
-)]
 pub fn range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 4 {
         return Err(ValkeyError::WrongArity);

@@ -4,7 +4,6 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
-use crate::fanout::register_cluster_message_handlers;
 use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
     Version,
@@ -74,9 +73,6 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
     start_series_background_worker(ctx);
-
-    // todo: check if we're clustered first
-    register_cluster_message_handlers(ctx);
 
     match register_server_events(ctx) {
         Ok(_) => {
