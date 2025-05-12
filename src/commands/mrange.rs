@@ -214,7 +214,7 @@ fn handle_aggregation_and_grouping(
         .map(|group| {
             let key = format!("{}={}", groupings.group_label, group.label_value);
             let aggregates = aggregate_grouped_samples(group, options, aggregations);
-            let samples = group_reduce(aggregates.into_iter(), groupings.aggregator.clone());
+            let samples = group_reduce(aggregates.into_iter(), groupings.aggregation);
             MRangeSeriesResult {
                 key,
                 group_label_value: Some(group.label_value.clone()),
@@ -296,7 +296,7 @@ fn get_grouped_raw_samples(
 ) -> Vec<Sample> {
     let iterators = get_sample_iterators(series_metas, options);
     let multi_iter = MultiSeriesSampleIter::new(iterators);
-    let aggregator = grouping_options.aggregator.clone();
+    let aggregator = grouping_options.aggregation;
     group_reduce(multi_iter, aggregator)
 }
 
@@ -368,7 +368,7 @@ fn group_series_by_label_internal<'a>(
 ) -> AHashMap<String, GroupedSeriesData<'a>> {
     let mut grouped: AHashMap<String, GroupedSeriesData<'a>> = AHashMap::new();
     let group_by_label_name = &grouping.group_label;
-    let reducer_name = grouping.aggregator.name();
+    let reducer_name = grouping.aggregation.name();
 
     for meta in metas.into_iter() {
         if let Some(label_value_str) = &meta.group_label_value {
@@ -413,8 +413,8 @@ fn group_sharded_series(
             .map(|meta| SampleIter::Slice(meta.samples.iter()))
             .collect();
         let multi_iter = MultiSeriesSampleIter::new(iterators);
-        let aggregator = grouping_opts.aggregator.clone();
-        group_reduce(multi_iter, aggregator)
+        let aggregation = grouping_opts.aggregation;
+        group_reduce(multi_iter, aggregation)
     }
 
     let mut grouped_by_key: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
@@ -426,7 +426,7 @@ fn group_sharded_series(
         }
     }
 
-    let reducer_name_str = grouping.aggregator.name();
+    let reducer_name_str = grouping.aggregation.name();
     let group_by_label_name_str = &grouping.group_label;
 
     // todo: chili

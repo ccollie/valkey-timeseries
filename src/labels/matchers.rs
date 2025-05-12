@@ -487,7 +487,7 @@ impl MatcherSetEnum {
         // if we have a __name__ filter, we need to ensure that all matchers have the same name
         // if so, we pull out the name and return it while removing the __name__ filter from all matchers
 
-        // track name filters. Use Smallvec instead of HashSet to avoid allocations
+        // Track name filters. Use Smallvec instead of HashSet to avoid allocations
         let mut to_remove: SmallVec<(usize, usize, bool), 4> = SmallVec::new();
 
         let name = {
@@ -609,7 +609,7 @@ impl Hash for Matchers {
         }
         if !self.matchers.is_empty() {
             state.write_u8(MATCHER_HASH_ID);
-            // constants added here since an empty Vec<Matcher> is equivalent tp an empty Vec<Vec<Matcher>>()
+            // constants added here since an empty Vec<Matcher> is equivalent to an empty Vec<Vec<Matcher>>()
             match &self.matchers {
                 MatcherSetEnum::Or(_) => {
                     state.write_u8(OR_HASH_ID);

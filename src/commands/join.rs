@@ -173,7 +173,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
         }
     }
 
-    // aggregations are only valid when the resulting join returns a single value per timestamo, i.e.
+    // aggregations are only valid when the resulting join returns a single value per timestamp, i.e.,
     // SEMI, ANTI, or when there is a transform
     if options.aggregation.is_some()
         && options.reducer.is_none()

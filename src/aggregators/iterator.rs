@@ -1,4 +1,4 @@
-use crate::aggregators::{AggOp, Aggregator, BucketTimestamp};
+use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
 use std::collections::VecDeque;
@@ -23,7 +23,7 @@ impl AggregationHelper {
         AggregationHelper {
             aligned_timestamp,
             report_empty: options.report_empty,
-            aggregator: options.aggregator.clone(),
+            aggregator: options.aggregation.into(),
             bucket_duration: options.bucket_duration,
             bucket_ts: options.timestamp_output,
             bucket_range_start: 0,
@@ -209,7 +209,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
 
     fn create_test_samples() -> Vec<Sample> {
@@ -224,9 +224,9 @@ mod tests {
         ]
     }
 
-    fn create_options(aggregator: Aggregator) -> AggregationOptions {
+    fn create_options(aggregator: Aggregation) -> AggregationOptions {
         AggregationOptions {
-            aggregator,
+            aggregation: aggregator,
             bucket_duration: 10,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_sum_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Sum(Default::default()));
+        let options = create_options(Aggregation::Sum);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_avg_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Avg(Default::default()));
+        let options = create_options(Aggregation::Avg);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn test_max_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Max(Default::default()));
+        let options = create_options(Aggregation::Max);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_min_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Min(Default::default()));
+        let options = create_options(Aggregation::Min);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn test_count_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Count(Default::default()));
+        let options = create_options(Aggregation::Count);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -326,7 +326,7 @@ mod tests {
             Sample::new(50, 6.0),
         ];
 
-        let mut options = create_options(Aggregator::Sum(Default::default()));
+        let mut options = create_options(Aggregation::Sum);
         options.report_empty = true;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -356,7 +356,7 @@ mod tests {
             Sample::new(50, 6.0),
         ];
 
-        let mut options = create_options(Aggregator::Last(Default::default()));
+        let mut options = create_options(Aggregation::Last);
         options.report_empty = true;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn test_bucket_timestamp_end() {
         let samples = create_test_samples();
-        let mut options = create_options(Aggregator::Sum(Default::default()));
+        let mut options = create_options(Aggregation::Sum);
         options.timestamp_output = BucketTimestamp::End;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn test_bucket_timestamp_mid() {
         let samples = create_test_samples();
-        let mut options = create_options(Aggregator::Sum(Default::default()));
+        let mut options = create_options(Aggregation::Sum);
         options.timestamp_output = BucketTimestamp::Mid;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let samples: Vec<Sample> = vec![];
-        let options = create_options(Aggregator::Sum(Default::default()));
+        let options = create_options(Aggregation::Sum);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -427,7 +427,7 @@ mod tests {
     //         Sample::new(32, 4.0),
     //     ];
     //
-    //     let options = create_options(Aggregator::Sum(Default::default()));
+    //     let options = create_options(Aggregator::Sum);
     //
     //     let iterator = AggregateIterator::new(
     //         samples.into_iter(),

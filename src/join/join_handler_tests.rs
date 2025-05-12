@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
     use crate::join::join_handler::join_internal;
     use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType};
@@ -239,7 +239,7 @@ mod tests {
         let mut options = create_basic_options();
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregator: Aggregator::Sum(Default::default()),
+            aggregation: Aggregation::Sum,
             bucket_duration: 15,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -427,7 +427,7 @@ mod tests {
         options.join_type = JoinType::Semi;
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregator: Aggregator::Sum(Default::default()),
+            aggregation: Aggregation::Sum,
             bucket_duration: 30,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -662,7 +662,7 @@ mod tests {
         let result = join_internal(left, right, &options);
 
         if let JoinResultType::Values(values) = result {
-            assert_eq!(values.len(), 2); // Timestamps 10 and 30 from left don't exist in right
+            assert_eq!(values.len(), 2); // Timestamps 10 and 30 from the left don't exist in right
 
             // Check the first value
             assert_eq!(values[0].timestamp, 10);
@@ -718,7 +718,7 @@ mod tests {
         options.join_type = JoinType::Anti;
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregator: Aggregator::Sum(Default::default()),
+            aggregation: Aggregation::Sum,
             bucket_duration: 25, // Bucket size to group timestamps 10 and 30
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,

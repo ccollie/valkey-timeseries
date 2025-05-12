@@ -1,4 +1,4 @@
-use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
+use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::labels::matchers::Matchers;
 use crate::labels::Label;
@@ -7,7 +7,7 @@ use valkey_module::{ValkeyString, ValkeyValue};
 
 #[derive(Debug, Clone)]
 pub struct AggregationOptions {
-    pub aggregator: Aggregator,
+    pub aggregation: Aggregation,
     pub bucket_duration: u64,
     pub timestamp_output: BucketTimestamp,
     pub alignment: BucketAlignment,
@@ -41,7 +41,7 @@ impl From<Matchers> for MatchFilterOptions {
 
 #[derive(Debug, Clone)]
 pub struct RangeGroupingOptions {
-    pub(crate) aggregator: Aggregator,
+    pub(crate) aggregation: Aggregation,
     pub(crate) group_label: String,
 }
 
