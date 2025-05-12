@@ -231,11 +231,29 @@ unsafe fn load_targets_for_fanout(
     }
 }
 
+const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+fn random_string() -> String {
+    let mut rng = rand::rng();
+    let random_string: String = (0..14)
+        .map(|_| {
+            let idx = rng.random_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect();
+    random_string
+}
+
 pub fn get_current_node() -> CString {
     unsafe {
         // C API: Get current node's cluster ID
         let node_id = ValkeyModule_GetMyClusterID
             .expect("ValkeyModule_GetMyClusterID function is unavailable")();
+
+        if node_id.is_null() {
+            // We're not clustered, so a random string is good enough
+            return CString::new(random_string())
+                .expect("get_current_node(): error converting String to CString");
+        }
 
         CStr::from_ptr(node_id).to_owned()
     }
