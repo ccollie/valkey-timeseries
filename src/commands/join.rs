@@ -1,5 +1,5 @@
 use crate::commands::arg_parse::{
-    advance_if_next_token, advance_if_next_token_one_of, parse_aggregation_options,
+    advance_if_next_token_one_of, parse_aggregation_options,
     parse_command_arg_token, parse_count_arg, parse_duration_ms, parse_join_operator,
     parse_timestamp_filter, parse_timestamp_range, parse_value_filter, CommandArgIterator,
     CommandArgToken,
@@ -8,10 +8,12 @@ use crate::error_consts;
 use crate::join::{process_join, AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
 use crate::series::{get_timeseries, invalid_series_key_error, TimeSeries};
 use std::time::Duration;
-use valkey_module::{AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
-///   [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]]
+///   [[INNER] | [FULL] | [LEFT] | [RIGHT] | ANTI | SEMI |[ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]]
 ///   [FILTER_BY_TS ts...]
 ///   [FILTER_BY_VALUE min max]
 ///   [COUNT count]
@@ -34,11 +36,10 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if left_key == right_key {
         return Err(ValkeyError::Str(error_consts::DUPLICATE_JOIN_KEY));
     }
-    
-    
+
     let left_series = get_timeseries(ctx, left_key, Some(AclPermissions::ACCESS), true)?;
     let right_series = get_timeseries(ctx, right_key, Some(AclPermissions::ACCESS), true)?;
-    
+
     match (left_series, right_series) {
         (Some(left_series), Some(right_series)) => {
             Ok(join_internal(&left_series, &right_series, &options))
@@ -97,10 +98,6 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
     }))
 }
 
-fn possibly_parse_exclusive(args: &mut CommandArgIterator) -> bool {
-    advance_if_next_token(args, CommandArgToken::Exclusive)
-}
-
 fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> ValkeyResult<()> {
     use CommandArgToken::*;
     let mut join_type_set = false;
@@ -115,21 +112,27 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
     }
 
     const VALID_TOKEN_ARGS: &[CommandArgToken] = &[
+        Anti,
         AsOf,
+        Count,
         FilterByValue,
         FilterByTs,
-        Count,
         Full,
-        Left,
-        Right,
         Inner,
+        Left,
         Reduce,
+        Right,
+        Semi,
     ];
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             Aggregation => options.aggregation = Some(parse_aggregation_options(args)?),
+            Anti => {
+                check_join_type_set(&mut join_type_set)?;
+                options.join_type = JoinType::Anti;
+            }
             AsOf => {
                 check_join_type_set(&mut join_type_set)?;
                 options.join_type = parse_asof_join_options(args)?;
@@ -153,32 +156,28 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
             }
             Left => {
                 check_join_type_set(&mut join_type_set)?;
-                let exclusive = possibly_parse_exclusive(args);
-                options.join_type = if exclusive {
-                    JoinType::LeftExclusive
-                } else {
-                    JoinType::Left
-                };
+                options.join_type = JoinType::Left;
             }
             Right => {
                 check_join_type_set(&mut join_type_set)?;
-                let exclusive = possibly_parse_exclusive(args);
-                options.join_type = if exclusive {
-                    JoinType::RightExclusive
-                } else {
-                    JoinType::Right
-                };
+                options.join_type = JoinType::Right;
             }
             Reduce => {
                 let arg = args.next_str()?;
                 options.reducer = Some(parse_join_operator(arg)?);
             }
+            Semi => {
+                check_join_type_set(&mut join_type_set)?;
+                options.join_type = JoinType::Semi;
+            }
             _ => return Err(ValkeyError::Str("TSDB: invalid JOIN command argument")),
         }
     }
 
-    // aggregations are only valid when there is a transform
-    if options.aggregation.is_some() && options.reducer.is_none() {
+    // aggregations are only valid when the resulting join returns a single value per timestamo, i.e.
+    // SEMI, ANTI, or when there is a transform
+    if options.aggregation.is_some() && options.reducer.is_none() && options.join_type != JoinType::Semi && options.join_type != JoinType::Anti {
+        // todo: better error message
         return Err(ValkeyError::Str(error_consts::MISSING_JOIN_REDUCER));
     }
 

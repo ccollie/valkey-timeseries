@@ -2,7 +2,7 @@ use crate::aggregators::aggregate;
 use crate::common::binop::BinopFunc;
 use crate::common::parallel::join;
 use crate::common::Sample;
-use crate::join::{create_join_iter, JoinOptions, JoinValue};
+use crate::join::{create_join_iter, JoinOptions, JoinType, JoinValue};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
@@ -34,6 +34,7 @@ pub fn process_join(
     right_series: &TimeSeries,
     options: &JoinOptions,
 ) -> JoinResultType {
+    // TODO: use iterators instead of collecting samples up front
     let (left_samples, right_samples) = join(
         || fetch_samples(left_series, options),
         || fetch_samples(right_series, options),
@@ -54,6 +55,7 @@ where
 {
     let join_iter = create_join_iter(left, right, options.join_type);
 
+    let count = options.count.unwrap_or(usize::MAX);
     if let Some(op) = options.reducer {
         let transform = op.get_handler();
         let iter = join_iter.map(|x| transform_join_value_to_sample(&x, transform));
@@ -63,14 +65,26 @@ where
             let aligned_timestamp = aggr_options.alignment.get_aligned_timestamp(start, end);
             let result = aggregate(aggr_options, aligned_timestamp, iter)
                 .into_iter()
+                .take(count)
                 .collect();
             return JoinResultType::Samples(result);
         }
 
         return JoinResultType::Samples(iter.collect());
+    } else if options.join_type == JoinType::Semi || options.join_type == JoinType::Anti {
+        // note that ANTI and SEMI joins return single values per timestamp, so we can use aggregation
+        if let Some(aggr_options) = &options.aggregation {
+            let sample_iter = join_iter.map(|x| transform_join_value_to_sample(&x, |l, _r| l));
+            let (start, end) = options.date_range.get_timestamps(None);
+            let aligned_timestamp = aggr_options.alignment.get_aligned_timestamp(start, end);
+            let result = aggregate(aggr_options, aligned_timestamp, sample_iter)
+                .into_iter()
+                .take(count)
+                .collect();
+            return JoinResultType::Samples(result);
+        }
     }
 
-    let count = options.count.unwrap_or(usize::MAX);
     JoinResultType::Values(join_iter.take(count).collect())
 }
 

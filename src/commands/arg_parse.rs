@@ -30,6 +30,7 @@ const MAX_TS_VALUES_FILTER: usize = 128;
 const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
 const CMD_ARG_ALIGN: &str = "ALIGN";
 const CMD_ARG_ALLOW_EXACT_MATCH: &str = "ALLOW_EXACT_MATCH";
+const CMD_ARG_ANTI: &str = "ANTI";
 const CMD_ARG_ASOF: &str = "ASOF";
 const CMD_ARG_BUCKET_TIMESTAMP: &str = "BUCKETTIMESTAMP";
 const CMD_ARG_CHUNK_SIZE: &str = "CHUNK_SIZE";
@@ -41,7 +42,6 @@ const CMD_ARG_DUPLICATE_POLICY: &str = "DUPLICATE_POLICY";
 const CMD_ARG_EMPTY: &str = "EMPTY";
 const CMD_ARG_ENCODING: &str = "ENCODING";
 const CMD_ARG_END: &str = "END";
-const CMD_ARG_EXCLUSIVE: &str = "EXCLUSIVE";
 const CMD_ARG_FALSE: &str = "FALSE";
 const CMD_ARG_FILTER: &str = "FILTER";
 const CMD_ARG_FILTER_BY_TS: &str = "FILTER_BY_TS";
@@ -67,6 +67,7 @@ const CMD_ARG_RETENTION: &str = "RETENTION";
 const CMD_ARG_RIGHT: &str = "RIGHT";
 const CMD_ARG_ROUNDING: &str = "ROUNDING";
 const CMD_ARG_SELECTED_LABELS: &str = "SELECTED_LABELS";
+const CMD_ARG_SEMI: &str = "SEMI";
 const CMD_ARG_STEP: &str = "STEP";
 const CMD_ARG_SIGNIFICANT_DIGITS: &str = "SIGNIFICANT_DIGITS";
 const CMD_ARG_START: &str = "START";
@@ -77,10 +78,11 @@ const CMD_ARG_WITH_LABELS: &str = "WITHLABELS";
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum CommandArgToken {
-    AsOf,
     Aggregation,
     Align,
     AllowExactMatch,
+    Anti,
+    AsOf,
     BucketTimestamp,
     ChunkSize,
     Compressed,
@@ -91,7 +93,6 @@ pub enum CommandArgToken {
     Empty,
     Encoding,
     End,
-    Exclusive,
     False,
     Filter,
     FilterByTs,
@@ -117,6 +118,7 @@ pub enum CommandArgToken {
     Right,
     Rounding,
     SelectedLabels,
+    Semi,
     SignificantDigits,
     Start,
     Step,
@@ -135,6 +137,7 @@ impl CommandArgToken {
             CommandArgToken::Aggregation => CMD_ARG_AGGREGATION,
             CommandArgToken::Align => CMD_ARG_ALIGN,
             CommandArgToken::AllowExactMatch => CMD_ARG_ALLOW_EXACT_MATCH,
+            CommandArgToken::Anti => CMD_ARG_ANTI,
             CommandArgToken::AsOf => CMD_ARG_ASOF,
             CommandArgToken::ChunkSize => CMD_ARG_CHUNK_SIZE,
             CommandArgToken::Compressed => CMD_ARG_COMPRESSED,
@@ -145,7 +148,6 @@ impl CommandArgToken {
             CommandArgToken::Empty => CMD_ARG_EMPTY,
             CommandArgToken::Encoding => CMD_ARG_ENCODING,
             CommandArgToken::End => CMD_ARG_END,
-            CommandArgToken::Exclusive => CMD_ARG_EXCLUSIVE,
             CommandArgToken::False => CMD_ARG_FALSE,
             CommandArgToken::Filter => CMD_ARG_FILTER,
             CommandArgToken::FilterByTs => CMD_ARG_FILTER_BY_TS,
@@ -166,6 +168,7 @@ impl CommandArgToken {
             CommandArgToken::Right => CMD_ARG_RIGHT,
             CommandArgToken::Rounding => CMD_ARG_ROUNDING,
             CommandArgToken::SignificantDigits => CMD_ARG_SIGNIFICANT_DIGITS,
+            CommandArgToken::Semi => CMD_ARG_SEMI,
             CommandArgToken::Start => CMD_ARG_START,
             CommandArgToken::Step => CMD_ARG_STEP,
             CommandArgToken::WithLabels => CMD_ARG_WITH_LABELS,
@@ -190,6 +193,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "AGGREGATION" => CommandArgToken::Aggregation,
         "ALIGN" => CommandArgToken::Align,
         "ALLOW_EXACT_MATCH" => CommandArgToken::AllowExactMatch,
+        "ANTI" => CommandArgToken::Anti,
         "ASOF" => CommandArgToken::AsOf,
         "BUCKETTIMESTAMP" => CommandArgToken::BucketTimestamp,
         "CHUNK_SIZE" => CommandArgToken::ChunkSize,
@@ -199,9 +203,8 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "DECIMAL_DIGITS" => CommandArgToken::DecimalDigits,
         "DUPLICATE_POLICY" => CommandArgToken::DuplicatePolicy,
         "EMPTY" => CommandArgToken::Empty,
-        "END" => CommandArgToken::End,
         "ENCODING" => CommandArgToken::Encoding,
-        "EXCLUSIVE" => CommandArgToken::Exclusive,
+        "END" => CommandArgToken::End,
         "FALSE" => CommandArgToken::False,
         "FILTER" => CommandArgToken::Filter,
         "FILTER_BY_TS" => CommandArgToken::FilterByTs,
@@ -227,6 +230,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "RIGHT" => CommandArgToken::Right,
         "ROUNDING" => CommandArgToken::Rounding,
         "SELECTED_LABELS" => CommandArgToken::SelectedLabels,
+        "SEMI" => CommandArgToken::Semi,
         "SIGNIFICANT_DIGITS" => CommandArgToken::SignificantDigits,
         "START" => CommandArgToken::Start,
         "STEP" => CommandArgToken::Step,
@@ -454,18 +458,6 @@ pub fn parse_count_arg(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
         return Err(ValkeyError::Str(error_consts::INVALID_COUNT_VALUE));
     }
     Ok(count as usize)
-}
-
-pub(crate) fn advance_if_next_token(args: &mut CommandArgIterator, token: CommandArgToken) -> bool {
-    if let Some(next) = args.peek() {
-        if let Some(tok) = parse_command_arg_token(next.as_slice()) {
-            if tok == token {
-                args.next();
-                return true;
-            }
-        }
-    }
-    false
 }
 
 pub(crate) fn advance_if_next_token_one_of(
@@ -906,7 +898,7 @@ mod tests {
 
     #[test]
     fn test_parse_chunk_size_invalid_non_multiple_of_eight() {
-        // Test values not multiple of 8
+        // Test values are not multiple of 8
         assert!(parse_chunk_size("1025").is_err());
         assert!(parse_chunk_size("4097").is_err());
         assert!(parse_chunk_size("1023").is_err());
@@ -924,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_parse_chunk_size_edge_cases() {
-        // Exactly at boundaries of multiple of 8
+        // Exactly at the boundaries of multiples of 8
         let valid_near_min = MIN_CHUNK_SIZE;
         let invalid_near_min = MIN_CHUNK_SIZE + 4;
 

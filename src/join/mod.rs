@@ -7,22 +7,36 @@ mod asof;
 mod join_handler;
 mod join_iter;
 pub mod join_reducer;
-mod join_right_exclusive_iter;
 mod join_right_iter;
 
 #[cfg(test)]
 mod join_handler_tests;
+pub mod sorted_join_semi;
 
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
-pub(crate) use crate::join::asof::AsofJoinStrategy;
 use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
 
+use crate::join::sorted_join_semi::SortedJoinSemiBy;
 use crate::series::request_types::AggregationOptions;
-pub(super) use asof::JoinAsOfIter;
+pub(super) use asof::{AsofJoinStrategy, JoinAsOfIter};
+
+pub trait JoinkitExt: Iterator {
+    fn join_semi<K, I, R, F>(self, right: R, key_fn: F) -> SortedJoinSemiBy<Self, R::IntoIter, K, F>
+    where
+        Self: Sized + Iterator<Item = I>,
+        R: IntoIterator<Item = I>,
+        K: Eq + Ord + Clone,
+        F: FnMut(&I) -> K + Clone,
+    {
+        SortedJoinSemiBy::new(self, right, key_fn)
+    }
+}
+
+impl<T: ?Sized> JoinkitExt for T where T: Iterator {}
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {
@@ -90,22 +104,22 @@ impl Ord for JoinValue {
 
 impl Eq for JoinValue {}
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq)]
 pub struct AsOfJoinOptions {
     pub strategy: AsofJoinStrategy,
     pub tolerance: Duration,
     pub allow_exact_match: bool,
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum JoinType {
     Left,
-    LeftExclusive,
     Right,
-    RightExclusive,
     #[default]
     Inner,
     Full,
+    Semi,
+    Anti,
     AsOf(AsOfJoinOptions),
 }
 
@@ -115,20 +129,20 @@ impl Display for JoinType {
             JoinType::Left => {
                 write!(f, "LEFT OUTER JOIN")?;
             }
-            JoinType::LeftExclusive => {
-                write!(f, "LEFT EXCLUSIVE JOIN")?;
-            }
             JoinType::Right => {
                 write!(f, "RIGHT OUTER JOIN")?;
-            }
-            JoinType::RightExclusive => {
-                write!(f, "RIGHT EXCLUSIVE JOIN")?;
             }
             JoinType::Inner => {
                 write!(f, "INNER JOIN")?;
             }
             JoinType::Full => {
                 write!(f, "FULL JOIN")?;
+            }
+            JoinType::Semi => {
+                write!(f, "SEMI JOIN")?;
+            }
+            JoinType::Anti => {
+                write!(f, "ANTI JOIN")?;
             }
             JoinType::AsOf(ref options) => {
                 write!(f, "ASOF JOIN {}", options.strategy)?;

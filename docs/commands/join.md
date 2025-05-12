@@ -1,6 +1,6 @@
 ```
 TS.JOIN leftKey rightKey fromTimestamp toTimestamp
-    [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] ALLOW_EXACT_MATCH]]
+    [[INNER] | [FULL] | [LEFT] | [RIGHT] | [ANTI] | [SEMI] | [ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] ALLOW_EXACT_MATCH]]
     [FILTER_BY_TS ts...]
     [FILTER_BY_VALUE min max]
     [COUNT count]
@@ -8,7 +8,7 @@ TS.JOIN leftKey rightKey fromTimestamp toTimestamp
     [AGGREGATION aggregator bucketDuration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
 ```
 
-Join 2 time series on sample timestamps. Performs an INNER join by default.
+Join two time series on sample timestamps. Performs an INNER join by default.
 
 [Examples](#examples)
 
@@ -16,12 +16,13 @@ Join 2 time series on sample timestamps. Performs an INNER join by default.
 
 <details open><summary><code>leftKey</code></summary>
 
-is key name for the time series being joined.
+is the key name for the time series being joined.
 </details>
 
 <details open><summary><code>rightKey</code></summary> 
 
-is key name for time series.
+is the key name for the right time series.
+
 </details>
 
 Both keys must have been created before `TS.JOIN` is called.
@@ -42,33 +43,40 @@ Both keys must have been created before `TS.JOIN` is called.
 
 ## Optional arguments
 
-<details open><summary><code>LEFT [EXCLUSIVE]</code></summary>
-
+<details open><summary><code>LEFT</code></summary>
 A `LEFT` join outputs the matching samples between both tables. In case no samples match from the left series, it returns 
 those items with null values.
 
-A `LEFT EXCLUSIVE` join returns samples for which no corresponding timestamp exists in the `right` series.
-
 </details>
 
-<details open><summary><code>RIGHT [EXCLUSIVE]</code></summary>
-
+<details open><summary><code>RIGHT</code></summary>
 A `RIGHT` join outputs all samples in the right series. In case no samples match from the left series, it returns
 those items with null values.
-
-`RIGHT EXCLUSIVE` join returns samples for which no corresponding timestamp exists in the `left` series.
 
 </details>
 
 <details open><summary><code>INNER</code></summary>
+Specifies an `INNER` join. A row is generated for samples with matching timestamps in the selected range.
 
-specifies an `INNER` join. A row is generated for samples with matching timestamps in the selected range.
+</details>
+
+<details open><summary><code>ANTI</code></summary>
+An `ANTI` join returns samples for which no matching timestamp exists in the `right` series.
+
+</details>
+
+<details open><summary><code>SEMI</code></summary>
+An `SEMI` join returns samples for which no corresponding timestamp exists in the `right` series. It does not return any 
+values from the right table.
+
+The main purpose is to filter the left series based on the existence of related records in the right table, not to 
+combine data from both tables.
 
 </details>
 
 <details open><summary><code>FULL</code></summary>
 
-specifies an FULL join. Returns samples from both left and right series. If no matching rows exist for the row in the left 
+Specifies an FULL join. Returns samples from both left and right series. If no matching rows exist for the row in the left 
 series, the value of the right series will have nulls. Correspondingly, the value of the left series will have nulls if 
 there are no matching rows for the sample in the right series.
 
