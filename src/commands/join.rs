@@ -1,8 +1,7 @@
 use crate::commands::arg_parse::{
-    advance_if_next_token_one_of, parse_aggregation_options,
-    parse_command_arg_token, parse_count_arg, parse_duration_ms, parse_join_operator,
-    parse_timestamp_filter, parse_timestamp_range, parse_value_filter, CommandArgIterator,
-    CommandArgToken,
+    advance_if_next_token_one_of, parse_aggregation_options, parse_command_arg_token,
+    parse_count_arg, parse_duration_ms, parse_join_operator, parse_timestamp_filter,
+    parse_timestamp_range, parse_value_filter, CommandArgIterator, CommandArgToken,
 };
 use crate::error_consts;
 use crate::join::{process_join, AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
@@ -176,7 +175,11 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
 
     // aggregations are only valid when the resulting join returns a single value per timestamo, i.e.
     // SEMI, ANTI, or when there is a transform
-    if options.aggregation.is_some() && options.reducer.is_none() && options.join_type != JoinType::Semi && options.join_type != JoinType::Anti {
+    if options.aggregation.is_some()
+        && options.reducer.is_none()
+        && options.join_type != JoinType::Semi
+        && options.join_type != JoinType::Anti
+    {
         // todo: better error message
         return Err(ValkeyError::Str(error_consts::MISSING_JOIN_REDUCER));
     }

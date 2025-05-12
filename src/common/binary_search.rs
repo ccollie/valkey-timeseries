@@ -56,8 +56,8 @@ pub fn find_last_ge_index<T: Ord>(arr: &[T], val: &T) -> usize {
 /// * `None` if the `values` slice is empty, if all samples are less than `start`,
 ///   or if `start` and `end` are equal and greater than the sample at the found index.
 ///
-/// Used to get an inclusive bounds for the slice (all elements in slice[start_index...=end_index]
-/// satisfy the condition x >= start &&  <= end).
+/// Used to get an inclusive bound for the slice (all elements in slice[start_index...=end_index]
+/// satisfy the condition x >= start && <= end).
 pub(crate) fn get_index_bounds<T: Ord>(values: &[T], start: &T, end: &T) -> Option<(usize, usize)> {
     if values.is_empty() {
         return None;
@@ -133,7 +133,7 @@ impl<T: std::fmt::Debug> ExponentialSearch<T> for &[T] {
         }
         let end_bound = std::cmp::min(self.len(), bound);
         // SAFETY:
-        // We checked the end bound and previous bound was within slice as per the `while` condition.
+        // We checked the end bound and the previous bound was within slice as per the `while` condition.
         let prev_bound = bound / 2;
 
         let slice = unsafe { self.get_unchecked(prev_bound..end_bound) };

@@ -897,7 +897,7 @@ mod tests {
             assert_eq!(values[0].timestamp, 20); // Only timestamp 20 matches
         }
     }
-    
+
     // #[test]
     // fn test_join_anti_different_reducer_operations() {
     //     let left = vec![Sample::new(10, 5.0)];

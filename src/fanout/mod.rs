@@ -5,7 +5,7 @@ mod results_tracker;
 
 use crate::series::index::PostingsStats;
 use crate::series::request_types::{MGetRequest, MatchFilterOptions, RangeOptions};
-pub use coordinator::{register_cluster_message_handlers, send_multi_shard_request};
+pub use coordinator::send_multi_shard_request;
 pub use request::*;
 use results_tracker::*;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult};
