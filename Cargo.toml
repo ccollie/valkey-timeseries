@@ -33,6 +33,7 @@ rand = { version = "0.9", features = ["small_rng"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
+snowdon = "0.2.0"
 thiserror = "2.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"

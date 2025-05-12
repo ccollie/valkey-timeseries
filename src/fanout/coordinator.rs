@@ -1,9 +1,10 @@
 use super::cluster::{
-    fanout_cluster_message, get_current_node, is_clustered, is_multi_or_lua,
-    register_message_receiver, send_cluster_message,
+    fanout_cluster_message, is_clustered, is_multi_or_lua, register_message_receiver,
+    send_cluster_message,
 };
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
+use crate::common::ids::flake_id;
 use crate::common::pool::get_pooled_buffer;
 use crate::fanout::error::Error;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
@@ -18,9 +19,8 @@ use crate::fanout::{
 use crate::{config, error_consts};
 use core::time::Duration;
 use papaya::HashMap;
-use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_uchar};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use valkey_module::{
     BlockedClient, Context, RedisModuleTimerID, Status, ThreadSafeContext, ValkeyModuleCtx,
@@ -30,9 +30,7 @@ use valkey_module::{RedisModuleCtx, ValkeyError, ValkeyResult};
 const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
 const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
-
-static NODE_ID_HASH: LazyLock<u64> = LazyLock::new(get_node_id_hash);
-static REQUEST_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static HANDLERS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 struct InFlightRequest {
     pub command_type: CommandMessageType,
@@ -91,6 +89,10 @@ fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
     if is_multi_or_lua(ctx) {
         return Err(ValkeyError::Str("Cannot execute in MULTI or Lua context"));
     }
+    if !HANDLERS_REGISTERED.load(Ordering::Relaxed) {
+        HANDLERS_REGISTERED.store(true, Ordering::SeqCst);
+        register_cluster_message_handlers(ctx);
+    }
     Ok(())
 }
 
@@ -110,15 +112,7 @@ fn get_multi_shard_command_timeout() -> Duration {
 }
 
 fn generate_request_id() -> u64 {
-    *NODE_ID_HASH + REQUEST_ID_SEQUENCE.fetch_add(1, Ordering::SeqCst)
-}
-
-fn get_node_id_hash() -> u64 {
-    let node_id = get_current_node();
-    // hash the node id
-    let mut hasher = ahash::AHasher::default();
-    node_id.hash(&mut hasher);
-    hasher.finish()
+    flake_id()
 }
 
 pub fn send_multi_shard_request<T: MultiShardCommand, F>(

@@ -5,6 +5,7 @@ pub mod db;
 pub mod encoding;
 pub mod hash;
 pub mod humanize;
+pub mod ids;
 pub mod parallel;
 pub mod pool;
 pub mod rdb;
