@@ -111,10 +111,13 @@ impl PcoChunk {
 
         // then we compress in parallel
         // TODO: handle errors
-        let _ = join(
-            || compress_timestamps(&mut t_data, timestamps).ok(),
-            || compress_values(&mut v_data, values).ok(),
+        let (ts_result, value_result) = join(
+            || compress_timestamps(&mut t_data, timestamps),
+            || compress_values(&mut v_data, values),
         );
+        
+        ts_result?;
+        value_result?;
 
         // then we put the buffers back
         self.timestamps = t_data;
@@ -145,17 +148,12 @@ impl PcoChunk {
         timestamps.reserve(self.count);
         values.reserve(self.count);
         // todo: dynamically calculate cutoff or just use chili
-        if self.values.len() > 2048 {
-            // todo: return errors as appropriate
-            let _ = join(
-                || decompress_timestamps(&self.timestamps, timestamps).ok(),
-                || decompress_values(&self.values, values).ok(),
-            );
-        } else {
-            decompress_timestamps(&self.timestamps, timestamps)?;
-            decompress_values(&self.values, values)?;
-        }
-        Ok(())
+        let (timestamps, values) = join(
+            || decompress_timestamps(&self.timestamps, timestamps),
+            || decompress_values(&self.values, values),
+        );
+        timestamps?;
+        values
     }
 
     #[cfg(test)]
