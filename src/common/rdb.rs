@@ -25,7 +25,7 @@ pub(crate) fn rdb_save_optional_marker(rdb: *mut RedisModuleIO, is_some: bool) {
     }
 }
 
-/// WARNING!: internal and *ONLY* for ints < 64bits! We used a signed integer with value.abs() if a value
+/// WARNING!: internal and *ONLY* for ints < 64 bits! We used a signed integer with value.abs() if a value
 /// is present, and -1 otherwise
 pub(crate) fn save_optional_unsigned(rdb: *mut RedisModuleIO, value: Option<u64>) {
     if let Some(value) = value {

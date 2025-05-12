@@ -10,7 +10,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.INCRBY', 'ts_incr', 10)
         print("TS.INCRBY ts_incr 10", result)
 
-        # Verify the key was created and the value incremented
+        # Verify the key was created, and the value incremented
         assert self.client.execute_command(f'EXISTS ts_incr') == 1
         value = self.client.execute_command('TS.GET', 'ts_incr')
         assert len(value) == 2
@@ -67,10 +67,10 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
     def test_incrby_with_negative_values(self):
         """Test TS.INCRBY with negative increments (decrement)"""
-        # Create a series and add initial value
+        # Create a series and add an initial value
         self.client.execute_command('TS.INCRBY', 'ts_decr', 50)
 
-        # Decrement by using negative value
+        # Decrement by using a negative value
         self.client.execute_command('TS.INCRBY', 'ts_decr', -20)
 
         # Value should now be 30
@@ -122,7 +122,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         # Add initial value
         self.client.execute_command('TS.INCRBY', 'ts_dup', 10, 'TIMESTAMP', timestamp)
 
-        # Increment again with same timestamp but with ON_DUPLICATE SUM
+        # Increment again with the same timestamp but with ON_DUPLICATE SUM
         self.client.execute_command(
             'TS.INCRBY', 'ts_dup', 5, 'TIMESTAMP', timestamp, 'ON_DUPLICATE', 'SUM'
         )
@@ -131,7 +131,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         samples = self.client.execute_command('TS.RANGE', 'ts_dup', '-', '+')
         assert float(samples[0][1]) == 15.0
 
-        # Try with MAX policy
+        # Try with the MAX policy
         self.client.execute_command(
             'TS.INCRBY', 'ts_dup', 20, 'TIMESTAMP', timestamp, 'ON_DUPLICATE', 'MAX'
         )
@@ -142,7 +142,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
     def test_incrby_with_chunk_size(self):
         """Test TS.INCRBY with custom chunk size"""
-        # Create with custom chunk size
+        # Create with a custom chunk size
         self.client.execute_command('TS.INCRBY', 'ts_chunk', 1, 'CHUNK_SIZE', 128)
 
         # Verify chunk size
@@ -152,7 +152,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         # Should increment normally
         self.client.execute_command('TS.INCRBY', 'ts_chunk', 2)
 
-        # Final value should be 3
+        # The final value should be 3
         samples = self.client.execute_command('TS.RANGE', 'ts_chunk', '-', '+')
         assert float(samples[-1][1]) == 3.0
 
@@ -183,7 +183,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
 
     def test_incrby_errors(self):
         """Test error cases for TS.INCRBY"""
-        # Test with missing key
+        # Test with a missing key
         self.verify_error_response(
             self.client, 'TS.INCRBY',
             "wrong number of arguments for 'TS.INCRBY' command"
