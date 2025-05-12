@@ -55,7 +55,7 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         assert actual_num_keys == expected_num_keys, assert_num_key_error_msg
 
     def generate_random_string(self, length=7):
-        """ Creates a random string with specified length.
+        """ Creates a random string with a specified length.
         """
         characters = string.ascii_letters + string.digits
         random_string = ''.join(random.choice(characters) for _ in range(length))
