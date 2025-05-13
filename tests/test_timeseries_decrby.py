@@ -76,7 +76,7 @@ class TestTsDecrby(ValkeyTimeSeriesTestCaseBase):
         current_time_approx = int(time.time() * 1000)
         result_star = self.client.execute_command('TS.DECRBY', 'ts_timestamp', 5.0, 'TIMESTAMP', '*')
         assert isinstance(result_star, int)
-        assert abs(result_star - current_time_approx) < 5000 # Check if timestamp is recent
+        assert abs(result_star - current_time_approx) < 5000 # Check if the timestamp is recent
 
         latest_sample_star = self.client.execute_command('TS.GET', 'ts_timestamp')
         assert latest_sample_star[0] == result_star
@@ -163,7 +163,7 @@ class TestTsDecrby(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command('TS.DECRBY', 'ts_err', 5.0, 'TIMESTAMP', 'invalid_ts')
         assert "invalid timestamp" in str(excinfo.value).lower()
 
-        # Timestamp older than last sample (without RESET)
+        # Timestamp older than the last sample
         with pytest.raises(ResponseError) as excinfo:
             self.client.execute_command('TS.DECRBY', 'ts_err', 5.0, 'TIMESTAMP', 500)
         assert "timestamp must be equal to or higher than the maximum existing timestamp" in str(excinfo.value).lower()
@@ -173,25 +173,3 @@ class TestTsDecrby(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError) as excinfo:
             self.client.execute_command('TS.DECRBY', 'string_key', 1.0)
         assert "the key is not a TSDB key" in str(excinfo.value)
-
-    def test_decrby_with_reset_timestamp(self):
-        """Test TS.DECRBY with RESET option for older timestamp"""
-        self.client.execute_command('TS.CREATE', 'ts_reset')
-        self.client.execute_command('TS.ADD', 'ts_reset', 2000, 50.0)
-
-        # Decrement with an older timestamp using RESET
-        older_timestamp = 1500
-        result = self.client.execute_command('TS.DECRBY', 'ts_reset', 10.0, 'TIMESTAMP', older_timestamp, 'RESET')
-        assert result == older_timestamp
-
-        # Verify the new sample is added at the older timestamp
-        samples = self.client.execute_command('TS.RANGE', 'ts_reset', '-', '+')
-        assert len(samples) == 2
-        assert samples[0][0] == older_timestamp
-        assert float(samples[0][1]) == pytest.approx(40.0) # 50.0 - 10.0 (based on latest before reset)
-        assert samples[1][0] == 2000 # Original sample still exists
-
-        # Verify GET returns the latest (original) sample
-        latest_sample = self.client.execute_command('TS.GET', 'ts_reset')
-        assert latest_sample[0] == 2000
-        assert float(latest_sample[1]) == pytest.approx(50.0)

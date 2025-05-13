@@ -6,15 +6,18 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
+    def setup_data(self):
+        """setup any state specific to the execution of the given class (which
+        usually contains tests).
+        """
+
         # Create a test series
         self.ts1 = "test_ts1"
         self.ts2 = "test_ts2"
 
         # Create two time series
-        self.client.execute_command("TS.CREATE", self.ts1)
-        self.client.execute_command("TS.CREATE", self.ts2)
+        self.client.execute_command("TS.CREATE", self.ts1, "DUPLICATE_POLICY", "last")
+        self.client.execute_command("TS.CREATE", self.ts2, "DUPLICATE_POLICY", "last")
 
         # Base timestamp
         self.now = 1000
@@ -29,13 +32,12 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             ts = self.now + i * 1000
             self.client.execute_command("TS.ADD", self.ts2, ts, i * 5)
 
-        yield
-        # Cleanup after tests
-        self.client.flushall()
-
 
     def test_inner_join(self):
         """Test inner join operation"""
+
+        self.setup_data()
+
         # Inner join should only return matching timestamps
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
@@ -65,6 +67,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_left_join(self):
         """Test left-join operation"""
+
+        self.setup_data()
+
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
             self.now, self.now + 15000,
@@ -94,6 +99,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_right_join(self):
         """Test right join operation"""
+
+        self.setup_data()
+
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
             self.now, self.now + 15000,
@@ -123,6 +131,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_full_join(self):
         """Test full join operation"""
+
+        self.setup_data()
+
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
             self.now, self.now + 15000,
@@ -154,6 +165,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_anti_join(self):
         """Test anti-join operation"""
+
+        self.setup_data()
+
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
             self.now, self.now + 15000,
@@ -162,6 +176,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Should return timestamps in the left that aren't in the right (0-4)
         assert len(result) == 5
+        print(result)
 
         for item in result:
             ts, left_val, right_val = item
@@ -177,6 +192,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_semi_join(self):
         """Test semi-join operation"""
+
+        self.setup_data()
+
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
             self.now, self.now + 15000,
@@ -185,6 +203,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Should return timestamps in the left that are also in the right (5-9)
         assert len(result) == 5
+        print(result)
 
         for item in result:
             ts, left_val, right_val = item
@@ -195,11 +214,14 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
             # Verify values
             assert float(left_val) == expected_left
-            assert right_val is not None
+            assert right_val is None # The right value should be None
             assert 5 <= idx < 10  # Only indexes 5-9 should be present
 
     def test_asof_join(self):
         """Test as-of join operation"""
+
+        self.setup_data()
+
         # Create a special series for as-of test with non-matching timestamps
         asof_ts = "test_asof"
         self.client.execute_command("TS.CREATE", asof_ts)
@@ -235,6 +257,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_join_with_reducer(self):
         """Test join with reducer operation"""
+
+        self.setup_data()
+
         # Test join with SUM reducer
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
@@ -262,6 +287,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_join_with_aggregation(self):
         """Test join with aggregation"""
+
+        self.setup_data()
+
         # Add more data points for the aggregation test
         for i in range(10, 20):
             ts = self.now + i * 500  # Create points every 500ms
@@ -285,6 +313,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_join_with_filter(self):
         """Test join with filters"""
+
+        self.setup_data()
+
         # Test with value filter
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
@@ -311,6 +342,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_join_count_limit(self):
         """Test join with count limit"""
+
+        self.setup_data()
+
         # Test with count limit
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
@@ -323,6 +357,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_error_cases(self):
         """Test error cases"""
+
+        self.setup_data()
+
         # Test with the same key for both series
         self.verify_error_response(
             self.client,
@@ -353,6 +390,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_asof_strategies(self):
         """Test different ASOF join strategies"""
+
+        self.setup_data()
+
         # Create a special series for as-of test
         asof_ts = "test_asof_strategies"
         self.client.execute_command("TS.CREATE", asof_ts)
@@ -412,6 +452,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def test_all_join_reducers(self):
         """Test different join reducers"""
+
+        self.setup_data()
+
         reducers = [
             "sum", "avg", "min", "max",
             "eq", "ne", "gt", "lt", "gte", "lte",

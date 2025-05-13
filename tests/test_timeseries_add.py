@@ -125,7 +125,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         timestamp = 160000
 
         self.client.execute_command(
-            "TS.ADD", "ts_dup_first", timestamp, 30.0, "ON_DUPLICATE", "FIRST"
+            "TS.ADD", "ts_dup_first", timestamp, 30.0, "DUPLICATE_POLICY", "FIRST"
         )
 
         info = self.ts_info("ts_dup_first")
@@ -140,7 +140,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Add duplicate with LAST policy (should update to new value)
         self.client.execute_command(
-            "TS.ADD", "ts_dup_last", timestamp, 10.0, "ON_DUPLICATE", "LAST"
+            "TS.ADD", "ts_dup_last", timestamp, 10.0, "DUPLICATE_POLICY", "LAST"
         )
         self.client.execute_command(
             "TS.ADD", "ts_dup_last", timestamp, 99.0
@@ -150,7 +150,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Add duplicate with MAX policy
         self.client.execute_command(
-            "TS.ADD", "ts_dup_max", timestamp, 40.0, "ON_DUPLICATE", "MAX"
+            "TS.ADD", "ts_dup_max", timestamp, 40.0, "DUPLICATE_POLICY", "MAX"
         )
         self.client.execute_command(
             "TS.ADD", "ts_dup_max", timestamp, 20.0
@@ -162,7 +162,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Add duplicate with MIN policy
         self.client.execute_command(
-            "TS.ADD", "ts_dup_min", timestamp, 20.0, "ON_DUPLICATE", "MIN"
+            "TS.ADD", "ts_dup_min", timestamp, 20.0, "DUPLICATE_POLICY", "MIN"
         )
         self.client.execute_command(
             "TS.ADD", "ts_dup_min", timestamp, 10.0
@@ -173,10 +173,10 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Add duplicate with SUM policy
         self.client.execute_command(
-            "TS.ADD", "ts_dup_sum", timestamp, 5.0, "ON_DUPLICATE", "SUM"
+            "TS.ADD", "ts_dup_sum", timestamp, 5.0, "DUPLICATE_POLICY", "SUM"
         )
         self.client.execute_command(
-            "TS.ADD", "ts_dup_last", timestamp, 20.0
+            "TS.ADD", "ts_dup_sum", timestamp, 20.0
         )
 
         samples = self.client.execute_command("TS.RANGE", "ts_dup_sum", "-", "+")
@@ -184,7 +184,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Add duplicate with BLOCK policy (should fail)
         self.client.execute_command(
-            "TS.ADD", "ts_dup_block", timestamp, 5.0, "ON_DUPLICATE", "BLOCK"
+            "TS.ADD", "ts_dup_block", timestamp, 5.0, "DUPLICATE_POLICY", "BLOCK"
         )
 
         with pytest.raises(ResponseError) as excinfo:
@@ -240,6 +240,12 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         # Test with invalid value
         with pytest.raises(ResponseError):
             self.client.execute_command("TS.ADD", "ts_invalid", 160000, "not_a_number")
+
+        self.client.execute_command(
+            "TS.ADD", "ts_invalid", 160000, 10.0, "CHUNK_SIZE", "invalid"
+        )
+        info = self.ts_info("ts_invalid")
+        print(info)
 
         # Test with invalid chunk size
         with pytest.raises(ResponseError):
