@@ -1,5 +1,5 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
-use crate::commands::parse_series_options;
+use crate::commands::{parse_series_options, CommandArgToken};
 use crate::common::Timestamp;
 use crate::error_consts;
 use crate::series::{
@@ -38,7 +38,10 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     } else {
         let key_name = args.remove(1);
         let mut args = args.into_iter().skip(2).peekable();
-        let options = parse_series_options(&mut args, TimeSeriesOptions::from_config(), &[])?;
+        const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
+
+        let options =
+            parse_series_options(&mut args, TimeSeriesOptions::from_config(), INVALID_ARGS)?;
         create_and_store_series(ctx, &key_name, options)?; // todo: ACL ?
 
         if let Some(mut series) =

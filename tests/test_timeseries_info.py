@@ -24,7 +24,7 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         assert info['lastTimestamp'] == ts2
         assert labels is None or len(labels) == 0
         # assert info['rules'] == []
-        assert 'duplicatePolicy' not in info # Default is BLOCK, not explicitly stored unless set
+        assert info['duplicatePolicy'] is None
 
     def test_info_with_options(self):
         """Test TS.INFO on a time series created with options"""
@@ -32,14 +32,14 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         retention = 60000 # 1 minute
         chunk_size = 128
         labels = ['sensor', 'temp', 'area', 'A1']
-        duplicate_policy = 'LAST'
+        duplicate_policy = 'last'
 
         self.client.execute_command(
             'TS.CREATE', key,
             'RETENTION', retention,
             'CHUNK_SIZE', chunk_size,
+            'DUPLICATE_POLICY', duplicate_policy,
             'LABELS', *labels,
-            'DUPLICATE_POLICY', duplicate_policy
         )
         ts1 = self.client.execute_command('TS.ADD', key, 3000, 30.3)
 
@@ -47,11 +47,11 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         labels = info['labels']
 
         assert info['totalSamples'] == 1
-        assert info['retentionTime'] == str(retention)
+        assert info['retentionTime'] == retention
         assert len(info['chunks']) == 1
         assert info['chunkSize'] == chunk_size
-        assert info['firstTimestamp'] == str(ts1)
-        assert info['lastTimestamp'] == str(ts1)
+        assert info['firstTimestamp'] == ts1
+        assert info['lastTimestamp'] == ts1
         # assert info['rules'] == []
         assert info['duplicatePolicy'] == duplicate_policy
         assert labels['sensor'] == 'temp'
@@ -74,7 +74,7 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         assert info['lastTimestamp'] == 0
         assert labels['status'] == 'init'
         # assert info['rules'] == []
-        assert 'duplicatePolicy' not in info
+        assert info['duplicatePolicy'] is None
         assert labels['status'] == 'init' # No data chunks yet
 
     def test_info_non_existent_key(self):

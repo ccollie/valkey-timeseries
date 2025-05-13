@@ -118,7 +118,7 @@ pub fn get_timeseries_mut<'a>(
             }
             Ok(None)
         }
-        Err(_e) => Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY)),
+        Err(_e) => Err(ValkeyError::WrongType),
     }
 }
 

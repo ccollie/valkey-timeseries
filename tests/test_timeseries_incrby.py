@@ -115,31 +115,6 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         samples = self.client.execute_command('TS.RANGE', 'ts_uncompressed', '-', '+')
         assert float(samples[-1][1]) == 15.0
 
-    def test_incrby_with_on_duplicate(self):
-        """Test TS.INCRBY with ON_DUPLICATE policy"""
-        timestamp = 160000
-
-        # Add initial value
-        self.client.execute_command('TS.INCRBY', 'ts_dup', 10, 'TIMESTAMP', timestamp)
-
-        # Increment again with the same timestamp but with ON_DUPLICATE SUM
-        self.client.execute_command(
-            'TS.INCRBY', 'ts_dup', 5, 'TIMESTAMP', timestamp, 'ON_DUPLICATE', 'SUM'
-        )
-
-        # Value should be summed to 15
-        samples = self.client.execute_command('TS.RANGE', 'ts_dup', '-', '+')
-        assert float(samples[0][1]) == 15.0
-
-        # Try with the MAX policy
-        self.client.execute_command(
-            'TS.INCRBY', 'ts_dup', 20, 'TIMESTAMP', timestamp, 'ON_DUPLICATE', 'MAX'
-        )
-
-        # Value should be the max (20)
-        samples = self.client.execute_command('TS.RANGE', 'ts_dup', '-', '+')
-        assert float(samples[0][1]) == 20.0
-
     def test_incrby_with_chunk_size(self):
         """Test TS.INCRBY with custom chunk size"""
         # Create with a custom chunk size
@@ -201,13 +176,13 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
             "TSDB: invalid timestamp."
         )
 
-        # Test with invalid policy
+        # Test with invalid option (ON_DUPLICATE is not a valid option)
         self.verify_error_response(
             self.client, 'TS.INCRBY ts_err 5 ON_DUPLICATE INVALID_POLICY',
-            "TSDB: invalid duplicate policy"
+            "TSDB: invalid argument"
         )
 
-    def test_incrby_existing_nonts_key(self):
+    def test_incrby_existing_non_timeseries_key(self):
         """Test TS.INCRBY on existing non-timeseries key"""
         # Create a regular string key
         self.client.execute_command('SET', 'string_key', 'hello')

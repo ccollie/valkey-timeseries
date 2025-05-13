@@ -2,11 +2,11 @@ use crate::common::constants::META_KEY_LABEL;
 use crate::common::rounding::RoundingStrategy;
 use crate::series::{
     chunks::{Chunk, TimeSeriesChunk},
-    with_timeseries, TimeSeries,
+    get_timeseries, TimeSeries,
 };
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
-use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{AclPermissions, Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
 
 pub fn info(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1);
@@ -19,10 +19,10 @@ pub fn info(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     };
 
     args.done()?;
-
-    with_timeseries(ctx, &key, true, |series| {
-        Ok(get_ts_info(series, debugging, None))
-    })
+    let series = get_timeseries(ctx, key, Some(AclPermissions::ACCESS), true)?;
+    // must_exist was passed above. Therefore, unwrap is safe here
+    let series = series.unwrap();
+    Ok(get_ts_info(&series, debugging, None))
 }
 
 fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> ValkeyValue {
