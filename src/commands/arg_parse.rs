@@ -454,9 +454,6 @@ pub fn parse_count_arg(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
         .map_err(|_| ValkeyError::Str(error_consts::MISSING_COUNT_VALUE))?;
     let count = parse_integer_arg(&next, CMD_ARG_COUNT, false)
         .map_err(|_| ValkeyError::Str(error_consts::NEGATIVE_COUNT))?;
-    if count > usize::MAX as i64 {
-        return Err(ValkeyError::Str(error_consts::INVALID_COUNT_VALUE));
-    }
     Ok(count as usize)
 }
 

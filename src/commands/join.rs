@@ -12,7 +12,7 @@ use valkey_module::{
 };
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
-///   [[INNER] | [FULL] | [LEFT] | [RIGHT] | ANTI | SEMI |[ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]]
+///   [INNER | FULL | LEFT | RIGHT | ANTI | SEMI | ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]
 ///   [FILTER_BY_TS ts...]
 ///   [FILTER_BY_VALUE min max]
 ///   [COUNT count]
@@ -111,6 +111,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
     }
 
     const VALID_TOKEN_ARGS: &[CommandArgToken] = &[
+        Aggregation,
         Anti,
         AsOf,
         Count,

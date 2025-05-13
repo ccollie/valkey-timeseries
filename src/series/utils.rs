@@ -137,7 +137,7 @@ pub fn create_series(
     }
     with_timeseries_index(ctx, |index| {
         // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
-        // We do this only in the case where we have a __name__ label, signalling that the user is
+        // We do this only in the case where we have a __name__ label, signaling that the user is
         // opting in to Prometheus semantics, meaning a metric name is unique to a series.
         if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
             let labels = ts.labels.to_label_vec();

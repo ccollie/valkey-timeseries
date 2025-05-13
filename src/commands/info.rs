@@ -31,11 +31,11 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
     map.insert("metric".into(), metric.into());
     map.insert(
         "totalSamples".into(),
-        ValkeyValue::Integer(ts.total_samples as i64), // return float instead ?
+        ValkeyValue::Integer(ts.total_samples as i64),
     );
     map.insert(
         "memoryUsage".into(),
-        ValkeyValue::Integer(ts.memory_usage() as i64), // ?? return float instead ?
+        ValkeyValue::Integer(ts.memory_usage() as i64),
     );
     map.insert(
         "firstTimestamp".into(),
@@ -73,6 +73,8 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
 
     if let Some(policy) = ts.sample_duplicates.policy {
         map.insert("duplicatePolicy".into(), policy.as_str().into());
+    } else {
+        map.insert("duplicatePolicy".into(), ValkeyValue::Null);
     }
 
     if let Some(key) = key {
@@ -119,7 +121,7 @@ fn get_ts_info(ts: &TimeSeries, debug: bool, key: Option<&ValkeyString>) -> Valk
 
     if debug {
         map.insert("keySelfName".into(), ValkeyValue::from(key));
-        // yes I know it's title case, but that's what redis does
+        // yes, I know its title case, but that's what redis does
         map.insert("Chunks".into(), get_chunks_info(ts));
     }
 

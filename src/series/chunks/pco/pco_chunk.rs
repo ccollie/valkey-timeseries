@@ -115,7 +115,7 @@ impl PcoChunk {
             || compress_timestamps(&mut t_data, timestamps),
             || compress_values(&mut v_data, values),
         );
-        
+
         ts_result?;
         value_result?;
 
