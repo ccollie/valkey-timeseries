@@ -82,7 +82,7 @@ impl TimeSeries {
         });
         res.rounding = options.rounding;
         res.sample_duplicates = options.sample_duplicate_policy;
-        if res.sample_duplicates.policy.is_some() {
+        if res.sample_duplicates.policy.is_none() {
             let policy = config::DUPLICATE_POLICY
                 .lock()
                 .expect("failed to lock DUPLICATE_POLICY mutex");
