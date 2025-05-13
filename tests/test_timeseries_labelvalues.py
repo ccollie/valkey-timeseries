@@ -145,7 +145,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         # Invalid filter format
         self.verify_error_response(
             self.client, 'TS.LABELVALUES name FILTER invalid-filter',
-            "Invalid filter: invalid-filter"
+            "TSDB: series selector is invalid"
         )
 
         # Invalid time format

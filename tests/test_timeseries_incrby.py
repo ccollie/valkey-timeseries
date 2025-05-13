@@ -190,7 +190,7 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         # Try to increment it as a timeseries - should fail
         self.verify_error_response(
             self.client, 'TS.INCRBY string_key 5',
-            "TSDB: the key is not a TSDB key"
+            "WRONGTYPE Operation against a key holding the wrong kind of value"
         )
 
     def test_incrby_with_get(self):

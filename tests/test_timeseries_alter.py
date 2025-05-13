@@ -178,7 +178,7 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         self.client.set(string_key, 'hello')
         with pytest.raises(ResponseError) as excinfo:
             self.client.execute_command('TS.ALTER', string_key, 'RETENTION', 1000)
-        assert "the key is not a TSDB key" in str(excinfo.value)
+        assert "WRONGTYPE" in str(excinfo.value)
 
     def test_alter_invalid_arguments(self):
         """Test TS.ALTER with invalid argument values"""

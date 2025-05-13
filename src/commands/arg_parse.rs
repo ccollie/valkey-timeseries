@@ -415,7 +415,12 @@ pub fn parse_timestamp_filter(
         if is_stop_token_or_end(args, stop_tokens) {
             break;
         }
-        let arg = args.next_str()?;
+        let arg = match args.next_str() {
+            Ok(arg) => arg,
+            Err(_e) => {
+                return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER));
+            }
+        };
         if let Ok(timestamp) = parse_timestamp(arg) {
             values.push(timestamp);
         } else {
@@ -426,9 +431,7 @@ pub fn parse_timestamp_filter(
         }
     }
     if values.is_empty() {
-        return Err(ValkeyError::Str(
-            "TSDB: FILTER_BY_TS one or more arguments are missing",
-        ));
+        return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER));
     }
     values.sort();
     values.dedup();
@@ -476,13 +479,17 @@ fn is_stop_token_or_end(args: &mut CommandArgIterator, stop_tokens: &[CommandArg
     if let Some(next) = args.peek() {
         match parse_command_arg_token(next.as_slice()) {
             Some(token) => {
-                args.next();
-                stop_tokens.contains(&token)
+                if stop_tokens.contains(&token) {
+                    args.next();
+                    true
+                } else {
+                    false
+                }
             }
             None => false,
         }
     } else {
-        false
+        true
     }
 }
 

@@ -8,7 +8,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
-        # Create test series with various labels
+        # Create series with various labels
         client.execute_command('TS.CREATE', 'ts1', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node1')
         client.execute_command('TS.CREATE', 'ts2', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node2')
         client.execute_command('TS.CREATE', 'ts3', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'node1')
@@ -135,16 +135,18 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Invalid filter format
-        self.verify_error_response(self.client, 'TS.LABELNAMES FILTER invalid_filter',
-                                   "Invalid filter: invalid_filter")
+        # This is invalid in redis, but this is a valid Prometheus filter (equivalent to {__name__="invalid_filter"})
+        # or invalid_filter{}
+        # self.verify_error_response(self.client, 'TS.LABELNAMES FILTER invalid_filter',
+        #                            "Invalid filter: invalid_filter")
 
         # Invalid time format
         self.verify_error_response(self.client, 'TS.LABELNAMES START invalid_time',
-                                   "Invalid timestamp specified")
+                                   "TSDB: invalid START timestamp")
 
         # Invalid limit format
         self.verify_error_response(self.client, 'TS.LABELNAMES LIMIT invalid_limit',
-                                   "Invalid limit specified")
+                                   "TSDB: invalid LIMIT value")
 
     def test_labelnames_after_series_deletion(self):
         """Test TS.LABELNAMES after deleting time series"""
@@ -166,14 +168,14 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
                                                     'FILTER', 'name=cpu', 'type!=usage'))
         assert result == [b'name', b'node', b'type']
 
-        # Complex filter with regex: nodes that don't match pattern
+        # Complex filter with regex: nodes that don't match the pattern
         result = sorted(self.client.execute_command('TS.LABELNAMES',
                                                     'FILTER', 'node!~"node[12]"'))
         assert result == [b'location', b'name', b'node', b'rack', b'type']
 
     def test_labelnames_with_empty_database(self):
         """Test TS.LABELNAMES with an empty database"""
-        # Ensure database is empty
+        # Ensure that the database is empty
         self.client.execute_command('FLUSHALL')
 
         # Verify no labels are returned

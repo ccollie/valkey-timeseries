@@ -247,4 +247,4 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify uncompressed flag in info
         info = self.ts_info('ts_uncompressed')
-        assert info['chunkType'] == b'uncompressed'
+        assert info['chunkType'] == 'uncompressed'

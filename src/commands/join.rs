@@ -5,7 +5,7 @@ use crate::commands::arg_parse::{
 };
 use crate::error_consts;
 use crate::join::{process_join, AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
-use crate::series::{get_timeseries, invalid_series_key_error, TimeSeries};
+use crate::series::{get_timeseries, TimeSeries};
 use std::time::Duration;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -33,20 +33,15 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     parse_join_args(&mut args, &mut options)?;
 
     if left_key == right_key {
-        return Err(ValkeyError::Str(error_consts::DUPLICATE_JOIN_KEY));
+        return Err(ValkeyError::Str(error_consts::DUPLICATE_JOIN_KEYS));
     }
 
-    let left_series = get_timeseries(ctx, left_key, Some(AclPermissions::ACCESS), true)?;
-    let right_series = get_timeseries(ctx, right_key, Some(AclPermissions::ACCESS), true)?;
+    // In both cases we pass true for must_exist, meaning that if the series does not exist, we will
+    // propagate an error. Because of this, unwrap is safe to use here.
+    let left_series = get_timeseries(ctx, left_key, Some(AclPermissions::ACCESS), true)?.unwrap();
+    let right_series = get_timeseries(ctx, right_key, Some(AclPermissions::ACCESS), true)?.unwrap();
 
-    match (left_series, right_series) {
-        (Some(left_series), Some(right_series)) => {
-            Ok(join_internal(&left_series, &right_series, &options))
-        }
-        (Some(_), None) => Err(invalid_series_key_error()),
-        (None, Some(_)) => Err(invalid_series_key_error()),
-        _ => Err(ValkeyError::Str(error_consts::INVALID_JOIN_KEY)),
-    }
+    Ok(join_internal(&left_series, &right_series, &options))
 }
 
 fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinType> {
@@ -103,7 +98,7 @@ fn parse_join_args(args: &mut CommandArgIterator, options: &mut JoinOptions) -> 
 
     fn check_join_type_set(is_set: &mut bool) -> ValkeyResult<()> {
         if *is_set {
-            Err(ValkeyError::Str("ERR join type already set"))
+            Err(ValkeyError::Str("TSDB: join type already set"))
         } else {
             *is_set = true;
             Ok(())

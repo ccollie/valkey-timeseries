@@ -84,7 +84,7 @@ pub fn get_timeseries(
 
     let redis_key = ctx.open_key(&key);
     match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-        Err(_) => Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY)),
+        Err(_) => Err(ValkeyError::WrongType),
         Ok(Some(_)) => Ok(Some(SeriesGuard {
             key: redis_key,
             key_inner: key,

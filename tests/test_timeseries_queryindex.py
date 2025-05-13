@@ -157,11 +157,11 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         result1 = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu'))
         assert result1 == [b'ts1', b'ts2', b'ts5', b'ts6']
 
-        # Second query with different filter
+        # Second query with a different filter
         result2 = sorted(self.client.execute_command('TS.QUERYINDEX', 'type=usage'))
         assert result2 == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts7', b'ts8']
 
-        # Verify first query still works
+        # Verify the first query still works
         result3 = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu'))
         assert result3 == [b'ts1', b'ts2', b'ts5', b'ts6']
 

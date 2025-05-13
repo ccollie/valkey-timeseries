@@ -4,6 +4,7 @@ use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_label_values_request, LabelValuesRequest, LabelValuesResponse};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
+use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{
     AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
@@ -58,7 +59,7 @@ pub fn process_label_values_request(
         return Err(ValkeyError::Str(error_consts::MISSING_LABEL_VALUE));
     }
 
-    let mut names: Vec<String> = vec![];
+    let mut names: BTreeSet<String> = BTreeSet::new();
 
     with_matched_series(
         ctx,
@@ -67,14 +68,13 @@ pub fn process_label_values_request(
         Some(AclPermissions::ACCESS),
         |acc, ts, _| {
             if let Some(label) = ts.get_label(label_name) {
-                acc.push(label.value.into());
+                acc.insert(label.value.into());
             }
         },
     )?;
 
-    if let Some(limit) = options.limit {
-        names.truncate(limit);
-    }
+    let limit = options.limit.unwrap_or(names.len());
+    let names = names.into_iter().take(limit).collect::<Vec<_>>();
 
     Ok(names)
 }

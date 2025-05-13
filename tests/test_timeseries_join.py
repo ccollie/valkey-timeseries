@@ -7,7 +7,7 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
     def setup_data(self):
-        """setup any state specific to the execution of the given class (which
+        """set up any state specific to the execution of the given class (which
         usually contains tests).
         """
 
@@ -364,7 +364,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         self.verify_error_response(
             self.client,
             f"TS.JOIN {self.ts1} {self.ts1} {self.now} {self.now + 15000}",
-            "TSDB: Cannot use same keys for joining"
+            "TSDB: duplicate join keys"
         )
 
         # Test with a non-existent key

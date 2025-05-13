@@ -88,13 +88,13 @@ class TestTsDel(ValkeyTimeSeriesTestCaseBase):
         deleted = self.client.execute_command('TS.DEL', 'ts5', 1200, 1600)
         assert deleted == 41  # Should delete points from 1200 to 1600 inclusive
 
-        # Verify correct number of points remain
+        # Verify the correct number of points remain
         result = self.client.execute_command('TS.RANGE', 'ts5', 0, 2000)
         assert len(result) == 59
 
     def test_del_with_multiple_chunks(self):
         """Test deleting across multiple chunks"""
-        # Create a time series with small chunk size
+        # Create a time series with a small chunk size
         self.client.execute_command('TS.CREATE', 'ts6', 'CHUNK_SIZE', '128')
 
         # Add enough points to span multiple chunks
@@ -119,7 +119,7 @@ class TestTsDel(ValkeyTimeSeriesTestCaseBase):
         deleted = self.client.execute_command('TS.DEL', 'ts8', 1020, 1020)
         assert deleted == 1
 
-        # Verify only that specific point was deleted
+        # Verify only that a specific point was deleted
         result = self.client.execute_command('TS.RANGE', 'ts8', 0, 2000)
         assert len(result) == 4
         timestamps = [entry[0] for entry in result]
