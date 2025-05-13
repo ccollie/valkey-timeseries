@@ -82,12 +82,6 @@ impl TimeSeries {
         });
         res.rounding = options.rounding;
         res.sample_duplicates = options.sample_duplicate_policy;
-        if res.sample_duplicates.policy.is_none() {
-            let policy = config::DUPLICATE_POLICY
-                .lock()
-                .expect("failed to lock DUPLICATE_POLICY mutex");
-            res.sample_duplicates.policy = Some(*policy);
-        }
 
         // todo: make sure labels are sorted and dont contain __name__
         // if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
