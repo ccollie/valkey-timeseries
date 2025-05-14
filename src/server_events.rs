@@ -21,28 +21,18 @@ fn reindex_series(ctx: &Context, series: &TimeSeries, key: &[u8]) -> ValkeyResul
     })
 }
 
-fn handle_key_rename(ctx: &Context, _old_key: &[u8], new_key: &[u8]) {
-    let _key = ctx.create_string(new_key);
-    match get_timeseries(ctx, _key, None, false) {
-        Ok(Some(series)) => {
-            with_timeseries_index(ctx, move |index| {
-                index.remove_timeseries(&series);
-                index.index_timeseries(&series, new_key);
-            });
-        }
-        Ok(None) => {
-            // ignore the error if the series is not found
-        }
-        Err(_e) => {
-            // ignore wrong type errors
-        }
-    }
+fn handle_key_rename(ctx: &Context, old_key: &[u8], new_key: &[u8]) {
+    with_timeseries_index(ctx, |index| {
+        index.rename_series(old_key, new_key);
+    })
 }
 
 fn remove_key_from_index(ctx: &Context, key: &[u8]) {
     with_timeseries_index(ctx, |ts_index| {
-        // todo: batch these and run in the background, since lookups by key can be slow
-        ts_index.slow_remove_series_by_key(key)
+        // At this point, the key has been deleted by Valkey, so ww no longer have access to the
+        // labels and values of the series. What we have to do then is to mark the series as deleted
+        // in the index and schedule "gc" run which scans the index and removes the id
+        ts_index.remove_series_by_key(key)
     });
 }
 

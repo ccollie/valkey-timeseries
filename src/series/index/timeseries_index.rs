@@ -211,86 +211,9 @@ impl TimeSeriesIndex {
         f(&mut inner, state)
     }
 
-    pub fn slow_rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
-        // This is split in two parts because we need to do a linear scan on the id->key
-        // map to find the id for the old key. We hold a write lock only for the update
-        let id = {
-            let inner = self.inner.read().unwrap();
-            inner.get_id_for_key(old_key)
-        };
-        if let Some(id) = id {
-            let mut inner = self.inner.write().unwrap();
-            inner.set_timeseries_key(id, new_key);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize {
-        const BATCH_SIZE: usize = 500;
-
+    pub fn rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
         let mut inner = self.inner.write().unwrap();
-        let all_postings = inner
-            .label_index
-            .get_mut(&*ALL_POSTINGS_KEY)
-            .expect("ALL_POSTINGS_KEY should always exist");
-
-        let old_count = all_postings.cardinality();
-        all_postings.remove_all(ids.iter().cloned());
-        let removed_count = old_count - all_postings.cardinality();
-
-        inner.id_to_key.retain(|id, _| !ids.contains(id));
-
-        let range = inner.get_key_range();
-
-        // we process in batches to avoid holding the lock for too long
-        if let Some((start, end)) = range {
-            let end = end.clone();
-            let mut current_start = start.clone();
-            let mut keys_to_remove = Vec::new();
-
-            drop(inner);
-
-            loop {
-                let mut i: usize = 0;
-                let mut inner = self.inner.write().unwrap();
-
-                for (key, bmp) in inner
-                    .label_index
-                    .range_mut(current_start.clone()..=end.clone())
-                {
-                    let count = bmp.cardinality();
-                    bmp.remove_all(ids.iter().cloned());
-                    if bmp.cardinality() != count
-                        && bmp.is_empty()
-                        && key.as_str() != ALL_POSTINGS_KEY.as_str()
-                    {
-                        keys_to_remove.push(key.clone());
-                    }
-                    i += 1;
-                    if i == BATCH_SIZE {
-                        current_start = key.clone();
-                        continue;
-                    }
-                }
-
-                // If we processed less than BATCH_SIZE items, we're done
-                if i < BATCH_SIZE {
-                    break;
-                }
-
-                drop(inner);
-            }
-
-            if !keys_to_remove.is_empty() {
-                let mut inner = self.inner.write().unwrap();
-                for key in keys_to_remove {
-                    inner.label_index.remove(&key);
-                }
-            }
-        }
-        removed_count as usize
+        inner.rename_series_key(old_key, new_key).is_some()
     }
 
     pub fn remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize {
@@ -384,7 +307,8 @@ impl TimeSeriesIndex {
         removed_count as usize
     }
 
-    pub fn slow_remove_series_by_key(&self, key: &[u8]) -> bool {
+    pub fn remove_series_by_key(&self, key: &[u8]) -> bool {
+        // todo: have a tombstone for the key, so we can remove it from the index lazily
         let id = {
             let inner = self.inner.read().unwrap();
             inner.get_id_for_key(key)
@@ -612,7 +536,7 @@ mod tests {
 
         assert_eq!(index.count(), BATCH_TEST_SIZE);
 
-        // Remove first half of the series
+        // Remove the first half of the series
         let first_half: Vec<_> = all_series_ids.iter().take(BATCH_TEST_SIZE / 2).copied().collect();
         let removed = index.remove_series_by_ids(&first_half);
 

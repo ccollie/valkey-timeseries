@@ -28,7 +28,10 @@ pub type KeyType = Box<[u8]>;
 pub struct MemoryPostings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
-    pub(super) id_to_key: IntMap<SeriesRef, KeyType>,
+    /// Map from timeseries id to the key of the timeseries.
+    pub(super) id_to_key: IntMap<SeriesRef, KeyType>, // todo: use an interned string
+    /// Map valkey key to timeseries id. An ART is used for prefix compression.
+    pub(super) key_to_id: TreeMap<IndexKey, SeriesRef>,
 }
 
 impl Default for MemoryPostings {
@@ -37,6 +40,7 @@ impl Default for MemoryPostings {
         MemoryPostings {
             label_index: PostingsIndex::new(),
             id_to_key: IntMap::default(),
+            key_to_id: Default::default(),
         }
     }
 }
@@ -45,6 +49,7 @@ impl MemoryPostings {
     pub(super) fn clear(&mut self) {
         self.label_index.clear();
         self.id_to_key.clear();
+        self.key_to_id.clear();
     }
 
     // swap the inner value with some other value
@@ -52,6 +57,7 @@ impl MemoryPostings {
     pub fn swap(&mut self, other: &mut Self) {
         std::mem::swap(&mut self.label_index, &mut other.label_index);
         std::mem::swap(&mut self.id_to_key, &mut other.id_to_key);
+        std::mem::swap(&mut self.key_to_id, &mut other.key_to_id);
     }
 
     pub(super) fn remove_posting_for_label_value(
@@ -132,14 +138,40 @@ impl MemoryPostings {
         }
         let key = new_key.to_vec().into_boxed_slice();
         self.id_to_key.insert(id, key);
+        self.key_to_id.insert(new_key.into(), id);
     }
 
     pub fn remove_timeseries(&mut self, series: &TimeSeries) {
         let id = series.id;
+        if let Some(key) = self.id_to_key.remove(&id) {
+            let key = IndexKey::from(key.as_ref());
+            if let Some(existing) = self.key_to_id.remove(&key) {
+                debug_assert_eq!(existing, id);
+            }
+        }
         let labels = series.labels.iter().collect::<Vec<_>>();
         self.remove_posting_by_id_and_labels(id, &labels);
         self.remove_id_from_all_postings(id);
-        self.id_to_key.remove(&id);
+    }
+    
+    pub fn rename_series_key(
+        &mut self,
+        old_key: &[u8],
+        new_key: &[u8],
+    ) -> Option<SeriesRef> {
+        // TODO: figure out how to handle this allocation
+        let old_key = IndexKey::from(old_key);
+        if let Some(id) = self.key_to_id.remove(&old_key) {
+            let key = new_key.to_vec().into_boxed_slice();
+            self.id_to_key.remove(&id);
+            self.id_to_key.insert(id, key);
+            
+            let new_key = IndexKey::from(new_key);
+            self.key_to_id.insert(new_key, id);
+            Some(id)
+        } else {
+            None
+        }
     }
 
     pub fn count(&self) -> usize {
@@ -157,12 +189,8 @@ impl MemoryPostings {
     }
 
     pub fn get_id_for_key(&self, key: &[u8]) -> Option<SeriesRef> {
-        for (id, k) in self.id_to_key.iter() {
-            if k.as_ref() == key {
-                return Some(*id);
-            }
-        }
-        None
+        let key = IndexKey::from(key);
+        self.key_to_id.get(&key).map(|v| *v)
     }
 
     pub(super) fn has_id(&self, id: SeriesRef) -> bool {
@@ -571,7 +599,7 @@ mod tests {
             assert!(result.contains(i as SeriesRef));
         }
 
-        // Check that the execution time is reasonable (adjust threshold as needed)
+        // Check that the execution time is reasonable (adjust the threshold as needed)
         assert!(
             duration < std::time::Duration::from_secs(1),
             "Postings retrieval took too long: {:?}",

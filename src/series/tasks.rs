@@ -154,7 +154,7 @@ fn remove_stale_series_internal(db: i32) {
     }
 
     if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
-        index.slow_remove_series_by_ids(&series);
+        index.remove_series_by_ids(&series);
     }
 }
 
