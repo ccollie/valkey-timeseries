@@ -12,6 +12,7 @@ use crate::labels::{InternedLabel, Label, SeriesLabel};
 use crate::series::{SeriesRef, TimeSeries};
 use get_size::GetSize;
 use valkey_module::{ValkeyError, ValkeyResult};
+use std::mem::size_of;
 
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<MemoryPostings>,
@@ -211,7 +212,7 @@ impl TimeSeriesIndex {
     }
 
     pub fn slow_rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
-        // this is split in two parts because we need to do a linear scan on the id->key
+        // This is split in two parts because we need to do a linear scan on the id->key
         // map to find the id for the old key. We hold a write lock only for the update
         let id = {
             let inner = self.inner.read().unwrap();
@@ -292,13 +293,104 @@ impl TimeSeriesIndex {
         removed_count as usize
     }
 
+    pub fn remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize {
+        const BATCH_SIZE: usize = 500;
+
+        // First phase: Update all_postings and id_to_key
+        let mut inner = self.inner.write().unwrap_or_else(|e| {
+            // Handle poisoned lock gracefully
+            // log::warn!("Acquiring write lock failed: {:?}", e);
+            e.into_inner()
+        });
+        
+        let all_postings = inner
+            .label_index
+            .get_mut(&*ALL_POSTINGS_KEY)
+            .expect("ALL_POSTINGS_KEY should always exist");
+
+        let old_count = all_postings.cardinality();
+        // Use copied() instead of cloned() since SeriesRef is Copy
+        all_postings.remove_all(ids.iter().copied());
+        let removed_count = old_count - all_postings.cardinality();
+
+        // Use a more efficient lookup for bulk operations
+        let ids_set: ahash::AHashSet<SeriesRef> = ids.iter().copied().collect();
+        inner.id_to_key.retain(|id, _| !ids_set.contains(id));
+
+        // Only proceed if we need to update the index
+        if removed_count == 0 {
+            return 0;
+        }
+
+        // Second phase: Process label index in batches
+        if let Some((start, end)) = inner.get_key_range() {
+            // Store these outside the loop to avoid repeated clones
+            let end_key = end.clone();
+            let mut current_key = start.clone();
+            let all_postings_str = ALL_POSTINGS_KEY.as_str();
+            
+            // Process batches of keys to remove
+            loop {
+                let mut batch_keys_to_remove = Vec::with_capacity(BATCH_SIZE);
+                let mut processed = 0;
+                
+                // Process one batch with the lock held
+                for (key, bmp) in inner
+                    .label_index
+                    .range_mut(current_key.clone()..=end_key.clone())
+                {
+                    if key.as_str() == all_postings_str {
+                        processed += 1;
+                        if processed == BATCH_SIZE {
+                            current_key = key.clone();
+                            break; // Break out of for loop after BATCH_SIZE
+                        }
+                        continue; // Skip ALL_POSTINGS_KEY
+                    }
+                    
+                    let old_cardinality = bmp.cardinality();
+                    bmp.remove_all(ids.iter().copied());
+                    
+                    if bmp.cardinality() != old_cardinality && bmp.is_empty() {
+                        batch_keys_to_remove.push(key.clone());
+                    }
+                    
+                    processed += 1;
+                    if processed == BATCH_SIZE {
+                        current_key = key.clone();
+                        break; // Break out of for loop after BATCH_SIZE
+                    }
+                }
+            
+                // Remove the keys marked for deletion in this batch
+                for key in batch_keys_to_remove {
+                    inner.label_index.remove(&key);
+                }
+                
+                // If we processed fewer than BATCH_SIZE items, we're done
+                if processed < BATCH_SIZE {
+                    break;
+                }
+                
+                // Release the lock between batches to give other threads a chance
+                drop(inner);
+                inner = self.inner.write().unwrap_or_else(|e| {
+                    // log::warn!("Reacquiring write lock failed: {:?}", e);
+                    e.into_inner()
+                });
+            }
+        }
+
+        removed_count as usize
+    }
+
     pub fn slow_remove_series_by_key(&self, key: &[u8]) -> bool {
         let id = {
             let inner = self.inner.read().unwrap();
             inner.get_id_for_key(key)
         };
         if let Some(id) = id {
-            let removed = self.slow_remove_series_by_ids(&[id]);
+            let removed = self.remove_series_by_ids(&[id]);
             return removed > 0;
         }
         false
@@ -397,5 +489,252 @@ mod tests {
             .unwrap()
             .unwrap_or_default();
         assert_eq!(id, ts.id);
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_single() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let id = ts.id;
+
+        index.index_timeseries(&ts, b"time-series-1");
+        assert_eq!(index.count(), 1);
+
+        let removed = index.remove_series_by_ids(&[id]);
+
+        assert_eq!(removed, 1);
+        assert_eq!(index.count(), 0);
+        assert!(!index.has_id(id));
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_multiple() {
+        let index = TimeSeriesIndex::new();
+
+        let ts1 = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let ts2 = create_series_from_metric_name(r#"cpu{region="us-west-2",env="prod"}"#);
+        let ts3 = create_series_from_metric_name(r#"memory{region="eu-west-1",env="dev"}"#);
+
+        let id1 = ts1.id;
+        let id2 = ts2.id;
+        let id3 = ts3.id;
+
+        index.index_timeseries(&ts1, b"time-series-1");
+        index.index_timeseries(&ts2, b"time-series-2");
+        index.index_timeseries(&ts3, b"time-series-3");
+        assert_eq!(index.count(), 3);
+
+        let removed = index.remove_series_by_ids(&[id1, id3]);
+
+        assert_eq!(removed, 2);
+        assert_eq!(index.count(), 1);
+        assert!(!index.has_id(id1));
+        assert!(index.has_id(id2));
+        assert!(!index.has_id(id3));
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_nonexistent() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let id = ts.id;
+        let nonexistent_id = id + 1000;
+
+        index.index_timeseries(&ts, b"time-series-1");
+        assert_eq!(index.count(), 1);
+
+        let removed = index.remove_series_by_ids(&[nonexistent_id]);
+
+        assert_eq!(removed, 0);
+        assert_eq!(index.count(), 1);
+        assert!(index.has_id(id));
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_empty_list() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+
+        index.index_timeseries(&ts, b"time-series-1");
+        assert_eq!(index.count(), 1);
+
+        let removed = index.remove_series_by_ids(&[]);
+
+        assert_eq!(removed, 0);
+        assert_eq!(index.count(), 1);
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_empty_index() {
+        let index = TimeSeriesIndex::new();
+        let removed = index.remove_series_by_ids(&[1, 2, 3]);
+
+        assert_eq!(removed, 0);
+        assert_eq!(index.count(), 0);
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_batch_boundary() {
+        const BATCH_TEST_SIZE: usize = 510; // Just over the batch size of 500
+        let index = TimeSeriesIndex::new();
+        let mut series_ids = Vec::with_capacity(BATCH_TEST_SIZE);
+
+        // Create and index more series than the batch size
+        for i in 0..BATCH_TEST_SIZE {
+            let ts = create_series_from_metric_name(&format!(r#"metric_{}{{region="region-{}"}}"#, i, i));
+            let id = ts.id;
+            series_ids.push(id);
+            index.index_timeseries(&ts, format!("time-series-{}", i).as_bytes());
+        }
+
+        assert_eq!(index.count(), BATCH_TEST_SIZE);
+
+        // Remove all series
+        let removed = index.remove_series_by_ids(&series_ids);
+
+        assert_eq!(removed, BATCH_TEST_SIZE);
+        assert_eq!(index.count(), 0);
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_partial_batch() {
+        const BATCH_TEST_SIZE: usize = 750; // 1.5x the batch size
+        let index = TimeSeriesIndex::new();
+        let mut all_series_ids = Vec::with_capacity(BATCH_TEST_SIZE);
+
+        // Create and index more series than the batch size
+        for i in 0..BATCH_TEST_SIZE {
+            let ts = create_series_from_metric_name(&format!(r#"metric_{}{{region="region-{}"}}"#, i, i));
+            let id = ts.id;
+            all_series_ids.push(id);
+            index.index_timeseries(&ts, format!("time-series-{}", i).as_bytes());
+        }
+
+        assert_eq!(index.count(), BATCH_TEST_SIZE);
+
+        // Remove first half of the series
+        let first_half: Vec<_> = all_series_ids.iter().take(BATCH_TEST_SIZE / 2).copied().collect();
+        let removed = index.remove_series_by_ids(&first_half);
+
+        assert_eq!(removed, BATCH_TEST_SIZE / 2);
+        assert_eq!(index.count(), BATCH_TEST_SIZE - (BATCH_TEST_SIZE / 2));
+
+        // Check that the right IDs were removed
+        for id in &first_half {
+            assert!(!index.has_id(*id));
+        }
+
+        // Check that the remaining IDs still exist
+        for id in all_series_ids.iter().skip(BATCH_TEST_SIZE / 2) {
+            assert!(index.has_id(*id));
+        }
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_shared_labels() {
+        let index = TimeSeriesIndex::new();
+
+        // Create series with shared labels
+        let ts1 = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let ts2 = create_series_from_metric_name(r#"latency{region="us-east-1",env="prod"}"#);
+        let ts3 = create_series_from_metric_name(r#"cpu{region="us-east-1",env="qa"}"#);
+
+        let id1 = ts1.id;
+        let id2 = ts2.id;
+        let id3 = ts3.id;
+
+        index.index_timeseries(&ts1, b"time-series-1");
+        index.index_timeseries(&ts2, b"time-series-2");
+        index.index_timeseries(&ts3, b"time-series-3");
+
+        assert_eq!(index.count(), 3);
+
+        // Remove series with shared labels
+        let removed = index.remove_series_by_ids(&[id1, id3]);
+
+        assert_eq!(removed, 2);
+        assert_eq!(index.count(), 1);
+
+        // Verify the right series was kept
+        assert!(!index.has_id(id1));
+        assert!(index.has_id(id2));
+        assert!(!index.has_id(id3));
+
+        // Check the label index structure is intact
+        let labels = vec![Label::new("region", "us-east-1"), Label::new("env", "prod")];
+        let result = index.postings_by_labels(&labels);
+        assert_eq!(result.cardinality(), 1);
+        assert_eq!(result.iter().next(), Some(id2));
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_multiple_calls() {
+        let index = TimeSeriesIndex::new();
+
+        let ts1 = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        let ts2 = create_series_from_metric_name(r#"cpu{region="us-west-2",env="prod"}"#);
+        let ts3 = create_series_from_metric_name(r#"memory{region="eu-west-1",env="dev"}"#);
+
+        let id1 = ts1.id;
+        let id2 = ts2.id;
+        let id3 = ts3.id;
+
+        index.index_timeseries(&ts1, b"time-series-1");
+        index.index_timeseries(&ts2, b"time-series-2");
+        index.index_timeseries(&ts3, b"time-series-3");
+
+        // Remove one series
+        let removed1 = index.remove_series_by_ids(&[id1]);
+        assert_eq!(removed1, 1);
+        assert_eq!(index.count(), 2);
+
+        // Remove another series
+        let removed2 = index.remove_series_by_ids(&[id2]);
+        assert_eq!(removed2, 1);
+        assert_eq!(index.count(), 1);
+
+        // Remove the last series
+        let removed3 = index.remove_series_by_ids(&[id3]);
+        assert_eq!(removed3, 1);
+        assert_eq!(index.count(), 0);
+    }
+
+    #[test]
+    fn test_remove_series_by_ids_consistency() {
+        let index = TimeSeriesIndex::new();
+
+        // Create a number of series
+        const NUM_SERIES: usize = 100;
+        let mut series_ids = Vec::with_capacity(NUM_SERIES);
+
+        for i in 0..NUM_SERIES {
+            let ts = create_series_from_metric_name(
+                &format!(r#"metric_{}{{region="region-{}",env="env-{}"}}"#, i % 5, i % 10, i % 3),
+            );
+            let id = ts.id;
+            series_ids.push(id);
+            index.index_timeseries(&ts, format!("time-series-{}", i).as_bytes());
+        }
+
+        assert_eq!(index.count(), NUM_SERIES);
+
+        // Remove half the series
+        let to_remove: Vec<_> = series_ids.iter().step_by(2).copied().collect();
+        let removed = index.remove_series_by_ids(&to_remove);
+
+        assert_eq!(removed, to_remove.len());
+        assert_eq!(index.count(), NUM_SERIES - to_remove.len());
+
+        // Check for consistency - removed IDs should not exist
+        for id in &to_remove {
+            assert!(!index.has_id(*id));
+        }
+
+        // Remaining IDs should still exist
+        for (i, id) in series_ids.iter().enumerate() {
+            if i % 2 == 1 {  // Keep only odd indices
+                assert!(index.has_id(*id));
+            }
+        }
     }
 }

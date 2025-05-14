@@ -21,11 +21,22 @@ fn reindex_series(ctx: &Context, series: &TimeSeries, key: &[u8]) -> ValkeyResul
     })
 }
 
-fn handle_key_rename(ctx: &Context, old_key: &[u8], new_key: &[u8]) {
-    with_timeseries_index(ctx, |index| {
-        // todo: run in the background
-        index.slow_rename_series(old_key, new_key)
-    });
+fn handle_key_rename(ctx: &Context, _old_key: &[u8], new_key: &[u8]) {
+    let _key = ctx.create_string(new_key);
+    match get_timeseries(ctx, _key, None, false) {
+        Ok(Some(series)) => {
+            with_timeseries_index(ctx, move |index| {
+                index.remove_timeseries(&series);
+                index.index_timeseries(&series, new_key);
+            });
+        }
+        Ok(None) => {
+            // ignore the error if the series is not found
+        }
+        Err(_e) => {
+            // ignore wrong type errors
+        }
+    }
 }
 
 fn remove_key_from_index(ctx: &Context, key: &[u8]) {

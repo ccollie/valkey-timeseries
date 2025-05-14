@@ -26,7 +26,7 @@ pub type KeyType = Box<[u8]>;
 
 #[derive(Clone)]
 pub struct MemoryPostings {
-    /// Map from label name and (label name,  label value) to set of timeseries ids.
+    /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     pub(super) id_to_key: IntMap<SeriesRef, KeyType>,
 }
