@@ -1,15 +1,14 @@
 use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
 use blart::map::Entry as ARTEntry;
-use blart::TreeMap;
+use blart::{AsBytes, TreeMap};
 use std::borrow::Cow;
 use std::sync::LazyLock;
-
-use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::SeriesLabel;
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::Bitmap64;
+use crate::common::hash::IntMap;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -30,8 +29,13 @@ pub struct MemoryPostings {
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
     pub(super) id_to_key: IntMap<SeriesRef, KeyType>, // todo: use an interned string
-    /// Map valkey key to timeseries id. An ART is used for prefix compression.
+    /// Map valkey key to timeseries id. An ART is used for prefix compression (we're likely
+    /// to have a lot of related keys with the same prefix).
     pub(super) key_to_id: TreeMap<IndexKey, SeriesRef>,
+    /// Set of timeseries ids of series that should be removed from the index. This really only
+    /// happens when the series is deleted (via DEL), but we need to keep track of it to clean up the
+    /// index during a gc pass.
+    stale_ids: PostingsBitmap
 }
 
 impl Default for MemoryPostings {
@@ -41,6 +45,7 @@ impl Default for MemoryPostings {
             label_index: PostingsIndex::new(),
             id_to_key: IntMap::default(),
             key_to_id: Default::default(),
+            stale_ids: PostingsBitmap::default(),
         }
     }
 }
@@ -50,6 +55,7 @@ impl MemoryPostings {
         self.label_index.clear();
         self.id_to_key.clear();
         self.key_to_id.clear();
+        self.stale_ids.clear();
     }
 
     // swap the inner value with some other value
@@ -58,6 +64,7 @@ impl MemoryPostings {
         std::mem::swap(&mut self.label_index, &mut other.label_index);
         std::mem::swap(&mut self.id_to_key, &mut other.id_to_key);
         std::mem::swap(&mut self.key_to_id, &mut other.key_to_id);
+        std::mem::swap(&mut self.stale_ids, &mut other.stale_ids);
     }
 
     pub(super) fn remove_posting_for_label_value(
@@ -153,19 +160,19 @@ impl MemoryPostings {
         self.remove_posting_by_id_and_labels(id, &labels);
         self.remove_id_from_all_postings(id);
     }
-    
+
     pub fn rename_series_key(
         &mut self,
         old_key: &[u8],
         new_key: &[u8],
     ) -> Option<SeriesRef> {
-        // TODO: figure out how to handle this allocation
+        // TODO: figure out how to avoid this allocation
         let old_key = IndexKey::from(old_key);
         if let Some(id) = self.key_to_id.remove(&old_key) {
             let key = new_key.to_vec().into_boxed_slice();
             self.id_to_key.remove(&id);
             self.id_to_key.insert(id, key);
-            
+
             let new_key = IndexKey::from(new_key);
             self.key_to_id.insert(new_key, id);
             Some(id)
@@ -188,11 +195,6 @@ impl MemoryPostings {
         self.all_postings().maximum().unwrap_or_default()
     }
 
-    pub fn get_id_for_key(&self, key: &[u8]) -> Option<SeriesRef> {
-        let key = IndexKey::from(key);
-        self.key_to_id.get(&key).map(|v| *v)
-    }
-
     pub(super) fn has_id(&self, id: SeriesRef) -> bool {
         self.id_to_key.contains_key(&id)
     }
@@ -210,12 +212,20 @@ impl MemoryPostings {
         }
     }
 
+    #[inline]
+    fn remove_stale_if_needed(&self, postings: &mut PostingsBitmap) {
+        if !self.stale_ids.is_empty() {
+            postings.andnot_inplace(&self.stale_ids);
+        }
+    }
+
     pub fn postings_for_all_label_values(&self, label_name: &str) -> PostingsBitmap {
         let prefix = get_key_for_label_prefix(label_name);
         let mut result = PostingsBitmap::new();
         for (_, map) in self.label_index.prefix(prefix.as_bytes()) {
             result |= map;
         }
+        self.remove_stale_if_needed(&mut result);
         result
     }
 
@@ -230,11 +240,13 @@ impl MemoryPostings {
                 result |= bmp;
             }
         }
+
+        self.remove_stale_if_needed(&mut result);
         result
     }
 
     /// `postings_for_label_matching` returns postings having a label with the given name and a value
-    /// for which match returns true. If no postings are found having at least one matching label,
+    /// for which `match_fn` returns true. If no postings are found having at least one matching label,
     /// an empty bitmap is returned.
     pub fn postings_for_label_matching<F, STATE>(
         &self,
@@ -255,6 +267,8 @@ impl MemoryPostings {
                 result |= map;
             }
         }
+
+        self.remove_stale_if_needed(&mut result);
         result
     }
 
@@ -278,6 +292,10 @@ impl MemoryPostings {
                 }
             }
         }
+        if !self.stale_ids.is_empty() {
+            acc.andnot_inplace(&self.stale_ids);
+        }
+
         acc
     }
 
@@ -305,6 +323,9 @@ impl MemoryPostings {
                         to_remove.or_inplace(map);
                     }
                 }
+                if !self.stale_ids.is_empty() {
+                    to_remove.or_inplace(&self.stale_ids);
+                }
                 if to_remove.is_empty() {
                     Cow::Borrowed(all)
                 } else {
@@ -325,17 +346,105 @@ impl MemoryPostings {
         }
     }
 
-    pub(super) fn get_key_range(&self) -> Option<(&IndexKey, &IndexKey)> {
-        if let Some((start, _)) = self.label_index.first_key_value() {
-            if let Some((end, _)) = self.label_index.last_key_value() {
-                return Some((start, end));
-            }
-        }
-        None
-    }
-
     pub(crate) fn get_key_by_id(&self, id: SeriesRef) -> Option<&KeyType> {
         self.id_to_key.get(&id)
+    }
+
+    /// Marks a key as stale by removing it from the index and adding its ID to the stale IDs set.
+    /// Context: when a series is deleted using `DEL`, we have no access to the series data to do a proper 
+    /// cleanup. We remove the key from the index and mark the ID as stale, which will be cleaned up later.
+    /// The stale IDs are stored in a bitmap for efficient removal and are checked to ensure that no stale IDs are
+    /// returned in queries until they are removed.
+    pub(crate) fn mark_key_as_stale(&mut self, key: &[u8]) -> bool {     
+        let old_key = IndexKey::from(key);
+        if let Some(id) = self.key_to_id.remove(&old_key) {
+            self.id_to_key.remove(&id);
+            self.stale_ids.add(id);
+            true
+        } else {
+            false
+        }
+    }
+    
+    pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
+        if let Some(key) = self.id_to_key.remove(&id) {
+            self.stale_ids.add(id);
+            let old_key = IndexKey::from(key.as_bytes());
+            self.key_to_id.remove(&old_key);
+            self.stale_ids.add(id);
+        }
+    }
+    
+    pub(super) fn has_stale_ids(&self) -> bool {
+        !self.stale_ids.is_empty()
+    }
+
+    /// Removes stale series IDs from a subset of the index structures.
+    /// 
+    /// This method processes at most `count` keys starting from `start_prefix`,
+    /// removing stale IDs from their bitmaps and cleaning up empty entries.
+    ///
+    /// ## Arguments
+    /// * `start_prefix` - The key to start processing from (inclusive)
+    /// * `count` - Maximum number of keys to process in this batch
+    /// 
+    /// ## Returns
+    /// * `Option<IndexKey>` - The next key to continue processing from, or None if processing is complete
+    pub(super) fn remove_stale_ids(&mut self, start_prefix: Option<IndexKey>, count: usize) -> Option<IndexKey> {
+        // Skip if there are no stale IDs to process
+        if self.stale_ids.is_empty() {
+            return None;
+        }
+
+        let mut keys_processed = 0;
+        let mut keys_to_process = Vec::new();
+        let mut next_key = None;
+        
+        // Determine the prefix to use for iteration
+        let prefix_bytes = start_prefix.map_or_else(Vec::new, |k| k.as_bytes().to_vec());
+        
+        // Collect keys to process
+        for (key, _) in self.label_index.prefix(&prefix_bytes) {
+            if keys_processed >= count {
+                // Save the key we stopped at as the next starting point
+                next_key = Some(key.clone());
+                break;
+            }
+            
+            keys_to_process.push(key.clone());
+            keys_processed += 1;
+        }
+        
+        // Process collected keys
+        for key in keys_to_process {
+            if let Some(mut bitmap) = self.label_index.remove(&key) {
+                // Remove stale IDs from the bitmap
+                bitmap.andnot_inplace(&self.stale_ids);
+                
+                // Only reinsert if the bitmap is not empty
+                if !bitmap.is_empty() {
+                    self.label_index.insert(key, bitmap);
+                }
+            }
+        }
+        
+        // Clean up id_to_key and key_to_id maps for all stale IDs
+        // This is done in every batch since we need to ensure consistency
+        if keys_processed > 0 {
+            self.stale_ids.iter().for_each(|id| {
+                if let Some(key) = self.id_to_key.remove(&id) {
+                    let idx_key = IndexKey::from(key.as_ref());
+                    self.key_to_id.remove(&idx_key);
+                }
+            });
+            
+            // Clear stale_ids if we've processed all keys
+            if next_key.is_none() {
+                self.stale_ids.clear();
+            }
+        }
+        
+        next_key
     }
 }
 

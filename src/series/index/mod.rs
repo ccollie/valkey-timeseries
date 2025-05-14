@@ -4,8 +4,6 @@ mod index_key;
 mod memory_postings;
 mod posting_stats;
 mod querier;
-#[cfg(test)]
-mod querier_tests;
 mod timeseries_index;
 
 use crate::common::db::get_current_db;
@@ -22,6 +20,9 @@ use crate::series::{check_key_permissions, TimeSeries};
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
+
+#[cfg(test)]
+mod querier_tests;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;

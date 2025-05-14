@@ -1,4 +1,4 @@
-use crate::common::db::{get_current_db, set_current_db};
+use crate::common::db::set_current_db;
 use crate::common::hash::IntMap;
 use crate::common::parallel::join;
 use crate::series::index::{
@@ -11,21 +11,16 @@ use lazy_static::lazy_static;
 use num_traits::Zero;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::AtomicI32;
-use std::sync::{LazyLock, Mutex, RwLock};
+use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 use valkey_module::{
     Context, DetachedContext, RedisModuleTimerID, Status, ValkeyGILGuard, ValkeyString,
 };
 
-const BATCH_SIZE: usize = 500;
-
-/// Per-db task metadata
-type IdleSeriesMap = IntMap<i32, Vec<SeriesRef>>;
+const BATCH_SIZE: usize = 100;
 type SeriesCursorMap = IntMap<i32, SeriesRef>;
 static SERIES_TRIM_CURSORS: LazyLock<RwLock<SeriesCursorMap>> =
     LazyLock::new(|| RwLock::new(SeriesCursorMap::new()));
-static STALE_SERIES: LazyLock<Mutex<IdleSeriesMap>> =
-    LazyLock::new(|| Mutex::new(IdleSeriesMap::new()));
 
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
@@ -49,23 +44,30 @@ fn next_db() -> i32 {
     next
 }
 
+fn get_trim_cursor(db: i32) -> SeriesRef {
+    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
+    match map.entry(db) {
+        Entry::Occupied(entry) => *entry.get(),
+        Entry::Vacant(entry) => {
+            let cursor = 0;
+            entry.insert(cursor);
+            cursor
+        }
+    }
+}
+
+fn set_trim_cursor(db: i32, cursor: SeriesRef) {
+    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
+    map.insert(db, cursor);
+}
+
 fn trim_series(ctx: &Context, db: i32) -> usize {
     if set_current_db(ctx, db) == Status::Err {
         ctx.log_warning(&format!("Failed to select db {}", db));
         return 0;
     }
 
-    let cursor = {
-        let mut map = SERIES_TRIM_CURSORS.write().unwrap();
-        match map.entry(db) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                let cursor = 0;
-                entry.insert(cursor);
-                cursor
-            }
-        }
-    };
+    let cursor = get_trim_cursor(db);
 
     let mut processed = 0;
     let mut last_processed = cursor;
@@ -100,10 +102,14 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
         last_processed = 0;
     }
 
-    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
-    map.insert(db, last_processed);
+    set_trim_cursor(db, last_processed);
+    
     if !to_delete.is_empty() {
-        remove_stale_series(ctx, &to_delete);
+        with_timeseries_index(ctx, |index| {
+            for id in to_delete {
+                index.mark_id_as_stale(id)
+            }
+        });
     }
 
     if processed.is_zero() {
@@ -143,36 +149,6 @@ fn fetch_keys_batch(
     })
 }
 
-fn remove_stale_series_internal(db: i32) {
-    let series = {
-        let mut map = STALE_SERIES.lock().unwrap();
-        map.remove(&db).unwrap_or_default()
-    };
-
-    if series.is_empty() {
-        return;
-    }
-
-    if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
-        index.remove_series_by_ids(&series);
-    }
-}
-
-pub(crate) fn remove_stale_series(ctx: &Context, ids: &[SeriesRef]) {
-    if !ids.is_empty() {
-        let id = get_current_db(ctx);
-        let mut map = STALE_SERIES.lock().unwrap();
-        match map.entry(id) {
-            Entry::Occupied(mut entry) => {
-                entry.get_mut().extend(ids.iter().copied());
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(ids.to_vec());
-            }
-        }
-    }
-}
-
 pub fn process_expires_task() {
     let detached_ctx = DetachedContext::new();
     let mut db = next_db();
@@ -196,13 +172,14 @@ pub fn process_expires_task() {
     }
 }
 
+fn remove_stale_series_internal(db: i32) {
+    if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
+        index.remove_stale_ids();
+    }
+}
+
 pub fn process_remove_stale_series() {
-    let db_ids = {
-        let map = STALE_SERIES.lock().unwrap();
-        map.iter()
-            .filter_map(|(db, series)| if !series.is_empty() { Some(*db) } else { None })
-            .collect::<Vec<_>>()
-    };
+    let db_ids = get_used_dbs();
 
     if db_ids.is_empty() {
         return;
@@ -219,9 +196,12 @@ pub fn process_remove_stale_series() {
                 );
             }
             _ => {
-                let (db, rest) = db_ids.split_first().unwrap();
-                remove_stale_series_internal(*db);
-                run_internal(rest);
+                let mid = db_ids.len() / 2;
+                let (left, right) = db_ids.split_at(mid);
+                let _ = join(
+                    || run_internal(left),
+                    || run_internal(right),
+                );
             }
         }
     }
