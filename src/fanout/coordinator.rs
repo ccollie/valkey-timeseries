@@ -13,8 +13,8 @@ use crate::fanout::request::{
 };
 use crate::fanout::results_tracker::{ResponseCallback, Tracker};
 use crate::fanout::{
-    CommandMessageType, MGetShardedCommand, MultiRangeCommand, MultiShardCommand, RangeCommand,
-    ResultsTracker, StatsCommand, TrackerEnum,
+    CommandMessageType, MGetShardedCommand, MultiRangeCommand, MultiShardCommand, ResultsTracker,
+    StatsCommand, TrackerEnum,
 };
 use crate::{config, error_consts};
 use core::time::Duration;
@@ -354,9 +354,6 @@ extern "C" fn on_request_received(
         CommandMessageType::LabelValues => {
             process_request::<LabelValuesCommand>(&ctx, &header, sender_id, buf)
         }
-        CommandMessageType::RangeQuery => {
-            process_request::<RangeCommand>(&ctx, &header, sender_id, buf)
-        }
         CommandMessageType::Cardinality => {
             process_request::<CardinalityCommand>(&ctx, &header, sender_id, buf)
         }
@@ -465,9 +462,6 @@ extern "C" fn on_response_received(
         }
         CommandMessageType::LabelValues => {
             process_response::<LabelValuesCommand>(&ctx, request, request_id, sender_id, buf)
-        }
-        CommandMessageType::RangeQuery => {
-            process_response::<RangeCommand>(&ctx, request, request_id, sender_id, buf)
         }
         CommandMessageType::Cardinality => {
             process_response::<CardinalityCommand>(&ctx, request, request_id, sender_id, buf)
