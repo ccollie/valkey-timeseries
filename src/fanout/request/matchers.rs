@@ -5,7 +5,7 @@ use super::request_generated::{
 use crate::labels::matchers::{
     Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue, RegexMatcher, ValueList,
 };
-use flatbuffers::{FlatBufferBuilder, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -142,6 +142,27 @@ pub(super) fn serialize_matchers<'a>(
     FBMatchers::create(bldr, &matchers_args)
 }
 
+/// Serializes a collection of Matchers filters into a FlatBuffer vector.
+///
+/// # Arguments
+/// * `bldr` - A mutable reference to a FlatBufferBuilder
+/// * `filters` - A slice of Matchers to serialize
+///
+/// # Returns
+/// A flatbuffers::WIPOffset that can be used in a parent FlatBuffer object
+pub(super) fn serialize_matchers_list<'a>(
+    bldr: &mut FlatBufferBuilder<'a>,
+    filters: &[Matchers],
+) -> WIPOffset<Vector<'a, ForwardsUOffset<FBMatchers<'a>>>> {
+    let mut serialized_filters = Vec::with_capacity(filters.len());
+
+    for filter in filters.iter() {
+        serialized_filters.push(serialize_matchers(bldr, filter));
+    }
+
+    bldr.create_vector(&serialized_filters)
+}
+
 pub(super) fn deserialize_matchers(filter: &FBMatchers) -> ValkeyResult<Matchers> {
     let mut result = Matchers::default();
 
@@ -198,6 +219,21 @@ pub(super) fn deserialize_matchers(filter: &FBMatchers) -> ValkeyResult<Matchers
     }
 
     Ok(result)
+}
+
+pub(super) fn deserialize_matchers_list(
+    filter_vec: Option<Vector<ForwardsUOffset<FBMatchers>>>,
+) -> ValkeyResult<Vec<Matchers>> {
+    if let Some(filter_vec) = filter_vec {
+        let mut filters = Vec::with_capacity(filter_vec.len());
+        for filter in filter_vec.iter() {
+            let item = deserialize_matchers(&filter)?;
+            filters.push(item);
+        }
+        Ok(filters)
+    } else {
+        Err(ValkeyError::Str("TSDB: missing filters"))
+    }
 }
 
 fn deserialize_matcher(request_matcher: &FBMatcher) -> ValkeyResult<Matcher> {

@@ -22,12 +22,10 @@ impl MultiShardCommand for RangeCommand {
     }
 
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<RangeResponse> {
-        let mut req = req;
-        let matchers = req.matchers.pop().unwrap(); // todo: !!!!!!
         let options = RangeOptions {
             date_range: req.date_range.unwrap_or_default(),
             count: req.limit,
-            series_selector: matchers,
+            filters: req.matchers,
             ..Default::default()
         };
         process_mrange_query(ctx, options, false).map(|series| {
