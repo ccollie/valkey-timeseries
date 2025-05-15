@@ -31,34 +31,34 @@ table DateRange {
 
 table RangeRequest {
   range:DateRange;
-  filters:Matchers;
+  filters:[Matchers];
 }
 
 table MultiGetRequest {
   with_labels:bool;
   selected_labels:[string];
-  filter:Matchers;
+  filters:[Matchers];
 }
 
 table IndexQueryRequest {
   range:DateRange;
-  filter:Matchers;
+  filters:[Matchers];
 }
 
 table LabelNamesRequest {
   range:DateRange;
-  filter:Matchers;
+  filters:[Matchers];
 }
 
 table LabelValuesRequest {
   label:string;
   range:DateRange;
-  filter:Matchers;
+  filters:[Matchers];
 }
 
 table CardinalityRequest {
   range:DateRange;
-  filter:Matchers;
+  filters:[Matchers];
 }
 
 
@@ -111,7 +111,7 @@ table MultiRangeRequest {
   value_filter:ValueRangeFilter;
   with_labels:bool;
   selected_labels:[string];
-  filter:Matchers;
+  filters:[Matchers];
   aggregation:AggregationOptions;
   grouping:GroupingOptions;
 }

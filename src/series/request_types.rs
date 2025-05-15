@@ -52,7 +52,7 @@ pub struct RangeOptions {
     pub aggregation: Option<AggregationOptions>,
     pub timestamp_filter: Option<Vec<Timestamp>>,
     pub value_filter: Option<ValueFilter>,
-    pub series_selector: Matchers,
+    pub filters: Vec<Matchers>,
     pub with_labels: bool,
     pub selected_labels: Vec<String>,
     pub grouping: Option<RangeGroupingOptions>,
@@ -90,7 +90,7 @@ impl From<MRangeSeriesResult> for ValkeyValue {
 #[derive(Debug, Default, Clone)]
 pub struct MGetRequest {
     pub with_labels: bool,
-    pub filter: Matchers,
+    pub filters: Vec<Matchers>,
     pub selected_labels: Vec<String>,
 }
 

@@ -27,12 +27,11 @@ pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.LABELVALUES in cluster mode requires at least one matcher",
             ));
         }
-        // TODO: normalize single vs multi filters
-        let filter = label_args.matchers[0].clone(); // TODO !!!!!!!!!!!!!!
+
         let options = LabelValuesRequest {
             label_name,
             range: label_args.date_range,
-            filter,
+            filters: label_args.matchers,
         };
         // in cluster mode, we need to send the request to all nodes
         perform_remote_label_values_request(ctx, options, on_label_values_request_done)?;

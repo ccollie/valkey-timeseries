@@ -1,15 +1,16 @@
 use crate::commands::arg_parse::{
     parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
 };
+use crate::commands::parse_series_selector_list;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
-use crate::labels::{parse_series_selector, Label};
+use crate::labels::Label;
 use crate::series::index::with_matched_series;
 use crate::series::range_utils::get_series_labels;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
 use valkey_module::{
-    AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
+    AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult,
     ValkeyString, ValkeyValue,
 };
 
@@ -34,14 +35,13 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 }
 
 pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetRequest> {
-    const CMD_TOKENS: &[CommandArgToken] = &[CommandArgToken::WithLabels];
+    const CMD_TOKENS: &[CommandArgToken] = &[
+        CommandArgToken::WithLabels,
+        CommandArgToken::SelectedLabels,
+        CommandArgToken::Filter,
+    ];
 
-    let filter = parse_series_selector(args.next_str()?)?;
-    let mut options = MGetRequest {
-        with_labels: false,
-        filter,
-        selected_labels: Default::default(),
-    };
+    let mut options = MGetRequest::default();
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
@@ -52,11 +52,14 @@ pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetReq
             CommandArgToken::SelectedLabels => {
                 options.selected_labels = parse_label_list(args, CMD_TOKENS)?;
             }
+            CommandArgToken::Filter => {
+                options.filters = parse_series_selector_list(args, CMD_TOKENS)?;
+            }
             _ => {}
         }
     }
 
-    if options.filter.is_empty() {
+    if options.filters.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
 
@@ -71,7 +74,7 @@ pub fn process_mget_request(
     let selected_labels = &options.selected_labels;
     let mut series = vec![];
 
-    let opts: MatchFilterOptions = options.filter.into();
+    let opts: MatchFilterOptions = options.filters.into();
     with_matched_series(
         ctx,
         &mut series,

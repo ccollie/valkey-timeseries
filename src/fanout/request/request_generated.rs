@@ -1165,13 +1165,16 @@ impl<'a> RangeRequest<'a> {
         }
     }
     #[inline]
-    pub fn filters(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(RangeRequest::VT_FILTERS, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(RangeRequest::VT_FILTERS, None)
         }
     }
 }
@@ -1185,18 +1188,18 @@ impl flatbuffers::Verifiable for RangeRequest<'_> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
             .visit_field::<flatbuffers::ForwardsUOffset<DateRange>>("range", Self::VT_RANGE, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filters",
-                Self::VT_FILTERS,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .finish();
         Ok(())
     }
 }
 pub struct RangeRequestArgs<'a> {
     pub range: Option<flatbuffers::WIPOffset<DateRange<'a>>>,
-    pub filters: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
 }
 impl<'a> Default for RangeRequestArgs<'a> {
     #[inline]
@@ -1219,12 +1222,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> RangeRequestBuilder<'a, 'b, A> 
             .push_slot_always::<flatbuffers::WIPOffset<DateRange>>(RangeRequest::VT_RANGE, range);
     }
     #[inline]
-    pub fn add_filters(&mut self, filters: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                RangeRequest::VT_FILTERS,
-                filters,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(RangeRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn new(
@@ -1271,7 +1276,7 @@ impl<'a> flatbuffers::Follow<'a> for MultiGetRequest<'a> {
 impl<'a> MultiGetRequest<'a> {
     pub const VT_WITH_LABELS: flatbuffers::VOffsetT = 4;
     pub const VT_SELECTED_LABELS: flatbuffers::VOffsetT = 6;
-    pub const VT_FILTER: flatbuffers::VOffsetT = 8;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 8;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1283,8 +1288,8 @@ impl<'a> MultiGetRequest<'a> {
         args: &'args MultiGetRequestArgs<'args>,
     ) -> flatbuffers::WIPOffset<MultiGetRequest<'bldr>> {
         let mut builder = MultiGetRequestBuilder::new(_fbb);
-        if let Some(x) = args.filter {
-            builder.add_filter(x);
+        if let Some(x) = args.filters {
+            builder.add_filters(x);
         }
         if let Some(x) = args.selected_labels {
             builder.add_selected_labels(x);
@@ -1318,13 +1323,16 @@ impl<'a> MultiGetRequest<'a> {
         }
     }
     #[inline]
-    pub fn filter(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(MultiGetRequest::VT_FILTER, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(MultiGetRequest::VT_FILTERS, None)
         }
     }
 }
@@ -1341,11 +1349,9 @@ impl flatbuffers::Verifiable for MultiGetRequest<'_> {
             .visit_field::<flatbuffers::ForwardsUOffset<
                 flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>,
             >>("selected_labels", Self::VT_SELECTED_LABELS, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filter",
-                Self::VT_FILTER,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .finish();
         Ok(())
     }
@@ -1355,7 +1361,9 @@ pub struct MultiGetRequestArgs<'a> {
     pub selected_labels: Option<
         flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>,
     >,
-    pub filter: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
 }
 impl<'a> Default for MultiGetRequestArgs<'a> {
     #[inline]
@@ -1363,7 +1371,7 @@ impl<'a> Default for MultiGetRequestArgs<'a> {
         MultiGetRequestArgs {
             with_labels: false,
             selected_labels: None,
-            filter: None,
+            filters: None,
         }
     }
 }
@@ -1391,12 +1399,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> MultiGetRequestBuilder<'a, 'b, 
         );
     }
     #[inline]
-    pub fn add_filter(&mut self, filter: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                MultiGetRequest::VT_FILTER,
-                filter,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(MultiGetRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn new(
@@ -1420,7 +1430,7 @@ impl core::fmt::Debug for MultiGetRequest<'_> {
         let mut ds = f.debug_struct("MultiGetRequest");
         ds.field("with_labels", &self.with_labels());
         ds.field("selected_labels", &self.selected_labels());
-        ds.field("filter", &self.filter());
+        ds.field("filters", &self.filters());
         ds.finish()
     }
 }
@@ -1443,7 +1453,7 @@ impl<'a> flatbuffers::Follow<'a> for IndexQueryRequest<'a> {
 
 impl<'a> IndexQueryRequest<'a> {
     pub const VT_RANGE: flatbuffers::VOffsetT = 4;
-    pub const VT_FILTER: flatbuffers::VOffsetT = 6;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 6;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1455,8 +1465,8 @@ impl<'a> IndexQueryRequest<'a> {
         args: &'args IndexQueryRequestArgs<'args>,
     ) -> flatbuffers::WIPOffset<IndexQueryRequest<'bldr>> {
         let mut builder = IndexQueryRequestBuilder::new(_fbb);
-        if let Some(x) = args.filter {
-            builder.add_filter(x);
+        if let Some(x) = args.filters {
+            builder.add_filters(x);
         }
         if let Some(x) = args.range {
             builder.add_range(x);
@@ -1475,13 +1485,16 @@ impl<'a> IndexQueryRequest<'a> {
         }
     }
     #[inline]
-    pub fn filter(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(IndexQueryRequest::VT_FILTER, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(IndexQueryRequest::VT_FILTERS, None)
         }
     }
 }
@@ -1495,25 +1508,25 @@ impl flatbuffers::Verifiable for IndexQueryRequest<'_> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
             .visit_field::<flatbuffers::ForwardsUOffset<DateRange>>("range", Self::VT_RANGE, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filter",
-                Self::VT_FILTER,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .finish();
         Ok(())
     }
 }
 pub struct IndexQueryRequestArgs<'a> {
     pub range: Option<flatbuffers::WIPOffset<DateRange<'a>>>,
-    pub filter: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
 }
 impl<'a> Default for IndexQueryRequestArgs<'a> {
     #[inline]
     fn default() -> Self {
         IndexQueryRequestArgs {
             range: None,
-            filter: None,
+            filters: None,
         }
     }
 }
@@ -1532,12 +1545,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> IndexQueryRequestBuilder<'a, 'b
             );
     }
     #[inline]
-    pub fn add_filter(&mut self, filter: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                IndexQueryRequest::VT_FILTER,
-                filter,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(IndexQueryRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn new(
@@ -1560,7 +1575,7 @@ impl core::fmt::Debug for IndexQueryRequest<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("IndexQueryRequest");
         ds.field("range", &self.range());
-        ds.field("filter", &self.filter());
+        ds.field("filters", &self.filters());
         ds.finish()
     }
 }
@@ -1583,7 +1598,7 @@ impl<'a> flatbuffers::Follow<'a> for LabelNamesRequest<'a> {
 
 impl<'a> LabelNamesRequest<'a> {
     pub const VT_RANGE: flatbuffers::VOffsetT = 4;
-    pub const VT_FILTER: flatbuffers::VOffsetT = 6;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 6;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1595,8 +1610,8 @@ impl<'a> LabelNamesRequest<'a> {
         args: &'args LabelNamesRequestArgs<'args>,
     ) -> flatbuffers::WIPOffset<LabelNamesRequest<'bldr>> {
         let mut builder = LabelNamesRequestBuilder::new(_fbb);
-        if let Some(x) = args.filter {
-            builder.add_filter(x);
+        if let Some(x) = args.filters {
+            builder.add_filters(x);
         }
         if let Some(x) = args.range {
             builder.add_range(x);
@@ -1615,13 +1630,16 @@ impl<'a> LabelNamesRequest<'a> {
         }
     }
     #[inline]
-    pub fn filter(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(LabelNamesRequest::VT_FILTER, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(LabelNamesRequest::VT_FILTERS, None)
         }
     }
 }
@@ -1635,25 +1653,25 @@ impl flatbuffers::Verifiable for LabelNamesRequest<'_> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
             .visit_field::<flatbuffers::ForwardsUOffset<DateRange>>("range", Self::VT_RANGE, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filter",
-                Self::VT_FILTER,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .finish();
         Ok(())
     }
 }
 pub struct LabelNamesRequestArgs<'a> {
     pub range: Option<flatbuffers::WIPOffset<DateRange<'a>>>,
-    pub filter: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
 }
 impl<'a> Default for LabelNamesRequestArgs<'a> {
     #[inline]
     fn default() -> Self {
         LabelNamesRequestArgs {
             range: None,
-            filter: None,
+            filters: None,
         }
     }
 }
@@ -1672,12 +1690,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> LabelNamesRequestBuilder<'a, 'b
             );
     }
     #[inline]
-    pub fn add_filter(&mut self, filter: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                LabelNamesRequest::VT_FILTER,
-                filter,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(LabelNamesRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn new(
@@ -1700,7 +1720,7 @@ impl core::fmt::Debug for LabelNamesRequest<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("LabelNamesRequest");
         ds.field("range", &self.range());
-        ds.field("filter", &self.filter());
+        ds.field("filters", &self.filters());
         ds.finish()
     }
 }
@@ -1724,7 +1744,7 @@ impl<'a> flatbuffers::Follow<'a> for LabelValuesRequest<'a> {
 impl<'a> LabelValuesRequest<'a> {
     pub const VT_LABEL: flatbuffers::VOffsetT = 4;
     pub const VT_RANGE: flatbuffers::VOffsetT = 6;
-    pub const VT_FILTER: flatbuffers::VOffsetT = 8;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 8;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1736,8 +1756,8 @@ impl<'a> LabelValuesRequest<'a> {
         args: &'args LabelValuesRequestArgs<'args>,
     ) -> flatbuffers::WIPOffset<LabelValuesRequest<'bldr>> {
         let mut builder = LabelValuesRequestBuilder::new(_fbb);
-        if let Some(x) = args.filter {
-            builder.add_filter(x);
+        if let Some(x) = args.filters {
+            builder.add_filters(x);
         }
         if let Some(x) = args.range {
             builder.add_range(x);
@@ -1769,13 +1789,16 @@ impl<'a> LabelValuesRequest<'a> {
         }
     }
     #[inline]
-    pub fn filter(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(LabelValuesRequest::VT_FILTER, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(LabelValuesRequest::VT_FILTERS, None)
         }
     }
 }
@@ -1790,11 +1813,9 @@ impl flatbuffers::Verifiable for LabelValuesRequest<'_> {
         v.visit_table(pos)?
             .visit_field::<flatbuffers::ForwardsUOffset<&str>>("label", Self::VT_LABEL, false)?
             .visit_field::<flatbuffers::ForwardsUOffset<DateRange>>("range", Self::VT_RANGE, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filter",
-                Self::VT_FILTER,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .finish();
         Ok(())
     }
@@ -1802,7 +1823,9 @@ impl flatbuffers::Verifiable for LabelValuesRequest<'_> {
 pub struct LabelValuesRequestArgs<'a> {
     pub label: Option<flatbuffers::WIPOffset<&'a str>>,
     pub range: Option<flatbuffers::WIPOffset<DateRange<'a>>>,
-    pub filter: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
 }
 impl<'a> Default for LabelValuesRequestArgs<'a> {
     #[inline]
@@ -1810,7 +1833,7 @@ impl<'a> Default for LabelValuesRequestArgs<'a> {
         LabelValuesRequestArgs {
             label: None,
             range: None,
-            filter: None,
+            filters: None,
         }
     }
 }
@@ -1834,12 +1857,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> LabelValuesRequestBuilder<'a, '
             );
     }
     #[inline]
-    pub fn add_filter(&mut self, filter: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                LabelValuesRequest::VT_FILTER,
-                filter,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(LabelValuesRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn new(
@@ -1863,7 +1888,7 @@ impl core::fmt::Debug for LabelValuesRequest<'_> {
         let mut ds = f.debug_struct("LabelValuesRequest");
         ds.field("label", &self.label());
         ds.field("range", &self.range());
-        ds.field("filter", &self.filter());
+        ds.field("filters", &self.filters());
         ds.finish()
     }
 }
@@ -1886,7 +1911,7 @@ impl<'a> flatbuffers::Follow<'a> for CardinalityRequest<'a> {
 
 impl<'a> CardinalityRequest<'a> {
     pub const VT_RANGE: flatbuffers::VOffsetT = 4;
-    pub const VT_FILTER: flatbuffers::VOffsetT = 6;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 6;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1898,8 +1923,8 @@ impl<'a> CardinalityRequest<'a> {
         args: &'args CardinalityRequestArgs<'args>,
     ) -> flatbuffers::WIPOffset<CardinalityRequest<'bldr>> {
         let mut builder = CardinalityRequestBuilder::new(_fbb);
-        if let Some(x) = args.filter {
-            builder.add_filter(x);
+        if let Some(x) = args.filters {
+            builder.add_filters(x);
         }
         if let Some(x) = args.range {
             builder.add_range(x);
@@ -1918,13 +1943,16 @@ impl<'a> CardinalityRequest<'a> {
         }
     }
     #[inline]
-    pub fn filter(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(CardinalityRequest::VT_FILTER, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(CardinalityRequest::VT_FILTERS, None)
         }
     }
 }
@@ -1938,25 +1966,25 @@ impl flatbuffers::Verifiable for CardinalityRequest<'_> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
             .visit_field::<flatbuffers::ForwardsUOffset<DateRange>>("range", Self::VT_RANGE, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filter",
-                Self::VT_FILTER,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .finish();
         Ok(())
     }
 }
 pub struct CardinalityRequestArgs<'a> {
     pub range: Option<flatbuffers::WIPOffset<DateRange<'a>>>,
-    pub filter: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
 }
 impl<'a> Default for CardinalityRequestArgs<'a> {
     #[inline]
     fn default() -> Self {
         CardinalityRequestArgs {
             range: None,
-            filter: None,
+            filters: None,
         }
     }
 }
@@ -1975,12 +2003,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CardinalityRequestBuilder<'a, '
             );
     }
     #[inline]
-    pub fn add_filter(&mut self, filter: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                CardinalityRequest::VT_FILTER,
-                filter,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(CardinalityRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn new(
@@ -2003,7 +2033,7 @@ impl core::fmt::Debug for CardinalityRequest<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("CardinalityRequest");
         ds.field("range", &self.range());
-        ds.field("filter", &self.filter());
+        ds.field("filters", &self.filters());
         ds.finish()
     }
 }
@@ -2414,7 +2444,7 @@ impl<'a> MultiRangeRequest<'a> {
     pub const VT_VALUE_FILTER: flatbuffers::VOffsetT = 10;
     pub const VT_WITH_LABELS: flatbuffers::VOffsetT = 12;
     pub const VT_SELECTED_LABELS: flatbuffers::VOffsetT = 14;
-    pub const VT_FILTER: flatbuffers::VOffsetT = 16;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 16;
     pub const VT_AGGREGATION: flatbuffers::VOffsetT = 18;
     pub const VT_GROUPING: flatbuffers::VOffsetT = 20;
 
@@ -2434,8 +2464,8 @@ impl<'a> MultiRangeRequest<'a> {
         if let Some(x) = args.aggregation {
             builder.add_aggregation(x);
         }
-        if let Some(x) = args.filter {
-            builder.add_filter(x);
+        if let Some(x) = args.filters {
+            builder.add_filters(x);
         }
         if let Some(x) = args.selected_labels {
             builder.add_selected_labels(x);
@@ -2523,13 +2553,16 @@ impl<'a> MultiRangeRequest<'a> {
         }
     }
     #[inline]
-    pub fn filter(&self) -> Option<Matchers<'a>> {
+    pub fn filters(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>> {
         // Safety:
         // Created from valid Table for this object
         // which contains a valid value in this slot
         unsafe {
-            self._tab
-                .get::<flatbuffers::ForwardsUOffset<Matchers>>(MultiRangeRequest::VT_FILTER, None)
+            self._tab.get::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>(MultiRangeRequest::VT_FILTERS, None)
         }
     }
     #[inline]
@@ -2580,11 +2613,9 @@ impl flatbuffers::Verifiable for MultiRangeRequest<'_> {
             .visit_field::<flatbuffers::ForwardsUOffset<
                 flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>,
             >>("selected_labels", Self::VT_SELECTED_LABELS, false)?
-            .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>(
-                "filter",
-                Self::VT_FILTER,
-                false,
-            )?
+            .visit_field::<flatbuffers::ForwardsUOffset<
+                flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Matchers>>,
+            >>("filters", Self::VT_FILTERS, false)?
             .visit_field::<flatbuffers::ForwardsUOffset<AggregationOptions>>(
                 "aggregation",
                 Self::VT_AGGREGATION,
@@ -2608,7 +2639,9 @@ pub struct MultiRangeRequestArgs<'a> {
     pub selected_labels: Option<
         flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>,
     >,
-    pub filter: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub filters: Option<
+        flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Matchers<'a>>>>,
+    >,
     pub aggregation: Option<flatbuffers::WIPOffset<AggregationOptions<'a>>>,
     pub grouping: Option<flatbuffers::WIPOffset<GroupingOptions<'a>>>,
 }
@@ -2622,7 +2655,7 @@ impl<'a> Default for MultiRangeRequestArgs<'a> {
             value_filter: None,
             with_labels: false,
             selected_labels: None,
-            filter: None,
+            filters: None,
             aggregation: None,
             grouping: None,
         }
@@ -2682,12 +2715,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> MultiRangeRequestBuilder<'a, 'b
         );
     }
     #[inline]
-    pub fn add_filter(&mut self, filter: flatbuffers::WIPOffset<Matchers<'b>>) {
+    pub fn add_filters(
+        &mut self,
+        filters: flatbuffers::WIPOffset<
+            flatbuffers::Vector<'b, flatbuffers::ForwardsUOffset<Matchers<'b>>>,
+        >,
+    ) {
         self.fbb_
-            .push_slot_always::<flatbuffers::WIPOffset<Matchers>>(
-                MultiRangeRequest::VT_FILTER,
-                filter,
-            );
+            .push_slot_always::<flatbuffers::WIPOffset<_>>(MultiRangeRequest::VT_FILTERS, filters);
     }
     #[inline]
     pub fn add_aggregation(&mut self, aggregation: flatbuffers::WIPOffset<AggregationOptions<'b>>) {
@@ -2731,7 +2766,7 @@ impl core::fmt::Debug for MultiRangeRequest<'_> {
         ds.field("value_filter", &self.value_filter());
         ds.field("with_labels", &self.with_labels());
         ds.field("selected_labels", &self.selected_labels());
-        ds.field("filter", &self.filter());
+        ds.field("filters", &self.filters());
         ds.field("aggregation", &self.aggregation());
         ds.field("grouping", &self.grouping());
         ds.finish()

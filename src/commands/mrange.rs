@@ -1,4 +1,4 @@
-use super::parse_range_options;
+use super::parse_mrange_options;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::Sample;
 use crate::fanout::cluster::is_clustered;
@@ -46,9 +46,9 @@ pub fn mrevrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
 fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
-    let options = parse_range_options(&mut args)?;
+    let options = parse_mrange_options(&mut args)?;
 
-    if options.series_selector.is_empty() {
+    if options.filters.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
     }
 
@@ -93,7 +93,7 @@ pub fn process_mrange_query(
     options: RangeOptions,
     reverse: bool,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
-    if options.series_selector.is_empty() {
+    if options.filters.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
     }
     let mut options = options;
@@ -102,8 +102,7 @@ pub fn process_mrange_query(
     options.date_range.start = TimestampValue::Specific(start_ts);
     options.date_range.end = TimestampValue::Specific(end_ts);
 
-    let matchers = std::mem::take(&mut options.series_selector);
-    let series_guards = series_by_matchers(ctx, &[matchers], None, true, true)?;
+    let series_guards = series_by_matchers(ctx, &options.filters, None, true, true)?;
 
     let series_metas: Vec<SeriesMeta> = series_guards
         .iter()
