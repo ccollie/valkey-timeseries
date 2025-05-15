@@ -1,7 +1,7 @@
 use super::common::{
     decode_label, deserialize_timestamp_range, load_flatbuffers_object, serialize_timestamp_range,
 };
-use super::matchers::{deserialize_matchers, serialize_matchers};
+use super::matchers::{deserialize_matchers_list, serialize_matchers_list};
 use super::request_generated::{
     AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder, AggregationType,
     BucketAlignmentType, BucketTimestampType, GroupingOptions, GroupingOptionsArgs,
@@ -157,12 +157,13 @@ pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOp
 
     let count = request.count.unwrap_or(0) as u32;
 
-    let filter = serialize_matchers(&mut bldr, &request.series_selector);
+    let filter = serialize_matchers_list(&mut bldr, &request.filters);
+
     let args = MultiRangeRequestArgs {
         range,
         with_labels: request.with_labels,
         selected_labels: Some(selected_labels),
-        filter: Some(filter),
+        filters: Some(filter),
         value_filter: if request.value_filter.is_some() {
             Some(&value_filter_value)
         } else {
@@ -337,12 +338,7 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
         max: filter.max(),
     });
 
-    let series_selector = if let Some(filter) = req.filter() {
-        deserialize_matchers(&filter)?
-    } else {
-        // Default or error handling if filter is mandatory
-        return Err(ValkeyError::Str("Missing mandatory filter expression"));
-    };
+    let filters = deserialize_matchers_list(req.filters())?;
 
     let with_labels = req.with_labels();
 
@@ -368,7 +364,7 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
         aggregation,
         timestamp_filter,
         value_filter,
-        series_selector,
+        filters,
         with_labels,
         selected_labels,
         grouping,
@@ -478,25 +474,46 @@ mod tests {
 
     fn make_sample_matchers() -> Matchers {
         Matchers {
-            name: Some("mrange-test".to_string()),
+            name: Some("mrange-test-x".to_string()),
             matchers: MatcherSetEnum::And(vec![
                 Matcher {
-                    label: "mrange-foo".to_string(),
+                    label: "mrange-foo-x".to_string(),
                     matcher: PredicateMatch::Equal(PredicateValue::String("bar".to_string())),
                 },
                 Matcher {
-                    label: "mrange-baz".to_string(),
+                    label: "mrange-baz-x".to_string(),
                     matcher: PredicateMatch::NotEqual(PredicateValue::String("qux".to_string())),
                 },
             ]),
         }
     }
 
+    fn make_matchers_vec() -> Vec<Matchers> {
+        vec![
+            Matchers {
+                name: Some("mrange-test".to_string()),
+                matchers: MatcherSetEnum::And(vec![
+                    Matcher {
+                        label: "mrange-foo".to_string(),
+                        matcher: PredicateMatch::Equal(PredicateValue::String("bar".to_string())),
+                    },
+                    Matcher {
+                        label: "mrange-baz".to_string(),
+                        matcher: PredicateMatch::NotEqual(PredicateValue::String(
+                            "qux".to_string(),
+                        )),
+                    },
+                ]),
+            },
+            make_sample_matchers(),
+        ]
+    }
+
     #[test]
     fn test_range_options_request_simple_serialize_deserialize() {
         let req = RangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
-            series_selector: make_sample_matchers(),
+            filters: make_matchers_vec(),
             with_labels: true,
             selected_labels: vec!["label1".to_string(), "label2".to_string()],
             timestamp_filter: None,
@@ -515,7 +532,7 @@ mod tests {
         assert_eq!(req.selected_labels, req2.selected_labels);
         assert_eq!(req.timestamp_filter, req2.timestamp_filter);
         assert_eq!(req.count, req2.count);
-        assert_eq!(req.series_selector, req2.series_selector);
+        assert_eq!(req.filters, req2.filters);
         assert!(req2.aggregation.is_none());
         assert!(req2.grouping.is_none());
     }
@@ -524,7 +541,7 @@ mod tests {
     fn test_multi_range_request_with_filters_serialize_deserialize() {
         let req = RangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
-            series_selector: make_sample_matchers(),
+            filters: make_matchers_vec(),
             with_labels: true,
             selected_labels: vec!["label1".to_string(), "label2".to_string()],
             timestamp_filter: Some(vec![105, 110, 115]),
@@ -566,7 +583,7 @@ mod tests {
 
         let req = RangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
-            series_selector: make_sample_matchers(),
+            filters: make_matchers_vec(),
             with_labels: true,
             selected_labels: vec!["label1".to_string()],
             timestamp_filter: None,
@@ -608,7 +625,7 @@ mod tests {
 
         let req = RangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
-            series_selector: make_sample_matchers(),
+            filters: make_matchers_vec(),
             with_labels: true,
             selected_labels: vec!["label1".to_string()],
             timestamp_filter: None,

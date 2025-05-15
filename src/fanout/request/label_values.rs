@@ -1,4 +1,4 @@
-use super::matchers::{deserialize_matchers, serialize_matchers};
+use super::matchers::{deserialize_matchers_list, serialize_matchers_list};
 use super::request_generated::{
     LabelValuesRequest as FBLabelValuesRequest, LabelValuesRequestArgs,
 };
@@ -21,7 +21,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult};
 pub struct LabelValuesRequest {
     pub label_name: String,
     pub range: Option<TimestampRange>,
-    pub filter: Matchers,
+    pub filters: Vec<Matchers>,
 }
 
 pub struct LabelValuesCommand;
@@ -32,14 +32,15 @@ impl Serialized for LabelValuesRequest {
 
         let name = bldr.create_string(&self.label_name);
         let range = serialize_timestamp_range(&mut bldr, self.range);
-        let filter = serialize_matchers(&mut bldr, &self.filter);
+
+        let filters = serialize_matchers_list(&mut bldr, &self.filters);
 
         let req = FBLabelValuesRequest::create(
             &mut bldr,
             &LabelValuesRequestArgs {
                 label: Some(name),
                 range,
-                filter: Some(filter),
+                filters: Some(filters),
             },
         );
 
@@ -62,16 +63,12 @@ impl Deserialized for LabelValuesRequest {
             return Err(ValkeyError::Str("TSDB: missing label name"));
         };
 
-        let filter = if let Some(filter) = req.filter() {
-            deserialize_matchers(&filter)?
-        } else {
-            return Err(ValkeyError::Str("TSDB: missing start timestamp"));
-        };
+        let filters = deserialize_matchers_list(req.filters())?;
 
         Ok(LabelValuesRequest {
             label_name,
             range,
-            filter,
+            filters,
         })
     }
 }
@@ -84,7 +81,7 @@ impl MultiShardCommand for LabelValuesCommand {
     fn exec(ctx: &Context, req: Self::REQ) -> ValkeyResult<LabelValuesResponse> {
         let options = MatchFilterOptions {
             date_range: req.range,
-            matchers: vec![req.filter], // todo: workaround clone
+            matchers: req.filters,
             ..Default::default()
         };
         process_label_values_request(ctx, &req.label_name, &options)
@@ -163,12 +160,33 @@ mod tests {
         }
     }
 
+    fn make_sample_matchers_list() -> Vec<Matchers> {
+        vec![
+            Matchers {
+                name: Some("test".to_string()),
+                matchers: MatcherSetEnum::And(vec![
+                    Matcher {
+                        label: "foo".to_string(),
+                        matcher: PredicateMatch::Equal(PredicateValue::String("bar".to_string())),
+                    },
+                    Matcher {
+                        label: "baz".to_string(),
+                        matcher: PredicateMatch::NotEqual(PredicateValue::String(
+                            "qux".to_string(),
+                        )),
+                    },
+                ]),
+            },
+            make_sample_matchers(),
+        ]
+    }
+
     #[test]
     fn test_label_values_request_serialize_deserialize() {
         let req = LabelValuesRequest {
             label_name: "my_label".to_string(),
             range: TimestampRange::from_timestamps(100, 200).ok(),
-            filter: make_sample_matchers(),
+            filters: make_sample_matchers_list(),
         };
 
         let mut buf = Vec::new();
@@ -177,7 +195,7 @@ mod tests {
         let req2 = LabelValuesRequest::deserialize(&buf).expect("deserialization failed");
         assert_eq!(req.label_name, req2.label_name);
         assert_eq!(req.range, req2.range);
-        assert_eq!(req.filter, req2.filter);
+        assert_eq!(req.filters, req2.filters);
     }
 
     #[test]

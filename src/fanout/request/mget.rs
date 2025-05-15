@@ -1,5 +1,5 @@
 use super::common::{decode_label, load_flatbuffers_object};
-use super::matchers::{deserialize_matchers, serialize_matchers};
+use super::matchers::{deserialize_matchers_list, serialize_matchers_list};
 use super::request_generated::{MultiGetRequest, MultiGetRequestArgs};
 use super::response_generated::{
     Label as FBLabel, LabelArgs, MGetValue as FBMGetValue, MGetValueBuilder,
@@ -13,7 +13,7 @@ use crate::labels::Label;
 use crate::series::request_types::MGetRequest;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
 pub struct MGetShardedCommand;
 
@@ -56,13 +56,13 @@ impl Serialized for MGetRequest {
             labels.push(name);
         }
         let selected_labels = bldr.create_vector(&labels);
-        let filter = serialize_matchers(&mut bldr, &self.filter);
+        let filters = serialize_matchers_list(&mut bldr, &self.filters);
 
         let req = MultiGetRequest::create(
             &mut bldr,
             &MultiGetRequestArgs {
                 with_labels: self.with_labels,
-                filter: Some(filter),
+                filters: Some(filters),
                 selected_labels: Some(selected_labels),
             },
         );
@@ -89,11 +89,7 @@ impl Deserialized for MGetRequest {
             }
         }
 
-        if let Some(filter) = req.filter() {
-            result.filter = deserialize_matchers(&filter)?;
-        } else {
-            return Err(ValkeyError::Str("TSDB: missing filter"));
-        }
+        result.filters = deserialize_matchers_list(req.filters())?;
 
         Ok(result)
     }
@@ -256,12 +252,16 @@ mod tests {
         }
     }
 
+    fn make_sample_matchers_list() -> Vec<Matchers> {
+        vec![make_sample_matchers()]
+    }
+
     #[test]
     fn test_mget_request_serialize_deserialize() {
         let req = MGetRequest {
             with_labels: true,
             selected_labels: vec!["label1".to_string(), "label2".to_string()],
-            filter: make_sample_matchers(),
+            filters: make_sample_matchers_list(),
         };
 
         let mut buf = Vec::new();
@@ -269,7 +269,7 @@ mod tests {
 
         let req2 = MGetRequest::deserialize(&buf).expect("deserialization failed");
         assert_eq!(req.with_labels, req2.with_labels);
-        assert_eq!(req.filter, req2.filter);
+        assert_eq!(req.filters, req2.filters);
         // Check that selected labels were preserved
         assert_eq!(req.selected_labels.len(), req.selected_labels.len());
         for label in &req.selected_labels {
@@ -347,7 +347,7 @@ mod tests {
         let req = MGetRequest {
             with_labels: false,
             selected_labels: vec![],
-            filter: make_sample_matchers(),
+            filters: make_sample_matchers_list(),
         };
 
         let mut buf = Vec::new();
@@ -355,7 +355,7 @@ mod tests {
 
         let req2 = MGetRequest::deserialize(&buf).expect("deserialization failed");
         assert_eq!(req.with_labels, req2.with_labels);
-        assert_eq!(req.filter, req2.filter);
+        assert_eq!(req.filters, req2.filters);
         assert!(req2.selected_labels.is_empty());
     }
 
