@@ -2,9 +2,7 @@ use ahash::AHashMap;
 use std::collections::hash_map::Entry;
 use std::sync::RwLock;
 
-use super::memory_postings::{
-    MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY_NAME,
-};
+use super::memory_postings::{MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
@@ -40,6 +38,7 @@ impl TimeSeriesIndex {
         }
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut inner = self.inner.write().unwrap();
         inner.clear();
@@ -216,14 +215,14 @@ impl TimeSeriesIndex {
         inner.rename_series_key(old_key, new_key).is_some()
     }
 
-    /// Immediately after a series is removed, it's data still exist in the index. This function marks the key as stale, so the index 
-    /// can be cleaned up lazily. This is a workaround for the fact that we don't have access to the series data when the server 'del' 
+    /// Immediately after a series is removed, it's data still exist in the index. This function marks the key as stale, so the index
+    /// can be cleaned up lazily. This is a workaround for the fact that we don't have access to the series data when the server 'del'
     /// and associated events are triggered.
     pub fn mark_key_as_stale(&self, key: &[u8]) {
         let mut inner = self.inner.write().unwrap();
         inner.mark_key_as_stale(key);
     }
-    
+
     pub fn mark_id_as_stale(&self, id: SeriesRef) {
         let mut inner = self.inner.write().unwrap();
         inner.mark_id_as_stale(id);
@@ -231,18 +230,17 @@ impl TimeSeriesIndex {
 
     pub fn remove_stale_ids(&self) -> usize {
         const BATCH_SIZE: usize = 100;
-        
+
         let inner = self.inner.write().expect("TimeSeries lock poisoned");
         if !inner.has_stale_ids() {
             return 0; // No stale IDs to remove
         }
 
         let old_count = inner.count();
-        
+
         let mut cursor = None;
         loop {
-            let mut inner = self.inner.write()
-                .expect("TimeSeries lock poisoned");
+            let mut inner = self.inner.write().expect("TimeSeries lock poisoned");
             match inner.remove_stale_ids(cursor, BATCH_SIZE) {
                 Some(new_cursor) => {
                     cursor = Some(new_cursor);
@@ -252,7 +250,7 @@ impl TimeSeriesIndex {
                 }
             }
         }
-        
+
         inner.count() - old_count
     }
 

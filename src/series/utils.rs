@@ -1,4 +1,5 @@
 use crate::common::constants::METRIC_NAME_LABEL;
+use crate::common::db::get_current_db;
 use crate::error_consts;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
@@ -135,6 +136,9 @@ pub fn create_series(
     if ts.id == 0 {
         ts.id = next_timeseries_id();
     }
+
+    ts._db = get_current_db(ctx);
+
     with_timeseries_index(ctx, |index| {
         // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
         // We do this only in the case where we have a __name__ label, signaling that the user is

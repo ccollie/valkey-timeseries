@@ -1,6 +1,6 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::series::index::*;
-use crate::series::{get_timeseries, with_timeseries, TimeSeries};
+use crate::series::{get_timeseries_mut, with_timeseries_mut, TimeSeries};
 use std::os::raw::c_void;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
@@ -10,8 +10,11 @@ static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);
 
 fn handle_key_restore(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
-    with_timeseries(ctx, &_key, false, |series| reindex_series(ctx, series, key))
-        .expect("Unexpected panic handling series restore");
+    with_timeseries_mut(ctx, &_key, None, |series| {
+        series._db = get_current_db(ctx);
+        reindex_series(ctx, series, key)
+    })
+    .expect("Unexpected panic handling series restore");
 }
 
 fn reindex_series(ctx: &Context, series: &TimeSeries, key: &[u8]) -> ValkeyResult<()> {
@@ -30,40 +33,48 @@ fn handle_key_rename(ctx: &Context, old_key: &[u8], new_key: &[u8]) {
 fn remove_key_from_index(ctx: &Context, key: &[u8]) {
     with_timeseries_index(ctx, |ts_index| {
         // At this point, the key has already been deleted by Valkey, so we no longer have access to the
-        // labels and values of the series. What we have to mark the series as deleted
-        // in the index and schedule "gc" run which scans the index and removes the id
+        // labels and values of the series. We mark the series as deleted in the index and schedule "gc"
+        // run which scans the index and removes the id
         ts_index.mark_key_as_stale(key)
     });
 }
 
 fn handle_loaded(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
-    let _ = with_timeseries(ctx, &_key, false, |series| {
-        with_timeseries_index(ctx, |index| {
-            if !index.has_id(series.id) {
-                index.index_timeseries(series, key);
-                // On module load, our series id generator would have been reset to zero. We have to ensure
-                // that after a load the counter has the value of the highest series id
-                TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                logging::log_warning("Trying to load a series that is already in the index");
-            }
-            Ok(())
-        })
+    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &_key, false, None) else {
+        logging::log_warning("Failed to load series");
+        return;
+    };
+
+    with_timeseries_index(ctx, |index| {
+        series._db = get_current_db(ctx);
+        if !index.has_id(series.id) {
+            index.index_timeseries(&series, key);
+            // On module load, our series id generator would have been reset to zero. We have to ensure
+            // that after a load the counter has the value of the highest series id
+            TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            logging::log_warning("Trying to load a series that is already in the index");
+        }
     });
 }
 
 fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
     let new_db = get_current_db(ctx);
-    // fetch the series from the old db
+    // fetch the series from the new
     let valkey_key = ctx.create_string(key);
-    set_current_db(ctx, old_db);
-    let Ok(Some(series)) = get_timeseries(ctx, valkey_key, None, false) else {
+    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
         return;
     };
+    series._db = new_db;
+
+    // remove the series from the old db index
+    set_current_db(ctx, old_db);
     with_timeseries_index(ctx, |index| {
         index.remove_timeseries(&series);
     });
+
+    // add the series to the new db index
     set_current_db(ctx, new_db);
     with_timeseries_index(ctx, |index| {
         index.index_timeseries(&series, key);

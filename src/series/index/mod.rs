@@ -104,9 +104,13 @@ where
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {
-    with_timeseries_index(ctx, |index| {
-        index.clear();
-    })
+    let db = get_current_db(ctx);
+    let map = TIMESERIES_INDEX.pin();
+    if map.remove(&db).is_some() && map.is_empty() {
+        // if we removed indices for all dbs, we need to reset the id
+        // to 0 so that we can start from 1 again
+        reset_timeseries_id(0);
+    }
 }
 
 pub fn clear_all_timeseries_indexes() {

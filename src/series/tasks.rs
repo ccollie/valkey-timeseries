@@ -8,7 +8,7 @@ use crate::series::{get_timeseries_mut, SeriesRef};
 use ahash::HashMapExt;
 use blart::AsBytes;
 use lazy_static::lazy_static;
-use num_traits::Zero;
+use smallvec::SmallVec;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::AtomicI32;
 use std::sync::{LazyLock, RwLock};
@@ -25,9 +25,9 @@ static SERIES_TRIM_CURSORS: LazyLock<RwLock<SeriesCursorMap>> =
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 
-fn get_used_dbs() -> Vec<i32> {
+fn get_used_dbs() -> SmallVec<i32, 16> {
     let index = TIMESERIES_INDEX.pin();
-    let mut keys: Vec<i32> = index.keys().copied().collect();
+    let mut keys: SmallVec<i32, 16> = index.keys().copied().collect();
     keys.sort();
     keys
 }
@@ -103,7 +103,7 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
     }
 
     set_trim_cursor(db, last_processed);
-    
+
     if !to_delete.is_empty() {
         with_timeseries_index(ctx, |index| {
             for id in to_delete {
@@ -112,7 +112,7 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
         });
     }
 
-    if processed.is_zero() {
+    if processed == 0 {
         ctx.log_debug("No series to trim");
     } else {
         ctx.log_notice(&format!("Processed: {processed} Trimmed {trimmed_count}, Deleted Samples: {total_deletes} samples"));
@@ -135,7 +135,7 @@ fn fetch_keys_batch(
             let mut added: usize = 0;
             for _ in 0..batch_size {
                 if id > max_id {
-                    return !added.is_zero();
+                    return added > 0;
                 }
                 if let Some(k) = postings.get_key_by_id(id) {
                     added += 1;
@@ -198,16 +198,15 @@ pub fn process_remove_stale_series() {
             _ => {
                 let mid = db_ids.len() / 2;
                 let (left, right) = db_ids.split_at(mid);
-                let _ = join(
-                    || run_internal(left),
-                    || run_internal(right),
-                );
+                let _ = join(|| run_internal(left), || run_internal(right));
             }
         }
     }
 
     run_internal(&db_ids);
 }
+
+const BACKGROUND_WORKER_INTERVAL: u64 = 30000; // 5000
 
 struct StaticData {
     timer_id: RedisModuleTimerID,
@@ -218,7 +217,7 @@ impl Default for StaticData {
     fn default() -> Self {
         Self {
             timer_id: 0,
-            interval: Duration::from_millis(5000),
+            interval: Duration::from_millis(BACKGROUND_WORKER_INTERVAL),
         }
     }
 }

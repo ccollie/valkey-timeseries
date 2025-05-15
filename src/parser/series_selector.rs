@@ -30,6 +30,7 @@ const SECONDARY_TOKENS: &[Token] = &[
 ///
 ///   * `region=(us-east-1,us-west-1)`
 ///   * `service="billing"`
+///   * `sensor=bedroom`
 ///
 ///   Or (Prometheus):
 ///

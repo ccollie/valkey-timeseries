@@ -4,6 +4,7 @@ use valkey_module::{
     native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleString, ValkeyString,
 };
 
+use crate::common::db::{get_current_db, set_current_db};
 use crate::series::defrag_series;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
@@ -40,6 +41,20 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
     },
 );
 
+fn remove_series_from_index(ts: &TimeSeries) {
+    let guard = valkey_module::MODULE_CONTEXT.lock();
+    let saved_db = get_current_db(&guard);
+    if saved_db != ts._db {
+        set_current_db(&guard, ts._db);
+    }
+    with_timeseries_index(&guard, |ts_index| {
+        ts_index.remove_timeseries(ts);
+    });
+    if saved_db != ts._db {
+        set_current_db(&guard, saved_db);
+    }
+}
+
 unsafe extern "C" fn rdb_save(rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
     let series = &*value.cast::<TimeSeries>();
     rdb_save_series(series, rdb);
@@ -65,8 +80,10 @@ unsafe extern "C" fn free(value: *mut c_void) {
     if value.is_null() {
         return;
     }
-    let sm = value as *mut TimeSeries;
-    Box::from_raw(sm);
+    let sm = value.cast::<TimeSeries>();
+    remove_series_from_index(&*sm);
+
+    drop(Box::from_raw(sm));
 }
 
 #[allow(non_snake_case, unused)]
@@ -79,7 +96,6 @@ unsafe extern "C" fn copy(
     with_timeseries_index(&guard, |index| {
         let sm = &*(value as *mut TimeSeries);
         let mut new_series = sm.clone();
-        // set id to 0 so indexer can allocate a new id
         new_series.id = next_timeseries_id();
         let key = ValkeyString::from_redis_module_string(guard.ctx, to_key);
         index.index_timeseries(&new_series, key.as_slice());
@@ -92,10 +108,7 @@ unsafe extern "C" fn unlink(_key: *mut RedisModuleString, value: *const c_void) 
     if value.is_null() {
         return;
     }
-    let guard = valkey_module::MODULE_CONTEXT.lock();
-    with_timeseries_index(&guard, |ts_index| {
-        ts_index.remove_timeseries(series);
-    });
+    remove_series_from_index(series);
 }
 
 unsafe extern "C" fn defrag(

@@ -50,7 +50,7 @@ pub struct TimeSeries {
     pub first_timestamp: Timestamp,
     /// The last timestamp in the time series
     pub last_sample: Option<Sample>,
-    // stats
+    pub(crate) _db: i32,
 }
 
 /// Hash based on the metric name, which should be unique in the db
@@ -854,6 +854,7 @@ impl Default for TimeSeries {
             first_timestamp: 0,
             rounding: None,
             last_sample: None,
+            _db: 0,
         }
     }
 }
