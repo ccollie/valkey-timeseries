@@ -1,6 +1,6 @@
 use super::{
     CardinalityCommand, IndexQueryCommand, LabelNamesCommand, LabelValuesCommand,
-    MGetShardedCommand, MultiRangeCommand, MultiShardCommand, RangeCommand, StatsCommand,
+    MGetShardedCommand, MultiRangeCommand, MultiShardCommand, StatsCommand,
 };
 use crate::fanout::error::Error;
 use enum_dispatch::enum_dispatch;
@@ -111,7 +111,6 @@ impl<T: MultiShardCommand> Tracker for ResultsTracker<T> {
 #[enum_dispatch(Tracker)]
 pub enum TrackerEnum {
     IndexQuery(ResultsTracker<IndexQueryCommand>),
-    RangeQuery(ResultsTracker<RangeCommand>),
     MultiRangeQuery(ResultsTracker<MultiRangeCommand>),
     MGetQuery(ResultsTracker<MGetShardedCommand>),
     LabelNames(ResultsTracker<LabelNamesCommand>),

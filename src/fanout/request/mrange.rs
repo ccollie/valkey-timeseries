@@ -19,20 +19,20 @@ use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::SeriesLabel;
 use crate::series::request_types::{
-    AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
+    AggregationOptions, MRangeOptions, MRangeSeriesResult, RangeGroupingOptions,
 };
 use crate::series::ValueFilter;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
-impl Serialized for RangeOptions {
+impl Serialized for MRangeOptions {
     fn serialize(&self, buf: &mut Vec<u8>) {
         serialize_multi_range_request(buf, self);
     }
 }
 
-impl Deserialized for RangeOptions {
+impl Deserialized for MRangeOptions {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         deserialize_multi_range_request(buf)
     }
@@ -41,7 +41,7 @@ impl Deserialized for RangeOptions {
 pub struct MultiRangeCommand;
 
 impl MultiShardCommand for MultiRangeCommand {
-    type REQ = RangeOptions;
+    type REQ = MRangeOptions;
     type RES = MultiRangeResponse;
     fn request_type() -> CommandMessageType {
         CommandMessageType::MultiRangeQuery
@@ -112,7 +112,7 @@ impl Deserialized for MultiRangeResponse {
     }
 }
 
-pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &RangeOptions) {
+pub(super) fn serialize_multi_range_request(buf: &mut Vec<u8>, request: &MRangeOptions) {
     let mut bldr = FlatBufferBuilder::with_capacity(512);
 
     let range = serialize_timestamp_range(&mut bldr, Some(request.date_range));
@@ -311,7 +311,7 @@ fn decode_grouping_options(reader: &GroupingOptions) -> RangeGroupingOptions {
     }
 }
 
-pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions> {
+pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<MRangeOptions> {
     let req = load_flatbuffers_object::<FBMultiRangeRequest>(buf, "MultiRangeRequest")?;
 
     let date_range = deserialize_timestamp_range(req.range())?.unwrap_or_default();
@@ -358,7 +358,7 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<RangeOptions>
         None
     };
 
-    Ok(RangeOptions {
+    Ok(MRangeOptions {
         date_range,
         count,
         aggregation,
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_range_options_request_simple_serialize_deserialize() {
-        let req = RangeOptions {
+        let req = MRangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
             filters: make_matchers_vec(),
             with_labels: true,
@@ -526,7 +526,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
+        let req2 = MRangeOptions::deserialize(&buf).expect("deserialization failed");
         assert_eq!(req.date_range, req2.date_range);
         assert_eq!(req.with_labels, req2.with_labels);
         assert_eq!(req.selected_labels, req2.selected_labels);
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_multi_range_request_with_filters_serialize_deserialize() {
-        let req = RangeOptions {
+        let req = MRangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
             filters: make_matchers_vec(),
             with_labels: true,
@@ -557,7 +557,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
+        let req2 = MRangeOptions::deserialize(&buf).expect("deserialization failed");
         assert_eq!(
             req.timestamp_filter.as_ref().unwrap(),
             req2.timestamp_filter.as_ref().unwrap()
@@ -581,7 +581,7 @@ mod tests {
             report_empty: true,
         };
 
-        let req = RangeOptions {
+        let req = MRangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
             filters: make_matchers_vec(),
             with_labels: true,
@@ -596,7 +596,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
+        let req2 = MRangeOptions::deserialize(&buf).expect("deserialization failed");
 
         let agg1 = req.aggregation.as_ref().unwrap();
         let agg2 = req2.aggregation.as_ref().unwrap();
@@ -623,7 +623,7 @@ mod tests {
             aggregation: Aggregation::Sum,
         };
 
-        let req = RangeOptions {
+        let req = MRangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
             filters: make_matchers_vec(),
             with_labels: true,
@@ -638,7 +638,7 @@ mod tests {
         let mut buf = Vec::new();
         req.serialize(&mut buf);
 
-        let req2 = RangeOptions::deserialize(&buf).expect("deserialization failed");
+        let req2 = MRangeOptions::deserialize(&buf).expect("deserialization failed");
 
         let grp1 = req.grouping.as_ref().unwrap();
         let grp2 = req2.grouping.as_ref().unwrap();
