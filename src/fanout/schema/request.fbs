@@ -104,6 +104,14 @@ table GroupingOptions {
   aggregator:AggregationType;
 }
 
+table RangeRequest {
+  range:DateRange;
+  count:uint32;
+  timestamp_filter:[int64];
+  value_filter:ValueRangeFilter;
+  aggregation:AggregationOptions;
+}
+
 table MultiRangeRequest {
   range:DateRange;
   count:uint32;
@@ -135,3 +143,4 @@ root_type LabelNamesRequest;
 root_type LabelValuesRequest;
 root_type CardinalityRequest;
 root_type MetadataRequest;
+root_type RangeRequest;

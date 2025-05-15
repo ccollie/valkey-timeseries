@@ -2,7 +2,7 @@ use crate::aggregators::{AggregateIterator, Aggregation, AggregationHandler, Agg
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
-use crate::series::request_types::{AggregationOptions, RangeOptions};
+use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
 use crate::series::TimeSeries;
 
 pub(crate) fn get_range(
@@ -38,7 +38,7 @@ pub(crate) fn get_range(
 
 pub fn get_multi_series_range(
     series: &[&TimeSeries],
-    range_options: &RangeOptions,
+    range_options: &MRangeOptions,
 ) -> Vec<Vec<Sample>> {
     fn get_samples_internal(
         series: &[&TimeSeries],
@@ -70,7 +70,15 @@ pub fn get_multi_series_range(
         }
     }
 
-    get_samples_internal(series, range_options)
+    let options: RangeOptions = RangeOptions {
+        date_range: range_options.date_range,
+        count: range_options.count,
+        aggregation: range_options.aggregation,
+        timestamp_filter: range_options.timestamp_filter.clone(),
+        value_filter: range_options.value_filter,
+    };
+
+    get_samples_internal(series, &options)
 }
 
 pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(
@@ -354,7 +362,6 @@ mod tests {
             value_filter: Some(ValueFilter::greater_than(3.0)),
             aggregation: Some(aggr_options),
             count: None, // count is ignored for aggregated results
-            ..Default::default()
         };
 
         let result = get_range(&series, &range_options, true);

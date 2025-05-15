@@ -44,7 +44,7 @@ pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetReq
     let mut options = MGetRequest::default();
 
     while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
             CommandArgToken::WithLabels => {
                 options.with_labels = true;

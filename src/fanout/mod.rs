@@ -4,7 +4,7 @@ pub mod request;
 mod results_tracker;
 
 use crate::series::index::PostingsStats;
-use crate::series::request_types::{MGetRequest, MatchFilterOptions, RangeOptions};
+use crate::series::request_types::{MGetRequest, MRangeOptions, MatchFilterOptions};
 pub use coordinator::send_multi_shard_request;
 pub use request::*;
 use results_tracker::*;
@@ -97,11 +97,11 @@ where
 
 pub fn perform_remote_mrange_request<F>(
     ctx: &Context,
-    request: RangeOptions,
+    request: MRangeOptions,
     on_done: F,
 ) -> ValkeyResult<u64>
 where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, RangeOptions, Vec<MultiRangeResponse>)
+    F: FnOnce(&ThreadSafeContext<BlockedClient>, MRangeOptions, Vec<MultiRangeResponse>)
         + Send
         + 'static,
 {

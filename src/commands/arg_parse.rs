@@ -14,7 +14,7 @@ use crate::parser::{
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
-    AggregationOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions,
+    AggregationOptions, MRangeOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions,
 };
 use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
@@ -465,7 +465,7 @@ pub(crate) fn advance_if_next_token_one_of(
     tokens: &[CommandArgToken],
 ) -> Option<CommandArgToken> {
     if let Some(next) = args.peek() {
-        if let Some(token) = parse_command_arg_token(next.as_slice()) {
+        if let Some(token) = parse_command_arg_token(&next) {
             if tokens.contains(&token) {
                 args.next();
                 return Some(token);
@@ -477,7 +477,7 @@ pub(crate) fn advance_if_next_token_one_of(
 
 fn is_stop_token_or_end(args: &mut CommandArgIterator, stop_tokens: &[CommandArgToken]) -> bool {
     if let Some(next) = args.peek() {
-        match parse_command_arg_token(next.as_slice()) {
+        match parse_command_arg_token(&next) {
             Some(token) => {
                 if stop_tokens.contains(&token) {
                     args.next();
@@ -665,7 +665,7 @@ pub fn parse_series_selector_list(
     let mut matchers = vec![];
 
     while let Some(next) = args.peek() {
-        if let Some(token) = parse_command_arg_token(next.as_slice()) {
+        if let Some(token) = parse_command_arg_token(&next) {
             if stop_tokens.contains(&token) {
                 break;
             }
@@ -691,15 +691,12 @@ pub fn parse_series_selector_list(
 }
 
 pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 8] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 5] = [
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
         CommandArgToken::BucketTimestamp,
-        CommandArgToken::Filter,
         CommandArgToken::FilterByTs,
         CommandArgToken::FilterByValue,
-        CommandArgToken::SelectedLabels,
-        CommandArgToken::WithLabels,
     ];
 
     let date_range = parse_timestamp_range(args)?;
@@ -710,7 +707,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
     };
 
     while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
             CommandArgToken::Aggregation => {
                 options.aggregation = Some(parse_aggregation_options(args)?);
@@ -724,12 +721,6 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
             CommandArgToken::FilterByTs => {
                 options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
             }
-            CommandArgToken::SelectedLabels => {
-                options.selected_labels = parse_label_list(args, &RANGE_OPTION_ARGS)?;
-            }
-            CommandArgToken::WithLabels => {
-                options.with_labels = true;
-            }
             _ => {}
         }
     }
@@ -737,7 +728,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
     Ok(options)
 }
 
-pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
+pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
     const RANGE_OPTION_ARGS: [CommandArgToken; 10] = [
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
@@ -753,13 +744,13 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<Range
 
     let date_range = parse_timestamp_range(args)?;
 
-    let mut options = RangeOptions {
+    let mut options = MRangeOptions {
         date_range,
         ..Default::default()
     };
 
     while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
             CommandArgToken::Aggregation => {
                 options.aggregation = Some(parse_aggregation_options(args)?);
@@ -812,7 +803,7 @@ pub(crate) fn parse_metadata_command_args(
     let mut limit: Option<usize> = None;
 
     while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
             CommandArgToken::Start => {
                 let next = args.next_str()?;

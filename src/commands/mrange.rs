@@ -10,7 +10,7 @@ use crate::series::range_utils::{
     aggregate_samples, get_multi_series_range, get_series_labels, group_reduce,
 };
 use crate::series::request_types::{
-    AggregationOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
+    AggregationOptions, MRangeOptions, MRangeSeriesResult, RangeGroupingOptions,
 };
 use crate::series::{SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
@@ -70,7 +70,7 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
 
 fn on_mrange_request_done(
     ctx: &ThreadSafeContext<BlockedClient>,
-    req: RangeOptions,
+    req: MRangeOptions,
     results: Vec<MultiRangeResponse>,
 ) {
     let all_series = results
@@ -90,7 +90,7 @@ fn on_mrange_request_done(
 
 pub fn process_mrange_query(
     ctx: &Context,
-    options: RangeOptions,
+    options: MRangeOptions,
     reverse: bool,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
     if options.filters.is_empty() {
@@ -125,7 +125,7 @@ pub fn process_mrange_query(
 
 fn process_mrange_command(
     metas: Vec<SeriesMeta>,
-    options: RangeOptions,
+    options: MRangeOptions,
     is_clustered: bool,
 ) -> Vec<MRangeSeriesResult> {
     let mut options = options;
@@ -186,7 +186,7 @@ fn build_grouped_labels(
 
 fn handle_aggregation_and_grouping(
     metas: Vec<SeriesMeta>,
-    options: &RangeOptions,
+    options: &MRangeOptions,
     groupings: &RangeGroupingOptions,
     aggregations: &AggregationOptions,
 ) -> Vec<MRangeSeriesResult> {
@@ -226,7 +226,7 @@ fn handle_aggregation_and_grouping(
 
 fn handle_grouping(
     metas: Vec<SeriesMeta>,
-    options: &RangeOptions,
+    options: &MRangeOptions,
     grouping: &RangeGroupingOptions,
 ) -> Vec<MRangeSeriesResult> {
     let mut grouped_series_map = group_series_by_label_internal(metas, grouping);
@@ -258,7 +258,7 @@ fn convert_labels(
         .collect::<Vec<Option<Label>>>()
 }
 
-fn handle_basic(metas: Vec<SeriesMeta>, options: &RangeOptions) -> Vec<MRangeSeriesResult> {
+fn handle_basic(metas: Vec<SeriesMeta>, options: &MRangeOptions) -> Vec<MRangeSeriesResult> {
     let mut metas = metas;
     let context_values: Vec<(String, Option<String>, Vec<Option<Label>>)> = metas
         .iter_mut()
@@ -290,7 +290,7 @@ fn handle_basic(metas: Vec<SeriesMeta>, options: &RangeOptions) -> Vec<MRangeSer
 
 fn get_grouped_raw_samples(
     series_metas: &[SeriesMeta],
-    options: &RangeOptions,
+    options: &MRangeOptions,
     grouping_options: &RangeGroupingOptions,
 ) -> Vec<Sample> {
     let iterators = get_sample_iterators(series_metas, options);
@@ -301,12 +301,12 @@ fn get_grouped_raw_samples(
 
 fn aggregate_grouped_samples(
     group: &RawGroupedSeries<'_>,
-    options: &RangeOptions,
+    options: &MRangeOptions,
     aggregation_options: &AggregationOptions,
 ) -> Vec<Sample> {
     fn get_raw_group_sample_iterators<'a>(
         series_refs: &'a [(&'a TimeSeries, String)],
-        options: &'a RangeOptions,
+        options: &'a MRangeOptions,
     ) -> Vec<SampleIter<'a>> {
         let (start_ts, end_ts) = options.date_range.get_timestamps(None);
         series_refs
@@ -332,7 +332,7 @@ fn aggregate_grouped_samples(
 
 fn get_sample_iterators<'a>(
     series_metas: &'a [SeriesMeta],
-    range_options: &'a RangeOptions,
+    range_options: &'a MRangeOptions,
 ) -> Vec<SampleIter<'a>> {
     let (start_ts, end_ts) = range_options.date_range.get_timestamps(None);
     series_metas

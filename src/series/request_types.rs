@@ -5,7 +5,7 @@ use crate::labels::Label;
 use crate::series::{TimestampRange, ValueFilter};
 use valkey_module::{ValkeyString, ValkeyValue};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct AggregationOptions {
     pub aggregation: Aggregation,
     pub bucket_duration: u64,
@@ -47,6 +47,15 @@ pub struct RangeGroupingOptions {
 
 #[derive(Debug, Default, Clone)]
 pub struct RangeOptions {
+    pub date_range: TimestampRange,
+    pub count: Option<usize>,
+    pub aggregation: Option<AggregationOptions>,
+    pub timestamp_filter: Option<Vec<Timestamp>>,
+    pub value_filter: Option<ValueFilter>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MRangeOptions {
     pub date_range: TimestampRange,
     pub count: Option<usize>,
     pub aggregation: Option<AggregationOptions>,

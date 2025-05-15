@@ -4,7 +4,7 @@ mod label_names;
 mod matchers;
 mod mget;
 mod mrange;
-mod range;
+
 #[allow(
     dead_code,
     unused_imports,
@@ -38,7 +38,6 @@ pub use label_names::*;
 pub use label_values::*;
 pub use mget::*;
 pub use mrange::*;
-pub use range::*;
 pub use stats::*;
 
 use crate::fanout::request::serialization::{Deserialized, Serialized};
@@ -50,13 +49,12 @@ use valkey_module::{Context, ValkeyResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandMessageType {
     IndexQuery = 0,
-    RangeQuery = 1,
-    MultiRangeQuery = 2,
-    MGetQuery = 3,
-    LabelNames = 4,
-    LabelValues = 5,
-    Cardinality = 6,
-    Stats = 7,
+    MultiRangeQuery = 1,
+    MGetQuery = 2,
+    LabelNames = 3,
+    LabelValues = 4,
+    Cardinality = 5,
+    Stats = 6,
     Error = 255,
 }
 
@@ -64,13 +62,12 @@ impl From<u8> for CommandMessageType {
     fn from(value: u8) -> Self {
         match value {
             0 => CommandMessageType::IndexQuery,
-            1 => CommandMessageType::RangeQuery,
-            2 => CommandMessageType::MultiRangeQuery,
-            3 => CommandMessageType::MGetQuery,
-            4 => CommandMessageType::LabelNames,
-            5 => CommandMessageType::LabelValues,
-            6 => CommandMessageType::Cardinality,
-            7 => CommandMessageType::Stats,
+            1 => CommandMessageType::MultiRangeQuery,
+            2 => CommandMessageType::MGetQuery,
+            3 => CommandMessageType::LabelNames,
+            4 => CommandMessageType::LabelValues,
+            5 => CommandMessageType::Cardinality,
+            6 => CommandMessageType::Stats,
             _ => CommandMessageType::Error,
         }
     }
@@ -80,7 +77,6 @@ impl std::fmt::Display for CommandMessageType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CommandMessageType::IndexQuery => write!(f, "IndexQuery"),
-            CommandMessageType::RangeQuery => write!(f, "RangeQuery"),
             CommandMessageType::MultiRangeQuery => write!(f, "MultiRangeQuery"),
             CommandMessageType::MGetQuery => write!(f, "MGetQuery"),
             CommandMessageType::LabelNames => write!(f, "LabelNames"),
