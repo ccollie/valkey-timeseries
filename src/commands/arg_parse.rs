@@ -683,6 +683,10 @@ pub fn parse_series_selector_list(
         }
     }
 
+    if matchers.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+
     Ok(matchers)
 }
 
