@@ -13,6 +13,7 @@ pub(crate) fn get_range(
     let (start_timestamp, end_timestamp) =
         args.date_range
             .get_series_range(series, None, check_retention);
+
     let mut range = series.get_range_filtered(
         start_timestamp,
         end_timestamp,

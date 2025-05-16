@@ -150,7 +150,7 @@ class TestTimeSeriesMRange(ValkeyTimeSeriesTestCaseBase):
                                              'GROUPBY', 'sensor', 'REDUCE', 'sum')
 
         # Should return just 1 time series that groups both temperature sensors
-        self.assertEqual(len(result), 1)
+        assert len(result) == 1
 
         # Check labels include the groupby and reducer info
         labels_dict = {item[0].decode(): item[1].decode() for item in result[0][1]}
