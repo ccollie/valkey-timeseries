@@ -75,15 +75,15 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Not matching regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!=~"c.*"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!~"c.*"'))
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
         # Not matching regex alternation
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!=~"cpu|memory"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!~"cpu|memory"'))
         assert result == [b'ts7', b'ts8']
 
         # Not matching using character class
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'node!=~"node[12]"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'node!~"node[12]"'))
         assert result == [b'ts6', b'ts7', b'ts8']
 
     def test_complex_queries(self):
@@ -99,7 +99,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
         # Regex not matching
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!=~"c.*"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!~"c.*"'))
         assert result == [b'ts3', b'ts4', b'ts7']
 
     def test_missing_labels(self):
@@ -123,7 +123,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts5']
 
         # Mix of equals, not equals, and regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu', 'node!=node1', 'type="~.*"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu', 'node!=node1', 'type=~".*"'))
         assert result == [b'ts2', b'ts6']
 
     def test_error_cases(self):
