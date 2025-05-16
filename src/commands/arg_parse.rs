@@ -415,34 +415,31 @@ pub fn parse_timestamp_filter(
         if is_stop_token_or_end(args, stop_tokens) {
             break;
         }
-        let arg = match args.next_str() {
-            Ok(arg) => arg,
-            Err(_e) => {
-                return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER));
-            }
+        let Ok(arg) = args.next_str() else {
+            return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER));
         };
-        if let Ok(timestamp) = parse_timestamp(arg) {
-            values.push(timestamp);
-        } else {
+        let Ok(timestamp) = parse_timestamp(arg) else {
             return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP));
-        }
-        if values.len() == MAX_TS_VALUES_FILTER {
-            break;
+        };
+        values.push(timestamp);
+        if values.len() > MAX_TS_VALUES_FILTER {
+            return Err(ValkeyError::Str("TSDB: too many timestamp filters"));
         }
     }
     if values.is_empty() {
-        return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER));
+        return Err(ValkeyError::Str(
+            error_consts::MISSING_TIMESTAMP_FILTER_VALUE,
+        ));
     }
-    values.sort();
-    values.dedup();
+
     Ok(values)
 }
 
 pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFilter> {
     let min = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str("TSDB cannot parse filter min parameter"))?;
+        .map_err(|_| ValkeyError::Str("TSDB cannot parse value filter min parameter"))?;
     let max = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str("TSDB cannot parse filter max parameter"))?;
+        .map_err(|_| ValkeyError::Str("TSDB cannot parse value filter max parameter"))?;
     if max < min {
         return Err(ValkeyError::Str(
             "TSDB filter min parameter is greater than max",
@@ -476,21 +473,14 @@ pub(crate) fn advance_if_next_token_one_of(
 }
 
 fn is_stop_token_or_end(args: &mut CommandArgIterator, stop_tokens: &[CommandArgToken]) -> bool {
-    if let Some(next) = args.peek() {
-        match parse_command_arg_token(next) {
-            Some(token) => {
-                if stop_tokens.contains(&token) {
-                    args.next();
-                    true
-                } else {
-                    false
-                }
-            }
-            None => false,
-        }
-    } else {
-        true
-    }
+    let Some(next) = args.peek() else {
+        return true; // at end
+    };
+    let Some(token) = parse_command_arg_token(next) else {
+        // should we error here?
+        return false; // not a token
+    };
+    stop_tokens.contains(&token)
 }
 
 pub fn parse_label_list(
@@ -690,8 +680,22 @@ pub fn parse_series_selector_list(
     Ok(matchers)
 }
 
+fn parse_align_for_aggregation(args: &mut CommandArgIterator) -> ValkeyResult<AggregationOptions> {
+    // ALIGN token already seen
+    let alignment_str = args.next_str()?;
+    let next = args.next_str()?;
+    if next != CMD_ARG_AGGREGATION {
+        return Err(ValkeyError::Str("TSDB: missing AGGREGATION"));
+    }
+    let mut aggregation = parse_aggregation_options(args)?;
+
+    aggregation.alignment = BucketAlignment::try_from(alignment_str)?;
+    Ok(aggregation)
+}
+
 pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 5] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 6] = [
+        CommandArgToken::Align,
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
         CommandArgToken::BucketTimestamp,
@@ -709,6 +713,9 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
+            CommandArgToken::Align => {
+                options.aggregation = Some(parse_align_for_aggregation(args)?);
+            }
             CommandArgToken::Aggregation => {
                 options.aggregation = Some(parse_aggregation_options(args)?);
             }
@@ -721,7 +728,10 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
             CommandArgToken::FilterByTs => {
                 options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
             }
-            _ => {}
+            _ => {
+                let msg = format!("ERR invalid argument '{}'", arg);
+                return Err(ValkeyError::String(msg));
+            }
         }
     }
 
@@ -754,14 +764,7 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
         let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
             CommandArgToken::Align => {
-                let alignment_str = args.next_str()?;
-                let next = args.next_str()?;
-                if next != CMD_ARG_AGGREGATION {
-                    return Err(ValkeyError::Str("TSDB: missing AGGREGATION"));
-                }
-                let mut aggregation = parse_aggregation_options(args)?;
-                aggregation.alignment = BucketAlignment::try_from(alignment_str)?;
-                options.aggregation = Some(aggregation);
+                options.aggregation = Some(parse_align_for_aggregation(args)?);
             }
             CommandArgToken::Aggregation => {
                 options.aggregation = Some(parse_aggregation_options(args)?);

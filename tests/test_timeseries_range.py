@@ -6,7 +6,7 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 # TODO: Aggregation and groupby tests are not (yet) implemented in this test case.
 class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
-    def setup_test(self):
+    def setup_data(self):
         # Setup some time series data
         self.client.execute_command('TS.CREATE', 'ts1')
         self.client.execute_command('TS.ADD', 'ts1', 1000, 10.1)
@@ -18,7 +18,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_basic_range(self):
         """Test basic TS.RANGE with start and end timestamps"""
 
-        self.setup_test()
+        self.setup_data()
 
         result = self.client.execute_command('TS.RANGE', 'ts1', 2000, 4000)
         assert result == [[2000, b'20.2'], [3000, b'30.3'], [4000, b'40.4']]
@@ -26,7 +26,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_full_range(self):
         """Test TS.RANGE with '-' and '+'"""
 
-        self.setup_test()
+        self.setup_data()
 
         result = self.client.execute_command('TS.RANGE', 'ts1', '-', '+')
         assert len(result) == 5
@@ -36,7 +36,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_with_count(self):
         """Test TS.RANGE with COUNT option"""
 
-        self.setup_test()
+        self.setup_data()
 
         # Forward count
         result = self.client.execute_command('TS.RANGE', 'ts1', '-', '+', 'COUNT', 2)
@@ -45,7 +45,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_filter_by_ts(self):
         """Test TS.RANGE with FILTER_BY_TS"""
 
-        self.setup_test()
+        self.setup_data()
 
         result = self.client.execute_command('TS.RANGE', 'ts1', '-', '+', 'FILTER_BY_TS', 1000, 3000, 5000)
         assert result == [[1000, b'10.1'], [3000, b'30.3'], [5000, b'50.5']]
@@ -53,7 +53,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_filter_by_value(self):
         """Test TS.RANGE with FILTER_BY_VALUE"""
 
-        self.setup_test()
+        self.setup_data()
 
         result = self.client.execute_command('TS.RANGE', 'ts1', '-', '+', 'FILTER_BY_VALUE', 20, 40)
         assert result == [[2000, b'20.2'], [3000, b'30.3']]
@@ -66,7 +66,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_filter_by_ts_and_value(self):
         """Test TS.RANGE combining FILTER_BY_TS and FILTER_BY_VALUE"""
 
-        self.setup_test()
+        self.setup_data()
 
         result = self.client.execute_command('TS.RANGE', 'ts1', '-', '+',
                                              'FILTER_BY_TS', 2000, 4000, 5000,
@@ -76,7 +76,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_aggregation(self):
         """Test TS.RANGE with basic aggregation"""
 
-        self.setup_test()
+        self.setup_data()
 
         # Average over 2000ms buckets
         result = self.client.execute_command('TS.RANGE', 'ts1', 1000, 5000, 'AGGREGATION', 'AVG', 2000)
@@ -94,7 +94,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_aggregation_options(self):
         """Test TS.RANGE aggregation with ALIGN, BUCKETTIMESTAMP, EMPTY"""
 
-        self.setup_test()
+        self.setup_data()
 
         # Align to 0, bucket timestamp mid, report empty
         result = self.client.execute_command('TS.RANGE', 'ts1', 500, 6500,
@@ -115,7 +115,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_aggregation_with_filters(self):
         """Test TS.RANGE combining aggregation and filters"""
 
-        self.setup_test()
+        self.setup_data()
 
         # Filter values > 30, then aggregate SUM over 3000ms buckets
         result = self.client.execute_command('TS.RANGE', 'ts1', '-', '+',
@@ -131,7 +131,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_empty_series(self):
         """Test TS.RANGE on an existing but empty series"""
 
-        self.setup_test()
+        self.setup_data()
 
         self.client.execute_command('TS.CREATE', 'ts_empty')
         result = self.client.execute_command('TS.RANGE', 'ts_empty', '-', '+')
@@ -144,7 +144,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_non_existent_series(self):
         """Test TS.RANGE on a non-existent key"""
 
-        self.setup_test()
+        self.setup_data()
 
         result = self.client.execute_command('TS.RANGE', 'ts_nonexistent', '-', '+')
         assert result == []
@@ -156,7 +156,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_edge_cases(self):
         """Test TS.RANGE with edge case timestamps"""
 
-        self.setup_test()
+        self.setup_data()
 
         # Exact start/end match
         result = self.client.execute_command('TS.RANGE', 'ts1', 2000, 2000)
