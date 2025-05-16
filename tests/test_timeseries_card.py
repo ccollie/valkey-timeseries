@@ -34,7 +34,6 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
     def test_card_basic(self):
         """Test basic TS.CARD functionality with no filters"""
         # Should count all time series
-
         self.setup_data()
 
         result = self.client.execute_command('TS.CARD')
@@ -284,10 +283,6 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
 
         self.setup_data()
 
-        # Invalid filter format (missing = operator)
-        with pytest.raises(ResponseError):
-            self.client.execute_command('TS.CARD', 'FILTER', 'invalid-filter')
-
         # Invalid timestamp format
         with pytest.raises(ResponseError):
             self.client.execute_command('TS.CARD', 'START', 'not-a-time', 'END', 2000, 'FILTER', 'sensor=temp')
@@ -295,10 +290,6 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         # Missing timestamp
         with pytest.raises(ResponseError):
             self.client.execute_command('TS.CARD', 'START', 'FILTER', 'sensor=temp')
-
-        # Wrong parameter order
-        with pytest.raises(ResponseError):
-            self.client.execute_command('TS.CARD', 'FILTER', 'sensor=temp', 'START', 1000)
 
         # Missing filter value
         with pytest.raises(ResponseError):

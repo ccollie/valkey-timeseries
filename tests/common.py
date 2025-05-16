@@ -28,16 +28,16 @@ def get_dynamic_lib_extension():
 PLATFORM = get_platform()
 MODULE_PATH = os.path.abspath("{}/target/debug/libvalkey_timeseries{}".format(ROOT_PATH, get_dynamic_lib_extension()))
 
-def getServerVersion():
+def get_server_version():
     version = os.getenv('VALKEY_VERSION')
     if version is None:
         version = "unstable"
 
     return version
 
-def getServerPath(version):
+def get_server_path(version):
     if version is None:
-        version = getServerVersion()
+        version = get_server_version()
     path = os.path.join(CWD, "..", ".build/binaries/{}/valkey-server".format(version))
     return os.path.abspath(path)
 

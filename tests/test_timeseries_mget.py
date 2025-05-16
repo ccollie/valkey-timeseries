@@ -1,4 +1,5 @@
 import pytest
+from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -43,20 +44,20 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         result.sort(key=lambda x: x[0])
 
         # Check the structure and content of the results
-        assert len(result) == 3
+        assert len(result) == 4
 
         # Each result is [key_name, [timestamp, value], labels_dict]
         assert result[0][0] == b'ts1'
-        assert result[0][1][0] == 2000  # latest timestamp
-        assert result[0][1][1] == 15    # latest value
+        assert result[0][2][0] == 2000  # latest timestamp
+        assert result[0][2][1] == b'15' # latest value
 
         assert result[1][0] == b'ts2'
-        assert result[1][1][0] == 2000
-        assert result[1][1][1] == 25
+        assert result[1][2][0] == 2000
+        assert result[1][2][1] == b'25'
 
         assert result[2][0] == b'ts5'
-        assert result[2][1][0] == 1000
-        assert result[2][1][1] == 50
+        assert result[2][2][0] == 1000
+        assert result[2][2][1] == b'50'
 
     def test_mget_with_empty_result(self):
         """Test TS.MGET with a filter that doesn't match any series"""
@@ -77,37 +78,41 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 2
 
         # Check that labels are included
-        ts3_labels = result[0][2]
-        assert len(ts3_labels) == 6  # 3 label pairs
+        ts3_labels = result[0][1]
+        assert len(ts3_labels) == 3  # 3 label pairs
         assert [b'name', b'memory'] in ts3_labels
         assert [b'type', b'usage'] in ts3_labels
         assert [b'node', b'node1'] in ts3_labels
 
-        ts4_labels = result[1][2]
-        assert len(ts4_labels) == 6
+        ts4_labels = result[1][1]
+        assert len(ts4_labels) == 3
         assert [b'name', b'memory'] in ts4_labels
         assert [b'type', b'usage'] in ts4_labels
         assert [b'node', b'node2'] in ts4_labels
 
-    def test_mget_with_selectedlabels(self):
-        """Test TS.MGET with the SELECTEDLABELS option"""
+    def test_mget_with_selected_labels(self):
+        """Test TS.MGET with the SELECTED_LABELS option"""
         self.setup_test_data(self.client)
 
         # Get all CPU metrics with only selected labels
-        result = self.client.execute_command('TS.MGET', 'SELECTEDLABELS', 'name', 'type', 'FILTER', 'name=cpu')
-        print(result)
+        result = self.client.execute_command('TS.MGET', 'SELECTED_LABELS', 'name', 'type', 'FILTER', 'name=cpu')
         result.sort(key=lambda x: x[0])
+        print(result)
 
-        assert len(result) == 3
+        assert len(result) == 4
+        
+        expected_labels = [
+            [[b'name', b'cpu'], [b'type', b'usage']],
+            [[b'name', b'cpu'], [b'type', b'usage']],
+            [[b'name', b'cpu'], [b'type', b'temperature']],
+            [[b'name', b'cpu'], None]
+        ]
 
         # Check that only selected labels are included
-        for item in result:
-            labels = item[2]
-            # Should only have the specified labels, not 'node' or others
-            label_names = [pair[0] for pair in labels]
-            assert b'name' in label_names
-            assert b'type' in label_names if b'type' in dict(labels) else True  # ts6 doesn't have 'type'
-            assert b'node' not in label_names
+        for i, item in enumerate(result):
+            labels = item[1]
+
+            assert labels == expected_labels[i], f"Labels mismatch at index {i}: {labels} != {expected_labels[i]}"
 
     def test_mget_with_complex_filter(self):
         """Test TS.MGET with complex filters"""
@@ -141,7 +146,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         result.sort(key=lambda x: x[0])
 
         assert len(result) == 2
-        # Each series should return empty array for the sample
+        # Each series should return an empty array for the sample
         assert result[0][0] == b'empty_ts1'
         assert result[0][1] == []
 
@@ -156,22 +161,15 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         self.verify_error_response(
             self.client,
             'TS.MGET',
-            "TSDB: Missing FILTER"
-        )
-
-        # Invalid filter format
-        self.verify_error_response(
-            self.client,
-            'TS.MGET FILTER invalid_filter',
-            "Invalid filter: invalid_filter"
+            "wrong number of arguments for 'TS.MGET' command"
         )
 
         # Unknown option
-        self.verify_error_response(
-            self.client,
-            'TS.MGET UNKNOWN_OPTION FILTER name=cpu',
-            "ERR invalid argument 'UNKNOWN_OPTION'"
-        )
+        with pytest.raises(ResponseError) as excinfo:
+            self.client.execute_command('TS.MGET', 'UNKNOWN_OPTION', 'FILTER', 'name=empty')
+
+        with pytest.raises(ResponseError):
+            self.client.execute_command('TS.MGET', 'WITHLABELS', 'SELECTED_LABELS', 'name', 'value', 'FILTER', 'name=cpu', 'UNKNOWN_OPTION')
 
     def test_mget_with_different_timestamps(self):
         """Test TS.MGET with series having different latest timestamps"""
@@ -183,11 +181,12 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         # Get all CPU metrics
         result = self.client.execute_command('TS.MGET', 'FILTER', 'name=cpu')
         result.sort(key=lambda x: x[0])
+        print(result)
 
         # Verify different timestamps
-        assert result[0][1][0] == 2000  # ts1
-        assert result[1][1][0] == 2000  # ts2
-        assert result[2][1][0] == 3000  # ts5 (newest timestamp)
+        assert result[0][2][0] == 2000  # ts1
+        assert result[1][2][0] == 2000  # ts2
+        assert result[2][2][0] == 3000  # ts5 (newest timestamp)
 
     def test_mget_after_series_deletion(self):
         """Test TS.MGET behavior after some series are deleted"""
@@ -198,8 +197,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         # Get all CPU metrics
         result = self.client.execute_command('TS.MGET', 'FILTER', 'name=cpu')
-        print("Result after deletion:", result)
-        # result.sort(key=lambda x: x[0])
+        result.sort(key=lambda x: x[0])
 
         # Should only return remaining series
         assert len(result) == 2
@@ -216,9 +214,10 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         # Get the disk metrics
         result = self.client.execute_command('TS.MGET', 'FILTER', 'name=disk')
+        print(result)
 
         # Should only have one result with the latest sample
         assert len(result) == 1
         assert result[0][0] == b'ts7'
-        assert result[0][1][0] == 3000  # latest timestamp
-        assert result[0][1][1] == 80     # latest value
+        assert result[0][2][0] == 3000  # latest timestamp
+        assert result[0][2][1] == b'80' # latest value

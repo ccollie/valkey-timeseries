@@ -465,7 +465,7 @@ pub(crate) fn advance_if_next_token_one_of(
     tokens: &[CommandArgToken],
 ) -> Option<CommandArgToken> {
     if let Some(next) = args.peek() {
-        if let Some(token) = parse_command_arg_token(&next) {
+        if let Some(token) = parse_command_arg_token(next) {
             if tokens.contains(&token) {
                 args.next();
                 return Some(token);
@@ -477,7 +477,7 @@ pub(crate) fn advance_if_next_token_one_of(
 
 fn is_stop_token_or_end(args: &mut CommandArgIterator, stop_tokens: &[CommandArgToken]) -> bool {
     if let Some(next) = args.peek() {
-        match parse_command_arg_token(&next) {
+        match parse_command_arg_token(next) {
             Some(token) => {
                 if stop_tokens.contains(&token) {
                     args.next();
@@ -665,7 +665,7 @@ pub fn parse_series_selector_list(
     let mut matchers = vec![];
 
     while let Some(next) = args.peek() {
-        if let Some(token) = parse_command_arg_token(&next) {
+        if let Some(token) = parse_command_arg_token(next) {
             if stop_tokens.contains(&token) {
                 break;
             }
@@ -729,7 +729,8 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
 }
 
 pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 10] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 11] = [
+        CommandArgToken::Align,
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
         CommandArgToken::BucketTimestamp,
@@ -752,6 +753,16 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(&arg).unwrap_or_default();
         match token {
+            CommandArgToken::Align => {
+                let alignment_str = args.next_str()?;
+                let next = args.next_str()?;
+                if next != CMD_ARG_AGGREGATION {
+                    return Err(ValkeyError::Str("TSDB: missing AGGREGATION"));
+                }
+                let mut aggregation = parse_aggregation_options(args)?;
+                aggregation.alignment = BucketAlignment::try_from(alignment_str)?;
+                options.aggregation = Some(aggregation);
+            }
             CommandArgToken::Aggregation => {
                 options.aggregation = Some(parse_aggregation_options(args)?);
             }
@@ -780,9 +791,15 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
         }
     }
 
-    // if options.series_selector.is_empty() {
-    //     return Err(ValkeyError::Str("TSDB: no FILTER given"));
-    // }
+    if options.filters.is_empty() {
+        return Err(ValkeyError::Str("TSDB: no FILTER given"));
+    }
+
+    if !options.selected_labels.is_empty() && options.with_labels {
+        return Err(ValkeyError::Str(
+            error_consts::WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED,
+        ));
+    }
 
     Ok(options)
 }
@@ -856,6 +873,22 @@ pub(crate) fn parse_metadata_command_args(
     }
 
     Ok(options)
+}
+
+pub(super) fn find_last_token_instance(
+    args: &[ValkeyString],
+    cmd_tokens: &[CommandArgToken],
+) -> Option<(CommandArgToken, usize)> {
+    let mut i = args.len() - 1;
+    for arg in args.iter().rev() {
+        if let Some(token) = parse_command_arg_token(arg) {
+            if cmd_tokens.contains(&token) {
+                return Some((token, i));
+            }
+        }
+        i -= 1;
+    }
+    None
 }
 
 #[cfg(test)]

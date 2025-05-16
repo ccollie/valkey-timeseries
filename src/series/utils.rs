@@ -39,7 +39,7 @@ pub fn check_key_permissions(
         if permissions.contains(AclPermissions::UPDATE) {
             return Err(ValkeyError::Str(error_consts::KEY_WRITE_PERMISSION_ERROR));
         }
-        Err(ValkeyError::Str(error_consts::KEY_READ_PERMISSION_ERROR))
+        Err(ValkeyError::Str(error_consts::PERMISSION_DENIED))
     }
 }
 

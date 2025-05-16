@@ -20,7 +20,7 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         if timestamp is None:
             timestamp = self.start_ts
 
-        self.client.execute_command("TS.CREATE", key)
+        self.client.execute_command("TS.CREATE", key, "LABELS", "key", key, "sensor", "temp")
         self.client.execute_command("TS.ADD", key, timestamp, value)
         return key
 
@@ -30,7 +30,7 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         key = "ts:loaded"
-        self.create_ts(key)
+        self.client.execute_command("TS.CREATE", key, "LABELS", "__name__", "sensor", "sensor", "temp")
 
         # Save and reload to trigger load events
         self.client.save()
@@ -39,11 +39,14 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         # Verify the key exists and is queryable
         assert self.client.exists(key)
 
-        # Verify we can query the timeseries (would fail if not properly indexed)
-        result = self.client.execute_command("TS.RANGE", key, 0, "+")
-        assert len(result) == 1
-        assert result[0][0] == self.start_ts
-        assert float(result[0][1]) == 1.0
+        # Query the key to ensure it was loaded and indexed correctly
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key))
+        assert len(keys) == 1
+        assert keys[0] == key
+
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 1
+        assert keys[0] == key
 
     def test_delete_event(self):
         """Test that a deleted series is properly removed from the index."""
@@ -58,6 +61,12 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
 
         # The key should be removed
         assert not self.client.exists(key)
+
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key))
+        assert len(keys) == 0
+
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 0
 
         # Create the key again - should succeed without index interference
         self.create_ts(key, self.start_ts + 1, 2.0)
@@ -79,12 +88,28 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
 
         # Old key should be gone, new key should exist
         assert not self.client.exists(old_key)
+        
+        # The old key should not be queryable
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(old_key))
+        assert len(keys) == 0
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 0
+        
         assert self.client.exists(new_key)
 
         # The new key should be queryable
         result = self.client.execute_command("TS.RANGE", new_key, 0, "+")
         assert len(result) == 1
         assert result[0][0] == self.start_ts
+        
+        # Verify the key is indexed correctly
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(new_key))
+        assert len(keys) == 1
+        assert keys[0] == new_key
+        
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 1
+        assert keys[0] == new_key
 
     def test_restore_event(self):
         """Test that a restored series is properly reindexed."""
@@ -100,6 +125,15 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
 
         # Restore the key
         self.client.restore(key, 0, dumped)
+
+        # Query the key to ensure it was restored and indexed correctly
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key))
+        assert len(keys) == 1
+        assert keys[0] == key
+
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 1
+
 
         # The key should be queryable
         result = self.client.execute_command("TS.RANGE", key, 0, "+")
@@ -120,12 +154,29 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         # Key should not exist in db 0
         assert not self.client.exists(key)
 
+        # should not be able to find it in db 1 by index
+        key = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key))
+        assert len(key) == 0
+
+        key = self.client.execute_command("TS.QUERYINDEX", "sensor=sensor")
+        assert len(key) == 0
+
+
         # Key should exist in db 1 and be queryable
         self.client.select(1)
         assert self.client.exists(key)
         result = self.client.execute_command("TS.RANGE", key, 0, "+")
         assert len(result) == 1
         assert result[0][0] == self.start_ts
+
+        # Verify the key is indexed correctly in db 1
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key))
+        assert len(keys) == 1
+        assert keys[0] == key
+
+        keys = self.client.execute_command("TS.QUERYINDEX", "sensor=sensor")
+        assert len(keys) == 1
+        assert keys[0] == key
 
         # Return to db 0 for other tests
         self.client.select(0)
@@ -144,12 +195,22 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         for key in keys:
             assert self.client.exists(key)
 
+        keys = self.client.execute_command("TS.QUERYINDEX", 'key=~"ts:flush*"')
+        assert len(keys) == 3
+
         # Flush the database
         self.client.flushdb()
 
         # No keys should exist
         for key in keys:
             assert not self.client.exists(key)
+
+        # the index should be empty
+        keys = self.client.execute_command("TS.QUERYINDEX", 'key=~"ts:flush*"')
+        assert len(keys) == 0
+
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 0
 
         # Create a new key - should work without index interference
         new_key = "ts:new"
@@ -178,6 +239,12 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         # key0 should now be in db 1
         self.client.select(1)
         assert self.client.exists(key0)
+
+        # Verify the key is indexed correctly in db 1
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key0))
+        assert len(keys) == 1
+        assert keys[0] == key0
+
         result = self.client.execute_command("TS.RANGE", key0, 0, "+")
         assert len(result) == 1
         assert float(result[0][1]) == 1.0
@@ -185,6 +252,12 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         # key1 should now be in db 0
         self.client.select(0)
         assert self.client.exists(key1)
+
+        # Verify the key is indexed correctly in db 0
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key1))
+        assert len(keys) == 1
+        assert keys[0] == key1
+        
         result = self.client.execute_command("TS.RANGE", key1, 0, "+")
         assert len(result) == 1
         assert float(result[0][1]) == 2.0
@@ -205,6 +278,12 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
 
         # The key should be gone
         assert not self.client.exists(key)
+        
+        # The key should not be queryable
+        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key))
+        assert len(keys) == 0
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
+        assert len(keys) == 0
 
         # Create the key again - should succeed without index interference
         self.create_ts(key, self.start_ts + 1, 2.0)

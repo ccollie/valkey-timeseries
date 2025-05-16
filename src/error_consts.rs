@@ -16,7 +16,6 @@ pub const INVALID_VALUE: &str = "TSDB: invalid value";
 pub const INVALID_BOOLEAN: &str = "TSDB: invalid boolean argument";
 pub const INVALID_CHUNK_ENCODING: &str = "TSDB: invalid chunk encoding method";
 pub const MISSING_CHUNK_ENCODING: &str = "TSDB: missing chunk encoding method";
-
 pub const INVALID_CHUNK_SIZE: &str = "TSDB: invalid chunk size";
 pub const INVALID_DUPLICATE_POLICY: &str = "TSDB: invalid duplicate policy";
 pub const MISSING_DUPLICATE_POLICY: &str = "TSDB: missing duplicate policy value";
@@ -60,8 +59,10 @@ pub const NEGATIVE_COUNT: &str = "TSDB: COUNT should be a positive number";
 pub const ROUNDING_ALREADY_SET: &str = "TSDB: rounding already set";
 pub const DUPLICATE_SAMPLE_BLOCKED: &str = "TSDB: Error at upsert, duplicate sample blocked";
 pub const PERMISSION_DENIED: &str =
-    "TSDB: the user does not have permission to access one or more keys";
+    "TSDB: current user doesn't have read permission to one or more keys that match the specified filter";
 pub const COMMAND_SERIALIZATION_ERROR: &str = "TSDB: command serialization error";
 pub const COMMAND_DESERIALIZATION_ERROR: &str = "TSDB: command deserialization error";
 pub const CLUSTER_MODE_ERROR: &str = "TSDB: cluster mode not supported";
 pub const NO_CLUSTER_NODES_AVAILABLE: &str = "TSDB: no cluster nodes available";
+pub const WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED: &str =
+    "TSDB: WITHLABELS and SELECTED_LABELS are mutually exclusive";

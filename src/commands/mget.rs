@@ -1,6 +1,4 @@
-use crate::commands::arg_parse::{
-    parse_command_arg_token, parse_label_list, CommandArgIterator, CommandArgToken,
-};
+use crate::commands::arg_parse::{find_last_token_instance, parse_label_list, CommandArgToken};
 use crate::commands::parse_series_selector_list;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
@@ -14,13 +12,15 @@ use valkey_module::{
     ValkeyString, ValkeyValue,
 };
 
-/// TS.MGET selector
-///   [WITHLABELS]
-///   [SELECTED_LABELS label...]
+/// TS.MGET
+///   [WITHLABELS | SELECTED_LABELS label...]
+///   [FILTER filterExpr...]
 pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
-    let mut args = args.into_iter().skip(1).peekable();
+    if args.len() < 2 {
+        return Err(ValkeyError::WrongArity);
+    }
 
-    let options = parse_mget_options(&mut args)?;
+    let options = parse_mget_options(args)?;
 
     if is_clustered(ctx) {
         perform_remote_mget_request(ctx, options, on_mget_request_done)?;
@@ -34,33 +34,68 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     Ok(ValkeyValue::Array(result))
 }
 
-pub fn parse_mget_options(args: &mut CommandArgIterator) -> ValkeyResult<MGetRequest> {
-    const CMD_TOKENS: &[CommandArgToken] = &[
-        CommandArgToken::WithLabels,
+/// Parsing commands with variadic args gets wonky. For example, if we have something like:
+///
+/// `TS.MGET SELECTED_LABELS label1 label2 FILTER a=b x=y`
+///
+/// It's not clear if FILTER a=b and x=y are to be parsed as part of SELECTED_LABELS.
+/// To avoid this, we need to check backwards for variadic command arguments and remove them
+/// before handling the rest of the arguments.
+pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> {
+    // Look for all variadic tokens in the command, processing from right to left
+    // until no more tokens are found
+    let supported_tokens = &[
         CommandArgToken::SelectedLabels,
         CommandArgToken::Filter,
+        CommandArgToken::Latest,
+        CommandArgToken::WithLabels,
     ];
 
     let mut options = MGetRequest::default();
+    let mut args = args;
 
-    while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(&arg).unwrap_or_default();
+    while let Some((token, token_position)) = find_last_token_instance(&args, supported_tokens) {
+        // Split off the token and its arguments from the main args
+        let token_with_args = args.split_off(token_position);
+
+        let mut arg_iterator = token_with_args.into_iter().skip(1).peekable();
+
         match token {
+            CommandArgToken::SelectedLabels => {
+                options.selected_labels = parse_label_list(&mut arg_iterator, &[])?;
+            }
+            CommandArgToken::Filter => {
+                options.filters = parse_series_selector_list(&mut arg_iterator, &[])?;
+            }
             CommandArgToken::WithLabels => {
                 options.with_labels = true;
             }
-            CommandArgToken::SelectedLabels => {
-                options.selected_labels = parse_label_list(args, CMD_TOKENS)?;
+            CommandArgToken::Latest => {
+                // not currently implemented
+                return Err(ValkeyError::Str("TS.MGET: LATEST not implemented yet"));
             }
-            CommandArgToken::Filter => {
-                options.filters = parse_series_selector_list(args, CMD_TOKENS)?;
-            }
-            _ => {}
+            _ => unreachable!("Token should be one of the supported tokens"),
         }
     }
 
     if options.filters.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+
+    if !options.selected_labels.is_empty() && options.with_labels {
+        return Err(ValkeyError::Str(
+            error_consts::WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED,
+        ));
+    }
+
+    if args.len() > 1 {
+        let arg_debug = args[1..]
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(ValkeyError::String(arg_debug));
+        // return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
     }
 
     Ok(options)

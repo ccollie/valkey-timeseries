@@ -99,7 +99,7 @@ pub fn get_series_labels<'a>(
     with_labels: bool,
     selected_labels: &[String],
 ) -> Vec<Option<InternedLabel<'a>>> {
-    if !with_labels || selected_labels.is_empty() {
+    if !with_labels && selected_labels.is_empty() {
         return vec![];
     }
 
