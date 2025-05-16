@@ -1,33 +1,33 @@
-use crate::common::db::{get_current_db, set_current_db};
+use crate::common::db::set_current_db;
 use crate::common::hash::IntMap;
 use crate::common::parallel::join;
-use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::index::{with_timeseries_index, TIMESERIES_INDEX};
-use crate::series::{SeriesRef, TimeSeries};
+use crate::series::index::{
+    optimize_all_timeseries_indexes, with_timeseries_index, TIMESERIES_INDEX,
+};
+use crate::series::{get_timeseries_mut, SeriesRef};
 use ahash::HashMapExt;
 use blart::AsBytes;
-use num_traits::Zero;
+use lazy_static::lazy_static;
+use smallvec::SmallVec;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::AtomicI32;
-use std::sync::{LazyLock, Mutex, RwLock};
-use valkey_module::{Context, DetachedContext, Status, ValkeyString};
+use std::sync::{LazyLock, RwLock};
+use std::time::Duration;
+use valkey_module::{
+    Context, DetachedContext, RedisModuleTimerID, Status, ValkeyGILGuard, ValkeyString,
+};
 
-const BATCH_SIZE: usize = 500;
-
-/// Per-db task metadata
-type IdleSeriesMap = IntMap<i32, Vec<SeriesRef>>;
+const BATCH_SIZE: usize = 100;
 type SeriesCursorMap = IntMap<i32, SeriesRef>;
 static SERIES_TRIM_CURSORS: LazyLock<RwLock<SeriesCursorMap>> =
     LazyLock::new(|| RwLock::new(SeriesCursorMap::new()));
-static STALE_SERIES: LazyLock<Mutex<IdleSeriesMap>> =
-    LazyLock::new(|| Mutex::new(IdleSeriesMap::new()));
 
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 
-fn get_used_dbs() -> Vec<i32> {
+fn get_used_dbs() -> SmallVec<i32, 16> {
     let index = TIMESERIES_INDEX.pin();
-    let mut keys: Vec<i32> = index.keys().copied().collect();
+    let mut keys: SmallVec<i32, 16> = index.keys().copied().collect();
     keys.sort();
     keys
 }
@@ -44,23 +44,30 @@ fn next_db() -> i32 {
     next
 }
 
+fn get_trim_cursor(db: i32) -> SeriesRef {
+    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
+    match map.entry(db) {
+        Entry::Occupied(entry) => *entry.get(),
+        Entry::Vacant(entry) => {
+            let cursor = 0;
+            entry.insert(cursor);
+            cursor
+        }
+    }
+}
+
+fn set_trim_cursor(db: i32, cursor: SeriesRef) {
+    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
+    map.insert(db, cursor);
+}
+
 fn trim_series(ctx: &Context, db: i32) -> usize {
     if set_current_db(ctx, db) == Status::Err {
         ctx.log_warning(&format!("Failed to select db {}", db));
         return 0;
     }
 
-    let cursor = {
-        let mut map = SERIES_TRIM_CURSORS.write().unwrap();
-        match map.entry(db) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                let cursor = 0;
-                entry.insert(cursor);
-                cursor
-            }
-        }
-    };
+    let cursor = get_trim_cursor(db);
 
     let mut processed = 0;
     let mut last_processed = cursor;
@@ -72,8 +79,7 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
     if fetch_keys_batch(ctx, last_processed + 1, BATCH_SIZE, &mut keys) {
         // todo: can we use rayon here ?
         for (id, key) in keys.iter() {
-            let redis_key = ctx.open_key_writable(key);
-            if let Ok(Some(series)) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+            if let Ok(Some(mut series)) = get_timeseries_mut(ctx, key, false, None) {
                 match series.trim() {
                     Ok(deleted) => {
                         total_deletes += deleted;
@@ -96,13 +102,17 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
         last_processed = 0;
     }
 
-    let mut map = SERIES_TRIM_CURSORS.write().unwrap();
-    map.insert(db, last_processed);
+    set_trim_cursor(db, last_processed);
+
     if !to_delete.is_empty() {
-        remove_stale_series(ctx, &to_delete);
+        with_timeseries_index(ctx, |index| {
+            for id in to_delete {
+                index.mark_id_as_stale(id)
+            }
+        });
     }
 
-    if processed.is_zero() {
+    if processed == 0 {
         ctx.log_debug("No series to trim");
     } else {
         ctx.log_notice(&format!("Processed: {processed} Trimmed {trimmed_count}, Deleted Samples: {total_deletes} samples"));
@@ -125,7 +135,7 @@ fn fetch_keys_batch(
             let mut added: usize = 0;
             for _ in 0..batch_size {
                 if id > max_id {
-                    return !added.is_zero();
+                    return added > 0;
                 }
                 if let Some(k) = postings.get_key_by_id(id) {
                     added += 1;
@@ -137,36 +147,6 @@ fn fetch_keys_batch(
             true
         })
     })
-}
-
-fn remove_stale_series_internal(db: i32) {
-    let series = {
-        let mut map = STALE_SERIES.lock().unwrap();
-        map.remove(&db).unwrap_or_default()
-    };
-
-    if series.is_empty() {
-        return;
-    }
-
-    if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
-        index.slow_remove_series_by_ids(&series);
-    }
-}
-
-pub(crate) fn remove_stale_series(ctx: &Context, ids: &[SeriesRef]) {
-    if !ids.is_empty() {
-        let id = get_current_db(ctx);
-        let mut map = STALE_SERIES.lock().unwrap();
-        match map.entry(id) {
-            Entry::Occupied(mut entry) => {
-                entry.get_mut().extend(ids.iter().copied());
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(ids.to_vec());
-            }
-        }
-    }
 }
 
 pub fn process_expires_task() {
@@ -192,13 +172,14 @@ pub fn process_expires_task() {
     }
 }
 
+fn remove_stale_series_internal(db: i32) {
+    if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
+        index.remove_stale_ids();
+    }
+}
+
 pub fn process_remove_stale_series() {
-    let db_ids = {
-        let map = STALE_SERIES.lock().unwrap();
-        map.iter()
-            .filter_map(|(db, series)| if !series.is_empty() { Some(*db) } else { None })
-            .collect::<Vec<_>>()
-    };
+    let db_ids = get_used_dbs();
 
     if db_ids.is_empty() {
         return;
@@ -215,12 +196,62 @@ pub fn process_remove_stale_series() {
                 );
             }
             _ => {
-                let (db, rest) = db_ids.split_first().unwrap();
-                remove_stale_series_internal(*db);
-                run_internal(rest);
+                let mid = db_ids.len() / 2;
+                let (left, right) = db_ids.split_at(mid);
+                let _ = join(|| run_internal(left), || run_internal(right));
             }
         }
     }
 
     run_internal(&db_ids);
+}
+
+const BACKGROUND_WORKER_INTERVAL: u64 = 30000; // 5000
+
+struct StaticData {
+    timer_id: RedisModuleTimerID,
+    interval: Duration,
+}
+
+impl Default for StaticData {
+    fn default() -> Self {
+        Self {
+            timer_id: 0,
+            interval: Duration::from_millis(BACKGROUND_WORKER_INTERVAL),
+        }
+    }
+}
+
+lazy_static! {
+    static ref STATIC_DATA: ValkeyGILGuard<StaticData> = ValkeyGILGuard::new(StaticData::default());
+}
+
+pub(crate) fn start_series_background_worker(ctx: &Context) {
+    let mut static_data = STATIC_DATA.lock(ctx);
+    let timer_id = static_data.timer_id;
+    if timer_id == 0 {
+        static_data.timer_id =
+            ctx.create_timer(static_data.interval, series_worker_callback, 0usize);
+    }
+}
+
+pub(crate) fn stop_series_background_worker(ctx: &Context) {
+    let mut static_data = STATIC_DATA.lock(ctx);
+    let timer_id = static_data.timer_id;
+    if timer_id != 0 {
+        if ctx.stop_timer::<usize>(timer_id).is_err() {
+            let msg = format!("Failed to stop series timer {timer_id}. Timer may not exist",);
+            ctx.log_debug(&msg);
+        }
+        static_data.timer_id = 0;
+    }
+}
+
+fn series_worker_callback(ctx: &Context, _ignore: usize) {
+    ctx.log_debug("[series worker callback]: optimizing series indexes");
+    // use rayon threadpool to run off the main thread
+    // todo: run these on a dedicated schedule
+    rayon::spawn(optimize_all_timeseries_indexes);
+    rayon::spawn(process_expires_task);
+    rayon::spawn(process_remove_stale_series);
 }

@@ -2,6 +2,7 @@ use get_size::GetSize;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
+use valkey_module::ValkeyValue;
 
 pub type Timestamp = i64;
 pub type SampleValue = f64;
@@ -73,5 +74,15 @@ impl Hash for Sample {
 impl Display for Sample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} @ {}", self.value, self.timestamp)
+    }
+}
+
+impl From<Sample> for ValkeyValue {
+    fn from(sample: Sample) -> Self {
+        let row = vec![
+            ValkeyValue::from(sample.timestamp),
+            ValkeyValue::from(sample.value),
+        ];
+        ValkeyValue::from(row)
     }
 }

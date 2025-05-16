@@ -42,15 +42,16 @@ impl TimestampValue {
 
     pub fn as_series_timestamp(&self, series: &TimeSeries, now: Option<Timestamp>) -> Timestamp {
         use TimestampValue::*;
+
         match self {
-            Earliest => series.first_timestamp,
+            Earliest => series.get_min_timestamp(),
             Latest => series.last_timestamp(),
             Now => now.unwrap_or_else(current_time_millis),
             Specific(ts) => *ts,
-            Relative(delta) => now
-                .unwrap_or_else(current_time_millis)
-                .saturating_add(*delta)
-                .min(MAX_TIMESTAMP),
+            Relative(delta) => {
+                let now = now.unwrap_or_else(current_time_millis);
+                now.saturating_add(*delta).min(MAX_TIMESTAMP)
+            }
         }
     }
 }
@@ -61,36 +62,43 @@ impl TryFrom<&str> for TimestampValue {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         use crate::error_consts;
         use TimestampValue::*;
-        match value {
-            "-" => Ok(Earliest),
-            "+" => Ok(Latest),
-            "*" => Ok(Now),
-            _ => {
-                // ergonomics. Support something like TS.RANGE key -6hrs -3hrs
-                if let Some(ch) = value.chars().next() {
-                    if ch == '-' || ch == '+' {
-                        let value = &value[1..];
-                        let delta = if ch == '+' {
-                            parse_duration_ms(value)?
-                        } else {
-                            let positive = parse_duration_ms(value)?;
-                            -positive
-                        };
-                        return Ok(Relative(delta));
-                    }
-                }
-                let ts = parse_timestamp(value)
-                    .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
 
-                if ts < 0 {
-                    return Err(ValkeyError::Str(
-                        "ERR: invalid timestamp, must be a non-negative integer",
-                    ));
-                }
+        let len = value.len();
 
-                Ok(Specific(ts))
+        if len == 0 {
+            return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP));
+        }
+
+        if len == 1 {
+            match value {
+                "-" => return Ok(Earliest),
+                "+" => return Ok(Latest),
+                "*" => return Ok(Now),
+                _ => {}
             }
         }
+
+        // ergonomics. Support something like TS.RANGE key -6hrs -3hrs
+        if let Some(ch) = value.chars().next() {
+            if ch == '-' || ch == '+' {
+                let value = &value[1..];
+                let mut ms = parse_duration_ms(value)?;
+
+                if ch == '-' {
+                    ms = -ms;
+                }
+                return Ok(Relative(ms));
+            }
+        }
+
+        let ts = parse_timestamp(value, false)
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
+
+        if ts < 0 {
+            return Err(ValkeyError::Str(error_consts::NEGATIVE_TIMESTAMP));
+        }
+
+        Ok(Specific(ts))
     }
 }
 
@@ -213,6 +221,16 @@ impl TimestampRange {
         Ok(TimestampRange { start, end })
     }
 
+    pub fn from_timestamps(start: Timestamp, end: Timestamp) -> ValkeyResult<Self> {
+        if start > end {
+            return Err(ValkeyError::Str("ERR invalid timestamp range: start > end"));
+        }
+        Ok(TimestampRange {
+            start: TimestampValue::Specific(start),
+            end: TimestampValue::Specific(end),
+        })
+    }
+
     pub fn get_series_range(
         &self,
         series: &TimeSeries,
@@ -230,8 +248,7 @@ impl TimestampRange {
         };
 
         if check_retention && !series.retention.is_zero() {
-            let retention_ms = series.retention.as_millis() as i64;
-            let earliest = series.last_timestamp().saturating_sub(retention_ms);
+            let earliest = series.get_min_timestamp();
             start_timestamp = start_timestamp.max(earliest);
         }
 
@@ -326,29 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_range_value_try_from_positive_seconds() {
-        let input = "12345678";
-        let result = TimestampValue::try_from(input);
-        assert!(result.is_ok());
-        let expected = TimestampValue::Specific(12345678000);
-        assert_eq!(result.unwrap(), expected);
-    }
-
-    #[test]
     fn test_timestamp_range_value_try_from_positive_number() {
         let input = "12345678900";
         let result = TimestampValue::try_from(input);
         assert!(result.is_ok());
         let expected = TimestampValue::Specific(12345678900);
-        assert_eq!(result.unwrap(), expected);
-    }
-
-    #[test]
-    fn test_timestamp_range_value_try_from_negative_seconds() {
-        let input = "-12345678";
-        let result = TimestampValue::try_from(input);
-        assert!(result.is_ok());
-        let expected = TimestampValue::Relative(-12345678000);
         assert_eq!(result.unwrap(), expected);
     }
 

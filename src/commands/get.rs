@@ -1,0 +1,19 @@
+use crate::series::with_timeseries;
+use valkey_module::ValkeyError::WrongArity;
+use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
+
+/// TS.GET key
+pub fn get(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    let mut args = args.into_iter().skip(1);
+    if let Ok(key) = args.next_arg() {
+        args.done()?;
+
+        let sample = with_timeseries(ctx, &key, true, move |series| Ok(series.last_sample))?;
+        Ok(match sample {
+            Some(sample) => sample.into(),
+            None => ValkeyValue::Array(vec![]),
+        })
+    } else {
+        Err(WrongArity)
+    }
+}

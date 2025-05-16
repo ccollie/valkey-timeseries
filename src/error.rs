@@ -25,7 +25,7 @@ pub enum TsdbError {
     #[error("Decompression error. {0}")]
     CannotDecompress(String),
 
-    #[error("Duplicate sample. {0}")] // need better error
+    #[error("Duplicate sample. {0}")] // need a better error
     DuplicateSample(String),
 
     #[error("Invalid metric: {0}")]

@@ -17,7 +17,7 @@ pub enum Token {
     #[token("or", ignore(ascii_case))]
     OpOr,
 
-    #[regex(r"[_a-zA-Z][_a-zA-Z0-9:\.]*")]
+    #[regex(r"[_a-zA-Z][_a-zA-Z0-9:\.\-]*")]
     Identifier,
 
     #[regex(r#"'(?s:[^'\\]|\\.)*'"#)]
@@ -273,6 +273,14 @@ mod tests {
           [
             Identifier=>"foo",
             Identifier=>"bar123",
+          ]
+        );
+
+        // accept dashes in label names
+        test_tokens!(
+          "foo-bar",
+          [
+            Identifier=>"foo-bar",
           ]
         );
     }

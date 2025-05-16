@@ -2,7 +2,7 @@ use crate::common::binary_search::{find_last_ge_index, ExponentialSearch};
 use crate::common::constants::VEC_BASE_SIZE;
 use crate::common::parallel::join;
 use crate::common::pool::{get_pooled_vec_f64, get_pooled_vec_i64, PooledVecF64, PooledVecI64};
-use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
@@ -111,10 +111,13 @@ impl PcoChunk {
 
         // then we compress in parallel
         // TODO: handle errors
-        let _ = join(
-            || compress_timestamps(&mut t_data, timestamps).ok(),
-            || compress_values(&mut v_data, values).ok(),
+        let (ts_result, value_result) = join(
+            || compress_timestamps(&mut t_data, timestamps),
+            || compress_values(&mut v_data, values),
         );
+
+        ts_result?;
+        value_result?;
 
         // then we put the buffers back
         self.timestamps = t_data;
@@ -145,17 +148,12 @@ impl PcoChunk {
         timestamps.reserve(self.count);
         values.reserve(self.count);
         // todo: dynamically calculate cutoff or just use chili
-        if self.values.len() > 2048 {
-            // todo: return errors as appropriate
-            let _ = join(
-                || decompress_timestamps(&self.timestamps, timestamps).ok(),
-                || decompress_values(&self.values, values).ok(),
-            );
-        } else {
-            decompress_timestamps(&self.timestamps, timestamps)?;
-            decompress_values(&self.values, values)?;
-        }
-        Ok(())
+        let (timestamps, values) = join(
+            || decompress_timestamps(&self.timestamps, timestamps),
+            || decompress_values(&self.values, values),
+        );
+        timestamps?;
+        values
     }
 
     #[cfg(test)]

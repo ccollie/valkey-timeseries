@@ -1,4 +1,4 @@
-use crate::common::serialization::*;
+use crate::common::rdb::*;
 use crate::common::Sample;
 use crate::labels::InternedMetricName;
 use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
@@ -61,6 +61,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
         total_samples,
         first_timestamp,
         last_sample,
+        _db: 0,
     };
 
     // ts.update_meta();

@@ -1,19 +1,11 @@
-use crate::aggregators::{AggOp, Aggregator, BucketAlignment, BucketTimestamp};
+use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
-use smallvec::{smallvec, SmallVec};
-
-#[derive(Debug, Clone)]
-pub struct AggregationOptions {
-    pub aggregator: Aggregator,
-    pub bucket_duration: u64,
-    pub timestamp_output: BucketTimestamp,
-    pub alignment: BucketAlignment,
-    pub report_empty: bool,
-}
+use crate::series::request_types::AggregationOptions;
+use std::collections::VecDeque;
 
 /// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]
-pub struct AggregationHelper {
+struct AggregationHelper {
     aggregator: Aggregator,
     bucket_duration: u64,
     bucket_ts: BucketTimestamp,
@@ -21,6 +13,8 @@ pub struct AggregationHelper {
     bucket_range_end: Timestamp,
     aligned_timestamp: Timestamp,
     last_value: f64,
+    all_nans: bool,
+    count: usize,
     report_empty: bool,
 }
 
@@ -29,18 +23,20 @@ impl AggregationHelper {
         AggregationHelper {
             aligned_timestamp,
             report_empty: options.report_empty,
-            aggregator: options.aggregator.clone(),
+            aggregator: options.aggregation.into(),
             bucket_duration: options.bucket_duration,
             bucket_ts: options.timestamp_output,
             bucket_range_start: 0,
             bucket_range_end: 0,
             last_value: f64::NAN,
+            all_nans: true,
+            count: 0,
         }
     }
 
     fn add_empty_buckets(
         &self,
-        samples: &mut SmallVec<Sample, 6>,
+        samples: &mut VecDeque<Sample>,
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
@@ -54,7 +50,7 @@ impl AggregationHelper {
         samples.reserve(count);
 
         for timestamp in (start..end).step_by(self.bucket_duration as usize) {
-            samples.push(Sample { timestamp, value });
+            samples.push_back(Sample { timestamp, value });
         }
     }
 
@@ -75,16 +71,25 @@ impl AggregationHelper {
     }
 
     fn finalize_internal(&mut self) -> Sample {
-        let value = self.aggregator.finalize();
+        let value = if self.all_nans {
+            if self.count == 0 {
+                self.aggregator.empty_value()
+            } else {
+                f64::NAN
+            }
+        } else {
+            self.aggregator.finalize()
+        };
         let timestamp = self.calculate_bucket_start();
         self.aggregator.reset();
+        self.all_nans = true;
         Sample { timestamp, value }
     }
 
     fn finalize_bucket(
         &mut self,
         last_ts: Option<Timestamp>,
-        empty_buckets: &mut SmallVec<Sample, 6>,
+        empty_buckets: &mut VecDeque<Sample>,
     ) -> Sample {
         let bucket = self.finalize_internal();
         if self.report_empty {
@@ -98,12 +103,17 @@ impl AggregationHelper {
         } else {
             self.advance_current_bucket();
         }
+        self.count = 0;
         bucket
     }
 
     fn update(&mut self, value: f64) {
-        self.aggregator.update(value);
-        self.last_value = value;
+        if !value.is_nan() {
+            self.aggregator.update(value);
+            self.last_value = value;
+            self.all_nans = false;
+        }
+        self.count += 1;
     }
 
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
@@ -136,9 +146,8 @@ pub fn aggregate(
 pub struct AggregateIterator<T: Iterator<Item = Sample>> {
     inner: T,
     aggregator: AggregationHelper,
-    empty_buckets: SmallVec<Sample, 6>,
+    empty_buckets: VecDeque<Sample>,
     init: bool,
-    count: usize,
 }
 
 impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
@@ -147,26 +156,14 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
         Self {
             inner,
             aggregator,
-            empty_buckets: smallvec![],
+            empty_buckets: VecDeque::new(),
             init: false,
-            count: 0,
         }
-    }
-
-    fn update(&mut self, value: f64) {
-        self.aggregator.update(value);
-        self.count += 1;
     }
 
     fn finalize_bucket(&mut self, last_ts: Option<Timestamp>) -> Sample {
-        let bucket = self
-            .aggregator
-            .finalize_bucket(last_ts, &mut self.empty_buckets);
-        if !self.empty_buckets.is_empty() {
-            self.empty_buckets.reverse();
-        }
-        self.count = 0;
-        bucket
+        self.aggregator
+            .finalize_bucket(last_ts, &mut self.empty_buckets)
     }
 }
 
@@ -174,8 +171,8 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // First return any empty buckets if available
-        if let Some(sample) = self.empty_buckets.pop() {
+        // First, return any empty buckets if available
+        if let Some(sample) = self.empty_buckets.pop_front() {
             return Some(sample);
         }
 
@@ -184,7 +181,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
             if let Some(sample) = self.inner.next() {
                 self.init = true;
                 self.aggregator.update_bucket_timestamps(sample.timestamp);
-                self.update(sample.value);
+                self.aggregator.update(sample.value);
             } else {
                 return None; // Empty input stream
             }
@@ -194,14 +191,14 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
         while let Some(sample) = self.inner.next() {
             if self.aggregator.should_finalize_bucket(sample.timestamp) {
                 let bucket = self.finalize_bucket(Some(sample.timestamp));
-                self.update(sample.value);
+                self.aggregator.update(sample.value);
                 return Some(bucket);
             }
-            self.update(sample.value);
+            self.aggregator.update(sample.value);
         }
 
         // Handle the final bucket if we haven't processed it yet
-        if self.count > 0 {
+        if self.aggregator.count > 0 {
             return Some(self.finalize_bucket(None));
         }
 
@@ -212,7 +209,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregators::{Aggregator, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
 
     fn create_test_samples() -> Vec<Sample> {
@@ -227,9 +224,9 @@ mod tests {
         ]
     }
 
-    fn create_options(aggregator: Aggregator) -> AggregationOptions {
+    fn create_options(aggregator: Aggregation) -> AggregationOptions {
         AggregationOptions {
-            aggregator,
+            aggregation: aggregator,
             bucket_duration: 10,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -240,7 +237,7 @@ mod tests {
     #[test]
     fn test_sum_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Sum(Default::default()));
+        let options = create_options(Aggregation::Sum);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -264,7 +261,7 @@ mod tests {
     #[test]
     fn test_avg_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Avg(Default::default()));
+        let options = create_options(Aggregation::Avg);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -278,7 +275,7 @@ mod tests {
     #[test]
     fn test_max_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Max(Default::default()));
+        let options = create_options(Aggregation::Max);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -292,7 +289,7 @@ mod tests {
     #[test]
     fn test_min_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Min(Default::default()));
+        let options = create_options(Aggregation::Min);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -306,7 +303,7 @@ mod tests {
     #[test]
     fn test_count_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregator::Count(Default::default()));
+        let options = create_options(Aggregation::Count);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -329,7 +326,7 @@ mod tests {
             Sample::new(50, 6.0),
         ];
 
-        let mut options = create_options(Aggregator::Sum(Default::default()));
+        let mut options = create_options(Aggregation::Sum);
         options.report_empty = true;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -359,7 +356,7 @@ mod tests {
             Sample::new(50, 6.0),
         ];
 
-        let mut options = create_options(Aggregator::Last(Default::default()));
+        let mut options = create_options(Aggregation::Last);
         options.report_empty = true;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -381,7 +378,7 @@ mod tests {
     #[test]
     fn test_bucket_timestamp_end() {
         let samples = create_test_samples();
-        let mut options = create_options(Aggregator::Sum(Default::default()));
+        let mut options = create_options(Aggregation::Sum);
         options.timestamp_output = BucketTimestamp::End;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -396,7 +393,7 @@ mod tests {
     #[test]
     fn test_bucket_timestamp_mid() {
         let samples = create_test_samples();
-        let mut options = create_options(Aggregator::Sum(Default::default()));
+        let mut options = create_options(Aggregation::Sum);
         options.timestamp_output = BucketTimestamp::Mid;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -411,7 +408,7 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let samples: Vec<Sample> = vec![];
-        let options = create_options(Aggregator::Sum(Default::default()));
+        let options = create_options(Aggregation::Sum);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -430,7 +427,7 @@ mod tests {
     //         Sample::new(32, 4.0),
     //     ];
     //
-    //     let options = create_options(Aggregator::Sum(Default::default()));
+    //     let options = create_options(Aggregator::Sum);
     //
     //     let iterator = AggregateIterator::new(
     //         samples.into_iter(),

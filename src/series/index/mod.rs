@@ -4,25 +4,25 @@ mod index_key;
 mod memory_postings;
 mod posting_stats;
 mod querier;
-#[cfg(test)]
-mod querier_tests;
 mod timeseries_index;
 
 use crate::common::db::get_current_db;
 use papaya::{Guard, HashMap};
 use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
-use crate::arg_types::MatchFilterOptions;
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
-use crate::error_consts;
-use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::TimeSeries;
+use crate::series::request_types::MatchFilterOptions;
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
+use crate::series::{check_key_permissions, TimeSeries};
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
+
+#[cfg(test)]
+mod querier_tests;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
@@ -61,6 +61,7 @@ pub fn with_matched_series<F, STATE>(
     ctx: &Context,
     acc: &mut STATE,
     filter: &MatchFilterOptions,
+    acls: Option<AclPermissions>,
     mut f: F,
 ) -> ValkeyResult<()>
 where
@@ -68,7 +69,13 @@ where
 {
     let keys = series_keys_by_matchers(ctx, &filter.matchers, None)?;
     if keys.is_empty() {
-        return Err(ValkeyError::Str(error_consts::NO_SERIES_FOUND));
+        return Ok(());
+    }
+    if let Some(acls) = acls {
+        let perm = &acls;
+        for key in &keys {
+            check_key_permissions(ctx, key, perm)?;
+        }
     }
 
     let now = Some(current_time_millis());
@@ -80,7 +87,7 @@ where
             Ok(Some(series)) => {
                 if let Some(range) = filter.date_range {
                     let (start, end) = range.get_series_range(series, now, true);
-                    if series.overlaps(start, end) {
+                    if series.has_samples_in_range(start, end) {
                         f(acc, series, key);
                     }
                 } else {
@@ -97,9 +104,13 @@ where
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {
-    with_timeseries_index(ctx, |index| {
-        index.clear();
-    })
+    let db = get_current_db(ctx);
+    let map = TIMESERIES_INDEX.pin();
+    if map.remove(&db).is_some() && map.is_empty() {
+        // if we removed indices for all dbs, we need to reset the id
+        // to 0 so that we can start from 1 again
+        reset_timeseries_id(0);
+    }
 }
 
 pub fn clear_all_timeseries_indexes() {

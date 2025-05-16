@@ -10,13 +10,15 @@ description = "A Timeseries data type for Valkey"
 [dependencies]
 ahash = { version = "0.8", features = ["std", "serde"] }
 blart = "0.3"
-bon = "3.5"
+bon = "3.6"
 byte-pool = "0.2"
 cfg-if = "1.0.0"
 chili = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 croaring = "2.3"
 enquote = "1.1"
+enum_dispatch = "0.3"
+flatbuffers = "25.2"
 get-size = { version = "^0.1", features = ["derive"] }
 hashify = { version = "^0.2" }
 linkme = "0.3.32"
@@ -27,10 +29,11 @@ joinkit = "0.2.0"
 lazy_static = "1.5.0"
 papaya = "0.2"
 pco = "0.4"
-rand = "0.9"
+rand = { version = "0.9", features = ["small_rng"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
+snowdon = "0.2.0"
 thiserror = "2.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"
@@ -57,6 +60,7 @@ lto = true            # Link-time optimization
 codegen-units = 1     # Better optimization (slower compile)
 opt-level = 3         # Maximum optimization
 panic = "abort"       # Smaller binary size
+strip = true
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]

@@ -1,16 +1,17 @@
-### TS.CARD
+**TS.CARD** counts the number of distinct series.
 
 #### Syntax
-
 ```
-TS.CARD FILTER filter... [START fromTimestamp] [END toTimestamp]
+TS.CARD [START fromTimestamp] [END toTimestamp] [FILTER filter...]
 ```
 returns the number of unique time series that match a certain label set.
+
+Without arguments, it returns the number of unique time series in the database.
 
 ### Required arguments
 
 <details open><summary><code>filter</code></summary>
-Repeated series selector argument that selects the series to return. At least one filter argument must be provided.
+Repeated series selector argument that selects the series to return. Optional.
 </details>
 
 ### Optional Arguments

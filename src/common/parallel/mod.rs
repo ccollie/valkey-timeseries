@@ -1,3 +1,6 @@
+use crate::common::parallel::items::{IntoItems, Items};
+/// Copyright (c) 2023-present, The SWC authors. All rights reserved
+/// Licensed under the Apache License, Version 2.0 (the "License");
 use std::{cell::RefCell, mem::transmute};
 
 pub mod items;
@@ -31,12 +34,12 @@ impl<'a> MaybeScope<'a> {
     {
         let scope: &mut chili::Scope = match &mut self.0 {
             ScopeLike::Scope(scope) => unsafe {
-                // Safety: chili Scope will be alive until the end of the function, because it's
+                // Safety: chili Scope will be alive until the end of the function, because its
                 // contract of 'a lifetime in the type.
                 transmute::<&mut chili::Scope, &mut chili::Scope>(&mut scope.0)
             },
             ScopeLike::Global(global_scope) => {
-                // Initialize global scope lazily, and only once.
+                // Initialize the global scope lazily, and only once.
                 let scope = global_scope.get_or_insert_with(|| chili::Scope::global());
 
                 unsafe {
@@ -153,3 +156,99 @@ where
 
     (ra, rb)
 }
+
+pub trait Parallel: Send + Sync {
+    /// Used to create visitor.
+    fn create(&self) -> Self;
+
+    /// This can be called in anytime.
+    fn merge(&mut self, other: Self);
+}
+
+pub trait ParallelExt {
+    /// Invoke `op` in parallel if the concurrent feature is enabled and `nodes.len()` is bigger than
+    /// a threshold.
+    fn maybe_par<I, F>(&mut self, threshold: usize, nodes: I, op: F)
+    where
+        I: IntoItems,
+        F: Send + Sync + Fn(&mut Self, I::Elem),
+    {
+        self.maybe_par_idx(threshold, nodes, |v, _, n| op(v, n))
+    }
+
+    /// Invoke `op` in parallel, if compiled with the concurrent feature enabled and `nodes.len()` is
+    /// larger than a threshold.
+    ///
+    fn maybe_par_idx<I, F>(&mut self, threshold: usize, nodes: I, op: F)
+    where
+        I: IntoItems,
+        F: Send + Sync + Fn(&mut Self, usize, I::Elem),
+    {
+        self.maybe_par_idx_raw(threshold, nodes.into_items(), &op)
+    }
+
+    /// If you don't have a special reason, use [`Parallel::maybe_par`] or
+    /// [`Parallel::maybe_par_idx`] instead.
+    fn maybe_par_idx_raw<I, F>(&mut self, threshold: usize, nodes: I, op: &F)
+    where
+        I: Items,
+        F: Send + Sync + Fn(&mut Self, usize, I::Elem);
+}
+
+// #[cfg(feature = "concurrent")]
+impl<T> ParallelExt for T
+where
+    T: Parallel,
+{
+    fn maybe_par_idx_raw<I, F>(&mut self, threshold: usize, nodes: I, op: &F)
+    where
+        I: Items,
+        F: Send + Sync + Fn(&mut Self, usize, I::Elem),
+    {
+        if nodes.len() >= threshold {
+            let len = nodes.len();
+            if len == 0 {
+                return;
+            }
+
+            if len == 1 {
+                op(self, 0, nodes.into_iter().next().unwrap());
+                return;
+            }
+
+            let (na, nb) = nodes.split_at(len / 2);
+            let mut vb = Parallel::create(&*self);
+            let (_, vb) = join(
+                || self.maybe_par_idx_raw(threshold, na, op),
+                || {
+                    vb.maybe_par_idx_raw(threshold, nb, op);
+                    vb
+                },
+            );
+
+            Parallel::merge(self, vb);
+
+            return;
+        }
+
+        for (idx, n) in nodes.into_iter().enumerate() {
+            op(self, idx, n);
+        }
+    }
+}
+
+// #[cfg(not(feature = "concurrent"))]
+// impl<T> Parallel for T
+// where
+//     T: Parallel,
+// {
+//     fn maybe_par_idx_raw<I, F>(&mut self, _threshold: usize, nodes: I, op: &F)
+//     where
+//         I: Items,
+//         F: Send + Sync + Fn(&mut Self, usize, I::Elem),
+//     {
+//         for (idx, n) in nodes.into_iter().enumerate() {
+//             op(self, idx, n);
+//         }
+//     }
+// }

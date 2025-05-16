@@ -278,4 +278,91 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn test_parse_series_selector_with_quoted_labels() {
+        let input = r#"{"metric.name"="value", "label-with-dash"="foo", "quoted.label"=~"val.*"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert!(result.name.is_none());
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 3);
+
+            assert_matcher(&matchers[0], "metric.name", MatchOp::Equal, "value");
+            assert_matcher(&matchers[1], "label-with-dash", MatchOp::Equal, "foo");
+            assert_matcher(&matchers[2], "quoted.label", MatchOp::RegexEqual, "val.*");
+        });
+    }
+
+    #[test]
+    fn test_parse_series_selector_with_escaped_quotes() {
+        let input =
+            r#"{"metric.name"="value", "label-with-dash"="foo", "quoted.label"=~"val\".*"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert!(result.name.is_none());
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 3);
+
+            assert_matcher(&matchers[0], "metric.name", MatchOp::Equal, "value");
+            assert_matcher(&matchers[1], "label-with-dash", MatchOp::Equal, "foo");
+            assert_matcher(
+                &matchers[2],
+                "quoted.label",
+                MatchOp::RegexEqual,
+                r##"val".*"##,
+            );
+        });
+    }
+
+    #[test]
+    fn test_parse_single_identifier_matcher() {
+        let input = r#"{"foo"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert_eq!(result.name, Some("foo".to_string()));
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 0);
+        });
+    }
+
+    #[test]
+    fn test_parse_single_identifier_matcher_with_normal() {
+        let input = r#"{"foo", a="bc"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert_eq!(result.name, Some("foo".to_string()));
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 1);
+            assert_matcher(&matchers[0], "a", MatchOp::Equal, "bc");
+        });
+    }
+
+    #[test]
+    fn test_parse_reserved_symbols_as_labels() {
+        let input = r#"foo{NaN="inf"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert_eq!(result.name, Some("foo".to_string()));
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 1);
+            assert_matcher(&matchers[0], "NaN", MatchOp::Equal, "inf");
+        });
+    }
+
+    #[test]
+    fn test_parse_metric_name_in_the_middle_of_selector_list() {
+        let input = r#"{a="b", foo!="bar", "metric_name", test=~"test", bar!~"baz"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert_eq!(result.name, Some("metric_name".to_string()));
+
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 4);
+            assert_matcher(&matchers[0], "a", MatchOp::Equal, "b");
+            assert_matcher(&matchers[1], "foo", MatchOp::NotEqual, "bar");
+            assert_matcher(&matchers[2], "test", MatchOp::RegexEqual, "test");
+            assert_matcher(&matchers[3], "bar", MatchOp::RegexNotEqual, "baz");
+        });
+    }
 }

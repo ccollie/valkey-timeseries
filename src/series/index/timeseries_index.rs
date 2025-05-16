@@ -2,15 +2,14 @@ use ahash::AHashMap;
 use std::collections::hash_map::Entry;
 use std::sync::RwLock;
 
-use super::memory_postings::{
-    MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY, ALL_POSTINGS_KEY_NAME,
-};
+use super::memory_postings::{MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::{InternedLabel, Label, SeriesLabel};
 use crate::series::{SeriesRef, TimeSeries};
 use get_size::GetSize;
+use std::mem::size_of;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub struct TimeSeriesIndex {
@@ -39,6 +38,7 @@ impl TimeSeriesIndex {
         }
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut inner = self.inner.write().unwrap();
         inner.clear();
@@ -165,6 +165,8 @@ impl TimeSeriesIndex {
             }
         }
 
+        let series_count = self.count() as u64;
+
         PostingsStats {
             cardinality_metrics_stats: metrics.into_vec(),
             cardinality_label_stats: labels.into_vec(),
@@ -172,6 +174,7 @@ impl TimeSeriesIndex {
             label_value_pairs_stats: label_value_pairs.into_vec(),
             num_label_pairs,
             num_labels,
+            series_count,
         }
     }
 
@@ -207,98 +210,48 @@ impl TimeSeriesIndex {
         f(&mut inner, state)
     }
 
-    pub fn slow_rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
-        // this is split in two parts because we need to do a linear scan on the id->key
-        // map to find the id for the old key. We hold a write lock only for the update
-        let id = {
-            let inner = self.inner.read().unwrap();
-            inner.get_id_for_key(old_key)
-        };
-        if let Some(id) = id {
-            let mut inner = self.inner.write().unwrap();
-            inner.set_timeseries_key(id, new_key);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize {
-        const BATCH_SIZE: usize = 500;
-
+    pub fn rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
         let mut inner = self.inner.write().unwrap();
-        let all_postings = inner
-            .label_index
-            .get_mut(&*ALL_POSTINGS_KEY)
-            .expect("ALL_POSTINGS_KEY should always exist");
-
-        let old_count = all_postings.cardinality();
-        all_postings.remove_all(ids.iter().cloned());
-        let removed_count = old_count - all_postings.cardinality();
-
-        inner.id_to_key.retain(|id, _| !ids.contains(id));
-
-        let range = inner.get_key_range();
-
-        // we process in batches to avoid holding the lock for too long
-        if let Some((start, end)) = range {
-            let end = end.clone();
-            let mut current_start = start.clone();
-            let mut keys_to_remove = Vec::new();
-
-            drop(inner);
-
-            loop {
-                let mut i: usize = 0;
-                let mut inner = self.inner.write().unwrap();
-
-                for (key, bmp) in inner
-                    .label_index
-                    .range_mut(current_start.clone()..=end.clone())
-                {
-                    let count = bmp.cardinality();
-                    bmp.remove_all(ids.iter().cloned());
-                    if bmp.cardinality() != count
-                        && bmp.is_empty()
-                        && key.as_str() != ALL_POSTINGS_KEY.as_str()
-                    {
-                        keys_to_remove.push(key.clone());
-                    }
-                    i += 1;
-                    if i == BATCH_SIZE {
-                        current_start = key.clone();
-                        continue;
-                    }
-                }
-
-                // If we processed less than BATCH_SIZE items, we're done
-                if i < BATCH_SIZE {
-                    break;
-                }
-
-                drop(inner);
-            }
-
-            if !keys_to_remove.is_empty() {
-                let mut inner = self.inner.write().unwrap();
-                for key in keys_to_remove {
-                    inner.label_index.remove(&key);
-                }
-            }
-        }
-        removed_count as usize
+        inner.rename_series_key(old_key, new_key).is_some()
     }
 
-    pub fn slow_remove_series_by_key(&self, key: &[u8]) -> bool {
-        let id = {
-            let inner = self.inner.read().unwrap();
-            inner.get_id_for_key(key)
-        };
-        if let Some(id) = id {
-            let removed = self.slow_remove_series_by_ids(&[id]);
-            return removed > 0;
+    /// Immediately after a series is removed, it's data still exist in the index. This function marks the key as stale, so the index
+    /// can be cleaned up lazily. This is a workaround for the fact that we don't have access to the series data when the server 'del'
+    /// and associated events are triggered.
+    pub fn mark_key_as_stale(&self, key: &[u8]) {
+        let mut inner = self.inner.write().unwrap();
+        inner.mark_key_as_stale(key);
+    }
+
+    pub fn mark_id_as_stale(&self, id: SeriesRef) {
+        let mut inner = self.inner.write().unwrap();
+        inner.mark_id_as_stale(id);
+    }
+
+    pub fn remove_stale_ids(&self) -> usize {
+        const BATCH_SIZE: usize = 100;
+
+        let inner = self.inner.write().expect("TimeSeries lock poisoned");
+        if !inner.has_stale_ids() {
+            return 0; // No stale IDs to remove
         }
-        false
+
+        let old_count = inner.count();
+
+        let mut cursor = None;
+        loop {
+            let mut inner = self.inner.write().expect("TimeSeries lock poisoned");
+            match inner.remove_stale_ids(cursor, BATCH_SIZE) {
+                Some(new_cursor) => {
+                    cursor = Some(new_cursor);
+                }
+                None => {
+                    break; // No more stale IDs to remove
+                }
+            }
+        }
+
+        inner.count() - old_count
     }
 
     pub fn optimize(&self) {

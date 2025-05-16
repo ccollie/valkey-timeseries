@@ -166,19 +166,15 @@ impl Iterator for ChunkSampleIterator<'_> {
 
 pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
     fn get_error_result() -> TsdbResult<()> {
-        let msg = format!("ERR: CHUNK_SIZE value must be a multiple of 2 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
+        let msg = format!("TSDB: CHUNK_SIZE value must be a multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
         Err(TsdbError::InvalidConfiguration(msg))
     }
 
-    if chunk_size_bytes < MIN_CHUNK_SIZE {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size_bytes) {
         return get_error_result();
     }
 
-    if chunk_size_bytes > MAX_CHUNK_SIZE {
-        return get_error_result();
-    }
-
-    if chunk_size_bytes % 2 != 0 {
+    if chunk_size_bytes % 8 != 0 {
         return get_error_result();
     }
 

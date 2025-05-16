@@ -198,6 +198,14 @@ impl RegexMatcher {
     }
 }
 
+impl TryFrom<&str> for RegexMatcher {
+    type Error = ParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::create(value)
+    }
+}
+
 impl Display for RegexMatcher {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", enquote('"', &self.value))
@@ -425,7 +433,7 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
     matches_empty || re.is_match("")
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, Hash, PartialEq)]
 pub enum MatcherSetEnum {
     Or(Vec<Vec<Matcher>>),
     And(Vec<Matcher>),
@@ -449,7 +457,7 @@ impl MatcherSetEnum {
                     for (i, matcher) in and_matchers.iter_mut().enumerate() {
                         if matcher.is_metric_name_filter() {
                             if name.is_none() {
-                                name = matcher.regex_text().map(|text| text.to_string())
+                                name = matcher.text().map(|text| text.to_string())
                             }
                             and_matchers.remove(i);
                             break;
@@ -479,7 +487,7 @@ impl MatcherSetEnum {
         // if we have a __name__ filter, we need to ensure that all matchers have the same name
         // if so, we pull out the name and return it while removing the __name__ filter from all matchers
 
-        // track name filters. Use Smallvec instead of HashSet to avoid allocations
+        // Track name filters. Use Smallvec instead of HashSet to avoid allocations
         let mut to_remove: SmallVec<(usize, usize, bool), 4> = SmallVec::new();
 
         let name = {
@@ -558,7 +566,7 @@ impl Default for MatcherSetEnum {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Matchers {
     pub name: Option<String>,
     pub matchers: MatcherSetEnum,
@@ -601,7 +609,7 @@ impl Hash for Matchers {
         }
         if !self.matchers.is_empty() {
             state.write_u8(MATCHER_HASH_ID);
-            // constants added here since an empty Vec<Matcher> is equivalent tp an empty Vec<Vec<Matcher>>()
+            // constants added here since an empty Vec<Matcher> is equivalent to an empty Vec<Vec<Matcher>>()
             match &self.matchers {
                 MatcherSetEnum::Or(_) => {
                     state.write_u8(OR_HASH_ID);
@@ -644,4 +652,27 @@ fn join_matchers(f: &mut Formatter<'_>, v: &[Matcher]) -> fmt::Result {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::labels::matchers::RegexMatcher;
+
+    #[test]
+    fn test_match_anchoring() {
+        // Test anchoring behavior - should match full string only
+        let matcher = RegexMatcher::create("abc.*").unwrap();
+        assert!(matcher.is_match("abc123"));
+        assert!(!matcher.is_match("xabc123"));
+
+        let matcher = RegexMatcher::create(".*xyz$").unwrap();
+        assert!(matcher.is_match("123xyz"));
+        assert!(!matcher.is_match("123xyzx"));
+
+        let matcher = RegexMatcher::create("abc").unwrap();
+
+        assert!(matcher.is_match("abc"));
+        assert!(!matcher.is_match("xabc"));
+        assert!(!matcher.is_match("abcx"));
+    }
 }

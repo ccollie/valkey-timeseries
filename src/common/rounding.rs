@@ -32,7 +32,7 @@ impl Display for RoundingStrategy {
     }
 }
 
-/// rounds f to the given number of decimal digits after the point.
+/// Rounds f to the given number of decimal digits after the point.
 ///
 /// See also round_to_sig_figs.
 pub fn round_to_decimal_digits(f: f64, digits: i32) -> f64 {

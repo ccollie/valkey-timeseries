@@ -3,26 +3,40 @@ use joinkit::EitherOrBoth;
 use std::fmt::Display;
 use std::time::Duration;
 
-pub mod asof;
-mod join_asof_iter;
-mod join_full_iter;
+mod asof;
 mod join_handler;
-mod join_inner_iter;
 mod join_iter;
-mod join_left_exclusive_iter;
-mod join_left_iter;
-pub(crate) mod join_reducer;
-mod join_right_exclusive_iter;
+pub mod join_reducer;
 mod join_right_iter;
 
-use crate::aggregators::AggregationOptions;
+#[cfg(test)]
+mod join_handler_tests;
+pub mod sorted_join_semi;
+
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
-use crate::join::asof::AsOfJoinStrategy;
 use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
+
+use crate::join::sorted_join_semi::SortedJoinSemiBy;
+use crate::series::request_types::AggregationOptions;
+pub(super) use asof::{AsofJoinStrategy, JoinAsOfIter};
+
+pub trait JoinkitExt: Iterator {
+    fn join_semi<K, I, R, F>(self, right: R, key_fn: F) -> SortedJoinSemiBy<Self, R::IntoIter, K, F>
+    where
+        Self: Sized + Iterator<Item = I>,
+        R: IntoIterator<Item = I>,
+        K: Eq + Ord + Clone,
+        F: FnMut(&I) -> K + Clone,
+    {
+        SortedJoinSemiBy::new(self, right, key_fn)
+    }
+}
+
+impl<T: ?Sized> JoinkitExt for T where T: Iterator {}
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct JoinValue {
@@ -56,8 +70,8 @@ impl JoinValue {
     }
 }
 
-impl From<&EitherOrBoth<&Sample, &Sample>> for JoinValue {
-    fn from(value: &EitherOrBoth<&Sample, &Sample>) -> Self {
+impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
+    fn from(value: EitherOrBoth<&Sample, &Sample>) -> Self {
         match value {
             EitherOrBoth::Both(l, r) => {
                 let mut value = Self::both(l.timestamp, l.value, r.value);
@@ -70,36 +84,53 @@ impl From<&EitherOrBoth<&Sample, &Sample>> for JoinValue {
     }
 }
 
-impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
-    fn from(value: EitherOrBoth<&Sample, &Sample>) -> Self {
-        (&value).into()
+impl From<EitherOrBoth<Sample, Sample>> for JoinValue {
+    fn from(value: EitherOrBoth<Sample, Sample>) -> Self {
+        convert_join_item(value)
     }
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+impl PartialOrd for JoinValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.timestamp.cmp(&other.timestamp))
+    }
+}
+
+impl Ord for JoinValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp.cmp(&other.timestamp)
+    }
+}
+
+impl Eq for JoinValue {}
+
+#[derive(Clone, Debug, Copy, PartialEq)]
+pub struct AsOfJoinOptions {
+    pub strategy: AsofJoinStrategy,
+    pub tolerance: Duration,
+    pub allow_exact_match: bool,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum JoinType {
-    Left(bool),
-    Right(bool),
+    Left,
+    Right,
     #[default]
     Inner,
     Full,
-    AsOf(AsOfJoinStrategy, Duration),
+    Semi,
+    Anti,
+    AsOf(AsOfJoinOptions),
 }
 
 impl Display for JoinType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JoinType::Left(exclusive) => {
+            JoinType::Left => {
                 write!(f, "LEFT OUTER JOIN")?;
-                if *exclusive {
-                    write!(f, " EXCLUSIVE")?;
-                }
             }
-            JoinType::Right(exclusive) => {
+            JoinType::Right => {
                 write!(f, "RIGHT OUTER JOIN")?;
-                if *exclusive {
-                    write!(f, " EXCLUSIVE")?;
-                }
             }
             JoinType::Inner => {
                 write!(f, "INNER JOIN")?;
@@ -107,14 +138,19 @@ impl Display for JoinType {
             JoinType::Full => {
                 write!(f, "FULL JOIN")?;
             }
-            JoinType::AsOf(dir, tolerance) => {
-                write!(f, "ASOF JOIN")?;
-                match dir {
-                    AsOfJoinStrategy::Next => write!(f, " NEXT")?,
-                    AsOfJoinStrategy::Prior => write!(f, " PRIOR")?,
+            JoinType::Semi => {
+                write!(f, "SEMI JOIN")?;
+            }
+            JoinType::Anti => {
+                write!(f, "ANTI JOIN")?;
+            }
+            JoinType::AsOf(ref options) => {
+                write!(f, "ASOF JOIN {}", options.strategy)?;
+                if !options.tolerance.is_zero() {
+                    write!(f, " TOLERANCE {}", humanize_duration(&options.tolerance))?;
                 }
-                if !tolerance.is_zero() {
-                    write!(f, " TOLERANCE {}", humanize_duration(tolerance))?;
+                if options.allow_exact_match {
+                    write!(f, " ALLOW EXACT MATCH")?;
                 }
             }
         }
@@ -133,7 +169,7 @@ pub struct JoinOptions {
     pub aggregation: Option<AggregationOptions>,
 }
 
-pub(crate) fn convert_join_item(item: EitherOrBoth<&Sample, &Sample>) -> JoinValue {
+pub(crate) fn convert_join_item(item: EitherOrBoth<Sample, Sample>) -> JoinValue {
     match item {
         EitherOrBoth::Both(l, r) => JoinValue::both(l.timestamp, l.value, r.value),
         EitherOrBoth::Left(l) => JoinValue::left(l.timestamp, l.value),

@@ -1,13 +1,30 @@
+// Based on code from the Prometheus project
+// Copyright 2017 The Prometheus Authors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use super::memory_postings::{handle_equal_match, MemoryPostings, PostingsBitmap, EMPTY_BITMAP};
 use super::{with_timeseries_index, TimeSeriesIndex};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
+use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
-use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::{check_key_read_permission, SeriesRef, TimeSeries, TimestampRange};
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
+use crate::series::{
+    check_key_read_permission, SeriesGuard, SeriesRef, TimeSeries, TimestampRange,
+};
 use ahash::AHashSet;
 use blart::AsBytes;
 use smallvec::SmallVec;
@@ -15,6 +32,50 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::str;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
+
+pub fn series_by_matchers(
+    ctx: &Context,
+    matchers: &[Matchers],
+    range: Option<TimestampRange>,
+    require_permissions: bool,
+    raise_permission_error: bool,
+) -> ValkeyResult<Vec<SeriesGuard>> {
+    if matchers.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    with_timeseries_index(ctx, |index| {
+        let mut state = ();
+
+        index.with_postings(&mut state, move |inner, _| {
+            let first = postings_for_matchers_internal(inner, &matchers[0])?;
+            if matchers.len() == 1 {
+                return collect_series(
+                    ctx,
+                    inner,
+                    first.iter(),
+                    range,
+                    require_permissions,
+                    raise_permission_error,
+                );
+            }
+            // todo: use chili here ?
+            let mut result = first.into_owned();
+            for matcher in &matchers[1..] {
+                let postings = postings_for_matchers_internal(inner, matcher)?;
+                result.and_inplace(&postings);
+            }
+            collect_series(
+                ctx,
+                inner,
+                result.iter(),
+                range,
+                require_permissions,
+                raise_permission_error,
+            )
+        })
+    })
+}
 
 pub fn series_keys_by_matchers(
     ctx: &Context,
@@ -98,6 +159,47 @@ fn collect_series_keys(
         });
     }
     keys
+}
+
+fn collect_series(
+    ctx: &Context,
+    postings: &MemoryPostings,
+    ids: impl Iterator<Item = SeriesRef>,
+    date_range: Option<TimestampRange>,
+    require_permissions: bool,
+    raise_permission_error: bool,
+) -> ValkeyResult<Vec<SeriesGuard>> {
+    let (start, end, has_range) = if let Some(date_range) = date_range {
+        let (start, end) = date_range.get_timestamps(None);
+        (start, end, true)
+    } else {
+        (0, 0, false)
+    };
+    let mut series = Vec::new();
+    for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
+        let real_key = ctx.create_string(key.as_bytes());
+        if require_permissions && !check_key_read_permission(ctx, &real_key) {
+            if raise_permission_error {
+                let msg = error_consts::PERMISSION_DENIED;
+                return Err(ValkeyError::Str(msg));
+            } else {
+                continue;
+            }
+        };
+
+        // NOTE: unless the index is out of sync, getting a valid series at this point should not fail
+        let guard = SeriesGuard::open(ctx, real_key);
+        if has_range {
+            let ts = guard.get_series();
+            if !ts.has_samples_in_range(start, end) {
+                // if the series is empty, we don't need to add it to the list
+                continue;
+            }
+        }
+        series.push(guard);
+    }
+
+    Ok(series)
 }
 
 /// `postings_for_matchers` assembles a single postings iterator against the series index
@@ -213,7 +315,7 @@ pub(super) fn postings_for_matcher_slice<'a>(
 
     let mut sorted_matchers: SmallVec<(&Matcher, bool, bool), 4> = SmallVec::new();
     // See which label must be non-empty.
-    // Optimization for case like {l=~".", l!="1"}.
+    // Optimization for a case like {l=~".", l!="1"}.
     let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(ms.len());
     for m in ms {
         let matches_empty = m.matches("");
@@ -230,13 +332,13 @@ pub(super) fn postings_for_matcher_slice<'a>(
 
     if has_subtracting_matchers && !has_intersecting_matchers {
         // If there's nothing to subtract from, add in everything and remove the not_its later.
-        // We prefer to get all_postings so that the base of subtraction (i.e. all_postings)
+        // We prefer to get all_postings so that the base of subtraction (i.e., all_postings)
         // doesn't include series that may be added to the index reader during this function call.
         its.push(Cow::Borrowed(ix.all_postings()));
     };
 
     // Sort matchers to have the intersecting matchers first.
-    // This way the base for subtraction is smaller and there is no chance that the set we subtract
+    // This way the base for subtraction is smaller, and there is no chance that the set we subtract
     // from contains postings of series that didn't exist when we constructed the set we subtract by.
     sorted_matchers.sort_by(|i, j| -> Ordering {
         let is_i_subtracting = i.2;

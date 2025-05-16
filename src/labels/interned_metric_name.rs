@@ -1,11 +1,11 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::serialization::{rdb_load_string, rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
 use enquote::enquote;
 use get_size::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
-use valkey_module::{raw, ValkeyResult};
+use valkey_module::{raw, ValkeyResult, ValkeyValue};
 use yasi::InternedString;
 
 const VALUE_SEPARATOR: &str = "=";
@@ -14,6 +14,16 @@ const EMPTY_LABEL: &str = "";
 pub struct InternedLabel<'a> {
     pub name: &'a str,
     pub value: &'a str,
+}
+
+impl From<InternedLabel<'_>> for ValkeyValue {
+    fn from(label: InternedLabel) -> Self {
+        let row = vec![
+            ValkeyValue::from(label.name),
+            ValkeyValue::from(label.value),
+        ];
+        ValkeyValue::from(row)
+    }
 }
 
 impl SeriesLabel for InternedLabel<'_> {
@@ -77,6 +87,21 @@ impl InternedMetricName {
                 self.0.insert(idx, interned_value);
             }
         }
+    }
+
+    pub fn get_tag(&self, key: &str) -> Option<InternedLabel> {
+        if let Some(label) = self.0.iter().find(|x| {
+            if let Some((k, _)) = x.split_once(VALUE_SEPARATOR) {
+                k == key
+            } else {
+                false
+            }
+        }) {
+            if let Some((name, value)) = label.split_once(VALUE_SEPARATOR) {
+                return Some(InternedLabel { name, value });
+            }
+        }
+        None
     }
 
     pub fn get_value(&self, key: &str) -> Option<&str> {

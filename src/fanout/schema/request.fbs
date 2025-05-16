@@ -1,0 +1,146 @@
+// request.fbs
+enum MatchOpType : byte {
+  Equal = 0,
+  NotEqual = 1,
+  RegexEqual = 2,
+  RegexNotEqual = 3
+}
+
+table Matcher {
+  group_id:uint16;
+  label:string;
+  op:MatchOpType;
+  value:[string];
+}
+
+enum MatchersCondition : byte {
+  And = 0,
+  Or = 1
+}
+
+table Matchers {
+  name:string;
+  condition:MatchersCondition;
+  matchers:[Matcher];
+}
+
+table DateRange {
+  start:int64;
+  end:int64;
+}
+
+table RangeRequest {
+  range:DateRange;
+  filters:[Matchers];
+}
+
+table MultiGetRequest {
+  with_labels:bool;
+  selected_labels:[string];
+  filters:[Matchers];
+}
+
+table IndexQueryRequest {
+  range:DateRange;
+  filters:[Matchers];
+}
+
+table LabelNamesRequest {
+  range:DateRange;
+  filters:[Matchers];
+}
+
+table LabelValuesRequest {
+  label:string;
+  range:DateRange;
+  filters:[Matchers];
+}
+
+table CardinalityRequest {
+  range:DateRange;
+  filters:[Matchers];
+}
+
+
+enum AggregationType : byte {
+  Sum = 0,
+  Avg = 1,
+  Min = 2,
+  Max = 3,
+  First = 4,
+  Last = 5,
+  Count = 6,
+  Range = 7,
+  StdS = 8,
+  StdP = 9,
+  VarS = 10,
+  VarP = 11
+}
+
+enum BucketTimestampType : byte {
+  Start = 0,
+  End = 1,
+  Mid = 2
+}
+
+enum BucketAlignmentType : byte {
+  Default = 0,
+  Start = 1,
+  End = 2,
+  Timestamp = 3
+}
+
+table AggregationOptions {
+  aggregator:AggregationType;
+  bucket_duration:uint64;
+  timestamp_output:BucketTimestampType;
+  bucket_alignment:BucketAlignmentType;
+  alignment_timestamp:int64 = 0;
+  report_empty:bool = false;
+}
+
+table GroupingOptions {
+  group_label:string;
+  aggregator:AggregationType;
+}
+
+table RangeRequest {
+  range:DateRange;
+  count:uint32;
+  timestamp_filter:[int64];
+  value_filter:ValueRangeFilter;
+  aggregation:AggregationOptions;
+}
+
+table MultiRangeRequest {
+  range:DateRange;
+  count:uint32;
+  timestamp_filter:[int64];
+  value_filter:ValueRangeFilter;
+  with_labels:bool;
+  selected_labels:[string];
+  filters:[Matchers];
+  aggregation:AggregationOptions;
+  grouping:GroupingOptions;
+}
+
+struct ValueRangeFilter {
+  min:float64;
+  max:float64;
+}
+
+table MetadataRequest {
+    range:DateRange;
+    filters:[Matchers];
+    limit:uint32;
+}
+
+root_type RangeRequest;
+root_type MultiRangeRequest;
+root_type MultiGetRequest;
+root_type IndexQueryRequest;
+root_type LabelNamesRequest;
+root_type LabelValuesRequest;
+root_type CardinalityRequest;
+root_type MetadataRequest;
+root_type RangeRequest;

@@ -1,8 +1,12 @@
 #[cfg(test)]
 mod tests {
+    use crate::common::rounding::RoundingStrategy;
+    use crate::common::time::current_time_millis;
     use crate::common::{Sample, Timestamp};
     use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk};
-    use crate::series::{TimeSeries, ValueFilter};
+    use crate::series::{
+        DuplicatePolicy, SampleAddResult, TimeSeries, TimeSeriesOptions, ValueFilter,
+    };
     use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;
 
@@ -32,8 +36,531 @@ mod tests {
     }
 
     #[test]
+    fn test_add_first_sample() {
+        let mut ts = TimeSeries::new();
+        // Add first sample
+        let result = ts.add(100, 200.0, None);
+
+        assert!(result.is_ok());
+        assert_eq!(ts.total_samples, 1);
+        assert_eq!(ts.first_timestamp, 100);
+        assert_eq!(ts.last_timestamp(), 100);
+        assert_eq!(
+            ts.last_sample,
+            Some(Sample {
+                timestamp: 100,
+                value: 200.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_add_multiple_samples_in_order() {
+        let mut ts = TimeSeries::new();
+
+        // Add samples in chronological order
+        assert!(ts.add(100, 200.0, None).is_ok());
+        assert!(ts.add(200, 300.0, None).is_ok());
+        assert!(ts.add(300, 400.0, None).is_ok());
+
+        assert_eq!(ts.total_samples, 3);
+        assert_eq!(ts.first_timestamp, 100);
+        assert_eq!(ts.last_timestamp(), 300);
+        assert_eq!(
+            ts.last_sample,
+            Some(Sample {
+                timestamp: 300,
+                value: 400.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_add_with_rounding() {
+        let mut ts = TimeSeries::new();
+        ts.rounding = Some(RoundingStrategy::DecimalDigits(1));
+
+        // Value should be rounded to 1 decimal place
+        let result = ts.add(100, 200.123, None);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            ts.last_sample,
+            Some(Sample {
+                timestamp: 100,
+                value: 200.1
+            })
+        );
+    }
+
+    #[test]
+    fn test_add_duplicate_timestamp() {
+        let mut ts = TimeSeries::new();
+        ts.sample_duplicates.policy = Some(DuplicatePolicy::KeepLast);
+
+        // Add first sample
+        assert!(ts.add(100, 200.0, None).is_ok());
+
+        // Add sample with same timestamp but different value
+        let result = ts.add(100, 300.0, None);
+
+        assert!(result.is_ok());
+        assert_eq!(ts.total_samples, 1); // Should replace, not add
+        assert_eq!(
+            ts.last_sample,
+            Some(Sample {
+                timestamp: 100,
+                value: 300.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_add_duplicate_with_override_policy() {
+        let mut ts = TimeSeries::new();
+        ts.sample_duplicates.policy = Some(DuplicatePolicy::Block);
+
+        // Add first sample
+        assert!(ts.add(100, 200.0, None).is_ok());
+
+        // Add duplicate but override policy to KeepLast
+        let result = ts.add(100, 300.0, Some(DuplicatePolicy::KeepLast));
+
+        assert!(result.is_ok());
+        assert_eq!(
+            ts.last_sample,
+            Some(Sample {
+                timestamp: 100,
+                value: 300.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_add_older_sample() {
+        let mut ts = TimeSeries::new();
+
+        // Add first sample
+        assert!(ts.add(200, 200.0, None).is_ok());
+
+        // Add older sample
+        let result = ts.add(100, 100.0, None);
+
+        assert!(result.is_ok());
+
+        assert_eq!(ts.total_samples, 2);
+        assert_eq!(ts.first_timestamp, 100); // First timestamp should update
+        assert_eq!(ts.last_timestamp(), 200); // Last timestamp unchanged
+    }
+
+    #[test]
+    fn test_add_sample_too_old() {
+        let mut ts = TimeSeries::new();
+        ts.retention = Duration::from_millis(1000);
+
+        // Add a sample
+        let now = current_time_millis();
+        assert!(ts.add(now, 100.0, None).is_ok());
+
+        // Try to add a sample older than retention period
+        let old_ts = now - 2000;
+        let result = ts.add(old_ts, 50.0, None);
+
+        assert!(matches!(result, SampleAddResult::TooOld));
+        assert_eq!(ts.total_samples, 1); // Sample count unchanged
+    }
+
+    #[test]
+    fn test_add_causes_chunk_split() {
+        let mut ts = TimeSeries::new();
+        // Set a very small chunk size to force a split
+        ts.chunk_size_bytes = 64;
+
+        let data = DataGenerator::builder()
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::Deriv)
+            .samples(40)
+            .build()
+            .generate();
+
+        let sample_count = data.len();
+        // Add samples until we trigger a split
+        for sample in data {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        // Verify we have more than one chunk
+        assert!(ts.chunks.len() > 1);
+        assert_eq!(ts.total_samples, sample_count);
+    }
+
+    #[test]
+    fn test_add_ignores_duplicate_per_policy() {
+        let mut ts = TimeSeries::new();
+        ts.sample_duplicates.policy = Some(DuplicatePolicy::Block);
+
+        // Add first sample
+        assert!(ts.add(100, 200.0, None).is_ok());
+
+        // Try to add duplicate
+        let result = ts.add(100, 300.0, None);
+
+        assert!(matches!(result, SampleAddResult::Duplicate));
+        assert_eq!(
+            ts.last_sample,
+            Some(Sample {
+                timestamp: 100,
+                value: 200.0
+            })
+        );
+    }
+
+    #[test]
+    fn test_add_to_empty_series() {
+        let mut timeseries = TimeSeries::new();
+        let timestamp = Timestamp::from(1_000_000);
+        let value = 42.0;
+
+        let result = timeseries.add(timestamp, value, None);
+
+        assert!(result.is_ok(), "Adding to an empty series should succeed");
+        assert_eq!(
+            timeseries.total_samples, 1,
+            "Total samples should increment after adding a sample"
+        );
+        assert_eq!(
+            timeseries.first_timestamp, timestamp,
+            "First timestamp should match the added sample"
+        );
+    }
+
+    #[test]
+    fn test_add_duplicate_sample_with_override() {
+        let mut timeseries = TimeSeries::new();
+        let timestamp = Timestamp::from(1_000_000);
+        let value1 = 42.0;
+        let value2 = 50.0;
+        let duplicate_policy = Some(DuplicatePolicy::KeepLast);
+
+        // Add the first sample
+        timeseries.add(timestamp, value1, None);
+
+        // Add a duplicate sample and override the value
+        let result = timeseries.add(timestamp, value2, duplicate_policy);
+
+        assert!(
+            result.is_ok(),
+            "Adding a duplicate sample with override should succeed"
+        );
+        assert_eq!(
+            timeseries.total_samples, 1,
+            "Total samples count should remain the same for duplicate policy"
+        );
+        assert_eq!(
+            timeseries.last_sample.unwrap().value,
+            value2,
+            "Last sample value should be updated with the duplicate policy override"
+        );
+    }
+
+    #[test]
+    fn test_add_sample_before_first() {
+        let mut timeseries = TimeSeries::new();
+        // set a retention period to allow adding older samples
+        timeseries.retention = Duration::from_millis(1000);
+
+        let timestamp1 = Timestamp::from(1_000);
+        let timestamp2 = Timestamp::from(500); // Out-of-order timestamp
+        let value1 = 42.0;
+        let value2 = 24.0;
+
+        // Add the first sample
+        timeseries.add(timestamp1, value1, None);
+
+        // Attempt to add an out-of-order sample
+        let result = timeseries.add(timestamp2, value2, None);
+
+        assert!(result.is_ok(), "Should add a sample before the first");
+    }
+
+    #[test]
+    fn test_add_sample_updates_boundaries() {
+        let mut timeseries = TimeSeries::new();
+        let timestamp1 = Timestamp::from(1_000);
+        let timestamp2 = Timestamp::from(2_000);
+        let value1 = 42.0;
+        let value2 = 50.0;
+
+        // Add the first sample
+        timeseries.add(timestamp1, value1, None);
+
+        // Add a second sample
+        timeseries.add(timestamp2, value2, None);
+
+        assert_eq!(
+            timeseries.first_timestamp, timestamp1,
+            "First timestamp should remain unchanged after adding later samples"
+        );
+        assert_eq!(
+            timeseries.last_sample.unwrap().timestamp,
+            timestamp2,
+            "Last sample should update after adding a later sample"
+        );
+    }
+
+    #[test]
+    fn test_add_1000_entries() {
+        let mut ts = TimeSeries::new();
+        let data = DataGenerator::builder()
+            .samples(1000)
+            .start(0)
+            .interval(Duration::from_millis(1000))
+            .build()
+            .generate();
+
+        for sample in data.iter() {
+            assert!(ts.add(sample.timestamp, sample.value, None).is_ok());
+        }
+
+        assert_eq!(ts.total_samples, 1000);
+        assert_eq!(ts.first_timestamp, data[0].timestamp);
+        assert_eq!(ts.last_timestamp(), data[data.len() - 1].timestamp);
+
+        for (sample, orig) in ts.iter().zip(data.iter()) {
+            assert_eq!(sample.timestamp, orig.timestamp);
+            assert_eq!(sample.value, orig.value);
+        }
+    }
+
+    #[test]
+    fn test_merge_samples_empty_timeseries() {
+        let mut ts = TimeSeries::new();
+        let samples = vec![
+            Sample {
+                timestamp: 100,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 200,
+                value: 2.0,
+            },
+        ];
+
+        let results = ts.merge_samples(&samples, None).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], SampleAddResult::Ok(100)));
+        assert!(matches!(results[1], SampleAddResult::Ok(200)));
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts.first_timestamp, 100);
+        assert_eq!(ts.last_timestamp(), 200);
+    }
+
+    #[test]
+    fn test_merge_samples_non_empty_timeseries() {
+        let mut ts = TimeSeries::new();
+        ts.add(150, 1.5, None);
+
+        let samples = vec![
+            Sample {
+                timestamp: 100,
+                value: 1.0,
+            }, // Before existing
+            Sample {
+                timestamp: 200,
+                value: 2.0,
+            }, // After existing
+        ];
+
+        let results = ts.merge_samples(&samples, None).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], SampleAddResult::Ok(100)));
+        assert!(matches!(results[1], SampleAddResult::Ok(200)));
+        assert_eq!(ts.len(), 3); // 1 initial + 2 merged
+        assert_eq!(ts.first_timestamp, 100);
+        assert_eq!(ts.last_timestamp(), 200);
+        assert_eq!(
+            ts.get_range(0, 300),
+            vec![
+                Sample {
+                    timestamp: 100,
+                    value: 1.0
+                },
+                Sample {
+                    timestamp: 150,
+                    value: 1.5
+                },
+                Sample {
+                    timestamp: 200,
+                    value: 2.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_merge_samples_out_of_order_input() {
+        let mut ts = TimeSeries::new();
+        let samples = vec![
+            Sample {
+                timestamp: 200,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 100,
+                value: 1.0,
+            },
+        ];
+
+        let results = ts.merge_samples(&samples, None).unwrap();
+
+        assert_eq!(results.len(), 2);
+        // Note: The order in results corresponds to the input order
+        assert!(matches!(results[0], SampleAddResult::Ok(200)));
+        assert!(matches!(results[1], SampleAddResult::Ok(100)));
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts.first_timestamp, 100);
+        assert_eq!(ts.last_timestamp(), 200);
+        assert_eq!(
+            ts.get_range(0, 300),
+            vec![
+                Sample {
+                    timestamp: 100,
+                    value: 1.0
+                },
+                Sample {
+                    timestamp: 200,
+                    value: 2.0
+                },
+            ]
+        );
+    }
+
+    // #[test]
+    // fn test_merge_samples_spanning_multiple_chunks() {
+    //     // Force small chunks
+    //     let mut ts = TimeSeries::with_options(TimeSeriesOptions {
+    //         chunk_compression: ChunkEncoding::Uncompressed,
+    //         chunk_size: Some(64), // Small chunk size to force splitting
+    //         ..Default::default()
+    //     })
+    //         .unwrap();
+    //
+    //     // Add initial data to create multiple chunks
+    //     let mut samples_to_add = vec![];
+    //     let mut len = 0;
+    //     while ts.chunks.len() < 3 {
+    //
+    //         let data = DataGenerator::builder()
+    //             .start(1000)
+    //             .interval(Duration::from_millis(1000))
+    //             .algorithm(RandAlgo::Deriv)
+    //             .samples(40)
+    //             .build()
+    //             .generate();
+    //
+    //         for sample in data.iter() {
+    //             ts.add(sample.timestamp, sample.value, None);
+    //             if len != ts.chunks.len() {
+    //                 samples_to_add.push(Sample::new(sample.timestamp + 500, sample.value));
+    //                 len = ts.chunks.len();
+    //                 break;
+    //             }
+    //         }
+    //     }
+    //
+    //     assert!(ts.chunks.len() > 1, "Test requires multiple chunks");
+    //     let initial_len = ts.len();
+    //     let initial_chunks = ts.chunks.len();
+    //
+    //     let expected = samples_to_add.iter().map(|sample| SampleAddResult::Ok(sample.timestamp))
+    //         .collect::<Vec<_>>();
+    //     let results = ts.merge_samples(&samples_to_add, None).unwrap();
+    //
+    //     assert_eq!(results.len(), 3);
+    //     assert_eq!(expected, results);
+    //
+    //     assert_eq!(ts.len(), initial_len + 3);
+    // }
+
+    #[test]
+    fn test_merge_samples_older_than_retention() {
+        let mut ts = TimeSeries::with_options(TimeSeriesOptions {
+            retention: Some(Duration::from_millis(100)),
+            ..Default::default()
+        })
+        .unwrap();
+        ts.add(200, 2.0, None); // Sets last_timestamp to 200
+                                // Minimum timestamp allowed is 200 - 100 = 100
+
+        let samples = vec![
+            Sample {
+                timestamp: 50,
+                value: 0.5,
+            }, // Too old
+            Sample {
+                timestamp: 150,
+                value: 1.5,
+            }, // Within retention
+        ];
+
+        let results = ts.merge_samples(&samples, None).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], SampleAddResult::TooOld));
+        assert!(matches!(results[1], SampleAddResult::Ok(150)));
+        assert_eq!(ts.len(), 2); // Only the valid sample was added
+        assert!(ts.get_sample(50).unwrap().is_none());
+        assert!(ts.get_sample(150).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_merge_empty_sample_list() {
+        let mut ts = TimeSeries::new();
+        ts.add(100, 1.0, None);
+        let initial_len = ts.len();
+
+        let samples: Vec<Sample> = vec![];
+        let results = ts.merge_samples(&samples, None).unwrap();
+
+        assert!(results.is_empty());
+        assert_eq!(ts.len(), initial_len); // No change
+    }
+
+    #[test]
+    fn test_merge_samples_with_rounding() {
+        let mut ts = TimeSeries::with_options(TimeSeriesOptions {
+            rounding: Some(RoundingStrategy::DecimalDigits(2)), // Round to 2 decimal places
+            ..Default::default()
+        })
+        .unwrap();
+
+        let samples = vec![
+            Sample {
+                timestamp: 100,
+                value: 1.234,
+            },
+            Sample {
+                timestamp: 200,
+                value: 5.678,
+            },
+        ];
+
+        let results = ts.merge_samples(&samples, None).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], SampleAddResult::Ok(100)));
+        assert!(matches!(results[1], SampleAddResult::Ok(200)));
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts.get_sample(100).unwrap().unwrap().value, 1.23); // Rounded
+        assert_eq!(ts.get_sample(200).unwrap().unwrap().value, 5.68); // Rounded
+    }
+
+    #[test]
     fn test_samples_by_timestamps_exact_match_one_chunk() {
-        // Setup a TimeSeries instance with a single chunk containing specific timestamps
+        // Set up a TimeSeries instance with a single chunk containing specific timestamps
         let mut time_series = TimeSeries::default();
         let mut chunk = TimeSeriesChunk::Gorilla(GorillaChunk::with_max_size(4096));
         let timestamps = vec![1000, 2000, 3000];
@@ -75,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_multiple_chunks() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
 
         // Assume create_chunk_with_samples is a helper function to create a chunk with given samples
@@ -148,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_with_duplicates_in_same_chunk() {
-        // Setup a TimeSeries instance with a single chunk containing duplicate timestamps
+        // Set up a TimeSeries instance with a single chunk containing duplicate timestamps
         let mut time_series = TimeSeries::default();
         let timestamp = 1000;
         let sample1 = Sample {
@@ -176,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_samples_by_timestamps_across_multiple_chunks() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
 
         let chunk1 = create_chunk(None);
@@ -272,7 +799,7 @@ mod tests {
 
         // Check that all chunks are removed
         assert_eq!(deleted_count, 2);
-        assert!(time_series.chunks.len() == 1);
+        assert_eq!(time_series.chunks.len(), 1);
         assert_eq!(time_series.total_samples, 1);
         assert_eq!(time_series.first_timestamp, 60);
         assert_eq!(time_series.last_sample, Some(sample3));
@@ -280,7 +807,7 @@ mod tests {
 
     #[test]
     fn test_trim_partial_chunks() {
-        // Setup a TimeSeries with chunks such that some are before the min_timestamp
+        // Set up a TimeSeries with chunks such that some are before the min_timestamp
         let mut time_series = TimeSeries::default();
 
         // Assume we have a helper function to create a chunk with given timestamps
@@ -388,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_remove_range_partial_overlap_multiple_chunks() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries::default();
 
         // Create and add samples to the time series
@@ -464,7 +991,7 @@ mod tests {
 
     #[test]
     fn test_remove_range_updates_total_samples_correctly() {
-        // Setup a TimeSeries with multiple chunks and samples
+        // Set up a TimeSeries with multiple chunks and samples
         let mut time_series = TimeSeries::default();
         let sample1 = Sample {
             timestamp: 1,
@@ -515,7 +1042,7 @@ mod tests {
 
     #[test]
     fn test_remove_range_exactly_matches_chunk_boundaries() {
-        // Setup a TimeSeries with multiple chunks
+        // Set up a TimeSeries with multiple chunks
         let mut time_series = TimeSeries {
             // Assume each chunk can hold 2 samples for simplicity
             chunk_size_bytes: 2 * size_of::<Sample>(),

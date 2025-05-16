@@ -1,5 +1,8 @@
 import os
+import re
+
 import pytest
+from valkey.commands.timeseries.utils import list_to_dict
 from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkey import ResponseError
 import random
@@ -13,7 +16,7 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
 
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
-        args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH'),'bf.bloom-use-random-seed': self.use_random_seed}
+        args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
         server_path = f"{os.path.dirname(os.path.realpath(__file__))}/build/binaries/{os.environ['SERVER_VERSION']}/valkey-server"
 
         self.server, self.client = self.create_server(testdir = self.testdir,  server_path=server_path, args=args)
@@ -47,31 +50,47 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
             assert client.execute_command(f'EXISTS {key}') == 0, f"Item {key} {value} exists"
 
     def verify_server_key_count(self, client, expected_num_keys):
-        actual_num_keys = client.info_obj().num_keys()
+        actual_num_keys = self.server.num_keys()
         assert_num_key_error_msg = f"Actual key number {actual_num_keys} is different from expected key number {expected_num_keys}"
         assert actual_num_keys == expected_num_keys, assert_num_key_error_msg
 
     def generate_random_string(self, length=7):
-        """ Creates a random string with specified length.
+        """ Creates a random string with a specified length.
         """
         characters = string.ascii_letters + string.digits
         random_string = ''.join(random.choice(characters) for _ in range(length))
         return random_string
 
-    def validate_copied_series_correctness(self, client, original_filter_name, item_prefix, add_operation_idx, expected_fp_rate, fp_margin, original_info_dict):
+    def ts_info(self, key, debug = False):
+        """ Get the info of the given key.
+        """
+        debug_str = 'DEBUG' if debug else ''
+        info = self.client.execute_command(f'TS.INFO {key} {debug_str}')
+        info_dict = parse_info_response(info)
+
+        return info_dict
+
+    def validate_ts_info_values(self, key, expected_info_dict):
+        """ Validate the values of the timeseries info.
+        """
+        info_dict = self.ts_info(key)
+        for k, v in expected_info_dict.items():
+            if k == 'labels':
+                assert info_dict[k] == v
+            else:
+                assert info_dict[k] == v, f"Expected {k} to be {v}, but got {info_dict[k]}"
+
+
+    def validate_copied_series_correctness(self, client, original_name):
         """ Validate correctness on a copy of the provided timeseries.
         """
-        copy_filter_name = "filter_copy"
-        assert client.execute_command(f'COPY {original_filter_name} {copy_filter_name}') == 1
+        copy_filter_name = f"{original_name}_copy"
+        assert client.execute_command(f'COPY {original_name} {copy_filter_name}') == 1
         assert client.execute_command('DBSIZE') == 2
-        copy_info = client.execute_command(f'TS.INFO {copy_filter_name}')
-        copy_it = iter(copy_info)
-        copy_info_dict = dict(zip(copy_it, copy_it))
-        assert copy_info_dict[b'Capacity'] == original_info_dict[b'Capacity']
-        assert copy_info_dict[b'Number of items inserted'] == original_info_dict[b'Number of items inserted']
-        assert copy_info_dict[b'Number of filters'] == original_info_dict[b'Number of filters']
-        assert copy_info_dict[b'Size'] == original_info_dict[b'Size']
-        assert copy_info_dict[b'Expansion rate'] == original_info_dict[b'Expansion rate']
+        original_info_dict = self.ts_info(original_name)
+        copy_info_dict = self.ts_info(copy_filter_name)
+
+        assert copy_info_dict == original_info_dict, f"Expected {copy_info_dict} to be equal to {original_info_dict}"
 
     """
     This method will parse the return of an INFO command and return a python dict where each metric is a key value pair.
@@ -151,3 +170,48 @@ class ValkeyInfo:
 
     def uptime_in_secs(self):
         return self.info['uptime_in_seconds']
+
+
+def parse_info_response(response):
+    """Helper function to parse TS.INFO list response into a dictionary."""
+    info_dict = {}
+    it = iter(response)
+    for key in it:
+        key_str = key.decode('utf-8')
+        value = next(it)
+        if isinstance(value, list):
+            # Handle nested structures like labels and chunks
+            if key_str == 'labels':
+                # Convert the labels from a list to a dictionary
+                if value is None or len(value) == 0:
+                    info_dict['labels'] = {}
+                else:
+                    info_dict['labels'] = list_to_dict(value)
+            elif key_str == 'rules':
+                # Convert the rules from a list to a dictionary
+                if value is None or len(value) == 0:
+                    info_dict[key_str] = []
+                else:
+                    info_dict[key_str] = []
+                    for rule in value:
+                        rule_dict = {}
+                        for i in range(0, len(rule), 2):
+                            rule_dict[rule[i].decode('utf-8')] = rule[i + 1]
+                        info_dict[key_str].append(rule_dict)
+            elif key_str == 'Chunks':
+                if value is None or len(value) == 0:
+                    info_dict['chunks'] = []
+                else:
+                    info_dict['chunks'] = []
+                    for chunk in value:
+                        chunk_dict = {}
+                        for i in range(0, len(chunk), 2):
+                            chunk_dict[chunk[i].decode('utf-8')] = chunk[i + 1]
+                        info_dict['chunks'].append(chunk_dict)
+            else: # Fallback for unknown list types
+                info_dict[key_str] = value
+        elif isinstance(value, bytes):
+            info_dict[key_str] = value.decode('utf-8')
+        else:
+            info_dict[key_str] = value
+    return info_dict

@@ -2,12 +2,15 @@
 // https://github.com/cryptorelay/redis-aggregation/tree/master
 // License: Apache License 2.0
 
+use super::Aggregation;
+use enum_dispatch::enum_dispatch;
 use std::fmt::Display;
 use valkey_module::{ValkeyError, ValkeyString};
 
 type Value = f64;
 
-pub trait AggOp {
+#[enum_dispatch]
+pub trait AggregationHandler {
     fn save(&self) -> (&str, String);
     fn load(&mut self, buf: &str);
     fn update(&mut self, value: Value);
@@ -16,11 +19,19 @@ pub trait AggOp {
     fn empty_value(&self) -> Value {
         f64::NAN
     }
+    fn finalize(&self) -> f64 {
+        if let Some(v) = self.current() {
+            v
+        } else {
+            self.empty_value()
+        }
+    }
+    fn aggregation(&self) -> Aggregation;
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggFirst(Option<Value>);
-impl AggOp for AggFirst {
+impl AggregationHandler for AggFirst {
     fn save(&self) -> (&str, String) {
         ("first", serde_json::to_string(&self.0).unwrap())
     }
@@ -38,11 +49,15 @@ impl AggOp for AggFirst {
     fn current(&self) -> Option<Value> {
         self.0
     }
+
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::First
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggLast(Option<Value>);
-impl AggOp for AggLast {
+impl AggregationHandler for AggLast {
     fn save(&self) -> (&str, String) {
         ("last", serde_json::to_string(&self.0).unwrap())
     }
@@ -58,11 +73,14 @@ impl AggOp for AggLast {
     fn current(&self) -> Option<Value> {
         self.0
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Last
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggMin(Option<Value>);
-impl AggOp for AggMin {
+impl AggregationHandler for AggMin {
     fn save(&self) -> (&str, String) {
         ("min", serde_json::to_string(&self.0).unwrap())
     }
@@ -81,11 +99,15 @@ impl AggOp for AggMin {
     fn current(&self) -> Option<Value> {
         self.0
     }
+
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Min
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggMax(Option<Value>);
-impl AggOp for AggMax {
+impl AggregationHandler for AggMax {
     fn save(&self) -> (&str, String) {
         ("max", serde_json::to_string(&self.0).unwrap())
     }
@@ -104,6 +126,10 @@ impl AggOp for AggMax {
     fn current(&self) -> Option<Value> {
         self.0
     }
+
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Max
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -112,7 +138,7 @@ pub struct AggRange {
     max: Value,
     init: bool,
 }
-impl AggOp for AggRange {
+impl AggregationHandler for AggRange {
     fn save(&self) -> (&str, String) {
         (
             "range",
@@ -142,6 +168,9 @@ impl AggOp for AggRange {
             Some(self.max - self.min)
         }
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Range
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -149,7 +178,7 @@ pub struct AggAvg {
     count: usize,
     sum: Value,
 }
-impl AggOp for AggAvg {
+impl AggregationHandler for AggAvg {
     fn save(&self) -> (&str, String) {
         (
             "avg",
@@ -176,11 +205,14 @@ impl AggOp for AggAvg {
             Some(self.sum / self.count as f64)
         }
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Avg
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggSum(Value);
-impl AggOp for AggSum {
+impl AggregationHandler for AggSum {
     fn save(&self) -> (&str, String) {
         ("sum", serde_json::to_string(&self.0).unwrap())
     }
@@ -199,11 +231,14 @@ impl AggOp for AggSum {
     fn empty_value(&self) -> Value {
         0.
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Sum
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggCount(usize);
-impl AggOp for AggCount {
+impl AggregationHandler for AggCount {
     fn save(&self) -> (&str, String) {
         ("count", serde_json::to_string(&self.0).unwrap())
     }
@@ -222,6 +257,9 @@ impl AggOp for AggCount {
 
     fn empty_value(&self) -> Value {
         0.
+    }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::Count
     }
 }
 
@@ -272,7 +310,7 @@ impl Display for AggStd {
 
 #[derive(Clone, Default, Debug)]
 pub struct AggVarP(AggStd);
-impl AggOp for AggVarP {
+impl AggregationHandler for AggVarP {
     fn save(&self) -> (&str, String) {
         ("var.p", self.0.to_string())
     }
@@ -292,11 +330,14 @@ impl AggOp for AggVarP {
             Some(self.0.variance() / self.0.count as Value)
         }
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::VarP
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggVarS(AggStd);
-impl AggOp for AggVarS {
+impl AggregationHandler for AggVarS {
     fn save(&self) -> (&str, String) {
         ("var.s", self.0.to_string())
     }
@@ -318,11 +359,14 @@ impl AggOp for AggVarS {
             Some(self.0.variance() / (self.0.count - 1) as Value)
         }
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::VarS
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggStdP(AggStd);
-impl AggOp for AggStdP {
+impl AggregationHandler for AggStdP {
     fn save(&self) -> (&str, String) {
         ("std.p", self.0.to_string())
     }
@@ -342,11 +386,14 @@ impl AggOp for AggStdP {
             Some((self.0.variance() / self.0.count as Value).sqrt())
         }
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::StdP
+    }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct AggStdS(AggStd);
-impl AggOp for AggStdS {
+impl AggregationHandler for AggStdS {
     fn save(&self) -> (&str, String) {
         ("std.s", self.0.to_string())
     }
@@ -368,8 +415,12 @@ impl AggOp for AggStdS {
             Some((self.0.variance() / (self.0.count - 1) as Value).sqrt())
         }
     }
+    fn aggregation(&self) -> Aggregation {
+        Aggregation::StdS
+    }
 }
 
+#[enum_dispatch(AggregationHandler)]
 #[derive(Clone, Debug)]
 pub enum Aggregator {
     First(AggFirst),
@@ -391,7 +442,8 @@ impl TryFrom<&ValkeyString> for Aggregator {
 
     fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
         let str = value.to_string_lossy();
-        str.as_str().try_into()
+        let aggregation = Aggregation::try_from(str.as_str())?;
+        Ok(aggregation.into())
     }
 }
 
@@ -399,159 +451,33 @@ impl TryFrom<&str> for Aggregator {
     type Error = ValkeyError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if let Some(agg) = Self::new(value) {
-            return Ok(agg);
+        let aggregation = Aggregation::try_from(value)?;
+        Ok(aggregation.into())
+    }
+}
+
+impl From<Aggregation> for Aggregator {
+    fn from(agg: Aggregation) -> Self {
+        match agg {
+            Aggregation::Avg => Aggregator::Avg(AggAvg::default()),
+            Aggregation::Count => Aggregator::Count(AggCount::default()),
+            Aggregation::First => Aggregator::First(AggFirst::default()),
+            Aggregation::Last => Aggregator::Last(AggLast::default()),
+            Aggregation::Max => Aggregator::Max(AggMax::default()),
+            Aggregation::Min => Aggregator::Min(AggMin::default()),
+            Aggregation::Range => Aggregator::Range(AggRange::default()),
+            Aggregation::StdP => Aggregator::StdP(AggStdP::default()),
+            Aggregation::StdS => Aggregator::StdS(AggStdS::default()),
+            Aggregation::VarP => Aggregator::VarP(AggVarP::default()),
+            Aggregation::VarS => Aggregator::VarS(AggVarS::default()),
+            Aggregation::Sum => Aggregator::Sum(AggSum::default()),
         }
-        Err(ValkeyError::Str("TSDB: unknown AGGREGATION type"))
     }
 }
 
 impl Aggregator {
-    pub fn new(name: &str) -> Option<Self> {
-        hashify::tiny_map_ignore_case! {
-            name.as_bytes(),
-            "first" => Aggregator::First(AggFirst::default()),
-            "last" => Aggregator::Last(AggLast::default()),
-            "min" => Aggregator::Min(AggMin::default()),
-            "max" => Aggregator::Max(AggMax::default()),
-            "avg" => Aggregator::Avg(AggAvg::default()),
-            "sum" => Aggregator::Sum(AggSum::default()),
-            "count" => Aggregator::Count(AggCount::default()),
-            "range" => Aggregator::Range(AggRange::default()),
-            "std.s" => Aggregator::StdS(AggStdS::default()),
-            "std.p" => Aggregator::StdP(AggStdP::default()),
-            "var.s" => Aggregator::VarS(AggVarS::default()),
-            "var.p" => Aggregator::VarP(AggVarP::default()),
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Aggregator::First(_) => "first",
-            Aggregator::Last(_) => "last",
-            Aggregator::Min(_) => "min",
-            Aggregator::Max(_) => "max",
-            Aggregator::Avg(_) => "avg",
-            Aggregator::Sum(_) => "sum",
-            Aggregator::Count(_) => "count",
-            Aggregator::StdS(_) => "std.s",
-            Aggregator::StdP(_) => "std.p",
-            Aggregator::VarS(_) => "var.s",
-            Aggregator::VarP(_) => "var.p",
-            Aggregator::Range(_) => "range",
-        }
-    }
-
-    pub fn finalize(&self) -> f64 {
-        if let Some(v) = self.current() {
-            v
-        } else {
-            self.empty_value()
-        }
-    }
-}
-
-impl AggOp for Aggregator {
-    fn save(&self) -> (&str, String) {
-        match self {
-            Aggregator::First(agg) => agg.save(),
-            Aggregator::Last(agg) => agg.save(),
-            Aggregator::Min(agg) => agg.save(),
-            Aggregator::Max(agg) => agg.save(),
-            Aggregator::Avg(agg) => agg.save(),
-            Aggregator::Sum(agg) => agg.save(),
-            Aggregator::Count(agg) => agg.save(),
-            Aggregator::StdS(agg) => agg.save(),
-            Aggregator::StdP(agg) => agg.save(),
-            Aggregator::VarS(agg) => agg.save(),
-            Aggregator::VarP(agg) => agg.save(),
-            Aggregator::Range(agg) => agg.save(),
-        }
-    }
-
-    fn load(&mut self, buf: &str) {
-        match self {
-            Aggregator::First(agg) => agg.load(buf),
-            Aggregator::Last(agg) => agg.load(buf),
-            Aggregator::Min(agg) => agg.load(buf),
-            Aggregator::Max(agg) => agg.load(buf),
-            Aggregator::Avg(agg) => agg.load(buf),
-            Aggregator::Sum(agg) => agg.load(buf),
-            Aggregator::Count(agg) => agg.load(buf),
-            Aggregator::StdS(agg) => agg.load(buf),
-            Aggregator::StdP(agg) => agg.load(buf),
-            Aggregator::VarS(agg) => agg.load(buf),
-            Aggregator::VarP(agg) => agg.load(buf),
-            Aggregator::Range(agg) => agg.load(buf),
-        }
-    }
-
-    fn update(&mut self, value: Value) {
-        match self {
-            Aggregator::First(agg) => agg.update(value),
-            Aggregator::Last(agg) => agg.update(value),
-            Aggregator::Min(agg) => agg.update(value),
-            Aggregator::Max(agg) => agg.update(value),
-            Aggregator::Avg(agg) => agg.update(value),
-            Aggregator::Sum(agg) => agg.update(value),
-            Aggregator::Count(agg) => agg.update(value),
-            Aggregator::StdS(agg) => agg.update(value),
-            Aggregator::StdP(agg) => agg.update(value),
-            Aggregator::VarS(agg) => agg.update(value),
-            Aggregator::VarP(agg) => agg.update(value),
-            Aggregator::Range(agg) => agg.update(value),
-        }
-    }
-
-    fn reset(&mut self) {
-        match self {
-            Aggregator::First(agg) => agg.reset(),
-            Aggregator::Last(agg) => agg.reset(),
-            Aggregator::Min(agg) => agg.reset(),
-            Aggregator::Max(agg) => agg.reset(),
-            Aggregator::Avg(agg) => agg.reset(),
-            Aggregator::Sum(agg) => agg.reset(),
-            Aggregator::Count(agg) => agg.reset(),
-            Aggregator::StdS(agg) => agg.reset(),
-            Aggregator::StdP(agg) => agg.reset(),
-            Aggregator::VarS(agg) => agg.reset(),
-            Aggregator::VarP(agg) => agg.reset(),
-            Aggregator::Range(agg) => agg.reset(),
-        }
-    }
-
-    fn current(&self) -> Option<Value> {
-        match self {
-            Aggregator::First(agg) => agg.current(),
-            Aggregator::Last(agg) => agg.current(),
-            Aggregator::Min(agg) => agg.current(),
-            Aggregator::Max(agg) => agg.current(),
-            Aggregator::Avg(agg) => agg.current(),
-            Aggregator::Sum(agg) => agg.current(),
-            Aggregator::Count(agg) => agg.current(),
-            Aggregator::StdS(agg) => agg.current(),
-            Aggregator::StdP(agg) => agg.current(),
-            Aggregator::VarS(agg) => agg.current(),
-            Aggregator::VarP(agg) => agg.current(),
-            Aggregator::Range(agg) => agg.current(),
-        }
-    }
-
-    fn empty_value(&self) -> Value {
-        match self {
-            Aggregator::First(agg) => agg.empty_value(),
-            Aggregator::Last(agg) => agg.empty_value(),
-            Aggregator::Min(agg) => agg.empty_value(),
-            Aggregator::Max(agg) => agg.empty_value(),
-            Aggregator::Avg(agg) => agg.empty_value(),
-            Aggregator::Sum(agg) => agg.empty_value(),
-            Aggregator::Count(agg) => agg.empty_value(),
-            Aggregator::Range(agg) => agg.empty_value(),
-            Aggregator::StdS(agg) => agg.empty_value(),
-            Aggregator::StdP(agg) => agg.empty_value(),
-            Aggregator::VarS(agg) => agg.empty_value(),
-            Aggregator::VarP(agg) => agg.empty_value(),
-        }
+    pub fn new(aggr: Aggregation) -> Self {
+        aggr.into()
     }
 }
 
@@ -561,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_aggregator_first_save_load() {
-        let agg = Aggregator::First(AggFirst(Some(42.0)));
+        let agg = Aggregator::from(AggFirst(Some(42.0)));
         let (name, serialized) = agg.save();
 
         assert_eq!(name, "first");
@@ -838,7 +764,7 @@ mod tests {
             new_agg.load(&serialized);
 
             // Check that they're the same type after loading
-            assert_eq!(new_agg.name(), agg.name());
+            assert_eq!(new_agg.aggregation(), agg.aggregation());
         }
     }
 }

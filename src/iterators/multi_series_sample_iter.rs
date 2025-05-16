@@ -33,7 +33,7 @@ impl<'a> MultiSeriesSampleIter<'a> {
         false
     }
 
-    /// Load samples to heap, and try to ensure that the iterators are roughly at the same timestamp
+    /// Load samples to the heap, trying to ensure that the iterators are roughly at the same timestamp
     fn load_heap(&mut self) -> bool {
         if !self.push_samples_to_heap() {
             return false;
@@ -44,7 +44,7 @@ impl<'a> MultiSeriesSampleIter<'a> {
             None => return false,
         };
 
-        let mut to_remove: SmallVec<usize, 6> = SmallVec::new();
+        let mut to_remove: SmallVec<usize, 8> = SmallVec::new();
         for (i, sample_iter) in self.inner.iter_mut().enumerate() {
             let mut sample_added = false;
 

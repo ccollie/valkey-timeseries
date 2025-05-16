@@ -1,10 +1,10 @@
-use crate::common::serialization::rdb_load_string;
+use crate::common::rdb::rdb_load_string;
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::SampleIter;
-use crate::series::chunks::utils::filter_samples_by_value;
+use crate::series::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use crate::series::types::ValueFilter;
 use crate::series::{
     chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
@@ -12,7 +12,6 @@ use crate::series::{
 };
 use core::mem::size_of;
 use get_size::GetSize;
-use smallvec::SmallVec;
 use std::cmp::Ordering;
 use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
 
@@ -101,6 +100,16 @@ impl TimeSeriesChunk {
         first_time <= end_time && last_time >= start_time
     }
 
+    pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
+        if !self.overlaps(start_time, end_time) {
+            return false;
+        }
+        if self.range_iter(start_time, end_time).next().is_some() {
+            return true;
+        }
+        false
+    }
+
     // todo: make this a trait method
     pub fn iter(&self) -> Box<dyn Iterator<Item = Sample> + '_> {
         use TimeSeriesChunk::*;
@@ -169,26 +178,8 @@ impl TimeSeriesChunk {
         timestamp_filter: &Option<Vec<Timestamp>>,
         value_filter: &Option<ValueFilter>,
     ) -> Vec<Sample> {
-        fn filter_timestamps(
-            timestamps: &[Timestamp],
-            start: Timestamp,
-            end: Timestamp,
-        ) -> SmallVec<Timestamp, 32> {
-            timestamps
-                .iter()
-                .filter_map(|ts| {
-                    let ts = *ts;
-                    if ts >= start && ts <= end {
-                        Some(ts)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-
         let mut samples = if let Some(ts_filter) = timestamp_filter {
-            let filtered_ts = filter_timestamps(ts_filter, start_timestamp, end_timestamp);
+            let filtered_ts = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
             self.samples_by_timestamps(&filtered_ts)
                 .unwrap_or_default()
                 .into_iter()
@@ -216,7 +207,7 @@ impl TimeSeriesChunk {
     }
 
     /// Merge a range of samples into this chunk.
-    /// If the chunk is full or the other chunk is empty, returns 0.
+    /// If the chunk is full or the other chunk is empty, it returns 0.
     /// Duplicate values are handled according to `duplicate_policy`.
     /// Samples with timestamps before `retention_threshold` will be ignored, whether
     /// they fall with the given range [start_ts..end_ts].
@@ -419,7 +410,7 @@ impl Chunk for TimeSeriesChunk {
     }
 }
 
-fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut raw::RedisModuleIO) {
+fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut RedisModuleIO) {
     let chunk_type = match chunk {
         TimeSeriesChunk::Uncompressed(_) => "uncompressed",
         TimeSeriesChunk::Gorilla(_) => "gorilla",
