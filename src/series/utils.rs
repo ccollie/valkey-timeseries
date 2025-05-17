@@ -1,6 +1,7 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::db::get_current_db;
 use crate::error_consts;
+use crate::series::acl::check_key_permissions;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions};
@@ -8,40 +9,6 @@ use valkey_module::key::ValkeyKeyWritable;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
-
-#[inline]
-fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
-    let user = ctx.get_current_user();
-    ctx.acl_check_key_permission(&user, key, &permissions)
-        .is_ok()
-}
-
-pub fn check_key_read_permission(ctx: &Context, key: &ValkeyString) -> bool {
-    has_key_permissions(ctx, key, AclPermissions::ACCESS)
-}
-
-#[inline]
-pub fn check_key_permissions(
-    ctx: &Context,
-    key: &ValkeyString,
-    permissions: &AclPermissions,
-) -> ValkeyResult<()> {
-    let user = ctx.get_current_user();
-    if ctx
-        .acl_check_key_permission(&user, key, permissions)
-        .is_ok()
-    {
-        Ok(())
-    } else {
-        if permissions.contains(AclPermissions::DELETE) {
-            return Err(ValkeyError::Str(error_consts::KEY_DELETE_PERMISSION_ERROR));
-        }
-        if permissions.contains(AclPermissions::UPDATE) {
-            return Err(ValkeyError::Str(error_consts::KEY_WRITE_PERMISSION_ERROR));
-        }
-        Err(ValkeyError::Str(error_consts::PERMISSION_DENIED))
-    }
-}
 
 pub fn with_timeseries<R>(
     ctx: &Context,
