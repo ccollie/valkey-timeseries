@@ -3,7 +3,8 @@ use super::common::{
 };
 use super::matchers::{deserialize_matchers_list, serialize_matchers_list};
 use super::request_generated::{
-    AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder, AggregationType,
+    AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder, 
+    AggregationType as FBAggregationType,
     BucketAlignmentType, BucketTimestampType, GroupingOptions, GroupingOptionsArgs,
     MultiRangeRequest as FBMultiRangeRequest, MultiRangeRequestArgs, ValueRangeFilter,
 };
@@ -12,7 +13,7 @@ use super::response_generated::{
     MultiRangeResponseArgs, Sample as ResponseSample, SeriesResponse as FBSeriesResponse,
     SeriesResponseArgs,
 };
-use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
+use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::commands::process_mrange_query;
 use crate::common::{Sample, Timestamp};
 use crate::fanout::request::serialization::{Deserialized, Serialized};
@@ -240,37 +241,37 @@ fn decode_bucket_alignment(alignment: BucketAlignmentType) -> BucketAlignment {
     }
 }
 
-fn encode_aggregator_enum(aggregator: &Aggregation) -> AggregationType {
+fn encode_aggregator_enum(aggregator: &AggregationType) -> FBAggregationType {
     match aggregator {
-        Aggregation::Sum => AggregationType::Sum,
-        Aggregation::Min => AggregationType::Min,
-        Aggregation::Max => AggregationType::Max,
-        Aggregation::Avg => AggregationType::Avg,
-        Aggregation::Count => AggregationType::Count,
-        Aggregation::First => AggregationType::First,
-        Aggregation::Last => AggregationType::Last,
-        Aggregation::StdS => AggregationType::StdS,
-        Aggregation::StdP => AggregationType::StdP,
-        Aggregation::VarP => AggregationType::VarP,
-        Aggregation::VarS => AggregationType::VarS,
-        Aggregation::Range => AggregationType::Range,
+        AggregationType::Sum => FBAggregationType::Sum,
+        AggregationType::Min => FBAggregationType::Min,
+        AggregationType::Max => FBAggregationType::Max,
+        AggregationType::Avg => FBAggregationType::Avg,
+        AggregationType::Count => FBAggregationType::Count,
+        AggregationType::First => FBAggregationType::First,
+        AggregationType::Last => FBAggregationType::Last,
+        AggregationType::StdS => FBAggregationType::StdS,
+        AggregationType::StdP => FBAggregationType::StdP,
+        AggregationType::VarP => FBAggregationType::VarP,
+        AggregationType::VarS => FBAggregationType::VarS,
+        AggregationType::Range => FBAggregationType::Range,
     }
 }
 
-fn decode_aggregator(agg_type: AggregationType) -> Aggregation {
+fn decode_aggregator(agg_type: FBAggregationType) -> AggregationType {
     match agg_type {
-        AggregationType::Sum => Aggregation::Sum,
-        AggregationType::Avg => Aggregation::Avg,
-        AggregationType::Min => Aggregation::Min,
-        AggregationType::Max => Aggregation::Max,
-        AggregationType::First => Aggregation::First,
-        AggregationType::Last => Aggregation::Last,
-        AggregationType::Count => Aggregation::Count,
-        AggregationType::Range => Aggregation::Range,
-        AggregationType::StdS => Aggregation::StdS,
-        AggregationType::StdP => Aggregation::StdP,
-        AggregationType::VarS => Aggregation::VarS,
-        AggregationType::VarP => Aggregation::VarP,
+        FBAggregationType::Sum => AggregationType::Sum,
+        FBAggregationType::Avg => AggregationType::Avg,
+        FBAggregationType::Min => AggregationType::Min,
+        FBAggregationType::Max => AggregationType::Max,
+        FBAggregationType::First => AggregationType::First,
+        FBAggregationType::Last => AggregationType::Last,
+        FBAggregationType::Count => AggregationType::Count,
+        FBAggregationType::Range => AggregationType::Range,
+        FBAggregationType::StdS => AggregationType::StdS,
+        FBAggregationType::StdP => AggregationType::StdP,
+        FBAggregationType::VarS => AggregationType::VarS,
+        FBAggregationType::VarP => AggregationType::VarP,
         _ => unreachable!("Unsupported aggregator type in decode_aggregator"),
     }
 }
@@ -465,7 +466,7 @@ fn decode_series_response(reader: &FBSeriesResponse) -> MRangeSeriesResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
     use crate::labels::matchers::{
         Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
     };
@@ -574,7 +575,7 @@ mod tests {
     #[test]
     fn test_multi_range_request_with_aggregation_serialize_deserialize() {
         let agg_options = AggregationOptions {
-            aggregation: Aggregation::Avg,
+            aggregation: AggregationType::Avg,
             bucket_duration: 60,
             timestamp_output: BucketTimestamp::Mid,
             alignment: BucketAlignment::Start,
@@ -606,7 +607,7 @@ mod tests {
         assert_eq!(agg1.report_empty, agg2.report_empty);
 
         match (&agg1.aggregation, &agg2.aggregation) {
-            (Aggregation::Avg, Aggregation::Avg) => {}
+            (AggregationType::Avg, AggregationType::Avg) => {}
             _ => panic!("Wrong aggregator type after deserialization"),
         }
 
@@ -620,7 +621,7 @@ mod tests {
     fn test_multi_range_request_with_grouping_serialize_deserialize() {
         let grouping = RangeGroupingOptions {
             group_label: "category".to_string(),
-            aggregation: Aggregation::Sum,
+            aggregation: AggregationType::Sum,
         };
 
         let req = MRangeOptions {
@@ -646,7 +647,7 @@ mod tests {
         assert_eq!(grp1.group_label, grp2.group_label);
 
         match (&grp1.aggregation, &grp2.aggregation) {
-            (Aggregation::Sum, Aggregation::Sum) => {}
+            (AggregationType::Sum, AggregationType::Sum) => {}
             _ => panic!("Wrong aggregator type after deserialization"),
         }
     }

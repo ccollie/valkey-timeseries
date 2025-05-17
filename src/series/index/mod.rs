@@ -16,7 +16,7 @@ use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{check_key_permissions, TimeSeries};
+use crate::series::{check_key_permissions, get_timeseries_mut, SeriesGuardMut, SeriesRef, TimeSeries};
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
@@ -101,6 +101,27 @@ where
         }
     }
     Ok(())
+}
+
+pub fn get_series_by_id(
+    ctx: &Context,
+    id: SeriesRef,
+    must_exist: bool,
+    permissions: Option<AclPermissions>,
+) -> ValkeyResult<Option<SeriesGuardMut>> {
+    let map = TIMESERIES_INDEX.pin();
+    let db = get_current_db(ctx);
+    let Some(index)  = map.get(&db) else {
+        return Ok(None);
+    };
+    let mut state = 0;
+    index.with_postings(&mut state, |posting, _| {
+        let Some(key) = posting.get_key_by_id(id) else {
+            return Ok(None);
+        };
+        let real_key = ctx.create_string(key.as_ref());
+        get_timeseries_mut(ctx, &real_key, must_exist, permissions)
+    })
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {

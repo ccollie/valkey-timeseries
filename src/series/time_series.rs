@@ -20,6 +20,7 @@ use std::time::Duration;
 use std::vec;
 use valkey_module::logging;
 use valkey_module::{ValkeyError, ValkeyResult};
+use crate::series::compaction_rule::CompactionRule;
 
 pub type TimeseriesId = u64;
 pub type SeriesRef = u64;
@@ -50,6 +51,8 @@ pub struct TimeSeries {
     pub first_timestamp: Timestamp,
     /// The last timestamp in the time series
     pub last_sample: Option<Sample>,
+    pub src_series: Option<TimeseriesId>,
+    pub rules: Vec<CompactionRule>,
     pub(crate) _db: i32,
 }
 
@@ -838,6 +841,10 @@ impl TimeSeries {
         self.update_first_last_timestamps();
         self.total_samples = self.chunks.iter().map(|x| x.len()).sum();
     }
+    
+    pub fn is_compaction(&self) -> bool {
+        self.src_series.is_some()
+    }
 }
 
 impl Default for TimeSeries {
@@ -854,6 +861,8 @@ impl Default for TimeSeries {
             first_timestamp: 0,
             rounding: None,
             last_sample: None,
+            src_series: None,
+            rules: vec![],
             _db: 0,
         }
     }

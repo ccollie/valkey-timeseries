@@ -4,6 +4,7 @@ pub mod arg_parse;
 mod card;
 mod create_series;
 mod del;
+mod delete_rule;
 mod get;
 mod incr_decr_by;
 mod info;
@@ -19,8 +20,11 @@ mod rev_range;
 mod stats;
 
 mod test_cmd;
+mod create_rule;
 
 pub use arg_parse::*;
+pub use create_rule::*;
+pub use delete_rule::*;
 
 pub use add::*;
 pub use alter_series::*;

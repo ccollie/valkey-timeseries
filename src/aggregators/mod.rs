@@ -10,7 +10,7 @@ mod iterator;
 pub use handlers::*;
 pub use iterator::*;
 
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketTimestamp {
     #[default]
     Start,
@@ -54,7 +54,7 @@ impl TryFrom<&ValkeyString> for BucketTimestamp {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketAlignment {
     #[default]
     Default,
@@ -98,8 +98,8 @@ impl TryFrom<&str> for BucketAlignment {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Aggregation {
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub enum AggregationType {
     Avg,
     Count,
     First,
@@ -114,47 +114,47 @@ pub enum Aggregation {
     VarS,
 }
 
-impl Aggregation {
+impl AggregationType {
     pub fn name(&self) -> &'static str {
         match self {
-            Aggregation::First => "first",
-            Aggregation::Last => "last",
-            Aggregation::Min => "min",
-            Aggregation::Max => "max",
-            Aggregation::Avg => "avg",
-            Aggregation::Sum => "sum",
-            Aggregation::Count => "count",
-            Aggregation::StdS => "std.s",
-            Aggregation::StdP => "std.p",
-            Aggregation::VarS => "var.s",
-            Aggregation::VarP => "var.p",
-            Aggregation::Range => "range",
+            AggregationType::First => "first",
+            AggregationType::Last => "last",
+            AggregationType::Min => "min",
+            AggregationType::Max => "max",
+            AggregationType::Avg => "avg",
+            AggregationType::Sum => "sum",
+            AggregationType::Count => "count",
+            AggregationType::StdS => "std.s",
+            AggregationType::StdP => "std.p",
+            AggregationType::VarS => "var.s",
+            AggregationType::VarP => "var.p",
+            AggregationType::Range => "range",
         }
     }
 }
-impl Display for Aggregation {
+impl Display for AggregationType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl TryFrom<&str> for Aggregation {
+impl TryFrom<&str> for AggregationType {
     type Error = ValkeyError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let value = hashify::tiny_map_ignore_case! {
             value.as_bytes(),
-            "avg" => Aggregation::Avg,
-            "count" => Aggregation::Count,
-            "first" => Aggregation::First,
-            "last" => Aggregation::Last,
-            "min" => Aggregation::Min,
-            "max" => Aggregation::Max,
-            "sum" => Aggregation::Sum,
-            "range" => Aggregation::Range,
-            "std.s" => Aggregation::StdS,
-            "std.p" => Aggregation::StdP,
-            "var.s" => Aggregation::VarS,
-            "var.p" => Aggregation::VarP,
+            "avg" => AggregationType::Avg,
+            "count" => AggregationType::Count,
+            "first" => AggregationType::First,
+            "last" => AggregationType::Last,
+            "min" => AggregationType::Min,
+            "max" => AggregationType::Max,
+            "sum" => AggregationType::Sum,
+            "range" => AggregationType::Range,
+            "std.s" => AggregationType::StdS,
+            "std.p" => AggregationType::StdP,
+            "var.s" => AggregationType::VarS,
+            "var.p" => AggregationType::VarP,
         };
 
         match value {
@@ -164,11 +164,45 @@ impl TryFrom<&str> for Aggregation {
     }
 }
 
-impl TryFrom<&ValkeyString> for Aggregation {
+impl TryFrom<&ValkeyString> for AggregationType {
     type Error = ValkeyError;
 
     fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
         let str = value.to_string_lossy();
-        Aggregation::try_from(str.as_str())
+        AggregationType::try_from(str.as_str())
+    }
+}
+
+
+impl TryFrom<u8> for AggregationType {
+    type Error = ValkeyError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(AggregationType::Avg),
+            1 => Ok(AggregationType::Count),
+            2 => Ok(AggregationType::First),
+            3 => Ok(AggregationType::Last),
+            4 => Ok(AggregationType::Min),
+            5 => Ok(AggregationType::Max),
+            6 => Ok(AggregationType::Sum),
+            7 => Ok(AggregationType::Range),
+            _ => Err(ValkeyError::Str("TSDB: invalid AGGREGATION value")),
+        }
+    }
+}
+
+impl From<AggregationType> for u8 {
+    fn from(value: AggregationType) -> Self {
+        match value {
+            AggregationType::Avg => 0,
+            AggregationType::Count => 1,
+            AggregationType::First => 2,
+            AggregationType::Last => 3,
+            AggregationType::Min => 4,
+            AggregationType::Max => 5,
+            AggregationType::Sum => 6,
+            AggregationType::Range => 7,
+            _ => unreachable!(),
+        }
     }
 }

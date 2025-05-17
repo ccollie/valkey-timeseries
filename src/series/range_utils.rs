@@ -1,4 +1,4 @@
-use crate::aggregators::{AggregateIterator, Aggregation, AggregationHandler, Aggregator};
+use crate::aggregators::{AggregateIterator, AggregationType, AggregationHandler, Aggregator};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
@@ -118,7 +118,7 @@ pub fn get_series_labels<'a>(
 /// aggregates non-NAN samples based on the specified aggregation options.
 pub(crate) fn group_reduce(
     samples: impl Iterator<Item = Sample>,
-    aggregation: Aggregation,
+    aggregation: AggregationType,
 ) -> Vec<Sample> {
     let mut samples = samples.into_iter().filter(|sample| !sample.value.is_nan());
     let mut aggregator: Aggregator = aggregation.into();
@@ -159,7 +159,7 @@ pub(crate) fn group_reduce(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
     use crate::series::{TimeSeriesOptions, TimestampRange, TimestampValue, ValueFilter};
     use std::time::Duration;
 
@@ -226,7 +226,7 @@ mod tests {
         let series = create_test_series();
 
         let aggr_options = AggregationOptions {
-            aggregation: Aggregation::Sum,
+            aggregation: AggregationType::Sum,
             bucket_duration: 20,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -347,7 +347,7 @@ mod tests {
         let timestamps = vec![120, 130, 140, 150, 160];
 
         let aggr_options = AggregationOptions {
-            aggregation: Aggregation::Avg,
+            aggregation: AggregationType::Avg,
             bucket_duration: 20,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,

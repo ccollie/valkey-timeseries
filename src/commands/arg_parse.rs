@@ -1,4 +1,4 @@
-use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
+use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
 use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
@@ -544,7 +544,7 @@ pub fn parse_aggregation_options(
     let agg_str = args
         .next_str()
         .map_err(|_e| ValkeyError::Str("ERR: Error parsing AGGREGATION"))?;
-    let aggregator = Aggregation::try_from(agg_str)?;
+    let aggregator = AggregationType::try_from(agg_str)?;
     let bucket_duration = parse_duration_arg(&args.next_arg()?)
         .map_err(|_e| ValkeyError::Str("Error parsing bucket_duration"))?;
 
@@ -603,7 +603,7 @@ pub fn parse_grouping_params(args: &mut CommandArgIterator) -> ValkeyResult<Rang
         .next_str()
         .map_err(|_e| ValkeyError::Str("ERR: Error parsing grouping reducer"))?;
 
-    let aggregator = Aggregation::try_from(agg_str).map_err(|_| {
+    let aggregator = AggregationType::try_from(agg_str).map_err(|_| {
         let msg = format!("ERR: invalid grouping aggregator \"{}\"", agg_str);
         ValkeyError::String(msg)
     })?;

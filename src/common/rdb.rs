@@ -5,6 +5,8 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
 
+const STALE_NAN: f64 = f64::from_bits(0x7ff0000000000002);
+
 const OPTIONAL_MARKER_PRESENT: u64 = 0xfe;
 const OPTIONAL_MARKER_ABSENT: u64 = 0xff;
 
@@ -33,6 +35,19 @@ pub(crate) fn save_optional_unsigned(rdb: *mut RedisModuleIO, value: Option<u64>
     } else {
         raw::save_signed(rdb, -1);
     }
+}
+
+pub(crate) fn rdb_save_optional_f64(rdb: *mut RedisModuleIO, value: Option<f64>) {
+    let val = value.unwrap_or(STALE_NAN);
+    raw::save_double(rdb, val);
+}
+
+pub(crate) fn rdb_load_optional_f64(rdb: *mut RedisModuleIO) -> ValkeyResult<Option<f64>> {
+    let val = raw::load_double(rdb)?;
+    if val.to_bits() == STALE_NAN.to_bits() {
+        return Ok(None);
+    }
+    Ok(Some(val))
 }
 
 pub fn rdb_save_duration(rdb: *mut RedisModuleIO, duration: &Duration) {

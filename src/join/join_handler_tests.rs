@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
     use crate::join::join_handler::join_internal;
     use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType};
@@ -239,7 +239,7 @@ mod tests {
         let mut options = create_basic_options();
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregation: Aggregation::Sum,
+            aggregation: AggregationType::Sum,
             bucket_duration: 15,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -427,7 +427,7 @@ mod tests {
         options.join_type = JoinType::Semi;
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregation: Aggregation::Sum,
+            aggregation: AggregationType::Sum,
             bucket_duration: 30,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -718,7 +718,7 @@ mod tests {
         options.join_type = JoinType::Anti;
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregation: Aggregation::Sum,
+            aggregation: AggregationType::Sum,
             bucket_duration: 25, // Bucket size to group timestamps 10 and 30
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,

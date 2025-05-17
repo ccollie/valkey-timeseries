@@ -85,7 +85,7 @@ impl TimeSeriesIndex {
         let inner = self.inner.read().unwrap();
         inner.has_id(id)
     }
-
+    
     /// Return all series ids corresponding to the given label value pairs
     pub fn postings_by_labels<T: SeriesLabel>(&self, labels: &[T]) -> PostingsBitmap {
         let inner = self.inner.read().unwrap();

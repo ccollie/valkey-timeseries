@@ -2,17 +2,20 @@
 // https://github.com/cryptorelay/redis-aggregation/tree/master
 // License: Apache License 2.0
 
-use super::Aggregation;
+use super::AggregationType;
+use crate::common::rdb::{
+    rdb_load_bool, rdb_load_optional_f64, rdb_load_u8, rdb_load_usize, rdb_save_bool,
+    rdb_save_optional_f64, rdb_save_u8, rdb_save_usize,
+};
 use enum_dispatch::enum_dispatch;
+use get_size::GetSize;
 use std::fmt::Display;
-use valkey_module::{ValkeyError, ValkeyString};
+use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString};
 
 type Value = f64;
 
 #[enum_dispatch]
 pub trait AggregationHandler {
-    fn save(&self) -> (&str, String);
-    fn load(&mut self, buf: &str);
     fn update(&mut self, value: Value);
     fn reset(&mut self);
     fn current(&self) -> Option<Value>;
@@ -26,18 +29,12 @@ pub trait AggregationHandler {
             self.empty_value()
         }
     }
-    fn aggregation(&self) -> Aggregation;
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO);
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggFirst(Option<Value>);
-impl AggregationHandler for AggFirst {
-    fn save(&self) -> (&str, String) {
-        ("first", serde_json::to_string(&self.0).unwrap())
-    }
-    fn load(&mut self, buf: &str) {
-        self.0 = serde_json::from_str::<Option<Value>>(buf).unwrap();
-    }
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct FirstAggregator(Option<Value>);
+impl AggregationHandler for FirstAggregator {
     fn update(&mut self, value: Value) {
         if self.0.is_none() {
             self.0 = Some(value)
@@ -49,21 +46,23 @@ impl AggregationHandler for AggFirst {
     fn current(&self) -> Option<Value> {
         self.0
     }
-
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::First
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.current());
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggLast(Option<Value>);
-impl AggregationHandler for AggLast {
-    fn save(&self) -> (&str, String) {
-        ("last", serde_json::to_string(&self.0).unwrap())
+impl FirstAggregator {
+    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_optional_f64(rdb).map(|v| Self(v))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = serde_json::from_str::<Option<Value>>(buf).unwrap();
-    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct LastAggregator(Option<Value>);
+impl AggregationHandler for LastAggregator {
     fn update(&mut self, value: Value) {
         self.0 = Some(value)
     }
@@ -73,20 +72,23 @@ impl AggregationHandler for AggLast {
     fn current(&self) -> Option<Value> {
         self.0
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Last
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.current());
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggMin(Option<Value>);
-impl AggregationHandler for AggMin {
-    fn save(&self) -> (&str, String) {
-        ("min", serde_json::to_string(&self.0).unwrap())
+impl LastAggregator {
+    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_optional_f64(rdb).map(|v| Self(v))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = serde_json::from_str::<Option<Value>>(buf).unwrap();
-    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct MinAggregator(Option<Value>);
+impl AggregationHandler for MinAggregator {
     fn update(&mut self, value: Value) {
         self.0 = Some(match self.0 {
             None => value,
@@ -99,21 +101,23 @@ impl AggregationHandler for AggMin {
     fn current(&self) -> Option<Value> {
         self.0
     }
-
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Min
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.current());
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggMax(Option<Value>);
-impl AggregationHandler for AggMax {
-    fn save(&self) -> (&str, String) {
-        ("max", serde_json::to_string(&self.0).unwrap())
+impl MinAggregator {
+    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_optional_f64(rdb).map(|v| Self(v))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = serde_json::from_str::<Option<Value>>(buf).unwrap();
-    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct MaxAggregator(Option<Value>);
+impl AggregationHandler for MaxAggregator {
     fn update(&mut self, value: Value) {
         self.0 = Some(match self.0 {
             None => value,
@@ -126,31 +130,27 @@ impl AggregationHandler for AggMax {
     fn current(&self) -> Option<Value> {
         self.0
     }
-
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Max
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.current());
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggRange {
+impl MaxAggregator {
+    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_optional_f64(rdb).map(|v| Self(v))
+    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct RangeAggregator {
     min: Value,
     max: Value,
     init: bool,
 }
-impl AggregationHandler for AggRange {
-    fn save(&self) -> (&str, String) {
-        (
-            "range",
-            serde_json::to_string(&(self.init, self.min, self.max)).unwrap(),
-        )
-    }
-    fn load(&mut self, buf: &str) {
-        let t = serde_json::from_str::<(bool, Value, Value)>(buf).unwrap();
-        self.init = t.0;
-        self.min = t.1;
-        self.max = t.2;
-    }
+impl AggregationHandler for RangeAggregator {
     fn update(&mut self, value: Value) {
         self.max = self.max.max(value);
         self.min = self.min.min(value);
@@ -168,28 +168,28 @@ impl AggregationHandler for AggRange {
             Some(self.max - self.min)
         }
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Range
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        raw::save_double(rdb, self.min);
+        raw::save_double(rdb, self.max);
+        rdb_save_bool(rdb, self.init);
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggAvg {
+impl RangeAggregator {
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let min = raw::load_double(rdb)?;
+        let max = raw::load_double(rdb)?;
+        let init = rdb_load_bool(rdb)?;
+        Ok(Self { min, max, init })
+    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct AvgAggregator {
     count: usize,
     sum: Value,
 }
-impl AggregationHandler for AggAvg {
-    fn save(&self) -> (&str, String) {
-        (
-            "avg",
-            serde_json::to_string(&(self.count, self.sum)).unwrap(),
-        )
-    }
-    fn load(&mut self, buf: &str) {
-        let t = serde_json::from_str::<(usize, Value)>(buf).unwrap();
-        self.count = t.0;
-        self.sum = t.1;
-    }
+impl AggregationHandler for AvgAggregator {
     fn update(&mut self, value: Value) {
         self.sum += value;
         self.count += 1;
@@ -205,20 +205,23 @@ impl AggregationHandler for AggAvg {
             Some(self.sum / self.count as f64)
         }
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Avg
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        raw::save_double(rdb, self.sum);
+        rdb_save_usize(rdb, self.count);
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggSum(Value);
-impl AggregationHandler for AggSum {
-    fn save(&self) -> (&str, String) {
-        ("sum", serde_json::to_string(&self.0).unwrap())
+impl AvgAggregator {
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let sum = raw::load_double(rdb)?;
+        let count = rdb_load_usize(rdb)?;
+        Ok(Self { count, sum })
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = serde_json::from_str(buf).unwrap();
-    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct SumAggregator(Value);
+impl AggregationHandler for SumAggregator {
     fn update(&mut self, value: Value) {
         self.0 += value;
     }
@@ -231,20 +234,21 @@ impl AggregationHandler for AggSum {
     fn empty_value(&self) -> Value {
         0.
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Sum
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        raw::save_double(rdb, self.0);
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggCount(usize);
-impl AggregationHandler for AggCount {
-    fn save(&self) -> (&str, String) {
-        ("count", serde_json::to_string(&self.0).unwrap())
+impl SumAggregator {
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let value = raw::load_double(rdb)?;
+        Ok(Self(value))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = serde_json::from_str(buf).unwrap();
-    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct CountAggregator(usize);
+impl AggregationHandler for CountAggregator {
     fn update(&mut self, _value: Value) {
         self.0 += 1;
     }
@@ -254,16 +258,22 @@ impl AggregationHandler for AggCount {
     fn current(&self) -> Option<Value> {
         Some(self.0 as Value)
     }
-
     fn empty_value(&self) -> Value {
         0.
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::Count
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_usize(rdb, self.0);
     }
 }
 
-#[derive(Clone, Default, Debug)]
+impl CountAggregator {
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let value = rdb_load_usize(rdb)?;
+        Ok(Self(value))
+    }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
 pub struct AggStd {
     sum: Value,
     sum_2: Value,
@@ -299,6 +309,19 @@ impl AggStd {
             self.sum_2 - 2. * self.sum * avg + avg * avg * self.count as Value
         }
     }
+
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        raw::save_double(rdb, self.sum);
+        raw::save_double(rdb, self.sum_2);
+        rdb_save_usize(rdb, self.count);
+    }
+
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let sum = raw::load_double(rdb)?;
+        let sum_2 = raw::load_double(rdb)?;
+        let count = rdb_load_usize(rdb)?;
+        Ok(Self { sum, sum_2, count })
+    }
 }
 
 impl Display for AggStd {
@@ -308,15 +331,17 @@ impl Display for AggStd {
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggVarP(AggStd);
-impl AggregationHandler for AggVarP {
-    fn save(&self) -> (&str, String) {
-        ("var.p", self.0.to_string())
-    }
-    fn load(&mut self, buf: &str) {
-        self.0 = AggStd::from_str(buf);
-    }
+// boxed to minimize size of stack Aggregator enum 
+pub(crate) type OnlineAggregator = Box<AggStd>;
+
+fn load_online_aggregator(rdb: *mut RedisModuleIO) -> ValkeyResult<OnlineAggregator> {
+    let inner = AggStd::load_from_rdb(rdb)?;
+    Ok(Box::new(inner))
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct VarPAggregator(OnlineAggregator);
+impl AggregationHandler for VarPAggregator {
     fn update(&mut self, value: Value) {
         self.0.add(value)
     }
@@ -330,20 +355,24 @@ impl AggregationHandler for AggVarP {
             Some(self.0.variance() / self.0.count as Value)
         }
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::VarP
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        self.0.save_to_rdb(rdb);
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggVarS(AggStd);
-impl AggregationHandler for AggVarS {
-    fn save(&self) -> (&str, String) {
-        ("var.s", self.0.to_string())
+impl VarPAggregator {
+    fn new() -> Self {
+        Self(Box::new(AggStd::default()))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = AggStd::from_str(buf);
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let inner = AggStd::load_from_rdb(rdb)?;
+        Ok(Self(Box::new(inner)))
     }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct VarSAggregator(OnlineAggregator);
+impl AggregationHandler for VarSAggregator {
     fn update(&mut self, value: Value) {
         self.0.add(value)
     }
@@ -359,20 +388,24 @@ impl AggregationHandler for AggVarS {
             Some(self.0.variance() / (self.0.count - 1) as Value)
         }
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::VarS
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        self.0.save_to_rdb(rdb);
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggStdP(AggStd);
-impl AggregationHandler for AggStdP {
-    fn save(&self) -> (&str, String) {
-        ("std.p", self.0.to_string())
+impl VarSAggregator {
+    fn new() -> Self {
+        Self(Box::new(AggStd::default()))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = AggStd::from_str(buf);
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let inner = load_online_aggregator(rdb)?;
+        Ok(Self(inner))
     }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct StdPAggregator(OnlineAggregator);
+impl AggregationHandler for StdPAggregator {
     fn update(&mut self, value: Value) {
         self.0.add(value)
     }
@@ -386,20 +419,24 @@ impl AggregationHandler for AggStdP {
             Some((self.0.variance() / self.0.count as Value).sqrt())
         }
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::StdP
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        self.0.save_to_rdb(rdb);
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct AggStdS(AggStd);
-impl AggregationHandler for AggStdS {
-    fn save(&self) -> (&str, String) {
-        ("std.s", self.0.to_string())
+impl StdPAggregator {
+    fn new() -> Self {
+        Self(Box::new(AggStd::default()))
     }
-    fn load(&mut self, buf: &str) {
-        self.0 = AggStd::from_str(buf);
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let inner = load_online_aggregator(rdb)?;
+        Ok(Self(inner))
     }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+pub struct StdSAggregator(OnlineAggregator);
+impl AggregationHandler for StdSAggregator {
     fn update(&mut self, value: Value) {
         self.0.add(value)
     }
@@ -415,26 +452,36 @@ impl AggregationHandler for AggStdS {
             Some((self.0.variance() / (self.0.count - 1) as Value).sqrt())
         }
     }
-    fn aggregation(&self) -> Aggregation {
-        Aggregation::StdS
+    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+        self.0.save_to_rdb(rdb);
+    }
+}
+
+impl StdSAggregator {
+    fn new() -> Self {
+        Self(Box::new(AggStd::default()))
+    }
+    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        let inner = load_online_aggregator(rdb)?;
+        Ok(Self(inner))
     }
 }
 
 #[enum_dispatch(AggregationHandler)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, GetSize)]
 pub enum Aggregator {
-    First(AggFirst),
-    Last(AggLast),
-    Min(AggMin),
-    Max(AggMax),
-    Avg(AggAvg),
-    Sum(AggSum),
-    Count(AggCount),
-    Range(AggRange),
-    StdS(AggStdS),
-    StdP(AggStdP),
-    VarS(AggVarS),
-    VarP(AggVarP),
+    First(FirstAggregator),
+    Last(LastAggregator),
+    Min(MinAggregator),
+    Max(MaxAggregator),
+    Avg(AvgAggregator),
+    Sum(SumAggregator),
+    Count(CountAggregator),
+    Range(RangeAggregator),
+    StdS(StdSAggregator),
+    StdP(StdPAggregator),
+    VarS(VarSAggregator),
+    VarP(VarPAggregator),
 }
 
 impl TryFrom<&ValkeyString> for Aggregator {
@@ -442,7 +489,7 @@ impl TryFrom<&ValkeyString> for Aggregator {
 
     fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
         let str = value.to_string_lossy();
-        let aggregation = Aggregation::try_from(str.as_str())?;
+        let aggregation = AggregationType::try_from(str.as_str())?;
         Ok(aggregation.into())
     }
 }
@@ -451,320 +498,104 @@ impl TryFrom<&str> for Aggregator {
     type Error = ValkeyError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let aggregation = Aggregation::try_from(value)?;
+        let aggregation = AggregationType::try_from(value)?;
         Ok(aggregation.into())
     }
 }
 
-impl From<Aggregation> for Aggregator {
-    fn from(agg: Aggregation) -> Self {
+impl From<AggregationType> for Aggregator {
+    fn from(agg: AggregationType) -> Self {
         match agg {
-            Aggregation::Avg => Aggregator::Avg(AggAvg::default()),
-            Aggregation::Count => Aggregator::Count(AggCount::default()),
-            Aggregation::First => Aggregator::First(AggFirst::default()),
-            Aggregation::Last => Aggregator::Last(AggLast::default()),
-            Aggregation::Max => Aggregator::Max(AggMax::default()),
-            Aggregation::Min => Aggregator::Min(AggMin::default()),
-            Aggregation::Range => Aggregator::Range(AggRange::default()),
-            Aggregation::StdP => Aggregator::StdP(AggStdP::default()),
-            Aggregation::StdS => Aggregator::StdS(AggStdS::default()),
-            Aggregation::VarP => Aggregator::VarP(AggVarP::default()),
-            Aggregation::VarS => Aggregator::VarS(AggVarS::default()),
-            Aggregation::Sum => Aggregator::Sum(AggSum::default()),
+            AggregationType::Avg => Aggregator::Avg(AvgAggregator::default()),
+            AggregationType::Count => Aggregator::Count(CountAggregator::default()),
+            AggregationType::First => Aggregator::First(FirstAggregator::default()),
+            AggregationType::Last => Aggregator::Last(LastAggregator::default()),
+            AggregationType::Max => Aggregator::Max(MaxAggregator::default()),
+            AggregationType::Min => Aggregator::Min(MinAggregator::default()),
+            AggregationType::Range => Aggregator::Range(RangeAggregator::default()),
+            AggregationType::StdP => Aggregator::StdP(StdPAggregator::default()),
+            AggregationType::StdS => Aggregator::StdS(StdSAggregator::default()),
+            AggregationType::VarP => Aggregator::VarP(VarPAggregator::default()),
+            AggregationType::VarS => Aggregator::VarS(VarSAggregator::default()),
+            AggregationType::Sum => Aggregator::Sum(SumAggregator::default()),
         }
     }
 }
 
 impl Aggregator {
-    pub fn new(aggr: Aggregation) -> Self {
+    pub fn new(aggr: AggregationType) -> Self {
         aggr.into()
     }
+
+    pub fn aggregation_type(&self) -> AggregationType {
+        match self {
+            Aggregator::First(_) => AggregationType::First,
+            Aggregator::Last(_) => AggregationType::Last,
+            Aggregator::Min(_) => AggregationType::Min,
+            Aggregator::Max(_) => AggregationType::Max,
+            Aggregator::Avg(_) => AggregationType::Avg,
+            Aggregator::Sum(_) => AggregationType::Sum,
+            Aggregator::Count(_) => AggregationType::Count,
+            Aggregator::Range(_) => AggregationType::Range,
+            Aggregator::StdP(_) => AggregationType::StdP,
+            Aggregator::StdS(_) => AggregationType::StdS,
+            Aggregator::VarP(_) => AggregationType::VarP,
+            Aggregator::VarS(_) => AggregationType::VarS,
+        }
+    }
+    
+    pub fn save(&self, rdb: *mut RedisModuleIO) {
+        // Save the aggregation type first
+        let agg_type = self.aggregation_type();
+        save_aggregation_type(rdb, agg_type);
+
+        match self {
+            Aggregator::First(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Last(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Min(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Max(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Avg(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Sum(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Count(agg) => agg.save_to_rdb(rdb),
+            Aggregator::Range(agg) => agg.save_to_rdb(rdb),
+            Aggregator::StdP(agg) => agg.save_to_rdb(rdb),
+            Aggregator::StdS(agg) => agg.save_to_rdb(rdb),
+            Aggregator::VarP(agg) => agg.save_to_rdb(rdb),
+            Aggregator::VarS(agg) => agg.save_to_rdb(rdb),
+        }
+    }
+
+    pub fn load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        // Load the aggregation type
+        let agg_type = load_aggregation_type(rdb)?;
+        let agg: Aggregator = match agg_type {
+            AggregationType::Avg => AvgAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::Count => CountAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::First => FirstAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::Last => LastAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::Max => MaxAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::Min => MinAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::Range => RangeAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::StdP => StdPAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::StdS => StdSAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::VarP => VarPAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::VarS => VarSAggregator::load_from_rdb(rdb)?.into(),
+            AggregationType::Sum => SumAggregator::load_from_rdb(rdb)?.into(),
+        };
+        Ok(agg)
+    }
+}
+
+fn save_aggregation_type(rdb: *mut RedisModuleIO, agg_type: AggregationType) {
+    let val: u8 = agg_type.into();
+    rdb_save_u8(rdb, val);
+}
+
+fn load_aggregation_type(rdb: *mut RedisModuleIO) -> ValkeyResult<AggregationType> {
+    let val = rdb_load_u8(rdb)?;
+    AggregationType::try_from(val)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_aggregator_first_save_load() {
-        let agg = Aggregator::from(AggFirst(Some(42.0)));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "first");
-
-        let mut new_agg = Aggregator::First(AggFirst::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::First(first) = new_agg {
-            assert_eq!(first.0, Some(42.0));
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_last_save_load() {
-        let agg = Aggregator::Last(AggLast(Some(123.5)));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "last");
-
-        let mut new_agg = Aggregator::Last(AggLast::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Last(last) = new_agg {
-            assert_eq!(last.0, Some(123.5));
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_min_save_load() {
-        let agg = Aggregator::Min(AggMin(Some(-1.5)));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "min");
-
-        let mut new_agg = Aggregator::Min(AggMin::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Min(min) = new_agg {
-            assert_eq!(min.0, Some(-1.5));
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_max_save_load() {
-        let agg = Aggregator::Max(AggMax(Some(999.9)));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "max");
-
-        let mut new_agg = Aggregator::Max(AggMax::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Max(max) = new_agg {
-            assert_eq!(max.0, Some(999.9));
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_sum_save_load() {
-        let agg = Aggregator::Sum(AggSum(123.45));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "sum");
-
-        let mut new_agg = Aggregator::Sum(AggSum::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Sum(sum) = new_agg {
-            assert_eq!(sum.0, 123.45);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_count_save_load() {
-        let agg = Aggregator::Count(AggCount(42));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "count");
-
-        let mut new_agg = Aggregator::Count(AggCount::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Count(count) = new_agg {
-            assert_eq!(count.0, 42);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_avg_save_load() {
-        let agg = Aggregator::Avg(AggAvg {
-            count: 5,
-            sum: 50.0,
-        });
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "avg");
-
-        let mut new_agg = Aggregator::Avg(AggAvg::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Avg(avg) = new_agg {
-            assert_eq!(avg.count, 5);
-            assert_eq!(avg.sum, 50.0);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_range_save_load() {
-        let agg = Aggregator::Range(AggRange {
-            min: 10.0,
-            max: 20.0,
-            init: true,
-        });
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "range");
-
-        let mut new_agg = Aggregator::Range(AggRange::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::Range(range) = new_agg {
-            assert_eq!(range.min, 10.0);
-            assert_eq!(range.max, 20.0);
-            assert!(range.init);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_stdp_save_load() {
-        let agg = Aggregator::StdP(AggStdP(AggStd {
-            sum: 100.0,
-            sum_2: 1050.0,
-            count: 10,
-        }));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "std.p");
-
-        let mut new_agg = Aggregator::StdP(AggStdP::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::StdP(stdp) = new_agg {
-            assert_eq!(stdp.0.sum, 100.0);
-            assert_eq!(stdp.0.sum_2, 1050.0);
-            assert_eq!(stdp.0.count, 10);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_stds_save_load() {
-        let agg = Aggregator::StdS(AggStdS(AggStd {
-            sum: 200.0,
-            sum_2: 4100.0,
-            count: 20,
-        }));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "std.s");
-
-        let mut new_agg = Aggregator::StdS(AggStdS::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::StdS(stds) = new_agg {
-            assert_eq!(stds.0.sum, 200.0);
-            assert_eq!(stds.0.sum_2, 4100.0);
-            assert_eq!(stds.0.count, 20);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_varp_save_load() {
-        let agg = Aggregator::VarP(AggVarP(AggStd {
-            sum: 150.0,
-            sum_2: 2350.0,
-            count: 15,
-        }));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "var.p");
-
-        let mut new_agg = Aggregator::VarP(AggVarP::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::VarP(varp) = new_agg {
-            assert_eq!(varp.0.sum, 150.0);
-            assert_eq!(varp.0.sum_2, 2350.0);
-            assert_eq!(varp.0.count, 15);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_vars_save_load() {
-        let agg = Aggregator::VarS(AggVarS(AggStd {
-            sum: 250.0,
-            sum_2: 6350.0,
-            count: 25,
-        }));
-        let (name, serialized) = agg.save();
-
-        assert_eq!(name, "var.s");
-
-        let mut new_agg = Aggregator::VarS(AggVarS::default());
-        new_agg.load(&serialized);
-
-        if let Aggregator::VarS(vars) = new_agg {
-            assert_eq!(vars.0.sum, 250.0);
-            assert_eq!(vars.0.sum_2, 6350.0);
-            assert_eq!(vars.0.count, 25);
-        } else {
-            panic!("Wrong aggregator type after loading");
-        }
-    }
-
-    #[test]
-    fn test_aggregator_empty_save_load() {
-        // Test with default values
-        let aggregator_types = vec![
-            Aggregator::First(AggFirst::default()),
-            Aggregator::Last(AggLast::default()),
-            Aggregator::Min(AggMin::default()),
-            Aggregator::Max(AggMax::default()),
-            Aggregator::Avg(AggAvg::default()),
-            Aggregator::Sum(AggSum::default()),
-            Aggregator::Count(AggCount::default()),
-            Aggregator::Range(AggRange::default()),
-            Aggregator::StdS(AggStdS::default()),
-            Aggregator::StdP(AggStdP::default()),
-            Aggregator::VarS(AggVarS::default()),
-            Aggregator::VarP(AggVarP::default()),
-        ];
-
-        for agg in aggregator_types {
-            let (name, serialized) = agg.save();
-            assert!(!name.is_empty());
-            assert!(!serialized.is_empty());
-
-            let mut new_agg = match &agg {
-                Aggregator::First(_) => Aggregator::First(AggFirst::default()),
-                Aggregator::Last(_) => Aggregator::Last(AggLast::default()),
-                Aggregator::Min(_) => Aggregator::Min(AggMin::default()),
-                Aggregator::Max(_) => Aggregator::Max(AggMax::default()),
-                Aggregator::Avg(_) => Aggregator::Avg(AggAvg::default()),
-                Aggregator::Sum(_) => Aggregator::Sum(AggSum::default()),
-                Aggregator::Count(_) => Aggregator::Count(AggCount::default()),
-                Aggregator::Range(_) => Aggregator::Range(AggRange::default()),
-                Aggregator::StdS(_) => Aggregator::StdS(AggStdS::default()),
-                Aggregator::StdP(_) => Aggregator::StdP(AggStdP::default()),
-                Aggregator::VarS(_) => Aggregator::VarS(AggVarS::default()),
-                Aggregator::VarP(_) => Aggregator::VarP(AggVarP::default()),
-            };
-
-            new_agg.load(&serialized);
-
-            // Check that they're the same type after loading
-            assert_eq!(new_agg.aggregation(), agg.aggregation());
-        }
-    }
 }

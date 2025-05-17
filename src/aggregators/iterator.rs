@@ -209,7 +209,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
+    use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
 
     fn create_test_samples() -> Vec<Sample> {
@@ -224,7 +224,7 @@ mod tests {
         ]
     }
 
-    fn create_options(aggregator: Aggregation) -> AggregationOptions {
+    fn create_options(aggregator: AggregationType) -> AggregationOptions {
         AggregationOptions {
             aggregation: aggregator,
             bucket_duration: 10,
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_sum_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregation::Sum);
+        let options = create_options(AggregationType::Sum);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_avg_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregation::Avg);
+        let options = create_options(AggregationType::Avg);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn test_max_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregation::Max);
+        let options = create_options(AggregationType::Max);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_min_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregation::Min);
+        let options = create_options(AggregationType::Min);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn test_count_aggregation() {
         let samples = create_test_samples();
-        let options = create_options(Aggregation::Count);
+        let options = create_options(AggregationType::Count);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
@@ -326,7 +326,7 @@ mod tests {
             Sample::new(50, 6.0),
         ];
 
-        let mut options = create_options(Aggregation::Sum);
+        let mut options = create_options(AggregationType::Sum);
         options.report_empty = true;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -356,7 +356,7 @@ mod tests {
             Sample::new(50, 6.0),
         ];
 
-        let mut options = create_options(Aggregation::Last);
+        let mut options = create_options(AggregationType::Last);
         options.report_empty = true;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn test_bucket_timestamp_end() {
         let samples = create_test_samples();
-        let mut options = create_options(Aggregation::Sum);
+        let mut options = create_options(AggregationType::Sum);
         options.timestamp_output = BucketTimestamp::End;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn test_bucket_timestamp_mid() {
         let samples = create_test_samples();
-        let mut options = create_options(Aggregation::Sum);
+        let mut options = create_options(AggregationType::Sum);
         options.timestamp_output = BucketTimestamp::Mid;
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let samples: Vec<Sample> = vec![];
-        let options = create_options(Aggregation::Sum);
+        let options = create_options(AggregationType::Sum);
 
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
 
