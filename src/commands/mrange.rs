@@ -5,6 +5,7 @@ use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mrange_request, MultiRangeResponse};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
+use crate::series::acl::check_metadata_permissions;
 use crate::series::index::series_by_matchers;
 use crate::series::range_utils::{
     aggregate_samples, get_multi_series_range, get_series_labels, group_reduce,
@@ -51,6 +52,8 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     if options.filters.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
     }
+
+    check_metadata_permissions(ctx)?;
 
     args.done()?;
 

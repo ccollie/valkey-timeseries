@@ -1,3 +1,4 @@
+pub mod acl;
 pub mod chunks;
 mod defrag;
 mod guard;
