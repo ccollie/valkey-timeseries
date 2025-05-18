@@ -50,6 +50,8 @@ pub struct TimeSeries {
     pub first_timestamp: Timestamp,
     /// The last timestamp in the time series
     pub last_sample: Option<Sample>,
+    /// Internal bookkeeping for current db. Simplifies event handling related to indexing.
+    /// This is not part of the time series data itself, not is it stored to rdb.
     pub(crate) _db: i32,
 }
 
@@ -948,7 +950,7 @@ impl<'a> SeriesSampleIterator<'a> {
         start: Timestamp,
         end: Timestamp,
         value_filter: &'a Option<ValueFilter>,
-        ts_filter: &'a Option<Vec<Timestamp>>, // box instead
+        ts_filter: &'a Option<Vec<Timestamp>>,
     ) -> Self {
         let chunk_index = find_start_chunk_index(&series.chunks, start);
 
