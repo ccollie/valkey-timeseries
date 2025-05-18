@@ -11,6 +11,11 @@ fn unterminated_string_literal(_: &mut Lexer<Token>) -> ParseResult<()> {
 
 #[derive(Logos, Debug, PartialEq, Clone, Copy)]
 #[logos(error = ParseError)]
+#[logos(subpattern decimal = r"[0-9][_0-9]*")]
+#[logos(subpattern hex = r"-?0[xX][0-9a-fA-F][_0-9a-fA-F]*")]
+#[logos(subpattern octal = r"-?0[oO]?[1-7][_0-7]*")]
+#[logos(subpattern binary = r"-?0[bB][0-1][_0-1]*")]
+#[logos(subpattern float = r"-?(?:([0-9]*[.])?[0-9][0-9_]*)(?:[eE][+-]?[0-9][0-9_]*)?")]
 #[logos(skip r"[ \t\n\f\r]+")]
 #[logos(skip r"#[^\r\n]*(\r\n|\n)?")] // single line comment
 pub enum Token {
@@ -24,6 +29,13 @@ pub enum Token {
     #[regex(r#"`(?s:[^`\\]|\\.)*`"#)]
     #[regex(r#""(?s:[^"\\]|\\.)*""#)]
     StringLiteral,
+
+    #[regex("(?&decimal)", priority = 3)]
+    #[regex("(?&binary)")]
+    #[regex("(?&hex)")]
+    #[regex("(?&octal)")]
+    #[regex("(?&float)")]
+    Number,
 
     #[token("{")]
     LeftBrace,
@@ -71,6 +83,7 @@ impl Token {
             Self::StringLiteral => "<string literal>",
 
             Self::Identifier => "<identifier>",
+            Self::Number => "<number>",
 
             // symbols
             Self::LeftBrace => "{{",
