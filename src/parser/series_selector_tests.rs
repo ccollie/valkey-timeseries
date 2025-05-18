@@ -65,6 +65,24 @@ mod tests {
     }
 
     #[test]
+    fn test_series_selector_number_literal_value() {
+        let input = "job=1234";
+        let result = parse_series_selector(input).unwrap();
+
+        assert_eq!(result.name, None);
+
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 1);
+
+            let matcher = &matchers[0];
+            assert_eq!(matcher.label, "job");
+            assert!(
+                matches!(matcher.matcher, PredicateMatch::Equal(PredicateValue::String(ref s)) if s == "1234")
+            );
+        });
+    }
+
+    #[test]
     fn test_parse_series_selector_single_label_matcher_without_metric_name() {
         let input = "{job=\"prometheus\"}";
         let result = parse_series_selector(input).unwrap();

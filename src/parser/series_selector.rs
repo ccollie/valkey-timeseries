@@ -318,10 +318,11 @@ fn parse_string_literal(lexer: &mut Lexer<Token>) -> ParseResult<String> {
 pub(crate) fn parse_matcher_value(lexer: &mut Lexer<Token>) -> ParseResult<PredicateValue> {
     use Token::*;
 
-    let (tok, text) = expect_one_of_tokens(lexer, &[StringLiteral, Identifier, LeftParen, Eof])?;
+    let (tok, text) =
+        expect_one_of_tokens(lexer, &[StringLiteral, Identifier, Number, LeftParen, Eof])?;
     match tok {
         Eof => return Ok(PredicateValue::Empty),
-        Identifier => {
+        Identifier | Number => {
             return Ok(PredicateValue::String(text.to_string()));
         }
         StringLiteral => {
@@ -337,11 +338,14 @@ pub(crate) fn parse_matcher_value(lexer: &mut Lexer<Token>) -> ParseResult<Predi
         let (tok, name) = if was_value {
             expect_one_of_tokens(lexer, &[Comma, RightParen])?
         } else {
-            expect_one_of_tokens(lexer, &[StringLiteral, Identifier, Comma, RightParen])?
+            expect_one_of_tokens(
+                lexer,
+                &[StringLiteral, Identifier, Number, Comma, RightParen],
+            )?
         };
 
         match tok {
-            Identifier => {
+            Identifier | Number => {
                 values.push(name.to_string());
                 was_value = true;
             }
