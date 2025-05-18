@@ -326,6 +326,10 @@ impl ValueFilter {
             max: value,
         }
     }
+
+    pub fn is_match(&self, value: f64) -> bool {
+        value >= self.min && value <= self.max
+    }
 }
 
 #[cfg(test)]
