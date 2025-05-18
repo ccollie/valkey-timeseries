@@ -77,24 +77,21 @@ impl BucketAlignment {
 impl TryFrom<&str> for BucketAlignment {
     type Error = ValkeyError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let alignment = match value {
-            arg if arg.eq_ignore_ascii_case("start") => BucketAlignment::Start,
-            arg if arg.eq_ignore_ascii_case("end") => BucketAlignment::End,
-            arg if arg.len() == 1 => {
-                let c = arg.chars().next().unwrap();
-                match c {
-                    '-' => BucketAlignment::Start,
-                    '+' => BucketAlignment::End,
-                    _ => return Err(ValkeyError::Str(error_consts::INVALID_ALIGN)),
-                }
-            }
-            _ => {
+        let alignment = hashify::tiny_map_ignore_case! {
+            value.as_bytes(),
+            "start" => BucketAlignment::Start,
+            "end" => BucketAlignment::End,
+            "-" => BucketAlignment::Start,
+            "+" => BucketAlignment::End,
+        };
+        match alignment {
+            Some(alignment) => Ok(alignment),
+            None => {
                 let timestamp = parse_timestamp(value, false)
                     .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGN))?;
-                BucketAlignment::Timestamp(timestamp)
+                Ok(BucketAlignment::Timestamp(timestamp))
             }
-        };
-        Ok(alignment)
+        }
     }
 }
 
@@ -213,4 +210,154 @@ pub fn calc_bucket_start(ts: Timestamp, align_timestamp: Timestamp, bucket_durat
     let diff = ts - align_timestamp;
     let delta = bucket_duration as i64;
     ts - ((diff % delta + delta) % delta)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_timestamp_calculates_correctly_for_start() {
+        let ts = Timestamp::from(1000);
+        let delta = 500;
+        assert_eq!(BucketTimestamp::Start.calculate(ts, delta), ts);
+    }
+
+    #[test]
+    fn bucket_timestamp_calculates_correctly_for_mid() {
+        let ts = Timestamp::from(1000);
+        let delta = 500;
+        assert_eq!(
+            BucketTimestamp::Mid.calculate(ts, delta),
+            Timestamp::from(1250)
+        );
+    }
+
+    #[test]
+    fn bucket_timestamp_calculates_correctly_for_end() {
+        let ts = Timestamp::from(1000);
+        let delta = 500;
+        assert_eq!(
+            BucketTimestamp::End.calculate(ts, delta),
+            Timestamp::from(1500)
+        );
+    }
+
+    #[test]
+    fn bucket_timestamp_try_from_str_parses_valid_values() {
+        assert_eq!(
+            BucketTimestamp::try_from("start").unwrap(),
+            BucketTimestamp::Start
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("end").unwrap(),
+            BucketTimestamp::End
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("mid").unwrap(),
+            BucketTimestamp::Mid
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("-").unwrap(),
+            BucketTimestamp::Start
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("+").unwrap(),
+            BucketTimestamp::End
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("~").unwrap(),
+            BucketTimestamp::Mid
+        );
+    }
+
+    #[test]
+    fn bucket_timestamp_try_from_str_returns_error_for_invalid_value() {
+        assert!(BucketTimestamp::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn bucket_alignment_gets_correct_aligned_timestamp() {
+        let start = Timestamp::from(1000);
+        let end = Timestamp::from(2000);
+        assert_eq!(
+            BucketAlignment::Default.get_aligned_timestamp(start, end),
+            0
+        );
+        assert_eq!(
+            BucketAlignment::Start.get_aligned_timestamp(start, end),
+            start
+        );
+        assert_eq!(BucketAlignment::End.get_aligned_timestamp(start, end), end);
+        assert_eq!(
+            BucketAlignment::Timestamp(Timestamp::from(1500)).get_aligned_timestamp(start, end),
+            Timestamp::from(1500)
+        );
+    }
+
+    #[test]
+    fn bucket_alignment_try_from_str_parses_valid_values() {
+        assert_eq!(
+            BucketAlignment::try_from("start").unwrap(),
+            BucketAlignment::Start
+        );
+        assert_eq!(
+            BucketAlignment::try_from("end").unwrap(),
+            BucketAlignment::End
+        );
+        assert_eq!(
+            BucketAlignment::try_from("-").unwrap(),
+            BucketAlignment::Start
+        );
+        assert_eq!(
+            BucketAlignment::try_from("+").unwrap(),
+            BucketAlignment::End
+        );
+        assert_eq!(
+            BucketAlignment::try_from("1500").unwrap(),
+            BucketAlignment::Timestamp(Timestamp::from(1500))
+        );
+    }
+
+    #[test]
+    fn bucket_alignment_try_from_str_returns_error_for_invalid_value() {
+        assert!(BucketAlignment::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn aggregation_name_returns_correct_value() {
+        assert_eq!(Aggregation::Avg.name(), "avg");
+        assert_eq!(Aggregation::Count.name(), "count");
+        assert_eq!(Aggregation::First.name(), "first");
+        assert_eq!(Aggregation::Last.name(), "last");
+        assert_eq!(Aggregation::Min.name(), "min");
+        assert_eq!(Aggregation::Max.name(), "max");
+        assert_eq!(Aggregation::Sum.name(), "sum");
+        assert_eq!(Aggregation::Range.name(), "range");
+        assert_eq!(Aggregation::StdS.name(), "std.s");
+        assert_eq!(Aggregation::StdP.name(), "std.p");
+        assert_eq!(Aggregation::VarS.name(), "var.s");
+        assert_eq!(Aggregation::VarP.name(), "var.p");
+    }
+
+    #[test]
+    fn aggregation_try_from_str_parses_valid_values() {
+        assert_eq!(Aggregation::try_from("avg").unwrap(), Aggregation::Avg);
+        assert_eq!(Aggregation::try_from("count").unwrap(), Aggregation::Count);
+        assert_eq!(Aggregation::try_from("first").unwrap(), Aggregation::First);
+        assert_eq!(Aggregation::try_from("last").unwrap(), Aggregation::Last);
+        assert_eq!(Aggregation::try_from("min").unwrap(), Aggregation::Min);
+        assert_eq!(Aggregation::try_from("max").unwrap(), Aggregation::Max);
+        assert_eq!(Aggregation::try_from("sum").unwrap(), Aggregation::Sum);
+        assert_eq!(Aggregation::try_from("range").unwrap(), Aggregation::Range);
+        assert_eq!(Aggregation::try_from("std.s").unwrap(), Aggregation::StdS);
+        assert_eq!(Aggregation::try_from("std.p").unwrap(), Aggregation::StdP);
+        assert_eq!(Aggregation::try_from("var.s").unwrap(), Aggregation::VarS);
+        assert_eq!(Aggregation::try_from("var.p").unwrap(), Aggregation::VarP);
+    }
+
+    #[test]
+    fn aggregation_try_from_str_returns_error_for_invalid_value() {
+        assert!(Aggregation::try_from("invalid").is_err());
+    }
 }
