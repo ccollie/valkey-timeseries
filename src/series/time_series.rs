@@ -53,6 +53,8 @@ pub struct TimeSeries {
     pub last_sample: Option<Sample>,
     pub src_series: Option<TimeseriesId>,
     pub rules: Vec<CompactionRule>,
+    /// Internal bookkeeping for current db. Simplifies event handling related to indexing.
+    /// This is not part of the time series data itself, not is it stored to rdb.
     pub(crate) _db: i32,
 }
 
@@ -841,7 +843,7 @@ impl TimeSeries {
         self.update_first_last_timestamps();
         self.total_samples = self.chunks.iter().map(|x| x.len()).sum();
     }
-    
+
     pub fn is_compaction(&self) -> bool {
         self.src_series.is_some()
     }
@@ -957,7 +959,7 @@ impl<'a> SeriesSampleIterator<'a> {
         start: Timestamp,
         end: Timestamp,
         value_filter: &'a Option<ValueFilter>,
-        ts_filter: &'a Option<Vec<Timestamp>>, // box instead
+        ts_filter: &'a Option<Vec<Timestamp>>,
     ) -> Self {
         let chunk_index = find_start_chunk_index(&series.chunks, start);
 

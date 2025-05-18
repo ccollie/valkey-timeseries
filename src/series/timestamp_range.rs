@@ -78,7 +78,7 @@ impl TryFrom<&str> for TimestampValue {
             }
         }
 
-        // ergonomics. Support something like TS.RANGE key -6hrs -3hrs
+        // Ergonomics. Support something like TS.RANGE key -6hrs -3hrs
         if let Some(ch) = value.chars().next() {
             if ch == '-' || ch == '+' {
                 let value = &value[1..];
@@ -105,6 +105,7 @@ impl TryFrom<&str> for TimestampValue {
 fn parse_duration_ms(arg: &str) -> ValkeyResult<i64> {
     parse_duration_value(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
 }
+
 impl TryFrom<String> for TimestampValue {
     type Error = ValkeyError;
 
