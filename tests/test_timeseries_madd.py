@@ -21,7 +21,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify samples were added correctly
         range_result = self.client.execute_command('TS.RANGE', 'ts1', 0, 4000)
-        expected_result = [[1000, b'10.0'], [2000, b'20.0'], [3000, b'30.0']]
+        expected_result = [[1000, b'10'], [2000, b'20'], [3000, b'30']]
         assert range_result == expected_result
 
     def test_madd_multiple_series(self):
