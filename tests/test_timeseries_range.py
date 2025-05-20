@@ -82,6 +82,7 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.RANGE', 'ts1', 1000, 5000, 'AGGREGATION', 'AVG', 2000)
         assert len(result) == 3
         # Bucket 1 (1000-2999): avg(10.1, 20.2) = 15.15
+        print(result)
         assert result[0][0] == 1000
         assert float(result[0][1]) == pytest.approx(15.15)
         # Bucket 2 (3000-4999): avg(30.3, 40.4) = 35.35

@@ -145,9 +145,11 @@ class TestTimeSeriesMRange(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         result = self.client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
-                                             'WITHLABELS', 'AGGREGATION', 'avg', 20,
+                                             'WITHLABELS',
+                                             'AGGREGATION', 'avg', 20,
                                              'FILTER', 'sensor=temp',
-                                             'GROUPBY', 'sensor', 'REDUCE', 'sum')
+                                             'GROUPBY', 'sensor',
+                                             'REDUCE', 'sum')
 
         # Should return just 1 time series that groups both temperature sensors
         assert len(result) == 1
@@ -156,9 +158,11 @@ class TestTimeSeriesMRange(ValkeyTimeSeriesTestCaseBase):
         labels_dict = {item[0].decode(): item[1].decode() for item in result[0][1]}
         assert labels_dict['sensor'] == 'temp'
         assert labels_dict['__reducer__'] == 'sum'
+        print(result)
 
         # Check values are aggregated (sum of both sensors)
         for ts, val in result[0][2]:
+            val = float(val.decode())
             assert val > 40  # Sum of two temp sensors should be > 40
 
     def test_mrange_empty(self):
