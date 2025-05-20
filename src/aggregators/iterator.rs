@@ -11,7 +11,7 @@ struct AggregationHelper {
     bucket_ts: BucketTimestamp,
     bucket_range_start: Timestamp,
     bucket_range_end: Timestamp,
-    aligned_timestamp: Timestamp,
+    align_timestamp: Timestamp,
     last_value: f64,
     all_nans: bool,
     count: usize,
@@ -19,9 +19,9 @@ struct AggregationHelper {
 }
 
 impl AggregationHelper {
-    pub(crate) fn new(options: &AggregationOptions, aligned_timestamp: Timestamp) -> Self {
+    pub(crate) fn new(options: &AggregationOptions, align_timestamp: Timestamp) -> Self {
         AggregationHelper {
-            aligned_timestamp,
+            align_timestamp,
             report_empty: options.report_empty,
             aggregator: options.aggregation.into(),
             bucket_duration: options.bucket_duration,
@@ -128,7 +128,7 @@ impl AggregationHelper {
     }
 
     fn calc_bucket_start(&self, ts: Timestamp) -> Timestamp {
-        let diff = ts - self.aligned_timestamp;
+        let diff = ts - self.align_timestamp;
         let delta = self.bucket_duration as i64;
         ts - ((diff % delta + delta) % delta)
     }
