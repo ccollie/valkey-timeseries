@@ -1,8 +1,9 @@
-use crate::aggregators::Aggregator;
+use crate::aggregators::{AggregationHandler, Aggregator};
 use crate::common::{Sample, Timestamp};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
 use get_size::GetSize;
 use valkey_module::{raw, AclPermissions, Context, ValkeyResult};
+use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::series::index::{get_series_by_id, with_timeseries_index};
 
 #[derive(Debug, Clone, PartialEq, GetSize)]
@@ -11,6 +12,7 @@ pub struct CompactionRule {
     pub aggregator: Aggregator,
     pub bucket_duration: u64,
     pub align_timestamp: Timestamp,
+    pub bucket_end: Timestamp,
 }
 
 impl CompactionRule {
@@ -21,7 +23,8 @@ impl CompactionRule {
         raw::save_unsigned(rdb, self.dest_id);
         self.aggregator.save(rdb);
         raw::save_unsigned(rdb, self.bucket_duration);
-        raw::save_unsigned(rdb, self.align_timestamp as u64);
+        rdb_save_timestamp(rdb, self.align_timestamp);
+        rdb_save_timestamp(rdb, self.bucket_end);
     }
     
     pub fn load_from_rdb(
@@ -30,13 +33,15 @@ impl CompactionRule {
         let dest_id = raw::load_unsigned(rdb)? as SeriesRef;
         let aggregator = Aggregator::load(rdb)?;
         let bucket_duration = raw::load_unsigned(rdb)?;
-        let align_timestamp = raw::load_unsigned(rdb)? as Timestamp;
+        let align_timestamp = rdb_load_timestamp(rdb)?;
+        let bucket_end = rdb_load_timestamp(rdb)?;
 
         Ok(CompactionRule {
             dest_id,
             aggregator,
             bucket_duration,
             align_timestamp,
+            bucket_end,
         })
     }
 
@@ -74,10 +79,10 @@ pub enum CompactionResult {
     InvalidDestination(SeriesRef),
 }
 
-fn run_compaction_internal(ctx: &Context, rule: &mut CompactionRule, sample: Sample) -> CompactionResult {
-    let start = rule.calc_bucket_start(sample.timestamp);
-    let end = start + rule.bucket_duration as i64;
-    rule.aggregator.update(sample, start, end);
+fn run_compaction_internal(ctx: &CompactionUpdateContext, sample: Sample) -> CompactionResult {
+    let start = ctx.rule.calc_bucket_start(sample.timestamp);
+    let end = start + ctx.rule.bucket_duration as i64;
+    rule.aggregator.update(sample.value);
     
     let res = get_series_by_id(ctx, rule.dest_id, false, Some(AclPermissions::UPDATE));
     if res.is_err() {
@@ -102,6 +107,36 @@ fn run_compaction_internal(ctx: &Context, rule: &mut CompactionRule, sample: Sam
     }
 }
 
-fn run_compactions(ctx: &Context, rules: &[&mut CompactionRule], value: Sample) {
+struct CompactionUpdateContext<'a> {
+    series: &'a mut TimeSeries,
+    rule: &'a mut CompactionRule,
+}
 
+fn run_compactions_internal(ctx: &Context, rules: &[&mut CompactionUpdateContext], value: Sample) {
+
+}
+
+fn run_compactions(ctx: &Context, series: &mut TimeSeries, value: Sample) {
+    let mut compaction_rules = Vec::new();
+    for rule in series.rules.iter_mut() {
+        if rule.dest_id == 0 {
+            continue;
+        }
+        let res = get_series_by_id(ctx, rule.dest_id, false, Some(AclPermissions::UPDATE));
+        if res.is_err() {
+            // could be permissions related
+            // mark the id for removal, signal to src_series to remove it
+        } else {
+            let Some(mut dest) = res.unwrap() else {
+                // todo: mark the id for removal, signal to src_series to remove it
+                mark_series_for_removal(ctx, rule.dest_id);
+                return CompactionResult::InvalidDestination(rule.dest_id);
+            };
+            compaction_rules.push(CompactionUpdateContext {
+                series,
+                rule,
+            });
+        }
+    }
+    run_compactions_internal(ctx, &compaction_rules, value);
 }
