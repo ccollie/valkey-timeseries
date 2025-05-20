@@ -4,15 +4,57 @@ use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
 use crate::series::TimeSeries;
+use std::cmp::Ordering;
+
+#[allow(dead_code)]
+pub(super) fn filter_sample_by_timestamps_internal(
+    timestamp: Timestamp,
+    timestamps: &[Timestamp],
+    index: &mut usize,
+) -> Option<bool> {
+    if *index >= timestamps.len() {
+        return None;
+    }
+
+    let mut first_ts = timestamps[*index];
+    match timestamp.cmp(&first_ts) {
+        Ordering::Less => Some(false),
+        Ordering::Equal => {
+            *index += 1;
+            Some(true)
+        }
+        Ordering::Greater => {
+            while first_ts < timestamp && *index < timestamps.len() {
+                *index += 1;
+                first_ts = timestamps[*index];
+                if first_ts == timestamp {
+                    *index += 1;
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn filter_samples_by_timestamps(samples: &mut Vec<Sample>, timestamps: &[Timestamp]) {
+    let mut index = 0;
+    samples.retain(move |sample| {
+        filter_sample_by_timestamps_internal(sample.timestamp, timestamps, &mut index)
+            .unwrap_or_default()
+    });
+}
 
 pub(crate) fn get_range(
     series: &TimeSeries,
     args: &RangeOptions,
     check_retention: bool,
 ) -> Vec<Sample> {
-    let (start_timestamp, end_timestamp) =
-        args.date_range
-            .get_series_range(series, None, check_retention);
+    let (mut start_timestamp, end_timestamp) = args.date_range.get_timestamps(None);
+    if check_retention && !series.retention.is_zero() {
+        start_timestamp = series.get_min_timestamp().max(start_timestamp);
+    }
 
     let mut range = series.get_range_filtered(
         start_timestamp,
@@ -22,19 +64,19 @@ pub(crate) fn get_range(
     );
 
     if let Some(aggr_options) = &args.aggregation {
-        aggregate_samples(
+        range = aggregate_samples(
             range.into_iter(),
             start_timestamp,
             end_timestamp,
             aggr_options,
         )
-    } else {
-        if let Some(count) = args.count {
-            range.truncate(count);
-        }
-        range
     }
-    // group by
+
+    if let Some(count) = args.count {
+        range.truncate(count);
+    }
+
+    range
 }
 
 pub fn get_multi_series_range(
