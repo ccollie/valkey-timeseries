@@ -241,7 +241,7 @@ impl Chunk for GorillaChunk {
 
         let mut result = Vec::with_capacity(samples.len());
 
-        // we assume that samples are sorted. Try to optimize by seeing if all samples are past the
+        // We assume that samples are sorted. Try to optimize by seeing if all samples are past the
         // current chunk's last timestamp.
         let first = samples[0];
         if self.is_empty() || first.timestamp > self.last_timestamp() {

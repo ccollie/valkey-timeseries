@@ -20,12 +20,18 @@ use valkey_module::{raw, ValkeyError, ValkeyResult, ValkeyValue};
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize)]
 /// The policy to use when a duplicate sample is encountered
 pub enum DuplicatePolicy {
+    /// Block the sample and return an error
     #[default]
     Block,
+    /// Keep the first sample
     KeepFirst,
+    /// Keep the last (current) sample
     KeepLast,
+    /// Keep the minimum value of the current and old sample
     Min,
+    /// Keep the maximum value of the current and old sample
     Max,
+    /// Sum the current and old sample
     Sum,
 }
 
@@ -47,6 +53,60 @@ impl DuplicatePolicy {
         }
     }
 
+
+    /// Handles duplicate values for a given timestamp based on the `DuplicatePolicy`
+    /// defined for the current instance.
+    ///
+    /// # Parameters
+    /// - `self`: The current `DuplicatePolicy` instance.
+    /// - `ts`: The `Timestamp` of the duplicate sample.
+    /// - `old`: The previously stored value.
+    /// - `new`: The newly encountered value.
+    ///
+    /// # Returns
+    /// - `TsdbResult<f64>`: A result containing the resolved value as per the duplicate
+    ///   policy, or an error if the policy is `Block` and a duplicate value is encountered.
+    ///
+    /// # Behavior
+    /// The behavior of the method is determined by the policy represented by `self`:
+    ///
+    /// - **`Block`**:
+    ///   - Always returns an error of type `TsdbError::DuplicateSample` with information about
+    ///     the conflicting value and timestamp.
+    ///
+    /// - **`KeepFirst`**:
+    ///   - Retains and returns the `old` value.
+    ///
+    /// - **`KeepLast`**:
+    ///   - Replaces the `old` value with the `new` value and returns `new`.
+    ///
+    /// - **`Min`**:
+    ///   - Returns the smaller of the `old` and `new` values (`old.min(new)`).
+    ///
+    /// - **`Max`**:
+    ///   - Returns the larger of the `old` and `new` values (`old.max(new)`).
+    ///
+    /// - **`Sum`**:
+    ///   - Returns the sum of `old` and `new` values (`old + new`).
+    ///
+    /// # Special Cases
+    /// - If either `old` or `new` is NaN (Not-a-Number):
+    ///   - If the policy is not `Block`, the method returns the non-NaN value
+    ///     (`new` if `old` is NaN or `old` if `new` is NaN).
+    ///   - If both `old` and `new` are NaN, it returns `old`.
+    ///
+    /// # Errors
+    /// - Returns `TsdbError::DuplicateSample` if the `DuplicatePolicy` is `Block`
+    ///   and a duplicate value is encountered.
+    ///
+    /// # Example
+    /// ```rust
+    /// let result = duplicate_policy.duplicate_value(ts, 42.0, 43.0);
+    /// match result {
+    ///     Ok(value) => println!("Resolved value: {}", value),
+    ///     Err(err) => eprintln!("Error: {}", err),
+    /// }
+    /// ```
     pub fn duplicate_value(self, ts: Timestamp, old: f64, new: f64) -> TsdbResult<f64> {
         use DuplicatePolicy::*;
         if (old.is_nan() || new.is_nan()) && self != Block {
@@ -101,6 +161,8 @@ impl TryFrom<String> for DuplicatePolicy {
     }
 }
 
+
+/// A struct that defines the policy for determining and handling duplicate samples in a dataset.
 #[derive(Copy, Clone, Default, Debug, GetSize, PartialEq)]
 pub struct SampleDuplicatePolicy {
     pub policy: Option<DuplicatePolicy>,
@@ -168,7 +230,7 @@ impl SampleDuplicatePolicy {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum SampleAddResult {
     Ok(Timestamp),
     Duplicate,
@@ -176,7 +238,12 @@ pub enum SampleAddResult {
     TooOld,
     Error(&'static str),
     CapacityFull,
+    #[default]
     InvalidKey,
+    InvalidPermissions,
+    InvalidValue,
+    InvalidTimestamp,
+    NegativeTimestamp,
 }
 
 impl SampleAddResult {
@@ -194,7 +261,11 @@ impl Display for SampleAddResult {
             SampleAddResult::TooOld => write!(f, "{}", error_consts::SAMPLE_TOO_OLD),
             SampleAddResult::Error(e) => write!(f, "{}", e),
             SampleAddResult::CapacityFull => write!(f, "Capacity full"),
-            SampleAddResult::InvalidKey => write!(f, "Invalid key"),
+            SampleAddResult::InvalidKey => write!(f, "{}", error_consts::INVALID_TIMESERIES_KEY),
+            SampleAddResult::InvalidPermissions => write!(f, "{}", error_consts::PERMISSION_DENIED),
+            SampleAddResult::InvalidValue => write!(f, "{}", error_consts::INVALID_VALUE),
+            SampleAddResult::InvalidTimestamp => write!(f, "{}", error_consts::INVALID_TIMESTAMP),
+            SampleAddResult::NegativeTimestamp => write!(f, "{}", error_consts::NEGATIVE_TIMESTAMP),
         }
     }
 }
@@ -203,11 +274,20 @@ impl From<SampleAddResult> for ValkeyValue {
     fn from(res: SampleAddResult) -> Self {
         match res {
             SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
-            _ => ValkeyValue::Null,
+            SampleAddResult::Error(e) => ValkeyValue::StaticError(e),
+            SampleAddResult::TooOld => ValkeyValue::StaticError(error_consts::SAMPLE_TOO_OLD),
+            SampleAddResult::InvalidKey => ValkeyValue::StaticError(error_consts::INVALID_TIMESERIES_KEY),
+            SampleAddResult::InvalidValue => ValkeyValue::StaticError(error_consts::INVALID_VALUE),
+            SampleAddResult::InvalidTimestamp => ValkeyValue::StaticError(error_consts::INVALID_TIMESTAMP),
+            SampleAddResult::NegativeTimestamp => ValkeyValue::StaticError(error_consts::NEGATIVE_TIMESTAMP),
+            SampleAddResult::Duplicate => ValkeyValue::StaticError(error_consts::DUPLICATE_SAMPLE_BLOCKED),
+            SampleAddResult::CapacityFull => ValkeyValue::StaticError(error_consts::CAPACITY_FULL),
+            SampleAddResult::InvalidPermissions => ValkeyValue::StaticError(error_consts::KEY_WRITE_PERMISSION_ERROR),
         }
     }
 }
 
+/// Options for time series configuration
 #[derive(Debug, Clone)]
 pub struct TimeSeriesOptions {
     pub chunk_compression: ChunkEncoding,
@@ -533,14 +613,14 @@ mod tests {
             max_value_delta: 0.0, // Zero value delta
         };
 
-        // With exact same values
+        // With the exact same values
         let current_sample = Sample {
             timestamp: 105,
             value: 10.0,
         };
         assert!(policy.is_duplicate(&current_sample, &last_sample, None));
 
-        // With slight value difference
+        // With a slight value difference
         let current_sample = Sample {
             timestamp: 125,
             value: 10.00001,

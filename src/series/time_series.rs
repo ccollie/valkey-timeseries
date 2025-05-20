@@ -302,14 +302,17 @@ impl TimeSeries {
     /// This function efficiently groups samples by the chunks they would belong to
     /// and applies the appropriate duplicate policy when merging.
     ///
-    /// # Arguments
+    /// ## Arguments
     ///
     /// * `samples` - A slice of samples to merge into the time series
     /// * `policy_override` - Optional override for the duplicate policy to use when merging
     ///
-    /// # Returns
+    /// ## Returns
     ///
     /// A result containing a vector of `SampleAddResult` with the outcome for each sample.
+    /// 
+    /// TODO: handle splitting chunks
+    /// 
     pub fn merge_samples(
         &mut self,
         samples: &[Sample],
