@@ -38,7 +38,8 @@ pub const MISSING_TIMESTAMP_FILTER_VALUE: &str = "TSDB: missing timestamp filter
 pub const KEY_NOT_FOUND: &str = "TSDB: the key does not exist";
 pub const INVALID_TIMESERIES_KEY: &str = "TSDB: the key is not a TSDB key";
 pub const KEY_READ_PERMISSION_ERROR: &str = "TSDB: key permission error";
-pub const KEY_WRITE_PERMISSION_ERROR: &str = "TSDB: the current user does not have permissions to write to a given key";
+pub const KEY_WRITE_PERMISSION_ERROR: &str =
+    "TSDB: the current user does not have permissions to write to a given key";
 pub const KEY_UPDATE_PERMISSION_ERROR: &str = "TSDB: key update permission error";
 pub const KEY_DELETE_PERMISSION_ERROR: &str = "TSDB: key delete permission error";
 pub const DUPLICATE_KEY: &str = "TSDB: key already exists";

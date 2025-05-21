@@ -53,7 +53,6 @@ impl DuplicatePolicy {
         }
     }
 
-
     /// Handles duplicate values for a given timestamp based on the `DuplicatePolicy`
     /// defined for the current instance.
     ///
@@ -160,7 +159,6 @@ impl TryFrom<String> for DuplicatePolicy {
         DuplicatePolicy::from_str(&s)
     }
 }
-
 
 /// A struct that defines the policy for determining and handling duplicate samples in a dataset.
 #[derive(Copy, Clone, Default, Debug, GetSize, PartialEq)]
@@ -276,13 +274,23 @@ impl From<SampleAddResult> for ValkeyValue {
             SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
             SampleAddResult::Error(e) => ValkeyValue::StaticError(e),
             SampleAddResult::TooOld => ValkeyValue::StaticError(error_consts::SAMPLE_TOO_OLD),
-            SampleAddResult::InvalidKey => ValkeyValue::StaticError(error_consts::INVALID_TIMESERIES_KEY),
+            SampleAddResult::InvalidKey => {
+                ValkeyValue::StaticError(error_consts::INVALID_TIMESERIES_KEY)
+            }
             SampleAddResult::InvalidValue => ValkeyValue::StaticError(error_consts::INVALID_VALUE),
-            SampleAddResult::InvalidTimestamp => ValkeyValue::StaticError(error_consts::INVALID_TIMESTAMP),
-            SampleAddResult::NegativeTimestamp => ValkeyValue::StaticError(error_consts::NEGATIVE_TIMESTAMP),
-            SampleAddResult::Duplicate => ValkeyValue::StaticError(error_consts::DUPLICATE_SAMPLE_BLOCKED),
+            SampleAddResult::InvalidTimestamp => {
+                ValkeyValue::StaticError(error_consts::INVALID_TIMESTAMP)
+            }
+            SampleAddResult::NegativeTimestamp => {
+                ValkeyValue::StaticError(error_consts::NEGATIVE_TIMESTAMP)
+            }
+            SampleAddResult::Duplicate => {
+                ValkeyValue::StaticError(error_consts::DUPLICATE_SAMPLE_BLOCKED)
+            }
             SampleAddResult::CapacityFull => ValkeyValue::StaticError(error_consts::CAPACITY_FULL),
-            SampleAddResult::InvalidPermissions => ValkeyValue::StaticError(error_consts::KEY_WRITE_PERMISSION_ERROR),
+            SampleAddResult::InvalidPermissions => {
+                ValkeyValue::StaticError(error_consts::KEY_WRITE_PERMISSION_ERROR)
+            }
         }
     }
 }

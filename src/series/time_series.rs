@@ -313,9 +313,9 @@ impl TimeSeries {
     /// ## Returns
     ///
     /// A result containing a vector of `SampleAddResult` with the outcome for each sample.
-    /// 
+    ///
     /// TODO: handle splitting chunks
-    /// 
+    ///
     pub fn merge_samples(
         &mut self,
         samples: &[Sample],
