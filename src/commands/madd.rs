@@ -193,7 +193,7 @@ fn parse_args<'a>(
         let raw_value = &args[index + 2];
         let timestamp_str = raw_timestamp.try_as_str()?;
 
-        let series_samples = input_map.entry(key).or_insert_with(SeriesSamples::default);
+        let series_samples = input_map.entry(key).or_default();
 
         // if series_samples is new, we need to look up the series by key
         let mut res = if series_samples.samples.is_empty() {
@@ -231,7 +231,7 @@ fn parse_args<'a>(
         };
 
         if timestamp_str == "*" {
-            raw_timestamp = &current_ts;
+            raw_timestamp = current_ts;
         }
 
         series_samples.samples.push(ParsedInput {
@@ -264,7 +264,7 @@ fn handle_replication(ctx: &Context, inputs: &[ParsedInput]) {
     if !replication_args.is_empty() {
         ctx.replicate("TS.MADD", &*replication_args);
         for key in replication_args.into_iter().step_by(3) {
-            ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.ADD", key);
+            ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", key);
         }
     }
 }
