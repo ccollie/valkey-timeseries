@@ -11,7 +11,7 @@ const MILLIS_PER_YEAR: f64 = 365.0 * MILLIS_PER_DAY;
 /// `positive_duration_value` returns positive duration in milliseconds for the given s
 /// and the given step.
 ///
-/// Duration in s may be combined, i.e. 2h5m or 2h-5m.
+/// Duration in s may be combined, i.e., 2h5m or 2h-5m.
 ///
 /// Error is returned if the duration in s is negative.
 pub fn parse_positive_duration_value(s: &str) -> Result<i64, ParseError> {
@@ -35,7 +35,7 @@ fn validate_duration(ms: f64) -> ParseResult<f64> {
 
 /// `parse_duration_value` returns the duration in milliseconds for the given s
 ///
-/// Duration in s may be combined, i.e. 2h5m, -2h5m or 2h-5m.
+/// Duration in s may be combined, i.e., 2h5m, -2h5m or 2h-5m.
 ///
 /// The returned duration value can be negative.
 pub fn parse_duration_internal(s: &str) -> ParseResult<f64> {

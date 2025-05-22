@@ -32,7 +32,7 @@ pub trait AggregationHandler {
     fn save_to_rdb(&self, rdb: *mut RedisModuleIO);
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct FirstAggregator(Option<Value>);
 impl AggregationHandler for FirstAggregator {
     fn update(&mut self, value: Value) {
@@ -60,7 +60,7 @@ impl FirstAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct LastAggregator(Option<Value>);
 impl AggregationHandler for LastAggregator {
     fn update(&mut self, value: Value) {
@@ -86,7 +86,7 @@ impl LastAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MinAggregator(Option<Value>);
 impl AggregationHandler for MinAggregator {
     fn update(&mut self, value: Value) {
@@ -115,7 +115,7 @@ impl MinAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MaxAggregator(Option<Value>);
 impl AggregationHandler for MaxAggregator {
     fn update(&mut self, value: Value) {
@@ -144,7 +144,7 @@ impl MaxAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct RangeAggregator {
     min: Value,
     max: Value,
@@ -184,7 +184,7 @@ impl RangeAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct AvgAggregator {
     count: usize,
     sum: Value,
@@ -219,7 +219,7 @@ impl AvgAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct SumAggregator(Value);
 impl AggregationHandler for SumAggregator {
     fn update(&mut self, value: Value) {
@@ -246,7 +246,7 @@ impl SumAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct CountAggregator(usize);
 impl AggregationHandler for CountAggregator {
     fn update(&mut self, _value: Value) {
@@ -273,7 +273,7 @@ impl CountAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct AggStd {
     sum: Value,
     sum_2: Value,
