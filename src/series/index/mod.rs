@@ -192,6 +192,14 @@ pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
     index.mark_id_as_stale(id);
 }
 
+pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
+    // mark the id for removal, signal to src_series to remove it
+    with_timeseries_index(ctx, |index| {
+        index.mark_id_as_stale(id);
+    });
+}
+
+
 pub(crate) fn init_croaring_allocator() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| unsafe { croaring::configure_rust_alloc() });
