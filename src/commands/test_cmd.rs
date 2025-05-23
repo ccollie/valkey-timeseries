@@ -1,22 +1,13 @@
-use valkey_module::{Context, ValkeyResult, ValkeyString, VALKEY_OK};
-use valkey_module_macros::command;
+use crate::commands::parse_metadata_command_args;
+use crate::series::index::series_keys_by_matchers;
+use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// Stub function for easier testing of arbitrary code
-#[command(
-    {
-        name: "TEST",
-        flags: [ReadOnly],
-        arity: 0,
-        key_spec: [
-            {
-                notes: "test command that define all the arguments at even position as keys",
-                flags: [ReadOnly, Access],
-                begin_search: Keyword({ keyword : "foo", startfrom : 1 }),
-                find_keys: Range({ last_key :- 1, steps : 0, limit : 0 }),
-            }
-        ]
-    }
-)]
-pub fn test(_ctx: &Context, _args: Vec<ValkeyString>) -> ValkeyResult {
-    VALKEY_OK
+pub fn test_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    let mut args = args.into_iter().skip(1).peekable();
+    let options = parse_metadata_command_args(&mut args, true)?;
+
+    let keys = series_keys_by_matchers(ctx, &options.matchers, None)?;
+
+    Ok(ValkeyValue::from(keys))
 }
