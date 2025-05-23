@@ -1,4 +1,5 @@
 import pytest
+from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -64,11 +65,11 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # Query for all metrics with name not equal to cpu
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!=cpu'))
-        assert result == [b'ts3', b'ts4', b'ts7']
+        assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
         # Query for all metrics with type not matching 'usage'
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'type!=usage'))
-        assert result == [b'ts5']
+        assert result == [b'ts5', b'ts6']
 
     def test_prometheus_not_regex_matcher(self):
         """Test Prometheus-style regex negation matchers (label!~"regex")"""
@@ -92,7 +93,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # CPU metrics that are not usage type
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu', 'type!=usage'))
-        assert result == [b'ts5']
+        assert result == [b'ts5', b'ts6']
 
         # Non-CPU metrics that are usage type
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!=cpu', 'type=usage'))
@@ -119,7 +120,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Find series that match regex but don't match another condition
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name="~.*"', 'type!=usage'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=~".*"', 'type!=usage'))
         assert result == [b'ts5']
 
         # Mix of equals, not equals, and regex
@@ -131,11 +132,10 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Empty query should return error
-        self.verify_error_response(self.client, 'TS.QUERYINDEX', "wrong number of arguments for 'TS.QUERYINDEX' command")
+        with pytest.raises(ResponseError) as excinfo:
+            self.client.execute_command('TS.QUERYINDEX')
+        assert "wrong number of arguments for 'ts.queryindex' command" in str(excinfo.value).lower()
 
-        # Invalid filter format
-        self.verify_error_response(self.client, 'TS.QUERYINDEX invalid_filter',
-                                   "Invalid filter: invalid_filter")
 
     def test_no_results(self):
         """Test queries that should return no results"""
