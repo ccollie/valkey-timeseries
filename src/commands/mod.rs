@@ -44,3 +44,5 @@ pub use query_index::*;
 pub use range::*;
 pub use rev_range::*;
 pub use stats::*;
+
+pub use test_cmd::*;
