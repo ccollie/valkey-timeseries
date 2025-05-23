@@ -65,7 +65,6 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
     def test_labelnames_with_time_range(self):
         """Test TS.LABELNAMES with time range filters"""
-        self.setup_test_data(self.client)
 
         now = 1000
 
