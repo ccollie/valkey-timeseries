@@ -2378,14 +2378,33 @@ mod tests {
     #[test]
     fn test_has_samples_in_range_no_overlap() {
         // Create a chunk with samples from 10 to 50
-        for encoding in [ChunkEncoding::Uncompressed, ChunkEncoding::Gorilla, ChunkEncoding::Pco] {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
-                Sample { timestamp: 10, value: 1.0 },
-                Sample { timestamp: 20, value: 2.0 },
-                Sample { timestamp: 30, value: 3.0 },
-                Sample { timestamp: 40, value: 4.0 },
-                Sample { timestamp: 50, value: 5.0 },
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 20,
+                    value: 2.0,
+                },
+                Sample {
+                    timestamp: 30,
+                    value: 3.0,
+                },
+                Sample {
+                    timestamp: 40,
+                    value: 4.0,
+                },
+                Sample {
+                    timestamp: 50,
+                    value: 5.0,
+                },
             ];
             chunk.set_data(&samples).unwrap();
 
@@ -2401,11 +2420,26 @@ mod tests {
     fn test_has_samples_in_range_with_samples() {
         let mut chunk = TimeSeriesChunk::new(ChunkEncoding::Gorilla, 1024);
         let samples = vec![
-            Sample { timestamp: 10, value: 1.0 },
-            Sample { timestamp: 20, value: 2.0 },
-            Sample { timestamp: 30, value: 3.0 },
-            Sample { timestamp: 40, value: 4.0 },
-            Sample { timestamp: 50, value: 5.0 },
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
         ];
         chunk.set_data(&samples).unwrap();
 
@@ -2414,7 +2448,7 @@ mod tests {
         assert!(chunk.has_samples_in_range(10, 30));
         assert!(chunk.has_samples_in_range(10, 10)); // Exact match on first
         assert!(chunk.has_samples_in_range(50, 50)); // Exact match on last
-        assert!(chunk.has_samples_in_range(5, 55));  // Wider range including all samples
+        assert!(chunk.has_samples_in_range(5, 55)); // Wider range including all samples
     }
 
     #[test]
@@ -2427,12 +2461,25 @@ mod tests {
 
     #[test]
     fn test_has_samples_in_range_gaps_in_data() {
-        for encoding in [ChunkEncoding::Uncompressed, ChunkEncoding::Gorilla, ChunkEncoding::Pco] {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
-                Sample { timestamp: 10, value: 1.0 },
-                Sample { timestamp: 30, value: 3.0 },
-                Sample { timestamp: 50, value: 5.0 },
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 30,
+                    value: 3.0,
+                },
+                Sample {
+                    timestamp: 50,
+                    value: 5.0,
+                },
             ];
             chunk.set_data(&samples).unwrap();
 
@@ -2448,11 +2495,21 @@ mod tests {
     #[test]
     fn test_has_samples_in_range_different_encodings() {
         // Test with different chunk encodings to ensure behavior is consistent
-        for encoding in [ChunkEncoding::Uncompressed, ChunkEncoding::Gorilla, ChunkEncoding::Pco] {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
-                Sample { timestamp: 10, value: 1.0 },
-                Sample { timestamp: 20, value: 2.0 },
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 20,
+                    value: 2.0,
+                },
             ];
             chunk.set_data(&samples).unwrap();
 
@@ -2463,11 +2520,21 @@ mod tests {
 
     #[test]
     fn test_has_samples_in_range_edge_cases() {
-        for encoding in [ChunkEncoding::Uncompressed, ChunkEncoding::Gorilla, ChunkEncoding::Pco] {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
-                Sample { timestamp: 10, value: 1.0 },
-                Sample { timestamp: 20, value: 2.0 },
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 20,
+                    value: 2.0,
+                },
             ];
             chunk.set_data(&samples).unwrap();
 
@@ -2480,5 +2547,4 @@ mod tests {
             assert!(!chunk.has_samples_in_range(15, 15)); // Overlaps chunk but no sample at exactly 15
         }
     }
-
 }
