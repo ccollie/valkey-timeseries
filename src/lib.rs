@@ -139,6 +139,7 @@ valkey_module! {
         ["TS.LABELNAMES", commands::label_names, "readonly fast", 0, 0, 0, "fast read timeseries"],
         ["TS.LABELVALUES", commands::label_values, "readonly fast", 0, 0, 0, "fast read timeseries"],
         ["TS.STATS", commands::stats, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.TEST", commands::test_cmd, "readonly", 0, 0, 0, "read timeseries"]
     ]
     event_handlers: [
         [@SET @STRING @GENERIC @EVICTED @EXPIRED : generic_key_event_handler]
