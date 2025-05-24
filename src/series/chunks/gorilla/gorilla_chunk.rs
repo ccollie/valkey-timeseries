@@ -303,22 +303,13 @@ impl Chunk for GorillaChunk {
             return Ok(self.clone());
         }
 
-        let mut first_ts: Timestamp = 0;
-        let mut other_first_ts: Timestamp = 0;
-
         let mid = self.len() / 2;
         for (i, value) in self.encoder.iter().enumerate() {
             let sample = value?;
             if i < mid {
-                if first_ts == 0 {
-                    first_ts = sample.timestamp;
-                }
                 // todo: handle min and max timestamps
                 push_sample(&mut left_chunk, &sample)?;
             } else {
-                if other_first_ts == 0 {
-                    other_first_ts = sample.timestamp;
-                }
                 push_sample(&mut right_chunk.encoder, &sample)?;
             }
         }
