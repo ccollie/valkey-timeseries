@@ -84,6 +84,8 @@ cargo build --release
 cargo build --release --features valkey_8_0
 valkey-server --loadmodule ./target/release/libvalkey_timeseries.so
 ```
+**Note**: This library requires a minimum rust version of `1.86`.
+
 #### Running Unit tests
 
 To run all unit tests, follow these steps:
