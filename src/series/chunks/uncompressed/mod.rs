@@ -332,9 +332,6 @@ impl Chunk for UncompressedChunk {
             &mut state,
             |state, sample, duplicate| {
                 let is_new = sample_set.remove(&sample.timestamp);
-                if state.dest.len() >= max_len {
-                    return Err(TsdbError::CapacityFull(max_len));
-                }
                 state.dest.push(sample);
                 if is_new {
                     if duplicate {
