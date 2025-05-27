@@ -231,7 +231,7 @@ impl TimeSeriesChunk {
     }
 
     pub fn should_split(&self) -> bool {
-        self.utilization() > SPLIT_FACTOR
+        self.utilization() >= SPLIT_FACTOR
     }
 
     pub(crate) fn upsert(

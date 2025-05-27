@@ -1,9 +1,7 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
-use crate::common::parallel::items::Items;
 use crate::common::parallel::join;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
-use crate::error::TsdbResult;
 use crate::series::{get_timeseries_mut, SampleAddResult, SeriesGuardMut, TimeSeries};
 use ahash::AHashMap;
 use smallvec::{smallvec, SmallVec};
@@ -61,10 +59,10 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let current_ts = ctx.create_string(now.to_string());
 
     // parse the input arguments into a map of samples grouped by series
-    let mut input_map = parse_args(ctx, &args, &current_ts)?;
+    let mut input_map = parse_args(ctx, &args[1..], &current_ts)?;
 
     // map results to the input
-    let results = handle_update(&mut input_map);
+    let results = handle_update(&mut input_map)?;
 
     // reassemble the input back into the original order
     let mut all_inputs = Vec::with_capacity(sample_count);
@@ -72,22 +70,22 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         all_inputs.extend(ss.samples);
     }
 
-    // match results back to the original input
-    for (index, res) in results {
-        if let Some(input) = all_inputs.get_mut(index) {
-            input.res = res;
-        }
-    }
-
     // sort the inputs back to the original order
     all_inputs.sort_by(|x, y| x.index.cmp(&y.index));
+
+    // match results back to the original input
+    for (index, res) in results.iter() {
+        if let Some(input) = all_inputs.get_mut(*index) {
+            input.res = *res;
+        }
+    }
 
     // handle replication
     handle_replication(ctx, &all_inputs);
 
-    let result = all_inputs
+    let result = results
         .into_iter()
-        .map(|x| ValkeyValue::from(x.res))
+        .map(|x| ValkeyValue::from(x.1))
         .collect::<Vec<_>>();
 
     Ok(ValkeyValue::Array(result))
@@ -95,7 +93,7 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
 fn add_samples_internal(
     input: &mut PerSeriesSamples,
-) -> TsdbResult<SmallVec<(usize, SampleAddResult), 8>> {
+) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
     if input.samples.len() == 1 {
         let sample = input.samples.pop().unwrap();
         let index = input.indices.pop().unwrap();
@@ -103,7 +101,10 @@ fn add_samples_internal(
         return Ok(smallvec![(index, result)]);
     }
 
-    let add_results = input.series.merge_samples(&input.samples, None)?;
+    let add_results = input
+        .series
+        .merge_samples(&input.samples, None)
+        .map_err(|e| ValkeyError::String(format!("{}", e)))?;
 
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results
@@ -117,36 +118,44 @@ fn add_samples_internal(
     Ok(result)
 }
 
-fn execute_grouped(groups: &mut [PerSeriesSamples]) -> SmallVec<(usize, SampleAddResult), 8> {
+fn execute_grouped(
+    groups: &mut [PerSeriesSamples],
+) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
     match groups {
-        [] => {
-            smallvec![]
-        }
-        [first] => add_samples_internal(first).unwrap(),
+        [] => Ok(smallvec![]),
+        [first] => add_samples_internal(first),
         [left, right] => {
-            let (mut l, r) = join(
-                || add_samples_internal(left).unwrap(),
-                || add_samples_internal(right).unwrap(),
+            let (l, r) = join(
+                || add_samples_internal(left),
+                || add_samples_internal(right),
             );
+            let mut res = l?;
+            let other = r?;
 
-            l.extend(r);
-            l
+            res.extend(other);
+            Ok(res)
         }
-        _ => {
-            let (left, right) = groups.split_at(groups.len() / 2);
-            let (mut l, r) = join(|| execute_grouped(left), || execute_grouped(right));
-            l.extend(r);
-            l
+        _=> {
+            let mid = groups.len() / 2;
+            let (left, right) = groups.split_at_mut(mid);
+            let (l, r) = join(
+                || execute_grouped(left),
+                || execute_grouped(right),
+            );
+            let mut res = l?;
+            let other = r?;
+
+            res.extend(other);
+            Ok(res)
         }
     }
 }
 
 fn handle_update(
     input_map: &mut AHashMap<&ValkeyString, SeriesSamples>,
-) -> SmallVec<(usize, SampleAddResult), 8> {
+) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
     let mut per_series_samples: SmallVec<PerSeriesSamples, 4> = SmallVec::new();
 
-    // todo! Parallelize this if we involve multiple keys/chunks
     for (_key, samples) in input_map.iter_mut() {
         let res = samples.err;
 
@@ -161,11 +170,9 @@ fn handle_update(
                 indices: SmallVec::new(),
             };
 
-            for input in samples.samples.iter() {
-                if input.res.is_ok() {
-                    s.samples.push(Sample::new(input.timestamp, input.value));
-                    s.indices.push(input.index);
-                }
+            for input in samples.samples.iter().filter(|x| x.res.is_ok()) {
+                s.samples.push(Sample::new(input.timestamp, input.value));
+                s.indices.push(input.index);
             }
 
             if !s.samples.is_empty() {
@@ -174,7 +181,9 @@ fn handle_update(
         }
     }
 
-    execute_grouped(&mut per_series_samples)
+    let mut results = execute_grouped(&mut per_series_samples)?;
+    results.sort_by_key(|(index, _)| *index);
+    Ok(results)
 }
 
 fn parse_args<'a>(
@@ -185,9 +194,9 @@ fn parse_args<'a>(
     let mut input_map: AHashMap<&ValkeyString, SeriesSamples> =
         AHashMap::with_capacity(args.len() / 3);
 
-    let mut index: usize = 1;
+    let mut index: usize = 0;
     let mut arg_index: usize = 0;
-    while index <= args.len() {
+    while index < args.len() {
         let key = &args[index];
         let mut raw_timestamp = &args[index + 1];
         let raw_value = &args[index + 2];
@@ -200,6 +209,7 @@ fn parse_args<'a>(
             match get_timeseries_mut(ctx, key, true, Some(AclPermissions::UPDATE)) {
                 Ok(Some(guard)) => {
                     series_samples.series = Some(guard);
+                    series_samples.err = SampleAddResult::Ok(0);
                     SampleAddResult::Ok(0)
                 }
                 Ok(None) => SampleAddResult::InvalidKey,

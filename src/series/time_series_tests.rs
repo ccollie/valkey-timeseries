@@ -3,7 +3,7 @@ mod tests {
     use crate::common::rounding::RoundingStrategy;
     use crate::common::time::current_time_millis;
     use crate::common::{Sample, Timestamp};
-    use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk};
+    use crate::series::chunks::{Chunk, ChunkEncoding, GorillaChunk, TimeSeriesChunk};
     use crate::series::{
         DuplicatePolicy, SampleAddResult, TimeSeries, TimeSeriesOptions, ValueFilter,
     };
@@ -438,52 +438,61 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_merge_samples_spanning_multiple_chunks() {
-    //     // Force small chunks
-    //     let mut ts = TimeSeries::with_options(TimeSeriesOptions {
-    //         chunk_compression: ChunkEncoding::Uncompressed,
-    //         chunk_size: Some(64), // Small chunk size to force splitting
-    //         ..Default::default()
-    //     })
-    //         .unwrap();
-    //
-    //     // Add initial data to create multiple chunks
-    //     let mut samples_to_add = vec![];
-    //     let mut len = 0;
-    //     while ts.chunks.len() < 3 {
-    //
-    //         let data = DataGenerator::builder()
-    //             .start(1000)
-    //             .interval(Duration::from_millis(1000))
-    //             .algorithm(RandAlgo::Deriv)
-    //             .samples(40)
-    //             .build()
-    //             .generate();
-    //
-    //         for sample in data.iter() {
-    //             ts.add(sample.timestamp, sample.value, None);
-    //             if len != ts.chunks.len() {
-    //                 samples_to_add.push(Sample::new(sample.timestamp + 500, sample.value));
-    //                 len = ts.chunks.len();
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //
-    //     assert!(ts.chunks.len() > 1, "Test requires multiple chunks");
-    //     let initial_len = ts.len();
-    //     let initial_chunks = ts.chunks.len();
-    //
-    //     let expected = samples_to_add.iter().map(|sample| SampleAddResult::Ok(sample.timestamp))
-    //         .collect::<Vec<_>>();
-    //     let results = ts.merge_samples(&samples_to_add, None).unwrap();
-    //
-    //     assert_eq!(results.len(), 3);
-    //     assert_eq!(expected, results);
-    //
-    //     assert_eq!(ts.len(), initial_len + 3);
-    // }
+    #[test]
+    fn test_merge_samples_spanning_multiple_chunks() {
+        // Force small chunks
+        let mut ts = TimeSeries::with_options(TimeSeriesOptions {
+            chunk_compression: ChunkEncoding::Uncompressed,
+            chunk_size: Some(64), // Small chunk size to force splitting
+            ..Default::default()
+        })
+        .unwrap();
+
+        // Add initial data to create multiple chunks
+        let mut samples_to_add = vec![];
+        let mut len = 0;
+
+        let data = DataGenerator::builder()
+            .start(1000)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::Deriv)
+            .samples(1000)
+            .build()
+            .generate();
+
+        while ts.chunks.len() < 3 {
+            for sample in data.iter() {
+                ts.add(sample.timestamp, sample.value, None);
+                if len != ts.chunks.len() {
+                    samples_to_add.push(Sample::new(sample.timestamp + 500, sample.value));
+                    len = ts.chunks.len();
+                    break;
+                }
+            }
+        }
+
+        assert!(ts.chunks.len() > 1, "Test requires multiple chunks");
+        let initial_len = ts.len();
+
+        let samples_to_add = DataGenerator::builder()
+            .start(1500)
+            .interval(Duration::from_millis(1000))
+            .algorithm(RandAlgo::StdNorm)
+            .samples(5)
+            .build()
+            .generate();
+
+        let expected = samples_to_add
+            .iter()
+            .map(|sample| SampleAddResult::Ok(sample.timestamp))
+            .collect::<Vec<_>>();
+
+        let results = ts.merge_samples(&samples_to_add, None).unwrap();
+
+        assert_eq!(results.len(), samples_to_add.len());
+        assert_eq!(expected, results);
+        assert_eq!(ts.len(), initial_len + samples_to_add.len());
+    }
 
     #[test]
     fn test_merge_samples_older_than_retention() {

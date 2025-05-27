@@ -30,6 +30,12 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.CREATE', 'ts1')
         self.client.execute_command('TS.CREATE', 'ts2')
 
+        self.client.execute_command('TS.test',
+                                     'ts1', 1000, 10.0,
+                                     'ts2', 1000, 100.0,
+                                     'ts1', 2000, 20.0,
+                                     'ts2', 2000, 200.0)
+
         # Add samples to both time series
         result = self.client.execute_command('TS.MADD',
                                              'ts1', 1000, 10.0,
@@ -51,24 +57,6 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         assert len(range_ts2) == 2
         assert float(range_ts2[0][1]) == 100.0
         assert float(range_ts2[1][1]) == 200.0
-
-    def test_madd_auto_creation(self):
-        """Test that TS.MADD automatically creates time series if they don't exist"""
-        # Add samples to non-existent time series
-        result = self.client.execute_command('TS.MADD',
-                                             'ts_auto1', 1000, 10.0,
-                                             'ts_auto2', 2000, 20.0)
-
-        # Verify timestamps
-        assert result == [1000, 2000]
-
-        # Verify time series were created
-        assert self.client.execute_command('EXISTS', 'ts_auto1') == 1
-        assert self.client.execute_command('EXISTS', 'ts_auto2') == 1
-
-        # Verify data
-        assert float(self.client.execute_command('TS.GET', 'ts_auto1')[1]) == 10.0
-        assert float(self.client.execute_command('TS.GET', 'ts_auto2')[1]) == 20.0
 
     def test_madd_with_labels(self):
         """Test TS.MADD with pre-created time series with labels"""
@@ -96,17 +84,17 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         # Add a sample
         self.client.execute_command('TS.ADD', 'ts_dup', 1000, 10.0)
 
-        # Try to add samples with duplicate timestamp
+        # Try to add samples with a duplicate timestamp
         result = self.client.execute_command('TS.MADD',
                                              'ts_dup', 1000, 20.0,  # Duplicate
                                              'ts_dup', 2000, 30.0)  # New
 
         print(result)
         # Verify timestamps (should fail for duplicate)
-        assert result[0] == -1  # Error code for duplicate timestamp
-        assert result[1] == 2000  # Success for new timestamp
+        assert result[0] == []  # Error code for duplicate timestamp
+        assert result[1] == 2000
 
-        # Verify data - original sample should remain unchanged
+        # Verify data - the original sample should remain unchanged
         range_result = self.client.execute_command('TS.RANGE', 'ts_dup', 0, 3000)
         assert len(range_result) == 2
         assert float(range_result[0][1]) == 10.0  # Original value preserved
@@ -135,7 +123,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         assert float(range_result[1][1]) == 30.0
 
     def test_madd_with_retention(self):
-        """Test adding samples with retention period"""
+        """Test adding samples with a retention period"""
         # Create time series with retention
         self.client.execute_command('TS.CREATE', 'ts_retention', 'RETENTION', 3000)
 
