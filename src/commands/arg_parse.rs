@@ -331,11 +331,16 @@ pub fn parse_metric_name(arg: &str) -> ValkeyResult<Vec<Label>> {
 
 /// Parse a float value for use in a command argument, specifically ADD, MADD, and INCRBY/DECRBY.
 pub fn parse_value_arg(arg: &ValkeyString) -> ValkeyResult<f64> {
-    // todo: error on NAN and Inf ?
-    arg.try_as_str()
+    let value = arg.try_as_str()
         .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))?
         .parse::<f64>()
-        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))?;
+    
+    if value.is_nan() || value.is_infinite() {
+        return Err(ValkeyError::Str(error_consts::INVALID_VALUE));
+    }
+    
+    Ok(value)
 }
 
 pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {
