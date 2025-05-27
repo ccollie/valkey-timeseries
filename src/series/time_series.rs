@@ -303,7 +303,8 @@ impl TimeSeries {
     /// Merges a collection of samples into the time series.
     ///
     /// This function efficiently groups samples by the chunks they would belong to
-    /// and applies the appropriate duplicate policy when merging.
+    /// and applies the appropriate duplicate policy when merging. If samples are split across
+    /// multiple chunks, they are processed (mostly) in parallel to optimize performance.
     ///
     /// ## Arguments
     ///
@@ -314,8 +315,6 @@ impl TimeSeries {
     ///
     /// A result containing a vector of `SampleAddResult` with the outcome for each sample.
     ///
-    /// TODO: handle splitting chunks
-    ///
     pub fn merge_samples(
         &mut self,
         samples: &[Sample],
@@ -325,7 +324,7 @@ impl TimeSeries {
             return Ok(Vec::new());
         }
 
-        let dp_policy = self.sample_duplicates.resolve_policy(policy_override);
+        let policy = self.sample_duplicates.resolve_policy(policy_override);
         let earliest_allowed_timestamp = if self.retention.is_zero() {
             0
         } else {
@@ -343,38 +342,52 @@ impl TimeSeries {
         let chunk_groups =
             self.group_samples_by_chunk(samples, &mut results, earliest_allowed_timestamp);
 
-        // Process each chunk group
-        for (&chunk_idx, group) in &chunk_groups {
-            // Get mutable reference to the chunk
-            let chunk = if chunk_idx < self.chunks.len() {
-                &mut self.chunks[chunk_idx]
-            } else {
-                // Create a new chunk if needed
-                self.append_chunk();
-                self.chunks.last_mut().unwrap()
-            };
-
-            // Extract just the samples for this chunk
-            let mut chunk_samples: SmallVec<Sample, 8> = SmallVec::new();
-            chunk_samples.extend(group.iter().map(|(_idx, sample)| *sample));
-
-            // Merge samples into this chunk
-            let chunk_results = chunk.merge_samples(&chunk_samples, Some(dp_policy))?;
-
-            // Map results back to original indices
-            for ((orig_idx, _), result) in group.iter().zip(chunk_results.iter()) {
-                results[*orig_idx] = *result;
-
-                // Update metadata for successful additions
-                if let SampleAddResult::Ok(ts) = result {
-                    // The first timestamp might need updating
-                    if *ts < self.first_timestamp || self.is_empty() {
-                        self.first_timestamp = *ts;
-                    }
-
-                    // Update sample count
-                    self.total_samples += 1;
+        // The following is done this way because Vec::get_disjoint_mut() ony takes slices (not even slice refs),
+        // so we need to process the groups in pairs, and then handle the last group separately if needed.
+        let mut cursor = &chunk_groups[0..];
+        let mut chunk_results: SmallVec<_, 8> = SmallVec::new();
+        while !cursor.is_empty() {
+            match cursor {
+                [] => break, // No more groups to process
+                [first] => {
+                    // If there's only one group left, process it directly
+                    let chunk = self
+                        .chunks
+                        .get_mut(first.chunk_index)
+                        .expect("TimeSeries chunks should not be empty");
+                    chunk_results.extend(first.handle_merge(chunk, first, policy));
+                    break;
                 }
+                [first, second, rest @ ..] => {
+                    // Process the first two groups in parallel
+                    let [l, r] = self
+                        .chunks
+                        .get_disjoint_mut([first.chunk_index, second.chunk_index])
+                        .expect("TimeSeries chunks should be disjoint");
+                    let (left_results, right_results) = join(
+                        || first.handle_merge(l, first, policy),
+                        || second.handle_merge(r, second, policy),
+                    );
+                    chunk_results.extend(left_results);
+                    chunk_results.extend(right_results);
+                    cursor = rest;
+                }
+            }
+        }
+
+        // Map results back to original indices
+        for (orig_idx, result) in chunk_results.into_iter() {
+            results[orig_idx] = result;
+
+            // Update metadata for successful additions
+            if let SampleAddResult::Ok(ts) = result {
+                // The first timestamp might need updating
+                if ts < self.first_timestamp || self.is_empty() {
+                    self.first_timestamp = ts;
+                }
+
+                // Update sample count
+                self.total_samples += 1;
             }
         }
 
@@ -390,8 +403,8 @@ impl TimeSeries {
         samples: &[Sample],
         results: &mut [SampleAddResult],
         earliest_allowed_timestamp: Timestamp,
-    ) -> IntMap<usize, SmallVec<(usize, Sample), 8>> {
-        let mut chunk_groups: IntMap<usize, SmallVec<(usize, Sample), 8>> = IntMap::default();
+    ) -> SmallVec<GroupedSamples, 8> {
+        let mut chunk_groups: IntMap<usize, GroupedSamples> = IntMap::default();
 
         for (index, &sample) in samples.iter().enumerate() {
             if sample.timestamp < earliest_allowed_timestamp {
@@ -407,20 +420,35 @@ impl TimeSeries {
             let chunk_index = if self.is_empty() || sample.timestamp < self.first_timestamp {
                 0
             } else {
-                find_last_ge_index(&self.chunks, sample.timestamp).0
+                let index = find_last_ge_index(&self.chunks, sample.timestamp).0;
+                // see if we need to split the chunk
+                let chunk = &mut self.chunks[index];
+                if chunk.should_split() {
+                    // split the chunk and return the new index
+                    let new_chunk = chunk.split().unwrap();
+                    let in_new_chunk = new_chunk.is_timestamp_in_range(sample.timestamp);
+                    self.chunks.insert(index + 1, new_chunk);
+                    if in_new_chunk {
+                        index + 1
+                    } else {
+                        index
+                    }
+                } else {
+                    index
+                }
             };
-
+            //let chunk = &mut self.chunks[chunk_index];
             chunk_groups
                 .entry(chunk_index)
-                .or_default()
-                .push((index, adjusted_sample));
+                .or_insert_with(|| GroupedSamples::new(chunk_index))
+                .add_sample(adjusted_sample, index);
         }
 
         for group in chunk_groups.values_mut() {
-            group.sort_by_key(|(_, sample)| sample.timestamp);
+            group.sort_by_timestamp();
         }
 
-        chunk_groups
+        chunk_groups.into_values().collect::<SmallVec<_, 8>>()
     }
 
     /// Get the time series between given start and end time (both inclusive).
@@ -869,6 +897,77 @@ impl Default for TimeSeries {
             src_series: None,
             rules: vec![],
             _db: 0,
+        }
+    }
+}
+
+/// Represents a collection of samples grouped by chunk index.
+struct GroupedSamples {
+    chunk_index: usize,
+    samples: SmallVec<Sample, 8>,
+    indices: SmallVec<usize, 8>,
+}
+
+impl GroupedSamples {
+    fn new(chunk_index: usize) -> Self {
+        Self {
+            chunk_index,
+            samples: SmallVec::new(),
+            indices: SmallVec::new(),
+        }
+    }
+
+    /// Sorts samples by timestamp in ascending order, maintaining the relationship with their original indices.
+    fn sort_by_timestamp(&mut self) {
+        // Create a vector of (index, sample) pairs
+        let mut pairs: SmallVec<(usize, Sample), 8> = self
+            .indices
+            .iter()
+            .copied()
+            .zip(self.samples.iter().copied())
+            .collect();
+
+        // Sort the pairs by sample timestamp
+        pairs.sort_by_key(|(_idx, sample)| sample.timestamp);
+
+        // Clear the existing SmallVecs
+        self.indices.clear();
+        self.samples.clear();
+
+        // Push sorted elements back into the SmallVecs
+        for (idx, sample) in pairs {
+            self.indices.push(idx);
+            self.samples.push(sample);
+        }
+    }
+
+    fn add_sample(&mut self, sample: Sample, index: usize) {
+        self.samples.push(sample);
+        self.indices.push(index);
+    }
+
+    fn handle_merge(
+        &self,
+        chunk: &mut TimeSeriesChunk,
+        group: &GroupedSamples,
+        policy: DuplicatePolicy,
+    ) -> SmallVec<(usize, SampleAddResult), 8> {
+        // Merge samples into this chunk
+        match chunk.merge_samples(&group.samples, Some(policy)) {
+            Ok(chunk_results) => chunk_results
+                .iter()
+                .zip(group.indices.iter().cloned())
+                .map(|(res, index)| (index, *res))
+                .collect::<SmallVec<_, 8>>(),
+            Err(_e) => {
+                let err = SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE);
+                group
+                    .indices
+                    .iter()
+                    .cloned()
+                    .map(|index| (index, err))
+                    .collect::<SmallVec<_, 8>>()
+            }
         }
     }
 }

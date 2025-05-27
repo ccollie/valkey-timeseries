@@ -323,8 +323,6 @@ impl Chunk for UncompressedChunk {
         let left_iter = SampleIter::Slice(self.samples.iter());
         let right_iter = SampleIter::Slice(samples.iter());
 
-        let max_len = self.max_elements;
-
         merge_samples(
             left_iter,
             right_iter,

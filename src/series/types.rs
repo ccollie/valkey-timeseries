@@ -272,25 +272,7 @@ impl From<SampleAddResult> for ValkeyValue {
     fn from(res: SampleAddResult) -> Self {
         match res {
             SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
-            SampleAddResult::Error(e) => ValkeyValue::StaticError(e),
-            SampleAddResult::TooOld => ValkeyValue::StaticError(error_consts::SAMPLE_TOO_OLD),
-            SampleAddResult::InvalidKey => {
-                ValkeyValue::StaticError(error_consts::INVALID_TIMESERIES_KEY)
-            }
-            SampleAddResult::InvalidValue => ValkeyValue::StaticError(error_consts::INVALID_VALUE),
-            SampleAddResult::InvalidTimestamp => {
-                ValkeyValue::StaticError(error_consts::INVALID_TIMESTAMP)
-            }
-            SampleAddResult::NegativeTimestamp => {
-                ValkeyValue::StaticError(error_consts::NEGATIVE_TIMESTAMP)
-            }
-            SampleAddResult::Duplicate => {
-                ValkeyValue::StaticError(error_consts::DUPLICATE_SAMPLE_BLOCKED)
-            }
-            SampleAddResult::CapacityFull => ValkeyValue::StaticError(error_consts::CAPACITY_FULL),
-            SampleAddResult::InvalidPermissions => {
-                ValkeyValue::StaticError(error_consts::KEY_WRITE_PERMISSION_ERROR)
-            }
+            _ => ValkeyValue::Array(vec![]),
         }
     }
 }
