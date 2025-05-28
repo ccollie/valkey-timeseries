@@ -34,6 +34,7 @@ pub const INVALID_SERIES_SELECTOR: &str = "TSDB: series selector is invalid";
 pub const INVALID_STEP_DURATION: &str = "TSDB: invalid step duration";
 pub const INVALID_TIMESTAMP: &str = "TSDB: invalid timestamp.";
 pub const NEGATIVE_TIMESTAMP: &str = "TSDB: timestamps cannot be negative.";
+pub const ERROR_ADDING_SAMPLE: &str = "TSDB: error at add";
 pub const MISSING_TIMESTAMP_FILTER_VALUE: &str = "TSDB: missing timestamp filter values";
 pub const KEY_NOT_FOUND: &str = "TSDB: the key does not exist";
 pub const INVALID_TIMESERIES_KEY: &str = "TSDB: the key is not a TSDB key";
