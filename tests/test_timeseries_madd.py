@@ -1,4 +1,5 @@
 import pytest
+from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -6,7 +7,7 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
     def test_madd_basic(self):
-        """Test basic functionality of TS.MADD command"""
+        """Test the basic functionality of TS.MADD command"""
         # Create a time series
         self.client.execute_command('TS.CREATE', 'ts1')
 
@@ -16,7 +17,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
                                              'ts1', 2000, 20.0,
                                              'ts1', 3000, 30.0)
 
-        # Verify result contains the timestamps
+        # Verify that the result contains the timestamps
         assert result == [1000, 2000, 3000]
 
         # Verify samples were added correctly
@@ -60,7 +61,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
     def test_madd_with_labels(self):
         """Test TS.MADD with pre-created time series with labels"""
-        # Create time series with labels
+        # Create a time series with labels
         self.client.execute_command('TS.CREATE', 'ts_labels', 'LABELS', 'sensor', 'temp', 'location', 'room1')
 
         # Add samples
@@ -91,7 +92,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
 
         print(result)
         # Verify timestamps (should fail for duplicate)
-        assert result[0] == []  # Error code for duplicate timestamp
+        assert result[0] == b'TSDB: duplicate sample'  # Error code for duplicate timestamp
         assert result[1] == 2000
 
         # Verify data - the original sample should remain unchanged
@@ -105,7 +106,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         # Create time series with duplicate policy
         self.client.execute_command('TS.CREATE', 'ts_dup_policy', 'DUPLICATE_POLICY', 'MAX')
 
-        # Add initial sample
+        # Add an initial sample
         self.client.execute_command('TS.ADD', 'ts_dup_policy', 1000, 10.0)
 
         # Add duplicate sample with higher value
@@ -139,7 +140,8 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         # Verify older samples are removed due to retention
         range_result = self.client.execute_command('TS.RANGE', 'ts_retention', 0, now + 10000)
 
-        # First sample should be removed due to retention (3000ms)
+        print(range_result)
+        # The first sample should be removed due to retention (3000ms)
         assert len(range_result) == 2
         assert float(range_result[0][1]) == 20.0
         assert float(range_result[1][1]) == 30.0
@@ -164,7 +166,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 1000
         assert result == expected_timestamps
 
-        # Verify sample count
+        # Verify the sample count
         info = self.ts_info('ts_large')
         assert info['totalSamples'] == 1000
 
@@ -174,28 +176,27 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('SET', 'string_key', 'hello')
 
         # Add with invalid timestamp format
-        self.verify_error_response(
-            self.client, 'TS.MADD ts1 abc 10.0',
-            "TSDB: invalid timestamp."
-        )
+        with pytest.raises(ResponseError) as execInfo:
+            self.client.execute_command("TS.ADD", "ts_1", "abc", 10.0)
+
+        assert "TSDB: invalid timestamp" in str(execInfo.value)
 
         # Add with invalid value format
-        self.verify_error_response(
-            self.client, 'TS.MADD ts1 1000 invalid',
-            "TSDB: invalid value"
-        )
+        self.client.execute_command('TS.CREATE', 'ts1')
+        res = self.client.execute_command("TS.MADD", "ts1", "1000", "invalid")
+        assert "TSDB: invalid value" in str(res[0])
 
         # Add to a regular string key
-        self.verify_error_response(
-            self.client, 'TS.MADD string_key 1000 10.0',
-            "TSDB: the key is not a TSDB key"
-        )
+        res = self.client.execute_command("TS.MADD", "string_key", "1000", "10.0")
+        assert "TSDB: the key is not a TSDB key" in str(res[0])
+
+        # todo check that NaN and Inf are disallowed
 
         # Not enough arguments
-        self.verify_error_response(
-            self.client, 'TS.MADD ts1 1000',
-            "wrong number of arguments for 'TS.MADD' command"
-        )
+        with pytest.raises(ResponseError) as execInfo:
+            self.client.execute_command("TS.MADD", "ts1", "1000")
+
+        assert "wrong number of arguments for 'TS.MADD' command" in str(execInfo.value)
 
     def test_madd_with_millisecond_values(self):
         """Test TS.MADD with millisecond timestamp values"""

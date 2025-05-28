@@ -129,7 +129,6 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         )
 
         info = self.ts_info("ts_dup_first")
-        print(info)
         assert info["duplicatePolicy"] == "first"
 
         self.client.execute_command(
@@ -157,7 +156,6 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         )
 
         samples = self.client.execute_command("TS.RANGE", "ts_dup_max", "-", "+")
-        print(samples)
         assert float(samples[0][1]) == 40.0  # Higher value kept
 
         # Add duplicate with MIN policy
@@ -191,7 +189,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command(
                 "TS.ADD", "ts_dup_block", timestamp, 20.0
             )
-        assert "sample blocked" in str(excinfo.value)
+        assert "duplicate" in str(excinfo.value)
 
     def test_add_with_labels_creation(self):
         """Test TS.ADD with labels when creating a new timeseries"""
@@ -313,11 +311,11 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         """Test TS.ADD with extreme values"""
         self.client.execute_command("TS.CREATE", "ts_extreme")
 
-        # Test with very large timestamp
+        # Test with a very large timestamp
         max_timestamp = 9223372036854775807  # i64::MAX
         self.client.execute_command("TS.ADD", "ts_extreme", max_timestamp, 100.0)
 
-        # Test with very large value
+        # Test with a very large value
         large_value = 1.7976931348623157e+308  # close to f64::MAX
         self.client.execute_command("TS.ADD", "ts_extreme", 160000, large_value)
 

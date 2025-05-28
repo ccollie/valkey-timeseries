@@ -61,7 +61,6 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // parse the input arguments into a map of samples grouped by series
     let mut input_map = parse_args(ctx, &args[1..], &current_ts)?;
 
-    // map results to the input
     let results = handle_update(&mut input_map)?;
 
     // reassemble the input back into the original order
@@ -135,13 +134,10 @@ fn execute_grouped(
             res.extend(other);
             Ok(res)
         }
-        _=> {
+        _ => {
             let mid = groups.len() / 2;
             let (left, right) = groups.split_at_mut(mid);
-            let (l, r) = join(
-                || execute_grouped(left),
-                || execute_grouped(right),
-            );
+            let (l, r) = join(|| execute_grouped(left), || execute_grouped(right));
             let mut res = l?;
             let other = r?;
 
@@ -156,10 +152,16 @@ fn handle_update(
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
     let mut per_series_samples: SmallVec<PerSeriesSamples, 4> = SmallVec::new();
 
+    let mut errors: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
+
     for (_key, samples) in input_map.iter_mut() {
         let res = samples.err;
 
         if !res.is_ok() {
+            // if we have an error, we need to return it for each sample
+            for input in samples.samples.iter() {
+                errors.push((input.index, res));
+            }
             continue;
         }
 
@@ -170,9 +172,14 @@ fn handle_update(
                 indices: SmallVec::new(),
             };
 
-            for input in samples.samples.iter().filter(|x| x.res.is_ok()) {
-                s.samples.push(Sample::new(input.timestamp, input.value));
-                s.indices.push(input.index);
+            for input in samples.samples.iter() {
+                if input.res.is_ok() {
+                    s.samples.push(Sample::new(input.timestamp, input.value));
+                    s.indices.push(input.index);
+                } else {
+                    // if we have an error, we need to return it for this sample
+                    errors.push((input.index, input.res));
+                }
             }
 
             if !s.samples.is_empty() {
@@ -182,6 +189,8 @@ fn handle_update(
     }
 
     let mut results = execute_grouped(&mut per_series_samples)?;
+    // add errors to the results
+    results.extend(errors);
     results.sort_by_key(|(index, _)| *index);
     Ok(results)
 }
