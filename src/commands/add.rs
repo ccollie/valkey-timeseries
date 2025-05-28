@@ -75,9 +75,7 @@ fn handle_add(
             replicate_and_notify(ctx, args, timestamp);
             Ok(ValkeyValue::Integer(ts))
         }
-        SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
-        SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
-        _ => unreachable!("BUG: invalid SampleAddResult in TS.ADD"),
+        other => other.into(),
     }
 }
 

@@ -272,7 +272,53 @@ impl From<SampleAddResult> for ValkeyValue {
     fn from(res: SampleAddResult) -> Self {
         match res {
             SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
-            _ => ValkeyValue::Array(vec![]),
+            SampleAddResult::Duplicate => {
+                ValkeyValue::SimpleStringStatic(error_consts::DUPLICATE_SAMPLE)
+            }
+            SampleAddResult::TooOld => ValkeyValue::StaticError(error_consts::SAMPLE_TOO_OLD),
+            SampleAddResult::InvalidTimestamp => {
+                ValkeyValue::StaticError(error_consts::INVALID_TIMESTAMP)
+            }
+            SampleAddResult::InvalidPermissions => {
+                ValkeyValue::StaticError(error_consts::PERMISSION_DENIED)
+            }
+            SampleAddResult::InvalidKey => {
+                ValkeyValue::StaticError(error_consts::INVALID_TIMESERIES_KEY)
+            }
+            SampleAddResult::InvalidValue => ValkeyValue::StaticError(error_consts::INVALID_VALUE),
+            SampleAddResult::NegativeTimestamp => {
+                ValkeyValue::StaticError(error_consts::NEGATIVE_TIMESTAMP)
+            }
+            SampleAddResult::Error(_) => {
+                ValkeyValue::StaticError(error_consts::ERROR_ADDING_SAMPLE)
+            }
+            SampleAddResult::CapacityFull => ValkeyValue::StaticError(error_consts::CAPACITY_FULL),
+        }
+    }
+}
+
+impl From<SampleAddResult> for ValkeyResult {
+    fn from(result: SampleAddResult) -> Self {
+        match result {
+            SampleAddResult::Ok(ts) => Ok(ValkeyValue::Integer(ts)),
+            SampleAddResult::Ignored(ts) => Ok(ValkeyValue::Integer(ts)),
+            SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE)),
+            SampleAddResult::TooOld => Err(ValkeyError::Str(error_consts::SAMPLE_TOO_OLD)),
+            SampleAddResult::InvalidTimestamp => {
+                Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP))
+            }
+            SampleAddResult::InvalidPermissions => {
+                Err(ValkeyError::Str(error_consts::PERMISSION_DENIED))
+            }
+            SampleAddResult::InvalidKey => {
+                Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY))
+            }
+            SampleAddResult::InvalidValue => Err(ValkeyError::Str(error_consts::INVALID_VALUE)),
+            SampleAddResult::NegativeTimestamp => {
+                Err(ValkeyError::Str(error_consts::NEGATIVE_TIMESTAMP))
+            }
+            SampleAddResult::Error(e) => Err(ValkeyError::Str(e)),
+            SampleAddResult::CapacityFull => Err(ValkeyError::Str(error_consts::CAPACITY_FULL)),
         }
     }
 }
