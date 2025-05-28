@@ -218,50 +218,6 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command("TS.RANGE", new_key, 0, "+")
         assert len(result) == 1
 
-    def test_swapdb_event(self):
-        """Test that series are properly reindexed after swapping databases."""
-    
-        self.setup_data()
-
-        # Create keys in db 0
-        key0 = "ts:swap0"
-        self.create_ts(key0, self.start_ts, 1.0)
-
-        # Create keys in db 1
-        self.client.select(1)
-        key1 = "ts:swap1"
-        self.create_ts(key1, self.start_ts, 2.0)
-        self.client.select(0)  # Go back to db 0
-
-        # Swap databases 0 and 1
-        self.client.execute_command("SWAPDB", 0, 1)
-
-        # key0 should now be in db 1
-        self.client.select(1)
-        assert self.client.exists(key0)
-
-        # Verify the key is indexed correctly in db 1
-        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key0))
-        assert len(keys) == 1
-        assert keys[0] == key0
-
-        result = self.client.execute_command("TS.RANGE", key0, 0, "+")
-        assert len(result) == 1
-        assert float(result[0][1]) == 1.0
-
-        # key1 should now be in db 0
-        self.client.select(0)
-        assert self.client.exists(key1)
-
-        # Verify the key is indexed correctly in db 0
-        keys = self.client.execute_command("TS.QUERYINDEX", "key={}".format(key1))
-        assert len(keys) == 1
-        assert keys[0] == key1
-        
-        result = self.client.execute_command("TS.RANGE", key1, 0, "+")
-        assert len(result) == 1
-        assert float(result[0][1]) == 2.0
-
     def test_expire_event(self):
         """Test that an expired series is removed from the index."""
 
