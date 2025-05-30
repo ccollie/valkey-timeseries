@@ -24,6 +24,8 @@ pub use timeseries_index::*;
 
 #[cfg(test)]
 mod querier_tests;
+#[cfg(test)]
+mod timeseries_index_tests;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;

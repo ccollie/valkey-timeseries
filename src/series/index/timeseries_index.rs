@@ -231,27 +231,19 @@ impl TimeSeriesIndex {
     pub fn remove_stale_ids(&self) -> usize {
         const BATCH_SIZE: usize = 100;
 
-        let inner = self.inner.write().expect("TimeSeries lock poisoned");
-        if !inner.has_stale_ids() {
+        let mut inner = self.inner.write().expect("TimeSeries lock poisoned");
+        let old_count = inner.stale_ids.cardinality();
+        if old_count == 0 {
             return 0; // No stale IDs to remove
         }
 
-        let old_count = inner.count();
-
         let mut cursor = None;
-        loop {
-            let mut inner = self.inner.write().expect("TimeSeries lock poisoned");
-            match inner.remove_stale_ids(cursor, BATCH_SIZE) {
-                Some(new_cursor) => {
-                    cursor = Some(new_cursor);
-                }
-                None => {
-                    break; // No more stale IDs to remove
-                }
-            }
+        while let Some(new_cursor) = inner.remove_stale_ids(cursor, BATCH_SIZE) {
+            // Continue removing stale IDs in batches
+            cursor = Some(new_cursor);
         }
 
-        inner.count() - old_count
+        (old_count - inner.stale_ids.cardinality()) as usize // Return number of removed IDs
     }
 
     pub fn optimize(&self) {
