@@ -28,14 +28,14 @@ pub struct MemoryPostings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
-    id_to_key: IntMap<SeriesRef, KeyType>, // todo: use an interned string
+    pub(super) id_to_key: IntMap<SeriesRef, KeyType>, // todo: use an interned string
     /// Map valkey key to timeseries id. An ART is used for prefix compression (we're likely
     /// to have a lot of related keys with the same prefix).
-    key_to_id: TreeMap<IndexKey, SeriesRef>,
+    pub(super) key_to_id: TreeMap<IndexKey, SeriesRef>,
     /// Set of timeseries ids of series that should be removed from the index. This really only
     /// happens when the series is deleted (via DEL), but we need to keep track of it to clean up the
     /// index during a gc pass.
-    stale_ids: PostingsBitmap,
+    pub(super) stale_ids: PostingsBitmap,
 }
 
 impl Default for MemoryPostings {
@@ -377,6 +377,7 @@ impl MemoryPostings {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn has_stale_ids(&self) -> bool {
         !self.stale_ids.is_empty()
     }
