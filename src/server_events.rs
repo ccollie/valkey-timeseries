@@ -39,6 +39,7 @@ fn remove_key_from_index(ctx: &Context, key: &[u8]) {
     });
 }
 
+#[allow(dead_code)]
 fn handle_loaded(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
     let Ok(Some(mut series)) = get_timeseries_mut(ctx, &_key, false, None) else {
@@ -81,24 +82,44 @@ fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
     });
 }
 
-pub(crate) fn generic_key_event_handler(
+// handle events that require removing the series from the index
+pub(super) fn remove_key_events_handler(
     ctx: &Context,
     _event_type: NotifyEvent,
     event: &str,
     key: &[u8],
 ) {
-    hashify::fnc_map!(event.as_bytes(),
-        "loaded" => handle_loaded(ctx, key),
-        "del" => remove_key_from_index(ctx, key),
-        "evict" => remove_key_from_index(ctx, key),
-        "evicted" => remove_key_from_index(ctx, key),
-        "expire" => remove_key_from_index(ctx, key),
-        "expired" => remove_key_from_index(ctx, key),
-        "set" => remove_key_from_index(ctx, key),
-        "trimmed" => remove_key_from_index(ctx, key),
+    // If the event is one of the ones that require removing the series from the index, we
+    // remove it from the index
+    if hashify::tiny_set!(
+        event.as_bytes(),
+        "del",
+        "evict",
+        "evicted",
+        "expire",
+        "expired",
+        "set",
+        "trimmed"
+    ) {
+        remove_key_from_index(ctx, key);
+    }
+}
+
+pub(super) fn generic_key_events_handler(
+    ctx: &Context,
+    _event_type: NotifyEvent,
+    event: &str,
+    key: &[u8],
+) {
+    // todo: AddPostNotificationJob(ctx, event, key);
+    match event {
+        "loaded" => {
+            ctx.log_notice("Loaded event received");
+            handle_loaded(ctx, key);
+        }
         "move_from" => {
             *MOVE_FROM_DB.lock().unwrap() = get_current_db(ctx);
-        },
+        }
         "move_to" => {
             let mut lock = MOVE_FROM_DB.lock().unwrap();
             let old_db = *lock;
@@ -106,20 +127,24 @@ pub(crate) fn generic_key_event_handler(
             if old_db != -1 {
                 handle_key_move(ctx, key, old_db);
             }
-        },
+        }
+        // SAFETY: This is safe because the key is only used in the closure and this function
+        // is not called concurrently
         "rename_from" => {
             *RENAME_FROM_KEY.lock().unwrap() = key.to_vec();
-        },
+        }
         "rename_to" => {
             let mut old_key = RENAME_FROM_KEY.lock().unwrap();
             if !old_key.is_empty() {
                 handle_key_rename(ctx, &old_key, key);
                 old_key.clear()
             }
-        },
-        "restore" => handle_key_restore(ctx, key),
+        }
+        "restore" => {
+            handle_key_restore(ctx, key);
+        }
         _ => {}
-    );
+    }
 }
 
 unsafe extern "C" fn on_flush_event(
@@ -157,7 +182,7 @@ unsafe extern "C" fn on_swap_db_event(
     }
 }
 
-pub fn register_server_event_handler(
+fn register_server_event_handler(
     ctx: &Context,
     server_event: u64,
     inner_callback: raw::RedisModuleEventCallback,
