@@ -29,7 +29,7 @@ pub fn defrag_series(series: &mut TimeSeries) -> TsdbResult {
             continue;
         }
 
-        // while previous block has capacity merge into it
+        // while the previous block has capacity merge into it
         while let Some(deleted) =
             merge_by_capacity(prev_chunk, chunk, min_timestamp, duplicate_policy)?
         {
