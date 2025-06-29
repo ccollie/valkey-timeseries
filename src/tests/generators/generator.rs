@@ -134,12 +134,7 @@ mod tests {
     fn validate_range(iter: impl Iterator<Item = f64>, r: &Range<f64>) {
         let values = iter.take(1000).collect::<Vec<f64>>();
         for v in values {
-            assert!(
-                v >= r.start && v < r.end,
-                "value {} not in range {:?}",
-                v,
-                r
-            );
+            assert!(v >= r.start && v < r.end, "value {v} not in range {r:?}");
         }
     }
 

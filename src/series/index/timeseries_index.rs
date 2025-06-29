@@ -135,7 +135,7 @@ impl TimeSeriesIndex {
                 }
 
                 label_value_pairs.push(PostingStat {
-                    name: format!("{}={}", name, value),
+                    name: format!("{name}={value}"),
                     count,
                 });
                 num_label_pairs += 1;

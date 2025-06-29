@@ -150,7 +150,7 @@ impl TryFrom<&str> for JoinReducer {
     fn try_from(op: &str) -> Result<Self, Self::Error> {
         match join_reducer_get(op) {
             Some(operator) => Ok(operator),
-            None => Err(ValkeyError::String(format!("Unknown binary op {}", op))),
+            None => Err(ValkeyError::String(format!("Unknown binary op {op}"))),
         }
     }
 }

@@ -338,7 +338,7 @@ impl Chunk for GorillaChunk {
 #[inline]
 fn push_sample(encoder: &mut GorillaEncoder, sample: &Sample) -> TsdbResult {
     encoder.add_sample(sample).map_err(|e| {
-        eprintln!("Error adding sample: {:?}", e);
+        eprintln!("Error adding sample: {e:?}");
         TsdbError::CannotAddSample(*sample)
     })
 }
@@ -371,7 +371,7 @@ impl<'a> GorillaChunkIterator<'a> {
             }
             #[cfg(debug_assertions)]
             Some(Err(err)) => {
-                eprintln!("Error decoding sample: {:?}", err);
+                eprintln!("Error decoding sample: {err:?}");
                 None
             }
             #[cfg(not(debug_assertions))]

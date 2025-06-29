@@ -64,14 +64,14 @@ pub(super) fn compress_values(compressed: &mut Vec<u8>, values: &[f64]) -> TsdbR
     if values.is_empty() {
         return Ok(());
     }
-    pco_encode(values, compressed).map_err(|e| TsdbError::CannotSerialize(format!("values: {}", e)))
+    pco_encode(values, compressed).map_err(|e| TsdbError::CannotSerialize(format!("values: {e}")))
 }
 
 pub(super) fn decompress_values(compressed: &[u8], dst: &mut Vec<f64>) -> TsdbResult<()> {
     if compressed.is_empty() {
         return Ok(());
     }
-    pco_decode(compressed, dst).map_err(|e| TsdbError::CannotDeserialize(format!("values: {}", e)))
+    pco_decode(compressed, dst).map_err(|e| TsdbError::CannotDeserialize(format!("values: {e}")))
 }
 
 pub(super) fn compress_timestamps(
@@ -86,7 +86,7 @@ pub(super) fn compress_timestamps(
         delta_encoding_order: 2,
     };
     encode_with_options(timestamps, compressed, config)
-        .map_err(|e| TsdbError::CannotSerialize(format!("timestamps: {}", e)))
+        .map_err(|e| TsdbError::CannotSerialize(format!("timestamps: {e}")))
 }
 
 pub(super) fn decompress_timestamps(compressed: &[u8], dst: &mut Vec<i64>) -> TsdbResult<()> {
@@ -94,7 +94,7 @@ pub(super) fn decompress_timestamps(compressed: &[u8], dst: &mut Vec<i64>) -> Ts
         return Ok(());
     }
     pco_decode(compressed, dst)
-        .map_err(|e| TsdbError::CannotDeserialize(format!("timestamps: {}", e)))
+        .map_err(|e| TsdbError::CannotDeserialize(format!("timestamps: {e}")))
 }
 
 #[cfg(test)]

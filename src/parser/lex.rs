@@ -160,7 +160,7 @@ pub(crate) fn expect_one_of_tokens<'a>(
             .map(|t| t.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let msg = format!("one of: {}", expected);
+        let msg = format!("one of: {expected}");
         Err(unexpected("label name", &actual, &msg, Some(&res.2)))
     }
 }
@@ -374,7 +374,7 @@ mod tests {
                     tokens.push(lexer.slice());
                 }
                 Err(e) => {
-                    panic!("unexpected error {:?}\n {}", e, lexer.slice())
+                    panic!("unexpected error {e:?}\n {}", lexer.slice())
                 }
             }
         }
@@ -392,8 +392,7 @@ mod tests {
             let expected = expected_tokens[i];
             assert_eq!(
                 actual, expected,
-                "expected {:?} at index {}, got {:?}",
-                expected, i, actual
+                "expected {expected:?} at index {i}, got {actual:?}"
             );
         }
     }

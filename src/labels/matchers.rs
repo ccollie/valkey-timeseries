@@ -403,7 +403,7 @@ impl Display for Matcher {
         write!(f, "{}{}", self.label, self.op())?;
         match &self.matcher {
             PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => {
-                write!(f, "{}", value)
+                write!(f, "{value}")
             }
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
                 write!(f, "{}", enquote('"', &re.value))
@@ -648,7 +648,7 @@ fn join_matchers(f: &mut Formatter<'_>, v: &[Matcher]) -> fmt::Result {
         if i > 0 {
             write!(f, ", ")?;
         }
-        write!(f, "{}", matcher)?;
+        write!(f, "{matcher}")?;
     }
 
     Ok(())

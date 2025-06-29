@@ -68,7 +68,7 @@ fn read_middle_bits_count<R: BitRead>(reader: &mut R) -> std::io::Result<u8> {
     // The middle bits count is 6 bits long.
     let middle_bits_count: u8 = read_bits(reader, 6)? as u8;
 
-    // As prometheus uses 64 bits floats, the number of middle bits can be up to 64.
+    // As prometheus uses 64-bit floats, the number of middle bits can be up to 64.
     // However, the max value on 6 bits is 63.
     // There, prometheus has a small trick: it overflows and 0 actually means 64.
     // It works because numbers with zero bits are not serialized through this.
@@ -194,7 +194,7 @@ mod tests {
                 let (new_value, new_leading, new_trailing) =
                     read_varbit_xor(&mut reader, value, leading, trailing).unwrap();
 
-                assert_eq!(new_value, *number, "Failed at index {}", i);
+                assert_eq!(new_value, *number, "Failed at index {i}");
                 value = new_value;
                 leading = new_leading;
                 trailing = new_trailing;

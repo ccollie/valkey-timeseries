@@ -38,7 +38,7 @@ mod tests {
             }
 
             let got = encoder.iter().collect::<Result<Vec<_>, _>>().unwrap();
-            assert_eq!(input, got, "{name}: Wanted {:?}, got {:?}", input, got);
+            assert_eq!(input, got, "{name}: Wanted {input:?}, got {got:?}");
         }
     }
 

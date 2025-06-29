@@ -610,7 +610,7 @@ pub fn parse_grouping_params(args: &mut CommandArgIterator) -> ValkeyResult<Rang
         .map_err(|_e| ValkeyError::Str("ERR: Error parsing grouping reducer"))?;
 
     let aggregator = AggregationType::try_from(agg_str).map_err(|_| {
-        let msg = format!("ERR: invalid grouping aggregator \"{}\"", agg_str);
+        let msg = format!("ERR: invalid grouping aggregator \"{agg_str}\"");
         ValkeyError::String(msg)
     })?;
 
@@ -735,7 +735,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
                 options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
             }
             _ => {
-                let msg = format!("ERR invalid argument '{}'", arg);
+                let msg = format!("ERR invalid argument '{arg}'");
                 return Err(ValkeyError::String(msg));
             }
         }
@@ -855,7 +855,7 @@ pub(crate) fn parse_metadata_command_args(
                 limit = Some(next as usize);
             }
             _ => {
-                let msg = format!("ERR invalid argument '{}'", arg);
+                let msg = format!("ERR invalid argument '{arg}'");
                 return Err(ValkeyError::String(msg));
             }
         };

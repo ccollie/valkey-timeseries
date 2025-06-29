@@ -105,7 +105,7 @@ mod tests {
         // Test with a large number of keys
         let mut keys = Vec::with_capacity(1000);
         for i in 0..1000 {
-            keys.push(format!("series{}", i));
+            keys.push(format!("series{i}"));
         }
 
         let resp = IndexQueryResponse { keys };

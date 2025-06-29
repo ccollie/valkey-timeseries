@@ -142,7 +142,7 @@ impl<'a> PcoSampleIterator<'a> {
             Ok(Some(v)) => Some(v),
             Ok(None) => None,
             Err(err) => {
-                eprintln!("Error {:?}", err);
+                eprintln!("Error {err:?}");
                 None
             }
         }

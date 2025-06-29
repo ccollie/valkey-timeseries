@@ -332,7 +332,7 @@ impl AggStd {
 impl Display for AggStd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let repr = serde_json::to_string(&(self.sum, self.sum_2, self.count)).unwrap();
-        write!(f, "{}", repr)
+        write!(f, "{repr}")
     }
 }
 

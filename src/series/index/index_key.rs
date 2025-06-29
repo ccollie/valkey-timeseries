@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn test_display() {
         let key = IndexKey::from("test_key");
-        assert_eq!(format!("{}", key), "test_key");
+        assert_eq!(format!("{key}"), "test_key");
     }
 
     #[test]
