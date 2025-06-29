@@ -325,7 +325,7 @@ mod tests {
         // Create a large PostingStat list to test performance with bigger data
         let large_list: Vec<PostingStat> = (0..1000)
             .map(|i| PostingStat {
-                name: format!("metric{}", i),
+                name: format!("metric{i}"),
                 count: i as u64,
             })
             .collect();
@@ -348,7 +348,7 @@ mod tests {
 
         assert_eq!(deserialized.cardinality_metrics_stats.len(), 1000);
         for (i, stat) in deserialized.cardinality_metrics_stats.iter().enumerate() {
-            assert_eq!(stat.name, format!("metric{}", i));
+            assert_eq!(stat.name, format!("metric{i}"));
             assert_eq!(stat.count, i as u64);
         }
     }

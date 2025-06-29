@@ -43,7 +43,7 @@ pub fn flake_id() -> u64 {
                 thread::sleep(std::time::Duration::from_millis(1));
                 count += 1;
                 if count > 2 {
-                    panic!("Failed to generate snowflake ID: {}", e)
+                    panic!("Failed to generate snowflake ID: {e}")
                 }
             }
         }
