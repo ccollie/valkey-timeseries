@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use crate::common::db::set_current_db;
 use crate::common::hash::IntMap;
 use crate::common::parallel::join;
@@ -63,7 +64,7 @@ fn set_trim_cursor(db: i32, cursor: SeriesRef) {
 
 fn trim_series(ctx: &Context, db: i32) -> usize {
     if set_current_db(ctx, db) == Status::Err {
-        ctx.log_warning(&format!("Failed to select db {}", db));
+        ctx.log_warning(&format!("Failed to select db {db}"));
         return 0;
     }
 
@@ -88,7 +89,7 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
                         }
                     }
                     Err(e) => {
-                        ctx.log_warning(&format!("Failed to trim series {key}: {:?}", e));
+                        ctx.log_warning(&format!("Failed to trim series {key}: {e:?}"));
                     }
                 }
                 processed += 1;

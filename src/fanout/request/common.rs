@@ -87,7 +87,7 @@ where
     T: flatbuffers::Follow<'buf> + Verifiable + 'buf,
 {
     flatbuffers::root::<T>(buf).map_err(|_e| {
-        let msg = format!("TSDB: failed to deserialize {}", name);
+        let msg = format!("TSDB: failed to deserialize {name}");
         ValkeyError::String(msg)
     })
 }
@@ -112,8 +112,7 @@ pub fn deserialize_timestamp_range(
         match TimestampRange::from_timestamps(start, end) {
             Ok(range) => Ok(Some(range)),
             Err(e) => Err(ValkeyError::String(format!(
-                "TSDB: failed to deserialize date range: {}",
-                e
+                "TSDB: failed to deserialize date range: {e}",
             ))),
         }
     } else {
@@ -180,8 +179,7 @@ mod tests {
             let buffer: Vec<u8> = vec![0; i]; // Create a buffer of size i
             assert!(
                 MessageHeader::deserialize(&buffer).is_none(),
-                "Deserialization should fail for buffer size {}",
-                i
+                "Deserialization should fail for buffer size {i}"
             );
         }
     }

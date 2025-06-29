@@ -260,7 +260,7 @@ fn deserialize_matcher(request_matcher: &FBMatcher) -> ValkeyResult<Matcher> {
             if text.len() == 1 {
                 let item = text.get(0);
                 return RegexMatcher::create(item)
-                    .map_err(|e| ValkeyError::String(format!("TSDB: regex value error: {:?}", e)));
+                    .map_err(|e| ValkeyError::String(format!("TSDB: regex value error: {e:?}")));
             }
         }
         Err(ValkeyError::Str("TSDB: regex value is not a string"))
@@ -317,8 +317,7 @@ mod tests {
         // Assert equality
         assert_eq!(
             original_matchers, &deserialized_matchers,
-            "Round trip failed for: {:?}",
-            original_matchers
+            "Round trip failed for: {original_matchers:?}"
         );
     }
 

@@ -64,7 +64,7 @@ unsafe extern "C" fn rdb_load(rdb: *mut raw::RedisModuleIO, enc_ver: c_int) -> *
     match rdb_load_series(rdb, enc_ver) {
         Ok(series) => Box::into_raw(Box::new(series)) as *mut std::ffi::c_void,
         Err(e) => {
-            logging::log_notice(format!("Failed to load series from RDB. {:?}", e));
+            logging::log_notice(format!("Failed to load series from RDB. {e:?}"));
             std::ptr::null_mut()
         }
     }
@@ -81,7 +81,7 @@ unsafe extern "C" fn free(value: *mut c_void) {
         return;
     }
     let sm = value.cast::<TimeSeries>();
-    remove_series_from_index(&*sm);
+    // remove_series_from_index(&*sm);
 
     drop(Box::from_raw(sm));
 }

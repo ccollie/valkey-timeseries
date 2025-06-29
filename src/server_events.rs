@@ -39,7 +39,6 @@ fn remove_key_from_index(ctx: &Context, key: &[u8]) {
     });
 }
 
-#[allow(dead_code)]
 fn handle_loaded(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
     let Ok(Some(mut series)) = get_timeseries_mut(ctx, &_key, false, None) else {
@@ -89,6 +88,11 @@ pub(super) fn remove_key_events_handler(
     event: &str,
     key: &[u8],
 ) {
+    ctx.log_notice(&format!(
+        "Received event: {} for key: {}",
+        event,
+        String::from_utf8_lossy(key)
+    ));
     // If the event is one of the ones that require removing the series from the index, we
     // remove it from the index
     if hashify::tiny_set!(
@@ -112,6 +116,11 @@ pub(super) fn generic_key_events_handler(
     key: &[u8],
 ) {
     // todo: AddPostNotificationJob(ctx, event, key);
+    ctx.log_notice(&format!(
+        "Received event: {} for key: {}",
+        event,
+        String::from_utf8_lossy(key)
+    ));
     match event {
         "loaded" => {
             ctx.log_notice("Loaded event received");

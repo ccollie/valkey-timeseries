@@ -253,11 +253,11 @@ impl SampleAddResult {
 impl Display for SampleAddResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SampleAddResult::Ok(ts) => write!(f, "Added @ {}", ts),
+            SampleAddResult::Ok(ts) => write!(f, "Added @ {ts}"),
             SampleAddResult::Duplicate => write!(f, "{}", error_consts::DUPLICATE_SAMPLE),
-            SampleAddResult::Ignored(ts) => write!(f, "Ignored. Using ts: {}", ts),
+            SampleAddResult::Ignored(ts) => write!(f, "Ignored. Using ts: {ts}"),
             SampleAddResult::TooOld => write!(f, "{}", error_consts::SAMPLE_TOO_OLD),
-            SampleAddResult::Error(e) => write!(f, "{}", e),
+            SampleAddResult::Error(e) => write!(f, "{e}"),
             SampleAddResult::CapacityFull => write!(f, "Capacity full"),
             SampleAddResult::InvalidKey => write!(f, "{}", error_consts::INVALID_TIMESERIES_KEY),
             SampleAddResult::InvalidPermissions => write!(f, "{}", error_consts::PERMISSION_DENIED),

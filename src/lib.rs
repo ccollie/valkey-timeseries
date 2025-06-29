@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 extern crate enum_dispatch;
 extern crate get_size;
 extern crate strum;
@@ -5,8 +6,7 @@ extern crate strum_macros;
 extern crate valkey_module_macros;
 
 use valkey_module::{
-    configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
-    Version,
+    configuration::ConfigurationFlags, valkey_module, Context, Status, ValkeyString, Version,
 };
 
 pub mod aggregators;
@@ -26,7 +26,7 @@ mod tests;
 
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{start_series_background_worker, stop_series_background_worker};
+use crate::series::stop_series_background_worker;
 use crate::server_events::{
     generic_key_events_handler, register_server_events, remove_key_events_handler,
 };
@@ -48,8 +48,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
     // unlike init which is called at the end of the valkey_module! macro this is called at the beginning
     let version = ctx.get_server_version().unwrap();
     ctx.log_notice(&format!(
-        "preload for server version {:?} with args: {:?}",
-        version, args
+        "preload for server version {version:?} with args: {args:?}"
     ));
 
     let ver = ctx
@@ -74,15 +73,12 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
 fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
-    start_series_background_worker(ctx);
+    // start_series_background_worker(ctx);
 
     match register_server_events(ctx) {
-        Ok(_) => {
-            logging::log_debug("After initializing server events");
-            Status::Ok
-        }
+        Ok(_) => Status::Ok,
         Err(e) => {
-            let msg = format!("Failed to register server events: {}", e);
+            let msg = format!("Failed to register server events: {e}");
             ctx.log_warning(&msg);
             Status::Err
         }
@@ -145,7 +141,7 @@ valkey_module! {
     ]
     event_handlers: [
         [@SET @STRING @EVICTED @EXPIRED @TRIMMED: remove_key_events_handler],
-        [@GENERIC @LOADED: generic_key_events_handler]
+        [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
     ]
     configurations: [
         i64: [

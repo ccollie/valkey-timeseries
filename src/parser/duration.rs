@@ -18,8 +18,7 @@ pub fn parse_positive_duration_value(s: &str) -> Result<i64, ParseError> {
     let d = parse_duration_value(s)?;
     if d < 0 {
         return Err(ParseError::InvalidDuration(format!(
-            "duration cannot be negative; got {}",
-            s
+            "duration cannot be negative; got {s}"
         )));
     }
     Ok(d)
@@ -27,7 +26,7 @@ pub fn parse_positive_duration_value(s: &str) -> Result<i64, ParseError> {
 
 fn validate_duration(ms: f64) -> ParseResult<f64> {
     if ms.abs() > (1_i64 << (62 - 1)) as f64 {
-        let msg = format!("duration ({}) is too large", ms);
+        let msg = format!("duration ({ms}) is too large");
         return Err(ParseError::General(msg));
     }
     Ok(ms)
@@ -276,8 +275,7 @@ mod tests {
             let d = parse_duration_internal(s).unwrap();
             assert_eq!(
                 d, expected,
-                "unexpected duration; got {}; want {}; expr {}",
-                d, expected, s
+                "unexpected duration; got {d}; want {expected}; expr {s}"
             )
         }
 
@@ -316,7 +314,7 @@ mod tests {
     fn test_duration_error() {
         fn f(s: &str) {
             if let Ok(d) = parse_duration_value(s) {
-                panic!("Expected error, got {} for expr {}", d, s)
+                panic!("Expected error, got {d} for expr {s}")
             }
         }
 
@@ -341,7 +339,7 @@ mod tests {
     fn test_positive_duration_error() {
         fn f(s: &str) {
             if parse_positive_duration_value(s).is_ok() {
-                panic!("Expecting an error for duration {}", s)
+                panic!("Expecting an error for duration {s}")
             }
         }
         f("");

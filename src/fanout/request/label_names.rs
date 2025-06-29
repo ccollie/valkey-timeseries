@@ -104,7 +104,7 @@ mod tests {
         // Test with a large number of label names
         let mut names = Vec::with_capacity(1000);
         for i in 0..1000 {
-            names.push(format!("label{}", i));
+            names.push(format!("label{i}"));
         }
 
         let resp = LabelNamesResponse { names };

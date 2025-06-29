@@ -1158,8 +1158,7 @@ mod tests {
         let result = time_series.get_range(start_time, end_time);
         assert!(
             result.is_empty(),
-            "Expected an empty vector, got {:?}",
-            result
+            "Expected an empty vector, got {result:?}"
         );
     }
 

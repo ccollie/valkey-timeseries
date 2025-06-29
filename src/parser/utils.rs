@@ -23,8 +23,7 @@ pub fn extract_string_value(token: &str) -> ParseResult<Cow<str>> {
 
     if n < 2 {
         return Err(ParseError::SyntaxError(format!(
-            "invalid quoted string literal. A minimum of 2 chars needed; got {}",
-            token
+            "invalid quoted string literal. A minimum of 2 chars needed; got {token}"
         )));
     }
 
@@ -87,7 +86,7 @@ pub fn extract_string_value(token: &str) -> ParseResult<Cow<str>> {
 fn handle_unquote(token: &str, quote: char) -> ParseResult<String> {
     match unescape(token, Some(quote)) {
         Err(err) => {
-            let msg = format!("cannot parse string literal {token}: {:?}", err);
+            let msg = format!("cannot parse string literal {token}: {err:?}");
             Err(ParseError::SyntaxError(msg))
         }
         Ok(s) => Ok(s),

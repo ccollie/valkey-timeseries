@@ -71,7 +71,7 @@ impl InternedMetricName {
 
     /// adds new label to mn with the given key and value.
     pub fn add_label(&mut self, key: &str, value: &str) {
-        let full_label = format!("{}{}{}", key, VALUE_SEPARATOR, value);
+        let full_label = format!("{key}{VALUE_SEPARATOR}{value}");
         let interned_value = InternedString::intern(full_label);
         match self.0.binary_search_by_key(&key, |tag| {
             if let Some((k, _)) = tag.split_once(VALUE_SEPARATOR) {
@@ -292,7 +292,7 @@ mod tests {
         metric_name.add_label("key1", "value1");
         metric_name.add_label("key2", "value2");
 
-        let display = format!("{}", metric_name);
+        let display = format!("{metric_name}");
 
         assert_eq!(display, "metric{key1=\"value1\",key2=\"value2\"}");
     }

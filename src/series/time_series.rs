@@ -276,7 +276,7 @@ impl TimeSeries {
                 // Try to trim time series and log any errors
                 // TODO: do this in a separate thread to avoid blocking ingestion
                 if let Err(e) = self.trim() {
-                    logging::log_warning(format!("Error trimming time series: {:?}", e));
+                    logging::log_warning(format!("Error trimming time series: {e:?}"));
                 }
 
                 // Insert the new chunk at the correct position

@@ -562,7 +562,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let name = format!("{{{}}}", name);
+            let name = format!("{{{name}}}");
             exp.clear();
 
             for labels in case.exp {

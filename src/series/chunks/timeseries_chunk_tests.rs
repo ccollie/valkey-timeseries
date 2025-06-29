@@ -151,9 +151,7 @@ mod tests {
             let empty_result = chunk.get_range(15, 15).unwrap();
             assert!(
                 empty_result.is_empty(),
-                "{}: Expected empty result, got {:?}",
-                chunk_type,
-                empty_result
+                "{chunk_type}: Expected empty result, got {empty_result:?}"
             );
         }
     }
@@ -297,8 +295,7 @@ mod tests {
 
             assert_eq!(
                 current, expected,
-                "{chunk_type}: Expected range {:?} after removing [20, 30], got {:?}",
-                expected, current
+                "{chunk_type}: Expected range {expected:?} after removing [20, 30], got {current:?}"
             );
         }
     }
@@ -355,11 +352,7 @@ mod tests {
 
             let removed = chunk.remove_range(10, 10).unwrap();
 
-            assert_eq!(
-                removed, 1,
-                "{}: Expected 1 result, got {removed}",
-                chunk_type
-            );
+            assert_eq!(removed, 1, "{chunk_type}: Expected 1 result, got {removed}");
             assert_eq!(
                 chunk.get_range(0, 100).unwrap(),
                 vec![
@@ -988,7 +981,7 @@ mod tests {
             match chunk.merge_samples(&samples, Some(DuplicatePolicy::KeepLast)) {
                 Ok(_) => {}
                 Err(TsdbError::CapacityFull(_)) => break,
-                Err(e) => panic!("unexpected error: {:?}", e),
+                Err(e) => panic!("unexpected error: {e:?}"),
             }
             let threshold = (chunk.max_size() as f64 * SPLIT_FACTOR) as usize;
             if chunk.size() > threshold {

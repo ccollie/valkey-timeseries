@@ -924,8 +924,7 @@ mod tests {
         assert_eq!(range_samples.len(), 500_001);
         assert!(
             duration.as_millis() < 1000,
-            "Range iteration took too long: {:?}",
-            duration
+            "Range iteration took too long: {duration:?}"
         );
     }
 

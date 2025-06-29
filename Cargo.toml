@@ -13,7 +13,7 @@ ahash = { version = "0.8", features = ["std", "serde"] }
 blart = "0.3"
 bon = "3.6"
 byte-pool = "0.2"
-cfg-if = "1.0.0"
+cfg-if = "1.0"
 chili = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 croaring = "2.3"

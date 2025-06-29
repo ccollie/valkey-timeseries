@@ -59,14 +59,14 @@ impl Display for ParseErr {
         let line = self.line_offset + 1;
 
         let col = pos - last_line_break;
-        let position_str = format!("{}:{}:", line, col).to_string();
+        let position_str = format!("{line}:{col}:").to_string();
         write!(f, "{} parse error: {}", position_str, self.err)?;
         Ok(())
     }
 }
 
 /// unexpected creates a parser error complaining about an unexpected lexer item.
-/// The item that is presented as unexpected is always the last item produced
+/// The item presented as unexpected is always the last item produced
 /// by the lexer.
 pub(crate) fn unexpected(
     context: &str,

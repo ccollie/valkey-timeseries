@@ -103,7 +103,7 @@ fn add_samples_internal(
     let add_results = input
         .series
         .merge_samples(&input.samples, None)
-        .map_err(|e| ValkeyError::String(format!("{}", e)))?;
+        .map_err(|e| ValkeyError::String(format!("{e}")))?;
 
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results

@@ -187,6 +187,7 @@ impl MemoryPostings {
             .unwrap_or(&*EMPTY_BITMAP)
     }
 
+    #[allow(dead_code)]
     pub fn max_id(&self) -> SeriesRef {
         self.all_postings().maximum().unwrap_or_default()
     }
@@ -368,6 +369,7 @@ impl MemoryPostings {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
         if let Some(key) = self.id_to_key.remove(&id) {
             let old_key = IndexKey::from(key.as_bytes());
@@ -695,15 +697,11 @@ mod tests {
 
         // Add postings for a large number of values
         for i in 0..num_values {
-            postings.add_posting_for_label_value(
-                i as SeriesRef,
-                label_name,
-                &format!("value_{}", i),
-            );
+            postings.add_posting_for_label_value(i as SeriesRef, label_name, &format!("value_{i}"));
         }
 
         // Create a large array of values to search for
-        let values: Vec<String> = (0..num_values).map(|i| format!("value_{}", i)).collect();
+        let values: Vec<String> = (0..num_values).map(|i| format!("value_{i}")).collect();
 
         // Measure the time taken to execute the postings function
         let start_time = std::time::Instant::now();
@@ -719,8 +717,7 @@ mod tests {
         // Check that the execution time is reasonable (adjust the threshold as needed)
         assert!(
             duration < std::time::Duration::from_secs(1),
-            "Postings retrieval took too long: {:?}",
-            duration
+            "Postings retrieval took too long: {duration:?}"
         );
     }
 

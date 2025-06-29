@@ -25,9 +25,9 @@ impl Display for RoundingStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RoundingStrategy::SignificantDigits(digits) => {
-                write!(f, "significant_digits({})", digits)
+                write!(f, "significant_digits({digits})")
             }
-            RoundingStrategy::DecimalDigits(digits) => write!(f, "decimal_digits({})", digits),
+            RoundingStrategy::DecimalDigits(digits) => write!(f, "decimal_digits({digits})"),
         }
     }
 }
