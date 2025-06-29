@@ -235,7 +235,7 @@ where
                         let msg = errors[0].to_string();
                         ctx_locked.reply_error_string(&msg);
                         for error in errors.iter() {
-                            let msg = format!("Error: {}", error);
+                            let msg = format!("Error: {error}");
                             ctx_locked.log_warning(&msg);
                         }
                     }
@@ -433,8 +433,7 @@ extern "C" fn on_response_received(
     let map = INFLIGHT_REQUESTS.pin();
     let Some(request) = map.get(&request_id) else {
         ctx.log_warning(&format!(
-            "Failed to find inflight request for id {}",
-            request_id
+            "Failed to find inflight request for id {request_id}"
         ));
         return;
     };
@@ -496,8 +495,7 @@ extern "C" fn on_error_received(
     let map = INFLIGHT_REQUESTS.pin();
     let Some(request) = map.get(&request_id) else {
         ctx.log_warning(&format!(
-            "Failed to find inflight request for id {}",
-            request_id
+            "Failed to find inflight request for id {request_id}"
         ));
         return;
     };
