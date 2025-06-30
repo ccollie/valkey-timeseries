@@ -5,22 +5,24 @@ use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
 use std::thread;
 
-fn machine_id() -> String {
+static MACHINE_ID: LazyLock<u64> = LazyLock::new(|| {
     let node_id = get_current_node();
-    node_id.to_string_lossy().into_owned()
-}
+    let mut hasher = AHasher::default();
+    node_id.hash(&mut hasher);
+    hasher.finish()
+});
 
 // Specify our custom snowflake
 #[derive(Debug)]
 pub struct SnowflakeParameters;
+
 impl MachineId for SnowflakeParameters {
     fn machine_id() -> u64 {
-        let mid = machine_id();
-        let mut hasher = AHasher::default();
-        mid.hash(&mut hasher);
-        hasher.finish()
+        // Use the machine ID as a hash of the node ID
+        *MACHINE_ID
     }
 }
+
 impl Epoch for SnowflakeParameters {
     fn millis_since_unix() -> u64 {
         // Our epoch starts with at midnight May o1 2025
