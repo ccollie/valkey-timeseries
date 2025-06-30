@@ -31,6 +31,7 @@ mod label_values;
 mod response_generated;
 pub(crate) mod serialization;
 mod stats;
+mod series_chunk;
 
 pub use cardinality::*;
 pub use index_query::*;

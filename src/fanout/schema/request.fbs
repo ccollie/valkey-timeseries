@@ -29,10 +29,10 @@ table DateRange {
   end:int64;
 }
 
-table RangeRequest {
-  range:DateRange;
-  filters:[Matchers];
-}
+//table RangeRequest {
+//  range:DateRange;
+//  filters:[Matchers];
+//}
 
 table MultiGetRequest {
   with_labels:bool;
