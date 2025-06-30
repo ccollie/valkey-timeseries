@@ -11,10 +11,11 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
 use std::mem::size_of;
+use serde::{Deserialize, Serialize};
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
 /// `GorillaChunk` is a chunk of timeseries data encoded using Gorilla XOR encoding.
-#[derive(Debug, Clone, PartialEq, GetSize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize,  GetSize)]
 pub struct GorillaChunk {
     pub(crate) encoder: GorillaEncoder,
     pub max_size: usize,

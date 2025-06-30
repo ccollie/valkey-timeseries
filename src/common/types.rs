@@ -2,12 +2,13 @@ use get_size::GetSize;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
+use serde::{Deserialize, Serialize};
 use valkey_module::ValkeyValue;
 
 pub type Timestamp = i64;
 pub type SampleValue = f64;
 
-#[derive(Debug, Default, Clone, Copy, GetSize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, GetSize)]
 pub struct Sample {
     pub timestamp: Timestamp,
     pub value: SampleValue,

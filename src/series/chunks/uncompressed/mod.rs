@@ -8,12 +8,13 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use core::mem::size_of;
 use get_size::GetSize;
+use serde::{Deserialize, Serialize};
 use valkey_module::{raw, RedisModuleIO, ValkeyResult};
 
 // todo: move to constants
 pub const MAX_UNCOMPRESSED_SAMPLES: usize = 256;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UncompressedChunk {
     pub max_size: usize,
     pub samples: Vec<Sample>,
@@ -94,7 +95,7 @@ impl UncompressedChunk {
         self.samples.iter().cloned()
     }
 
-    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter {
+    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
         let slice = self.get_range_slice(start_ts, end_ts);
         SampleIter::vec(slice)
     }
@@ -146,7 +147,7 @@ impl UncompressedChunk {
     /// * `None` if the series is empty, if all samples are less than `start`,
     ///   or if `start` and `end` are equal and greater than the sample at the found index.
     ///
-    /// Used to get an inclusive bounds for series chunks (all chunks containing samples in the range [start_index...=end_index])
+    /// Used to get an inclusive bound for series chunks (all chunks containing samples in the range [start_index...=end_index])
     fn get_index_bounds(&self, start: Timestamp, end: Timestamp) -> Option<(usize, usize)> {
         let len = self.samples.len();
         if len == 0 {
@@ -592,7 +593,7 @@ mod tests {
         ];
         let mut chunk = UncompressedChunk::new(1000, &samples);
 
-        // Test 1: Remove middle range
+        // Test 1: Remove the middle range
         let removed = chunk.remove_range(25, 45).unwrap();
         assert_eq!(removed, 2);
         assert_eq!(
@@ -665,7 +666,7 @@ mod tests {
             ]
         );
 
-        // Test 4: Remove entire range
+        // Test 4: Remove the entire range
         let mut chunk = UncompressedChunk::new(1000, &samples);
         let removed = chunk.remove_range(0, 60).unwrap();
         assert_eq!(removed, 5);

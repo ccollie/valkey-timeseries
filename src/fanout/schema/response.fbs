@@ -9,6 +9,19 @@ struct Sample {
   value:float64;
 }
 
+enum CompressionType: byte {
+  None = 0,
+  Gorilla = 1,
+  Pco = 2,
+}
+
+table SeriesChunk {
+  version:uint32; // version of the series chunk
+  count:uint64;
+  compression:CompressionType;
+  data: [ubyte]; // or [byte]
+}
+
 table MGetValue {
   key:string;
   value:Sample;
