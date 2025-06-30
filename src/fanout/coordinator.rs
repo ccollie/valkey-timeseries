@@ -65,16 +65,12 @@ impl InFlightRequest {
 
     pub fn raise_error(&self, error: Error) {
         self.responses.raise_error(error);
-        if !self.is_completed() {
-            self.call_done();
-        }
+        self.call_done();
     }
 
     pub fn time_out(&self) {
         self.timed_out.store(true, Ordering::SeqCst);
-        if !self.is_completed() {
-            self.call_done();
-        }
+        self.call_done();
     }
 }
 
@@ -100,9 +96,7 @@ fn on_command_timeout(ctx: &Context, id: u64) {
     let map = INFLIGHT_REQUESTS.pin();
     if let Some(request) = map.get(&id) {
         let _ = ctx.stop_timer::<u64>(request.timer_id);
-        if !request.is_completed() {
-            request.time_out();
-        }
+        request.time_out();
     }
 }
 
