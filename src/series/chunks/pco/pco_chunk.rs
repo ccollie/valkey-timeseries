@@ -242,7 +242,7 @@ impl PcoChunk {
         }
     }
 
-    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter {
+    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
         let iter = PcoSampleIterator::new_range(&self.timestamps, &self.values, start_ts, end_ts);
         match iter {
             Ok(iter) => iter.into(),
@@ -544,9 +544,9 @@ impl Chunk for PcoChunk {
 
 fn get_timestamp_index(timestamps: &[Timestamp], ts: Timestamp, start_ofs: usize) -> (usize, bool) {
     let stamps = &timestamps[start_ofs..];
-    // for regularly spaced timestamps, we can get extreme levels of compression. Also since pco is
+    // For regularly spaced timestamps, we can get extreme levels of compression. Also, since pco is
     // intended for "cold" storage we can have larger than normal numbers of samples.
-    // if we pass a threshold, see if we should use an exponential search
+    // If we pass a threshold, see if we should use an exponential search
     let idx = if should_use_exponential_search(stamps, ts) {
         stamps
             .exponential_search_by(|s| s.cmp(&ts))
@@ -567,9 +567,9 @@ fn should_use_exponential_search(timestamps: &[Timestamp], ts: Timestamp) -> boo
     if timestamps.len() < EXPONENTIAL_SEARCH_THRESHOLD {
         return false;
     }
-    // exponential search is only worth it if we're near the beginning, so we use the following heuristic:
+    // Exponential search is only worth it if we're near the beginning, so we use the following heuristic:
     // 1. Assume timestamps are equally spaced
-    // 2. Get delta of `ts` from the start
+    // 2. Get a delta of `ts` from the start
     // 3. Calculate delta as a percentage of the range
     // 4. If delta is less than 20% of the range, return true. Otherwise, return false.
     // This heuristic assumes that timestamps are evenly spaced. If they aren't, this heuristic may not be accurate.
@@ -1030,7 +1030,7 @@ mod tests {
             .merge_samples(&new_samples, Some(DuplicatePolicy::KeepLast))
             .unwrap();
 
-        // Check that the merge result indicates successful addition
+        // Check that the merge result indicates a successful addition
         assert_eq!(
             result,
             vec![

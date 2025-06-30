@@ -24,11 +24,12 @@ use super::utils::{zigzag_encode, MSB};
 use get_size::GetSize;
 use num_traits::PrimInt;
 use std::io::Result;
+use serde::{Deserialize, Serialize};
 
 /// BufferedWriter
 ///
 /// BufferedWriter writes bytes to a buffer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, GetSize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, GetSize)]
 pub struct BufferedWriter {
     buf: Vec<u8>,
     pos: u32, // position in the last byte in the buffer
@@ -58,7 +59,7 @@ impl BufferedWriter {
     }
 
     pub fn write_bits(&mut self, bits: u32, value: u64) -> Result<()> {
-        // we should never write more than 64 bits for a u64
+        // we should never write more than 64 bits for an u64
         let mut num_bits = if bits > 64 { 64 } else { bits };
 
         let mut value = value.wrapping_shl(64 - num_bits);
