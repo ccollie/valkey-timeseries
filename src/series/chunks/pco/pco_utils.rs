@@ -203,22 +203,22 @@ pub fn decompress_samples_internal(
     }
 
     let mut input = compressed;
-    let Some((count, ofs)) = read_uvarint(&input, 0) else {
+    let Some((count, ofs)) = read_uvarint(input, 0) else {
         return Err(TsdbError::CannotDeserialize("count".to_string()));
     };
 
     input = &input[ofs..];
-    let Some((_data_len, ofs)) = read_uvarint(&input, 0) else {
+    let Some((_data_len, ofs)) = read_uvarint(input, 0) else {
         return Err(TsdbError::CannotDeserialize("data_len".to_string()));
     };
 
     input = &input[ofs..];
-    let Some((ts_len, ofs)) = read_uvarint(&input, 0) else {
+    let Some((ts_len, ofs)) = read_uvarint(input, 0) else {
         return Err(TsdbError::CannotDeserialize("ts_len".to_string()));
     };
 
     input = &input[ofs..];
-    let Some((value_len, _)) = read_uvarint(&input, 0) else {
+    let Some((value_len, _)) = read_uvarint(input, 0) else {
         return Err(TsdbError::CannotDeserialize("value_len".to_string()));
     };
 

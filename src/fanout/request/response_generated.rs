@@ -597,8 +597,9 @@ impl<'a> flatbuffers::Follow<'a> for SeriesChunk<'a> {
 
 impl<'a> SeriesChunk<'a> {
   pub const VT_KEY: flatbuffers::VOffsetT = 4;
-  pub const VT_LABELS: flatbuffers::VOffsetT = 6;
-  pub const VT_DATA: flatbuffers::VOffsetT = 8;
+  pub const VT_GROUP_VALUE: flatbuffers::VOffsetT = 6;
+  pub const VT_LABELS: flatbuffers::VOffsetT = 8;
+  pub const VT_DATA: flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -612,6 +613,7 @@ impl<'a> SeriesChunk<'a> {
     let mut builder = SeriesChunkBuilder::new(_fbb);
     if let Some(x) = args.data { builder.add_data(x); }
     if let Some(x) = args.labels { builder.add_labels(x); }
+    if let Some(x) = args.group_value { builder.add_group_value(x); }
     if let Some(x) = args.key { builder.add_key(x); }
     builder.finish()
   }
@@ -623,6 +625,13 @@ impl<'a> SeriesChunk<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(SeriesChunk::VT_KEY, None)}
+  }
+  #[inline]
+  pub fn group_value(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(SeriesChunk::VT_GROUP_VALUE, None)}
   }
   #[inline]
   pub fn labels(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label<'a>>>> {
@@ -648,6 +657,7 @@ impl flatbuffers::Verifiable for SeriesChunk<'_> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("key", Self::VT_KEY, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("group_value", Self::VT_GROUP_VALUE, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Label>>>>("labels", Self::VT_LABELS, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<SampleData>>("data", Self::VT_DATA, false)?
      .finish();
@@ -656,6 +666,7 @@ impl flatbuffers::Verifiable for SeriesChunk<'_> {
 }
 pub struct SeriesChunkArgs<'a> {
     pub key: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub group_value: Option<flatbuffers::WIPOffset<&'a str>>,
     pub labels: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label<'a>>>>>,
     pub data: Option<flatbuffers::WIPOffset<SampleData<'a>>>,
 }
@@ -664,6 +675,7 @@ impl<'a> Default for SeriesChunkArgs<'a> {
   fn default() -> Self {
     SeriesChunkArgs {
       key: None,
+      group_value: None,
       labels: None,
       data: None,
     }
@@ -678,6 +690,10 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SeriesChunkBuilder<'a, 'b, A> {
   #[inline]
   pub fn add_key(&mut self, key: flatbuffers::WIPOffset<&'b  str>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesChunk::VT_KEY, key);
+  }
+  #[inline]
+  pub fn add_group_value(&mut self, group_value: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesChunk::VT_GROUP_VALUE, group_value);
   }
   #[inline]
   pub fn add_labels(&mut self, labels: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<Label<'b >>>>) {
@@ -706,6 +722,7 @@ impl core::fmt::Debug for SeriesChunk<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("SeriesChunk");
       ds.field("key", &self.key());
+      ds.field("group_value", &self.group_value());
       ds.field("labels", &self.labels());
       ds.field("data", &self.data());
       ds.finish()
@@ -1492,6 +1509,103 @@ impl core::fmt::Debug for IndexQueryResponse<'_> {
       ds.finish()
   }
 }
+pub enum SearchQueryResponseOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct SearchQueryResponse<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for SearchQueryResponse<'a> {
+  type Inner = SearchQueryResponse<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> SearchQueryResponse<'a> {
+  pub const VT_SERIES: flatbuffers::VOffsetT = 4;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    SearchQueryResponse { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args SearchQueryResponseArgs<'args>
+  ) -> flatbuffers::WIPOffset<SearchQueryResponse<'bldr>> {
+    let mut builder = SearchQueryResponseBuilder::new(_fbb);
+    if let Some(x) = args.series { builder.add_series(x); }
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn series(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<SeriesChunk<'a>>>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<SeriesChunk>>>>(SearchQueryResponse::VT_SERIES, None)}
+  }
+}
+
+impl flatbuffers::Verifiable for SearchQueryResponse<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<SeriesChunk>>>>("series", Self::VT_SERIES, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct SearchQueryResponseArgs<'a> {
+    pub series: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<SeriesChunk<'a>>>>>,
+}
+impl<'a> Default for SearchQueryResponseArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    SearchQueryResponseArgs {
+      series: None,
+    }
+  }
+}
+
+pub struct SearchQueryResponseBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SearchQueryResponseBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_series(&mut self, series: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<SeriesChunk<'b >>>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SearchQueryResponse::VT_SERIES, series);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> SearchQueryResponseBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    SearchQueryResponseBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<SearchQueryResponse<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for SearchQueryResponse<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("SearchQueryResponse");
+      ds.field("series", &self.series());
+      ds.finish()
+  }
+}
 pub enum ErrorResponseOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -2211,73 +2325,73 @@ impl core::fmt::Debug for PostingStats<'_> {
   }
 }
 #[inline]
-/// Verifies that a buffer of bytes contains a `PostingStats`
+/// Verifies that a buffer of bytes contains a `SearchQueryResponse`
 /// and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_posting_stats_unchecked`.
-pub fn root_as_posting_stats(buf: &[u8]) -> Result<PostingStats, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::root::<PostingStats>(buf)
+/// `root_as_search_query_response_unchecked`.
+pub fn root_as_search_query_response(buf: &[u8]) -> Result<SearchQueryResponse, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root::<SearchQueryResponse>(buf)
 }
 #[inline]
 /// Verifies that a buffer of bytes contains a size prefixed
-/// `PostingStats` and returns it.
+/// `SearchQueryResponse` and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `size_prefixed_root_as_posting_stats_unchecked`.
-pub fn size_prefixed_root_as_posting_stats(buf: &[u8]) -> Result<PostingStats, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::size_prefixed_root::<PostingStats>(buf)
+/// `size_prefixed_root_as_search_query_response_unchecked`.
+pub fn size_prefixed_root_as_search_query_response(buf: &[u8]) -> Result<SearchQueryResponse, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root::<SearchQueryResponse>(buf)
 }
 #[inline]
 /// Verifies, with the given options, that a buffer of bytes
-/// contains a `PostingStats` and returns it.
+/// contains a `SearchQueryResponse` and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_posting_stats_unchecked`.
-pub fn root_as_posting_stats_with_opts<'b, 'o>(
+/// `root_as_search_query_response_unchecked`.
+pub fn root_as_search_query_response_with_opts<'b, 'o>(
   opts: &'o flatbuffers::VerifierOptions,
   buf: &'b [u8],
-) -> Result<PostingStats<'b>, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::root_with_opts::<PostingStats<'b>>(opts, buf)
+) -> Result<SearchQueryResponse<'b>, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root_with_opts::<SearchQueryResponse<'b>>(opts, buf)
 }
 #[inline]
 /// Verifies, with the given verifier options, that a buffer of
-/// bytes contains a size prefixed `PostingStats` and returns
+/// bytes contains a size prefixed `SearchQueryResponse` and returns
 /// it. Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_posting_stats_unchecked`.
-pub fn size_prefixed_root_as_posting_stats_with_opts<'b, 'o>(
+/// `root_as_search_query_response_unchecked`.
+pub fn size_prefixed_root_as_search_query_response_with_opts<'b, 'o>(
   opts: &'o flatbuffers::VerifierOptions,
   buf: &'b [u8],
-) -> Result<PostingStats<'b>, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::size_prefixed_root_with_opts::<PostingStats<'b>>(opts, buf)
+) -> Result<SearchQueryResponse<'b>, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root_with_opts::<SearchQueryResponse<'b>>(opts, buf)
 }
 #[inline]
-/// Assumes, without verification, that a buffer of bytes contains a PostingStats and returns it.
+/// Assumes, without verification, that a buffer of bytes contains a SearchQueryResponse and returns it.
 /// # Safety
-/// Callers must trust the given bytes do indeed contain a valid `PostingStats`.
-pub unsafe fn root_as_posting_stats_unchecked(buf: &[u8]) -> PostingStats {
-  flatbuffers::root_unchecked::<PostingStats>(buf)
+/// Callers must trust the given bytes do indeed contain a valid `SearchQueryResponse`.
+pub unsafe fn root_as_search_query_response_unchecked(buf: &[u8]) -> SearchQueryResponse {
+  flatbuffers::root_unchecked::<SearchQueryResponse>(buf)
 }
 #[inline]
-/// Assumes, without verification, that a buffer of bytes contains a size prefixed PostingStats and returns it.
+/// Assumes, without verification, that a buffer of bytes contains a size prefixed SearchQueryResponse and returns it.
 /// # Safety
-/// Callers must trust the given bytes do indeed contain a valid size prefixed `PostingStats`.
-pub unsafe fn size_prefixed_root_as_posting_stats_unchecked(buf: &[u8]) -> PostingStats {
-  flatbuffers::size_prefixed_root_unchecked::<PostingStats>(buf)
+/// Callers must trust the given bytes do indeed contain a valid size prefixed `SearchQueryResponse`.
+pub unsafe fn size_prefixed_root_as_search_query_response_unchecked(buf: &[u8]) -> SearchQueryResponse {
+  flatbuffers::size_prefixed_root_unchecked::<SearchQueryResponse>(buf)
 }
 #[inline]
-pub fn finish_posting_stats_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
+pub fn finish_search_query_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
     fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    root: flatbuffers::WIPOffset<PostingStats<'a>>) {
+    root: flatbuffers::WIPOffset<SearchQueryResponse<'a>>) {
   fbb.finish(root, None);
 }
 
 #[inline]
-pub fn finish_size_prefixed_posting_stats_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<PostingStats<'a>>) {
+pub fn finish_size_prefixed_search_query_response_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<SearchQueryResponse<'a>>) {
   fbb.finish_size_prefixed(root, None);
 }

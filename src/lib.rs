@@ -8,6 +8,7 @@ extern crate valkey_module_macros;
 use valkey_module::{
     configuration::ConfigurationFlags, valkey_module, Context, Status, ValkeyString, Version,
 };
+use crate::fanout::cluster::is_clustered;
 
 pub mod aggregators;
 pub(crate) mod commands;
@@ -23,6 +24,7 @@ mod parser;
 mod series;
 mod server_events;
 mod tests;
+mod query;
 
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
@@ -74,6 +76,13 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
     // start_series_background_worker(ctx);
+    if is_clustered(ctx) {
+        ctx.log_notice("Clustered mode detected, initializing cluster support");
+        fanout::register_cluster_message_handlers(ctx);
+        query::register_cluster_message_handlers(ctx);
+    } else {
+        ctx.log_notice("Single node mode detected, skipping cluster initialization");
+    }
 
     match register_server_events(ctx) {
         Ok(_) => Status::Ok,
@@ -132,6 +141,8 @@ valkey_module! {
         ["TS.RANGE", commands::range, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["TS.REVRANGE", commands::rev_range, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["TS.INFO", commands::info, "readonly", 0, 0, 0, "fast read timeseries"],
+        ["TS.QUERY", commands::query, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.QUERY_RANGE", commands::query_range, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.QUERYINDEX", commands::query_index, "readonly", 0, 0, 0, "fast read timeseries"],
         ["TS.CARD", commands::cardinality, "readonly fast", 0, 0, 0, "fast read timeseries"],
         ["TS.LABELNAMES", commands::label_names, "readonly fast", 0, 0, 0, "fast read timeseries"],

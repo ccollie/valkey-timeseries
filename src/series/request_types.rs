@@ -1,8 +1,9 @@
+use std::time::Duration;
 use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::labels::matchers::Matchers;
 use crate::labels::Label;
-use crate::series::{TimestampRange, ValueFilter};
+use crate::series::{TimestampRange, TimestampValue, ValueFilter};
 use valkey_module::{ValkeyString, ValkeyValue};
 
 #[derive(Debug, Copy, Clone)]
@@ -52,6 +53,24 @@ pub struct RangeOptions {
     pub aggregation: Option<AggregationOptions>,
     pub timestamp_filter: Option<Vec<Timestamp>>,
     pub value_filter: Option<ValueFilter>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct InstantQueryOptions {
+    pub query: String,
+    pub timestamp: TimestampValue,
+    pub step: Option<Duration>,
+    pub rounding: Option<u8>,
+    // todo: timeout
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct RangeQueryOptions {
+    pub query: String,
+    pub date_range: TimestampRange,
+    pub step: Option<Duration>,
+    pub rounding: Option<u8>,
+    // todo: timeout
 }
 
 #[derive(Debug, Default, Clone)]

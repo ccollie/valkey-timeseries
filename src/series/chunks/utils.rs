@@ -2,7 +2,9 @@ use crate::common::binary_search::*;
 use crate::common::{Sample, Timestamp};
 use crate::series::types::ValueFilter;
 use smallvec::SmallVec;
+use valkey_module::{ValkeyError, ValkeyResult};
 use crate::error::{TsdbError, TsdbResult};
+use crate::series::chunks::{GorillaChunk, PcoChunk, TimeSeriesChunk, UncompressedChunk};
 
 #[inline]
 pub(crate) fn filter_samples_by_value(samples: &mut Vec<Sample>, value_filter: &ValueFilter) {
@@ -73,3 +75,19 @@ pub(crate) fn read_usize(input: &mut &[u8], field: &str) -> TsdbResult<usize> {
     Ok(usize::from_le_bytes(buf))
 }
 
+/// Utility function to convert a slice of samples into a TimeSeriesChunk, use mainly to
+/// package samples into a chunk for cluster message passing or storage.
+pub fn samples_to_chunk(
+    samples: &[Sample]
+) -> ValkeyResult<TimeSeriesChunk>  {
+    let mut chunk = if samples.len() >= 1000 {
+        TimeSeriesChunk::Pco(PcoChunk::default())
+    } else if samples.len() >= 5 {
+        TimeSeriesChunk::Gorilla(GorillaChunk::default())
+    } else {
+        TimeSeriesChunk::Uncompressed(UncompressedChunk::default())
+    };
+    chunk.set_data(samples)
+        .map_err(|e| ValkeyError::String(format!("Failed to set chunk data: {e}")))?;
+    Ok(chunk)
+}

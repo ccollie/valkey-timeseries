@@ -7,6 +7,7 @@ pub const DUPLICATE_LABELS: &str = "TSDB: duplicate labels";
 pub const DUPLICATE_SAMPLE: &str = "TSDB: duplicate sample";
 pub const SAMPLE_TOO_CLOSE: &str = "TSDB: sample too close to previous in value or timestamp";
 pub const DUPLICATE_SERIES: &str = "TSDB: duplicate series";
+pub const DUPLICATE_METRIC_NAME_IN_INDEX: &str = "TSDB: duplicate series name in index";
 pub const SAMPLE_MERGE_ERROR: &str = "TSDB: error merging samples";
 pub const ERROR_FETCHING_SAMPLE: &str = "TSDB: fetching sample";
 pub const INTERNAL_ERROR: &str = "TSDB: internal error";

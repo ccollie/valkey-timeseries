@@ -2444,74 +2444,438 @@ impl core::fmt::Debug for MetadataRequest<'_> {
       ds.finish()
   }
 }
+pub enum QueryParamsOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct QueryParams<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for QueryParams<'a> {
+  type Inner = QueryParams<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> QueryParams<'a> {
+  pub const VT_QUERY: flatbuffers::VOffsetT = 4;
+  pub const VT_START: flatbuffers::VOffsetT = 6;
+  pub const VT_END: flatbuffers::VOffsetT = 8;
+  pub const VT_STEP: flatbuffers::VOffsetT = 10;
+  pub const VT_MAY_CACHE: flatbuffers::VOffsetT = 12;
+  pub const VT_DEADLINE: flatbuffers::VOffsetT = 14;
+  pub const VT_ROUND_DIGITS: flatbuffers::VOffsetT = 16;
+  pub const VT_REQUIRED_TAG_FILTERS: flatbuffers::VOffsetT = 18;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    QueryParams { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args QueryParamsArgs<'args>
+  ) -> flatbuffers::WIPOffset<QueryParams<'bldr>> {
+    let mut builder = QueryParamsBuilder::new(_fbb);
+    builder.add_deadline(args.deadline);
+    builder.add_step(args.step);
+    builder.add_end(args.end);
+    builder.add_start(args.start);
+    if let Some(x) = args.required_tag_filters { builder.add_required_tag_filters(x); }
+    if let Some(x) = args.query { builder.add_query(x); }
+    builder.add_round_digits(args.round_digits);
+    builder.add_may_cache(args.may_cache);
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn query(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(QueryParams::VT_QUERY, None)}
+  }
+  #[inline]
+  pub fn start(&self) -> i64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i64>(QueryParams::VT_START, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn end(&self) -> i64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i64>(QueryParams::VT_END, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn step(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(QueryParams::VT_STEP, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn may_cache(&self) -> bool {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<bool>(QueryParams::VT_MAY_CACHE, Some(true)).unwrap()}
+  }
+  #[inline]
+  pub fn deadline(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(QueryParams::VT_DEADLINE, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn round_digits(&self) -> u8 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u8>(QueryParams::VT_ROUND_DIGITS, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn required_tag_filters(&self) -> Option<Matchers<'a>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<Matchers>>(QueryParams::VT_REQUIRED_TAG_FILTERS, None)}
+  }
+}
+
+impl flatbuffers::Verifiable for QueryParams<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("query", Self::VT_QUERY, false)?
+     .visit_field::<i64>("start", Self::VT_START, false)?
+     .visit_field::<i64>("end", Self::VT_END, false)?
+     .visit_field::<u64>("step", Self::VT_STEP, false)?
+     .visit_field::<bool>("may_cache", Self::VT_MAY_CACHE, false)?
+     .visit_field::<u64>("deadline", Self::VT_DEADLINE, false)?
+     .visit_field::<u8>("round_digits", Self::VT_ROUND_DIGITS, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>("required_tag_filters", Self::VT_REQUIRED_TAG_FILTERS, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct QueryParamsArgs<'a> {
+    pub query: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub start: i64,
+    pub end: i64,
+    pub step: u64,
+    pub may_cache: bool,
+    pub deadline: u64,
+    pub round_digits: u8,
+    pub required_tag_filters: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+}
+impl<'a> Default for QueryParamsArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    QueryParamsArgs {
+      query: None,
+      start: 0,
+      end: 0,
+      step: 0,
+      may_cache: true,
+      deadline: 0,
+      round_digits: 0,
+      required_tag_filters: None,
+    }
+  }
+}
+
+pub struct QueryParamsBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> QueryParamsBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_query(&mut self, query: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(QueryParams::VT_QUERY, query);
+  }
+  #[inline]
+  pub fn add_start(&mut self, start: i64) {
+    self.fbb_.push_slot::<i64>(QueryParams::VT_START, start, 0);
+  }
+  #[inline]
+  pub fn add_end(&mut self, end: i64) {
+    self.fbb_.push_slot::<i64>(QueryParams::VT_END, end, 0);
+  }
+  #[inline]
+  pub fn add_step(&mut self, step: u64) {
+    self.fbb_.push_slot::<u64>(QueryParams::VT_STEP, step, 0);
+  }
+  #[inline]
+  pub fn add_may_cache(&mut self, may_cache: bool) {
+    self.fbb_.push_slot::<bool>(QueryParams::VT_MAY_CACHE, may_cache, true);
+  }
+  #[inline]
+  pub fn add_deadline(&mut self, deadline: u64) {
+    self.fbb_.push_slot::<u64>(QueryParams::VT_DEADLINE, deadline, 0);
+  }
+  #[inline]
+  pub fn add_round_digits(&mut self, round_digits: u8) {
+    self.fbb_.push_slot::<u8>(QueryParams::VT_ROUND_DIGITS, round_digits, 0);
+  }
+  #[inline]
+  pub fn add_required_tag_filters(&mut self, required_tag_filters: flatbuffers::WIPOffset<Matchers<'b >>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<Matchers>>(QueryParams::VT_REQUIRED_TAG_FILTERS, required_tag_filters);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> QueryParamsBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    QueryParamsBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<QueryParams<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for QueryParams<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("QueryParams");
+      ds.field("query", &self.query());
+      ds.field("start", &self.start());
+      ds.field("end", &self.end());
+      ds.field("step", &self.step());
+      ds.field("may_cache", &self.may_cache());
+      ds.field("deadline", &self.deadline());
+      ds.field("round_digits", &self.round_digits());
+      ds.field("required_tag_filters", &self.required_tag_filters());
+      ds.finish()
+  }
+}
+pub enum SearchQueryRequestOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct SearchQueryRequest<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for SearchQueryRequest<'a> {
+  type Inner = SearchQueryRequest<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> SearchQueryRequest<'a> {
+  pub const VT_START: flatbuffers::VOffsetT = 4;
+  pub const VT_END: flatbuffers::VOffsetT = 6;
+  pub const VT_MATCHERS: flatbuffers::VOffsetT = 8;
+  pub const VT_LIMIT: flatbuffers::VOffsetT = 10;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    SearchQueryRequest { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args SearchQueryRequestArgs<'args>
+  ) -> flatbuffers::WIPOffset<SearchQueryRequest<'bldr>> {
+    let mut builder = SearchQueryRequestBuilder::new(_fbb);
+    builder.add_end(args.end);
+    builder.add_start(args.start);
+    builder.add_limit(args.limit);
+    if let Some(x) = args.matchers { builder.add_matchers(x); }
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn start(&self) -> i64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i64>(SearchQueryRequest::VT_START, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn end(&self) -> i64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<i64>(SearchQueryRequest::VT_END, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn matchers(&self) -> Option<Matchers<'a>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<Matchers>>(SearchQueryRequest::VT_MATCHERS, None)}
+  }
+  #[inline]
+  pub fn limit(&self) -> u32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u32>(SearchQueryRequest::VT_LIMIT, Some(1000)).unwrap()}
+  }
+}
+
+impl flatbuffers::Verifiable for SearchQueryRequest<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<i64>("start", Self::VT_START, false)?
+     .visit_field::<i64>("end", Self::VT_END, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<Matchers>>("matchers", Self::VT_MATCHERS, false)?
+     .visit_field::<u32>("limit", Self::VT_LIMIT, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct SearchQueryRequestArgs<'a> {
+    pub start: i64,
+    pub end: i64,
+    pub matchers: Option<flatbuffers::WIPOffset<Matchers<'a>>>,
+    pub limit: u32,
+}
+impl<'a> Default for SearchQueryRequestArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    SearchQueryRequestArgs {
+      start: 0,
+      end: 0,
+      matchers: None,
+      limit: 1000,
+    }
+  }
+}
+
+pub struct SearchQueryRequestBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SearchQueryRequestBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_start(&mut self, start: i64) {
+    self.fbb_.push_slot::<i64>(SearchQueryRequest::VT_START, start, 0);
+  }
+  #[inline]
+  pub fn add_end(&mut self, end: i64) {
+    self.fbb_.push_slot::<i64>(SearchQueryRequest::VT_END, end, 0);
+  }
+  #[inline]
+  pub fn add_matchers(&mut self, matchers: flatbuffers::WIPOffset<Matchers<'b >>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<Matchers>>(SearchQueryRequest::VT_MATCHERS, matchers);
+  }
+  #[inline]
+  pub fn add_limit(&mut self, limit: u32) {
+    self.fbb_.push_slot::<u32>(SearchQueryRequest::VT_LIMIT, limit, 1000);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> SearchQueryRequestBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    SearchQueryRequestBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<SearchQueryRequest<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for SearchQueryRequest<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("SearchQueryRequest");
+      ds.field("start", &self.start());
+      ds.field("end", &self.end());
+      ds.field("matchers", &self.matchers());
+      ds.field("limit", &self.limit());
+      ds.finish()
+  }
+}
 #[inline]
-/// Verifies that a buffer of bytes contains a `RangeRequest`
+/// Verifies that a buffer of bytes contains a `SearchQueryRequest`
 /// and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_range_request_unchecked`.
-pub fn root_as_range_request(buf: &[u8]) -> Result<RangeRequest, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::root::<RangeRequest>(buf)
+/// `root_as_search_query_request_unchecked`.
+pub fn root_as_search_query_request(buf: &[u8]) -> Result<SearchQueryRequest, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root::<SearchQueryRequest>(buf)
 }
 #[inline]
 /// Verifies that a buffer of bytes contains a size prefixed
-/// `RangeRequest` and returns it.
+/// `SearchQueryRequest` and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `size_prefixed_root_as_range_request_unchecked`.
-pub fn size_prefixed_root_as_range_request(buf: &[u8]) -> Result<RangeRequest, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::size_prefixed_root::<RangeRequest>(buf)
+/// `size_prefixed_root_as_search_query_request_unchecked`.
+pub fn size_prefixed_root_as_search_query_request(buf: &[u8]) -> Result<SearchQueryRequest, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root::<SearchQueryRequest>(buf)
 }
 #[inline]
 /// Verifies, with the given options, that a buffer of bytes
-/// contains a `RangeRequest` and returns it.
+/// contains a `SearchQueryRequest` and returns it.
 /// Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_range_request_unchecked`.
-pub fn root_as_range_request_with_opts<'b, 'o>(
+/// `root_as_search_query_request_unchecked`.
+pub fn root_as_search_query_request_with_opts<'b, 'o>(
   opts: &'o flatbuffers::VerifierOptions,
   buf: &'b [u8],
-) -> Result<RangeRequest<'b>, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::root_with_opts::<RangeRequest<'b>>(opts, buf)
+) -> Result<SearchQueryRequest<'b>, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::root_with_opts::<SearchQueryRequest<'b>>(opts, buf)
 }
 #[inline]
 /// Verifies, with the given verifier options, that a buffer of
-/// bytes contains a size prefixed `RangeRequest` and returns
+/// bytes contains a size prefixed `SearchQueryRequest` and returns
 /// it. Note that verification is still experimental and may not
 /// catch every error, or be maximally performant. For the
 /// previous, unchecked, behavior use
-/// `root_as_range_request_unchecked`.
-pub fn size_prefixed_root_as_range_request_with_opts<'b, 'o>(
+/// `root_as_search_query_request_unchecked`.
+pub fn size_prefixed_root_as_search_query_request_with_opts<'b, 'o>(
   opts: &'o flatbuffers::VerifierOptions,
   buf: &'b [u8],
-) -> Result<RangeRequest<'b>, flatbuffers::InvalidFlatbuffer> {
-  flatbuffers::size_prefixed_root_with_opts::<RangeRequest<'b>>(opts, buf)
+) -> Result<SearchQueryRequest<'b>, flatbuffers::InvalidFlatbuffer> {
+  flatbuffers::size_prefixed_root_with_opts::<SearchQueryRequest<'b>>(opts, buf)
 }
 #[inline]
-/// Assumes, without verification, that a buffer of bytes contains a RangeRequest and returns it.
+/// Assumes, without verification, that a buffer of bytes contains a SearchQueryRequest and returns it.
 /// # Safety
-/// Callers must trust the given bytes do indeed contain a valid `RangeRequest`.
-pub unsafe fn root_as_range_request_unchecked(buf: &[u8]) -> RangeRequest {
-  flatbuffers::root_unchecked::<RangeRequest>(buf)
+/// Callers must trust the given bytes do indeed contain a valid `SearchQueryRequest`.
+pub unsafe fn root_as_search_query_request_unchecked(buf: &[u8]) -> SearchQueryRequest {
+  flatbuffers::root_unchecked::<SearchQueryRequest>(buf)
 }
 #[inline]
-/// Assumes, without verification, that a buffer of bytes contains a size prefixed RangeRequest and returns it.
+/// Assumes, without verification, that a buffer of bytes contains a size prefixed SearchQueryRequest and returns it.
 /// # Safety
-/// Callers must trust the given bytes do indeed contain a valid size prefixed `RangeRequest`.
-pub unsafe fn size_prefixed_root_as_range_request_unchecked(buf: &[u8]) -> RangeRequest {
-  flatbuffers::size_prefixed_root_unchecked::<RangeRequest>(buf)
+/// Callers must trust the given bytes do indeed contain a valid size prefixed `SearchQueryRequest`.
+pub unsafe fn size_prefixed_root_as_search_query_request_unchecked(buf: &[u8]) -> SearchQueryRequest {
+  flatbuffers::size_prefixed_root_unchecked::<SearchQueryRequest>(buf)
 }
 #[inline]
-pub fn finish_range_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
+pub fn finish_search_query_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(
     fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
-    root: flatbuffers::WIPOffset<RangeRequest<'a>>) {
+    root: flatbuffers::WIPOffset<SearchQueryRequest<'a>>) {
   fbb.finish(root, None);
 }
 
 #[inline]
-pub fn finish_size_prefixed_range_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<RangeRequest<'a>>) {
+pub fn finish_size_prefixed_search_query_request_buffer<'a, 'b, A: flatbuffers::Allocator + 'a>(fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>, root: flatbuffers::WIPOffset<SearchQueryRequest<'a>>) {
   fbb.finish_size_prefixed(root, None);
 }

@@ -10,11 +10,11 @@ use smallvec::SmallVec;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 #[derive(Default, Debug)]
-struct LocalMatcher {
-    group_idx: usize,
-    label: String,
-    op: MatchOpType,
-    value: SmallVec<String, 4>,
+pub(super) struct LocalMatcher {
+    pub(super) group_idx: usize,
+    pub(super) label: String,
+    pub(super) op: MatchOpType,
+    pub(super) value: SmallVec<String, 4>,
 }
 
 fn decompose_matcher(matcher: &Matcher) -> LocalMatcher {
@@ -68,6 +68,33 @@ fn decompose_matcher(matcher: &Matcher) -> LocalMatcher {
     }
 }
 
+pub(super) fn serialize_local_matchers<'a>(
+    bldr: &mut FlatBufferBuilder<'a>,
+    matchers: &[LocalMatcher],
+) -> SmallVec<WIPOffset<FBMatcher<'a>>, 6> {
+    let mut arg_items: SmallVec<_, 6> = SmallVec::new();
+    let mut values: SmallVec<_, 6> = SmallVec::new();
+    for item in matchers.iter() {
+        let label = bldr.create_string(item.label.as_str());
+        values.clear();
+        for v in item.value.iter() {
+            let string_value = bldr.create_string(v.as_str());
+            values.push(string_value);
+        }
+        let values_ = bldr.create_vector(&values);
+
+        let args = MatcherArgs {
+            group_id: item.group_idx as u16,
+            label: Some(label),
+            op: item.op,
+            value: Some(values_),
+        };
+        let obj = FBMatcher::create(bldr, &args);
+        arg_items.push(obj);
+    }
+    arg_items
+}
+
 pub(super) fn serialize_matchers<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
     matchers: &Matchers,
@@ -79,34 +106,7 @@ pub(super) fn serialize_matchers<'a>(
             dest.push(item);
         }
     }
-
-    fn serialize_local_matchers<'a>(
-        bldr: &mut FlatBufferBuilder<'a>,
-        matchers: &[LocalMatcher],
-    ) -> SmallVec<WIPOffset<FBMatcher<'a>>, 6> {
-        let mut arg_items: SmallVec<_, 6> = SmallVec::new();
-        let mut values: SmallVec<_, 6> = SmallVec::new();
-        for item in matchers.iter() {
-            let label = bldr.create_string(item.label.as_str());
-            values.clear();
-            for v in item.value.iter() {
-                let string_value = bldr.create_string(v.as_str());
-                values.push(string_value);
-            }
-            let values_ = bldr.create_vector(&values);
-
-            let args = MatcherArgs {
-                group_id: item.group_idx as u16,
-                label: Some(label),
-                op: item.op,
-                value: Some(values_),
-            };
-            let obj = FBMatcher::create(bldr, &args);
-            arg_items.push(obj);
-        }
-        arg_items
-    }
-
+    
     // Create name string if present
     let name = matchers
         .name

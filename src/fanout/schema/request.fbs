@@ -29,11 +29,6 @@ table DateRange {
   end:int64;
 }
 
-//table RangeRequest {
-//  range:DateRange;
-//  filters:[Matchers];
-//}
-
 table MultiGetRequest {
   with_labels:bool;
   selected_labels:[string];
@@ -60,7 +55,6 @@ table CardinalityRequest {
   range:DateRange;
   filters:[Matchers];
 }
-
 
 enum AggregationType : byte {
   Sum = 0,
@@ -135,6 +129,24 @@ table MetadataRequest {
     limit:uint32;
 }
 
+table QueryParams {
+    query:string;
+    start:int64;
+    end:int64;
+    step:uint64;
+    may_cache:bool = true;
+    deadline:uint64 = 0;
+    round_digits:uint8 = 0;
+    required_tag_filters:Matchers;
+}
+
+table SearchQueryRequest {
+    start:int64;
+    end:int64;
+    matchers:Matchers;
+    limit:uint32 = 1000;
+}
+
 root_type RangeRequest;
 root_type MultiRangeRequest;
 root_type MultiGetRequest;
@@ -144,3 +156,5 @@ root_type LabelValuesRequest;
 root_type CardinalityRequest;
 root_type MetadataRequest;
 root_type RangeRequest;
+root_type QueryParams;
+root_type SearchQueryRequest;

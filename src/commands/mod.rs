@@ -19,6 +19,8 @@ mod rev_range;
 mod stats;
 
 mod test_cmd;
+mod query;
+mod result;
 
 pub use arg_parse::*;
 
@@ -36,6 +38,7 @@ pub use label_values::*;
 pub use madd::*;
 pub use mget::*;
 pub use mrange::*;
+pub use query::*;
 pub use query_index::*;
 pub use range::*;
 pub use rev_range::*;

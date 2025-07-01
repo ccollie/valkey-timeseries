@@ -17,7 +17,6 @@ use crate::commands::process_mrange_query;
 use crate::common::Timestamp;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::request::series_chunk::{deserialize_sample_data, serialize_sample_data};
-use crate::fanout::serialization::samples_to_chunk;
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::SeriesLabel;
 use crate::series::request_types::{
@@ -27,6 +26,7 @@ use crate::series::ValueFilter;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
+use crate::series::chunks::utils::samples_to_chunk;
 
 impl Serialized for MRangeOptions {
     fn serialize(&self, buf: &mut Vec<u8>) {

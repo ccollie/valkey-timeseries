@@ -21,10 +21,14 @@ croaring = "2.3"
 enquote = "1.1"
 enum_dispatch = "0.3"
 flatbuffers = "25.2"
+futures = { version = "0.3", features = ["bilock", "unstable"] }
 get-size = { version = "^0.1", features = ["derive"] }
 hashify = { version = "^0.2" }
 linkme = "0.3.33"
 logos = "0.15"
+metricsql_common = { git = "https://github.com/ccollie/metricsql", branch = "dev" }
+metricsql_runtime = { git = "https://github.com/ccollie/metricsql", branch = "dev" }
+metricsql_parser = { git = "https://github.com/ccollie/metricsql", branch = "dev" }
 min-max-heap = "1.3"
 num-traits = "0.2"
 joinkit = "0.2.0"
@@ -44,9 +48,11 @@ regex = "1.11.1"
 strum = { version = "0.27", features = ["derive"] }
 strum_macros = "0.27"
 yasi = "0.1.5"
+async-trait = "0.1.88"
 
 [dev-dependencies]
 test-case = "3.3.1"
+criterion = { version="0.6.0"}
 
 [lib]
 name="valkey_timeseries"
@@ -65,8 +71,11 @@ panic = "abort"       # Smaller binary size
 strip = true
 
 [features]
-default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]
+default = ["min-valkey-compatibility-version-8-0", "croaring/alloc", "smol"]
+tokio = ["metricsql_runtime/tokio"]
+async-std = ["metricsql_runtime/async-std"]
+smol = ["metricsql_runtime/smol"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
-valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1 and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
+valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1, and by default it is built this way (unless this flag is provided). It is, however, compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
 use-redismodule-api = [] # We don't support this feature flag which is why it is empty.

@@ -1,4 +1,4 @@
-use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
+use super::index_key::{format_key_for_label_value, format_key_for_metric_name, get_key_for_label_prefix, IndexKey};
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::SeriesLabel;
@@ -9,6 +9,9 @@ use blart::{AsBytes, TreeMap};
 use croaring::Bitmap64;
 use std::borrow::Cow;
 use std::sync::LazyLock;
+use metricsql_runtime::prelude::MetricName;
+use valkey_module::{ValkeyError, ValkeyResult};
+use crate::error_consts;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -301,7 +304,7 @@ impl MemoryPostings {
         acc
     }
 
-    pub fn postings_without_label(&self, label: &str) -> Cow<PostingsBitmap> {
+    pub fn postings_without_label(&self, label: &str) -> Cow<'_, PostingsBitmap> {
         let all = self.all_postings();
         let to_remove = self.postings_for_all_label_values(label);
         if to_remove.is_empty() {
@@ -337,7 +340,7 @@ impl MemoryPostings {
         }
     }
 
-    pub fn postings_for_matcher(&self, matcher: &Matcher) -> Cow<PostingsBitmap> {
+    pub fn postings_for_matcher(&self, matcher: &Matcher) -> Cow<'_, PostingsBitmap> {
         match matcher.matcher {
             PredicateMatch::Equal(ref value) => handle_equal_match(self, &matcher.label, value),
             PredicateMatch::NotEqual(ref value) => {
@@ -348,6 +351,38 @@ impl MemoryPostings {
         }
     }
 
+    /// This exists primarily to ensure that we disallow duplicate metric names
+    pub fn posting_by_metric_name(
+        &self,
+        metric: &MetricName,
+    ) -> ValkeyResult<Option<SeriesRef>> {
+        let mut key: String = String::new();
+
+        let mut acc = PostingsBitmap::new();
+        
+        if !metric.measurement.is_empty() {
+            format_key_for_metric_name(&mut key, &metric.measurement);
+            let Some(map) = self.label_index.get(key.as_bytes()) else {
+                return Ok(None);
+            };
+            acc &= map;
+        }
+        for label in metric.labels.iter() {
+            format_key_for_label_value(&mut key, &label.name, &label.value);
+            let Some(bmp) = self.label_index.get(key.as_bytes()) else {
+                return Ok(None);
+            };
+            acc &= bmp;
+        }
+        match acc.cardinality() {
+            0 => Ok(None),
+            1 => Ok(acc.iter().next()),
+            _ => {
+                Err(ValkeyError::Str(error_consts::DUPLICATE_METRIC_NAME_IN_INDEX))
+            }
+        }
+    }
+    
     pub(crate) fn get_key_by_id(&self, id: SeriesRef) -> Option<&KeyType> {
         self.id_to_key.get(&id)
     }

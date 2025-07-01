@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use crate::common::constants::METRIC_NAME_LABEL;
 
 #[derive(Debug, Clone, PartialEq, Eq, GetSize)]
 pub struct IndexKey(Box<[u8]>);
@@ -117,6 +118,10 @@ pub(crate) fn format_key_for_label_value(dest: &mut String, label_name: &str, va
     // according to https://github.com/rust-lang/rust/blob/1.47.0/library/alloc/src/string.rs#L2414-L2427
     // write! will not return an Err, so the unwrap is safe
     write!(dest, "{label_name}={value}\0").expect("write! macro failed");
+}
+
+pub(super) fn format_key_for_metric_name(dest: &mut String, metric_name: &str) {
+    format_key_for_label_value(dest, METRIC_NAME_LABEL, metric_name);
 }
 
 pub(crate) fn get_key_for_label_prefix(label_name: &str) -> String {

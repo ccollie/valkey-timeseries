@@ -1,7 +1,4 @@
-use super::{
-    CardinalityCommand, IndexQueryCommand, LabelNamesCommand, LabelValuesCommand,
-    MGetShardedCommand, MultiRangeCommand, MultiShardCommand, StatsCommand,
-};
+use super::{CardinalityCommand, IndexQueryCommand, LabelNamesCommand, LabelValuesCommand, MGetShardedCommand, MultiRangeCommand, MultiShardCommand, StatsCommand};
 use crate::fanout::error::Error;
 use enum_dispatch::enum_dispatch;
 use std::sync::{Mutex, MutexGuard};

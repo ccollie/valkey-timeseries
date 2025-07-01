@@ -3,6 +3,7 @@ use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
 use enquote::enquote;
 use get_size::GetSize;
+use metricsql_runtime::prelude::MetricName;
 use std::collections::HashMap;
 use std::fmt::Display;
 use valkey_module::{raw, ValkeyResult, ValkeyValue};
@@ -37,7 +38,7 @@ impl SeriesLabel for InternedLabel<'_> {
 }
 
 /// A time series is optionally identified by a series of label-value pairs used to retrieve the
-/// series in queries. Given that these label are used to group semantically similar time series,
+/// series in queries. Given that these labels are used to group semantically similar time series,
 /// they are necessarily duplicated. We take advantage of this fact to intern label-value pairs,
 /// meaning that only a single allocation is made per unique pair, irrespective of the number of
 /// series it occurs in.
@@ -69,7 +70,7 @@ impl InternedMetricName {
         self.0.clear();
     }
 
-    /// adds new label to mn with the given key and value.
+    /// adds a new label to mn with the given key and value.
     pub fn add_label(&mut self, key: &str, value: &str) {
         let full_label = format!("{key}{VALUE_SEPARATOR}{value}");
         let interned_value = InternedString::intern(full_label);
@@ -89,7 +90,7 @@ impl InternedMetricName {
         }
     }
 
-    pub fn get_tag(&self, key: &str) -> Option<InternedLabel> {
+    pub fn get_tag(&self, key: &str) -> Option<InternedLabel<'_>> {
         if let Some(label) = self.0.iter().find(|x| {
             if let Some((k, _)) = x.split_once(VALUE_SEPARATOR) {
                 k == key
@@ -136,7 +137,7 @@ impl InternedMetricName {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = InternedLabel> {
+    pub fn iter(&self) -> impl Iterator<Item = InternedLabel<'_>> {
         self.0.iter().filter_map(|x| {
             if let Some((name, value)) = x.split_once(VALUE_SEPARATOR) {
                 Some(InternedLabel { name, value })
@@ -183,6 +184,14 @@ impl InternedMetricName {
         Ok(result)
     }
 
+    pub fn get_metric_name(&self) -> MetricName {
+        let mut mn = MetricName::default();
+        for InternedLabel { name, value } in self.iter() {
+            mn.add_label(name, value);
+        }
+        mn
+    }
+
     pub fn shrink_to_fit(&mut self) {
         self.0.shrink_to_fit();
     }
@@ -224,6 +233,25 @@ impl Display for InternedMetricName {
         }
         write!(f, "}}")?;
         Ok(())
+    }
+}
+
+impl From<&MetricName> for InternedMetricName {
+    fn from(metric_name: &MetricName) -> Self {
+        let mut interned_metric_name = InternedMetricName::with_capacity(metric_name.labels.len());
+        if !metric_name.measurement.is_empty() {
+            interned_metric_name.add_label(METRIC_NAME_LABEL, &metric_name.measurement);
+        }
+        for label in metric_name.labels.iter() {
+            interned_metric_name.add_label(&label.name, &label.value);
+        }
+        interned_metric_name
+    }
+}
+
+impl From<MetricName> for InternedMetricName {
+    fn from(metric_name: MetricName) -> Self {
+        InternedMetricName::from(&metric_name)
     }
 }
 

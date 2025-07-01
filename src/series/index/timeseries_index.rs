@@ -1,3 +1,4 @@
+use metricsql_runtime::prelude::MetricName;
 use ahash::AHashMap;
 use std::collections::hash_map::Entry;
 use std::sync::RwLock;
@@ -102,6 +103,11 @@ impl TimeSeriesIndex {
         }
     }
 
+    pub fn posting_by_metric_name(&self, metric: &MetricName) -> ValkeyResult<Option<SeriesRef>> {
+        let inner = self.inner.read().unwrap();
+        inner.posting_by_metric_name(metric)
+    }
+    
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
         #[derive(Clone, Copy)]
         struct SizeAccumulator {

@@ -19,7 +19,7 @@ pub struct GorillaIterator<'a> {
 }
 
 impl GorillaIterator<'_> {
-    pub fn new(encoder: &GorillaEncoder) -> GorillaIterator {
+    pub fn new(encoder: &GorillaEncoder) -> GorillaIterator<'_> {
         let buf = encoder.buf();
         let num_samples = encoder.num_samples;
         let last_timestamp = encoder.last_ts;

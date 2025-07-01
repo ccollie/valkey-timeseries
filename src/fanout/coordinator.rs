@@ -30,7 +30,6 @@ use valkey_module::{RedisModuleCtx, ValkeyError, ValkeyResult};
 const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
 const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
-static HANDLERS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 struct InFlightRequest {
     pub command_type: CommandMessageType,
@@ -85,10 +84,6 @@ fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
     if is_multi_or_lua(ctx) {
         return Err(ValkeyError::Str("Cannot execute in MULTI or Lua context"));
     }
-    if !HANDLERS_REGISTERED.load(Ordering::Relaxed) {
-        HANDLERS_REGISTERED.store(true, Ordering::SeqCst);
-        register_cluster_message_handlers(ctx);
-    }
     Ok(())
 }
 
@@ -100,12 +95,12 @@ fn on_command_timeout(ctx: &Context, id: u64) {
     }
 }
 
-fn get_multi_shard_command_timeout() -> Duration {
+pub fn get_cluster_command_timeout() -> Duration {
     let timeout = config::MULTI_SHARD_COMMAND_TIMEOUT.load(Ordering::Relaxed);
     Duration::from_millis(timeout)
 }
 
-fn generate_request_id() -> u64 {
+pub fn generate_request_id() -> u64 {
     flake_id()
 }
 
@@ -141,7 +136,7 @@ where
     let mut inflight_request = InFlightRequest::new(db, msg_type, tracker);
 
     if node_count > 0 {
-        let timeout = get_multi_shard_command_timeout();
+        let timeout = get_cluster_command_timeout();
         let timer_id = ctx.create_timer(timeout, on_command_timeout, id);
         inflight_request.timer_id = timer_id;
         let map = INFLIGHT_REQUESTS.pin();
@@ -220,7 +215,7 @@ where
                         let msg = format!(
                             "Multi-shard command {} timed out after {} ms",
                             inflight_request.command_type,
-                            get_multi_shard_command_timeout().as_millis()
+                            get_cluster_command_timeout().as_millis()
                         );
                         ctx_locked.reply_error_string(&msg);
                         ctx_locked.log_warning(&msg);
@@ -246,7 +241,7 @@ where
     tracker_callback
 }
 
-fn parse_header(
+pub fn parse_message_header(
     ctx: &Context,
     payload: *const c_uchar,
     len: u32,
@@ -319,7 +314,7 @@ extern "C" fn on_request_received(
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
 
     // Deserialize the header
-    let Some((header, buf)) = parse_header(&ctx, payload, len) else {
+    let Some((header, buf)) = parse_message_header(&ctx, payload, len) else {
         return;
     };
 
@@ -358,7 +353,7 @@ extern "C" fn on_request_received(
 
 const U64_SIZE: usize = size_of::<u64>();
 
-fn parse_response_header<'a>(ctx: &'a Context, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
+pub fn parse_response_header<'a>(ctx: &'a Context, buffer: &'a [u8]) -> Option<(u64, &'a [u8])> {
     if buffer.len() >= U64_SIZE {
         match buffer[..U64_SIZE].try_into() {
             Ok(request_id_bytes) => {
@@ -465,6 +460,7 @@ extern "C" fn on_response_received(
         CommandMessageType::Error => {
             process_error_response(&ctx, request, buf);
         }
+        CommandMessageType::SearchQuery => unimplemented!("SearchQuery is implemented as a separate command"),
     }
 }
 

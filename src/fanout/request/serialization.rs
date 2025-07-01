@@ -1,14 +1,12 @@
-use crate::common::Sample;
 use crate::fanout::request::common::{
     deserialize_timestamp_range, load_flatbuffers_object, serialize_timestamp_range,
 };
 use crate::fanout::request::matchers::{deserialize_matchers, serialize_matchers};
 use crate::fanout::request::request_generated::{MetadataRequest, MetadataRequestArgs};
-use crate::series::chunks::{GorillaChunk, PcoChunk, TimeSeriesChunk, UncompressedChunk};
 use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use std::io::Write;
-use valkey_module::{ValkeyError, ValkeyResult};
+use valkey_module::ValkeyResult;
 
 /// A trait for types that can be serialized to and deserialized from a byte stream.
 ///
@@ -70,19 +68,4 @@ impl Deserialized for MatchFilterOptions {
             limit,
         })
     }
-}
-
-pub(super) fn samples_to_chunk(
-    samples: &[Sample]
-) -> ValkeyResult<TimeSeriesChunk>  {
-    let mut chunk = if samples.len() >= 1000 {
-        TimeSeriesChunk::Pco(PcoChunk::default())
-    } else if samples.len() >= 5 {
-        TimeSeriesChunk::Gorilla(GorillaChunk::default())
-    } else {
-        TimeSeriesChunk::Uncompressed(UncompressedChunk::default())
-    };
-    chunk.set_data(samples)
-        .map_err(|e| ValkeyError::String(format!("Failed to set chunk data: {e}")))?;
-    Ok(chunk)
 }

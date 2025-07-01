@@ -1,9 +1,17 @@
+mod cardinality;
 mod common;
 mod index_query;
 mod label_names;
+mod label_values;
 mod matchers;
 mod mget;
 mod mrange;
+pub mod error;
+pub(crate) mod serialization;
+mod search_query;
+mod stats;
+mod query_matchers;
+mod series_chunk;
 
 #[allow(
     dead_code,
@@ -16,9 +24,6 @@ mod mrange;
 #[path = "./request_generated.rs"]
 mod request_generated;
 
-mod cardinality;
-pub mod error;
-mod label_values;
 #[allow(
     dead_code,
     unused_imports,
@@ -29,9 +34,7 @@ mod label_values;
 )]
 #[path = "./response_generated.rs"]
 mod response_generated;
-pub(crate) mod serialization;
-mod stats;
-mod series_chunk;
+mod series_response;
 
 pub use cardinality::*;
 pub use index_query::*;
@@ -40,6 +43,7 @@ pub use label_values::*;
 pub use mget::*;
 pub use mrange::*;
 pub use stats::*;
+pub use search_query::*;
 
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::TrackerEnum;
@@ -56,6 +60,7 @@ pub enum CommandMessageType {
     LabelValues = 4,
     Cardinality = 5,
     Stats = 6,
+    SearchQuery = 8,
     Error = 255,
 }
 
@@ -69,6 +74,7 @@ impl From<u8> for CommandMessageType {
             4 => CommandMessageType::LabelValues,
             5 => CommandMessageType::Cardinality,
             6 => CommandMessageType::Stats,
+            8 => CommandMessageType::SearchQuery,
             _ => CommandMessageType::Error,
         }
     }
@@ -84,6 +90,7 @@ impl std::fmt::Display for CommandMessageType {
             CommandMessageType::LabelValues => write!(f, "LabelValues"),
             CommandMessageType::Cardinality => write!(f, "Cardinality"),
             CommandMessageType::Stats => write!(f, "Stats"),
+            CommandMessageType::SearchQuery => write!(f, "SearchQuery"),
             CommandMessageType::Error => write!(f, "Error"),
         }
     }
