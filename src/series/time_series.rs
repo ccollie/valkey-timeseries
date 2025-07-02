@@ -124,7 +124,7 @@ impl TimeSeries {
         self.labels.get_value(name)
     }
 
-    pub fn get_label(&self, name: &str) -> Option<InternedLabel> {
+    pub fn get_label(&self, name: &str) -> Option<InternedLabel<'_>> {
         self.labels.get_tag(name)
     }
 
@@ -569,7 +569,7 @@ impl TimeSeries {
         }
     }
 
-    pub fn iter(&self) -> SeriesSampleIterator {
+    pub fn iter(&self) -> SeriesSampleIterator<'_> {
         SeriesSampleIterator::new(
             self,
             self.first_timestamp,
@@ -579,7 +579,7 @@ impl TimeSeries {
         )
     }
 
-    pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SeriesSampleIterator {
+    pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SeriesSampleIterator<'_> {
         SeriesSampleIterator::new(self, start, end, &None, &None)
     }
 
