@@ -449,6 +449,137 @@ impl core::fmt::Debug for Label<'_> {
       ds.finish()
   }
 }
+pub enum SampleDataOffset {}
+#[derive(Copy, Clone, PartialEq)]
+
+pub struct SampleData<'a> {
+  pub _tab: flatbuffers::Table<'a>,
+}
+
+impl<'a> flatbuffers::Follow<'a> for SampleData<'a> {
+  type Inner = SampleData<'a>;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    Self { _tab: flatbuffers::Table::new(buf, loc) }
+  }
+}
+
+impl<'a> SampleData<'a> {
+  pub const VT_VERSION: flatbuffers::VOffsetT = 4;
+  pub const VT_COMPRESSION: flatbuffers::VOffsetT = 6;
+  pub const VT_DATA: flatbuffers::VOffsetT = 8;
+
+  #[inline]
+  pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
+    SampleData { _tab: table }
+  }
+  #[allow(unused_mut)]
+  pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: flatbuffers::Allocator + 'bldr>(
+    _fbb: &'mut_bldr mut flatbuffers::FlatBufferBuilder<'bldr, A>,
+    args: &'args SampleDataArgs<'args>
+  ) -> flatbuffers::WIPOffset<SampleData<'bldr>> {
+    let mut builder = SampleDataBuilder::new(_fbb);
+    if let Some(x) = args.data { builder.add_data(x); }
+    builder.add_version(args.version);
+    builder.add_compression(args.compression);
+    builder.finish()
+  }
+
+
+  #[inline]
+  pub fn version(&self) -> u32 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u32>(SampleData::VT_VERSION, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn compression(&self) -> CompressionType {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<CompressionType>(SampleData::VT_COMPRESSION, Some(CompressionType::None)).unwrap()}
+  }
+  #[inline]
+  pub fn data(&self) -> Option<flatbuffers::Vector<'a, u8>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(SampleData::VT_DATA, None)}
+  }
+}
+
+impl flatbuffers::Verifiable for SampleData<'_> {
+  #[inline]
+  fn run_verifier(
+    v: &mut flatbuffers::Verifier, pos: usize
+  ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
+    use self::flatbuffers::Verifiable;
+    v.visit_table(pos)?
+     .visit_field::<u32>("version", Self::VT_VERSION, false)?
+     .visit_field::<CompressionType>("compression", Self::VT_COMPRESSION, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("data", Self::VT_DATA, false)?
+     .finish();
+    Ok(())
+  }
+}
+pub struct SampleDataArgs<'a> {
+    pub version: u32,
+    pub compression: CompressionType,
+    pub data: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
+}
+impl<'a> Default for SampleDataArgs<'a> {
+  #[inline]
+  fn default() -> Self {
+    SampleDataArgs {
+      version: 0,
+      compression: CompressionType::None,
+      data: None,
+    }
+  }
+}
+
+pub struct SampleDataBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
+  fbb_: &'b mut flatbuffers::FlatBufferBuilder<'a, A>,
+  start_: flatbuffers::WIPOffset<flatbuffers::TableUnfinishedWIPOffset>,
+}
+impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SampleDataBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_version(&mut self, version: u32) {
+    self.fbb_.push_slot::<u32>(SampleData::VT_VERSION, version, 0);
+  }
+  #[inline]
+  pub fn add_compression(&mut self, compression: CompressionType) {
+    self.fbb_.push_slot::<CompressionType>(SampleData::VT_COMPRESSION, compression, CompressionType::None);
+  }
+  #[inline]
+  pub fn add_data(&mut self, data: flatbuffers::WIPOffset<flatbuffers::Vector<'b , u8>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SampleData::VT_DATA, data);
+  }
+  #[inline]
+  pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> SampleDataBuilder<'a, 'b, A> {
+    let start = _fbb.start_table();
+    SampleDataBuilder {
+      fbb_: _fbb,
+      start_: start,
+    }
+  }
+  #[inline]
+  pub fn finish(self) -> flatbuffers::WIPOffset<SampleData<'a>> {
+    let o = self.fbb_.end_table(self.start_);
+    flatbuffers::WIPOffset::new(o.value())
+  }
+}
+
+impl core::fmt::Debug for SampleData<'_> {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    let mut ds = f.debug_struct("SampleData");
+      ds.field("version", &self.version());
+      ds.field("compression", &self.compression());
+      ds.field("data", &self.data());
+      ds.finish()
+  }
+}
 pub enum SeriesChunkOffset {}
 #[derive(Copy, Clone, PartialEq)]
 
@@ -465,10 +596,9 @@ impl<'a> flatbuffers::Follow<'a> for SeriesChunk<'a> {
 }
 
 impl<'a> SeriesChunk<'a> {
-  pub const VT_VERSION: flatbuffers::VOffsetT = 4;
-  pub const VT_COUNT: flatbuffers::VOffsetT = 6;
-  pub const VT_COMPRESSION: flatbuffers::VOffsetT = 8;
-  pub const VT_DATA: flatbuffers::VOffsetT = 10;
+  pub const VT_KEY: flatbuffers::VOffsetT = 4;
+  pub const VT_LABELS: flatbuffers::VOffsetT = 6;
+  pub const VT_DATA: flatbuffers::VOffsetT = 8;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -480,41 +610,33 @@ impl<'a> SeriesChunk<'a> {
     args: &'args SeriesChunkArgs<'args>
   ) -> flatbuffers::WIPOffset<SeriesChunk<'bldr>> {
     let mut builder = SeriesChunkBuilder::new(_fbb);
-    builder.add_count(args.count);
     if let Some(x) = args.data { builder.add_data(x); }
-    builder.add_version(args.version);
-    builder.add_compression(args.compression);
+    if let Some(x) = args.labels { builder.add_labels(x); }
+    if let Some(x) = args.key { builder.add_key(x); }
     builder.finish()
   }
 
 
   #[inline]
-  pub fn version(&self) -> u32 {
+  pub fn key(&self) -> Option<&'a str> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<u32>(SeriesChunk::VT_VERSION, Some(0)).unwrap()}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(SeriesChunk::VT_KEY, None)}
   }
   #[inline]
-  pub fn count(&self) -> u64 {
+  pub fn labels(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label<'a>>>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<u64>(SeriesChunk::VT_COUNT, Some(0)).unwrap()}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label>>>>(SeriesChunk::VT_LABELS, None)}
   }
   #[inline]
-  pub fn compression(&self) -> CompressionType {
+  pub fn data(&self) -> Option<SampleData<'a>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<CompressionType>(SeriesChunk::VT_COMPRESSION, Some(CompressionType::None)).unwrap()}
-  }
-  #[inline]
-  pub fn data(&self) -> Option<flatbuffers::Vector<'a, u8>> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, u8>>>(SeriesChunk::VT_DATA, None)}
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<SampleData>>(SeriesChunk::VT_DATA, None)}
   }
 }
 
@@ -525,27 +647,24 @@ impl flatbuffers::Verifiable for SeriesChunk<'_> {
   ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
-     .visit_field::<u32>("version", Self::VT_VERSION, false)?
-     .visit_field::<u64>("count", Self::VT_COUNT, false)?
-     .visit_field::<CompressionType>("compression", Self::VT_COMPRESSION, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, u8>>>("data", Self::VT_DATA, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("key", Self::VT_KEY, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Label>>>>("labels", Self::VT_LABELS, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<SampleData>>("data", Self::VT_DATA, false)?
      .finish();
     Ok(())
   }
 }
 pub struct SeriesChunkArgs<'a> {
-    pub version: u32,
-    pub count: u64,
-    pub compression: CompressionType,
-    pub data: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>>,
+    pub key: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub labels: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label<'a>>>>>,
+    pub data: Option<flatbuffers::WIPOffset<SampleData<'a>>>,
 }
 impl<'a> Default for SeriesChunkArgs<'a> {
   #[inline]
   fn default() -> Self {
     SeriesChunkArgs {
-      version: 0,
-      count: 0,
-      compression: CompressionType::None,
+      key: None,
+      labels: None,
       data: None,
     }
   }
@@ -557,20 +676,16 @@ pub struct SeriesChunkBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
 }
 impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SeriesChunkBuilder<'a, 'b, A> {
   #[inline]
-  pub fn add_version(&mut self, version: u32) {
-    self.fbb_.push_slot::<u32>(SeriesChunk::VT_VERSION, version, 0);
+  pub fn add_key(&mut self, key: flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesChunk::VT_KEY, key);
   }
   #[inline]
-  pub fn add_count(&mut self, count: u64) {
-    self.fbb_.push_slot::<u64>(SeriesChunk::VT_COUNT, count, 0);
+  pub fn add_labels(&mut self, labels: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<Label<'b >>>>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesChunk::VT_LABELS, labels);
   }
   #[inline]
-  pub fn add_compression(&mut self, compression: CompressionType) {
-    self.fbb_.push_slot::<CompressionType>(SeriesChunk::VT_COMPRESSION, compression, CompressionType::None);
-  }
-  #[inline]
-  pub fn add_data(&mut self, data: flatbuffers::WIPOffset<flatbuffers::Vector<'b , u8>>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesChunk::VT_DATA, data);
+  pub fn add_data(&mut self, data: flatbuffers::WIPOffset<SampleData<'b >>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<SampleData>>(SeriesChunk::VT_DATA, data);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> SeriesChunkBuilder<'a, 'b, A> {
@@ -590,9 +705,8 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SeriesChunkBuilder<'a, 'b, A> {
 impl core::fmt::Debug for SeriesChunk<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("SeriesChunk");
-      ds.field("version", &self.version());
-      ds.field("count", &self.count());
-      ds.field("compression", &self.compression());
+      ds.field("key", &self.key());
+      ds.field("labels", &self.labels());
       ds.field("data", &self.data());
       ds.finish()
   }
@@ -746,8 +860,8 @@ impl<'a> flatbuffers::Follow<'a> for SeriesResponse<'a> {
 impl<'a> SeriesResponse<'a> {
   pub const VT_KEY: flatbuffers::VOffsetT = 4;
   pub const VT_GROUP_LABEL_VALUE: flatbuffers::VOffsetT = 6;
-  pub const VT_SAMPLES: flatbuffers::VOffsetT = 8;
-  pub const VT_LABELS: flatbuffers::VOffsetT = 10;
+  pub const VT_LABELS: flatbuffers::VOffsetT = 8;
+  pub const VT_SAMPLES: flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -759,8 +873,8 @@ impl<'a> SeriesResponse<'a> {
     args: &'args SeriesResponseArgs<'args>
   ) -> flatbuffers::WIPOffset<SeriesResponse<'bldr>> {
     let mut builder = SeriesResponseBuilder::new(_fbb);
-    if let Some(x) = args.labels { builder.add_labels(x); }
     if let Some(x) = args.samples { builder.add_samples(x); }
+    if let Some(x) = args.labels { builder.add_labels(x); }
     if let Some(x) = args.group_label_value { builder.add_group_label_value(x); }
     if let Some(x) = args.key { builder.add_key(x); }
     builder.finish()
@@ -782,18 +896,18 @@ impl<'a> SeriesResponse<'a> {
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(SeriesResponse::VT_GROUP_LABEL_VALUE, None)}
   }
   #[inline]
-  pub fn samples(&self) -> Option<flatbuffers::Vector<'a, Sample>> {
-    // Safety:
-    // Created from valid Table for this object
-    // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, Sample>>>(SeriesResponse::VT_SAMPLES, None)}
-  }
-  #[inline]
   pub fn labels(&self) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label<'a>>>> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label>>>>(SeriesResponse::VT_LABELS, None)}
+  }
+  #[inline]
+  pub fn samples(&self) -> Option<SampleData<'a>> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<SampleData>>(SeriesResponse::VT_SAMPLES, None)}
   }
 }
 
@@ -806,8 +920,8 @@ impl flatbuffers::Verifiable for SeriesResponse<'_> {
     v.visit_table(pos)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("key", Self::VT_KEY, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<&str>>("group_label_value", Self::VT_GROUP_LABEL_VALUE, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, Sample>>>("samples", Self::VT_SAMPLES, false)?
      .visit_field::<flatbuffers::ForwardsUOffset<flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<Label>>>>("labels", Self::VT_LABELS, false)?
+     .visit_field::<flatbuffers::ForwardsUOffset<SampleData>>("samples", Self::VT_SAMPLES, false)?
      .finish();
     Ok(())
   }
@@ -815,8 +929,8 @@ impl flatbuffers::Verifiable for SeriesResponse<'_> {
 pub struct SeriesResponseArgs<'a> {
     pub key: Option<flatbuffers::WIPOffset<&'a str>>,
     pub group_label_value: Option<flatbuffers::WIPOffset<&'a str>>,
-    pub samples: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, Sample>>>,
     pub labels: Option<flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<Label<'a>>>>>,
+    pub samples: Option<flatbuffers::WIPOffset<SampleData<'a>>>,
 }
 impl<'a> Default for SeriesResponseArgs<'a> {
   #[inline]
@@ -824,8 +938,8 @@ impl<'a> Default for SeriesResponseArgs<'a> {
     SeriesResponseArgs {
       key: None,
       group_label_value: None,
-      samples: None,
       labels: None,
+      samples: None,
     }
   }
 }
@@ -844,12 +958,12 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> SeriesResponseBuilder<'a, 'b, A
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesResponse::VT_GROUP_LABEL_VALUE, group_label_value);
   }
   #[inline]
-  pub fn add_samples(&mut self, samples: flatbuffers::WIPOffset<flatbuffers::Vector<'b , Sample>>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesResponse::VT_SAMPLES, samples);
-  }
-  #[inline]
   pub fn add_labels(&mut self, labels: flatbuffers::WIPOffset<flatbuffers::Vector<'b , flatbuffers::ForwardsUOffset<Label<'b >>>>) {
     self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(SeriesResponse::VT_LABELS, labels);
+  }
+  #[inline]
+  pub fn add_samples(&mut self, samples: flatbuffers::WIPOffset<SampleData<'b >>) {
+    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<SampleData>>(SeriesResponse::VT_SAMPLES, samples);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> SeriesResponseBuilder<'a, 'b, A> {
@@ -871,8 +985,8 @@ impl core::fmt::Debug for SeriesResponse<'_> {
     let mut ds = f.debug_struct("SeriesResponse");
       ds.field("key", &self.key());
       ds.field("group_label_value", &self.group_label_value());
-      ds.field("samples", &self.samples());
       ds.field("labels", &self.labels());
+      ds.field("samples", &self.samples());
       ds.finish()
   }
 }
