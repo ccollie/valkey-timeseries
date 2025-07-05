@@ -15,11 +15,16 @@ enum CompressionType: byte {
   Pco = 2,
 }
 
-table SeriesChunk {
-  version:uint32; // version of the series chunk
-  count:uint64;
+table SampleData {
+  version:uint32;
   compression:CompressionType;
-  data: [ubyte]; // or [byte]
+  data: [ubyte];
+}
+
+table SeriesChunk {
+  key:string; // series key
+  labels:[Label];
+  data:SampleData; // compressed data
 }
 
 table MGetValue {
@@ -31,8 +36,8 @@ table MGetValue {
 table SeriesResponse {
   key:string;
   group_label_value:string;
-  samples:[Sample];
   labels:[Label];
+  samples:SampleData;
 }
 
 table MultiGetResponse {
