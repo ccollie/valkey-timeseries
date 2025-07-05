@@ -3,20 +3,22 @@ use super::common::{
 };
 use super::matchers::{deserialize_matchers_list, serialize_matchers_list};
 use super::request_generated::{
-    AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder, 
+    AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder,
     AggregationType as FBAggregationType,
     BucketAlignmentType, BucketTimestampType, GroupingOptions, GroupingOptionsArgs,
     MultiRangeRequest as FBMultiRangeRequest, MultiRangeRequestArgs, ValueRangeFilter,
 };
 use super::response_generated::{
     Label as ResponseLabel, LabelArgs, MultiRangeResponse as FBMultiRangeResponse,
-    MultiRangeResponseArgs, Sample as ResponseSample, SeriesResponse as FBSeriesResponse,
+    MultiRangeResponseArgs, SeriesResponse as FBSeriesResponse,
     SeriesResponseArgs,
 };
 use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::commands::process_mrange_query;
-use crate::common::{Sample, Timestamp};
+use crate::common::Timestamp;
 use crate::fanout::request::serialization::{Deserialized, Serialized};
+use crate::fanout::request::series_chunk::{deserialize_sample_data, serialize_sample_data};
+use crate::fanout::serialization::samples_to_chunk;
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::SeriesLabel;
 use crate::series::request_types::{
@@ -82,7 +84,6 @@ impl Serialized for MultiRangeResponse {
             series.push(value);
         }
 
-        // todo: use gorilla on samples
         let sample_values = bldr.create_vector(&series);
         let response_args = MultiRangeResponseArgs {
             series: Some(sample_values),
@@ -372,22 +373,16 @@ pub fn deserialize_multi_range_request(buf: &[u8]) -> ValkeyResult<MRangeOptions
     })
 }
 
+// todo: Return result instead of panic
 fn encode_series_response<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
     response: &MRangeSeriesResult,
-) -> WIPOffset<super::response_generated::SeriesResponse<'a>> {
+) -> WIPOffset<FBSeriesResponse<'a>> {
     let key = bldr.create_string(&response.key);
     let group_label_value = response
         .group_label_value
         .as_ref()
         .map(|label_value| bldr.create_string(label_value.as_str()));
-    // todo: use gorilla on samples and send the buffer
-    let mut samples = Vec::with_capacity(response.labels.len());
-    for sample in &response.samples {
-        let sample = ResponseSample::new(sample.timestamp, sample.value);
-        samples.push(sample);
-    }
-    let samples = bldr.create_vector(&samples);
 
     let mut labels = Vec::with_capacity(response.labels.len());
     for label in &response.labels {
@@ -414,13 +409,19 @@ fn encode_series_response<'a>(
     }
 
     let labels = bldr.create_vector(&labels);
+    let sample_chunk = samples_to_chunk(&response.samples)
+        .expect("Failed to convert samples to chunk");
+
+    let sample_data = serialize_sample_data(bldr, sample_chunk)
+        .expect("Failed to serialize sample data");
+
     FBSeriesResponse::create(
         bldr,
         &SeriesResponseArgs {
             key: Some(key),
             group_label_value,
-            samples: Some(samples),
             labels: Some(labels),
+            samples: Some(sample_data),
         },
     )
 }
@@ -428,15 +429,14 @@ fn encode_series_response<'a>(
 fn decode_series_response(reader: &FBSeriesResponse) -> MRangeSeriesResult {
     let key = reader.key().unwrap_or_default().to_string();
     let group_label_value = reader.group_label_value().map(|x| x.to_string());
-    let samples = reader
-        .samples()
-        .map(|sample| {
-            sample
-                .iter()
-                .map(|x| Sample::new(x.timestamp(), x.value()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let samples = match reader.samples().as_ref() {
+        Some(sample_data) => {
+            let chunk = deserialize_sample_data(sample_data)
+                .expect("Failed to deserialize sample data");
+            chunk.iter().collect()
+        }
+        None => Vec::new(),
+    };
 
     let labels = reader
         .labels()
@@ -467,6 +467,7 @@ fn decode_series_response(reader: &FBSeriesResponse) -> MRangeSeriesResult {
 mod tests {
     use super::*;
     use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
+    use crate::common::Sample;
     use crate::labels::matchers::{
         Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
     };
