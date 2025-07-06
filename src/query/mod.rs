@@ -1,7 +1,7 @@
 use metricsql_runtime::prelude::Context as QueryContext;
 use std::sync::{Arc, LazyLock};
 
-pub mod datasource;
+pub mod types;
 mod handlers;
 mod tracing;
 mod ts_metric_storage;
@@ -45,5 +45,5 @@ pub(super) fn create_query_context() -> QueryContext {
 pub(crate) use crate::query::cluster::register_cluster_message_handlers;
 use crate::query::config::QUERY_CONTEXT_CONFIG;
 pub(crate) use crate::query::query_utils::*;
-pub use datasource::*;
+pub use types::*;
 pub(crate) use handlers::*;

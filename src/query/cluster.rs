@@ -287,7 +287,6 @@ extern "C" fn on_request_received(
             if send_cluster_message(&ctx, sender_id, CLUSTER_RESPONSE_MESSAGE, &response_buf)
                 == Status::Err
             {
-                // todo: log this cluster's id
                 let node_id = get_current_node();
                 let msg = format!(
                     "Failed to send response for request ID {request_id}: node_id: {node_id:?}",
