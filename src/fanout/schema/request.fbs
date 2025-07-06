@@ -129,17 +129,6 @@ table MetadataRequest {
     limit:uint32;
 }
 
-table QueryParams {
-    query:string;
-    start:int64;
-    end:int64;
-    step:uint64;
-    may_cache:bool = true;
-    deadline:uint64 = 0;
-    round_digits:uint8 = 0;
-    required_tag_filters:Matchers;
-}
-
 table SearchQueryRequest {
     start:int64;
     end:int64;
@@ -156,5 +145,4 @@ root_type LabelValuesRequest;
 root_type CardinalityRequest;
 root_type MetadataRequest;
 root_type RangeRequest;
-root_type QueryParams;
 root_type SearchQueryRequest;
