@@ -61,7 +61,7 @@ pub struct InstantQueryOptions {
     pub timestamp: TimestampValue,
     pub step: Option<Duration>,
     pub rounding: Option<u8>,
-    // todo: timeout
+    pub timeout: Option<Duration>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -70,7 +70,7 @@ pub struct RangeQueryOptions {
     pub date_range: TimestampRange,
     pub step: Option<Duration>,
     pub rounding: Option<u8>,
-    // todo: timeout
+    pub timeout: Option<Duration>,
 }
 
 #[derive(Debug, Default, Clone)]

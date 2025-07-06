@@ -4,12 +4,16 @@ use crate::query::config::QUERY_DEFAULT_STEP;
 use crate::query::{run_instant_query, run_range_query};
 use metricsql_runtime::prelude::query::QueryParams;
 use std::thread;
+use std::time::Duration;
+use metricsql_runtime::Deadline;
 use valkey_module::{Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::error_consts;
 
 ///
 /// TS.QUERY_RANGE <query> start end
 ///     [STEP duration]
 ///     [ROUNDING digits]
+///     [TIMEOUT duration]
 ///
 pub(crate) fn query_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
@@ -21,12 +25,16 @@ pub(crate) fn query_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         *QUERY_DEFAULT_STEP.lock().expect("query default step lock poisoned")
     });
 
+    // todo: set a cap on timout duration to mitigate DOS
+    let deadline  = get_deadline(options.timeout)?;
+    
     let query_params: QueryParams = QueryParams {
         query: options.query,
         start,
         end,
         step,
         round_digits,
+        deadline,
         ..Default::default()
     };
     
@@ -52,8 +60,9 @@ pub(crate) fn query_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
 ///
 /// TS.QUERY <query> time
-///         [TIMEOUT duration]
-///         [ROUNDING digits]
+///    [STEP duration]
+///    [ROUNDING digits]
+///    [TIMEOUT duration]
 ///
 pub fn query(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
@@ -64,6 +73,8 @@ pub fn query(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let step = options.step.unwrap_or_else(|| {
         *QUERY_DEFAULT_STEP.lock().expect("query default step lock poisoned")
     });
+    
+    let deadline  = get_deadline(options.timeout)?;
 
     let query_params: QueryParams = QueryParams {
         query: options.query,
@@ -71,6 +82,7 @@ pub fn query(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         step,
         round_digits,
         end: start, // For instant queries, start and end are the same
+        deadline,
         ..Default::default()
     };
 
@@ -83,7 +95,7 @@ pub fn query(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 thread_ctx.reply(Ok(valkey_value));
             }
             Err(e) => {
-                let err_msg = format!("PROM: Error: {e:?}");
+                let err_msg = format!("TSDB(promql): Error: {e:?}");
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
                 thread_ctx.reply(Err(ValkeyError::String(err_msg.to_string())));
             }
@@ -91,4 +103,12 @@ pub fn query(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     });
 
     Ok(ValkeyValue::NoReply)
+}
+
+fn get_deadline(timeout: Option<Duration>) -> ValkeyResult<Deadline> {
+    if let Some(timeout) = timeout {
+        Deadline::new(timeout).map_err(|_| ValkeyError::Str(error_consts::INVALID_DURATION))
+    } else {
+        Ok(Deadline::default())
+    }
 }

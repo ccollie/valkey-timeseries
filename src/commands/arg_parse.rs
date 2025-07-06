@@ -69,6 +69,7 @@ const CMD_ARG_SEMI: &str = "SEMI";
 const CMD_ARG_STEP: &str = "STEP";
 const CMD_ARG_SIGNIFICANT_DIGITS: &str = "SIGNIFICANT_DIGITS";
 const CMD_ARG_START: &str = "START";
+const CMD_ARG_TIMEOUT: &str = "TIMEOUT";
 const CMD_ARG_TIMESTAMP: &str = "TIMESTAMP";
 const CMD_ARG_TRUE: &str = "TRUE";
 const CMD_ARG_UNCOMPRESSED: &str = "UNCOMPRESSED";
@@ -120,6 +121,7 @@ pub enum CommandArgToken {
     SignificantDigits,
     Start,
     Step,
+    Timeout,
     Timestamp,
     True,
     Uncompressed,
@@ -178,6 +180,7 @@ impl CommandArgToken {
             CommandArgToken::Reduce => CMD_ARG_REDUCE,
             CommandArgToken::Uncompressed => CMD_ARG_UNCOMPRESSED,
             CommandArgToken::SelectedLabels => CMD_ARG_SELECTED_LABELS,
+            CommandArgToken::Timeout => CMD_ARG_TIMEOUT,
             CommandArgToken::Timestamp => CMD_ARG_TIMESTAMP,
             CommandArgToken::True => CMD_ARG_TRUE,
             CommandArgToken::Invalid => "INVALID",
@@ -232,6 +235,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "SIGNIFICANT_DIGITS" => CommandArgToken::SignificantDigits,
         "START" => CommandArgToken::Start,
         "STEP" => CommandArgToken::Step,
+        "TIMEOUT" => CommandArgToken::Timeout,
         "TIMESTAMP" => CommandArgToken::Timestamp,
         "TRUE" => CommandArgToken::True,
         "UNCOMPRESSED" => CommandArgToken::Uncompressed,
@@ -812,9 +816,10 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
 }
 
 pub fn parse_instant_query_options(args: &mut CommandArgIterator) -> ValkeyResult<InstantQueryOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 2] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 3] = [
         CommandArgToken::Rounding,
         CommandArgToken::Step,
+        CommandArgToken::Timeout,
     ];
 
     let query = args
@@ -842,6 +847,9 @@ pub fn parse_instant_query_options(args: &mut CommandArgIterator) -> ValkeyResul
             CommandArgToken::Rounding => {
                 options.rounding = Some(parse_query_rounding(args)?);
             }
+            CommandArgToken::Timeout => {
+                options.timeout = Some(parse_duration_arg(&arg)?)
+            }
             _ => {
                 let msg = format!("ERR invalid argument '{arg}'");
                 return Err(ValkeyError::String(msg));
@@ -852,9 +860,10 @@ pub fn parse_instant_query_options(args: &mut CommandArgIterator) -> ValkeyResul
     Ok(options)
 }
 pub fn parse_range_query_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeQueryOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 2] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 3] = [
         CommandArgToken::Rounding,
         CommandArgToken::Step,
+        CommandArgToken::Timeout,
     ];
 
     let query = args
@@ -877,6 +886,9 @@ pub fn parse_range_query_options(args: &mut CommandArgIterator) -> ValkeyResult<
             }
             CommandArgToken::Rounding => {
                 options.rounding = Some(parse_query_rounding(args)?);
+            }
+            CommandArgToken::Timeout => {
+                options.timeout = Some(parse_duration_arg(&arg)?);
             }
             _ => {
                 let msg = format!("ERR invalid argument '{arg}'");
