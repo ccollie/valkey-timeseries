@@ -1,21 +1,35 @@
 use crate::aggregators::{AggregationHandler, Aggregator};
-use crate::common::{Sample, Timestamp};
-use crate::series::{DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
-use get_size::GetSize;
-use smallvec::SmallVec;
-use valkey_module::{raw, AclPermissions, Context, ThreadSafeContext, ValkeyResult};
-use crate::common::db::get_current_db;
 use crate::common::parallel::join;
 use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
-use crate::series::index::{get_series_by_id, mark_series_for_removal, with_timeseries_index, TIMESERIES_INDEX};
+use crate::common::{Sample, Timestamp};
+use crate::series::index::{get_series_by_id, mark_series_for_removal};
+use crate::series::{DuplicatePolicy, SeriesGuardMut, SeriesRef, TimeSeries};
+use get_size::GetSize;
+use smallvec::SmallVec;
+use valkey_module::{raw, Context, ValkeyResult};
+use yasi::InternedString;
 
-#[derive(Debug, Clone, PartialEq, GetSize)]
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompactionRule {
     pub dest_id: SeriesRef,
+    pub dest: InternedString,
     pub aggregator: Aggregator,
     pub bucket_duration: u64,
     pub align_timestamp: Timestamp,
     pub hi_ts: Option<Timestamp>,
+}
+
+impl GetSize for CompactionRule {
+
+    fn get_size(&self) -> usize {
+        self.dest_id.get_size() +
+        self.dest.len() +
+        self.aggregator.get_size() +
+        self.bucket_duration.get_size() +
+        self.align_timestamp.get_size() +
+        self.hi_ts.get_size()
+    }
 }
 
 impl CompactionRule {
@@ -24,6 +38,7 @@ impl CompactionRule {
         rdb: *mut raw::RedisModuleIO,
     ) {
         raw::save_unsigned(rdb, self.dest_id);
+        raw::save_string(rdb, &self.dest);
         self.aggregator.save(rdb);
         raw::save_unsigned(rdb, self.bucket_duration);
         rdb_save_timestamp(rdb, self.align_timestamp);
@@ -34,6 +49,7 @@ impl CompactionRule {
         rdb: *mut raw::RedisModuleIO,
     ) -> ValkeyResult<Self> {
         let dest_id = raw::load_unsigned(rdb)? as SeriesRef;
+        let dest = raw::load_string(rdb)?;
         let aggregator = Aggregator::load(rdb)?;
         let bucket_duration = raw::load_unsigned(rdb)?;
         let align_timestamp = rdb_load_timestamp(rdb)?;
@@ -43,9 +59,11 @@ impl CompactionRule {
         } else {
             Some(bucket_end)
         };
+        let dest = InternedString::from(dest);
 
         Ok(CompactionRule {
             dest_id,
+            dest,
             aggregator,
             bucket_duration,
             align_timestamp,
@@ -89,7 +107,7 @@ pub enum CompactionResult {
 }
 
 struct CompactionUpdateContext<'a> {
-    series: &'a mut TimeSeries,
+    series: SeriesGuardMut<'a>,
     rule: &'a mut CompactionRule,
 }
 
@@ -114,7 +132,7 @@ fn run_compaction_internal(rule_ctx: &mut CompactionUpdateContext, sample: Sampl
             }
         }
         None => {
-            // first time we add a sample, we need to align the timestamps
+            // the first time we add a sample, we need to align the timestamps
             rule_ctx.rule.hi_ts = Some(rule_ctx.rule.calc_bucket_end(ts));
         }
     }
@@ -155,7 +173,7 @@ impl TimeSeries {
         let mut to_remove: SmallVec<_, 4> = SmallVec::new();
         for rule in self.rules.iter_mut() {
             // note: permissions would have been checked for parent
-            let Ok(Some(mut dest)) = get_series_by_id(ctx, rule.dest_id, false, None) else {
+            let Ok(Some(dest)) = get_series_by_id(ctx, rule.dest_id, false, None) else {
                 // mark the id for removal
                 mark_series_for_removal(ctx, rule.dest_id);
                 to_remove.push(rule.dest_id);
@@ -167,15 +185,17 @@ impl TimeSeries {
                 continue;
             }
             rule_contexts.push(CompactionUpdateContext {
-                series: &mut dest,
+                series: dest,
                 rule,
             });
         }
+
+        let blocked_client = ctx.block_client();
+        run_compactions_internal(&mut rule_contexts, value);
+
         // remove the rules that are invalid
         for id in to_remove {
             self.remove_compaction_rule(id);
         }
-        let blocked_client = ctx.block_client();
-        run_compactions_internal(ctx, &rule_contexts, value);
     }
 }
