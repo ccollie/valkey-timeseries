@@ -13,6 +13,7 @@ On any day of the week it may not even build :-)
 - Configurable data retention period
 - Configurable encoding
 - Single sample and range queries
+- [Prometheus compatible](https://docs.victoriametrics.com/victoriametrics/metricsql/#) query language
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
 - Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
@@ -28,7 +29,7 @@ On any day of the week it may not even build :-)
 
 ## Performance
 
-valkey-timeseries achieves high performance by storing series data in-memory and applying optimizations throughout the stack to efficiently use the host resources, such as:
+`valkey-timeseries` achieves high performance by storing series data in-memory and applying optimizations throughout the stack to efficiently use the host resources, such as:
 
 - **Parallelism:** Low-overhead threading model that enables concurrent lock-free reads across series and chunks.
 - **CPU Cache Efficiency:** Modern, cache-friendly algorithms for data and index storage.
@@ -65,7 +66,9 @@ TS.MADD
 TS.MGET
 TS.MRANGE
 TS.MREVRANGE
+TS.QUERY
 TS.QUERYINDEX
+TS.QUERY_RANGE
 TS.RANGE
 TS.REVRANGE
 TS.STATS
