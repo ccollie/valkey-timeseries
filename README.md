@@ -133,13 +133,21 @@ valkey-server --loadmodule /path/to/libvalkey_timeseries.so
     MODULE LOAD /path/to/libvalkey_timeseries.so
 ```
 ## Feature Flags
-
 * valkey_8_0: valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1 and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
 ```
 cargo build --release --features valkey_8_0
 ```
-
 This can also be done by specifying SERVER_VERSION=8.0.0 and then running `./build.sh`
+
+### Async Runtime support:
+The query execution engine requires the use of an async runtime to allow efficient access to series data.
+You can specify one of the following runtimes in your `Cargo.toml` or via the command line.
+
+```
+* tokio: use the Tokio runtime
+* async-std: use the async-std runtime.
+* smol: use the Smol runtime (default).
+```
 
 ## License
 valkey-timeseries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

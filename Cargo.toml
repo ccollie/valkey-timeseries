@@ -53,6 +53,7 @@ async-trait = "0.1.88"
 [dev-dependencies]
 test-case = "3.3.1"
 criterion = { version="0.6.0"}
+tokio = { version = "1.46" }
 
 [lib]
 name="valkey_timeseries"
@@ -72,9 +73,9 @@ strip = true
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc", "smol"]
-tokio = ["metricsql_runtime/tokio"]
-async-std = ["metricsql_runtime/async-std"]
-smol = ["metricsql_runtime/smol"]
+tokio = ["metricsql_runtime/tokio", "metricsql_common/tokio"]
+async-std = ["metricsql_runtime/async-std", "metricsql_common/async-std"]
+smol = ["metricsql_runtime/smol", "metricsql_common/smol"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
 valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1, and by default it is built this way (unless this flag is provided). It is, however, compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
