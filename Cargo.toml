@@ -10,6 +10,7 @@ description = "A Timeseries data type for Valkey"
 
 [dependencies]
 ahash = { version = "0.8", features = ["std", "serde"] }
+async-trait = "0.1.88"
 blart = "0.3"
 bincode = {  version = "2.0", features = ["serde"] }
 bon = "3.6"
@@ -48,12 +49,13 @@ regex = "1.11.1"
 strum = { version = "0.27", features = ["derive"] }
 strum_macros = "0.27"
 yasi = "0.1.5"
-async-trait = "0.1.88"
+tokio = { version = "1", optional = true, features = ["rt", "rt-multi-thread"] }
+smol = { version = "2", default-features = false, optional = true }
 
 [dev-dependencies]
 test-case = "3.3.1"
 criterion = { version="0.6.0"}
-tokio = { version = "1.46" }
+tokio = { version = "1", features = ["rt", "test-util"]}
 
 [lib]
 name="valkey_timeseries"
@@ -72,10 +74,9 @@ panic = "abort"       # Smaller binary size
 strip = true
 
 [features]
-default = ["min-valkey-compatibility-version-8-0", "croaring/alloc", "smol"]
-tokio = ["metricsql_runtime/tokio", "metricsql_common/tokio"]
-async-std = ["metricsql_runtime/async-std", "metricsql_common/async-std"]
-smol = ["metricsql_runtime/smol", "metricsql_common/smol"]
+default = ["min-valkey-compatibility-version-8-0", "croaring/alloc", "tokio"]
+tokio = ["dep:tokio", "metricsql_common/tokio", "metricsql_runtime/tokio"]
+smol = ["dep:smol", "metricsql_common/smol", "metricsql_runtime/smol"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
 valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1, and by default it is built this way (unless this flag is provided). It is, however, compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.

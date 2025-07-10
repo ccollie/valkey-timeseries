@@ -62,7 +62,7 @@ fn collect_query_results(results: Vec<Option<SeriesDataPair>>) -> Vec<SeriesData
     results.into_iter().flatten().collect()
 }
 
-fn get_range(series: &TimeSeries, start_ts: Timestamp, end_ts: Timestamp) -> Option<SeriesDataPair> {
+fn get_range(series: &TimeSeries, start_ts: Timestamp, end_ts: Timestamp) -> Option<SeriesDataPair<'_>> {
     // This function should be implemented based on the VMMetricStorage::get_range logic
     // from the related code
     let samples = series.get_range(start_ts, end_ts);
