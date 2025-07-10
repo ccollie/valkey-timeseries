@@ -1,16 +1,16 @@
 use crate::common::{Sample, Timestamp};
-use crate::series::index::{series_keys_by_matchers, TimeSeriesIndex};
-use crate::series::{TimeSeries, TimeSeriesOptions};
+use crate::labels::matchers::Matchers;
+use crate::series::chunks::ChunkEncoding;
+use crate::series::index::{postings_for_matchers_internal, TimeSeriesIndex};
+use crate::series::{SeriesRef, TimeSeries, TimeSeriesOptions};
 use async_trait::async_trait;
 use metricsql_runtime::prelude::{
-    Deadline, MetricName, MetricStorage, QueryResult, QueryResults,
-    RuntimeResult, RuntimeError, SearchQuery,
+    Deadline, MetricName, MetricStorage, QueryResult, QueryResults, RuntimeError, RuntimeResult,
+    SearchQuery,
 };
 use std::collections::HashMap;
 use std::sync::RwLock;
 use valkey_module::{ValkeyError, ValkeyResult};
-use crate::labels::matchers::Matchers;
-use crate::series::chunks::ChunkEncoding;
 
 type KeyType = Box<[u8]>;
 
@@ -39,9 +39,11 @@ impl TestMetricStorage {
         })
     }
 
-
     fn key_exists(&self, key: &KeyType) -> bool {
-        let map = self.series.read().expect("Failed to acquire read lock on series map");
+        let map = self
+            .series
+            .read()
+            .expect("Failed to acquire read lock on series map");
         map.contains_key(key)
     }
 
@@ -52,7 +54,10 @@ impl TestMetricStorage {
         };
         let name = mn.to_string();
         let key = string_to_key(&name);
-        let mut map = self.series.write().expect("Failed to acquire read lock on series map");
+        let mut map = self
+            .series
+            .write()
+            .expect("Failed to acquire read lock on series map");
         match map.get_mut(&key) {
             Some(series) => {
                 series.add(ts, value, None);
@@ -69,11 +74,12 @@ impl TestMetricStorage {
 
     fn insert_series_from_metric_name(&mut self, mn: &MetricName) {
         let mut time_series = self.create_series(mn);
-        let mut map = self.series.write()
+        let mut map = self
+            .series
+            .write()
             .expect("Failed to acquire write lock on series map");
         let key = timeseries_key(&time_series);
-        self.index
-            .index_timeseries(&mut time_series, &key);
+        self.index.index_timeseries(&mut time_series, &key);
         map.insert(key, time_series);
     }
 
@@ -94,7 +100,9 @@ impl TestMetricStorage {
     where
         F: FnMut(&mut TimeSeries) -> ValkeyResult<()>,
     {
-        let mut map = self.series.write()
+        let mut map = self
+            .series
+            .write()
             .expect("Failed to acquire write lock on series map");
         match map.get_mut(key) {
             Some(series) => f(series),
@@ -136,31 +144,62 @@ impl TestMetricStorage {
     }
 
     fn get_series_data(&self, search_query: SearchQuery) -> RuntimeResult<Vec<QueryResult>> {
-        let matchers: Matchers = search_query.matchers.try_into()
-            .map_err(|e| {
-                RuntimeError::General(format!("Error converting matchers: {:?}", e))
-            })?;
-        let ctx_guard = valkey_module::MODULE_CONTEXT.lock();
+        let matchers: Matchers = search_query
+            .matchers
+            .try_into()
+            .map_err(|e| RuntimeError::General(format!("Error converting matchers: {:?}", e)))?;
         let start_ts = search_query.start;
         let end_ts = search_query.end;
 
-        let ctx = &ctx_guard;
-        let map = series_keys_by_matchers(ctx, &[matchers], None)
-            .map_err(|e| {
-                ctx.log_warning(&format!("ERR: {:?}", e));
-                // TODO. 1. on the lib side, use a better enum variant
-                RuntimeError::General("Error getting series keys".to_string())
-            })?;
+        let map = self.series_keys_by_matchers(&[matchers]).map_err(|e| {
+            let msg = format!("Error getting series keys: {:?}", e);
+            RuntimeError::General(msg)
+        })?;
         let mut results: Vec<QueryResult> = Vec::with_capacity(map.len());
 
         // use rayon?
         for key in map.into_iter() {
-            let k = key.as_slice().to_vec().into_boxed_slice();
-            if let Some(result) = self.get_series(k, start_ts, end_ts)? {
+            if let Some(result) = self.get_series(key, start_ts, end_ts)? {
                 results.push(result);
             }
         }
         Ok(results)
+    }
+
+    fn series_keys_by_matchers(&self, matchers: &[Matchers]) -> ValkeyResult<Vec<KeyType>> {
+        if matchers.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut state = ();
+
+        self.index.with_postings(&mut state, move |inner, _| {
+            let first = postings_for_matchers_internal(inner, &matchers[0])?;
+            if matchers.len() == 1 {
+                let keys = self.collect_series_keys(first.iter());
+                return Ok(keys);
+            }
+            // todo: use chili here ?
+            let mut result = first.into_owned();
+            for matcher in &matchers[1..] {
+                let postings = postings_for_matchers_internal(inner, matcher)?;
+                result.and_inplace(&postings);
+            }
+            let keys = self.collect_series_keys(result.iter());
+            Ok(keys)
+        })
+    }
+    fn collect_series_keys(&self, ids: impl Iterator<Item = SeriesRef>) -> Vec<KeyType> {
+        let mut keys = Vec::new();
+        let mut state = ();
+        self.index.with_postings(&mut state, |postings, _| {
+            ids.for_each(|id| {
+                if let Some(key) = postings.get_key_by_id(id) {
+                    keys.push(key.clone());
+                }
+            });
+        });
+        keys
     }
 }
 
