@@ -1,5 +1,6 @@
 use metricsql_runtime::prelude::Context as QueryContext;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 pub mod types;
 mod handlers;
@@ -37,9 +38,12 @@ pub(super) fn create_query_context() -> QueryContext {
     let default_config = 
         QUERY_CONTEXT_CONFIG.lock().expect("Default Config mutex poisoned");
 
-    QueryContext::new()
+    let mut context = QueryContext::new()
         .with_config(default_config.clone())
-        .with_metric_storage(provider)
+        .with_metric_storage(provider);
+    
+    context.config.latency_offset = Duration::ZERO;
+    context
 }
 
 pub(crate) use crate::query::cluster::register_cluster_message_handlers;
