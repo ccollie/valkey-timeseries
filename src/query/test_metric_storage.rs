@@ -65,7 +65,7 @@ impl TestMetricStorage {
             None => {
                 let mut time_series = self.create_series(&mn);
                 time_series.add(ts, value, None);
-                self.index.index_timeseries(&mut time_series, &key);
+                self.index.index_timeseries(&time_series, &key);
                 map.insert(key.clone(), time_series);
             }
         }
@@ -73,13 +73,13 @@ impl TestMetricStorage {
     }
 
     fn insert_series_from_metric_name(&mut self, mn: &MetricName) {
-        let mut time_series = self.create_series(mn);
+        let time_series = self.create_series(mn);
         let mut map = self
             .series
             .write()
             .expect("Failed to acquire write lock on series map");
         let key = timeseries_key(&time_series);
-        self.index.index_timeseries(&mut time_series, &key);
+        self.index.index_timeseries(&time_series, &key);
         map.insert(key, time_series);
     }
 
@@ -147,12 +147,12 @@ impl TestMetricStorage {
         let matchers: Matchers = search_query
             .matchers
             .try_into()
-            .map_err(|e| RuntimeError::General(format!("Error converting matchers: {:?}", e)))?;
+            .map_err(|e| RuntimeError::General(format!("Error converting matchers: {e:?}")))?;
         let start_ts = search_query.start;
         let end_ts = search_query.end;
 
         let map = self.series_keys_by_matchers(&[matchers]).map_err(|e| {
-            let msg = format!("Error getting series keys: {:?}", e);
+            let msg = format!("Error getting series keys: {e:?}");
             RuntimeError::General(msg)
         })?;
         let mut results: Vec<QueryResult> = Vec::with_capacity(map.len());
