@@ -1,17 +1,17 @@
 mod cardinality;
 mod common;
+pub mod error;
 mod index_query;
 mod label_names;
 mod label_values;
 mod matchers;
 mod mget;
 mod mrange;
-pub mod error;
-pub(crate) mod serialization;
-mod search_query;
-mod stats;
 mod query_matchers;
+mod search_query;
+pub(crate) mod serialization;
 mod series_chunk;
+mod stats;
 
 #[allow(
     dead_code,
@@ -42,8 +42,8 @@ pub use label_names::*;
 pub use label_values::*;
 pub use mget::*;
 pub use mrange::*;
-pub use stats::*;
 pub use search_query::*;
+pub use stats::*;
 
 use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::TrackerEnum;

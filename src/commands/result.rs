@@ -1,11 +1,11 @@
 use crate::common::Sample;
+use crate::labels::InternedLabel;
+use crate::query::{InstantQueryResult, RangeQueryResult};
+use crate::series::TimeSeries;
 use metricsql_runtime::types::{MetricName, METRIC_NAME_LABEL};
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{ValkeyString, ValkeyValue};
-use crate::labels::InternedLabel;
-use crate::query::{InstantQueryResult, RangeQueryResult};
-use crate::series::TimeSeries;
 
 pub static META_KEY_LABEL: &str = "__meta:key__";
 pub(crate) fn metric_name_to_valkey_value(
@@ -186,4 +186,3 @@ pub(crate) fn sample_to_value(sample: Sample) -> ValkeyValue {
     ];
     ValkeyValue::from(row)
 }
-

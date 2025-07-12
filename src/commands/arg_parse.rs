@@ -13,7 +13,10 @@ use crate::parser::{
     parse_positive_duration_value, timestamp::parse_timestamp as parse_timestamp_internal,
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
-use crate::series::request_types::{AggregationOptions, InstantQueryOptions, MRangeOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions, RangeQueryOptions};
+use crate::series::request_types::{
+    AggregationOptions, InstantQueryOptions, MRangeOptions, MatchFilterOptions,
+    RangeGroupingOptions, RangeOptions, RangeQueryOptions,
+};
 use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
 use ahash::AHashMap;
@@ -815,7 +818,9 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
     Ok(options)
 }
 
-pub fn parse_instant_query_options(args: &mut CommandArgIterator) -> ValkeyResult<InstantQueryOptions> {
+pub fn parse_instant_query_options(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<InstantQueryOptions> {
     const RANGE_OPTION_ARGS: [CommandArgToken; 3] = [
         CommandArgToken::Rounding,
         CommandArgToken::Step,
@@ -829,7 +834,7 @@ pub fn parse_instant_query_options(args: &mut CommandArgIterator) -> ValkeyResul
     let ts_str = args
         .next_str()
         .map_err(|_| ValkeyError::Str("TSDB: missing query timestamp"))?;
-    
+
     let ts_value = parse_timestamp_arg(ts_str, "query timestamp")?;
 
     let mut options = InstantQueryOptions {
@@ -847,9 +852,7 @@ pub fn parse_instant_query_options(args: &mut CommandArgIterator) -> ValkeyResul
             CommandArgToken::Rounding => {
                 options.rounding = Some(parse_query_rounding(args)?);
             }
-            CommandArgToken::Timeout => {
-                options.timeout = Some(parse_duration_arg(&arg)?)
-            }
+            CommandArgToken::Timeout => options.timeout = Some(parse_duration_arg(&arg)?),
             _ => {
                 let msg = format!("ERR invalid argument '{arg}'");
                 return Err(ValkeyError::String(msg));
@@ -869,7 +872,7 @@ pub fn parse_range_query_options(args: &mut CommandArgIterator) -> ValkeyResult<
     let query = args
         .next_str()
         .map_err(|_| ValkeyError::Str("TSDB: missing query"))?;
-    
+
     let date_range = parse_timestamp_range(args)?;
 
     let mut options = RangeQueryOptions {
@@ -900,26 +903,21 @@ pub fn parse_range_query_options(args: &mut CommandArgIterator) -> ValkeyResult<
     Ok(options)
 }
 
-fn parse_step_arg(
-    args: &mut CommandArgIterator,
-) -> ValkeyResult<Duration> {
+fn parse_step_arg(args: &mut CommandArgIterator) -> ValkeyResult<Duration> {
     let step_str = args
         .next_str()
         .map_err(|_| ValkeyError::Str("TSDB: missing step value"))?;
-    let step_value = parse_duration(step_str)
-        .map_err(|_| ValkeyError::Str("TSDB: invalid step value"))?;
+    let step_value =
+        parse_duration(step_str).map_err(|_| ValkeyError::Str("TSDB: invalid step value"))?;
     Ok(step_value)
 }
 
-fn parse_query_rounding(
-    args: &mut CommandArgIterator,
-) -> ValkeyResult<u8> {
-    let rounding = args.next_u64()
+fn parse_query_rounding(args: &mut CommandArgIterator) -> ValkeyResult<u8> {
+    let rounding = args
+        .next_u64()
         .map_err(|_| ValkeyError::Str("TSDB: missing query rounding value"))?;
     if rounding > MAX_SIGNIFICANT_DIGITS as u64 {
-        let msg = format!(
-            "TSDB: ROUNDING value must be between 0 and {MAX_SIGNIFICANT_DIGITS}"
-        );
+        let msg = format!("TSDB: ROUNDING value must be between 0 and {MAX_SIGNIFICANT_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
     Ok(rounding as u8)

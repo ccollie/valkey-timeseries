@@ -6,12 +6,8 @@ mod results_tracker;
 use crate::series::index::PostingsStats;
 use crate::series::request_types::{MGetRequest, MRangeOptions, MatchFilterOptions};
 pub(crate) use coordinator::{
-    generate_request_id, 
-    get_cluster_command_timeout,
-    send_multi_shard_request,
-    parse_message_header,
-    parse_response_header,
-    register_cluster_message_handlers
+    generate_request_id, get_cluster_command_timeout, parse_message_header, parse_response_header,
+    register_cluster_message_handlers, send_multi_shard_request,
 };
 pub use request::*;
 use results_tracker::*;

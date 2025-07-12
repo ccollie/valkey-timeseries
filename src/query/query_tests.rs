@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use metricsql_runtime::prelude::query::QueryParams;
     use crate::common::Timestamp;
+    use crate::query::run_range_query_internal;
     use crate::query::test_metric_storage::TestMetricStorage;
     use crate::query::test_utils::{
         create_context, range_query_cases, setup_range_query_test_data,
     };
-    use crate::query::{run_range_query_internal};
+    use metricsql_runtime::prelude::query::QueryParams;
 
     #[test]
     fn test_range_query() {

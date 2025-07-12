@@ -1,6 +1,5 @@
 use super::request_generated::{
-    SearchQueryRequest as FBSearchQueryRequest,
-    SearchQueryRequestArgs,
+    SearchQueryRequest as FBSearchQueryRequest, SearchQueryRequestArgs,
 };
 use super::serialization::{Deserialized, Serialized};
 use crate::common::Sample;
@@ -17,7 +16,6 @@ use flatbuffers::FlatBufferBuilder;
 use metricsql_parser::label::Matchers;
 use metricsql_runtime::{QueryResult, SearchQuery};
 use valkey_module::{ValkeyError, ValkeyResult};
-
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchQueryRequest {

@@ -2,7 +2,6 @@ use crate::common::Sample;
 use metricsql_runtime::types::MetricName;
 use std::fmt::Display;
 
-
 #[derive(Debug)]
 pub struct InstantQueryResult {
     pub metric: MetricName,

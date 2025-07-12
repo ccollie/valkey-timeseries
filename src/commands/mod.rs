@@ -18,9 +18,9 @@ mod range;
 mod rev_range;
 mod stats;
 
-mod test_cmd;
 mod query;
 mod result;
+mod test_cmd;
 
 pub use arg_parse::*;
 

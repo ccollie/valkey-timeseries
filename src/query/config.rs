@@ -11,7 +11,6 @@ use valkey_module::{ConfigurationValue, ValkeyError, ValkeyGILGuard, ValkeyStrin
 pub static QUERY_CONTEXT_CONFIG: LazyLock<Mutex<SessionConfig>> =
     LazyLock::new(|| Mutex::new(SessionConfig::default()));
 
-
 // Query Context related
 // https://github.com/VictoriaMetrics/VictoriaMetrics/blob/master/app/vmselect/prometheus/prometheus.go
 
@@ -33,10 +32,10 @@ pub const DEFAULT_QUERY_STEP: Duration = Duration::from_secs(5 * 60); // 5 minut
 lazy_static! {
     pub(crate) static ref QUERY_MAX_LENGTH_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_MAX_QUERY_LEN_STRING));
-    
+
     pub(crate) static ref QUERY_DEFAULT_STEP_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_QUERY_STEP_STRING));
-    
+
     pub(crate) static ref QUERY_MAX_LENGTH: AtomicI64 = AtomicI64::new(DEFAULT_MAX_QUERY_LENGTH as i64);
     pub(crate) static ref QUERY_MAX_MEMORY: AtomicI64 = AtomicI64::new(0);
     pub(crate) static ref QUERY_DEFAULT_STEP: Mutex<Duration> = Mutex::new(DEFAULT_QUERY_STEP);
@@ -66,14 +65,17 @@ fn parse_bool_config(name: &str, value: &str) -> Result<bool, ValkeyError> {
     } else if value == "false" || value == "0" {
         Ok(false)
     } else {
-        Err(ValkeyError::String(format!("Invalid boolean value: \"{value}\" for {name}")))
+        Err(ValkeyError::String(format!(
+            "Invalid boolean value: \"{value}\" for {name}"
+        )))
     }
 }
 
 fn parse_i64_in_range(name: &str, v: &str, min: i64, max: i64) -> Result<i64, ValkeyError> {
-    let value = parse_number_with_unit(v)
-        .map_err(|_| ValkeyError::String(format!("config: number expected for {name} value: got {v}")))? as i64;
-    if !(min ..=max).contains(&value) {
+    let value = parse_number_with_unit(v).map_err(|_| {
+        ValkeyError::String(format!("config: number expected for {name} value: got {v}"))
+    })? as i64;
+    if !(min..=max).contains(&value) {
         let msg = format!("{name} must be between {min} and {max}");
         return Err(ValkeyError::String(msg));
     }
@@ -88,30 +90,33 @@ fn on_string_config_set<T: ConfigurationValue<ValkeyString>>(
     val: &'static T,
 ) -> Result<(), ValkeyError> {
     let v = val.get(config_ctx).to_string_lossy();
-    match name {  
+    match name {
         "ts-query-max-len" => {
             let max_length = parse_i64_in_range(name, &v, 1, MAX_QUERY_LEN as i64)?;
             QUERY_MAX_LENGTH.store(max_length, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         "ts-query-default-step" => {
             let interval = parse_duration_config(name, &v)?;
-            *QUERY_DEFAULT_STEP.lock().expect("config: error acquiring QUERY_DEFAULT_STEP lock") = interval;
-        },
+            *QUERY_DEFAULT_STEP
+                .lock()
+                .expect("config: error acquiring QUERY_DEFAULT_STEP lock") = interval;
+        }
         "ts-query-round-digits" => {
             let digits = parse_i64_in_range(name, &v, 0, 36)?;
             QUERY_ROUNDING_DIGITS.store(digits, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         "ts-query-max-response-series" => {
             let max_series = parse_i64_in_range(name, &v, 0, 100000)?;
             QUERY_MAX_RESPONSE_SERIES.store(max_series, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         "ts-query-max-unique-series" => {
             let max_unique_series = parse_i64_in_range(name, &v, 0, 100000)?;
             QUERY_MAX_UNIQUE_SERIES.store(max_unique_series, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         "ts-max-memory-per-query" => {
             let max_memory = parse_number_with_unit(&v)
-                .map_err(|_| ValkeyError::String(format!("Invalid value \"{v}\" for {name}")))? as usize;
+                .map_err(|_| ValkeyError::String(format!("Invalid value \"{v}\" for {name}")))?
+                as usize;
             if !(1..=MAX_MEMORY_PER_QUERY).contains(&max_memory) {
                 let msg = format!(
                     "{name} must be between 1 byte and {}",
@@ -119,36 +124,44 @@ fn on_string_config_set<T: ConfigurationValue<ValkeyString>>(
                 );
                 return Err(ValkeyError::String(msg));
             }
-            QUERY_MAX_MEMORY_PER_QUERY.store(max_memory as u64, std::sync::atomic::Ordering::Relaxed);
-        },
+            QUERY_MAX_MEMORY_PER_QUERY
+                .store(max_memory as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         "ts-query-max-staleness-interval" => {
             let interval = parse_duration_config(name, &v)?;
-            *QUERY_MAX_STALENESS_INTERVAL.lock().expect("config: unable to acquire QUERY_MAX_STALENESS_INTERVAL lock") = interval;
-        },
+            *QUERY_MAX_STALENESS_INTERVAL
+                .lock()
+                .expect("config: unable to acquire QUERY_MAX_STALENESS_INTERVAL lock") = interval;
+        }
         "ts-query-max-step-for-points-adjustment" => {
             let duration = parse_duration_config(name, &v)?;
-            *QUERY_MAX_STEP_FOR_POINTS_ADJUSTMENT.lock().expect("config: QUERY_MAX_STEP_FOR_POINTS lock poisoned") = duration;
-        },
+            *QUERY_MAX_STEP_FOR_POINTS_ADJUSTMENT
+                .lock()
+                .expect("config: QUERY_MAX_STEP_FOR_POINTS lock poisoned") = duration;
+        }
         "ts-query-max-query-duration" => {
             let duration = parse_duration_config(name, &v)?;
-            *QUERY_MAX_DURATION.lock().expect("config: error acquiring QUERY_MAX_DURATION lock") = duration;
-        },
+            *QUERY_MAX_DURATION
+                .lock()
+                .expect("config: error acquiring QUERY_MAX_DURATION lock") = duration;
+        }
         "ts-query-max-points-subquery-per-series" => {
             let max_points = parse_i64_in_range(name, &v, 0, 100000)?;
-            QUERY_MAX_POINTS_SUBQUERY.store(max_points as i64, std::sync::atomic::Ordering::Relaxed);
-        },
+            QUERY_MAX_POINTS_SUBQUERY
+                .store(max_points as i64, std::sync::atomic::Ordering::Relaxed);
+        }
         "ts-query-stats-enabled" => {
             let enabled = parse_bool_config(name, &v)?;
             QUERY_STATS_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         "ts-query-trace-enabled" => {
             let enabled = parse_bool_config(name, &v)?;
             QUERY_TRACE_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         "ts-query-set-lookback-to-step" => {
             let enabled = parse_bool_config(name, &v)?;
             QUERY_SET_LOOKBACK_TO_STEP.store(enabled, std::sync::atomic::Ordering::Relaxed);
-        },
+        }
         _ => {}
     }
     Ok(())

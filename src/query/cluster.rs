@@ -58,11 +58,8 @@ impl InFlightRequest {
 
 impl InFlightRequest {
     pub fn update(&self, result: SearchQueryResponse) {
-        let mut results: Vec<QueryResult> = result
-            .series
-            .into_iter()
-            .map(QueryResult::from)
-            .collect();
+        let mut results: Vec<QueryResult> =
+            result.series.into_iter().map(QueryResult::from).collect();
         let mut inner = self.inner.lock().unwrap();
         inner.results.append(&mut results);
         self.decrement_internal(&mut inner);
@@ -135,7 +132,6 @@ impl InFlightRequest {
 type InFlightRequestMap = HashMap<u64, InFlightRequest, BuildNoHashHasher<u64>>;
 static INFLIGHT_REQUESTS: LazyLock<InFlightRequestMap> = LazyLock::new(InFlightRequestMap::default);
 
-
 /// Handles a search query request in the cluster.
 pub(super) async fn cluster_search_query(
     request: SearchQuery,
@@ -156,7 +152,8 @@ pub(super) async fn cluster_search_query(
 
     let node_count = {
         let ctx_guard = valkey_module::MODULE_CONTEXT.lock();
-        let node_count = fanout_cluster_message(&ctx_guard, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
+        let node_count =
+            fanout_cluster_message(&ctx_guard, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
         drop(ctx_guard);
         if node_count == 0 {
             // If no nodes are available, we cannot proceed with the request
@@ -314,9 +311,7 @@ fn process_request(ctx: &Context, req: SearchQueryRequest) -> ValkeyResult<Searc
             .into_iter()
             .map(|pair| pair.into())
             .collect::<Vec<QuerySeriesData>>();
-        Ok(SearchQueryResponse {
-            series,
-        })
+        Ok(SearchQueryResponse { series })
     })
 }
 
@@ -344,7 +339,7 @@ extern "C" fn on_response_received(
         ));
         return;
     };
-    
+
     let Ok(response) = SearchQueryResponse::deserialize(buf) else {
         // todo: return an error response to the sender
         ctx.log_warning("Failed to deserialize response payload");

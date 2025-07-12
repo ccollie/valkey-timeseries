@@ -1,14 +1,14 @@
-use std::ops::Deref;
-use metricsql_runtime::{QueryResult, SearchQuery};
-use valkey_module::{Context, ValkeyError, ValkeyResult};
 use crate::common::{Sample, Timestamp};
 use crate::labels::matchers::Matchers;
 use crate::series::index::series_by_matchers;
 use crate::series::TimeSeries;
+use metricsql_runtime::{QueryResult, SearchQuery};
+use std::ops::Deref;
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub struct SeriesDataPair<'a> {
     pub(crate) series: &'a TimeSeries,
-    pub(crate) samples: Vec<Sample>
+    pub(crate) samples: Vec<Sample>,
 }
 
 impl<'a> From<&SeriesDataPair<'a>> for QueryResult {
@@ -35,9 +35,7 @@ fn get_series_internal<'a>(
 ) -> Vec<SeriesDataPair<'a>> {
     match series {
         [] => Vec::new(),
-        [series] => {
-            collect_query_results(vec![get_range(series, start_ts, end_ts)])
-        }
+        [series] => collect_query_results(vec![get_range(series, start_ts, end_ts)]),
         [s1, s2] => {
             let (r1, r2) = scope.join(
                 |_| get_range(s1, start_ts, end_ts),
@@ -62,31 +60,32 @@ fn collect_query_results(results: Vec<Option<SeriesDataPair>>) -> Vec<SeriesData
     results.into_iter().flatten().collect()
 }
 
-fn get_range(series: &TimeSeries, start_ts: Timestamp, end_ts: Timestamp) -> Option<SeriesDataPair<'_>> {
+fn get_range(
+    series: &TimeSeries,
+    start_ts: Timestamp,
+    end_ts: Timestamp,
+) -> Option<SeriesDataPair<'_>> {
     // This function should be implemented based on the VMMetricStorage::get_range logic
     // from the related code
     let samples = series.get_range(start_ts, end_ts);
     if samples.is_empty() {
         return None;
     }
-    Some(SeriesDataPair {
-        series,
-        samples,
-    })
+    Some(SeriesDataPair { series, samples })
 }
 
 pub fn get_query_series_data<F, R>(
     ctx: &Context,
     search_query: SearchQuery,
-    func: F
-) -> ValkeyResult<R> 
-where F: Fn(Vec<SeriesDataPair<'_>>) -> ValkeyResult<R>
+    func: F,
+) -> ValkeyResult<R>
+where
+    F: Fn(Vec<SeriesDataPair<'_>>) -> ValkeyResult<R>,
 {
-    let matchers: Matchers = search_query.matchers.try_into()
-        .map_err(|e| {
-            ctx.log_warning(&format!("ERR: {e:?}"));
-            ValkeyError::String("Error converting matchers".to_string())
-        })?;
+    let matchers: Matchers = search_query.matchers.try_into().map_err(|e| {
+        ctx.log_warning(&format!("ERR: {e:?}"));
+        ValkeyError::String("Error converting matchers".to_string())
+    })?;
     let start_ts = search_query.start;
     let end_ts = search_query.end;
 
@@ -97,12 +96,7 @@ where F: Fn(Vec<SeriesDataPair<'_>>) -> ValkeyResult<R>
     }
 
     let mut scope = chili::Scope::global();
-    let pairs: Vec<SeriesDataPair> = get_series_internal(
-        &mut scope,
-        &series,
-        start_ts,
-        end_ts,
-    );
-    
+    let pairs: Vec<SeriesDataPair> = get_series_internal(&mut scope, &series, start_ts, end_ts);
+
     func(pairs)
 }

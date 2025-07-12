@@ -106,7 +106,7 @@ pub(super) fn serialize_matchers<'a>(
             dest.push(item);
         }
     }
-    
+
     // Create name string if present
     let name = matchers
         .name

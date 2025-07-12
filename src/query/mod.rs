@@ -2,14 +2,14 @@ use metricsql_runtime::prelude::Context as QueryContext;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-pub mod types;
+mod cluster;
+pub(crate) mod config;
 mod handlers;
+mod matchers;
+mod query_utils;
 mod tracing;
 mod ts_metric_storage;
-pub(crate) mod config;
-mod matchers;
-mod cluster;
-mod query_utils;
+pub mod types;
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -35,13 +35,14 @@ pub(super) fn create_query_context() -> QueryContext {
     let provider = Arc::new(TestMetricStorage::new());
     #[cfg(not(test))]
     let provider = Arc::new(VMMetricStorage { db: 0 });
-    let default_config = 
-        QUERY_CONTEXT_CONFIG.lock().expect("Default Config mutex poisoned");
+    let default_config = QUERY_CONTEXT_CONFIG
+        .lock()
+        .expect("Default Config mutex poisoned");
 
     let mut context = QueryContext::new()
         .with_config(default_config.clone())
         .with_metric_storage(provider);
-    
+
     context.config.latency_offset = Duration::ZERO;
     context
 }
@@ -49,5 +50,5 @@ pub(super) fn create_query_context() -> QueryContext {
 pub(crate) use crate::query::cluster::register_cluster_message_handlers;
 use crate::query::config::QUERY_CONTEXT_CONFIG;
 pub(crate) use crate::query::query_utils::*;
-pub use types::*;
 pub(crate) use handlers::*;
+pub use types::*;

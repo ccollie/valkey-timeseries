@@ -460,7 +460,9 @@ extern "C" fn on_response_received(
         CommandMessageType::Error => {
             process_error_response(&ctx, request, buf);
         }
-        CommandMessageType::SearchQuery => unimplemented!("SearchQuery is implemented as a separate command"),
+        CommandMessageType::SearchQuery => {
+            unimplemented!("SearchQuery is implemented as a separate command")
+        }
     }
 }
 

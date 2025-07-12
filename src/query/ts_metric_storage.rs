@@ -1,3 +1,6 @@
+use crate::common::db::set_current_db;
+use crate::fanout::cluster::is_clustered;
+use crate::query::cluster::cluster_search_query;
 use crate::query::get_query_series_data;
 use async_trait::async_trait;
 use metricsql_runtime::prelude::{
@@ -5,13 +8,10 @@ use metricsql_runtime::prelude::{
 };
 use metricsql_runtime::RuntimeError;
 use valkey_module::{Context, ValkeyResult};
-use crate::common::db::set_current_db;
-use crate::fanout::cluster::is_clustered;
-use crate::query::cluster::cluster_search_query;
 
 /// Interface between the time series database and the metricsql runtime.
 pub struct VMMetricStorage {
-    pub db: i32
+    pub db: i32,
 }
 
 fn get_series_data_standalone(
@@ -30,11 +30,8 @@ impl VMMetricStorage {
         let ctx_guard = valkey_module::MODULE_CONTEXT.lock();
         is_clustered(&ctx_guard)
     }
-    
-    fn get_series_data_standalone(
-        &self,
-        search_query: SearchQuery,
-    ) -> RuntimeResult<QueryResults> {
+
+    fn get_series_data_standalone(&self, search_query: SearchQuery) -> RuntimeResult<QueryResults> {
         let ctx_guard = valkey_module::MODULE_CONTEXT.lock();
         let db = self.db;
         let ctx: &Context = &ctx_guard;

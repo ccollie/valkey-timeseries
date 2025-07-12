@@ -1,3 +1,4 @@
+use crate::common::constants::METRIC_NAME_LABEL;
 use blart::{AsBytes, NoPrefixesBytes};
 use get_size::GetSize;
 use std::borrow::Borrow;
@@ -5,7 +6,6 @@ use std::fmt::Display;
 use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use crate::common::constants::METRIC_NAME_LABEL;
 
 #[derive(Debug, Clone, PartialEq, Eq, GetSize)]
 pub struct IndexKey(Box<[u8]>);

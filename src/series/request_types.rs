@@ -1,9 +1,9 @@
-use std::time::Duration;
 use crate::aggregators::{Aggregation, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::labels::matchers::Matchers;
 use crate::labels::Label;
 use crate::series::{TimestampRange, TimestampValue, ValueFilter};
+use std::time::Duration;
 use valkey_module::{ValkeyString, ValkeyValue};
 
 #[derive(Debug, Copy, Clone)]

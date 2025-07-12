@@ -1,8 +1,8 @@
-use crate::labels::matchers::{MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue, RegexMatcher};
+use crate::labels::matchers::{
+    MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue, RegexMatcher,
+};
 use metricsql_parser::prelude::{
-    MatchOp as ParserMatchOp,
-    Matcher as ParserMatcher,
-    Matchers as ParserMatchers
+    MatchOp as ParserMatchOp, Matcher as ParserMatcher, Matchers as ParserMatchers,
 };
 use regex::Regex;
 use valkey_module::ValkeyError;
@@ -36,7 +36,6 @@ impl TryFrom<ParserMatchers> for Matchers {
     }
 }
 
-
 impl From<ParserMatcher> for Matcher {
     fn from(parser_matcher: ParserMatcher) -> Self {
         let match_op = parser_matcher.op.into();
@@ -46,25 +45,24 @@ impl From<ParserMatcher> for Matcher {
             MatchOp::Equal => PredicateMatch::Equal(PredicateValue::String(value)),
             MatchOp::NotEqual => PredicateMatch::NotEqual(PredicateValue::String(value)),
             MatchOp::RegexEqual => {
-                let regex = Regex::new(&value)
-                    .unwrap_or_else(|_| Regex::new(NON_MATCHING_REGEX).expect("Invalid non-matching regex"));
-                let regex_matcher = RegexMatcher {
-                    regex,
-                    value,
-                };
+                let regex = Regex::new(&value).unwrap_or_else(|_| {
+                    Regex::new(NON_MATCHING_REGEX).expect("Invalid non-matching regex")
+                });
+                let regex_matcher = RegexMatcher { regex, value };
                 PredicateMatch::RegexEqual(regex_matcher)
             }
             MatchOp::RegexNotEqual => {
-                let regex = Regex::new(&value)
-                    .unwrap_or_else(|_| Regex::new(ALL_MATCHING_REGEX).expect("Invalid matching regex"));
-                let regex_matcher = RegexMatcher {
-                    regex,
-                    value,
-                };
+                let regex = Regex::new(&value).unwrap_or_else(|_| {
+                    Regex::new(ALL_MATCHING_REGEX).expect("Invalid matching regex")
+                });
+                let regex_matcher = RegexMatcher { regex, value };
                 PredicateMatch::RegexNotEqual(regex_matcher)
             }
         };
-        Matcher { label, matcher: predicate_match }
+        Matcher {
+            label,
+            matcher: predicate_match,
+        }
     }
 }
 
@@ -90,7 +88,10 @@ impl TryFrom<Matchers> for ParserMatchers {
                     let parser_matcher: ParserMatcher = matcher.try_into()?;
                     parser_matchers.push(parser_matcher);
                 }
-                Ok(ParserMatchers::with_matchers(matchers.name, parser_matchers))
+                Ok(ParserMatchers::with_matchers(
+                    matchers.name,
+                    parser_matchers,
+                ))
             }
             MatcherSetEnum::Or(or_matchers) => {
                 let mut parser_or_matchers = Vec::with_capacity(or_matchers.len());
@@ -101,7 +102,10 @@ impl TryFrom<Matchers> for ParserMatchers {
                         .collect::<Result<Vec<_>, _>>()?;
                     parser_or_matchers.push(parser_group);
                 }
-                Ok(ParserMatchers::with_or_matchers(matchers.name, parser_or_matchers))
+                Ok(ParserMatchers::with_or_matchers(
+                    matchers.name,
+                    parser_or_matchers,
+                ))
             }
         }
     }
@@ -114,37 +118,30 @@ impl TryFrom<Matcher> for ParserMatcher {
         match matcher.matcher {
             PredicateMatch::Equal(PredicateValue::String(val)) => {
                 Ok(ParserMatcher::equal(matcher.label, val))
-            },
+            }
             PredicateMatch::NotEqual(PredicateValue::String(val)) => {
                 Ok(ParserMatcher::not_equal(matcher.label, val))
-            },
+            }
             PredicateMatch::RegexEqual(regex_matcher) => {
-                let matcher = ParserMatcher::regex_equal(
-                    matcher.label,
-                    regex_matcher.value
-                ).map_err(|e| {
-                    ValkeyError::String(format!("Invalid regex value: {e}"))
-                })?;
+                let matcher = ParserMatcher::regex_equal(matcher.label, regex_matcher.value)
+                    .map_err(|e| ValkeyError::String(format!("Invalid regex value: {e}")))?;
                 Ok(matcher)
-            },
+            }
             PredicateMatch::RegexNotEqual(regex_matcher) => {
-                let matcher = ParserMatcher::regex_notequal(
-                    matcher.label,
-                    regex_matcher.value
-                ).map_err(|e| {
-                    ValkeyError::String(format!("Invalid regex value: {e}"))
-                })?;
+                let matcher = ParserMatcher::regex_notequal(matcher.label, regex_matcher.value)
+                    .map_err(|e| ValkeyError::String(format!("Invalid regex value: {e}")))?;
                 Ok(matcher)
-            },
+            }
             PredicateMatch::Equal(PredicateValue::Empty) => {
                 Ok(ParserMatcher::equal(matcher.label, "".to_string()))
-            },
+            }
             PredicateMatch::NotEqual(PredicateValue::Empty) => {
                 Ok(ParserMatcher::not_equal(matcher.label, "".to_string()))
-            },
-            PredicateMatch::Equal(PredicateValue::List(_)) | PredicateMatch::NotEqual(PredicateValue::List(_)) => {
-                Err(ValkeyError::String("ParserMatcher does not support list values".into()))
             }
+            PredicateMatch::Equal(PredicateValue::List(_))
+            | PredicateMatch::NotEqual(PredicateValue::List(_)) => Err(ValkeyError::String(
+                "ParserMatcher does not support list values".into(),
+            )),
         }
     }
 }

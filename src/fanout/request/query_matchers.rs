@@ -1,9 +1,6 @@
 use super::matchers::{serialize_local_matchers, LocalMatcher};
 use super::request_generated::{
-    MatchOpType,
-    Matcher as FBMatcher,
-    Matchers as FBMatchers, MatchersArgs,
-    MatchersCondition,
+    MatchOpType, Matcher as FBMatcher, Matchers as FBMatchers, MatchersArgs, MatchersCondition,
 };
 use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
 use metricsql_parser::label::{MatchOp, Matcher, Matchers};
@@ -71,11 +68,14 @@ pub(super) fn serialize_matchers<'a>(
         MatchersCondition::Or
     } else {
         // No matchers provided, return an empty FBMatchers
-        return FBMatchers::create(bldr, &MatchersArgs {
-            matchers: None,
-            condition: MatchersCondition::And,
-            name,
-        });
+        return FBMatchers::create(
+            bldr,
+            &MatchersArgs {
+                matchers: None,
+                condition: MatchersCondition::And,
+                name,
+            },
+        );
     };
 
     let matchers_args = {
@@ -92,7 +92,6 @@ pub(super) fn serialize_matchers<'a>(
     FBMatchers::create(bldr, &matchers_args)
 }
 
-
 pub(super) fn serialize_matchers_list<'a>(
     bldr: &mut FlatBufferBuilder<'a>,
     filters: &[Matchers],
@@ -107,12 +106,11 @@ pub(super) fn serialize_matchers_list<'a>(
 }
 
 pub(super) fn deserialize_matchers(filter: &FBMatchers) -> ValkeyResult<Matchers> {
-
     let name = filter.name().map(|n| n.to_string());
     let Some(matchers) = filter.matchers() else {
         return Err(ValkeyError::Str("TSDB: matchers cannot be empty"));
     };
-    
+
     match filter.condition() {
         MatchersCondition::And => {
             let items = matchers
@@ -147,9 +145,7 @@ pub(super) fn deserialize_matchers(filter: &FBMatchers) -> ValkeyResult<Matchers
             }
             Ok(Matchers::with_or_matchers(name, or_matchers))
         }
-        _ => {
-            Err(ValkeyError::Str("TSDB: unsupported matcher type in stream"))
-        }
+        _ => Err(ValkeyError::Str("TSDB: unsupported matcher type in stream")),
     }
 }
 
@@ -178,12 +174,7 @@ fn deserialize_matcher(request_matcher: &FBMatcher) -> ValkeyResult<Matcher> {
     }
 
     fn get_predicate_value(value: &FBMatcher) -> ValkeyResult<String> {
-        let items: Vec<_> = value
-            .value()
-            .unwrap_or_default()
-            .iter()
-            .take(1)
-            .collect();
+        let items: Vec<_> = value.value().unwrap_or_default().iter().take(1).collect();
 
         if items.is_empty() {
             return Err(ValkeyError::Str("TSDB: matcher value cannot be empty"));
@@ -191,7 +182,7 @@ fn deserialize_matcher(request_matcher: &FBMatcher) -> ValkeyResult<Matcher> {
 
         Ok(items[0].to_string())
     }
-    
+
     let value = get_predicate_value(request_matcher)?;
     let match_op = fb_to_match_op(op);
 
