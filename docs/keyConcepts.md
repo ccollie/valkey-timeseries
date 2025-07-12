@@ -100,36 +100,35 @@ Try to keep time series resolution consistent, since some [MetricsQL](#metricsql
 
 ### Types of metrics
 
-Internally, VictoriaMetrics does not have the notion of a metric type. The concept of a metric
+Internally, `valkey-timeseries` does not have the notion of a metric type. The concept of a metric
 type exists specifically to help users to understand how the metric was measured. There are four common metric types.
 
 #### Counter
 
-A Counter is a metric which counts some events. Its value increases or stays the same over time.
+A Counter is a metric that counts some events. Its value increases or stays the same over time.
 It cannot decrease in the general case. The only exception is e.g. `counter reset`,
-when the metric resets to zero. The `counter reset` can occur when the service, which exposes the counter, restarts.
+when the metric resets to zero. A `counter reset` can occur when the service, which exposes the counter, restarts.
 So, the `counter` metric shows the number of observed events since the service start.
 
-In programming, `counter` is a variable that you **increment** each time something happens.
+In programming, a `counter` is a variable that you **increment** each time something happens.
 
 ![counter](counter.webp)
 
-`vm_http_requests_total` is a typical example of a counter. The interpretation of a graph
+`vm_http_requests_total` is a typical example of a counter. The interpretation of the graph
 above is that time series `vm_http_requests_total{instance="localhost:8428", job="victoriametrics", path="api/v1/query_range"}`
 was rapidly changing from 1:38 pm to 1:39 pm, then there were no changes until 1:41 pm.
 
 A Counter is used for measuring the number of events, like the number of requests, errors, logs, messages, etc.
 The most common [MetricsQL](#metricsql) functions used with counters are:
 
-* [rate](https://docs.victoriametrics.com/victoriametrics/metricsql/#rate) - calculates the average per-second speed of metric change.
+* [rate](https://docs.victoriametrics.com/victoriametrics/metricsql/#rate)—calculates the average per-second speed of metric change.
   For example, `rate(requests_total)` shows how many requests are served per second on average;
-* [increase](https://docs.victoriametrics.com/victoriametrics/metricsql/#increase) - calculates the growth of a metric on the given
-  time period specified in square brackets.
+* [increase](https://docs.victoriametrics.com/victoriametrics/metricsql/#increase)—calculates the growth of a metric on the given time period specified in square brackets.
   For example, `increase(requests_total[1h])` shows the number of requests served over the last hour.
 
 It is OK to have fractional counters. For example, `request_duration_seconds_sum` counter may sum the durations of all the requests.
 Every duration may have a fractional value in seconds, e.g. `0.5` of a second. So the cumulative sum of all the request durations
-may be fractional too.
+may be fractional as well.
 
 It is recommended to put `_total`, `_sum` or `_count` suffix to `counter` metric names, so such metrics can be easily differentiated
 by humans from other metric types.
@@ -142,7 +141,7 @@ A Gauge is used for measuring a value that can go up and down:
 
 The metric `process_resident_memory_anon_bytes` on the graph shows the memory usage of the application at every given time.
 It is changing frequently, going up and down showing how the process allocates and frees the memory.
-In programming, `gauge` is a variable to which you **set** a specific value as it changes.
+In programming, a `gauge` is a variable to which you **set** a specific value as it changes.
 
 A Gauge is used in the following scenarios:
 

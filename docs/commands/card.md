@@ -4,7 +4,7 @@
 ```
 TS.CARD [START fromTimestamp] [END toTimestamp] [FILTER filter...]
 ```
-returns the number of unique time series that match a certain label set.
+returns the number of unique time series that match a given label set.
 
 Without arguments, it returns the number of unique time series in the database.
 

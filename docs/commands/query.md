@@ -14,15 +14,15 @@ Params:
   The `time` param can be specified in [multiple allowed formats](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#timestamp-formats).
 * `step` - optional [interval](https://prometheus.io/docs/prometheus/latest/querying/basics/#time-durations)
   for searching for raw samples in the past when executing the `query` (used when a sample is missing at the specified `time`).
-  For example, the request `/api/v1/query?query=up&step=1m` looks for the last written raw sample for the metric `up`
+  For example, the request `TS.QUERY up STEP 1m` looks for the last written raw sample for the metric `up`
   in the `(now()-1m, now()]` interval (the first millisecond is not included). If omitted, `step` is set to `5m` (5 minutes)
   by default.
 * `timeout` - optional query timeout. For example, `5s`. The query is canceled when the timeout is reached.
   By default, the timeout is set to the value of `ts-max-query-duration` configuration flag.
 
-The result of an Instant query is a list of [time series](https://docs.victoriametrics.com/victoriametrics/keyconcepts/#time-series)
-matching the filter in `query` expression. Each returned series contains exactly one `(timestamp, value)` entry,
-where `timestamp` equals to the `time` query arg, while the `value` contains `query` result at the requested `time`.
+The result of an Instant query is a list of [time series](https://docs.victoriametrics.com/victoriametrics/keyconcepts/#time-series) matching the filter in `query` expression. Each returned series 
+contains exactly one `(timestamp, value)` entry, where `timestamp` equals to the `time` query arg, while the `value` contains 
+`query` result at the requested `time`.
 
 To understand how instant queries work, let's begin with a data sample:
 
@@ -45,10 +45,10 @@ foo_bar 4.00 1652170560000 # 2022-05-10T08:16:00Z
 The data above contains a list of samples for the `foo_bar` time series with time intervals between samples
 ranging from 1m to 3m. If we plot this data sample on the graph, it will have the following form:
 
-![data samples](data_samples.webp)
-{width="500"}
+![data samples](data_samples.webp){width="500"}
 
-To get the value of the `foo_bar` series at some specific moment of time, for example `2022-05-10T08:03:00Z`, we need to issue an **instant query**:
+To get the value of the `foo_bar` series at some specific moment of time, for example `2022-05-10T08:03:00Z`, we need to 
+issue an **instant query**:
 
 ```sh
 TS.QUERY foo_bar 2022-05-10T08:03:00.000Z
@@ -64,10 +64,7 @@ TS.QUERY foo_bar 2022-05-10T08:03:00.000Z
         "metric": {
           "__name__": "foo_bar"
         },
-        "value": [
-          1652169780, // 2022-05-10T08:03:00Z
-          "3"
-        ]
+        "value": [1652169780, "3"]
       }
     ]
   }
@@ -80,12 +77,11 @@ we'll see that there is no raw sample at `2022-05-10T08:03:00Z`. When there is n
 requested timestamp, `valkey-timeseries` will try to locate the closest sample before the requested timestamp:
 
 ![instant query](instant_query.webp)
-{width="500"}
 
 The time range in which it will try to locate a replacement for a missing data sample is equal to `5m`
 by default and can be overridden via the `step` parameter.
 
-Instant queries can return multiple time series, but always only one data sample per series. Instant queries are used in
+Instant queries can return multiple time series but always only one data sample per series. Instant queries are used in
 the following scenarios:
 
 * Getting the last recorded value;

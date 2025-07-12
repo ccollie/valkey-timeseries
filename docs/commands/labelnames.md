@@ -12,7 +12,7 @@ Repeated series selector argument that selects the series to return. At least on
 ### Optional Arguments
 <details open><summary><code>fromTimestamp</code></summary>
 If specified along with `toTimestamp`, this limits the result to only labels from series which
-have data in the date range [`fromTimestamp` .. `toTimestamp`]
+have data in the date range `[fromTimestamp .. toTimestamp]`
 </details>
 
 <details open><summary><code>toTimestamp</code></summary>

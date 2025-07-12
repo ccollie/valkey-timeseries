@@ -22,12 +22,33 @@ Params:
 
 The result of a Range query is a list of [time series](https://docs.victoriametrics.com/victoriametrics/keyconcepts/#time-series) matching the filter in `query` expression. Each returned series 
 contains `(timestamp, value)` results for the `query` executed  at `start`, `start+step`, `start+2*step`, ..., `start+N*step` timestamps. 
-In other words, Range query is an [Instant query](#instant-query) executed independently at `start`, `start+step`, ..., `start+N*step` timestamps with 
+In other words, Range query is an `Instant Query` executed independently at `start`, `start+step`, ..., `start+N*step` timestamps with 
 the only difference that an instant query does not return `ephemeral` samples (see below). Instead, if the database does not contain any 
 samples for the requested time and step, it simply returns an empty result.
 
+Assume the following list of samples for the `foo_bar` time series with time intervals between samples
+ranging from 1m to 3m.
+```
+foo_bar 1.00 1652169600000 # 2022-05-10T08:00:00Z
+foo_bar 2.00 1652169660000 # 2022-05-10T08:01:00Z
+foo_bar 3.00 1652169720000 # 2022-05-10T08:02:00Z
+foo_bar 5.00 1652169840000 # 2022-05-10T08:04:00Z, one point missed
+foo_bar 5.50 1652169960000 # 2022-05-10T08:06:00Z, one point missed
+foo_bar 5.50 1652170020000 # 2022-05-10T08:07:00Z
+foo_bar 4.00 1652170080000 # 2022-05-10T08:08:00Z
+foo_bar 3.50 1652170260000 # 2022-05-10T08:11:00Z, two points missed
+foo_bar 3.25 1652170320000 # 2022-05-10T08:12:00Z
+foo_bar 3.00 1652170380000 # 2022-05-10T08:13:00Z
+foo_bar 2.00 1652170440000 # 2022-05-10T08:14:00Z
+foo_bar 1.00 1652170500000 # 2022-05-10T08:15:00Z
+foo_bar 4.00 1652170560000 # 2022-05-10T08:16:00Z
+```
 
-For example, to get the values of `foo_bar` during the time range from `2022-05-10T07:59:00Z` to `2022-05-10T08:17:00Z`,
+If we plot this data sample on the graph, it will have the following form:
+
+![data samples](data_samples.webp){width="500"}
+
+To get the values of `foo_bar` during the time range from `2022-05-10T07:59:00Z` to `2022-05-10T08:17:00Z`,
 we need to issue a range query:
 
 ```
@@ -44,74 +65,23 @@ TS.QUERY_RANGE foo_bar 2022-05-10T07:59:00.000Z 2022-05-10T08:17:00.000Z STEP 1m
           "__name__": "foo_bar"
         },
         "values": [
-          [
-            1652169600,
-            "1"
-          ],
-          [
-            1652169660,
-            "2"
-          ],
-          [
-            1652169720,
-            "3"
-          ],
-          [
-            1652169780,
-            "3"
-          ],
-          [
-            1652169840,
-            "5"
-          ],
-          [
-            1652169900,
-            "5"
-          ],
-          [
-            1652169960,
-            "5.5"
-          ],
-          [
-            1652170020,
-            "5.5"
-          ],
-          [
-            1652170080,
-            "4"
-          ],
-          [
-            1652170140,
-            "4"
-          ],
-          [
-            1652170260,
-            "3.5"
-          ],
-          [
-            1652170320,
-            "3.25"
-          ],
-          [
-            1652170380,
-            "3"
-          ],
-          [
-            1652170440,
-            "2"
-          ],
-          [
-            1652170500,
-            "1"
-          ],
-          [
-            1652170560,
-            "4"
-          ],
-          [
-            1652170620,
-            "4"
-          ]
+          [1652169600, "1"],
+          [1652169660, "2"],
+          [1652169720, "3"],
+          [1652169780, "3"],
+          [1652169840, "5"],
+          [1652169900, "5"],
+          [1652169960, "5.5"],
+          [1652170020, "5.5"],
+          [1652170080, "4"],
+          [1652170140, "4"],
+          [1652170260, "3.5"],
+          [1652170320, "3.25"],
+          [1652170380, "3"],
+          [1652170440, "2"],
+          [1652170500, "1"],
+          [1652170560, "4"],
+          [1652170620, "4"]
         ]
       }
     ]
@@ -145,7 +115,7 @@ response, where most of them are `ephemeral`.
 
 Sometimes, the lookbehind window for locating the datapoint isn't big enough, and the graph will contain a gap. For range
 queries, a lookbehind window isn't equal to the `step` parameter. It is calculated as the median of the intervals between
-the first 20 raw samples in the requested time range. In this way, `valkey-metrics` automatically adjusts the lookbehind
+the first 20 raw samples in the requested time range. In this way, `valkey-timeseries` automatically adjusts the lookbehind
 window to fill gaps and detect stale series at the same time.
 
 Range queries are mostly used for plotting time series data over specified time ranges. These queries are extremely
