@@ -153,13 +153,13 @@ pub struct RangeAggregator {
 impl AggregationHandler for RangeAggregator {
     fn update(&mut self, value: Value) {
         if !self.init {
+            self.init = true;
             self.min = value;
             self.max = value;
-            self.init = true;
-            return;
+        } else {
+            self.max = self.max.max(value);
+            self.min = self.min.min(value);
         }
-        self.max = self.max.max(value);
-        self.min = self.min.min(value);
     }
     fn reset(&mut self) {
         self.max = 0.;
@@ -336,7 +336,7 @@ impl Display for AggStd {
     }
 }
 
-// boxed to minimize size of stack Aggregator enum 
+// boxed to minimize size of stack Aggregator enum
 pub(crate) type OnlineAggregator = Box<AggStd>;
 
 fn load_online_aggregator(rdb: *mut RedisModuleIO) -> ValkeyResult<OnlineAggregator> {
@@ -548,7 +548,7 @@ impl Aggregator {
             Aggregator::VarS(_) => AggregationType::VarS,
         }
     }
-    
+
     pub fn save(&self, rdb: *mut RedisModuleIO) {
         // Save the aggregation type first
         let agg_type = self.aggregation_type();
