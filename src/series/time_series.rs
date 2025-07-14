@@ -993,7 +993,7 @@ pub(super) fn find_start_chunk_index(arr: &[TimeSeriesChunk], ts: Timestamp) -> 
         return arr
             .iter()
             .position(|x| ts >= x.first_timestamp())
-            .unwrap_or(arr.len());
+            .unwrap_or(arr.len() - 1);
     }
     let (pos, _) = binary_search_chunks_by_timestamp(arr, ts);
     pos
@@ -1012,7 +1012,7 @@ fn get_chunk_index(chunks: &[TimeSeriesChunk], timestamp: Timestamp) -> (usize, 
                     None
                 }
             })
-            .unwrap_or((chunks.len(), false));
+            .unwrap_or((chunks.len() - 1, false));
     }
 
     binary_search_chunks_by_timestamp(chunks, timestamp)
