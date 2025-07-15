@@ -641,7 +641,7 @@ pub fn parse_decimal_digit_rounding(
 ) -> ValkeyResult<RoundingStrategy> {
     let next = args.next_u64()?;
     if next > MAX_DECIMAL_DIGITS as u64 {
-        let msg = format!("ERR DECIMAL_DIGITS must be between 0 and {MAX_DECIMAL_DIGITS}");
+        let msg = format!("TSDB: DECIMAL_DIGITS must be between 0 and {MAX_DECIMAL_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
     Ok(RoundingStrategy::DecimalDigits(next as i32))
@@ -894,7 +894,7 @@ pub fn parse_range_query_options(args: &mut CommandArgIterator) -> ValkeyResult<
                 options.timeout = Some(parse_duration_arg(&arg)?);
             }
             _ => {
-                let msg = format!("ERR invalid argument '{arg}'");
+                let msg = format!("TSDB: invalid argument '{arg}'");
                 return Err(ValkeyError::String(msg));
             }
         }

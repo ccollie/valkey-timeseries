@@ -1,11 +1,14 @@
-import pytest
-from valkey import ResponseError
-from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
+from valkeytestframework.util.waiters import *
+
+from data_helpers import ingest_power_consumption_data
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 
 class TestTimeSeriesQuery(ValkeyTimeSeriesTestCaseBase):
+    def setup_consumption_data(self):
+        ingest_power_consumption_data(self.client)
+
     def setup_data(self):
         # Setup some time series data
         self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'temperature', 'sensor', 'temp', 'area', 'living_room')
@@ -54,4 +57,21 @@ class TestTimeSeriesQuery(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.ADD', 'foo_bar', 1652170560000, 4.00)
 
         result = self.client.execute_command('TS.QUERY', 'foo_bar', '2022-05-10T08:03:00.000Z')
+        print(result)
+
         assert result == [[2000, b'20.2'], [3000, b'30.3'], [4000, b'40.4']]
+
+    def test_query_examples(self):
+        """Test TS.QUERY with sample consumption data"""
+
+        self.setup_consumption_data()
+        # info = self.ts_info('power_consumption:delhi::NR')
+        # print(info)
+
+        query = 'avg by (state) (power_consumption) limit 1000'
+        start = 1598528400000  # Tue Jan 01 2019 06:00:00 GMT+0000
+        end = 1601061000000 # Thu Jan 31 2019 06:00:00 GMT+0000
+
+        result = self.client.execute_command('TS.QUERY_RANGE', query, start, end)
+        print(result)
+        assert result == [[1000, b'10.1'], [2000, b'20.2'], [3000, b'30.3']]

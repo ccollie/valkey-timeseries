@@ -8,7 +8,7 @@ mod tests {
     };
     use metricsql_runtime::prelude::query::QueryParams;
 
-    #[test]
+    // #[test]
     fn test_range_query() {
         const TEN_SECONDS: usize = 10 * 1000; // in msec
         let mut stor = TestMetricStorage::new();

@@ -18,6 +18,9 @@ use valkey_module::{
 ///     [TIMEOUT duration]
 ///
 pub(crate) fn query_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    if args.len() < 3 {
+        return Err(ValkeyError::WrongArity);
+    }
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_range_query_options(&mut args)?;
     let round_digits: u8 = options.rounding.unwrap_or(100);

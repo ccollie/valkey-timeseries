@@ -7,7 +7,8 @@ use super::memory_postings::{MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY_NA
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
-use crate::labels::{InternedLabel, Label, SeriesLabel};
+use crate::labels::{InternedLabel, InternedMetricName, Label, SeriesLabel};
+use crate::series::index::index_key::format_key_for_label_value;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size::GetSize;
 use std::mem::size_of;
@@ -96,6 +97,55 @@ impl TimeSeriesIndex {
     /// This exists primarily to ensure that we disallow duplicate metric names
     pub fn posting_by_labels(&self, labels: &[Label]) -> ValkeyResult<Option<SeriesRef>> {
         let acc = self.postings_by_labels(labels);
+        match acc.cardinality() {
+            0 => Ok(None),
+            1 => Ok(Some(acc.iter().next().expect("cardinality should be 1"))),
+            _ => Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES)),
+        }
+    }
+
+    /// Returns a unique series corresponding to the given labels. This exists primarily to ensure that we
+    /// disallow indexing of multiple series with the same metric name and labels;
+    ///
+    /// NOTE, this will return a value for a subset of labels, as it would be expensive to check all labels. For example, if you
+    /// have a series with labels `a=1, b=2, c=3` and you query for `a=1, b=2`, it will return an id if a single id exists.
+    ///  In that case, checking for a pre-existing series is a higher layer concern.
+    pub fn unique_series_id_by_labels(
+        &self,
+        labels: &InternedMetricName,
+    ) -> ValkeyResult<Option<SeriesRef>> {
+        let inner = self.inner.read().expect("poisoned memory lock");
+        let mut key: String = String::new();
+        let mut first = true;
+        let mut acc = PostingsBitmap::new();
+        let mut count = 0;
+
+        for label in labels.iter() {
+            format_key_for_label_value(&mut key, label.name(), label.value());
+            let Some(bmp) = inner.label_index.get(key.as_bytes()) else {
+                return Ok(None);
+            };
+            if bmp.is_empty() {
+                return Ok(None);
+            }
+            if first {
+                acc |= bmp;
+                first = false;
+            } else {
+                acc &= bmp;
+            }
+            count += 1;
+        }
+
+        // disallow subset matches
+        if count < labels.len() {
+            return Ok(None);
+        }
+
+        if !inner.stale_ids.is_empty() {
+            acc.andnot_inplace(&inner.stale_ids);
+        }
+
         match acc.cardinality() {
             0 => Ok(None),
             1 => Ok(Some(acc.iter().next().expect("cardinality should be 1"))),
@@ -287,6 +337,21 @@ mod tests {
         ts
     }
 
+    fn create_test_series(metric_name: &str, labels: &[(&str, &str)]) -> TimeSeries {
+        let mut ts = TimeSeries::new();
+        ts.id = next_timeseries_id();
+
+        let mut new_labels: InternedMetricName =
+            InternedMetricName::with_capacity(labels.len() + 1);
+        new_labels.add_label(METRIC_NAME_LABEL, metric_name);
+        for (key, value) in labels {
+            new_labels.add_label(key, value);
+        }
+
+        ts.labels = new_labels;
+        ts
+    }
+
     #[test]
     fn test_index_time_series() {
         let index = TimeSeriesIndex::new();
@@ -345,5 +410,161 @@ mod tests {
             .unwrap()
             .unwrap_or_default();
         assert_eq!(id, ts.id);
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_single_series() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+
+        index.index_timeseries(&ts, b"key1");
+
+        let result = index.unique_series_id_by_labels(&ts.labels);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(ts.id));
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_no_matching_series() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+
+        index.index_timeseries(&ts, b"key1");
+
+        // Query for different labels
+        let query_labels = InternedMetricName::from(vec![
+            Label::new("__name__", "memory_usage"),
+            Label::new("host", "server1"),
+            Label::new("env", "prod"),
+        ]);
+
+        let result = index.unique_series_id_by_labels(&query_labels);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_unique_id_by_labels_partial_match() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+
+        index.index_timeseries(&ts, b"key1");
+
+        // Query with only a subset of labels
+        let query_labels = InternedMetricName::from(vec![
+            Label::new("__name__", "cpu_usage"),
+            Label::new("host", "server1"),
+        ]);
+
+        let result = index.unique_series_id_by_labels(&query_labels);
+
+        assert!(result.is_ok());
+        // NOTE: if we find an efficient way to handle partial matches, this should return Ok(None)
+        assert_eq!(result.unwrap(), Some(ts.id));
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_duplicate_series_error() {
+        let index = TimeSeriesIndex::new();
+
+        // Create two series with identical labels
+        let ts1 = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+        let ts2 = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+
+        index.index_timeseries(&ts1, b"key1");
+        index.index_timeseries(&ts2, b"key2");
+
+        let result = index.unique_series_id_by_labels(&ts1.labels);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ValkeyError::Str(msg) => assert_eq!(msg, error_consts::DUPLICATE_SERIES),
+            _ => panic!("Expected DUPLICATE_SERIES error"),
+        }
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_multiple_unique_series() {
+        let index = TimeSeriesIndex::new();
+
+        let ts1 = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+        let ts2 = create_test_series("cpu_usage", &[("host", "server2"), ("env", "prod")]);
+        let ts3 = create_test_series("memory_usage", &[("host", "server1"), ("env", "prod")]);
+
+        index.index_timeseries(&ts1, b"key1");
+        index.index_timeseries(&ts2, b"key2");
+        index.index_timeseries(&ts3, b"key3");
+
+        // Query for ts1
+        let result1 = index.unique_series_id_by_labels(&ts1.labels);
+        assert!(result1.is_ok());
+        assert_eq!(result1.unwrap(), Some(ts1.id));
+
+        // Query for ts2
+        let result2 = index.unique_series_id_by_labels(&ts2.labels);
+        assert!(result2.is_ok());
+        assert_eq!(result2.unwrap(), Some(ts2.id));
+
+        // Query for ts3
+        let result3 = index.unique_series_id_by_labels(&ts3.labels);
+        assert!(result3.is_ok());
+        assert_eq!(result3.unwrap(), Some(ts3.id));
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_after_removal() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_test_series("cpu_usage", &[("host", "server1"), ("env", "prod")]);
+
+        index.index_timeseries(&ts, b"key1");
+
+        let result = index.unique_series_id_by_labels(&ts.labels);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(ts.id));
+
+        // Remove the series
+        index.remove_timeseries(&ts);
+
+        // Query should return None after removal
+        let result_after_removal = index.unique_series_id_by_labels(&ts.labels);
+        assert!(result_after_removal.is_ok());
+        assert_eq!(result_after_removal.unwrap(), None);
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_with_metric_name_only() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_test_series("cpu_usage", &[]);
+
+        index.index_timeseries(&ts, b"key1");
+
+        let labels = InternedMetricName::from(vec![Label::new("__name__", "cpu_usage")]);
+        let result = index.unique_series_id_by_labels(&labels);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(ts.id));
+    }
+
+    #[test]
+    fn test_unique_series_id_by_labels_with_extra_labels() {
+        let index = TimeSeriesIndex::new();
+        let ts = create_test_series("cpu_usage", &[("host", "server1")]);
+
+        index.index_timeseries(&ts, b"key1");
+
+        // Query with extra labels not in the series
+        let labels = InternedMetricName::from(vec![
+            Label::new("__name__", "cpu_usage"),
+            Label::new("host", "server1"),
+            Label::new("env", "prod"), // This label doesn't exist in the series
+        ]);
+
+        let result = index.unique_series_id_by_labels(&labels);
+
+        assert!(result.is_ok());
+        // Should return None because the extra label doesn't match
+        assert_eq!(result.unwrap(), None);
     }
 }

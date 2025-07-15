@@ -6,14 +6,14 @@ use crate::error_consts;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::SeriesLabel;
 use crate::series::index::init_croaring_allocator;
-use crate::series::{SeriesRef, TimeSeries};
+use crate::series::{SeriesGuard, SeriesRef, TimeSeries};
 use blart::map::Entry as ARTEntry;
 use blart::{AsBytes, TreeMap};
 use croaring::Bitmap64;
 use metricsql_runtime::prelude::MetricName;
 use std::borrow::Cow;
 use std::sync::LazyLock;
-use valkey_module::{ValkeyError, ValkeyResult};
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -384,6 +384,23 @@ impl MemoryPostings {
 
     pub(crate) fn get_key_by_id(&self, id: SeriesRef) -> Option<&KeyType> {
         self.id_to_key.get(&id)
+    }
+
+    pub(crate) fn get_valkey_string_key_by_id(
+        &self,
+        ctx: &Context,
+        id: SeriesRef,
+    ) -> Option<ValkeyString> {
+        let Some(mapped_key) = self.id_to_key.get(&id) else {
+            return None; // I
+        };
+        Some(ctx.create_string(mapped_key.as_bytes()))
+    }
+
+    pub fn get_series_by_id(&self, ctx: &Context, id: SeriesRef) -> Option<SeriesGuard> {
+        let key = self.get_valkey_string_key_by_id(ctx, id)?;
+        // We found the series, return it wrapped in a SeriesGuard
+        Some(SeriesGuard::open(ctx, key))
     }
 
     /// Marks a key as stale by removing it from the index and adding its ID to the stale IDs set.

@@ -96,7 +96,6 @@ an [instant query](#instant-query) executed `1 + (start-end)/step` times on the 
 this request, the graph will look something like the following:
 
 ![range query](range_query.webp)
-{width="500"}
 
 The blue dotted lines in the figure are the moments when the instant query was executed. Since the instant query retains the
 ability to return replacements for missing points, the graph contains two types of data points: `real` and `ephemeral`.

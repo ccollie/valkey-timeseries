@@ -90,7 +90,7 @@ pub(super) fn to_matrix_result(vals: Vec<RangeQueryResult>) -> ValkeyValue {
         .collect();
 
     let map: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::from([
-        (ValkeyValueKey::from("resultType"), "vector".into()),
+        (ValkeyValueKey::from("resultType"), "matrix".into()),
         (ValkeyValueKey::from("data"), data.into()),
     ]);
 
@@ -136,7 +136,7 @@ pub(super) fn to_instant_vector_result(results: Vec<InstantQueryResult>) -> Valk
         .collect();
 
     let map: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::from([
-        (ValkeyValueKey::from("resultType"), "matrix".into()),
+        (ValkeyValueKey::from("resultType"), "vector".into()),
         (ValkeyValueKey::from("data"), data.into()),
     ]);
 

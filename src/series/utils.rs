@@ -1,8 +1,9 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::db::get_current_db;
 use crate::error_consts;
+use crate::labels::{InternedMetricName, SeriesLabel};
 use crate::series::acl::check_key_permissions;
-use crate::series::index::{next_timeseries_id, with_timeseries_index};
+use crate::series::index::{next_timeseries_id, with_timeseries_index, TimeSeriesIndex};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions};
 use valkey_module::key::ValkeyKeyWritable;
@@ -66,6 +67,24 @@ pub fn get_timeseries(
     }
 }
 
+pub fn get_timeseries_by_id(
+    ctx: &Context,
+    id: u64,
+    permissions: Option<AclPermissions>,
+    must_exist: bool,
+) -> ValkeyResult<Option<SeriesGuard>> {
+    with_timeseries_index(ctx, |index| {
+        // ugly. Simplify this later
+        let mut state = ();
+        index.with_postings(&mut state, |posting, _| {
+            let Some(key) = posting.get_valkey_string_key_by_id(ctx, id) else {
+                return Ok(None);
+            };
+            get_timeseries(ctx, key, permissions, must_exist)
+        })
+    })
+}
+
 pub fn get_timeseries_mut<'a>(
     ctx: &'a Context,
     key: &ValkeyString,
@@ -94,6 +113,51 @@ pub(crate) fn invalid_series_key_error() -> ValkeyError {
     ValkeyError::Str(error_consts::KEY_NOT_FOUND)
 }
 
+pub fn validate_unique_series_by_labels(
+    ctx: &Context,
+    index: &TimeSeriesIndex,
+    labels: &InternedMetricName,
+) -> ValkeyResult<()> {
+    fn compare_labels(
+        existing_labels: &InternedMetricName,
+        new_labels: &InternedMetricName,
+    ) -> bool {
+        if existing_labels.len() != new_labels.len() {
+            return false;
+        }
+        for label in new_labels.iter() {
+            let Some(value) = new_labels.get_value(label.name()) else {
+                return false;
+            };
+            if value != label.value() {
+                return false;
+            }
+        }
+        true
+    }
+
+    let Some(id) = index.unique_series_id_by_labels(labels)? else {
+        // No unique series found by labels, so we can proceed with the creation.
+        return Ok(());
+    };
+
+    // Edge case: we may have a single series like `memory_usage{bar=bar, bar=baz}` that is a superset of the
+    // labels we are trying to create - g.g, labels = `memory_usage{bar=baz}`
+    // See comments in `TimeSeriesIndex::unique_series_id_by_labels` for more details.
+
+    // At this point, we have a unique series, or a series with a superset of `labels`.
+    // Grab the series by id and check if it matches the labels.
+    if let Some(existing_series) = get_timeseries_by_id(ctx, id, None, false)? {
+        let existing_series = existing_series.get_series();
+        let existing_labels = &existing_series.labels;
+        if compare_labels(existing_labels, labels) {
+            // The series already exists with the same labels.
+            return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
+        }
+    }
+    Ok(())
+}
+
 pub fn create_series(
     key: &ValkeyString,
     options: TimeSeriesOptions,
@@ -111,12 +175,7 @@ pub fn create_series(
         // We do this only in the case where we have a __name__ label, signaling that the user is
         // opting in to Prometheus semantics, meaning a metric name is unique to a series.
         if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
-            let labels = ts.labels.to_label_vec();
-            // will return an error if the series already exists
-            let existing_id = index.posting_by_labels(&labels)?;
-            if let Some(_id) = existing_id {
-                return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
-            }
+            validate_unique_series_by_labels(ctx, index, &ts.labels)?;
         }
 
         index.index_timeseries(&ts, key.iter().as_slice());

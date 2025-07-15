@@ -117,7 +117,9 @@ pub fn parse_series_options(
                 options.rounding = Some(parse_significant_digit_rounding(args)?);
             }
             _ => {
-                return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
+                let msg = format!("TSDB: invalid argument: {arg}");
+                return Err(ValkeyError::String(msg));
+                // return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
             }
         };
     }
