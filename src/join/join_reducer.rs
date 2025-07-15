@@ -37,7 +37,7 @@ pub enum JoinReducer {
     Unless,
 }
 
-const fn join_reducer_get(key: &str) -> Option<JoinReducer> {
+fn join_reducer_get(key: &str) -> Option<JoinReducer> {
     hashify::tiny_map_ignore_case! {
         key.as_bytes(),
         "abs_diff" => JoinReducer::AbsDiff,
@@ -150,7 +150,9 @@ impl TryFrom<&str> for JoinReducer {
     fn try_from(op: &str) -> Result<Self, Self::Error> {
         match join_reducer_get(op) {
             Some(operator) => Ok(operator),
-            None => Err(ValkeyError::String(format!("TSDB: unknown binary op {op}"))),
+            None => Err(ValkeyError::String(format!(
+                "TSDB: unknown binary op \"{op}\""
+            ))),
         }
     }
 }
