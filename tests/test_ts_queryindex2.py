@@ -1,4 +1,5 @@
 import pytest
+from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -40,10 +41,10 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # Find series without 'i' label
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i='))
-        assert result == [b'ts1', b'ts5', b'ts6']
+        assert result == [b'ts1', b'ts5', b'ts6', b'ts8']
 
         # Find series with 'i' label
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i="~.+"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~".+"'))
         assert result == [b'ts2', b'ts3', b'ts4', b'ts7']
 
     def test_not_equal_matching(self):
@@ -52,7 +53,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # Not equal to n=1
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!=1'))
-        assert result == [b'ts5', b'ts6']
+        assert result == [b'ts5', b'ts6', b'ts7', b'ts8']
 
         # Combine equality and negation
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i!=a'))
@@ -91,20 +92,20 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts5', b'ts6', b'ts7', b'ts8']
 
         # Not matching OR pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~"1|2"'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~"1|2"'))
         assert result == [b'ts6', b'ts7', b'ts8']
 
         # Not matching anything (should return empty set)
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"'))
-        assert result == [b'ts7', b'ts8']  # Only series without 'n' label
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~".*"'))
+        assert result == []
 
     def test_complex_combinations(self):
         """Test more complex query combinations"""
         self.setup_test_data(self.client)
 
         # Combination of equals, not equals and regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i!=a', 'i="~.*"'))
-        assert result == [b'ts3', b'ts4']
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i!=a', 'i=~".*"'))
+        assert result == [b'ts1', b'ts3', b'ts4']
 
         # Using multiple mutually exclusive conditions
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'n=2'))
@@ -139,12 +140,15 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
                                    "wrong number of arguments for 'TS.QUERYINDEX' command")
 
         # Invalid filter format
-        self.verify_error_response(self.client, 'TS.QUERYINDEX invalid_filter',
-                                   "Invalid filter: invalid_filter")
+        # Commented out because any valid identifier is possibly a Prometheus vector selector.
+        # self.verify_error_response(self.client, 'TS.QUERYINDEX invalid_filter',
+        #                            "Invalid filter: invalid_filter")
 
         # Invalid regex pattern
-        self.verify_error_response(self.client, 'TS.QUERYINDEX n=~[abc',
-                                   "Invalid pattern: [abc")
+        with pytest.raises(ResponseError) as execInfo:
+            self.client.execute_command("TS.QUERYINDEX", "n=~[abc")
+
+        assert "parse error: unexpected token \"[\"" in str(execInfo.value)
 
     def test_empty_result_cases(self):
         """Test cases that should return empty results"""
