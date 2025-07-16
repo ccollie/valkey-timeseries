@@ -20,6 +20,7 @@ use crate::series::types::*;
 use crate::series::{TimestampRange, TimestampValue};
 use ahash::AHashMap;
 use std::collections::BTreeSet;
+use std::fmt::Display;
 use std::iter::{Peekable, Skip};
 use std::time::Duration;
 use std::vec::IntoIter;
@@ -184,6 +185,12 @@ impl CommandArgToken {
             CommandArgToken::True => CMD_ARG_TRUE,
             CommandArgToken::Invalid => "INVALID",
         }
+    }
+}
+
+impl Display for CommandArgToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -464,6 +471,27 @@ pub fn parse_count_arg(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     Ok(count as usize)
 }
 
+pub(crate) fn parse_next_token(
+    args: &mut CommandArgIterator,
+    tokens: Option<&[CommandArgToken]>,
+) -> ValkeyResult<Option<CommandArgToken>> {
+    let arg = args.next_str()?;
+    let Some(token) = parse_command_arg_token(arg.as_bytes()) else {
+        return Ok(None);
+    };
+    let Some(valid_tokens) = tokens else {
+        return Ok(Some(token));
+    };
+    if valid_tokens.contains(&token) {
+        return Ok(Some(token));
+    }
+    let msg = format!(
+        "TSDB: expected one of {:?}, found \"{arg}\"",
+        valid_tokens.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+    );
+    Err(ValkeyError::String(msg))
+}
+
 pub(crate) fn advance_if_next_token_one_of(
     args: &mut CommandArgIterator,
     tokens: &[CommandArgToken],
@@ -637,7 +665,7 @@ pub fn parse_decimal_digit_rounding(
 ) -> ValkeyResult<RoundingStrategy> {
     let next = args.next_u64()?;
     if next > MAX_DECIMAL_DIGITS as u64 {
-        let msg = format!("ERR DECIMAL_DIGITS must be between 0 and {MAX_DECIMAL_DIGITS}");
+        let msg = format!("TSDB: DECIMAL_DIGITS must be between 0 and {MAX_DECIMAL_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
     Ok(RoundingStrategy::DecimalDigits(next as i32))
@@ -717,8 +745,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
         ..Default::default()
     };
 
-    while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(&arg).unwrap_or_default();
+    while let Some(token) = parse_next_token(args, None)?  {
         match token {
             CommandArgToken::Align => {
                 options.aggregation = Some(parse_align_for_aggregation(args)?);
@@ -736,8 +763,12 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
                 options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
             }
             _ => {
-                let msg = format!("ERR invalid argument '{arg}'");
-                return Err(ValkeyError::String(msg));
+                return if token == CommandArgToken::Invalid {
+                    Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT))
+                } else {
+                    let msg = format!("TSDB: invalid argument '{token}'");
+                    Err(ValkeyError::String(msg))
+                }
             }
         }
     }
@@ -785,8 +816,7 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
         ..Default::default()
     };
 
-    while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(&arg).unwrap_or_default();
+    while let Some(token) = parse_next_token(args, None)?  {
         match token {
             CommandArgToken::Align => {
                 options.aggregation = Some(parse_align_for_aggregation(args)?);
@@ -847,8 +877,7 @@ pub(crate) fn parse_metadata_command_args(
     let mut end_value: Option<TimestampValue> = None;
     let mut limit: Option<usize> = None;
 
-    while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(&arg).unwrap_or_default();
+    while let Some(token) = parse_next_token(args, None)?  {
         match token {
             CommandArgToken::Start => {
                 let next = args.next_str()?;
@@ -874,8 +903,8 @@ pub(crate) fn parse_metadata_command_args(
                 limit = Some(next as usize);
             }
             _ => {
-                let msg = format!("ERR invalid argument '{arg}'");
-                return Err(ValkeyError::String(msg));
+                let msg = "TSDB: invalid argument";
+                return Err(ValkeyError::Str(msg));
             }
         };
     }
