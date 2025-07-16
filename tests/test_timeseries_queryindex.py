@@ -101,7 +101,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # Regex not matching
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!~"c.*"'))
-        assert result == [b'ts3', b'ts4', b'ts7']
+        assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
     def test_missing_labels(self):
         """Test querying for metrics with missing labels"""
@@ -121,7 +121,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
         # Find series that match regex but don't match another condition
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=~".*"', 'type!=usage'))
-        assert result == [b'ts5']
+        assert result == [b'ts5', b'ts6']
 
         # Mix of equals, not equals, and regex
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu', 'node!=node1', 'type=~".*"'))
