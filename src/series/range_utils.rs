@@ -1,4 +1,4 @@
-use crate::aggregators::{AggregateIterator, AggregationType, AggregationHandler, Aggregator};
+use crate::aggregators::{AggregateIterator, AggregationHandler, AggregationType, Aggregator};
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
@@ -462,7 +462,7 @@ mod tests {
 
         // Create aggregation options with report_empty = true
         let aggr_options = AggregationOptions {
-            aggregation: Aggregation::Sum,
+            aggregation: AggregationType::Sum,
             bucket_duration: 30, // 30ms buckets to create gaps
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,

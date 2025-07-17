@@ -326,38 +326,38 @@ mod tests {
 
     #[test]
     fn aggregation_name_returns_correct_value() {
-        assert_eq!(Aggregation::Avg.name(), "avg");
-        assert_eq!(Aggregation::Count.name(), "count");
-        assert_eq!(Aggregation::First.name(), "first");
-        assert_eq!(Aggregation::Last.name(), "last");
-        assert_eq!(Aggregation::Min.name(), "min");
-        assert_eq!(Aggregation::Max.name(), "max");
-        assert_eq!(Aggregation::Sum.name(), "sum");
-        assert_eq!(Aggregation::Range.name(), "range");
-        assert_eq!(Aggregation::StdS.name(), "std.s");
-        assert_eq!(Aggregation::StdP.name(), "std.p");
-        assert_eq!(Aggregation::VarS.name(), "var.s");
-        assert_eq!(Aggregation::VarP.name(), "var.p");
+        assert_eq!(AggregationType::Avg.name(), "avg");
+        assert_eq!(AggregationType::Count.name(), "count");
+        assert_eq!(AggregationType::First.name(), "first");
+        assert_eq!(AggregationType::Last.name(), "last");
+        assert_eq!(AggregationType::Min.name(), "min");
+        assert_eq!(AggregationType::Max.name(), "max");
+        assert_eq!(AggregationType::Sum.name(), "sum");
+        assert_eq!(AggregationType::Range.name(), "range");
+        assert_eq!(AggregationType::StdS.name(), "std.s");
+        assert_eq!(AggregationType::StdP.name(), "std.p");
+        assert_eq!(AggregationType::VarS.name(), "var.s");
+        assert_eq!(AggregationType::VarP.name(), "var.p");
     }
 
     #[test]
-    fn aggregation_try_from_str_parses_valid_values() {
-        assert_eq!(Aggregation::try_from("avg").unwrap(), Aggregation::Avg);
-        assert_eq!(Aggregation::try_from("count").unwrap(), Aggregation::Count);
-        assert_eq!(Aggregation::try_from("first").unwrap(), Aggregation::First);
-        assert_eq!(Aggregation::try_from("last").unwrap(), Aggregation::Last);
-        assert_eq!(Aggregation::try_from("min").unwrap(), Aggregation::Min);
-        assert_eq!(Aggregation::try_from("max").unwrap(), Aggregation::Max);
-        assert_eq!(Aggregation::try_from("sum").unwrap(), Aggregation::Sum);
-        assert_eq!(Aggregation::try_from("range").unwrap(), Aggregation::Range);
-        assert_eq!(Aggregation::try_from("std.s").unwrap(), Aggregation::StdS);
-        assert_eq!(Aggregation::try_from("std.p").unwrap(), Aggregation::StdP);
-        assert_eq!(Aggregation::try_from("var.s").unwrap(), Aggregation::VarS);
-        assert_eq!(Aggregation::try_from("var.p").unwrap(), Aggregation::VarP);
+    fn aggregation_type_try_from_str_parses_valid_values() {
+        assert_eq!(AggregationType::try_from("avg").unwrap(), AggregationType::Avg);
+        assert_eq!(AggregationType::try_from("count").unwrap(), AggregationType::Count);
+        assert_eq!(AggregationType::try_from("first").unwrap(), AggregationType::First);
+        assert_eq!(AggregationType::try_from("last").unwrap(), AggregationType::Last);
+        assert_eq!(AggregationType::try_from("min").unwrap(), AggregationType::Min);
+        assert_eq!(AggregationType::try_from("max").unwrap(), AggregationType::Max);
+        assert_eq!(AggregationType::try_from("sum").unwrap(), AggregationType::Sum);
+        assert_eq!(AggregationType::try_from("range").unwrap(), AggregationType::Range);
+        assert_eq!(AggregationType::try_from("std.s").unwrap(), AggregationType::StdS);
+        assert_eq!(AggregationType::try_from("std.p").unwrap(), AggregationType::StdP);
+        assert_eq!(AggregationType::try_from("var.s").unwrap(), AggregationType::VarS);
+        assert_eq!(AggregationType::try_from("var.p").unwrap(), AggregationType::VarP);
     }
 
     #[test]
     fn aggregation_try_from_str_returns_error_for_invalid_value() {
-        assert!(Aggregation::try_from("invalid").is_err());
+        assert!(AggregationType::try_from("invalid").is_err());
     }
 }

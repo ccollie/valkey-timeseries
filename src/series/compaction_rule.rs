@@ -222,8 +222,7 @@ impl TimeSeries {
         if self.rules.is_empty() {
             return Ok(());
         }
-    
-        let mut rules_to_remove = Vec::new();
+
         let mut rule_contexts: SmallVec<_, 4> = SmallVec::new();
 
         let rules = std::mem::take(&mut self.rules);
@@ -232,11 +231,9 @@ impl TimeSeries {
             // Get the destination series
             let Ok(Some(dest_series)) = get_series_by_id(ctx, rule.dest_id, true, None) else {
                 // Destination series doesn't exist, mark rule for removal
-                rules_to_remove.push(rule.dest_id);
                 continue;
             };
             if !dest_series.is_compaction() {
-                rules_to_remove.push(rule.dest_id);
                 continue;
             }
         
