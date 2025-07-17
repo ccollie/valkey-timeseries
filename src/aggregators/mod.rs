@@ -206,3 +206,11 @@ impl From<AggregationType> for u8 {
         }
     }
 }
+
+/// Calculates the start of the bucket for a given timestamp, aligning it to the specified
+/// `align_timestamp` and `bucket_duration`.
+pub fn calc_bucket_start(ts: Timestamp, align_timestamp: Timestamp, bucket_duration: u64) -> Timestamp {
+    let diff = ts - align_timestamp;
+    let delta = bucket_duration as i64;
+    ts - ((diff % delta + delta) % delta)
+}

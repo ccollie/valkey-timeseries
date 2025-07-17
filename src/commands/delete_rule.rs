@@ -4,7 +4,7 @@ use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeySt
 ///
 /// TS.DELETERULE sourceKey destKey
 ///
-/// Deletes a compaction rule from sourceKey to destKey.
+/// Deletes a compaction rule.
 /// The user must be authorized to write to both sourceKey and destKey.
 /// The rule is removed from the sourceKey, and the src_series field in destKey is cleared, but
 /// the destination series is not deleted.

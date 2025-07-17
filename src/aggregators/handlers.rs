@@ -152,9 +152,14 @@ pub struct RangeAggregator {
 }
 impl AggregationHandler for RangeAggregator {
     fn update(&mut self, value: Value) {
+        if !self.init {
+            self.min = value;
+            self.max = value;
+            self.init = true;
+            return;
+        }
         self.max = self.max.max(value);
         self.min = self.min.min(value);
-        self.init = true;
     }
     fn reset(&mut self) {
         self.max = 0.;
