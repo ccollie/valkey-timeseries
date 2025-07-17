@@ -750,7 +750,7 @@ mod tests {
         ];
 
         let options = AggregationOptions {
-            aggregation: Aggregation::Range,
+            aggregation: AggregationType::Range,
             bucket_duration: 10,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
