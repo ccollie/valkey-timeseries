@@ -4,9 +4,9 @@ use super::common::{
 use super::matchers::{deserialize_matchers_list, serialize_matchers_list};
 use super::request_generated::{
     AggregationOptions as FBAggregationOptions, AggregationOptionsBuilder,
-    AggregationType as FBAggregationType,
-    BucketAlignmentType, BucketTimestampType, GroupingOptions, GroupingOptionsArgs,
-    MultiRangeRequest as FBMultiRangeRequest, MultiRangeRequestArgs, ValueRangeFilter,
+    AggregationType as FBAggregationType, BucketAlignmentType, BucketTimestampType,
+    GroupingOptions, GroupingOptionsArgs, MultiRangeRequest as FBMultiRangeRequest,
+    MultiRangeRequestArgs, ValueRangeFilter,
 };
 use super::response_generated::{
     Label as ResponseLabel, LabelArgs, MultiRangeResponse as FBMultiRangeResponse,

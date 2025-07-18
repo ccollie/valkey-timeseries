@@ -170,7 +170,6 @@ impl TryFrom<&ValkeyString> for AggregationType {
     }
 }
 
-
 impl TryFrom<u8> for AggregationType {
     type Error = ValkeyError;
     fn try_from(value: u8) -> Result<Self, Self::Error> {
@@ -206,7 +205,11 @@ impl From<AggregationType> for u8 {
 
 /// Calculates the start of the bucket for a given timestamp, aligning it to the specified
 /// `align_timestamp` and `bucket_duration`.
-pub fn calc_bucket_start(ts: Timestamp, align_timestamp: Timestamp, bucket_duration: u64) -> Timestamp {
+pub fn calc_bucket_start(
+    ts: Timestamp,
+    align_timestamp: Timestamp,
+    bucket_duration: u64,
+) -> Timestamp {
     let diff = ts - align_timestamp;
     let delta = bucket_duration as i64;
     ts - ((diff % delta + delta) % delta)
@@ -342,18 +345,54 @@ mod tests {
 
     #[test]
     fn aggregation_type_try_from_str_parses_valid_values() {
-        assert_eq!(AggregationType::try_from("avg").unwrap(), AggregationType::Avg);
-        assert_eq!(AggregationType::try_from("count").unwrap(), AggregationType::Count);
-        assert_eq!(AggregationType::try_from("first").unwrap(), AggregationType::First);
-        assert_eq!(AggregationType::try_from("last").unwrap(), AggregationType::Last);
-        assert_eq!(AggregationType::try_from("min").unwrap(), AggregationType::Min);
-        assert_eq!(AggregationType::try_from("max").unwrap(), AggregationType::Max);
-        assert_eq!(AggregationType::try_from("sum").unwrap(), AggregationType::Sum);
-        assert_eq!(AggregationType::try_from("range").unwrap(), AggregationType::Range);
-        assert_eq!(AggregationType::try_from("std.s").unwrap(), AggregationType::StdS);
-        assert_eq!(AggregationType::try_from("std.p").unwrap(), AggregationType::StdP);
-        assert_eq!(AggregationType::try_from("var.s").unwrap(), AggregationType::VarS);
-        assert_eq!(AggregationType::try_from("var.p").unwrap(), AggregationType::VarP);
+        assert_eq!(
+            AggregationType::try_from("avg").unwrap(),
+            AggregationType::Avg
+        );
+        assert_eq!(
+            AggregationType::try_from("count").unwrap(),
+            AggregationType::Count
+        );
+        assert_eq!(
+            AggregationType::try_from("first").unwrap(),
+            AggregationType::First
+        );
+        assert_eq!(
+            AggregationType::try_from("last").unwrap(),
+            AggregationType::Last
+        );
+        assert_eq!(
+            AggregationType::try_from("min").unwrap(),
+            AggregationType::Min
+        );
+        assert_eq!(
+            AggregationType::try_from("max").unwrap(),
+            AggregationType::Max
+        );
+        assert_eq!(
+            AggregationType::try_from("sum").unwrap(),
+            AggregationType::Sum
+        );
+        assert_eq!(
+            AggregationType::try_from("range").unwrap(),
+            AggregationType::Range
+        );
+        assert_eq!(
+            AggregationType::try_from("std.s").unwrap(),
+            AggregationType::StdS
+        );
+        assert_eq!(
+            AggregationType::try_from("std.p").unwrap(),
+            AggregationType::StdP
+        );
+        assert_eq!(
+            AggregationType::try_from("var.s").unwrap(),
+            AggregationType::VarS
+        );
+        assert_eq!(
+            AggregationType::try_from("var.p").unwrap(),
+            AggregationType::VarP
+        );
     }
 
     #[test]

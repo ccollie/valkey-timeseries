@@ -114,7 +114,7 @@ pub fn get_series_by_id(
 ) -> ValkeyResult<Option<SeriesGuardMut>> {
     let map = TIMESERIES_INDEX.pin();
     let db = get_current_db(ctx);
-    let Some(index)  = map.get(&db) else {
+    let Some(index) = map.get(&db) else {
         return Ok(None);
     };
     let mut state = 0;
@@ -168,7 +168,6 @@ pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
         index.mark_id_as_stale(id);
     });
 }
-
 
 pub(crate) fn init_croaring_allocator() {
     static INIT: std::sync::Once = std::sync::Once::new();

@@ -19,8 +19,8 @@ mod range;
 mod rev_range;
 mod stats;
 
-mod test_cmd;
 mod create_rule;
+mod test_cmd;
 
 pub use arg_parse::*;
 pub use create_rule::*;

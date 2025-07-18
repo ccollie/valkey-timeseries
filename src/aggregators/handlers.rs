@@ -56,7 +56,7 @@ impl FirstAggregator {
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(|v| Self(v))
+        rdb_load_optional_f64(rdb).map(Self)
     }
 }
 
@@ -82,7 +82,7 @@ impl LastAggregator {
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(|v| Self(v))
+        rdb_load_optional_f64(rdb).map(Self)
     }
 }
 
@@ -111,7 +111,7 @@ impl MinAggregator {
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(|v| Self(v))
+        rdb_load_optional_f64(rdb).map(Self)
     }
 }
 
@@ -140,7 +140,7 @@ impl MaxAggregator {
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(|v| Self(v))
+        rdb_load_optional_f64(rdb).map(Self)
     }
 }
 
@@ -367,7 +367,7 @@ impl AggregationHandler for VarPAggregator {
 
 impl VarPAggregator {
     fn new() -> Self {
-        Self(Box::new(AggStd::default()))
+        Self(Box::default())
     }
     fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
         let inner = AggStd::load_from_rdb(rdb)?;
@@ -400,7 +400,7 @@ impl AggregationHandler for VarSAggregator {
 
 impl VarSAggregator {
     fn new() -> Self {
-        Self(Box::new(AggStd::default()))
+        Self(Box::default())
     }
     fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
         let inner = load_online_aggregator(rdb)?;
@@ -431,7 +431,7 @@ impl AggregationHandler for StdPAggregator {
 
 impl StdPAggregator {
     fn new() -> Self {
-        Self(Box::new(AggStd::default()))
+        Self(Box::default())
     }
     fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
         let inner = load_online_aggregator(rdb)?;
@@ -464,7 +464,7 @@ impl AggregationHandler for StdSAggregator {
 
 impl StdSAggregator {
     fn new() -> Self {
-        Self(Box::new(AggStd::default()))
+        Self(Box::default())
     }
     fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
         let inner = load_online_aggregator(rdb)?;
@@ -602,5 +602,4 @@ fn load_aggregation_type(rdb: *mut RedisModuleIO) -> ValkeyResult<AggregationTyp
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

@@ -745,7 +745,8 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
         ..Default::default()
     };
 
-    while let Some(token) = parse_next_token(args, None)?  {
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Align => {
                 options.aggregation = Some(parse_align_for_aggregation(args)?);
@@ -816,7 +817,8 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
         ..Default::default()
     };
 
-    while let Some(token) = parse_next_token(args, None)?  {
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Align => {
                 options.aggregation = Some(parse_align_for_aggregation(args)?);
@@ -877,7 +879,8 @@ pub(crate) fn parse_metadata_command_args(
     let mut end_value: Option<TimestampValue> = None;
     let mut limit: Option<usize> = None;
 
-    while let Some(token) = parse_next_token(args, None)?  {
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Start => {
                 let next = args.next_str()?;

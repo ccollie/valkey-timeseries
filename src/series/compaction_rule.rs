@@ -16,41 +16,35 @@ pub struct CompactionRule {
     pub aggregator: Aggregator,
     pub bucket_duration: u64,
     pub align_timestamp: Timestamp,
-    pub hi_ts: Option<Timestamp>,
+    pub end_ts: Option<Timestamp>,
 }
 
 impl GetSize for CompactionRule {
-
     fn get_size(&self) -> usize {
-        self.dest_id.get_size() +
-        self.aggregator.get_size() +
-        self.bucket_duration.get_size() +
-        self.align_timestamp.get_size() +
-        self.hi_ts.get_size()
+        self.dest_id.get_size()
+            + self.aggregator.get_size()
+            + self.bucket_duration.get_size()
+            + self.align_timestamp.get_size()
+            + self.end_ts.get_size()
     }
 }
 
 impl CompactionRule {
-    pub fn save_to_rdb(
-        &self,
-        rdb: *mut raw::RedisModuleIO,
-    ) {
+    pub fn save_to_rdb(&self, rdb: *mut raw::RedisModuleIO) {
         raw::save_unsigned(rdb, self.dest_id);
         self.aggregator.save(rdb);
         raw::save_unsigned(rdb, self.bucket_duration);
         rdb_save_timestamp(rdb, self.align_timestamp);
-        rdb_save_timestamp(rdb, self.hi_ts.unwrap_or(-1));
+        rdb_save_timestamp(rdb, self.end_ts.unwrap_or(-1));
     }
-    
-    pub fn load_from_rdb(
-        rdb: *mut raw::RedisModuleIO,
-    ) -> ValkeyResult<Self> {
+
+    pub fn load_from_rdb(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
         let dest_id = raw::load_unsigned(rdb)? as SeriesRef;
         let aggregator = Aggregator::load(rdb)?;
         let bucket_duration = raw::load_unsigned(rdb)?;
         let align_timestamp = rdb_load_timestamp(rdb)?;
         let bucket_end = rdb_load_timestamp(rdb)?;
-        let hi_ts = if bucket_end == -1 {
+        let end_ts = if bucket_end == -1 {
             None
         } else {
             Some(bucket_end)
@@ -61,7 +55,7 @@ impl CompactionRule {
             aggregator,
             bucket_duration,
             align_timestamp,
-            hi_ts,
+            end_ts,
         })
     }
 
@@ -80,7 +74,7 @@ impl CompactionRule {
         let end = start + self.bucket_duration as i64;
         (start, end)
     }
-    
+
     pub fn calculate_range(
         &self,
         start: Timestamp,
@@ -98,7 +92,7 @@ impl CompactionRule {
 
     fn reset(&mut self) {
         self.aggregator.reset();
-        self.hi_ts = None;
+        self.end_ts = None;
     }
 }
 
@@ -109,8 +103,8 @@ struct CompactionUpdateContext<'a> {
 
 fn upsert_compaction_internal(rule_ctx: &mut CompactionUpdateContext, sample: Sample) {
     let ts = sample.timestamp;
-    
-    match rule_ctx.rule.hi_ts {
+
+    match rule_ctx.rule.end_ts {
         Some(hi_ts) => {
             if ts > hi_ts {
                 // we need to add a new bucket
@@ -119,16 +113,18 @@ fn upsert_compaction_internal(rule_ctx: &mut CompactionUpdateContext, sample: Sa
                 let rule = &rule_ctx.rule;
                 let start = hi_ts.saturating_sub(rule.bucket_duration as i64);
                 // do we need to replicate ?
-                rule_ctx.series.add(start, value, Some(DuplicatePolicy::KeepLast));
-                rule_ctx.rule.hi_ts = Some(rule.calc_bucket_end(ts));
+                rule_ctx
+                    .series
+                    .add(start, value, Some(DuplicatePolicy::KeepLast));
+                rule_ctx.rule.end_ts = Some(rule.calc_bucket_end(ts));
             }
         }
         None => {
             // the first time we add a sample, we need to align the timestamps
-            rule_ctx.rule.hi_ts = Some(rule_ctx.rule.calc_bucket_end(ts));
+            rule_ctx.rule.end_ts = Some(rule_ctx.rule.calc_bucket_end(ts));
         }
     }
-    
+
     rule_ctx.rule.aggregator.update(sample.value);
 }
 
@@ -137,18 +133,21 @@ fn upsert_compactions_internal(rule_contexts: &mut [CompactionUpdateContext], va
         [first] => {
             upsert_compaction_internal(first, value);
         }
-        [first, second ] => {
-            join(|| upsert_compaction_internal(first, value),
-                 || upsert_compaction_internal(second, value));
+        [first, second] => {
+            join(
+                || upsert_compaction_internal(first, value),
+                || upsert_compaction_internal(second, value),
+            );
         }
         _ => {
             let (left, right) = rule_contexts.split_at_mut(rule_contexts.len() / 2);
-            join(|| upsert_compactions_internal(left, value),
-                 || upsert_compactions_internal(right, value));
+            join(
+                || upsert_compactions_internal(left, value),
+                || upsert_compactions_internal(right, value),
+            );
         }
     }
 }
-
 
 impl TimeSeries {
     pub fn add_compaction_rule(&mut self, rule: CompactionRule) {
@@ -193,15 +192,11 @@ impl TimeSeries {
             if !dest.is_compaction() {
                 continue;
             }
-            rule_contexts.push(CompactionUpdateContext {
-                series: dest,
-                rule,
-            });
+            rule_contexts.push(CompactionUpdateContext { series: dest, rule });
         }
 
-        // todo: find way to avoid cloning here, though in most case all we have are Copy types
-        self.rules = rule_contexts.iter().map(|x| x.rule.clone()).collect();
         upsert_compactions_internal(&mut rule_contexts, value);
+        self.rules = rule_contexts.into_iter().map(|x| x.rule).collect();
     }
 
     /// When a range of samples is removed, we need to remove samples in the corresponding
@@ -218,7 +213,12 @@ impl TimeSeries {
     ///   current aggregation state to account for the removed samples.
     /// - `Error Handling`: Properly handle cases where destination series are missing or inaccessible.
     ///
-    fn remove_compaction_range(&mut self, ctx: &Context, start: Timestamp, end: Timestamp) -> TsdbResult<()> {
+    fn remove_compaction_range(
+        &mut self,
+        ctx: &Context,
+        start: Timestamp,
+        end: Timestamp,
+    ) -> TsdbResult<()> {
         if self.rules.is_empty() {
             return Ok(());
         }
@@ -236,13 +236,14 @@ impl TimeSeries {
             if !dest_series.is_compaction() {
                 continue;
             }
-        
+
             rule_contexts.push(CompactionUpdateContext {
                 series: dest_series,
                 rule,
             });
         }
-    
+
+        // todo: chili for lower overhead
         // Process all contexts in parallel
         let res = rule_contexts.par_iter_mut().try_for_each(|ctx| {
             self.handle_compaction_range_removal(&mut ctx.rule, &mut ctx.series, start, end)
@@ -250,10 +251,8 @@ impl TimeSeries {
 
         self.rules = rule_contexts.into_iter().map(|x| x.rule).collect();
 
-        if let Err(e) = res {
-            return Err(e);
-        }
-    
+        res?;
+
         Ok(())
     }
 
@@ -271,10 +270,23 @@ impl TimeSeries {
         // Handle different scenarios based on how the removal affects buckets
         if first_affected_bucket_start == last_affected_bucket_start {
             // Scenario 1: Removal is within a single bucket - need to recalculate that bucket
-            self.handle_single_bucket_removal(rule, dest_series, first_affected_bucket_start, start, end)?;
+            self.handle_single_bucket_removal(
+                rule,
+                dest_series,
+                first_affected_bucket_start,
+                start,
+                end,
+            )?;
         } else {
             // Scenario 2: Removal spans multiple buckets
-            self.handle_multiple_bucket_removal(rule, dest_series, first_affected_bucket_start, last_affected_bucket_start, start, end)?;
+            self.handle_multiple_bucket_removal(
+                rule,
+                dest_series,
+                first_affected_bucket_start,
+                last_affected_bucket_start,
+                start,
+                end,
+            )?;
         }
 
         Ok(())
@@ -302,8 +314,8 @@ impl TimeSeries {
         new_aggregator.reset();
 
         // Iterate through remaining samples in the bucket and re-aggregate
-        let bucket_samples = self.range_iter(bucket_start, bucket_end)
-            .into_iter()
+        let bucket_samples = self
+            .range_iter(bucket_start, bucket_end)
             .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
         let mut has_samples = false;
@@ -344,9 +356,17 @@ impl TimeSeries {
             let overlap_end = removal_end.min(bucket_end);
 
             if overlap_start <= overlap_end {
-                if current_bucket_start == first_bucket_start || current_bucket_start == last_bucket_start {
+                if current_bucket_start == first_bucket_start
+                    || current_bucket_start == last_bucket_start
+                {
                     // The first or last bucket might be partial
-                    self.handle_single_bucket_removal(rule, dest_series, current_bucket_start, removal_start, removal_end)?;
+                    self.handle_single_bucket_removal(
+                        rule,
+                        dest_series,
+                        current_bucket_start,
+                        removal_start,
+                        removal_end,
+                    )?;
                 } else {
                     // Middle buckets are completely removed
                     dest_series.remove_range(current_bucket_start, current_bucket_start)?;
@@ -367,7 +387,7 @@ impl TimeSeries {
         removal_end: Timestamp,
     ) {
         // If we have an active aggregation bucket
-        if let Some(hi_ts) = rule.hi_ts {
+        if let Some(hi_ts) = rule.end_ts {
             let current_bucket_start = hi_ts.saturating_sub(rule.bucket_duration as i64);
             let current_bucket_end = hi_ts;
 
@@ -378,9 +398,12 @@ impl TimeSeries {
                 new_aggregator.reset();
 
                 // Re-aggregate samples that are not in the removal range
-                let bucket_samples = self.get_range(current_bucket_start, current_bucket_end)
+                let bucket_samples = self
+                    .get_range(current_bucket_start, current_bucket_end)
                     .into_iter()
-                    .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
+                    .filter(|sample| {
+                        sample.timestamp < removal_start || sample.timestamp > removal_end
+                    });
 
                 for sample in bucket_samples {
                     new_aggregator.update(sample.value);
@@ -390,6 +413,4 @@ impl TimeSeries {
             }
         }
     }
-
-
 }

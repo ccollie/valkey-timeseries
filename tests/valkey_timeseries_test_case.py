@@ -9,6 +9,37 @@ import random
 import string
 import logging
 
+class CompactionRule:
+    """Represents a compaction rule for time series."""
+    def __init__(self, dest_key, bucket_duration, aggregation, alignment):
+        self.dest_key = dest_key.decode('utf-8') if isinstance(dest_key, bytes) else dest_key
+        self.bucket_duration = int(bucket_duration)
+        self.aggregation = aggregation.decode('utf-8') if isinstance(aggregation, bytes) else aggregation
+        if alignment is None:
+            self.alignment = 0
+        else:
+            self.alignment = int(alignment)
+
+    def __eq__(self, other):
+        if isinstance(other, list):
+            if len(other) != 4:
+                return False
+            other = CompactionRule(other[0], other[1], other[2], other[3])
+        elif isinstance(other, object):
+            if not hasattr(other, 'dest_key') or not hasattr(other, 'bucket_duration') or \
+               not hasattr(other, 'aggregation') or not hasattr(other, 'alignment'):
+                return False
+            other = CompactionRule(other.dest_key, other.bucket_duration, other.aggregation, other.alignment)
+        elif not isinstance(other, CompactionRule):
+            return False
+        return (self.dest_key == other.dest_key and
+                self.bucket_duration == other.bucket_duration and
+                self.aggregation == other.aggregation and
+                self.alignment == other.alignment)
+    def __repr__(self):
+        return f"CompactionRule(dest_key={self.dest_key}, bucket_duration={self.bucket_duration}, " \
+               f"aggregation={self.aggregation}, alignment={self.alignment})"
+
 class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
 
     # Global Parameterized Configs
@@ -179,6 +210,15 @@ def parse_info_response(response):
     for key in it:
         key_str = key.decode('utf-8')
         value = next(it)
+        if key_str == 'rules':
+            # Handle rules separately
+            info_dict[key_str] = []
+            for rule in value:
+                if isinstance(rule, list):
+                    # Convert each rule to a CompactionRule object
+                    data = CompactionRule(rule[0], rule[1], rule[2], rule[3])
+                    info_dict[key_str].append(data)
+            continue
         if isinstance(value, list):
             # Handle nested structures like labels and chunks
             if key_str == 'labels':

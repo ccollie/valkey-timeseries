@@ -9,6 +9,7 @@ use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::labels::{InternedLabel, InternedMetricName};
 use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
+use crate::series::compaction_rule::CompactionRule;
 use crate::series::index::next_timeseries_id;
 use crate::series::DuplicatePolicy;
 use crate::{config, error_consts};
@@ -20,7 +21,6 @@ use std::time::Duration;
 use std::vec;
 use valkey_module::logging;
 use valkey_module::{ValkeyError, ValkeyResult};
-use crate::series::compaction_rule::CompactionRule;
 
 pub type TimeseriesId = u64;
 pub type SeriesRef = u64;
