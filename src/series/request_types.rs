@@ -101,6 +101,7 @@ pub struct MGetRequest {
     pub with_labels: bool,
     pub filters: Vec<Matchers>,
     pub selected_labels: Vec<String>,
+    pub latest: bool,
 }
 
 pub struct MGetSeriesData {

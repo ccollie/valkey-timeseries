@@ -61,6 +61,7 @@ impl Serialized for MGetRequest {
         let req = MultiGetRequest::create(
             &mut bldr,
             &MultiGetRequestArgs {
+                latest: self.latest,
                 with_labels: self.with_labels,
                 filters: Some(filters),
                 selected_labels: Some(selected_labels),
@@ -78,6 +79,7 @@ impl Deserialized for MGetRequest {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self> {
         let req = load_flatbuffers_object::<MultiGetRequest>(buf, "MGetRequest")?;
         let mut result: MGetRequest = MGetRequest {
+            latest: req.latest(),
             with_labels: req.with_labels(),
             ..MGetRequest::default()
         };
@@ -260,6 +262,7 @@ mod tests {
     fn test_mget_request_serialize_deserialize() {
         let req = MGetRequest {
             with_labels: true,
+            latest: true,
             selected_labels: vec!["label1".to_string(), "label2".to_string()],
             filters: make_sample_matchers_list(),
         };
@@ -269,6 +272,7 @@ mod tests {
 
         let req2 = MGetRequest::deserialize(&buf).expect("deserialization failed");
         assert_eq!(req.with_labels, req2.with_labels);
+        assert_eq!(req.latest, req2.latest);
         assert_eq!(req.filters, req2.filters);
         // Check that selected labels were preserved
         assert_eq!(req.selected_labels.len(), req.selected_labels.len());
@@ -346,6 +350,7 @@ mod tests {
     fn test_mget_request_minimal_serialize_deserialize() {
         let req = MGetRequest {
             with_labels: false,
+            latest: false,
             selected_labels: vec![],
             filters: make_sample_matchers_list(),
         };
@@ -355,6 +360,7 @@ mod tests {
 
         let req2 = MGetRequest::deserialize(&buf).expect("deserialization failed");
         assert_eq!(req.with_labels, req2.with_labels);
+        assert_eq!(req.latest, req2.latest);
         assert_eq!(req.filters, req2.filters);
         assert!(req2.selected_labels.is_empty());
     }

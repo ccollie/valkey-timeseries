@@ -4,6 +4,7 @@ use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
 use crate::labels::Label;
+use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;
 use crate::series::range_utils::get_series_labels;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
@@ -15,6 +16,7 @@ use valkey_module::{
 /// TS.MGET
 ///   [WITHLABELS | SELECTED_LABELS label...]
 ///   [FILTER filterExpr...]
+///   [LATEST]
 pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(ValkeyError::WrongArity);
@@ -71,8 +73,7 @@ pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> 
                 options.with_labels = true;
             }
             CommandArgToken::Latest => {
-                // not currently implemented
-                return Err(ValkeyError::Str("TS.MGET: LATEST not implemented yet"));
+                options.latest = true;
             }
             _ => unreachable!("Token should be one of the supported tokens"),
         }
@@ -116,7 +117,11 @@ pub fn process_mget_request(
         &opts,
         Some(AclPermissions::ACCESS),
         move |acc, series, key| {
-            let sample = series.last_sample;
+            let sample = if options.latest {
+                get_latest_compaction_sample(ctx, series)
+            } else {
+                series.last_sample
+            };
             let labels = get_series_labels(series, with_labels, selected_labels)
                 .into_iter()
                 .map(|label| label.map(|x| Label::new(x.name, x.value)))
