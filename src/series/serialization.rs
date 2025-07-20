@@ -2,7 +2,7 @@ use crate::common::rdb::*;
 use crate::common::Sample;
 use crate::labels::InternedMetricName;
 use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
-use crate::series::compaction_rule::CompactionRule;
+use crate::series::compaction::CompactionRule;
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeseriesId};
 use valkey_module::{raw, ValkeyResult};
 

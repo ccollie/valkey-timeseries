@@ -1,6 +1,6 @@
 pub mod acl;
 pub mod chunks;
-mod compaction_rule;
+mod compaction;
 mod defrag;
 mod guard;
 pub mod index;
@@ -17,7 +17,7 @@ mod timestamp_range;
 pub(crate) mod types;
 mod utils;
 
-pub use compaction_rule::*;
+pub use compaction::*;
 pub use defrag::defrag_series;
 pub use guard::*;
 pub use tasks::*;

@@ -127,6 +127,17 @@ pub fn get_series_by_id(
     })
 }
 
+pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString> {
+    let map = TIMESERIES_INDEX.pin();
+    let db = get_current_db(ctx);
+    let index = map.get(&db)?;
+    let mut state = 0;
+    index.with_postings(&mut state, |posting, _| {
+        let key = posting.get_key_by_id(id)?;
+        Some(ctx.create_string(key.as_ref()))
+    })
+}
+
 pub fn clear_timeseries_index(ctx: &Context) {
     let db = get_current_db(ctx);
     let map = TIMESERIES_INDEX.pin();

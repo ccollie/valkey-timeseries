@@ -1,6 +1,6 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::commands::parse_series_options;
-use crate::common::Timestamp;
+use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::{
     create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
@@ -47,18 +47,18 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let key = &original_args[1];
     create_and_store_series(ctx, key, options)?; // todo: ACL ?
 
-    if let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? {
-        handle_add(
-            ctx,
-            &mut series,
-            original_args,
-            timestamp,
-            timestamp_str,
-            value,
-        )
-    } else {
-        Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND))
-    }
+    let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? else {
+        return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
+    };
+
+    handle_add(
+        ctx,
+        &mut series,
+        original_args,
+        timestamp,
+        timestamp_str,
+        value,
+    )
 }
 
 fn handle_add(
@@ -69,14 +69,57 @@ fn handle_add(
     timestamp_str: &str,
     value: f64,
 ) -> ValkeyResult {
-    match series.add(timestamp, value, None) {
-        SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
-            let timestamp = if timestamp_str == "*" { Some(ts) } else { None };
-            replicate_and_notify(ctx, args, timestamp);
-            Ok(ValkeyValue::Integer(ts))
+    let mut ignored = false;
+
+    let res = series.add(timestamp, value, None);
+    let (replication_timestamp, ts) = match series.add(timestamp, value, None) {
+        SampleAddResult::Ignored(res_ts) => {
+            ignored = true;
+            let timestamp = if timestamp_str == "*" {
+                Some(res_ts)
+            } else {
+                None
+            };
+            (timestamp, res_ts)
         }
-        other => other.into(),
+        SampleAddResult::Ok(res_ts) => {
+            let timestamp = if timestamp_str == "*" {
+                Some(res_ts)
+            } else {
+                None
+            };
+            (timestamp, res_ts)
+        }
+        _ => {
+            return res.into();
+        }
+    };
+
+    // `ignored` is true when the sample is not added because it is before retention. If there's not
+    // a change, we don't want to run compaction.
+    // Question: should we replicate the command in this case?
+    if !ignored && !series.rules.is_empty() {
+        // TODO!!!!!: if rounding is enabled, we need to used the rounded value in compaction
+        let sample = Sample::new(ts, value);
+        if is_upsert(series, ts) {
+            if let Err(res) = series.upsert_compaction(ctx, sample) {
+                let msg = format!(
+                    "TSDB: error running compaction upsert for key '{}': {}",
+                    args[1], res
+                );
+                return Err(ValkeyError::String(msg));
+            }
+            // run compaction_upsert
+            return Ok(ValkeyValue::Integer(ts));
+        } else {
+            let sample = series.last_sample.unwrap_or(Sample::new(ts, value));
+            // If the sample is not an upsert, we run compaction
+            series.run_compaction(ctx, sample)?;
+        }
     }
+
+    replicate_and_notify(ctx, args, replication_timestamp);
+    Ok(ValkeyValue::Integer(ts))
 }
 
 fn replicate_and_notify(ctx: &Context, args: Vec<ValkeyString>, timestamp: Option<Timestamp>) {
@@ -89,9 +132,16 @@ fn replicate_and_notify(ctx: &Context, args: Vec<ValkeyString>, timestamp: Optio
         let replication_args = args.iter().collect::<Vec<_>>();
         ctx.replicate("TS.ADD", &*replication_args);
         let key = args.swap_remove(0);
-        ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.ADD", &key);
+        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", &key);
     } else {
         ctx.replicate_verbatim();
-        ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.ADD", &args[2]);
+        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", &args[2]);
     }
+}
+
+pub(super) fn is_upsert(series: &TimeSeries, ts: Timestamp) -> bool {
+    let Some(last_ts) = series.last_sample else {
+        return false;
+    };
+    ts <= last_ts.timestamp
 }

@@ -9,7 +9,7 @@ use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::labels::{InternedLabel, InternedMetricName};
 use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
-use crate::series::compaction_rule::CompactionRule;
+use crate::series::compaction::CompactionRule;
 use crate::series::index::next_timeseries_id;
 use crate::series::DuplicatePolicy;
 use crate::{config, error_consts};
@@ -279,7 +279,7 @@ impl TimeSeries {
                 // Try to trim time series and log any errors
                 // TODO: do this in a separate thread to avoid blocking ingestion
                 if let Err(e) = self.trim() {
-                    logging::log_warning(format!("Error trimming time series: {e:?}"));
+                    logging::log_warning(format!("TSDB: Error trimming time series: {e:?}"));
                 }
 
                 // Insert the new chunk at the correct position
