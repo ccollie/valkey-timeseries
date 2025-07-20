@@ -36,6 +36,7 @@ table DateRange {
 
 table MultiGetRequest {
   with_labels:bool;
+  latest:bool = false;
   selected_labels:[string];
   filters:[Matchers];
 }

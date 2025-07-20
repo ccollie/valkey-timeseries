@@ -1133,8 +1133,9 @@ impl<'a> flatbuffers::Follow<'a> for MultiGetRequest<'a> {
 
 impl<'a> MultiGetRequest<'a> {
     pub const VT_WITH_LABELS: flatbuffers::VOffsetT = 4;
-    pub const VT_SELECTED_LABELS: flatbuffers::VOffsetT = 6;
-    pub const VT_FILTERS: flatbuffers::VOffsetT = 8;
+    pub const VT_LATEST: flatbuffers::VOffsetT = 6;
+    pub const VT_SELECTED_LABELS: flatbuffers::VOffsetT = 8;
+    pub const VT_FILTERS: flatbuffers::VOffsetT = 10;
 
     #[inline]
     pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -1152,6 +1153,7 @@ impl<'a> MultiGetRequest<'a> {
         if let Some(x) = args.selected_labels {
             builder.add_selected_labels(x);
         }
+        builder.add_latest(args.latest);
         builder.add_with_labels(args.with_labels);
         builder.finish()
     }
@@ -1164,6 +1166,17 @@ impl<'a> MultiGetRequest<'a> {
         unsafe {
             self._tab
                 .get::<bool>(MultiGetRequest::VT_WITH_LABELS, Some(false))
+                .unwrap()
+        }
+    }
+    #[inline]
+    pub fn latest(&self) -> bool {
+        // Safety:
+        // Created from valid Table for this object
+        // which contains a valid value in this slot
+        unsafe {
+            self._tab
+                .get::<bool>(MultiGetRequest::VT_LATEST, Some(false))
                 .unwrap()
         }
     }
@@ -1204,6 +1217,7 @@ impl flatbuffers::Verifiable for MultiGetRequest<'_> {
         use self::flatbuffers::Verifiable;
         v.visit_table(pos)?
             .visit_field::<bool>("with_labels", Self::VT_WITH_LABELS, false)?
+            .visit_field::<bool>("latest", Self::VT_LATEST, false)?
             .visit_field::<flatbuffers::ForwardsUOffset<
                 flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<&'_ str>>,
             >>("selected_labels", Self::VT_SELECTED_LABELS, false)?
@@ -1216,6 +1230,7 @@ impl flatbuffers::Verifiable for MultiGetRequest<'_> {
 }
 pub struct MultiGetRequestArgs<'a> {
     pub with_labels: bool,
+    pub latest: bool,
     pub selected_labels: Option<
         flatbuffers::WIPOffset<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>,
     >,
@@ -1228,6 +1243,7 @@ impl<'a> Default for MultiGetRequestArgs<'a> {
     fn default() -> Self {
         MultiGetRequestArgs {
             with_labels: false,
+            latest: false,
             selected_labels: None,
             filters: None,
         }
@@ -1243,6 +1259,11 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> MultiGetRequestBuilder<'a, 'b, 
     pub fn add_with_labels(&mut self, with_labels: bool) {
         self.fbb_
             .push_slot::<bool>(MultiGetRequest::VT_WITH_LABELS, with_labels, false);
+    }
+    #[inline]
+    pub fn add_latest(&mut self, latest: bool) {
+        self.fbb_
+            .push_slot::<bool>(MultiGetRequest::VT_LATEST, latest, false);
     }
     #[inline]
     pub fn add_selected_labels(
@@ -1287,6 +1308,7 @@ impl core::fmt::Debug for MultiGetRequest<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut ds = f.debug_struct("MultiGetRequest");
         ds.field("with_labels", &self.with_labels());
+        ds.field("latest", &self.latest());
         ds.field("selected_labels", &self.selected_labels());
         ds.field("filters", &self.filters());
         ds.finish()
