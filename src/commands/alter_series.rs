@@ -29,7 +29,7 @@ pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
         ctx.replicate_verbatim();
         if changed {
-            ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.ALTER", &key);
+            ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.alter", &key);
         }
         VALKEY_OK
     })

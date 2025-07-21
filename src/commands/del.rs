@@ -30,7 +30,7 @@ pub fn del(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     })?;
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.DEL", &key);
+    ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", &key);
 
     Ok(ValkeyValue::from(count))
 }
