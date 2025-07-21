@@ -1,10 +1,14 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::db::get_current_db;
 use crate::error_consts;
+use crate::labels::Label;
 use crate::series::acl::check_key_permissions;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions};
+use crate::series::{
+    create_compaction_rules_from_config, SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions,
+};
+use std::time::Duration;
 use valkey_module::key::ValkeyKeyWritable;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
@@ -124,10 +128,11 @@ pub fn create_series(
     })
 }
 
-pub fn create_and_store_series(
+pub fn create_and_store_internal(
     ctx: &Context,
     key: &ValkeyString,
     options: TimeSeriesOptions,
+    notify: bool,
 ) -> ValkeyResult<()> {
     let _key = ValkeyKeyWritable::open(ctx.ctx, key);
     // check if this refers to an existing series
@@ -138,9 +143,80 @@ pub fn create_and_store_series(
     let ts = create_series(key, options, ctx)?;
     _key.set_value(&VK_TIME_SERIES_TYPE, ts)?;
 
-    ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::MODULE, "TS.CREATE", key);
-    ctx.log_verbose("series created");
+    if notify {
+        ctx.replicate_verbatim();
+        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.create", key);
+        ctx.log_verbose("series created");
+    }
+
+    Ok(())
+}
+
+pub fn create_and_store_series(
+    ctx: &Context,
+    key: &ValkeyString,
+    options: TimeSeriesOptions,
+) -> ValkeyResult<()> {
+    create_and_store_internal(ctx, key, options, true)
+}
+
+pub fn add_default_compactions(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    key: &ValkeyString,
+) -> ValkeyResult<()> {
+    let key_str = key.to_string_lossy();
+    let Some(compaction_rules) = create_compaction_rules_from_config(&key_str) else {
+        // No compaction rules available for this key
+        return Ok(());
+    };
+
+    let base_config = TimeSeriesOptions::from_config();
+    // base_config.chunk_compression = ChunkEncoding::Uncompressed;
+
+    // create a new series for each compaction rule
+    let mut rules = Vec::with_capacity(compaction_rules.len());
+    for (dest_key, (mut rule, retention)) in compaction_rules.into_iter() {
+        let bucket_duration = rule.bucket_duration;
+        let agg_type = rule.aggregator.aggregation_type();
+
+        let mut labels = series.labels.to_label_vec();
+
+        labels.push(Label::new("aggregation", agg_type.name()));
+        let duration_str = bucket_duration.to_string();
+        labels.push(Label::new("time_bucket", &duration_str));
+
+        let child_key = ctx.create_string(dest_key);
+        let options = TimeSeriesOptions {
+            src_id: Some(series.id),
+            retention: Some(Duration::from_millis(retention)),
+            labels,
+            ..base_config
+        };
+
+        let value_key = ValkeyKeyWritable::open(ctx.ctx, &child_key);
+        if !value_key.is_empty() {
+            let msg = format!("TSDB: compaction series for key '{child_key}' already exists.");
+            ctx.log_warning(&msg);
+            continue;
+        }
+
+        let destination = match create_series(&child_key, options, ctx) {
+            Ok(dest_series) => dest_series,
+            Err(e) => {
+                let msg =
+                    format!("TSDB: error creating compaction series for key \"{child_key}\": {e}");
+                ctx.log_warning(&msg);
+                continue;
+            }
+        };
+
+        rule.dest_id = destination.id;
+        value_key.set_value(&VK_TIME_SERIES_TYPE, destination)?;
+
+        rules.push(rule);
+    }
+    series.rules = rules;
 
     Ok(())
 }

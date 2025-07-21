@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod chunks;
 mod compaction;
+mod compaction_policy;
 mod defrag;
 mod guard;
 pub mod index;
@@ -18,6 +19,7 @@ pub(crate) mod types;
 mod utils;
 
 pub use compaction::*;
+pub use compaction_policy::*;
 pub use defrag::defrag_series;
 pub use guard::*;
 pub use tasks::*;

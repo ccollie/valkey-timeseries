@@ -9,6 +9,7 @@ use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::chunks::ChunkEncoding;
+use crate::series::SeriesRef;
 use get_size::GetSize;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
@@ -326,6 +327,8 @@ impl From<SampleAddResult> for ValkeyResult {
 /// Options for time series configuration
 #[derive(Debug, Clone)]
 pub struct TimeSeriesOptions {
+    /// The source ID of the series, if this is a derived series
+    pub src_id: Option<SeriesRef>,
     pub chunk_compression: ChunkEncoding,
     pub chunk_size: Option<usize>,
     pub retention: Option<Duration>,
@@ -384,6 +387,7 @@ impl TimeSeriesOptions {
 impl Default for TimeSeriesOptions {
     fn default() -> Self {
         Self {
+            src_id: None,
             chunk_compression: ChunkEncoding::default(),
             chunk_size: Some(CHUNK_SIZE_DEFAULT as usize),
             retention: None,
@@ -398,6 +402,7 @@ impl Default for TimeSeriesOptions {
 impl From<&ConfigSettings> for TimeSeriesOptions {
     fn from(settings: &ConfigSettings) -> Self {
         Self {
+            src_id: None,
             chunk_compression: settings.chunk_encoding,
             chunk_size: Some(settings.chunk_size_bytes),
             retention: settings.retention_period,

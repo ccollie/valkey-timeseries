@@ -96,6 +96,7 @@ impl TimeSeries {
         // }
 
         res.labels = InternedMetricName::new(&options.labels);
+        res.src_series = options.src_id;
         res.id = next_timeseries_id();
 
         Ok(res)

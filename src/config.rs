@@ -5,17 +5,16 @@ use crate::error_consts;
 use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
 use crate::series::chunks::{validate_chunk_size, ChunkEncoding};
-use crate::series::{DuplicatePolicy, SampleDuplicatePolicy};
+use crate::series::{
+    add_compaction_policies_from_config, clear_compaction_policy_config, DuplicatePolicy,
+    SampleDuplicatePolicy,
+};
 use lazy_static::lazy_static;
 use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use valkey_module::configuration::ConfigurationContext;
-use valkey_module::{
-    ConfigurationValue, Context, ValkeyError, ValkeyGILGuard, ValkeyResult, ValkeyString,
-};
-use valkey_module_macros::config_changed_event_handler;
-// See https://redis.io/docs/latest/develop/data-types/timeseries/configuration/
+use valkey_module::{ConfigurationValue, ValkeyError, ValkeyGILGuard, ValkeyResult, ValkeyString};
 
 /// Minimal Valkey version that supports the TimeSeries Module
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
@@ -58,6 +57,8 @@ pub const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
 
 pub(super) const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
 pub(super) const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
+pub const COMPACTION_POLICY_CONFIG_NAME: &str = "ts-compaction-policy";
+pub(super) const DEFAULT_COMPACTION_POLICY_STRING: &str = "";
 
 pub const MIN_THREADS: i64 = 1;
 pub const MAX_THREADS: i64 = 16;
@@ -117,6 +118,8 @@ lazy_static! {
             DEFAULT_DUPLICATE_POLICY.as_str()
         ));
     pub(super) static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
+    pub(super) static ref COMPACTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
     pub(super) static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(
@@ -190,12 +193,6 @@ fn handle_config_update() {
     *cfg = modified;
 }
 
-#[config_changed_event_handler]
-fn config_changed_event_handler(ctx: &Context, _changed_configs: &[&str]) {
-    ctx.log_notice("config changed");
-    // handle_config_update()
-}
-
 fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> ValkeyResult<i64> {
     let duration = parse_duration_value(value).map_err(|_e| {
         ValkeyError::String(format!(
@@ -258,6 +255,14 @@ pub(crate) fn on_string_config_set(
                     .expect("chunk encoding policy lock poisoned") = encoding;
             })
             .map_err(|_| ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING)),
+        "ts-compaction-policy" => {
+            let trimmed = value_str.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                clear_compaction_policy_config();
+                return Ok(());
+            }
+            add_compaction_policies_from_config(trimmed, true)
+        }
         _ => Err(ValkeyError::Str("Unknown configuration parameter")),
     }
 }
