@@ -8,7 +8,7 @@ from valkeytestframework.util.waiters import *
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 
-class TestCompactionAddCard(ValkeyTimeSeriesTestCaseBase):
+class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
     """Test compaction behavior when adding samples to TimeSeries"""
 
     def create_source_and_dest_series(self, source_key: str, dest_key: str,
@@ -64,7 +64,7 @@ class TestCompactionAddCard(ValkeyTimeSeriesTestCaseBase):
         for ts, value in samples:
             self.add_sample(source_key, ts, value)
 
-        # Verify source series has all samples
+        # Verify the source series has all samples
         source_samples = self.get_samples(source_key, 0, "+")
         assert len(source_samples) == 4
 
