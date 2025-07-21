@@ -1,5 +1,6 @@
 import os
 import re
+from typing import List
 
 import pytest
 from valkey.commands.timeseries.utils import list_to_dict
@@ -11,7 +12,7 @@ import logging
 
 class CompactionRule:
     """Represents a compaction rule for time series."""
-    def __init__(self, dest_key, bucket_duration, aggregation, alignment):
+    def __init__(self, dest_key, bucket_duration, aggregation, alignment = 0):
         self.dest_key = dest_key.decode('utf-8') if isinstance(dest_key, bytes) else dest_key
         self.bucket_duration = int(bucket_duration)
         self.aggregation = aggregation.decode('utf-8') if isinstance(aggregation, bytes) else aggregation
@@ -111,6 +112,56 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
             else:
                 assert info_dict[k] == v, f"Expected {k} to be {v}, but got {info_dict[k]}"
 
+    def validate_rules(self, key, rules: List[CompactionRule], check_dest: bool = True):
+        """ Validate the compaction rules of the timeseries.
+        """
+        info_dict = self.ts_info(key)
+        if 'rules' not in info_dict:
+            assert len(rules) == 0, f"Expected no rules, but got {len(rules)} rules: {rules}"
+            return
+
+        actual_rules = info_dict['rules']
+        assert len(actual_rules) == len(rules), f"Expected {len(rules)} rules, but got {len(actual_rules)}"
+
+        # Convert actual rules to a set for easy comparison
+        actual_rule_set = set()
+        for rule in actual_rules:
+            if isinstance(rule, CompactionRule):
+                # Create a hashable tuple representation
+                rule_tuple = (rule.dest_key, rule.bucket_duration, rule.aggregation, rule.alignment)
+                actual_rule_set.add(rule_tuple)
+            else:
+                raise TypeError(f"Unexpected type for actual rule: {type(rule)}")
+
+        # Convert expected rules to a set
+        expected_rule_set = set()
+        for rule in rules:
+            if isinstance(rule, CompactionRule):
+                rule_tuple = (rule.dest_key, rule.bucket_duration, rule.aggregation, rule.alignment)
+                expected_rule_set.add(rule_tuple)
+            else:
+                raise TypeError(f"Unexpected type for expected rule: {type(rule)}")
+
+        # Find rules in the series but not in the expected list
+        extra_rules = actual_rule_set - expected_rule_set
+        if extra_rules:
+            extra_rules_formatted = [CompactionRule(*rule_tuple) for rule_tuple in extra_rules]
+            assert False, f"Found unexpected rules in series: {extra_rules_formatted}"
+
+        # Find rules in the expected list but not in the series
+        missing_rules = expected_rule_set - actual_rule_set
+        if missing_rules:
+            missing_rules_formatted = [CompactionRule(*rule_tuple) for rule_tuple in missing_rules]
+            assert False, f"Expected rules not found in series: {missing_rules_formatted}"
+
+        # If we get here, all rules match exactly
+        if check_dest:
+            for rule in rules:
+                if not isinstance(rule, CompactionRule):
+                    raise TypeError(f"Expected rule to be of type CompactionRule, but got {type(rule)}")
+                dest_key = rule.dest_key
+                exists = self.client.execute_command("EXISTS", dest_key)
+                assert exists == True, f"Expected destination key '{dest_key}' to exist, but it does not."
 
     def validate_copied_series_correctness(self, client, original_name):
         """ Validate correctness on a copy of the provided timeseries.

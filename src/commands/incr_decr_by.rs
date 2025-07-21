@@ -3,7 +3,8 @@ use crate::commands::{parse_series_options, CommandArgToken};
 use crate::common::Timestamp;
 use crate::error_consts;
 use crate::series::{
-    create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
+    add_default_compactions, create_and_store_series, get_timeseries_mut, SampleAddResult,
+    TimeSeries, TimeSeriesOptions,
 };
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -23,7 +24,6 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     }
 
     let mut args = args;
-
     let delta = parse_value_arg(&args[2])?;
     let timestamp = handle_parse_timestamp(&mut args)?;
     let key_name = &args[1];
@@ -36,22 +36,35 @@ fn incr_decr(ctx: &Context, args: Vec<ValkeyString>, is_increment: bool) -> Valk
     )? {
         handle_update(ctx, &mut series, key_name, timestamp, delta, is_increment)
     } else {
-        let key_name = args.remove(1);
-        let mut args = args.into_iter().skip(2).peekable();
-        const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
-
-        let options =
-            parse_series_options(&mut args, TimeSeriesOptions::from_config(), INVALID_ARGS)?;
-        create_and_store_series(ctx, &key_name, options)?; // todo: ACL ?
-
-        if let Some(mut series) =
-            get_timeseries_mut(ctx, &key_name, true, Some(AclPermissions::INSERT))?
-        {
-            handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
-        } else {
-            Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND))
-        }
+        create_series_and_update(ctx, args, timestamp, delta, is_increment)
     }
+}
+
+fn create_series_and_update(
+    ctx: &Context,
+    mut args: Vec<ValkeyString>,
+    timestamp: Option<Timestamp>,
+    delta: f64,
+    is_increment: bool,
+) -> ValkeyResult {
+    let key_name = args.remove(1);
+    let mut remaining_args = args.into_iter().skip(2).peekable();
+    const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
+
+    let options = parse_series_options(
+        &mut remaining_args,
+        TimeSeriesOptions::from_config(),
+        INVALID_ARGS,
+    )?;
+    create_and_store_series(ctx, &key_name, options)?;
+
+    let Some(mut series) = get_timeseries_mut(ctx, &key_name, true, Some(AclPermissions::INSERT))?
+    else {
+        return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
+    };
+
+    add_default_compactions(ctx, &mut series, &key_name)?;
+    handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
 }
 
 fn handle_parse_timestamp(args: &mut Vec<ValkeyString>) -> ValkeyResult<Option<Timestamp>> {

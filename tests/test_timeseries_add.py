@@ -1,6 +1,6 @@
 import pytest
 from valkey import ResponseError
-from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
+from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase, CompactionRule
 from valkeytestframework.conftest import resource_port_tracker
 
 
@@ -278,7 +278,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         assert samples[0][1] == b'123.46'  # Rounded to 2 decimal places
 
     def test_add_with_significant_digits(self):
-        """Test TS.ADD with significant digits option"""
+        """Test TS.ADD with a significant digits option"""
         timestamp = 160000
 
         # Add with significant digits precision
@@ -324,3 +324,268 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         assert len(samples) == 2
         assert samples[1][0] == max_timestamp
         assert abs(float(samples[0][1]) - large_value) < 1e300
+
+    ## ========= Compaction Config Tests ========= ##
+    def set_policy(self, policy: str) -> None:
+        """Helper to set the compaction policy"""
+        self.client.execute_command("CONFIG SET ts-compaction-policy {}".format(policy))
+
+    def test_basic_compaction_policy_on_new_key(self):
+        """Test that the compaction policy is applied when creating new series with TS.ADD"""
+        # Set up compaction policy configuration
+        policy_config = "avg:1M:1h:5s"
+        suffix = "AVG_60000_5000"
+        source_key = 'temperature:sensor1'
+        self.set_policy(policy_config)
+
+        dest_key = f"{source_key}_{suffix}"
+
+        expected_rules = [
+            CompactionRule(dest_key, 60000, "avg", 5000)
+        ]
+
+        # Use TS.ADD on non-existent key - should create series and apply compaction rules
+        result = self.client.execute_command('TS.ADD', source_key, 1000, 25.5, 'LABELS', 'sensor', 'temp1')
+        assert result == 1000
+
+        # Verify the destination key was created
+        self.validate_rules(source_key, expected_rules)
+
+    def test_multiple_compaction_policies_applied(self):
+        """Test that multiple compaction policies are applied to matching series"""
+        # Configure multiple policies
+        policy_config = "avg:1M:2h:10s;sum:5M:1h;max:15s:30M"
+        source_key = 'sensor:temp1'
+
+        expected_rules = [
+            CompactionRule(f"{source_key}_AVG_60000_10000", 60000, "avg", 10000),
+            CompactionRule(f"{source_key}_SUM_300000_360000", 300000, "avg", 360000),
+            CompactionRule(f"{source_key}_MAX_15000", 15000, "max", 0)
+        ]
+
+        assert self.set_policy(policy_config) == b"OK"
+
+        # Add sample to non-existent key
+        self.client.execute_command('TS.ADD', source_key, 2000, 30.0)
+
+        # Verify multiple compaction rules were added
+        self.validate_rules(source_key, expected_rules)
+        # TODO: validate values have been added
+
+    def test_pattern_matching_in_compaction_policy(self):
+        """Test that filter patterns in compaction policy work correctly"""
+        policy_config = "sum:60s:1h:5s|^metrics:cpu:*"
+        suffix = "SUM_60000_5000"
+
+        assert self.set_policy(policy_config) == b"OK"
+
+        # Test matching key
+        matching_key = 'metrics:cpu:server1'
+        dest_key = f"{matching_key}_{suffix}"
+
+        expected_rules = [
+            CompactionRule(dest_key, 60000, "sum", 5000)
+        ]
+
+        self.client.execute_command('TS.ADD', matching_key, 3000, 75.5)
+
+        self.validate_rules(matching_key, expected_rules)
+
+        # Test non-matching key (should not get compaction rules from this policy)
+        non_matching_key = 'metrics:memory:server1'
+        self.client.execute_command('TS.ADD', non_matching_key, 3000, 80.0)
+
+        info = self.ts_info(non_matching_key)
+        rules = info.get('rules', [])
+        # Should not have the CPU compaction rule
+        assert not any(rule[0] == 'metrics:cpu:server1' for rule in rules)
+
+    def test_compaction_policy_with_different_aggregations(self):
+        """Test compaction policies with various aggregation functions"""
+        aggregations = ['avg', 'sum', 'min', 'max', 'count']
+
+        for agg in aggregations:
+            # Clear previous config
+            assert self.set_policy("none") == b"OK"
+
+            policy_config = f"{agg}:1M:1h:10s"
+            suffix = f"{agg.upper()}_60000_10000"
+            assert self.set_policy(policy_config) == b"OK"
+
+            expected_rules = [
+                CompactionRule(f'test_{agg}:sensor1_{suffix}', 60000, agg, 10000)
+            ]
+            # Add to source
+            source_key = f'test_{agg}:sensor1'
+            self.client.execute_command('TS.ADD', source_key, 4000, 10.0)
+
+            self.validate_rules(source_key, expected_rules)
+
+
+    def test_compaction_rules_applied_only_on_new_series(self):
+        """Test that compaction rules are only applied when source series doesn't exist"""
+        # Set compaction policy
+        policy_config = "sum:30s:1h:5s"
+        suffix = "SUM_30000_5000"
+        assert self.set_policy(policy_config) == b"OK"
+
+        # Create destination
+        dest_key = f'existing:test_{suffix}'
+
+        # First create the series manually without compaction rules
+        source_key = 'existing:test'
+        self.client.execute_command('TS.CREATE', source_key)
+
+
+        # Verify no rules initially
+        info = self.ts_info(source_key)
+        initial_rules = info.get('rules', [])
+
+        # Now add sample to existing series
+        self.client.execute_command('TS.ADD', source_key, 5000, 15.0)
+
+        # Verify rules haven't changed (compaction policy not applied to existing series)
+        info = self.ts_info(source_key)
+        current_rules = info.get('rules', [])
+        assert len(current_rules) == len(initial_rules)
+
+        exists = self.client.execute_command('EXISTS', dest_key)
+        assert exists == 0, f"Expected no compaction rule for {dest_key}, but it exists"
+
+    def test_compaction_policy_with_alignment(self):
+        """Test compaction policy with timestamp alignment"""
+        policy_config = "range:10M:6h:5s"
+        suffix = "RANGE_600000_5000"
+        assert self.set_policy(policy_config) == b"OK"
+
+        # Create source via TS.ADD
+        source_key = 'aligned:test'
+        dest_key = f'{source_key}_{suffix}'
+        self.client.execute_command('TS.ADD', source_key, 6000, 20.0)
+
+        # Verify rule includes alignment
+        info = self.ts_info(source_key)
+        rules = info.get('rules', [])
+        assert len(rules) >= 1
+
+        # Check for alignment parameter (rule format: [dest, bucket_duration, aggregation, alignment])
+        found_rule = any(
+            rule[0] == dest_key and len(rule) >= 4 and rule[3] == 0
+            for rule in rules
+        )
+        assert found_rule, "Expected rule with alignment not found"
+
+    def test_empty_compaction_policy_config(self):
+        """Test that empty compaction policy config doesn't create rules"""
+        # Set empty policy
+        self.client.execute_command('CONFIG SET ts-compaction-policy none')
+
+        # Create series via TS.ADD
+        source_key = 'no_policy:test'
+        self.client.execute_command('TS.ADD', source_key, 7000, 25.0)
+
+        # Verify no compaction rules
+        info = self.ts_info(source_key)
+        rules = info.get('rules', [])
+        assert len(rules) == 0, f"Expected no rules, got {rules}"
+
+    def test_compaction_policy_config_replacement(self):
+        """Test that setting new compaction policy replaces old one for new series"""
+        # Set initial policy
+        initial_policy = "min:2M:1h"
+        assert self.set_policy(initial_policy) == b"OK"
+
+        # Create series with initial policy
+        first_key = 'initial:test'
+        self.client.execute_command('TS.ADD', first_key, 8000, 30.0)
+
+        dest_key = f"{first_key}_MIN_120000"
+        expected_rules = [
+            CompactionRule(dest_key, 120000, "min")
+        ]
+        self.validate_rules(first_key, expected_rules)
+
+        # Change policy
+        new_policy = "max:1M:2h"
+        assert self.set_policy(new_policy) == b"OK"
+
+        # Create destination for new policy
+        self.client.execute_command('TS.CREATE', 'new_dest:test')
+
+        # Create new series with new policy
+        second_key = 'new:test'
+        self.client.execute_command('TS.ADD', second_key, 8000, 35.0)
+
+        dest_key = f"{second_key}_MAX_60000"
+        expected_rules = [
+            CompactionRule(dest_key, 120000, "max")
+        ]
+
+        # Validate that new rules are applied
+        self.validate_rules(second_key, expected_rules)
+
+
+    def test_compaction_with_ts_add_labels(self):
+        """Test that compaction rules are applied when TS.ADD creates series with labels"""
+        policy_config = "avg:1M:1h:5s"
+        suffix = "AVG_60000_5000"
+
+        assert self.set_policy(policy_config) == b"OK"
+
+        # Create destination
+        self.client.execute_command('TS.CREATE', 'labeled_dest:sensor1')
+
+        # Create series with TS.ADD including labels
+        source_key = 'labeled:sensor1'
+        self.client.execute_command(
+            'TS.ADD', source_key, 9000, 40.0,
+            'LABELS', 'sensor_type', 'temperature', 'location', 'room1'
+        )
+        dest_key = f"{source_key}_{suffix}"
+
+        # Verify series has labels and compaction rule
+        info = self.ts_info(source_key)
+
+        # Check labels
+        labels = info.get('labels', {})
+        assert 'sensor_type' in labels
+        assert labels['sensor_type'] == 'temperature'
+
+        # Check compaction rule
+        rules = info.get('rules', [])
+        assert len(rules) >= 1
+        assert any(rule[0] == dest_key for rule in rules)
+
+    def test_compaction_rules_functional_after_creation(self):
+        """Test that compaction rules created from config actually work"""
+        policy_config = "sum:1M:1h"
+        assert self.set_policy(policy_config) == b"OK"
+
+        # Create source and add multiple samples
+        source_key = 'functional:test'
+        base_ts = 10000
+
+        dest_key = f"{source_key}_SUM_60000"
+
+        expected_rules = [
+            CompactionRule(dest_key, 60000, "sum", 5000)
+        ]
+
+        # First sample creates the series and applies compaction rules
+        self.client.execute_command('TS.ADD', source_key, base_ts, 10.0)
+
+        self.validate_rules(source_key, expected_rules)
+
+        # Add more samples in the same bucket (60 seconds)
+        self.client.execute_command('TS.ADD', source_key, base_ts + 30000, 20.0)
+        self.client.execute_command('TS.ADD', source_key, base_ts + 50000, 30.0)
+
+        # Add sample in next bucket to trigger compaction
+        self.client.execute_command('TS.ADD', source_key, base_ts + 70000, 40.0)
+
+        # Verify compaction occurred
+        dest_samples = self.client.execute_command('TS.RANGE', dest_key, '-', '+')
+        assert len(dest_samples) >= 1, "No compacted samples found"
+
+        # Verify the sum aggregation (10 + 20 + 30 = 60)
+        assert dest_samples[0][1] == 60.0, f"Expected sum of 60, got {dest_samples[0][1]}"
