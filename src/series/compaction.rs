@@ -1,17 +1,14 @@
-use crate::aggregators::{calc_bucket_start, AggregationHandler, AggregationType, Aggregator};
+use crate::aggregators::{calc_bucket_start, AggregationHandler, Aggregator};
 use crate::common::parallel::{Parallel, ParallelExt};
 use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
-use crate::parser::parse_positive_duration_value;
 use crate::series::index::{get_series_by_id, get_series_key_by_id};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size::GetSize;
 use smallvec::SmallVec;
 use std::sync::{Arc, Mutex};
-use valkey_module::{
-    raw, BlockedClient, Context, NotifyEvent, ThreadSafeContext, ValkeyError, ValkeyResult,
-};
+use valkey_module::{raw, BlockedClient, Context, NotifyEvent, ThreadSafeContext, ValkeyResult};
 
 const PARALLEL_THRESHOLD: usize = 2;
 
@@ -21,7 +18,7 @@ pub struct CompactionRule {
     pub aggregator: Aggregator,
     pub bucket_duration: u64,
     pub align_timestamp: Timestamp,
-    pub end_ts: Option<Timestamp>,
+    pub bucket_start: Option<Timestamp>,
 }
 
 impl GetSize for CompactionRule {
@@ -30,7 +27,7 @@ impl GetSize for CompactionRule {
             + self.aggregator.get_size()
             + self.bucket_duration.get_size()
             + self.align_timestamp.get_size()
-            + self.end_ts.get_size()
+            + self.bucket_start.get_size()
     }
 }
 
@@ -40,7 +37,7 @@ impl CompactionRule {
         self.aggregator.save(rdb);
         raw::save_unsigned(rdb, self.bucket_duration);
         rdb_save_timestamp(rdb, self.align_timestamp);
-        rdb_save_timestamp(rdb, self.end_ts.unwrap_or(-1));
+        rdb_save_timestamp(rdb, self.bucket_start.unwrap_or(-1));
     }
 
     pub fn load_from_rdb(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
@@ -48,19 +45,15 @@ impl CompactionRule {
         let aggregator = Aggregator::load(rdb)?;
         let bucket_duration = raw::load_unsigned(rdb)?;
         let align_timestamp = rdb_load_timestamp(rdb)?;
-        let bucket_end = rdb_load_timestamp(rdb)?;
-        let end_ts = if bucket_end == -1 {
-            None
-        } else {
-            Some(bucket_end)
-        };
+        let start_ts = rdb_load_timestamp(rdb)?;
+        let bucket_start = if start_ts == -1 { None } else { Some(start_ts) };
 
         Ok(CompactionRule {
             dest_id,
             aggregator,
             bucket_duration,
             align_timestamp,
-            end_ts,
+            bucket_start,
         })
     }
 
@@ -68,15 +61,9 @@ impl CompactionRule {
         calc_bucket_start(ts, self.align_timestamp, self.bucket_duration)
     }
 
-    fn calc_bucket_end(&self, ts: Timestamp) -> Timestamp {
-        let diff = ts - self.align_timestamp;
-        let delta = self.bucket_duration as i64;
-        ts + (delta - (diff % delta))
-    }
-
     fn get_bucket_range(&self, ts: Timestamp) -> (Timestamp, Timestamp) {
         let start = self.calc_bucket_start(ts);
-        let end = start + self.bucket_duration as i64;
+        let end = start.saturating_add_unsigned(self.bucket_duration);
         (start, end)
     }
 
@@ -97,98 +84,8 @@ impl CompactionRule {
 
     fn reset(&mut self) {
         self.aggregator.reset();
-        self.end_ts = None;
+        self.bucket_start = None;
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompactionPolicy {
-    pub aggregator: AggregationType,
-    pub bucket_duration_ms: u64,
-    pub retention_ms: u64,
-    pub align_timestamp: Timestamp,
-}
-
-/// A compaction policy is a set of rules that define how to compact time series data.
-/// The value from configuration is expected to be in the format:
-///  `aggregation_type:bucket_duration:retention:[align_timestamp]`
-///
-/// E.g., `avg:60:2h:0`
-///
-/// Where:
-///  - `aggregation_type` is the type of aggregation to use (e.g., `avg`, `sum`, etc.)
-///  - `bucket_duration` is the duration of each bucket in seconds
-///  - `retention` is the retention period in seconds
-///  - The `align_timestamp` is optional and defaults to 0 if not provided.
-///
-fn parse_compaction_policy(val: &str) -> ValkeyResult<CompactionPolicy> {
-    let args: Vec<&str> = val.split(':').collect();
-    if args.len() < 3 || args.len() > 4 {
-        let msg = format!(
-            "TSDB: invalid compaction policy format: '{val}'. Expected: aggregation_type:bucket_duration:retention[:align_timestamp]",
-        );
-        return Err(ValkeyError::String(msg));
-    }
-    let aggregator = AggregationType::try_from(args[0])?;
-    let Ok(bucket_duration_ms) = parse_positive_duration_value(args[1]) else {
-        return Err(ValkeyError::String(
-            "TSDB: invalid bucket duration in compaction policy".to_string(),
-        ));
-    };
-    if bucket_duration_ms == 0 {
-        return Err(ValkeyError::String(
-            "TSDB: compaction policy bucket duration cannot be zero".to_string(),
-        ));
-    }
-    let Ok(retention_ms) = parse_positive_duration_value(args[2]) else {
-        return Err(ValkeyError::Str(
-            "TSDB: Invalid retention in compaction policy",
-        ));
-    };
-    let align_timestamp = if args.len() == 4 {
-        match parse_positive_duration_value(args[3]) {
-            Ok(ts) => ts,
-            _ => {
-                return Err(ValkeyError::String(
-                    "Invalid align timestamp in compaction policy".to_string(),
-                ))
-            }
-        }
-    } else {
-        0 // Default align timestamp
-    };
-    if align_timestamp >= bucket_duration_ms {
-        return Err(ValkeyError::Str(
-            "TSDB: align timestamp must be less than than bucket duration",
-        ));
-    }
-
-    Ok(CompactionPolicy {
-        aggregator,
-        bucket_duration_ms: bucket_duration_ms as u64,
-        retention_ms: retention_ms as u64,
-        align_timestamp,
-    })
-}
-
-pub(crate) fn parse_compaction_policies(val: &str) -> ValkeyResult<Vec<CompactionPolicy>> {
-    let policies: Vec<&str> = val.split(';').collect();
-    if policies.is_empty() {
-        return Err(ValkeyError::String(
-            "No compaction policies provided".to_string(),
-        ));
-    }
-    let mut resolved_policies: Vec<CompactionPolicy> = Vec::with_capacity(policies.len());
-    for policy in policies.iter() {
-        if policy.is_empty() {
-            return Err(ValkeyError::String(
-                "Empty compaction policy found".to_string(),
-            ));
-        }
-        let parsed_policy = parse_compaction_policy(policy)?;
-        resolved_policies.push(parsed_policy);
-    }
-    Ok(resolved_policies)
 }
 
 #[derive(Clone)]
@@ -263,24 +160,22 @@ fn handle_sample_compaction(
 ) -> TsdbResult<()> {
     let ts = sample.timestamp;
     let bucket_start = rule.calc_bucket_start(ts);
-    let bucket_end = bucket_start + rule.bucket_duration as i64;
 
-    let Some(current_end_ts) = rule.end_ts else {
+    let Some(current_bucket_start) = rule.bucket_start else {
         // First sample for this rule - initialize the aggregation
-        rule.end_ts = Some(bucket_end);
+        rule.bucket_start = Some(bucket_start);
         rule.aggregator.update(sample.value);
         return Ok(());
     };
-
-    let current_bucket_start = current_end_ts.saturating_sub(rule.bucket_duration as i64);
 
     if bucket_start == current_bucket_start {
         // Sample belongs to the current aggregation bucket
         rule.aggregator.update(sample.value);
     } else if bucket_start > current_bucket_start {
         // Sample starts a new bucket - finalize the current bucket first
-        finalize_current_bucket_and_start_new(ctx, rule, dest_series, sample, bucket_end)?;
+        finalize_current_bucket(ctx, rule, dest_series, sample, bucket_start)?;
     } else {
+        let bucket_end = bucket_start.saturating_add_unsigned(rule.bucket_duration);
         // Sample is in an older bucket (shouldn't happen for new samples, but handle gracefully)
         recalculate_bucket(
             ctx,
@@ -297,19 +192,19 @@ fn handle_sample_compaction(
 }
 
 /// Finalize the current aggregation bucket and start a new one
-fn finalize_current_bucket_and_start_new(
+fn finalize_current_bucket(
     ctx: &ThreadSafeContext<BlockedClient>,
     rule: &mut CompactionRule,
     dest_series: &mut TimeSeries,
     new_sample: Sample,
-    new_bucket_end: Timestamp,
+    new_bucket_start: Timestamp,
 ) -> TsdbResult<()> {
     // Finalize the current bucket
     let aggregated_value = rule.aggregator.finalize();
-    let current_bucket_start = rule
-        .end_ts
-        .unwrap_or(new_bucket_end)
-        .saturating_sub(rule.bucket_duration as i64);
+    let current_bucket_start = rule.bucket_start.expect(
+        "finalize_current_bucket should be called when current bucket start is already set",
+    );
+
     add_dest_bucket(
         ctx,
         dest_series,
@@ -321,7 +216,7 @@ fn finalize_current_bucket_and_start_new(
     // Start a new bucket with the new sample
     rule.aggregator.reset();
     rule.aggregator.update(new_sample.value);
-    rule.end_ts = Some(new_bucket_end);
+    rule.bucket_start = Some(new_bucket_start);
 
     Ok(())
 }
@@ -337,18 +232,22 @@ fn handle_compaction_upsert(
 ) -> TsdbResult<()> {
     let ts = sample.timestamp;
     let bucket_start = rule.calc_bucket_start(ts);
-    let bucket_end = bucket_start + rule.bucket_duration as i64;
 
     // Check if this affects the current ongoing aggregation bucket
-    if let Some(current_end_ts) = rule.end_ts {
-        let current_bucket_start = current_end_ts.saturating_sub(rule.bucket_duration as i64);
+    let Some(current_bucket_start) = rule.bucket_start else {
+        // No current bucket, this is the first sample for this rule
+        rule.bucket_start = Some(bucket_start);
+        rule.aggregator.update(sample.value);
+        return Ok(());
+    };
 
-        if bucket_start == current_bucket_start {
-            // This sample belongs to the current aggregation bucket
-            // We need to recalculate the entire bucket since we don't know what changed
-            recalculate_current_bucket(series, rule, current_bucket_start, current_end_ts)?;
-            return Ok(());
-        }
+    let bucket_end = current_bucket_start.saturating_add_unsigned(rule.bucket_duration);
+
+    if bucket_start == current_bucket_start {
+        // This sample belongs to the current aggregation bucket
+        // We need to recalculate the entire bucket since we don't know what changed
+        recalculate_current_bucket(series, rule, current_bucket_start, bucket_end)?;
+        return Ok(());
     }
 
     // This is a historical upsert - need to recalculate the affected bucket
@@ -376,6 +275,9 @@ fn recalculate_current_bucket(
     for sample in series.range_iter(bucket_start, bucket_end) {
         rule.aggregator.update(sample.value);
     }
+
+    // reset would have cleared the bucket_start, so we need to set it again
+    rule.bucket_start = Some(bucket_start);
 
     Ok(())
 }
@@ -554,14 +456,12 @@ fn handle_current_bucket_adjustment(
     removal_start: Timestamp,
     removal_end: Timestamp,
 ) {
-    // If we have an active aggregation bucket
-    let Some(end_ts) = rule.end_ts else {
+    let Some(current_bucket_start) = rule.bucket_start else {
         // No active aggregation, nothing to adjust
         return;
     };
 
-    let current_bucket_start = end_ts.saturating_sub(rule.bucket_duration as i64);
-    let current_bucket_end = end_ts;
+    let current_bucket_end = current_bucket_start.saturating_add_unsigned(rule.bucket_duration);
 
     // Check if the removal affects the current aggregation bucket
     if removal_start < current_bucket_end && removal_end > current_bucket_start {
@@ -832,12 +732,11 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
         return None;
     }
     let rule = parent.get_rule_by_dest_id(series.id)?;
-    let Some(end_ts) = rule.end_ts else {
+    let Some(start) = rule.bucket_start else {
         // no data
         return None;
     };
     let value = rule.aggregator.current()?;
-    let start = rule.calc_bucket_start(end_ts - 1);
     let sample = Sample::new(start, value);
     Some(sample)
 }

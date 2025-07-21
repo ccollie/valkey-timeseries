@@ -120,6 +120,6 @@ fn parse_args(args: &mut CommandArgIterator, dest_id: SeriesRef) -> ValkeyResult
         aggregator: aggregation_type.into(),
         bucket_duration: duration.as_millis() as u64,
         align_timestamp,
-        end_ts: None,
+        bucket_start: None,
     })
 }
