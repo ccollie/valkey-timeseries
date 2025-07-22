@@ -118,7 +118,7 @@ impl Parallel for CompactionWorker {
     }
 }
 
-pub fn run_compaction_parallel(
+pub fn run_compaction(
     ctx: &Context,
     series: &mut TimeSeries,
     sample: Sample,
@@ -139,15 +139,55 @@ pub fn run_compaction_parallel(
             },
         )
     } else {
-        iterate_compactions(
-            ctx,
-            series,
-            sample,
-            |thread_ctx, parent, dest_series, rule, sample| {
-                handle_sample_compaction(thread_ctx, parent, rule, dest_series, sample)
-            },
-        )
+        upsert_compaction(ctx, series, sample)
     }
+}
+
+pub fn upsert_compaction(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    sample: Sample,
+) -> TsdbResult<()> {
+    if series.rules.is_empty() {
+        return Ok(());
+    }
+
+    iterate_compactions(
+        ctx,
+        series,
+        sample,
+        |thread_ctx, parent, dest_series, rule, value| {
+            handle_compaction_upsert(thread_ctx, parent, rule, dest_series, value)
+        },
+    )
+}
+
+pub fn remove_compaction_range(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    start: Timestamp,
+    end: Timestamp,
+) -> TsdbResult<()> {
+    if series.rules.is_empty() {
+        return Ok(());
+    }
+    let unused = Sample::new(0, 0.0);
+    // Process all contexts in parallel
+    iterate_compactions(
+        ctx,
+        series,
+        unused,
+        |thread_ctx, src_series, dest_series, rule, _| {
+            handle_compaction_range_removal(thread_ctx, src_series, rule, dest_series, end, start)
+        },
+    )?;
+    // Update any ongoing aggregations that might be affected
+    let mut rules = std::mem::take(&mut series.rules);
+    for rule in &mut rules {
+        handle_current_bucket_adjustment(series, rule, start, end);
+    }
+    series.rules = rules;
+    Ok(())
 }
 
 fn null_ts_filter(ts: Timestamp) -> bool {
@@ -421,7 +461,7 @@ fn handle_multiple_bucket_removal(
     let mut current_bucket_start = first_bucket_start;
 
     while current_bucket_start <= last_bucket_start {
-        let bucket_end = current_bucket_start + rule.bucket_duration as i64;
+        let bucket_end = current_bucket_start.saturating_add_unsigned(rule.bucket_duration);
 
         // Determine the overlap between this bucket and the removal range
         let overlap_start = removal_start.max(current_bucket_start);
@@ -447,7 +487,7 @@ fn handle_multiple_bucket_removal(
             }
         }
 
-        current_bucket_start += rule.bucket_duration as i64;
+        current_bucket_start = bucket_end;
     }
 
     Ok(())
@@ -530,10 +570,8 @@ fn get_compaction_series<'a>(
 ///
 /// ## Arguments
 ///
-/// - `ctx`: A reference to the current context, which provides access to the
-///   database and facilitates operations like retrieving child series or logging.
-/// - `series`: A mutable reference to the `TimeSeries` being processed. This object
-///   may have compaction rules and child series derived from those rules.
+/// - `ctx`: the current context
+/// - `series`: A mutable reference to the `TimeSeries` being processed.
 /// - `value`: A `Sample` object containing the value or data being processed
 ///   during the current iteration.
 /// - `f`: A closure or function pointer that implements the processing logic
@@ -590,6 +628,7 @@ where
             // No destination series available, nothing to do
             return Ok(());
         }
+
         let mut rules = std::mem::take(&mut series.rules);
         let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
         let res = run_internal(&thread_ctx, series, &mut rules, destinations, value, &f);
@@ -762,45 +801,24 @@ impl TimeSeries {
         if self.rules.is_empty() {
             return Ok(());
         }
-        run_compaction_parallel(ctx, self, value)
+        run_compaction(ctx, self, value)
     }
 
     pub fn upsert_compaction(&mut self, ctx: &Context, value: Sample) -> TsdbResult<()> {
         if self.rules.is_empty() {
             return Ok(());
         }
-        iterate_compactions(ctx, self, value, |thread_ctx, parent, dest, rule, item| {
-            handle_compaction_upsert(thread_ctx, parent, rule, dest, item)
-        })
+        upsert_compaction(ctx, self, value)
     }
 
     /// Remove a range from all compactions
-    pub(super) fn remove_compaction_range(
+    pub fn remove_compaction_range(
         &mut self,
         ctx: &Context,
         start: Timestamp,
         end: Timestamp,
     ) -> TsdbResult<()> {
-        if self.rules.is_empty() {
-            return Ok(());
-        }
-        let unused = Sample::new(0, 0.0);
-        // Process all contexts in parallel
-        iterate_compactions(
-            ctx,
-            self,
-            unused,
-            |thread_ctx, src_series, dest_series, rule, _| {
-                handle_compaction_range_removal(
-                    thread_ctx,
-                    src_series,
-                    rule,
-                    dest_series,
-                    end,
-                    start,
-                )
-            },
-        )
+        remove_compaction_range(ctx, self, start, end)
     }
 }
 
