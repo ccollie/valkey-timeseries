@@ -8,7 +8,6 @@ use crate::series::index::{get_series_by_id, get_series_key_by_id};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size::GetSize;
 use smallvec::SmallVec;
-use std::sync::{Arc, Mutex};
 use topologic::AcyclicDependencyGraph;
 use valkey_module::{
     raw, BlockedClient, Context, NotifyEvent, ThreadSafeContext, ValkeyError, ValkeyResult,
@@ -94,13 +93,13 @@ impl CompactionRule {
 
 #[derive(Clone)]
 struct CompactionWorker {
-    errors: Arc<Mutex<SmallVec<TsdbError, 4>>>,
+    errors: SmallVec<TsdbError, 4>,
 }
 
 impl CompactionWorker {
     fn new() -> Self {
         Self {
-            errors: Arc::new(Mutex::new(SmallVec::new())),
+            errors: SmallVec::new(),
         }
     }
 }
@@ -108,13 +107,12 @@ impl CompactionWorker {
 impl Parallel for CompactionWorker {
     fn create(&self) -> Self {
         Self {
-            /* fields */
             errors: self.errors.clone(),
         }
     }
 
-    fn merge(&mut self, _other: Self) {
-        // state is shared behind an Arc, so no need to merge
+    fn merge(&mut self, other: Self) {
+        self.errors.extend(other.errors);
     }
 }
 
@@ -682,21 +680,18 @@ where
             match f(thread_ctx, series, &mut dest_guard, rule, value) {
                 Ok(_) => {}
                 Err(error) => {
-                    // todo: handle error properly
                     let log_ctx = thread_ctx.lock();
                     let msg = format!(
                         "Failed to handle compaction rule for series {}: {}",
                         dest_guard.id, error
                     );
                     log_ctx.log_warning(&msg);
-                    let mut lock = worker.errors.lock().unwrap();
-                    lock.push(error);
+                    worker.errors.push(error);
                 }
             }
         });
-
-        let errors = worker.errors.lock().unwrap();
-        let Some(first_error) = errors.first().cloned() else {
+        
+        let Some(first_error) = worker.errors.first().cloned() else {
             // No errors, we can safely return
             return Ok(());
         };

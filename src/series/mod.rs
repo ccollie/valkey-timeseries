@@ -17,11 +17,13 @@ mod time_series_tests;
 mod timestamp_range;
 pub(crate) mod types;
 mod utils;
+mod sample_merge;
 
 pub use compaction::*;
 pub use compaction_policy::*;
 pub use defrag::defrag_series;
 pub use guard::*;
+pub use sample_merge::*;
 pub use tasks::*;
 pub use time_series::*;
 pub use timestamp_range::*;

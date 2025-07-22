@@ -1,10 +1,9 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
-use crate::common::parallel::join;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
-use crate::series::{get_timeseries_mut, SampleAddResult, SeriesGuardMut, TimeSeries};
+use crate::series::{get_timeseries_mut, multi_series_merge_samples, PerSeriesSamples, SampleAddResult, SeriesGuardMut};
 use ahash::AHashMap;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use std::ops::DerefMut;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -26,12 +25,6 @@ struct SeriesSamples<'a> {
     series: Option<SeriesGuardMut<'a>>,
     err: SampleAddResult,
     samples: Vec<ParsedInput<'a>>,
-}
-
-struct PerSeriesSamples<'a> {
-    series: &'a mut TimeSeries,
-    samples: SmallVec<Sample, 4>,
-    indices: SmallVec<usize, 4>,
 }
 
 /// TS.MADD key timestamp value [key timestamp value ...]
@@ -61,7 +54,7 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // parse the input arguments into a map of samples grouped by series
     let mut input_map = parse_args(ctx, &args[1..], &current_ts)?;
 
-    let results = handle_update(&mut input_map)?;
+    let results = handle_update(ctx, &mut input_map)?;
 
     // reassemble the input back into the original order
     let mut all_inputs = Vec::with_capacity(sample_count);
@@ -90,64 +83,8 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     Ok(ValkeyValue::Array(result))
 }
 
-fn add_samples_internal(
-    input: &mut PerSeriesSamples,
-) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-    if input.samples.len() == 1 {
-        let sample = input.samples.pop().unwrap();
-        let index = input.indices.pop().unwrap();
-        let result = input.series.add(sample.timestamp, sample.value, None);
-        return Ok(smallvec![(index, result)]);
-    }
-
-    let add_results = input
-        .series
-        .merge_samples(&input.samples, None)
-        .map_err(|e| ValkeyError::String(format!("{e}")))?;
-
-    let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
-    for item in add_results
-        .iter()
-        .zip(input.indices.iter())
-        .map(|(res, index)| (*index, *res))
-    {
-        result.push(item);
-    }
-
-    Ok(result)
-}
-
-fn execute_grouped(
-    groups: &mut [PerSeriesSamples],
-) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-    match groups {
-        [] => Ok(smallvec![]),
-        [first] => add_samples_internal(first),
-        [left, right] => {
-            let (l, r) = join(
-                || add_samples_internal(left),
-                || add_samples_internal(right),
-            );
-            let mut res = l?;
-            let other = r?;
-
-            res.extend(other);
-            Ok(res)
-        }
-        _ => {
-            let mid = groups.len() / 2;
-            let (left, right) = groups.split_at_mut(mid);
-            let (l, r) = join(|| execute_grouped(left), || execute_grouped(right));
-            let mut res = l?;
-            let other = r?;
-
-            res.extend(other);
-            Ok(res)
-        }
-    }
-}
-
 fn handle_update(
+    ctx: &Context,
     input_map: &mut AHashMap<&ValkeyString, SeriesSamples>,
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
     let mut per_series_samples: SmallVec<PerSeriesSamples, 4> = SmallVec::new();
@@ -165,30 +102,27 @@ fn handle_update(
             continue;
         }
 
-        if let Some(series) = &mut samples.series {
-            let mut s = PerSeriesSamples {
-                series: series.deref_mut(),
-                samples: SmallVec::new(),
-                indices: SmallVec::new(),
-            };
+        let Some(series) = &mut samples.series else {
+            continue;
+        };
 
-            for input in samples.samples.iter() {
-                if input.res.is_ok() {
-                    s.samples.push(Sample::new(input.timestamp, input.value));
-                    s.indices.push(input.index);
-                } else {
-                    // if we have an error, we need to return it for this sample
-                    errors.push((input.index, input.res));
-                }
-            }
+        let mut s = PerSeriesSamples::new(series.deref_mut());
 
-            if !s.samples.is_empty() {
-                per_series_samples.push(s);
+        for input in samples.samples.iter() {
+            if input.res.is_ok() {
+                s.add_sample(Sample::new(input.timestamp, input.value), input.index);
+            } else {
+                // if we have an error, we need to return it for this sample
+                errors.push((input.index, input.res));
             }
+        }
+
+        if !s.is_empty() {
+            per_series_samples.push(s);
         }
     }
 
-    let mut results = execute_grouped(&mut per_series_samples)?;
+    let mut results = multi_series_merge_samples(&mut per_series_samples, Some(ctx))?;
     // add errors to the results
     results.extend(errors);
     results.sort_by_key(|(index, _)| *index);
