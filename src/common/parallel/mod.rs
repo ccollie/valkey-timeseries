@@ -252,3 +252,40 @@ where
 //         }
 //     }
 // }
+
+pub fn par_try_for_each_mut<T: Send, F, E>(slice: &mut [T], f: F) -> Result<(), E>
+where
+    F: Fn(&mut T) -> Result<(), E> + Send + Sync,
+    E: Send,
+{
+    fn for_each_internal<E, T, F>(slice: &mut [T], f: &F) -> Result<(), E>
+    where
+        F: Fn(&mut T) -> Result<(), E> + Send + Sync,
+        E: Send,
+        T: Send,
+    {
+        match slice {
+            [] => Ok(()),
+            [first] => f(first),
+            [first, second] => {
+                let (l, r) = join(|| f(first), || f(second));
+                l?;
+                r?;
+                Ok(())
+            }
+            _ => {
+                let mid = slice.len() / 2;
+                let (left, right) = slice.split_at_mut(mid);
+                let (l, r) = join(
+                    || for_each_internal(left, f),
+                    || for_each_internal(right, f),
+                );
+                l?;
+                r?;
+                Ok(())
+            }
+        }
+    }
+
+    for_each_internal(slice, &f)
+}
