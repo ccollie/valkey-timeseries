@@ -43,6 +43,18 @@ pub(crate) const fn op_or(left: f64, right: f64) -> f64 {
     right
 }
 
+// implement xor
+#[inline]
+pub(crate) const fn op_xor(left: f64, right: f64) -> f64 {
+    if left.is_nan() && right.is_nan() {
+        return 0.;
+    }
+    if left == right {
+        return 0.;
+    }
+    1.
+}
+
 /// gt returns true if left > right
 #[inline]
 pub(crate) const fn op_gt(left: f64, right: f64) -> bool {

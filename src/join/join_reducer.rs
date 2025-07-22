@@ -1,8 +1,4 @@
-use crate::common::binop::{
-    abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte, compare_neq,
-    max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul, op_or,
-    op_plus, op_pow, op_unless, pct_change, sgn_diff, BinopFunc,
-};
+use crate::common::binop::{abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte, compare_neq, max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul, op_or, op_plus, op_pow, op_unless, op_xor, pct_change, sgn_diff, BinopFunc};
 use std::fmt;
 use std::str::FromStr;
 use valkey_module::ValkeyError;
@@ -35,6 +31,7 @@ pub enum JoinReducer {
     SgnDiff,
     Sum,
     Unless,
+    Xor,
 }
 
 fn join_reducer_get(key: &str) -> Option<JoinReducer> {
@@ -68,7 +65,8 @@ fn join_reducer_get(key: &str) -> Option<JoinReducer> {
         "sum" => JoinReducer::Sum,
         "avg" => JoinReducer::Avg,
         "max" => JoinReducer::Max,
-        "min" => JoinReducer::Min
+        "min" => JoinReducer::Min,
+        "xor" => JoinReducer::Xor,
     }
 }
 
@@ -101,6 +99,7 @@ impl JoinReducer {
             Avg => "avg",
             Max => "max",
             Min => "min",
+            Xor => "xor",
         }
     }
 
@@ -132,6 +131,7 @@ impl JoinReducer {
             SgnDiff => sgn_diff,
             Unless => op_unless,
             PctChange => pct_change,
+            Xor => op_xor,
         }
     }
 }
