@@ -1,7 +1,9 @@
 use crate::aggregators::AggregationType;
 use crate::commands::{parse_duration, CommandArgIterator};
 use crate::parser::timestamp::parse_timestamp;
-use crate::series::{check_new_rule_circular_dependency, get_timeseries_mut, CompactionRule, SeriesRef};
+use crate::series::{
+    check_new_rule_circular_dependency, get_timeseries_mut, CompactionRule, SeriesRef,
+};
 use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
     VALKEY_OK,

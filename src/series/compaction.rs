@@ -118,11 +118,7 @@ impl Parallel for CompactionWorker {
     }
 }
 
-pub fn run_compaction(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    sample: Sample,
-) -> TsdbResult<()> {
+pub fn run_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample) -> TsdbResult<()> {
     if series.rules.is_empty() {
         return Ok(());
     }
@@ -143,11 +139,7 @@ pub fn run_compaction(
     }
 }
 
-pub fn upsert_compaction(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    sample: Sample,
-) -> TsdbResult<()> {
+pub fn upsert_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample) -> TsdbResult<()> {
     if series.rules.is_empty() {
         return Ok(());
     }

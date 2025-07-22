@@ -1,4 +1,8 @@
-use crate::common::binop::{abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte, compare_neq, max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul, op_or, op_plus, op_pow, op_unless, op_xor, pct_change, sgn_diff, BinopFunc};
+use crate::common::binop::{
+    abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte, compare_neq,
+    max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul, op_or,
+    op_plus, op_pow, op_unless, op_xor, pct_change, sgn_diff, BinopFunc,
+};
 use std::fmt;
 use std::str::FromStr;
 use valkey_module::ValkeyError;
