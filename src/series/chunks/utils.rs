@@ -57,17 +57,3 @@ pub(crate) fn filter_timestamp_slice(
     filtered.dedup();
     filtered
 }
-
-pub(crate) fn write_usize(slice: &mut Vec<u8>, size: usize) {
-    slice.extend_from_slice(&size.to_le_bytes());
-}
-
-pub(crate) fn read_usize(input: &mut &[u8], field: &str) -> TsdbResult<usize> {
-    let (int_bytes, rest) = input.split_at(size_of::<usize>());
-    let buf = int_bytes.try_into().map_err(|_| {
-        TsdbError::CannotDeserialize(format!("invalid usize reading {field}").to_string())
-    })?;
-
-    *input = rest;
-    Ok(usize::from_le_bytes(buf))
-}
