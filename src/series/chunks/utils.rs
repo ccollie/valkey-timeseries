@@ -1,6 +1,5 @@
 use crate::common::binary_search::*;
 use crate::common::{Sample, Timestamp};
-use crate::error::{TsdbError, TsdbResult};
 use crate::series::types::ValueFilter;
 use smallvec::SmallVec;
 
