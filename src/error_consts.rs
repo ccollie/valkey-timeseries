@@ -72,3 +72,4 @@ pub const CLUSTER_MODE_ERROR: &str = "TSDB: cluster mode not supported";
 pub const NO_CLUSTER_NODES_AVAILABLE: &str = "TSDB: no cluster nodes available";
 pub const WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED: &str =
     "TSDB: WITHLABELS and SELECTED_LABELS are mutually exclusive";
+pub const COMPACTION_CIRCULAR_DEPENDENCY: &str = "TSDB: circular dependency in compaction rules";

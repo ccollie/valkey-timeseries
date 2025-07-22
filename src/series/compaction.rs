@@ -3,12 +3,16 @@ use crate::common::parallel::{Parallel, ParallelExt};
 use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
+use crate::error_consts;
 use crate::series::index::{get_series_by_id, get_series_key_by_id};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size::GetSize;
 use smallvec::SmallVec;
 use std::sync::{Arc, Mutex};
-use valkey_module::{raw, BlockedClient, Context, NotifyEvent, ThreadSafeContext, ValkeyResult};
+use topologic::AcyclicDependencyGraph;
+use valkey_module::{
+    raw, BlockedClient, Context, NotifyEvent, ThreadSafeContext, ValkeyError, ValkeyResult,
+};
 
 const PARALLEL_THRESHOLD: usize = 2;
 
@@ -126,7 +130,7 @@ pub fn run_compaction_parallel(
     let last_ts = series.last_timestamp();
 
     if sample.timestamp < last_ts {
-        run_parallel(
+        iterate_compactions(
             ctx,
             series,
             sample,
@@ -135,7 +139,7 @@ pub fn run_compaction_parallel(
             },
         )
     } else {
-        run_parallel(
+        iterate_compactions(
             ctx,
             series,
             sample,
@@ -472,8 +476,7 @@ fn handle_current_bucket_adjustment(
         // Re-aggregate samples that are not in the removal range
         let bucket_samples = series
             .range_iter(current_bucket_start, current_bucket_end)
-            .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end)
-            .into_iter();
+            .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
         for sample in bucket_samples {
             new_aggregator.update(sample.value);
@@ -520,7 +523,39 @@ fn get_compaction_series<'a>(
     destinations
 }
 
-fn run_parallel<F>(ctx: &Context, series: &mut TimeSeries, value: Sample, f: F) -> TsdbResult<()>
+/// Iterates through compaction rules (possibly in parallel) and applies the provided function `f` to process
+/// the specified `TimeSeries` and its associated child series. This function handles
+/// the traversal and execution of compaction logic on the series hierarchy, allowing
+/// recursive processing of any child `TimeSeries` derived from the rules.
+///
+/// ## Arguments
+///
+/// - `ctx`: A reference to the current context, which provides access to the
+///   database and facilitates operations like retrieving child series or logging.
+/// - `series`: A mutable reference to the `TimeSeries` being processed. This object
+///   may have compaction rules and child series derived from those rules.
+/// - `value`: A `Sample` object containing the value or data being processed
+///   during the current iteration.
+/// - `f`: A closure or function pointer that implements the processing logic
+///   for each compaction rule. This function is called with:
+///   - A thread-safe context (`ThreadSafeContext`) for logging or thread-dependent operations.
+///   - The current `TimeSeries` being processed.
+///   - A mutable reference to a child `TimeSeries` derived from compaction rules.
+///   - A mutable reference to a `CompactionRule` for the current rule being processed.
+///   - The sample value (`value`) to be processed.
+///
+/// ## Returns
+///
+/// This function returns a `TsdbResult<()>`:
+/// - `Ok(())` if all compaction operations and recursive calls are successful.
+/// - `Err` if any part of the compaction operation fails at any level.
+///
+fn iterate_compactions<F>(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    value: Sample,
+    f: F,
+) -> TsdbResult<()>
 where
     F: Fn(
             &ThreadSafeContext<BlockedClient>,
@@ -532,11 +567,57 @@ where
         + Send
         + Sync,
 {
-    let destinations = get_compaction_series(ctx, series);
+    fn process_series<F>(
+        ctx: &Context,
+        series: &mut TimeSeries,
+        value: Sample,
+        f: F,
+    ) -> TsdbResult<()>
+    where
+        F: Fn(
+                &ThreadSafeContext<BlockedClient>,
+                &TimeSeries,
+                &mut TimeSeries,
+                &mut CompactionRule,
+                Sample,
+            ) -> TsdbResult<()>
+            + Send
+            + Sync,
+    {
+        // Process the source series first
+        let destinations = get_compaction_series(ctx, series);
+        if destinations.is_empty() || series.rules.is_empty() {
+            // No destination series available, nothing to do
+            return Ok(());
+        }
+        let mut rules = std::mem::take(&mut series.rules);
+        let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
+        let res = run_internal(&thread_ctx, series, &mut rules, destinations, value, &f);
 
-    if series.rules.is_empty() {
-        // No destination series available, nothing to do
-        return Ok(());
+        // Recurse into child series
+        let children: SmallVec<SeriesGuardMut, 4> = rules
+            .iter()
+            .filter_map(|rule| get_destination_series(ctx, rule.dest_id))
+            .collect::<SmallVec<_, 4>>();
+
+        series.rules = rules;
+        res?;
+
+        for mut child_series in children {
+            let destinations = get_compaction_series(ctx, &mut child_series);
+            let mut rules = std::mem::take(&mut child_series.rules);
+            let res = run_internal(
+                &thread_ctx,
+                &child_series,
+                &mut rules,
+                destinations,
+                value,
+                &f,
+            );
+            child_series.rules = rules;
+            res?;
+        }
+        Ok(())
     }
 
     fn run_internal<F>(
@@ -555,9 +636,12 @@ where
                 &mut CompactionRule,
                 Sample,
             ) -> TsdbResult<()>
-            + Send
             + Sync,
     {
+        if rules.is_empty() {
+            // No compaction rules, nothing to do
+            return Ok(());
+        }
         let destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
 
         let mut worker = CompactionWorker::new();
@@ -589,12 +673,7 @@ where
         Err(first_error)
     }
 
-    let mut rules = std::mem::take(&mut series.rules);
-    let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
-    let res = run_internal(&thread_ctx, series, &mut rules, destinations, value, f);
-    series.rules = rules;
-    // todo: recurse into child series if needed
-    res
+    process_series(ctx, series, value, f)
 }
 
 fn add_dest_bucket(
@@ -690,7 +769,7 @@ impl TimeSeries {
         if self.rules.is_empty() {
             return Ok(());
         }
-        run_parallel(ctx, self, value, |thread_ctx, parent, dest, rule, item| {
+        iterate_compactions(ctx, self, value, |thread_ctx, parent, dest, rule, item| {
             handle_compaction_upsert(thread_ctx, parent, rule, dest, item)
         })
     }
@@ -707,7 +786,7 @@ impl TimeSeries {
         }
         let unused = Sample::new(0, 0.0);
         // Process all contexts in parallel
-        run_parallel(
+        iterate_compactions(
             ctx,
             self,
             unused,
@@ -739,4 +818,65 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
     let value = rule.aggregator.current()?;
     let sample = Sample::new(start, value);
     Some(sample)
+}
+
+pub fn check_circular_dependencies(ctx: &Context, series: &mut TimeSeries) -> ValkeyResult<()> {
+    let graph = build_compaction_dependency_graph(ctx, series)?;
+    if graph.is_empty() {
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// Check if adding a new compaction rule would create a circular dependency
+pub fn check_new_rule_circular_dependency(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    rule: &CompactionRule,
+) -> ValkeyResult<()> {
+    if series.rules.is_empty() {
+        return Ok(());
+    }
+
+    let mut graph = build_compaction_dependency_graph(ctx, series)?;
+    if graph.is_empty() {
+        return Ok(());
+    }
+
+    // Check if the new rule would create a circular dependency
+    if graph.depend_on(series.id, rule.dest_id).is_err() {
+        return Err(ValkeyError::Str(
+            error_consts::COMPACTION_CIRCULAR_DEPENDENCY,
+        ));
+    }
+
+    Ok(())
+}
+
+// todo: swap out impl of topological sorter or bring in the code and use stack based
+// storage for the graph to avoid heap allocations
+pub fn build_compaction_dependency_graph(
+    ctx: &Context,
+    series: &mut TimeSeries,
+) -> ValkeyResult<AcyclicDependencyGraph<SeriesRef>> {
+    fn build(
+        ctx: &Context,
+        source_series: &mut TimeSeries,
+        graph: &mut AcyclicDependencyGraph<SeriesRef>,
+    ) -> ValkeyResult<()> {
+        let src_id = source_series.id;
+        let mut destinations = get_compaction_series(ctx, source_series);
+        for dest in destinations.iter_mut() {
+            graph
+                .depend_on(src_id, dest.id)
+                .map_err(|_| ValkeyError::Str(error_consts::COMPACTION_CIRCULAR_DEPENDENCY))?;
+            build(ctx, dest, graph)?;
+        }
+        Ok(())
+    }
+
+    let mut graph = AcyclicDependencyGraph::new();
+    build(ctx, series, &mut graph)?;
+
+    Ok(graph)
 }

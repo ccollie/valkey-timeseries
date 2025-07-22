@@ -1,7 +1,7 @@
 use crate::aggregators::AggregationType;
 use crate::commands::{parse_duration, CommandArgIterator};
 use crate::parser::timestamp::parse_timestamp;
-use crate::series::{get_timeseries_mut, CompactionRule, SeriesRef};
+use crate::series::{check_new_rule_circular_dependency, get_timeseries_mut, CompactionRule, SeriesRef};
 use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
     VALKEY_OK,
@@ -64,14 +64,10 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ));
     }
 
-    if !dest_series.rules.is_empty() {
-        return Err(ValkeyError::Str(
-            "TSDB: destination series is already the source of compaction rules",
-        ));
-    }
-
     // Parse aggregation options
     let rule = parse_args(&mut args, dest_id)?;
+
+    check_new_rule_circular_dependency(ctx, &mut source_series, &rule)?;
 
     // add or replace in the list of compaction rules in `source_series`
     if let Some(existing) = source_series
