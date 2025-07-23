@@ -231,7 +231,7 @@ impl SampleDuplicatePolicy {
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum SampleAddResult {
-    Ok(Timestamp),
+    Ok(Sample),
     Duplicate,
     Ignored(Timestamp),
     TooOld,
@@ -254,7 +254,7 @@ impl SampleAddResult {
 impl Display for SampleAddResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SampleAddResult::Ok(ts) => write!(f, "Added @ {ts}"),
+            SampleAddResult::Ok(sample) => write!(f, "Added {sample}"),
             SampleAddResult::Duplicate => write!(f, "{}", error_consts::DUPLICATE_SAMPLE),
             SampleAddResult::Ignored(ts) => write!(f, "Ignored. Using ts: {ts}"),
             SampleAddResult::TooOld => write!(f, "{}", error_consts::SAMPLE_TOO_OLD),
@@ -272,7 +272,8 @@ impl Display for SampleAddResult {
 impl From<SampleAddResult> for ValkeyValue {
     fn from(res: SampleAddResult) -> Self {
         match res {
-            SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
+            SampleAddResult::Ok(ts) => ts.into(),
+            SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
             SampleAddResult::Duplicate => {
                 ValkeyValue::SimpleStringStatic(error_consts::DUPLICATE_SAMPLE)
             }
@@ -301,7 +302,7 @@ impl From<SampleAddResult> for ValkeyValue {
 impl From<SampleAddResult> for ValkeyResult {
     fn from(result: SampleAddResult) -> Self {
         match result {
-            SampleAddResult::Ok(ts) => Ok(ValkeyValue::Integer(ts)),
+            SampleAddResult::Ok(sample) => Ok(sample.into()),
             SampleAddResult::Ignored(ts) => Ok(ValkeyValue::Integer(ts)),
             SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE)),
             SampleAddResult::TooOld => Err(ValkeyError::Str(error_consts::SAMPLE_TOO_OLD)),

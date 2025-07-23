@@ -228,7 +228,7 @@ impl Chunk for GorillaChunk {
         ) -> TsdbResult<()> {
             match chunk.add_sample(sample) {
                 Ok(_) => {
-                    res.push(SampleAddResult::Ok(sample.timestamp));
+                    res.push(SampleAddResult::Ok(*sample));
                     Ok(())
                 }
                 err @ Err(TsdbError::CapacityFull(_)) => Err(err.unwrap_err()),
@@ -282,7 +282,7 @@ impl Chunk for GorillaChunk {
                     if is_duplicate {
                         state.result.push(SampleAddResult::Duplicate);
                     } else {
-                        state.result.push(SampleAddResult::Ok(sample.timestamp));
+                        state.result.push(SampleAddResult::Ok(sample));
                     }
                 }
                 Ok(())

@@ -362,6 +362,15 @@ mod tests {
         }
     }
 
+    fn assert_ok(result: SampleAddResult, expected: SampleAddResult) {
+        match (result, expected) {
+            (SampleAddResult::Ok(actual), SampleAddResult::Ok(expected)) => {
+                assert_eq!(actual, expected);
+            }
+            _ => panic!("Unexpected result: {:?}", result),
+        }
+    }
+    
     #[test]
     fn test_merge_samples_empty_timeseries() {
         let mut ts = TimeSeries::new();
@@ -379,8 +388,8 @@ mod tests {
         let results = ts.merge_samples(&samples, None).unwrap();
 
         assert_eq!(results.len(), 2);
-        assert!(matches!(results[0], SampleAddResult::Ok(100)));
-        assert!(matches!(results[1], SampleAddResult::Ok(200)));
+        assert_ok(results[0], SampleAddResult::Ok(samples[0]));
+        assert_ok(results[1], SampleAddResult::Ok(samples[1]));
         assert_eq!(ts.len(), 2);
         assert_eq!(ts.first_timestamp, 100);
         assert_eq!(ts.last_timestamp(), 200);
@@ -405,8 +414,8 @@ mod tests {
         let results = ts.merge_samples(&samples, None).unwrap();
 
         assert_eq!(results.len(), 2);
-        assert!(matches!(results[0], SampleAddResult::Ok(100)));
-        assert!(matches!(results[1], SampleAddResult::Ok(200)));
+        assert_ok(results[0], SampleAddResult::Ok(samples[0]));
+        assert_ok(results[1], SampleAddResult::Ok(samples[1]));
         assert_eq!(ts.len(), 3); // 1 initial + 2 merged
         assert_eq!(ts.first_timestamp, 100);
         assert_eq!(ts.last_timestamp(), 200);
@@ -447,8 +456,8 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         // Note: The order in results corresponds to the input order
-        assert!(matches!(results[0], SampleAddResult::Ok(200)));
-        assert!(matches!(results[1], SampleAddResult::Ok(100)));
+        assert_ok(results[0], SampleAddResult::Ok(samples[0]));
+        assert_ok(results[1], SampleAddResult::Ok(samples[1]));
         assert_eq!(ts.len(), 2);
         assert_eq!(ts.first_timestamp, 100);
         assert_eq!(ts.last_timestamp(), 200);
@@ -513,7 +522,7 @@ mod tests {
 
         let expected = samples_to_add
             .iter()
-            .map(|sample| SampleAddResult::Ok(sample.timestamp))
+            .map(|sample| SampleAddResult::Ok(*sample))
             .collect::<Vec<_>>();
 
         let results = ts.merge_samples(&samples_to_add, None).unwrap();
@@ -548,7 +557,7 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert!(matches!(results[0], SampleAddResult::TooOld));
-        assert!(matches!(results[1], SampleAddResult::Ok(150)));
+        assert_ok(results[1], SampleAddResult::Ok(samples[1]));
         assert_eq!(ts.len(), 2); // Only the valid sample was added
         assert!(ts.get_sample(50).unwrap().is_none());
         assert!(ts.get_sample(150).unwrap().is_some());
@@ -589,8 +598,8 @@ mod tests {
         let results = ts.merge_samples(&samples, None).unwrap();
 
         assert_eq!(results.len(), 2);
-        assert!(matches!(results[0], SampleAddResult::Ok(100)));
-        assert!(matches!(results[1], SampleAddResult::Ok(200)));
+        assert_ok(results[0], SampleAddResult::Ok(samples[0]));
+        assert_ok(results[1], SampleAddResult::Ok(samples[1]));
         assert_eq!(ts.len(), 2);
         assert_eq!(ts.get_sample(100).unwrap().unwrap().value, 1.23); // Rounded
         assert_eq!(ts.get_sample(200).unwrap().unwrap().value, 5.68); // Rounded

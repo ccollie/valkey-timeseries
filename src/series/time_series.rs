@@ -171,7 +171,7 @@ impl TimeSeries {
         {
             SampleAddResult::Ignored(last_sample.timestamp)
         } else {
-            SampleAddResult::Ok(sample.timestamp)
+            SampleAddResult::Ok(*sample)
         }
     }
 
@@ -180,7 +180,7 @@ impl TimeSeries {
         match chunk.add_sample(&sample) {
             Ok(_) => {
                 self.update_after_sample_add(sample);
-                SampleAddResult::Ok(sample.timestamp)
+                SampleAddResult::Ok(sample)
             }
             Err(TsdbError::CapacityFull(_)) => self.handle_full_chunk(sample),
             Err(_) => SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE),
@@ -210,7 +210,7 @@ impl TimeSeries {
 
     fn handle_full_chunk(&mut self, sample: Sample) -> SampleAddResult {
         match self.add_chunk_with_sample(sample) {
-            Ok(_) => SampleAddResult::Ok(sample.timestamp),
+            Ok(_) => SampleAddResult::Ok(sample),
             Err(TsdbError::DuplicateSample(_)) => SampleAddResult::Duplicate,
             Err(_) => SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE),
         }
@@ -296,7 +296,7 @@ impl TimeSeries {
                 }
                 self.first_timestamp = sample.timestamp.min(self.first_timestamp);
 
-                SampleAddResult::Ok(sample.timestamp)
+                SampleAddResult::Ok(sample)
             }
             Err(_) => SampleAddResult::Error(error_consts::CHUNK_SPLIT),
         }

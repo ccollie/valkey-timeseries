@@ -152,8 +152,8 @@ fn parse_args<'a>(
             match get_timeseries_mut(ctx, key, true, Some(AclPermissions::UPDATE)) {
                 Ok(Some(guard)) => {
                     series_samples.series = Some(guard);
-                    series_samples.err = SampleAddResult::Ok(0);
-                    SampleAddResult::Ok(0)
+                    series_samples.err = SampleAddResult::Ok(Sample::default());
+                    SampleAddResult::Ok(Sample::default())
                 }
                 Ok(None) => SampleAddResult::InvalidKey,
                 Err(_) => SampleAddResult::InvalidPermissions,

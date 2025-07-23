@@ -297,7 +297,7 @@ impl PcoChunk {
                     if is_duplicate {
                         state.result.push(SampleAddResult::Duplicate);
                     } else {
-                        state.result.push(SampleAddResult::Ok(sample.timestamp));
+                        state.result.push(SampleAddResult::Ok(sample));
                     }
                 }
                 Ok(())
@@ -438,7 +438,7 @@ impl Chunk for PcoChunk {
             for sample in samples {
                 timestamps.push(sample.timestamp);
                 values.push(sample.value);
-                result.push(SampleAddResult::Ok(sample.timestamp));
+                result.push(SampleAddResult::Ok(*sample));
             }
 
             self.compress(&timestamps, &values)?;
@@ -454,7 +454,7 @@ impl Chunk for PcoChunk {
                 for sample in samples {
                     timestamps.push(sample.timestamp);
                     values.push(sample.value);
-                    result.push(SampleAddResult::Ok(sample.timestamp));
+                    result.push(SampleAddResult::Ok(*sample));
                 }
                 self.compress(&timestamps, &values)?;
                 return Ok(result);
@@ -606,6 +606,7 @@ mod tests {
     use crate::series::{DuplicatePolicy, SampleAddResult};
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
+    use crate::commands::add;
 
     fn decompress(chunk: &PcoChunk) -> Vec<Sample> {
         chunk.iter().collect()
@@ -960,7 +961,7 @@ mod tests {
 
         // Check that all new samples were added successfully
         for (i, sample) in new_samples.iter().enumerate() {
-            assert_eq!(result[i], SampleAddResult::Ok(sample.timestamp));
+            assert_eq!(result[i], SampleAddResult::Ok(*sample));
         }
 
         // Verify the chunk now contains the initial and new samples
@@ -983,7 +984,7 @@ mod tests {
 
         // Check that all new samples were added successfully
         for (i, sample) in left_samples.iter().enumerate() {
-            assert_eq!(result[i], SampleAddResult::Ok(sample.timestamp));
+            assert_eq!(result[i], SampleAddResult::Ok(*sample));
         }
 
         // Verify that the chunk now contains both the new and existing samples
@@ -1034,8 +1035,8 @@ mod tests {
         assert_eq!(
             result,
             vec![
-                SampleAddResult::Ok(2), // Duplicate, but should be overwritten
-                SampleAddResult::Ok(4), // New sample
+                SampleAddResult::Ok(new_samples[0]), // Duplicate, but should be overwritten
+                SampleAddResult::Ok(new_samples[1]), // New sample
             ]
         );
 
@@ -1106,7 +1107,7 @@ mod tests {
             vec![
                 SampleAddResult::Duplicate,
                 SampleAddResult::Duplicate,
-                SampleAddResult::Ok(4),
+                SampleAddResult::Ok(new_samples[2]),
             ]
         );
 
@@ -1144,7 +1145,7 @@ mod tests {
         // Ensure all samples are added successfully
         for (i, sample) in samples.iter().enumerate() {
             match result[i] {
-                SampleAddResult::Ok(ts) => assert_eq!(ts, sample.timestamp),
+                SampleAddResult::Ok(added) => assert_eq!(added.timestamp, sample.timestamp),
                 _ => panic!("Expected SampleAddResult::Ok, got {:?}", result[i]),
             }
         }
@@ -1181,8 +1182,8 @@ mod tests {
 
         // Check results
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], SampleAddResult::Ok(chunk.min_time));
-        assert_eq!(result[1], SampleAddResult::Ok(chunk.max_time));
+        assert_eq!(result[0], SampleAddResult::Ok(boundary_samples[0]));
+        assert_eq!(result[1], SampleAddResult::Ok(boundary_samples[1]));
 
         // Decompress and verify the samples
         let decompressed_samples = chunk.decompress_samples().unwrap();

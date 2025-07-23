@@ -293,14 +293,14 @@ impl Chunk for UncompressedChunk {
             } else {
                 self.upsert_sample(first, DuplicatePolicy::KeepLast)?;
             }
-            return Ok(vec![SampleAddResult::Ok(first.timestamp)]);
+            return Ok(vec![SampleAddResult::Ok(first)]);
         }
 
         if self.is_empty() || first.timestamp > self.last_timestamp() {
             self.samples.extend_from_slice(samples);
             let result = samples
                 .iter()
-                .map(|sample| SampleAddResult::Ok(sample.timestamp))
+                .map(|sample| SampleAddResult::Ok(*sample))
                 .collect();
             return Ok(result);
         }
@@ -336,7 +336,7 @@ impl Chunk for UncompressedChunk {
                     if duplicate {
                         state.res.push(SampleAddResult::Duplicate);
                     } else {
-                        state.res.push(SampleAddResult::Ok(sample.timestamp));
+                        state.res.push(SampleAddResult::Ok(sample));
                     }
                 }
                 Ok(())
@@ -1054,7 +1054,7 @@ mod tests {
         let result = chunk.merge_samples(&new_samples, None).unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(20), SampleAddResult::Ok(40)]
+            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
         );
         assert_eq!(
             chunk.samples,
@@ -1098,7 +1098,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(30), SampleAddResult::Ok(60)]
+            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
         );
         assert_eq!(
             chunk.samples,
@@ -1145,7 +1145,7 @@ mod tests {
         let result = empty_chunk.merge_samples(&new_samples, None).unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(10), SampleAddResult::Ok(20)]
+            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
         );
         assert_eq!(empty_chunk.samples, new_samples);
 
@@ -1164,7 +1164,7 @@ mod tests {
         let result = chunk.merge_samples(&new_samples, None).unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(60), SampleAddResult::Ok(70)]
+            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
         );
         assert_eq!(
             chunk.samples,
@@ -1199,7 +1199,7 @@ mod tests {
             value: 4.0,
         }];
         let result = chunk.merge_samples(&new_samples, None).unwrap();
-        assert_eq!(result, vec![SampleAddResult::Ok(40)]);
+        assert_eq!(result, vec![SampleAddResult::Ok(new_samples[0])]);
         assert_eq!(
             chunk.samples,
             vec![

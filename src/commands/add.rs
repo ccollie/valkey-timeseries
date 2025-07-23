@@ -85,13 +85,13 @@ fn handle_add(
             };
             (timestamp, res_ts)
         }
-        SampleAddResult::Ok(res_ts) => {
+        SampleAddResult::Ok(added) => {
             let timestamp = if timestamp_str == "*" {
-                Some(res_ts)
+                Some(added.timestamp)
             } else {
                 None
             };
-            (timestamp, res_ts)
+            (timestamp, added.timestamp)
         }
         _ => {
             return res.into();

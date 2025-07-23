@@ -240,7 +240,7 @@ impl TimeSeriesChunk {
         policy: DuplicatePolicy,
     ) -> (usize, SampleAddResult) {
         match self.upsert_sample(sample, policy) {
-            Ok(size) => (size, SampleAddResult::Ok(sample.timestamp)),
+            Ok(size) => (size, SampleAddResult::Ok(sample)),
             Err(TsdbError::DuplicateSample(_)) => (0, SampleAddResult::Duplicate),
             Err(_) => (0, SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE)),
         }

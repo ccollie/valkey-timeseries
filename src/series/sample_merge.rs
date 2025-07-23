@@ -10,13 +10,11 @@ use std::ops::DerefMut;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
 use crate::series::index::get_series_key_by_id;
 
-/// Appending to a GorillaChunk is a streaming operation, but adding out-of-order samples is an O(n) operation, where `n`
-/// is Chunk::num_samples(). For every insert of a sample with a timestamp prior to the last timestamp,
-/// the chunk data is rewritten to insert the sample in the correct location.
+/// Appending to a GorillaChunk is a streaming operation, but adding out-of-order samples is an O(n) operation.
+/// For every insert of a sample with a timestamp prior to the last timestamp, the chunk data is rewritten to insert
+/// the sample in the correct location.
 ///
 /// To optimize this process, we group samples by the chunk they belong to, then merge them in a single write operation.
-
-
 /// Represents a collection of samples for a single timeseries, grouped by chunk index.
 struct GroupedSamples {
     chunk_index: usize,
@@ -253,10 +251,10 @@ pub(super) fn merge_samples(
         results[orig_idx] = result;
 
         // Update metadata for successful additions
-        if let SampleAddResult::Ok(ts) = result {
+        if let SampleAddResult::Ok(sample) = result {
             // The first timestamp might need updating
-            if ts < series.first_timestamp || series.is_empty() {
-                series.first_timestamp = ts;
+            if sample.timestamp < series.first_timestamp || series.is_empty() {
+                series.first_timestamp = sample.timestamp;
             }
 
             // Update sample count
@@ -274,6 +272,7 @@ struct SeriesWorker{
     chunk_results: SmallVec<(usize, SampleAddResult), 8>,
     err: Option<ValkeyError>,
 }
+
 impl Parallel for SeriesWorker {
     fn create(&self) -> Self {
         Self {
@@ -305,14 +304,14 @@ pub fn multi_series_merge_samples(
         chunk_results: SmallVec::new(),
         err: None,
     };
-    
+
     let thread_ctx = ctx.map(|ctx| ThreadSafeContext::with_blocked_client(ctx.block_client()));
 
     worker.maybe_par(2, groups, |worker, input| {
         if worker.err.is_some() {
             return;
         }
-        
+
         match add_samples_internal(input, &thread_ctx) {
             Ok(results) => {
                 worker.chunk_results.extend(results);
@@ -334,11 +333,13 @@ fn add_samples_internal(
     input: &mut PerSeriesSamples,
     ctx: &Option<ThreadSafeContext<BlockedClient>>
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-    
+
     if input.samples.len() == 1 {
         let sample = input.samples.pop().unwrap();
         let index = input.indices.pop().unwrap();
         let result = input.series.add(sample.timestamp, sample.value, None);
+        handle_compaction(ctx, input.series, &[result]);
+
         return Ok(smallvec![(index, result)]);
     }
 
@@ -348,14 +349,11 @@ fn add_samples_internal(
         .map_err(|e| ValkeyError::String(format!("{e}")))?;
 
     // run compaction if needed
-    if let Some(ctx) = ctx {
-        if !input.series.rules.is_empty() {
-            let locked_ctx = ctx.lock();
-            for res in add_results.iter().filter(|x| x.is_ok()) {
-                todo!("Handle compaction for series with rules");
-            }
-        }
-    }
+    handle_compaction(
+        &ctx,
+        input.series,
+        &add_results
+    );
 
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results
@@ -370,25 +368,32 @@ fn add_samples_internal(
 }
 
 fn handle_compaction(
-    ctx: &Context,
+    thread_ctx: &Option<ThreadSafeContext<BlockedClient>>,
     series: &mut TimeSeries,
-    samples: &[Sample],
-    results: &mut [SampleAddResult],
-    last_timestamp: Option<Timestamp>,
+    results: &[SampleAddResult],
 ) {
     if series.rules.is_empty() {
         return;
     }
 
-    // Run compaction for each sample
-    for sample in samples {
+    let Some(thread_ctx) = thread_ctx else {
+        return;
+    };
+
+    let last_timestamp = series.last_sample.map(|last_sample| last_sample.timestamp);
+
+    for sample in results {
+        let SampleAddResult::Ok(sample) = sample else {
+            continue;
+        };
+        let ctx = thread_ctx.lock();
         let result = if is_upsert(sample.timestamp, last_timestamp) {
-            series.upsert_compaction(ctx, *sample)
+            series.upsert_compaction(&ctx, *sample)
         } else {
-            series.run_compaction(ctx, *sample)
+            series.run_compaction(&ctx, *sample)
         };
         if let Err(e) = result {
-            let key = get_series_key_by_id(ctx, series.id)
+            let key = get_series_key_by_id(&ctx, series.id)
                 .unwrap_or_else(|| ctx.create_string("Unknown"));
             let msg = format!(
                 "TSDB: error running compaction upsert for key '{key}': {e}",

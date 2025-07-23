@@ -96,15 +96,12 @@ fn handle_update(
 
     let result = series.increment_sample_value(timestamp, delta)?;
     match result {
-        SampleAddResult::Ok(ts) | SampleAddResult::Ignored(ts) => {
-            let event = if is_increment {
-                "ts.incrby"
-            } else {
-                "ts.decrby"
-            };
-            ctx.replicate_verbatim();
-            ctx.notify_keyspace_event(NotifyEvent::MODULE, event, key_name);
-            Ok(ValkeyValue::Integer(ts))
+        SampleAddResult::Ok(added) => {
+            replicate_and_notify(ctx, key_name, is_increment, added.timestamp)
+        }
+        SampleAddResult::Ignored(_ts) => {
+            let last_ts = series.last_timestamp();
+            Ok(ValkeyValue::Integer(last_ts))
         }
         SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE_BLOCKED)),
         SampleAddResult::Error(err) => Err(ValkeyError::Str(err)),
@@ -112,4 +109,20 @@ fn handle_update(
             unreachable!("BUG: invalid return value from TimeSeries::add() in TS.INCRBY/TS.DECRBY")
         }
     }
+}
+
+fn replicate_and_notify(
+    ctx: &Context,
+    key_name: &ValkeyString,
+    is_increment: bool,
+    ts: Timestamp,
+) -> ValkeyResult {
+    let event = if is_increment {
+        "ts.incrby"
+    } else {
+        "ts.decrby"
+    };
+    ctx.replicate_verbatim();
+    ctx.notify_keyspace_event(NotifyEvent::MODULE, event, key_name);
+    Ok(ValkeyValue::Integer(ts))
 }
