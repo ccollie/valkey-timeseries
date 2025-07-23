@@ -701,7 +701,6 @@ mod tests {
     use crate::series::{DuplicatePolicy, SampleAddResult};
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
-    use crate::commands::add;
 
     fn decompress(chunk: &PcoChunk) -> Vec<Sample> {
         chunk.iter().collect()
