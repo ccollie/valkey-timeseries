@@ -4,11 +4,11 @@ use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
 use crate::error_consts;
 use crate::series::chunks::{Chunk, TimeSeriesChunk};
+use crate::series::index::get_series_key_by_id;
 use crate::series::{find_last_ge_index, DuplicatePolicy, SampleAddResult, TimeSeries};
 use smallvec::{smallvec, SmallVec};
 use std::ops::DerefMut;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
-use crate::series::index::get_series_key_by_id;
 
 /// Appending to a GorillaChunk is a streaming operation, but adding out-of-order samples is an O(n) operation.
 /// For every insert of a sample with a timestamp prior to the last timestamp, the chunk data is rewritten to insert
@@ -233,11 +233,13 @@ pub(super) fn merge_samples(
     }
 
     // Group samples by chunk. Map is chunk_idx -> Vec<(original_index, sample)>
-    let chunk_groups = group_samples_by_chunk(series, samples, &mut results, earliest_allowed_timestamp);
+    let chunk_groups =
+        group_samples_by_chunk(series, samples, &mut results, earliest_allowed_timestamp);
     let mut chunks = std::mem::take(&mut series.chunks);
     let mut worker = MergeWorker::new();
     worker.maybe_par_idx(2, chunks.deref_mut(), |worker, index, chunk| {
-        let group = chunk_groups.get(&index)
+        let group = chunk_groups
+            .get(&index)
             .expect("Chunk index should exist in chunk groups");
 
         let results = group.handle_merge(chunk, group, policy);
@@ -268,7 +270,7 @@ pub(super) fn merge_samples(
     Ok(results)
 }
 
-struct SeriesWorker{
+struct SeriesWorker {
     chunk_results: SmallVec<(usize, SampleAddResult), 8>,
     err: Option<ValkeyError>,
 }
@@ -331,9 +333,8 @@ pub fn multi_series_merge_samples(
 
 fn add_samples_internal(
     input: &mut PerSeriesSamples,
-    ctx: &Option<ThreadSafeContext<BlockedClient>>
+    ctx: &Option<ThreadSafeContext<BlockedClient>>,
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-
     if input.samples.len() == 1 {
         let sample = input.samples.pop().unwrap();
         let index = input.indices.pop().unwrap();
@@ -349,11 +350,7 @@ fn add_samples_internal(
         .map_err(|e| ValkeyError::String(format!("{e}")))?;
 
     // run compaction if needed
-    handle_compaction(
-        &ctx,
-        input.series,
-        &add_results
-    );
+    handle_compaction(ctx, input.series, &add_results);
 
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results
@@ -395,9 +392,7 @@ fn handle_compaction(
         if let Err(e) = result {
             let key = get_series_key_by_id(&ctx, series.id)
                 .unwrap_or_else(|| ctx.create_string("Unknown"));
-            let msg = format!(
-                "TSDB: error running compaction upsert for key '{key}': {e}",
-            );
+            let msg = format!("TSDB: error running compaction upsert for key '{key}': {e}",);
             ctx.log_warning(&msg);
         }
     }
@@ -405,7 +400,7 @@ fn handle_compaction(
 
 fn is_upsert(timestamp: Timestamp, last_timestamp: Option<Timestamp>) -> bool {
     if let Some(last_timestamp) = last_timestamp {
-        return timestamp <= last_timestamp
+        return timestamp <= last_timestamp;
     }
     false
 }

@@ -1,7 +1,7 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
-use crate::common::parallel::{join};
+use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
@@ -333,7 +333,6 @@ impl TimeSeries {
         }
         merge_samples(self, samples, policy_override)
     }
-
 
     /// Get the time series between given start and end time (both inclusive).
     pub fn get_range(&self, start_time: Timestamp, end_time: Timestamp) -> Vec<Sample> {

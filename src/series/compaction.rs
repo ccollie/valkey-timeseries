@@ -690,7 +690,7 @@ where
                 }
             }
         });
-        
+
         let Some(first_error) = worker.errors.first().cloned() else {
             // No errors, we can safely return
             return Ok(());

@@ -367,10 +367,10 @@ mod tests {
             (SampleAddResult::Ok(actual), SampleAddResult::Ok(expected)) => {
                 assert_eq!(actual, expected);
             }
-            _ => panic!("Unexpected result: {:?}", result),
+            _ => panic!("Unexpected result: {result:?}"),
         }
     }
-    
+
     #[test]
     fn test_merge_samples_empty_timeseries() {
         let mut ts = TimeSeries::new();
@@ -598,11 +598,9 @@ mod tests {
         let results = ts.merge_samples(&samples, None).unwrap();
 
         assert_eq!(results.len(), 2);
-        assert_ok(results[0], SampleAddResult::Ok(samples[0]));
-        assert_ok(results[1], SampleAddResult::Ok(samples[1]));
         assert_eq!(ts.len(), 2);
-        assert_eq!(ts.get_sample(100).unwrap().unwrap().value, 1.23); // Rounded
-        assert_eq!(ts.get_sample(200).unwrap().unwrap().value, 5.68); // Rounded
+        assert_ok(results[0], SampleAddResult::Ok(Sample::new(100, 1.23)));
+        assert_ok(results[1], SampleAddResult::Ok(Sample::new(200, 5.68)));
     }
 
     #[test]

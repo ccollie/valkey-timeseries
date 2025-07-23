@@ -1,7 +1,10 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
-use crate::series::{get_timeseries_mut, multi_series_merge_samples, PerSeriesSamples, SampleAddResult, SeriesGuardMut};
+use crate::series::{
+    get_timeseries_mut, multi_series_merge_samples, PerSeriesSamples, SampleAddResult,
+    SeriesGuardMut,
+};
 use ahash::AHashMap;
 use smallvec::SmallVec;
 use std::ops::DerefMut;

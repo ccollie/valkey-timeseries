@@ -1054,7 +1054,10 @@ mod tests {
         let result = chunk.merge_samples(&new_samples, None).unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
+            vec![
+                SampleAddResult::Ok(new_samples[0]),
+                SampleAddResult::Ok(new_samples[1])
+            ]
         );
         assert_eq!(
             chunk.samples,
@@ -1098,7 +1101,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
+            vec![
+                SampleAddResult::Ok(new_samples[0]),
+                SampleAddResult::Ok(new_samples[1])
+            ]
         );
         assert_eq!(
             chunk.samples,
@@ -1145,7 +1151,10 @@ mod tests {
         let result = empty_chunk.merge_samples(&new_samples, None).unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
+            vec![
+                SampleAddResult::Ok(new_samples[0]),
+                SampleAddResult::Ok(new_samples[1])
+            ]
         );
         assert_eq!(empty_chunk.samples, new_samples);
 
@@ -1164,7 +1173,10 @@ mod tests {
         let result = chunk.merge_samples(&new_samples, None).unwrap();
         assert_eq!(
             result,
-            vec![SampleAddResult::Ok(new_samples[0]), SampleAddResult::Ok(new_samples[1])]
+            vec![
+                SampleAddResult::Ok(new_samples[0]),
+                SampleAddResult::Ok(new_samples[1])
+            ]
         );
         assert_eq!(
             chunk.samples,

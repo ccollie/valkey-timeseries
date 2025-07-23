@@ -7,6 +7,7 @@ mod guard;
 pub mod index;
 pub mod range_utils;
 pub mod request_types;
+mod sample_merge;
 pub mod serialization;
 pub mod series_data_type;
 mod series_fetcher;
@@ -17,7 +18,6 @@ mod time_series_tests;
 mod timestamp_range;
 pub(crate) mod types;
 mod utils;
-mod sample_merge;
 
 pub use compaction::*;
 pub use compaction_policy::*;
