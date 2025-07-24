@@ -86,11 +86,16 @@ impl GroupedSamples {
     }
 }
 
+pub struct IndexedSample {
+    pub index: usize,
+    pub timestamp: Timestamp,
+    pub value: f64,
+}
+
 /// A collection of samples for a single timeseries, along with their original indices.
 pub struct PerSeriesSamples<'a> {
     series: &'a mut TimeSeries,
-    samples: SmallVec<Sample, 4>,
-    indices: SmallVec<usize, 4>,
+    samples: SmallVec<IndexedSample, 6>,
 }
 
 impl<'a> PerSeriesSamples<'a> {
@@ -99,18 +104,30 @@ impl<'a> PerSeriesSamples<'a> {
         Self {
             series,
             samples: SmallVec::new(),
-            indices: SmallVec::new(),
         }
     }
 
     /// Adds a sample to the collection, along with its original index.
     pub fn add_sample(&mut self, sample: Sample, index: usize) {
-        self.samples.push(sample);
-        self.indices.push(index);
+        self.samples.push(IndexedSample {
+            index,
+            timestamp: sample.timestamp,
+            value: sample.value,
+        });
     }
 
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
+    }
+
+    pub fn sort_by_timestamp(&mut self) {
+        // Sort indexed samples by timestamp
+        self.samples.sort_by_key(|sample| sample.timestamp);
+    }
+
+    pub fn sort_by_index(&mut self) {
+        // Sort indexed samples by original index
+        self.samples.sort_by_key(|sample| sample.index);
     }
 }
 
@@ -140,12 +157,14 @@ impl Parallel for MergeWorker {
 }
 
 /// Groups samples by the chunk they belong to, while filtering out old samples.
+///
+/// NOTE: `samples` **must** be sorted by timestamp before calling this function.
 fn group_samples_by_chunk(
     series: &mut TimeSeries,
     samples: &[Sample],
     results: &mut [SampleAddResult],
     earliest_allowed_timestamp: Timestamp,
-) -> IntMap<usize, GroupedSamples> {
+) -> TsdbResult<IntMap<usize, GroupedSamples>> {
     let mut chunk_groups: IntMap<usize, GroupedSamples> = IntMap::default();
 
     for (index, &sample) in samples.iter().enumerate() {
@@ -162,21 +181,18 @@ fn group_samples_by_chunk(
         let chunk_index = if series.is_empty() || sample.timestamp < series.first_timestamp {
             0
         } else {
-            let index = find_last_ge_index(&series.chunks, sample.timestamp).0;
-            // see if we need to split the chunk
-            let chunk = &mut series.chunks[index];
-            if chunk.should_split() {
-                // split the chunk and return the new index
-                let new_chunk = chunk.split().unwrap();
-                let in_new_chunk = new_chunk.is_timestamp_in_range(sample.timestamp);
-                series.chunks.insert(index + 1, new_chunk);
-                if in_new_chunk {
-                    index + 1
-                } else {
-                    index
+            loop {
+                let (index, _) = find_last_ge_index(&series.chunks, sample.timestamp);
+
+                debug_assert!(index < series.chunks.len());
+                let chunk = &mut series.chunks[index];
+
+                if chunk.should_split() {
+                    chunk.split()?;
+                    continue;
                 }
-            } else {
-                index
+
+                break index;
             }
         };
 
@@ -190,7 +206,7 @@ fn group_samples_by_chunk(
         group.sort_by_timestamp();
     }
 
-    chunk_groups
+    Ok(chunk_groups)
 }
 
 /// Merges a collection of samples into a time series.
@@ -234,7 +250,7 @@ pub(super) fn merge_samples(
 
     // Group samples by chunk. Map is chunk_idx -> Vec<(original_index, sample)>
     let chunk_groups =
-        group_samples_by_chunk(series, samples, &mut results, earliest_allowed_timestamp);
+        group_samples_by_chunk(series, samples, &mut results, earliest_allowed_timestamp)?;
     let mut chunks = std::mem::take(&mut series.chunks);
     let mut worker = MergeWorker::new();
     worker.maybe_par_idx(2, chunks.deref_mut(), |worker, index, chunk| {
@@ -337,16 +353,23 @@ fn add_samples_internal(
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
     if input.samples.len() == 1 {
         let sample = input.samples.pop().unwrap();
-        let index = input.indices.pop().unwrap();
+        let index = sample.index;
         let result = input.series.add(sample.timestamp, sample.value, None);
         handle_compaction(ctx, input.series, &[result]);
 
         return Ok(smallvec![(index, result)]);
     }
 
+    input.sort_by_timestamp();
+    let samples: SmallVec<Sample, 8> = input
+        .samples
+        .iter()
+        .map(|s| Sample::new(s.timestamp, s.value))
+        .collect();
+
     let add_results = input
         .series
-        .merge_samples(&input.samples, None)
+        .merge_samples(&samples, None)
         .map_err(|e| ValkeyError::String(format!("{e}")))?;
 
     // run compaction if needed
@@ -355,8 +378,8 @@ fn add_samples_internal(
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results
         .iter()
-        .zip(input.indices.iter())
-        .map(|(res, index)| (*index, *res))
+        .zip(input.samples.iter())
+        .map(|(res, original)| (original.index, *res))
     {
         result.push(item);
     }
