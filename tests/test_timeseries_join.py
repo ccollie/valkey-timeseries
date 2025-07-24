@@ -1,4 +1,5 @@
 import pytest
+from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -361,32 +362,21 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         # Test with the same key for both series
-        self.verify_error_response(
-            self.client,
-            f"TS.JOIN {self.ts1} {self.ts1} {self.now} {self.now + 15000}",
-            "TSDB: duplicate join keys"
-        )
+        with pytest.raises(ResponseError, match="TSDB: duplicate join keys"):
+            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts1} {self.now} {self.now + 15000}")
 
         # Test with a non-existent key
-        self.verify_error_response(
-            self.client,
-            f"TS.JOIN {self.ts1} nonexistent {self.now} {self.now + 15000}",
-            "TSDB: the key does not exist"
-        )
+        with pytest.raises(ResponseError, match="TSDB: the key does not exist"):
+            self.client.execute_command(f"TS.JOIN {self.ts1} nonexistent {self.now} {self.now + 15000}")
 
         # Test with an invalid join type
-        self.verify_error_response(
-            self.client,
-            f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INVALID_TYPE",
-            "TSDB: invalid JOIN command argument"
-        )
+        with pytest.raises(ResponseError, match="TSDB: invalid JOIN command argument"):
+            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INVALID_TYPE")
 
+        with pytest.raises(ResponseError, match="unknown binary op \"invalid_op\""):
+            # Replace with different aggregation
+            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INNER REDUCE invalid_op")
         # Test with invalid reducer
-        self.verify_error_response(
-            self.client,
-            f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INNER REDUCE invalid_op",
-            "Unknown binary op invalid_op"
-        )
 
     def test_asof_strategies(self):
         """Test different ASOF join strategies"""
