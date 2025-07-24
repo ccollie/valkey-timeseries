@@ -272,7 +272,7 @@ impl Display for SampleAddResult {
 impl From<SampleAddResult> for ValkeyValue {
     fn from(res: SampleAddResult) -> Self {
         match res {
-            SampleAddResult::Ok(ts) => ts.into(),
+            SampleAddResult::Ok(ts) => ValkeyValue::Integer(ts.timestamp),
             SampleAddResult::Ignored(ts) => ValkeyValue::Integer(ts),
             SampleAddResult::Duplicate => {
                 ValkeyValue::SimpleStringStatic(error_consts::DUPLICATE_SAMPLE)
