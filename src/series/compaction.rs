@@ -4,16 +4,18 @@ use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::series::index::{get_series_by_id, get_series_key_by_id};
+use crate::series::index::{get_series_by_id, with_timeseries_postings};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size::GetSize;
 use smallvec::SmallVec;
 use topologic::AcyclicDependencyGraph;
 use valkey_module::{
-    raw, BlockedClient, Context, NotifyEvent, ThreadSafeContext, ValkeyError, ValkeyResult,
+    raw, Context, DetachedContext, NotifyEvent, ValkeyError,
+    ValkeyResult,
 };
 
 const PARALLEL_THRESHOLD: usize = 2;
+const TEMP_VEC_LEN: usize = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionRule {
@@ -93,12 +95,14 @@ impl CompactionRule {
 
 #[derive(Clone)]
 struct CompactionWorker {
-    errors: SmallVec<TsdbError, 4>,
+    added: SmallVec<SeriesRef, 8>,
+    errors: SmallVec<TsdbError, TEMP_VEC_LEN>,
 }
 
 impl CompactionWorker {
     fn new() -> Self {
         Self {
+            added: SmallVec::new(),
             errors: SmallVec::new(),
         }
     }
@@ -107,12 +111,42 @@ impl CompactionWorker {
 impl Parallel for CompactionWorker {
     fn create(&self) -> Self {
         Self {
+            added: SmallVec::new(),
             errors: self.errors.clone(),
         }
     }
 
     fn merge(&mut self, other: Self) {
+        self.added.extend(other.added);
         self.errors.extend(other.errors);
+    }
+}
+
+struct CompactionContext<'a> {
+    parent: &'a TimeSeries,
+    dest: &'a mut TimeSeries,
+    rule: &'a mut CompactionRule,
+    value: Sample,
+    log_ctx: &'a DetachedContext,
+    added: bool,
+}
+
+impl<'a> CompactionContext<'a> {
+    fn new(
+        log_ctx: &'a DetachedContext,
+        parent: &'a TimeSeries,
+        dest: &'a mut TimeSeries,
+        rule: &'a mut CompactionRule,
+        value: Sample,
+    ) -> Self {
+        Self {
+            parent,
+            dest,
+            rule,
+            value,
+            log_ctx,
+            added: false,
+        }
     }
 }
 
@@ -128,12 +162,15 @@ pub fn run_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample) ->
             ctx,
             series,
             sample,
-            |thread_ctx, parent, dest, rule, value| {
-                handle_compaction_upsert(thread_ctx, parent, rule, dest, value)
-            },
+            handle_compaction_upsert
         )
     } else {
-        upsert_compaction(ctx, series, sample)
+        iterate_compactions(
+            ctx,
+            series,
+            sample,
+            handle_sample_compaction
+        )
     }
 }
 
@@ -142,14 +179,7 @@ pub fn upsert_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample)
         return Ok(());
     }
 
-    iterate_compactions(
-        ctx,
-        series,
-        sample,
-        |thread_ctx, parent, dest_series, rule, value| {
-            handle_compaction_upsert(thread_ctx, parent, rule, dest_series, value)
-        },
-    )
+    iterate_compactions(ctx, series, sample, handle_compaction_upsert)
 }
 
 pub fn remove_compaction_range(
@@ -162,13 +192,13 @@ pub fn remove_compaction_range(
         return Ok(());
     }
     let unused = Sample::new(0, 0.0);
-    // Process all contexts in parallel
+    // Process all compactions in parallel
     iterate_compactions(
         ctx,
         series,
         unused,
-        |thread_ctx, src_series, dest_series, rule, _| {
-            handle_compaction_range_removal(thread_ctx, src_series, rule, dest_series, end, start)
+        |context, _sample| {
+            handle_compaction_range_removal(context, start, end)
         },
     )?;
     // Update any ongoing aggregations that might be affected
@@ -185,41 +215,27 @@ fn null_ts_filter(ts: Timestamp) -> bool {
 }
 
 /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
-fn handle_sample_compaction(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
-    sample: Sample,
-) -> TsdbResult<()> {
+fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> TsdbResult<()> {
     let ts = sample.timestamp;
-    let bucket_start = rule.calc_bucket_start(ts);
+    let sample_bucket_start = ctx.rule.calc_bucket_start(ts);
 
-    let Some(current_bucket_start) = rule.bucket_start else {
+    let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // First sample for this rule - initialize the aggregation
-        rule.bucket_start = Some(bucket_start);
-        rule.aggregator.update(sample.value);
+        ctx.rule.bucket_start = Some(sample_bucket_start);
+        ctx.rule.aggregator.update(sample.value);
         return Ok(());
     };
 
-    if bucket_start == current_bucket_start {
+    if sample_bucket_start == current_bucket_start {
         // Sample belongs to the current aggregation bucket
-        rule.aggregator.update(sample.value);
-    } else if bucket_start > current_bucket_start {
+        ctx.rule.aggregator.update(sample.value);
+    } else if sample_bucket_start > current_bucket_start {
         // Sample starts a new bucket - finalize the current bucket first
-        finalize_current_bucket(ctx, rule, dest_series, sample, bucket_start)?;
+        finalize_current_bucket(ctx, sample, sample_bucket_start)?;
     } else {
-        let bucket_end = bucket_start.saturating_add_unsigned(rule.bucket_duration);
+        let bucket_end = sample_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
         // Sample is in an older bucket (shouldn't happen for new samples, but handle gracefully)
-        recalculate_bucket(
-            ctx,
-            series,
-            rule,
-            dest_series,
-            bucket_start,
-            bucket_end,
-            null_ts_filter,
-        )?;
+        recalculate_bucket(ctx, sample_bucket_start, bucket_end, null_ts_filter)?;
     }
 
     Ok(())
@@ -227,101 +243,76 @@ fn handle_sample_compaction(
 
 /// Finalize the current aggregation bucket and start a new one
 fn finalize_current_bucket(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
+    ctx: &mut CompactionContext<'_>,
     new_sample: Sample,
     new_bucket_start: Timestamp,
 ) -> TsdbResult<()> {
     // Finalize the current bucket
-    let aggregated_value = rule.aggregator.finalize();
-    let current_bucket_start = rule.bucket_start.expect(
+    let aggregated_value = ctx.rule.aggregator.finalize();
+    let current_bucket_start = ctx.rule.bucket_start.expect(
         "finalize_current_bucket should be called when current bucket start is already set",
     );
 
-    add_dest_bucket(
-        ctx,
-        dest_series,
-        rule,
-        current_bucket_start,
-        aggregated_value,
-    )?;
+    add_dest_bucket(ctx, current_bucket_start, aggregated_value)?;
 
     // Start a new bucket with the new sample
-    rule.aggregator.reset();
-    rule.aggregator.update(new_sample.value);
-    rule.bucket_start = Some(new_bucket_start);
+    ctx.rule.aggregator.reset();
+    ctx.rule.aggregator.update(new_sample.value);
+    ctx.rule.bucket_start = Some(new_bucket_start);
 
     Ok(())
 }
 
 /// Handle upsert compaction for a destination series
 /// This is called when a sample is being inserted/updated with a timestamp that's <= the last sample timestamp
-fn handle_compaction_upsert(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
-    sample: Sample,
-) -> TsdbResult<()> {
+fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> TsdbResult<()> {
     let ts = sample.timestamp;
-    let bucket_start = rule.calc_bucket_start(ts);
+    let bucket_start = ctx.rule.calc_bucket_start(ts);
 
     // Check if this affects the current ongoing aggregation bucket
-    let Some(current_bucket_start) = rule.bucket_start else {
+    let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // No current bucket, this is the first sample for this rule
-        rule.bucket_start = Some(bucket_start);
-        rule.aggregator.update(sample.value);
+        ctx.rule.bucket_start = Some(bucket_start);
+        ctx.rule.aggregator.update(sample.value);
         return Ok(());
     };
 
-    let bucket_end = current_bucket_start.saturating_add_unsigned(rule.bucket_duration);
+    let duration = ctx.rule.bucket_duration;
+    let bucket_end = current_bucket_start.saturating_add_unsigned(duration);
 
     if bucket_start == current_bucket_start {
         // This sample belongs to the current aggregation bucket
         // We need to recalculate the entire bucket since we don't know what changed
-        recalculate_current_bucket(series, rule, current_bucket_start, bucket_end)?;
+        recalculate_current_bucket(ctx, current_bucket_start, bucket_end)?;
         return Ok(());
     }
 
     // This is a historical upsert - need to recalculate the affected bucket
-    recalculate_bucket(
-        ctx,
-        series,
-        rule,
-        dest_series,
-        bucket_start,
-        bucket_end,
-        null_ts_filter,
-    )
+    recalculate_bucket(ctx, bucket_start, bucket_end, null_ts_filter)
 }
 
 /// Recalculate the current ongoing aggregation bucket
 fn recalculate_current_bucket(
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
+    ctx: &mut CompactionContext,
     bucket_start: Timestamp,
     bucket_end: Timestamp,
 ) -> TsdbResult<()> {
     // Reset the aggregator and recalculate from all samples in the bucket
-    rule.aggregator.reset();
+    ctx.rule.aggregator.reset();
 
-    for sample in series.range_iter(bucket_start, bucket_end) {
-        rule.aggregator.update(sample.value);
+    for sample in ctx.parent.range_iter(bucket_start, bucket_end) {
+        ctx.rule.aggregator.update(sample.value);
     }
 
     // reset would have cleared the bucket_start, so we need to set it again
-    rule.bucket_start = Some(bucket_start);
+    ctx.rule.bucket_start = Some(bucket_start);
 
     Ok(())
 }
 
 /// Recalculate a historical bucket and update the destination series
 fn recalculate_bucket<F>(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
+    ctx: &mut CompactionContext,
     bucket_start: Timestamp,
     bucket_end: Timestamp,
     filter: F,
@@ -330,12 +321,13 @@ where
     F: Fn(Timestamp) -> bool,
 {
     // Create a new aggregator for this bucket
-    let mut bucket_aggregator = rule.aggregator.clone();
+    let mut bucket_aggregator = ctx.rule.aggregator.clone();
     bucket_aggregator.reset();
 
     // Aggregate all samples in this bucket
     let mut has_samples = false;
-    let sample_iter = series
+    let sample_iter = ctx
+        .parent
         .range_iter(bucket_start, bucket_end)
         .filter(|sample| filter(sample.timestamp));
 
@@ -346,10 +338,10 @@ where
 
     if has_samples {
         let aggregated_value = bucket_aggregator.finalize();
-        add_dest_bucket(ctx, dest_series, rule, bucket_start, aggregated_value)?;
+        add_dest_bucket(ctx, bucket_start, aggregated_value)?;
     } else {
         // No samples in this bucket anymore, remove it from destination
-        dest_series.remove_range(bucket_start, bucket_start)?;
+        ctx.dest.remove_range(bucket_start, bucket_start)?;
     }
 
     Ok(())
@@ -370,79 +362,46 @@ where
 /// - `Error Handling`: Properly handle cases where destination series are missing or inaccessible.
 ///
 fn handle_compaction_range_removal(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
+    ctx: &mut CompactionContext,
     start: Timestamp,
     end: Timestamp,
 ) -> TsdbResult<()> {
     // Calculate the bucket boundaries that are affected by the removed range
-    let first_bucket_start = rule.calc_bucket_start(start);
-    let last_bucket_start = rule.calc_bucket_start(end);
+    let first_bucket_start = ctx.rule.calc_bucket_start(start);
+    let last_bucket_start = ctx.rule.calc_bucket_start(end);
 
     // Handle different scenarios based on how the removal affects buckets
     if first_bucket_start == last_bucket_start {
         // Scenario 1: Removal is within a single bucket - need to recalculate that bucket
-        handle_single_bucket_removal(
-            ctx,
-            series,
-            rule,
-            dest_series,
-            first_bucket_start,
-            start,
-            end,
-        )
+        handle_single_bucket_removal(ctx, first_bucket_start, start, end)
     } else {
         // Scenario 2: Removal spans multiple buckets
-        handle_multiple_bucket_removal(
-            ctx,
-            series,
-            rule,
-            dest_series,
-            first_bucket_start,
-            last_bucket_start,
-            start,
-            end,
-        )
+        handle_multiple_bucket_removal(ctx, first_bucket_start, last_bucket_start, start, end)
     }
 }
 
 fn handle_single_bucket_removal(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
+    ctx: &mut CompactionContext,
     bucket_start: Timestamp,
     removal_start: Timestamp,
     removal_end: Timestamp,
 ) -> TsdbResult<()> {
-    let bucket_end = bucket_start + rule.bucket_duration as i64;
+    let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
 
     // Check if the entire bucket is being removed
     if removal_start <= bucket_start && removal_end >= bucket_end {
         // Remove the entire bucket from destination
-        dest_series.remove_range(bucket_start, bucket_end)?;
+        ctx.dest.remove_range(bucket_start, bucket_end)?;
         return Ok(());
     }
 
-    recalculate_bucket(
-        ctx,
-        series,
-        rule,
-        dest_series,
-        bucket_start,
-        bucket_end,
-        |ts| ts < removal_start || ts > removal_end,
-    )
+    recalculate_bucket(ctx, bucket_start, bucket_end, |ts| {
+        ts < removal_start || ts > removal_end
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_multiple_bucket_removal(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
-    dest_series: &mut TimeSeries,
+    ctx: &mut CompactionContext,
     first_bucket_start: Timestamp,
     last_bucket_start: Timestamp,
     removal_start: Timestamp,
@@ -451,7 +410,7 @@ fn handle_multiple_bucket_removal(
     let mut current_bucket_start = first_bucket_start;
 
     while current_bucket_start <= last_bucket_start {
-        let bucket_end = current_bucket_start.saturating_add_unsigned(rule.bucket_duration);
+        let bucket_end = current_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
 
         // Determine the overlap between this bucket and the removal range
         let overlap_start = removal_start.max(current_bucket_start);
@@ -464,16 +423,14 @@ fn handle_multiple_bucket_removal(
                 // The first or last bucket might be partial
                 handle_single_bucket_removal(
                     ctx,
-                    series,
-                    rule,
-                    dest_series,
                     current_bucket_start,
                     removal_start,
                     removal_end,
                 )?;
             } else {
                 // Middle buckets are completely removed
-                dest_series.remove_range(current_bucket_start, current_bucket_start)?;
+                ctx.dest
+                    .remove_range(current_bucket_start, current_bucket_start)?;
             }
         }
 
@@ -529,13 +486,13 @@ fn get_destination_series(ctx: &'_ Context, dest_id: SeriesRef) -> Option<Series
 fn get_compaction_series<'a>(
     ctx: &'a Context,
     series: &mut TimeSeries,
-) -> SmallVec<SeriesGuardMut<'a>, 4> {
+) -> SmallVec<SeriesGuardMut<'a>, TEMP_VEC_LEN> {
     if series.rules.is_empty() {
         return SmallVec::new();
     }
 
-    let mut missing: SmallVec<_, 4> = SmallVec::new();
-    let mut destinations: SmallVec<_, 4> = SmallVec::new();
+    let mut missing: SmallVec<_, TEMP_VEC_LEN> = SmallVec::new();
+    let mut destinations: SmallVec<_, TEMP_VEC_LEN> = SmallVec::new();
 
     for rule in series.rules.iter() {
         if let Some(dest_series) = get_destination_series(ctx, rule.dest_id) {
@@ -551,6 +508,22 @@ fn get_compaction_series<'a>(
         series.rules.retain(|r| !missing.contains(&r.dest_id));
     }
     destinations
+}
+
+fn notify_compaction(
+    ctx: &Context,
+    ids: &[SeriesRef],
+)  {
+    with_timeseries_postings(ctx, |postings| {
+        for &id in ids {
+            let Some(key) = postings.get_key_by_id(id) else {
+                ctx.log_warning("Compaction notification failed: series key not found");
+                continue;
+            };
+            let key = ctx.create_string(key.as_ref());
+            ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add:dest", &key);
+        }
+    });
 }
 
 /// Iterates through compaction rules (possibly in parallel) and applies the provided function `f` to process
@@ -585,15 +558,7 @@ fn iterate_compactions<F>(
     f: F,
 ) -> TsdbResult<()>
 where
-    F: Fn(
-            &ThreadSafeContext<BlockedClient>,
-            &TimeSeries,
-            &mut TimeSeries,
-            &mut CompactionRule,
-            Sample,
-        ) -> TsdbResult<()>
-        + Send
-        + Sync,
+    F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
 {
     fn process_series<F>(
         ctx: &Context,
@@ -602,15 +567,7 @@ where
         f: F,
     ) -> TsdbResult<()>
     where
-        F: Fn(
-                &ThreadSafeContext<BlockedClient>,
-                &TimeSeries,
-                &mut TimeSeries,
-                &mut CompactionRule,
-                Sample,
-            ) -> TsdbResult<()>
-            + Send
-            + Sync,
+        F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
     {
         // Process the source series first
         let destinations = get_compaction_series(ctx, series);
@@ -620,14 +577,13 @@ where
         }
 
         let mut rules = std::mem::take(&mut series.rules);
-        let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
-        let res = run_internal(&thread_ctx, series, &mut rules, destinations, value, &f);
+        let res = run_internal(ctx, series, &mut rules, destinations, value, &f);
 
         // Recurse into child series
-        let children: SmallVec<SeriesGuardMut, 4> = rules
+        let children: SmallVec<SeriesGuardMut, TEMP_VEC_LEN> = rules
             .iter()
             .filter_map(|rule| get_destination_series(ctx, rule.dest_id))
-            .collect::<SmallVec<_, 4>>();
+            .collect::<SmallVec<_, TEMP_VEC_LEN>>();
 
         series.rules = rules;
         res?;
@@ -635,14 +591,7 @@ where
         for mut child_series in children {
             let destinations = get_compaction_series(ctx, &mut child_series);
             let mut rules = std::mem::take(&mut child_series.rules);
-            let res = run_internal(
-                &thread_ctx,
-                &child_series,
-                &mut rules,
-                destinations,
-                value,
-                &f,
-            );
+            let res = run_internal(ctx, &child_series, &mut rules, destinations, value, &f);
             child_series.rules = rules;
             res?;
         }
@@ -650,7 +599,7 @@ where
     }
 
     fn run_internal<F>(
-        thread_ctx: &ThreadSafeContext<BlockedClient>,
+        ctx: &Context,
         series: &TimeSeries,
         rules: &mut [CompactionRule],
         child_series: SmallVec<SeriesGuardMut, 4>,
@@ -658,14 +607,7 @@ where
         f: F,
     ) -> TsdbResult<()>
     where
-        F: Fn(
-                &ThreadSafeContext<BlockedClient>,
-                &TimeSeries,
-                &mut TimeSeries,
-                &mut CompactionRule,
-                Sample,
-            ) -> TsdbResult<()>
-            + Sync,
+        F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
     {
         if rules.is_empty() {
             // No compaction rules, nothing to do
@@ -674,22 +616,39 @@ where
         let destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
 
         let mut worker = CompactionWorker::new();
+        let log_ctx = DetachedContext::new();
         worker.maybe_par(PARALLEL_THRESHOLD, destinations, |worker, item| {
             let rule = item.0;
             let mut dest_guard = item.1;
-            match f(thread_ctx, series, &mut dest_guard, rule, value) {
-                Ok(_) => {}
+            let mut cctx = CompactionContext {
+                parent: series,
+                dest: &mut dest_guard,
+                rule,
+                value,
+                log_ctx: &log_ctx,
+                added: false,
+            };
+            match f(&mut cctx, value) {
+                Ok(_) => {
+                    if cctx.added {
+                        worker.added.push(dest_guard.id);
+                    }
+                }
                 Err(error) => {
-                    let log_ctx = thread_ctx.lock();
                     let msg = format!(
-                        "Failed to handle compaction rule for series {}: {}",
-                        dest_guard.id, error
+                        "Failed to handle compaction rule for series {}: {error}",
+                        dest_guard.id,
                     );
                     log_ctx.log_warning(&msg);
                     worker.errors.push(error);
                 }
             }
         });
+
+        // Notify about the compaction results
+        if !worker.added.is_empty() {
+            notify_compaction(ctx, &worker.added);
+        }
 
         let Some(first_error) = worker.errors.first().cloned() else {
             // No errors, we can safely return
@@ -702,35 +661,28 @@ where
     process_series(ctx, series, value, f)
 }
 
-fn add_dest_bucket(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    dest_series: &mut TimeSeries,
-    rule: &mut CompactionRule,
-    ts: Timestamp,
-    value: f64,
-) -> TsdbResult<()> {
-    let bucket_start = rule.calc_bucket_start(ts);
+fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> TsdbResult<()> {
+    let bucket_start = ctx.rule.calc_bucket_start(ts);
     // Add the sample to the destination series
-    match dest_series.add(bucket_start, value, Some(DuplicatePolicy::KeepLast)) {
+    // todo: specify to ignore whatever adjustments
+    match ctx
+        .dest
+        .add(bucket_start, value, Some(DuplicatePolicy::KeepLast))
+    {
         SampleAddResult::Ok(_) => {
-            let ctx = ctx.lock();
-            let Some(key) = get_series_key_by_id(&ctx, dest_series.id) else {
-                ctx.log_verbose("Destination series key not found for compaction notification");
-                return Ok(());
-            };
-            ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add:dest", &key);
+            ctx.added = true;
             Ok(())
         }
         SampleAddResult::Ignored(_) => Ok(()), // duplicate sample, ignore it
         SampleAddResult::TooOld => {
             // bucket start is too old, we cannot add it
-            let ctx = ctx.lock();
-            ctx.log_verbose("Sample is too old for compaction rule, ignoring");
+            ctx.log_ctx
+                .log_verbose("Sample is too old for compaction rule, ignoring");
             Ok(())
         }
         SampleAddResult::Duplicate => {
-            let ctx = ctx.lock();
-            ctx.log_verbose("Duplicate sample detected in compaction rule, ignoring");
+            ctx.log_ctx
+                .log_verbose("Duplicate sample detected in compaction rule, ignoring");
             Ok(())
         }
         x => {
@@ -858,8 +810,6 @@ pub fn check_new_rule_circular_dependency(
     Ok(())
 }
 
-// todo: swap out impl of topological sorter or bring in the code and use stack based
-// storage for the graph to avoid heap allocations
 pub fn build_compaction_dependency_graph(
     ctx: &Context,
     series: &mut TimeSeries,

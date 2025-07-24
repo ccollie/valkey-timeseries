@@ -21,6 +21,7 @@ use crate::series::{get_timeseries_mut, SeriesGuardMut, SeriesRef, TimeSeries};
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
+use crate::series::index::memory_postings::MemoryPostings;
 
 #[cfg(test)]
 mod querier_tests;
@@ -56,6 +57,21 @@ where
     let guard = TIMESERIES_INDEX.guard();
     let index = get_timeseries_index_for_db(db, &guard);
     let res = f(index);
+    drop(guard);
+    res
+}
+
+pub fn with_timeseries_postings<F, R>(ctx: &Context, f: F) -> R
+where
+    F: FnOnce(&MemoryPostings) -> R,
+{
+    let db = get_current_db(ctx);
+    let guard = TIMESERIES_INDEX.guard();
+    let index = get_timeseries_index_for_db(db, &guard);
+    let mut state = ();
+    let res = index.with_postings(&mut state, |postings, _| {
+        f(postings)
+    });
     drop(guard);
     res
 }
