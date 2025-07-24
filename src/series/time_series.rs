@@ -310,9 +310,7 @@ impl TimeSeries {
     ///
     /// ## Note
     ///
-    /// This can be improved to more efficiently parallelize the merging process, but currently
-    /// it processes samples in pairs. `get_disjoint_mut` is useful in principle but a pain in
-    /// practice :-)
+    /// `samples` **must** be sorted by timestamp.
     ///
     /// ### Arguments
     ///
