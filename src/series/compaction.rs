@@ -9,10 +9,7 @@ use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef,
 use get_size::GetSize;
 use smallvec::SmallVec;
 use topologic::AcyclicDependencyGraph;
-use valkey_module::{
-    raw, Context, DetachedContext, NotifyEvent, ValkeyError,
-    ValkeyResult,
-};
+use valkey_module::{raw, Context, DetachedContext, NotifyEvent, ValkeyError, ValkeyResult};
 
 const PARALLEL_THRESHOLD: usize = 2;
 const TEMP_VEC_LEN: usize = 4;
@@ -158,19 +155,9 @@ pub fn run_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample) ->
     let last_ts = series.last_timestamp();
 
     if sample.timestamp < last_ts {
-        iterate_compactions(
-            ctx,
-            series,
-            sample,
-            handle_compaction_upsert
-        )
+        iterate_compactions(ctx, series, sample, handle_compaction_upsert)
     } else {
-        iterate_compactions(
-            ctx,
-            series,
-            sample,
-            handle_sample_compaction
-        )
+        iterate_compactions(ctx, series, sample, handle_sample_compaction)
     }
 }
 
@@ -193,14 +180,9 @@ pub fn remove_compaction_range(
     }
     let unused = Sample::new(0, 0.0);
     // Process all compactions in parallel
-    iterate_compactions(
-        ctx,
-        series,
-        unused,
-        |context, _sample| {
-            handle_compaction_range_removal(context, start, end)
-        },
-    )?;
+    iterate_compactions(ctx, series, unused, |context, _sample| {
+        handle_compaction_range_removal(context, start, end)
+    })?;
     // Update any ongoing aggregations that might be affected
     let mut rules = std::mem::take(&mut series.rules);
     for rule in &mut rules {
@@ -510,10 +492,7 @@ fn get_compaction_series<'a>(
     destinations
 }
 
-fn notify_compaction(
-    ctx: &Context,
-    ids: &[SeriesRef],
-)  {
+fn notify_compaction(ctx: &Context, ids: &[SeriesRef]) {
     with_timeseries_postings(ctx, |postings| {
         for &id in ids {
             let Some(key) = postings.get_key_by_id(id) else {
@@ -673,16 +652,11 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
             ctx.added = true;
             Ok(())
         }
-        SampleAddResult::Ignored(_) => Ok(()), // duplicate sample, ignore it
+        SampleAddResult::Ignored(_) => Ok(()), // duplicate sample, (ignored)
         SampleAddResult::TooOld => {
             // bucket start is too old, we cannot add it
             ctx.log_ctx
                 .log_verbose("Sample is too old for compaction rule, ignoring");
-            Ok(())
-        }
-        SampleAddResult::Duplicate => {
-            ctx.log_ctx
-                .log_verbose("Duplicate sample detected in compaction rule, ignoring");
             Ok(())
         }
         x => {
