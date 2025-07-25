@@ -5,6 +5,7 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
+use logger_rust::{set_log_level, LogLevel};
 use valkey_module::{
     configuration::ConfigurationFlags, valkey_module, Context, Status, ValkeyString, Version,
 };
@@ -73,6 +74,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
 fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
+    set_log_level(LogLevel::Both);
     // start_series_background_worker(ctx);
 
     match register_server_events(ctx) {
