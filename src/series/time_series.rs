@@ -1,7 +1,7 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
-use crate::common::parallel::join;
+use crate::common::parallel::{join, par_try_for_each_mut};
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
@@ -18,6 +18,7 @@ use get_size::GetSize;
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use std::vec;
 use valkey_module::logging;
@@ -109,6 +110,10 @@ impl TimeSeries {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        self.chunk_compression != ChunkEncoding::Uncompressed
     }
 
     /// Get the full metric name of the time series, including labels in Prometheus format.
@@ -488,7 +493,6 @@ impl TimeSeries {
         deleted_count
     }
 
-
     pub(super) fn trim(&mut self) -> TsdbResult<usize> {
         let min_timestamp = self.get_min_timestamp();
         if self.first_timestamp == min_timestamp {
@@ -524,46 +528,74 @@ impl TimeSeries {
         debug_assert!(start_ts <= end_ts);
 
         let mut deleted_samples = 0;
+        let mut chunks_deleted: usize = 0;
+
+        fn remove_internal(
+            chunk: &mut TimeSeriesChunk,
+            start_ts: Timestamp,
+            end_ts: Timestamp,
+        ) -> TsdbResult<usize> {
+            // Should we delete the entire chunk?
+            if chunk.is_contained_by_range(start_ts, end_ts) {
+                let count = chunk.len();
+                chunk.clear();
+                Ok(count)
+            } else {
+                // handle partial deletion
+                chunk.remove_range(start_ts, end_ts)
+            }
+        }
+
         if let Some((start_index, end_index)) = self.get_chunk_index_bounds(start_ts, end_ts) {
-            let mut deleted_chunks = 0;
+            let is_compressed = self.is_compressed();
 
-            for index in start_index..=end_index {
-                // todo: get_unchecked
-                let chunk = self
-                    .chunks
-                    .get_mut(index)
-                    .expect("Range out of bounds iterating ts chunk");
+            let chunks = &mut self
+                .chunks
+                .get_disjoint_mut([start_index..=end_index])
+                .expect("TimeSeries::remove_range(): range out of bounds")[0];
 
-                // Should we delete the entire chunk?
-                if chunk.is_contained_by_range(start_ts, end_ts) {
-                    deleted_samples += chunk.len();
-                    chunk.clear();
-                    deleted_chunks += 1;
-                } else {
-                    // handle partial deletion
-                    deleted_samples += chunk.remove_range(start_ts, end_ts)?;
+            let len = chunks.len();
+            if !is_compressed || len == 1 {
+                // eliminate the need for parallelization if chunks are not compressed
+                // If not compressed, we can iterate over the chunks directly
+                for chunk in chunks.iter_mut() {
+                    deleted_samples += remove_internal(chunk, start_ts, end_ts)?;
                     if chunk.is_empty() {
-                        deleted_chunks += 1;
+                        chunks_deleted += 1;
                     }
                 }
+            } else {
+                let deleted_count: AtomicUsize = AtomicUsize::new(0);
+                let deleted_chunks: AtomicUsize = AtomicUsize::new(0);
+
+                par_try_for_each_mut(chunks, |chunk| {
+                    let len = chunk.len();
+                    match remove_internal(chunk, start_ts, end_ts) {
+                        Ok(count) => {
+                            deleted_count.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+                            if count == len {
+                                deleted_chunks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                })?;
+                deleted_samples = deleted_count.load(std::sync::atomic::Ordering::Relaxed);
+                chunks_deleted = deleted_chunks.load(std::sync::atomic::Ordering::Relaxed);
             }
 
             // Remove empty chunks
-            if deleted_chunks > 0 {
-                // if we're deleting all chunks, save one so we can spare an allocation
-                let mut saved_chunk: Option<TimeSeriesChunk> = None;
-                if deleted_chunks == self.chunks.len() {
-                    saved_chunk = self.chunks.pop();
-                }
+            if chunks_deleted > 0 {
+                let saved_len = self.chunks.len();
                 self.chunks.retain(|chunk| !chunk.is_empty());
-
-                if let Some(saved_chunk) = saved_chunk {
-                    self.chunks.push(saved_chunk);
+                if self.chunks.len() < saved_len {
+                    self.chunks.shrink_to_fit();
                 }
             }
 
             // Update metadata
-            self.total_samples -= deleted_samples;
+            self.total_samples = self.total_samples.saturating_sub(deleted_samples);
             self.update_first_last_timestamps();
         }
 

@@ -1128,8 +1128,7 @@ mod tests {
         // Verify that all samples are removed
         assert_eq!(removed_samples, 4);
         assert_eq!(time_series.total_samples, 0);
-        assert_eq!(time_series.chunks.len(), 1); // One empty chunk should remain
-        assert!(time_series.chunks[0].is_empty());
+        assert!(time_series.chunks.is_empty());
     }
 
     #[test]
