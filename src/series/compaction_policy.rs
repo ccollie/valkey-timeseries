@@ -55,32 +55,32 @@ impl Display for CompactionPolicy {
 pub struct PolicyConfig {
     filters: RegexSet,
     /// Maps filter strings to indices of policies that match the filter.
-    filter_map: HashMap<String, Vec<CompactionPolicy>>,
-    policies: Vec<CompactionPolicy>,
+    filtered_policies: HashMap<String, Vec<CompactionPolicy>>,
+    global_policies: Vec<CompactionPolicy>,
 }
 
 impl PolicyConfig {
     pub fn new() -> Self {
         PolicyConfig {
             filters: RegexSet::empty(),
-            filter_map: HashMap::new(),
-            policies: Vec::new(),
+            filtered_policies: HashMap::new(),
+            global_policies: Vec::new(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.policies.is_empty() && self.filter_map.is_empty()
+        self.global_policies.is_empty() && self.filtered_policies.is_empty()
     }
 
     pub(crate) fn clear(&mut self) {
         self.filters = RegexSet::empty();
-        self.filter_map.clear();
-        self.policies.clear();
+        self.filtered_policies.clear();
+        self.global_policies.clear();
     }
 
     fn add_regex_filter(&mut self, filter: &str) -> ValkeyResult<()> {
         // add the filter to the regex set
-        let mut new_filters: Vec<String> = self.filter_map.keys().cloned().collect();
+        let mut new_filters: Vec<String> = self.filtered_policies.keys().cloned().collect();
         new_filters.push(filter.to_string());
         self.filters = RegexSet::new(&new_filters).map_err(|_| {
             let msg = format!("TSDB: invalid compaction regex filter: \"{filter}\"");
@@ -96,14 +96,14 @@ impl PolicyConfig {
     ) -> ValkeyResult<()> {
         if let Some(filter) = filter {
             // see if we've already added this filter
-            let indices = match self.filter_map.get_mut(&filter) {
+            let indices = match self.filtered_policies.get_mut(&filter) {
                 Some(indices) => indices,
                 None => {
                     self.add_regex_filter(&filter)?;
                     // if not, we need to create a new entry
-                    self.filter_map
+                    self.filtered_policies
                         .insert(filter.clone(), Vec::with_capacity(policies.len()));
-                    self.filter_map.get_mut(&filter).unwrap()
+                    self.filtered_policies.get_mut(&filter).unwrap()
                 }
             };
             let existing_set: HashSet<&CompactionPolicy> = indices.iter().collect();
@@ -122,7 +122,7 @@ impl PolicyConfig {
             return Ok(());
         }
 
-        self.policies.extend(policies);
+        self.global_policies.extend(policies);
 
         Ok(())
     }
@@ -159,10 +159,10 @@ impl PolicyConfig {
             return None;
         }
 
-        let mut result_set: HashSet<CompactionPolicy> = HashSet::with_capacity(self.policies.len());
+        let mut result_set: HashSet<CompactionPolicy> = HashSet::with_capacity(self.global_policies.len());
 
-        if !self.policies.is_empty() {
-            for policy in &self.policies {
+        if !self.global_policies.is_empty() {
+            for policy in &self.global_policies {
                 result_set.insert(*policy);
             }
         }
@@ -178,7 +178,7 @@ impl PolicyConfig {
                 let Some(pattern) = filters.get(match_idx) else {
                     continue;
                 };
-                let Some(policies) = self.filter_map.get(pattern) else {
+                let Some(policies) = self.filtered_policies.get(pattern) else {
                     continue;
                 };
                 for policy in policies {
