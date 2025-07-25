@@ -253,6 +253,27 @@ where
 //     }
 // }
 
+struct GlobalWorker {}
+
+impl Parallel for GlobalWorker {
+    fn create(&self) -> Self {
+        GlobalWorker {}
+    }
+
+    fn merge(&mut self, _other: Self) {
+        // No-op, as this is a global worker.
+    }
+}
+
+pub fn maybe_par_iter<I, F>(threshold: usize, nodes: I, op: F)
+where
+    I: IntoItems,
+    F: Send + Sync + Fn(I::Elem),
+{
+    let mut worker = GlobalWorker {};
+    worker.maybe_par_idx(threshold, nodes, |_v, _, n| op(n));
+}
+
 pub fn par_try_for_each_mut<T: Send, F, E>(slice: &mut [T], f: F) -> Result<(), E>
 where
     F: Fn(&mut T) -> Result<(), E> + Send + Sync,
