@@ -96,5 +96,5 @@ class TestTsGet(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.CREATE', 'ts_extra')
 
         # Test with extra arguments
-        self.verify_error_response(self.client, 'TS.GET ts_extra extra_arg',
+        self.verify_error_response(self.client, 'TS.GET ts_extra latest other',
                                    "wrong number of arguments for 'TS.GET' command")
