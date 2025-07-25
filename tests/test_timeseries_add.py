@@ -40,7 +40,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         """Test TS.ADD with '*' automatic timestamp"""
         self.client.execute_command("TS.CREATE", "ts3")
 
-        # Add a sample with automatic timestamp
+        # Add a sample with an automatic timestamp
         result = self.client.execute_command("TS.ADD", "ts3", "*", 33.5)
 
         # Verify a timestamp was generated (should be a recent timestamp)
@@ -73,7 +73,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         assert samples == [[timestamp, b'44.5']]
 
     def test_add_with_retention(self):
-        """Test TS.ADD with retention option"""
+        """Test TS.ADD with a retention option"""
         # Add to a non-existent timeseries with retention
         timestamp = 160000
         retention = 10000  # 10 seconds
@@ -107,7 +107,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
 
     def test_add_with_chunk_size(self):
-        """Test TS.ADD with chunk size option"""
+        """Test TS.ADD with a chunk size option"""
         timestamp = 160000
         chunk_size = 128  # Small chunk size for testing
 
@@ -185,11 +185,11 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             "TS.ADD", "ts_dup_block", timestamp, 5.0, "DUPLICATE_POLICY", "BLOCK"
         )
 
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError) as exception_info:
             self.client.execute_command(
                 "TS.ADD", "ts_dup_block", timestamp, 20.0
             )
-        assert "duplicate" in str(excinfo.value)
+        assert "duplicate" in str(exception_info.value)
 
     def test_add_with_labels_creation(self):
         """Test TS.ADD with labels when creating a new timeseries"""
@@ -257,14 +257,14 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
                 "TS.ADD", "ts_invalid", 160000, 10.0, "ON_DUPLICATE", "INVALID_POLICY"
             )
 
-        # Test with odd number of label pairs
+        # Test with an odd number of label pairs
         with pytest.raises(ResponseError):
             self.client.execute_command(
                 "TS.ADD", "ts_invalid", 160000, 10.0, "LABELS", "key1", "val1", "key2"
             )
 
     def test_add_with_decimal_digits(self):
-        """Test TS.ADD with decimal digits option"""
+        """Test TS.ADD with a decimal digits option"""
         timestamp = 160000
 
         # Add with decimal digits precision
@@ -344,7 +344,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             CompactionRule(dest_key, 60000, "avg", 5000)
         ]
 
-        # Use TS.ADD on non-existent key - should create series and apply compaction rules
+        # Use TS.ADD on a non-existent key - should create series and apply compaction rules
         result = self.client.execute_command('TS.ADD', source_key, 1000, 25.5, 'LABELS', 'sensor', 'temp1')
         assert result == 1000
 
@@ -365,7 +365,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         assert self.set_policy(policy_config) == b"OK"
 
-        # Add sample to non-existent key
+        # Add a sample to a non-existent key
         self.client.execute_command('TS.ADD', source_key, 2000, 30.0)
 
         # Verify multiple compaction rules were added
@@ -423,7 +423,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
 
     def test_compaction_rules_applied_only_on_new_series(self):
-        """Test that compaction rules are only applied when source series doesn't exist"""
+        """Test that compaction rules are only applied when the source series doesn't exist"""
         # Set compaction policy
         policy_config = "sum:30s:1h:5s"
         suffix = "SUM_30000_5000"
@@ -432,7 +432,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         # Create destination
         dest_key = f'existing:test_{suffix}'
 
-        # First create the series manually without compaction rules
+        # First, create the series manually without compaction rules
         source_key = 'existing:test'
         self.client.execute_command('TS.CREATE', source_key)
 
@@ -476,7 +476,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         assert found_rule, "Expected rule with alignment not found"
 
     def test_empty_compaction_policy_config(self):
-        """Test that empty compaction policy config doesn't create rules"""
+        """Test that an empty compaction policy config doesn't create rules"""
         # Set empty policy
         self.client.execute_command('CONFIG SET ts-compaction-policy none')
 
@@ -491,7 +491,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
     def test_compaction_policy_config_replacement(self):
         """Test that setting new compaction policy replaces old one for new series"""
-        # Set initial policy
+        # Set an initial policy
         initial_policy = "min:2M:1h"
         assert self.set_policy(initial_policy) == b"OK"
 
@@ -526,7 +526,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
 
     def test_compaction_with_ts_add_labels(self):
-        """Test that compaction rules are applied when TS.ADD creates series with labels"""
+        """Test that compaction rules are applied when TS.ADD creates a series with labels"""
         policy_config = "avg:1M:1h:5s"
         suffix = "AVG_60000_5000"
 
@@ -535,7 +535,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         # Create destination
         self.client.execute_command('TS.CREATE', 'labeled_dest:sensor1')
 
-        # Create series with TS.ADD including labels
+        # Create a series with TS.ADD including labels
         source_key = 'labeled:sensor1'
         self.client.execute_command(
             'TS.ADD', source_key, 9000, 40.0,
@@ -561,7 +561,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         policy_config = "sum:1M:1h"
         assert self.set_policy(policy_config) == b"OK"
 
-        # Create source and add multiple samples
+        # Create the source and add multiple samples
         source_key = 'functional:test'
         base_ts = 10000
 
@@ -571,7 +571,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             CompactionRule(dest_key, 60000, "sum", 5000)
         ]
 
-        # First sample creates the series and applies compaction rules
+        # The first sample creates the series and applies compaction rules
         self.client.execute_command('TS.ADD', source_key, base_ts, 10.0)
 
         self.validate_rules(source_key, expected_rules)
