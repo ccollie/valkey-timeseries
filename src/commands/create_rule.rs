@@ -56,13 +56,13 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     if source_series.is_compaction() {
         return Err(ValkeyError::Str(
-            "TSDB: source series is already the destination of a compaction rule",
+            "TSDB: the source key already has a source rule",
         ));
     }
 
-    if dest_series.is_compaction() {
+    if dest_series.is_compaction() && dest_series.src_series != Some(source_id) {
         return Err(ValkeyError::Str(
-            "TSDB: destination series is already the destination of a compaction rule",
+            "TSDB: the destination key already has a src rule",
         ));
     }
 
