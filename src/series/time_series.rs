@@ -474,15 +474,8 @@ impl TimeSeries {
         timestamp < min_ts
     }
 
-    pub(super) fn trim(&mut self) -> TsdbResult<usize> {
-        let min_timestamp = self.get_min_timestamp();
-        if self.first_timestamp == min_timestamp {
-            return Ok(0);
-        }
-
+    pub(super) fn remove_expired_chunks(&mut self, min_timestamp: Timestamp) -> usize {
         let mut deleted_count = 0;
-
-        // Remove entire chunks that are before min_timestamp
         self.chunks.retain(|chunk| {
             let last_ts = chunk.last_timestamp();
             if last_ts <= min_timestamp {
@@ -492,6 +485,17 @@ impl TimeSeries {
                 true
             }
         });
+        deleted_count
+    }
+
+
+    pub(super) fn trim(&mut self) -> TsdbResult<usize> {
+        let min_timestamp = self.get_min_timestamp();
+        if self.first_timestamp == min_timestamp {
+            return Ok(0);
+        }
+
+        let mut deleted_count = self.remove_expired_chunks(min_timestamp);
 
         // Handle partial chunk
         if let Some(chunk) = self.chunks.first_mut() {
