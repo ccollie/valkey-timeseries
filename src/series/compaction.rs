@@ -583,7 +583,8 @@ where
     let parent_result = execute_compaction_rules(ctx, series, value, f);
 
     // Collect child series
-    let child_series: Vec<_> = series.rules
+    let child_series: Vec<_> = series
+        .rules
         .iter()
         .filter_map(|rule| get_destination_series(ctx, rule.dest_id))
         .collect();
@@ -595,10 +596,9 @@ where
     for mut child in child_series {
         execute_compaction_rules(ctx, &mut child, value, f)?;
     }
-    
+
     Ok(())
 }
-
 
 fn execute_compaction_rules<F>(
     ctx: &Context,

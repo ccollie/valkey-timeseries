@@ -159,7 +159,8 @@ impl PolicyConfig {
             return None;
         }
 
-        let mut result_set: HashSet<CompactionPolicy> = HashSet::with_capacity(self.global_policies.len());
+        let mut result_set: HashSet<CompactionPolicy> =
+            HashSet::with_capacity(self.global_policies.len());
 
         if !self.global_policies.is_empty() {
             for policy in &self.global_policies {
