@@ -35,8 +35,7 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if let Some(mut guard) = get_timeseries_mut(ctx, &args[1], false, Some(AclPermissions::UPDATE))?
     {
         // args.done()?;
-        let series = guard.get_series_mut();
-        return handle_add(ctx, series, args, timestamp, timestamp_str, value);
+        return handle_add(ctx, &mut guard, args, timestamp, timestamp_str, value);
     }
 
     // clones because of replicate_and_notify
@@ -46,7 +45,7 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_series_options(&mut args, TimeSeriesOptions::from_config(), &[])?;
 
     let key = &original_args[1];
-    create_and_store_series(ctx, key, options)?; // todo: ACL ?
+    create_and_store_series(ctx, key, options)?;
 
     let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? else {
         return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
@@ -74,8 +73,9 @@ fn handle_add(
 ) -> ValkeyResult {
     let mut ignored = false;
 
-    let res = series.add(timestamp, value, None);
-    let (replication_timestamp, ts) = match series.add(timestamp, value, None) {
+    let last_ts = series.last_sample.map(|s| s.timestamp);
+
+    let (replication_timestamp, ts, value) = match series.add(timestamp, value, None) {
         SampleAddResult::Ignored(res_ts) => {
             ignored = true;
             let timestamp = if timestamp_str == "*" {
@@ -83,7 +83,7 @@ fn handle_add(
             } else {
                 None
             };
-            (timestamp, res_ts)
+            (timestamp, res_ts, value)
         }
         SampleAddResult::Ok(added) => {
             let timestamp = if timestamp_str == "*" {
@@ -91,20 +91,25 @@ fn handle_add(
             } else {
                 None
             };
-            (timestamp, added.timestamp)
+            (timestamp, added.timestamp, added.value)
         }
-        _ => {
+        res => {
             return res.into();
         }
+    };
+
+    let is_upsert = if let Some(last_ts) = last_ts {
+        ts <= last_ts
+    } else {
+        false
     };
 
     // `ignored` is true when the sample is not added because it is before retention. If there's not
     // a change, we don't want to run compaction.
     // Question: should we replicate the command in this case?
     if !ignored && !series.rules.is_empty() {
-        // TODO!!!!!: if rounding is enabled, we need to used the rounded value in compaction
         let sample = Sample::new(ts, value);
-        if is_upsert(series, ts) {
+        if is_upsert {
             if let Err(res) = series.upsert_compaction(ctx, sample) {
                 let msg = format!(
                     "TSDB: error running compaction upsert for key '{}': {}",
@@ -140,11 +145,4 @@ fn replicate_and_notify(ctx: &Context, args: Vec<ValkeyString>, timestamp: Optio
         ctx.replicate_verbatim();
         ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", &args[2]);
     }
-}
-
-pub(super) fn is_upsert(series: &TimeSeries, ts: Timestamp) -> bool {
-    let Some(last_ts) = series.last_sample else {
-        return false;
-    };
-    ts <= last_ts.timestamp
 }
