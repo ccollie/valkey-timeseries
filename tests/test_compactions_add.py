@@ -14,14 +14,14 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
     def create_source_and_dest_series(self, source_key: str, dest_key: str,
                                       retention_ms: Optional[int] = None) -> None:
         """Helper to create source and destination time series"""
-        # Create source series
+        # Create the source series
         if retention_ms:
             self.client.execute_command("TS.CREATE", source_key, "RETENTION", retention_ms)
         else:
             self.client.execute_command("TS.CREATE", source_key)
 
         # Create destination series for compaction
-            self.client.execute_command("TS.CREATE", dest_key)
+        self.client.execute_command("TS.CREATE", dest_key)
 
     def add_compaction_rule(self, source_key: str, dest_key: str,
                             aggregation: str, bucket_duration_ms: int,
@@ -50,7 +50,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         dest_key = "test:dest:basic"
 
         self.create_source_and_dest_series(source_key, dest_key)
-        self.add_compaction_rule(source_key, dest_key, "avg", 10000)  # 10 second buckets
+        self.add_compaction_rule(source_key, dest_key, "avg", 10000)  # 10-second buckets
 
         # Add samples spanning multiple buckets
         base_ts = int(time.time() * 1000)
@@ -66,15 +66,17 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the source series has all samples
         source_samples = self.get_samples(source_key, 0, "+")
+        print(source_samples)
         assert len(source_samples) == 4
 
         # Verify compaction created aggregated samples
         dest_samples = self.get_samples(dest_key, 0, "+")
+        print(dest_samples)
         assert len(dest_samples) >= 1  # At least one completed bucket
 
         # Verify first bucket average: (10 + 20) / 2 = 15
         first_bucket = dest_samples[0]
-        assert first_bucket[1] == 15.0
+        assert first_bucket[1] == b'15'
 
     def test_compaction_with_different_aggregations(self):
         """Test compaction with various aggregation types"""
@@ -100,15 +102,15 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
 
             # Verify aggregation results
             if agg == "avg":
-                assert dest_samples[0][1] == 15.0  # (10 + 20) / 2
+                assert dest_samples[0][1] == b'15' # (10 + 20) / 2
             elif agg == "sum":
-                assert dest_samples[0][1] == 30.0  # 10 + 20
+                assert dest_samples[0][1] == b'30'  # 10 + 20
             elif agg == "min":
-                assert dest_samples[0][1] == 10.0
+                assert dest_samples[0][1] == b'10'
             elif agg == "max":
-                assert dest_samples[0][1] == 20.0
+                assert dest_samples[0][1] == b'20'
             elif agg == "count":
-                assert dest_samples[0][1] == 2.0
+                assert dest_samples[0][1] == b'2'
 
     def test_compaction_with_align_timestamp(self):
         """Test that compaction respects align timestamp parameter"""
@@ -117,12 +119,12 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
 
         self.create_source_and_dest_series(source_key, dest_key)
 
-        # Align to 5 second offset within 10 second buckets
+        # Align to 5-second offset within 10-second buckets
         align_ts = 5000
         self.add_compaction_rule(source_key, dest_key, "avg", 10000, align_ts)
 
         base_ts = int(time.time() * 1000)
-        # Round down to nearest 10 seconds, then add align offset
+        # Round down to the nearest 10 seconds, then add align offset
         aligned_base = (base_ts // 10000) * 10000 + align_ts
 
         samples = [
@@ -137,7 +139,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         dest_samples = self.get_samples(dest_key, 0, "+")
         assert len(dest_samples) >= 1
 
-        # Verify first bucket is aligned correctly
+        # Verify the first bucket is aligned correctly
         first_bucket_ts = dest_samples[0][0]
         assert (first_bucket_ts - align_ts) % 10000 == 0
 
@@ -163,16 +165,18 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command("TS.ADD", source_key, ts, value)
 
         # Verify source maintains all samples in correct order
-        source_samples = self.get_samples(source_key)
+        source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
+        print(source_samples)
         assert len(source_samples) == 4
 
         # Verify compaction handled the out-of-order inserts correctly
-        dest_samples = self.get_samples(dest_key)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
+        print(dest_samples)
         assert len(dest_samples) >= 1
 
         # First bucket should have average of first three samples in chronological order
         # (10 + 15 + 20) / 3 = 15
-        assert dest_samples[0][1] == 15.0
+        assert dest_samples[0][1] == b'15'
 
     def test_compaction_bucket_finalization(self):
         """Test that compaction properly finalizes buckets when new buckets start"""
@@ -184,7 +188,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
 
         base_ts = int(time.time() * 1000)
 
-        # Add samples to first bucket
+        # Add samples to the first bucket
         self.client.execute_command("TS.ADD", source_key, base_ts, 10.0)
         self.client.execute_command("TS.ADD", source_key, base_ts + 2000, 20.0)
 
@@ -192,13 +196,13 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         dest_samples = self.get_samples(dest_key)
         assert len(dest_samples) == 0
 
-        # Add sample to new bucket - should finalize previous bucket
+        # Add sample to new bucket - should finalize the previous bucket
         self.client.execute_command("TS.ADD", source_key, base_ts + 7000, 30.0)
 
-        # Now first bucket should be finalized and compacted
+        # Now the first bucket should be finalized and compacted
         dest_samples = self.get_samples(dest_key)
         assert len(dest_samples) == 1
-        assert dest_samples[0][1] == 30.0  # sum: 10 + 20
+        assert dest_samples[0][1] == b'30'  # sum: 10 + 20
 
     def test_compaction_with_sample_upsert(self):
         """Test compaction handles sample upserts (timestamp <= last_timestamp) correctly"""
@@ -214,22 +218,26 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.add_sample(source_key, base_ts, 10.0)
         self.add_sample(source_key, base_ts + 5000, 20.0)
         self.add_sample(source_key, base_ts + 15000, 30.0)  # Finalizes first bucket
+        src_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
+        print(src_samples)
 
         # Verify initial compaction
         dest_samples = self.get_samples(dest_key)
+        print(dest_samples)
         initial_count = len(dest_samples)
         initial_value = dest_samples[0][1] if initial_count > 0 else None
 
         # Upsert an earlier sample (should recalculate bucket)
-        self.add_sample(source_key, base_ts + 2000, 25.0)
+        self.add_sample(source_key, base_ts + 2000, 20.0)
 
         # Verify compaction was recalculated
         dest_samples_after = self.get_samples(dest_key)
+        print(dest_samples_after)
         assert len(dest_samples_after) >= initial_count
 
         if initial_value is not None:
             # Value should have changed due to upsert: (10 + 25 + 20) / 3 = 18.33
-            new_value = dest_samples_after[0][1]
+            new_value = float(dest_samples_after[0][1])
             assert abs(new_value - 18.333333333333332) < 0.0001
 
     def test_compaction_across_multiple_destination_series(self):
@@ -278,7 +286,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         source_key = "test:source:retention"
         dest_key = "test:dest:retention"
 
-        # Create series with 30 second retention
+        # Create a series with 30-second retention
         retention_ms = 30000
         self.create_source_and_dest_series(source_key, dest_key, retention_ms)
         self.add_compaction_rule(source_key, dest_key, "avg", 5000)  # 5 second buckets
@@ -297,15 +305,18 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
             self.add_sample(source_key, ts, value)
             # Very old samples might be rejected
 
+        info = self.ts_info(source_key)
+        print(info)
+
         # Verify retention policy applied to source
-        source_samples = self.get_samples(source_key)
+        source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
 
         # All samples within retention should be preserved
         valid_samples = [s for s in old_samples if s[0] >= (base_ts - retention_ms)]
         assert len(source_samples) <= len(valid_samples)
 
         # Verify compaction still occurred for valid samples
-        dest_samples = self.get_samples(dest_key)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         assert len(dest_samples) >= 1
 
     def _test_compaction_error_handling(self):
@@ -357,11 +368,11 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         end_time = time.time()
 
         # Verify all samples were added
-        source_samples = self.get_samples(source_key)
+        source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
         assert len(source_samples) == sample_count
 
         # Verify compaction occurred efficiently
-        dest_samples = self.get_samples(dest_key)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         expected_buckets = sample_count // 10  # ~10 samples per 1s bucket
         assert len(dest_samples) >= expected_buckets * 0.8  # Allow some variance
 
