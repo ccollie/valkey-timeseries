@@ -89,16 +89,6 @@ pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> 
         ));
     }
 
-    if args.len() > 1 {
-        let arg_debug = args[1..]
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(ValkeyError::String(arg_debug));
-        // return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
-    }
-
     Ok(options)
 }
 
