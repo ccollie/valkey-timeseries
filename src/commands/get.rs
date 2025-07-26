@@ -11,10 +11,7 @@ pub fn get(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let latest = if args.len() == 3 {
         let arg = args[2].as_slice();
         if arg.len() != 6 || !arg.eq_ignore_ascii_case("latest".as_ref()) {
-            return Err(ValkeyError::String(format!(
-                "TSDB: invalid argument \"{}\"",
-                args[2]
-            )));
+            return Err(ValkeyError::Str("TSDB: wrong 3rd argument"));
         }
         true
     } else {
