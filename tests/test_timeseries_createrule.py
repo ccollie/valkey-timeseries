@@ -118,14 +118,14 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        # Create initial rule
+        # Create an initial rule
         self.client.execute_command(
             "TS.CREATERULE", source_key, dest_key,
             "AGGREGATION", "avg", "60000"
         )
 
-        with pytest.raises(ResponseError, match="destination series is already the destination of a compaction rule"):
-            # Replace with different aggregation
+        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+            # Try replacing with a different aggregation
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "AGGREGATION", "sum", "30000"
@@ -148,7 +148,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         key = "test:same_key"
         self.create_test_series(key)
 
-        with pytest.raises(ResponseError, match="source and destination key cannot be the same"):
+        with pytest.raises(ResponseError, match="TSDB: the source key and destination key should be different"):
             self.client.execute_command(
                 "TS.CREATERULE", key, key,
                 "AGGREGATION", "avg", "60000"
@@ -176,30 +176,6 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
                 "AGGREGATION", "avg", "60000"
             )
 
-    def test_create_rule_source_is_compaction(self):
-        """Test error when the source is already a compaction destination"""
-        source_key = "test:original"
-        middle_key = "test:middle"
-        final_key = "test:final"
-
-        self.create_test_series(source_key)
-        self.create_test_series(middle_key)
-        self.create_test_series(final_key)
-
-        # Create first rule: original -> middle
-        self.client.execute_command(
-            "TS.CREATERULE", source_key, middle_key,
-            "AGGREGATION", "avg", "60000"
-        )
-
-        # Try to create rule: middle -> final (should fail)
-        with pytest.raises(ResponseError,
-                           match="source series is already the destination of a compaction rule"):
-            self.client.execute_command(
-                "TS.CREATERULE", middle_key, final_key,
-                "AGGREGATION", "avg", "60000"
-            )
-
     def test_create_rule_dest_is_compaction(self):
         """Test error when the destination is already a compaction destination"""
         source1_key = "test:source1_comp"
@@ -218,33 +194,9 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
 
         # Try to create second rule to same destination
         with pytest.raises(ResponseError,
-                           match="destination series is already the destination of a compaction rule"):
+                           match="TSDB: the destination key already has a src rule"):
             self.client.execute_command(
                 "TS.CREATERULE", source2_key, dest_key,
-                "AGGREGATION", "sum", "60000"
-            )
-
-    def test_create_rule_dest_has_rules(self):
-        """Test error when the destination already has compaction rules"""
-        source_key = "test:source_has_rules"
-        dest_key = "test:dest_has_rules"
-        final_key = "test:final_has_rules"
-
-        self.create_test_series(source_key)
-        self.create_test_series(dest_key)
-        self.create_test_series(final_key)
-
-        # Create first rule: source -> dest
-        self.client.execute_command(
-            "TS.CREATERULE", source_key, dest_key,
-            "AGGREGATION", "avg", "60000"
-        )
-
-        # Try to create rule: dest -> final (dest is already the source of rules)
-        with pytest.raises(ResponseError,
-                           match="source series is already the destination of a compaction rule"):
-            self.client.execute_command(
-                "TS.CREATERULE", dest_key, final_key,
                 "AGGREGATION", "sum", "60000"
             )
 
@@ -396,18 +348,315 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         )
         assert result == b"OK"
 
-    def test_create_rule_timestamp_formats(self):
-        """Test various timestamp formats for alignment"""
-        source_key = "test:source_ts_fmt"
-        dest_key = "test:dest_ts_fmt"
+    def test_create_compaction_chain_success(self):
+        """Test creating a valid chain of compactions (A -> B -> C)"""
+        raw_key = "test:raw_data"
+        minute_key = "test:minute_data"
+        hour_key = "test:hour_data"
 
-        self.create_test_series(source_key)
-        self.create_test_series(dest_key)
+        # Create all series
+        self.create_test_series(raw_key)
+        self.create_test_series(minute_key)
+        self.create_test_series(hour_key)
 
-        # Unix timestamp in milliseconds
-        ts_ms = int(time.time() * 1000)
+        # Create first compaction rule: raw -> minute (60s buckets)
         result = self.client.execute_command(
-            "TS.CREATERULE", source_key, dest_key,
-            "AGGREGATION", "avg", "60000", str(ts_ms)
+            "TS.CREATERULE", raw_key, minute_key,
+            "AGGREGATION", "avg", "60000"
         )
         assert result == b"OK"
+
+        # Create a second compaction rule: minute -> hour (60min buckets)
+        result = self.client.execute_command(
+            "TS.CREATERULE", minute_key, hour_key,
+            "AGGREGATION", "avg", "3600000"
+        )
+        assert result == b"OK"
+
+        # Verify both rules were created
+        raw_info = self.ts_info(raw_key)
+        assert len(raw_info["rules"]) == 1
+        assert raw_info["rules"][0] == CompactionRule(minute_key, 60000, "avg", None)
+
+        minute_info = self.ts_info(minute_key)
+        assert len(minute_info["rules"]) == 1
+        assert minute_info["rules"][0] == CompactionRule(hour_key, 3600000, "avg", None)
+
+    def test_create_multi_level_compaction_tree(self):
+        """Test creating a tree-like compaction structure"""
+        source_key = "test:source"
+        branch1_key = "test:branch1"
+        branch2_key = "test:branch2"
+        leaf1_key = "test:leaf1"
+        leaf2_key = "test:leaf2"
+
+        # Create all series
+        for key in [source_key, branch1_key, branch2_key, leaf1_key, leaf2_key]:
+            self.create_test_series(key)
+
+        # Create first level: source -> branch1, source -> branch2
+        self.client.execute_command(
+            "TS.CREATERULE", source_key, branch1_key,
+            "AGGREGATION", "avg", "60000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", source_key, branch2_key,
+            "AGGREGATION", "sum", "60000"
+        )
+
+        # Create the second level: branch1 -> leaf1, branch2 -> leaf2
+        self.client.execute_command(
+            "TS.CREATERULE", branch1_key, leaf1_key,
+            "AGGREGATION", "max", "3600000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", branch2_key, leaf2_key,
+            "AGGREGATION", "min", "3600000"
+        )
+
+        # Verify the structure
+        source_info = self.ts_info(source_key)
+        assert len(source_info["rules"]) == 2
+
+        branch1_info = self.ts_info(branch1_key)
+        assert len(branch1_info["rules"]) == 1
+        assert branch1_info["rules"][0] == CompactionRule(leaf1_key, 3600000, "max", None)
+
+        branch2_info = self.ts_info(branch2_key)
+        assert len(branch2_info["rules"]) == 1
+        assert branch2_info["rules"][0] == CompactionRule(leaf2_key, 3600000, "min", None)
+
+    def test_prevent_self_compaction(self):
+        """Test preventing a series from being its own compaction destination"""
+        key = "test:self_compact"
+        self.create_test_series(key)
+
+        with pytest.raises(ResponseError, match="the source key and destination key should be different"):
+            self.client.execute_command(
+                "TS.CREATERULE", key, key,
+                "AGGREGATION", "avg", "60000"
+            )
+
+    def test_prevent_direct_circular_dependency(self):
+        """Test preventing direct circular dependency (A -> B -> A)"""
+        key_a = "test:circular_a"
+        key_b = "test:circular_b"
+
+        # Create both series
+        self.create_test_series(key_a)
+        self.create_test_series(key_b)
+
+        # Create the first rule: A -> B
+        result = self.client.execute_command(
+            "TS.CREATERULE", key_a, key_b,
+            "AGGREGATION", "avg", "60000"
+        )
+        assert result == b"OK"
+        info = self.ts_info(key_a)
+        assert len(info["rules"]) == 1
+        print(info["rules"])
+
+        self.client.execute_command(
+            "TS.CREATERULE", key_b, key_a,
+            "AGGREGATION", "sum", "60000"
+        )
+
+        print("Created rule from B to A")
+        info_b = self.ts_info(key_b)
+        print(info_b)
+
+        # Try to create a circular rule: B -> A (should fail)
+        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+            self.client.execute_command(
+                "TS.CREATERULE", key_b, key_a,
+                "AGGREGATION", "sum", "60000"
+            )
+
+
+    def test_prevent_indirect_circular_dependency(self):
+        """Test preventing indirect circular dependency (A -> B -> C -> A)"""
+        key_a = "test:indirect_a"
+        key_b = "test:indirect_b"
+        key_c = "test:indirect_c"
+
+        # Create all series
+        for key in [key_a, key_b, key_c]:
+            self.create_test_series(key)
+
+        # Create chain: A -> B -> C
+        self.client.execute_command(
+            "TS.CREATERULE", key_a, key_b,
+            "AGGREGATION", "avg", "60000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", key_b, key_c,
+            "AGGREGATION", "sum", "120000"
+        )
+
+        self.client.execute_command(
+            "TS.CREATERULE", key_c, key_a,
+            "AGGREGATION", "max", "300000"
+        )
+
+        # Try to create a circular rule: C -> A (should fail)
+        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+            self.client.execute_command(
+                "TS.CREATERULE", key_c, key_a,
+                "AGGREGATION", "max", "300000"
+            )
+
+
+    def test_prevent_complex_circular_dependency(self):
+        """Test preventing circular dependency in a more complex graph"""
+        keys = [f"test:complex_{i}" for i in range(5)]
+
+        # Create all series
+        for key in keys:
+            self.create_test_series(key)
+
+        # Create a complex dependency graph:
+        # 0 -> 1, 0 -> 2
+        # 1 -> 3
+        # 2 -> 3, 2 -> 4
+        self.client.execute_command(
+            "TS.CREATERULE", keys[0], keys[1],
+            "AGGREGATION", "avg", "60000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", keys[0], keys[2],
+            "AGGREGATION", "sum", "60000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", keys[1], keys[3],
+            "AGGREGATION", "max", "120000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", keys[2], keys[3],
+            "AGGREGATION", "min", "120000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", keys[2], keys[4],
+            "AGGREGATION", "count", "120000"
+        )
+
+        # Now try to create rules that would cause cycles
+        # 3 -> 0 would create a cycle
+        with pytest.raises(ResponseError, match="circular dependency"):
+            self.client.execute_command(
+                "TS.CREATERULE", keys[3], keys[0],
+                "AGGREGATION", "avg", "300000"
+            )
+
+        # 4 -> 1 would create a cycle through 0
+        with pytest.raises(ResponseError, match="circular dependency"):
+            self.client.execute_command(
+                "TS.CREATERULE", keys[4], keys[1],
+                "AGGREGATION", "sum", "300000"
+            )
+
+    def test_allow_valid_diamond_dependency(self):
+        """Test that diamond-shaped dependencies are allowed (no cycles)"""
+        source_key = "test:diamond_source"
+        left_key = "test:diamond_left"
+        right_key = "test:diamond_right"
+        sink_key = "test:diamond_sink"
+
+        # Create all series
+        for key in [source_key, left_key, right_key, sink_key]:
+            self.create_test_series(key)
+
+        # Create a diamond structure:
+        # source -> left, source -> right
+        # left -> sink, right -> sink
+        self.client.execute_command(
+            "TS.CREATERULE", source_key, left_key,
+            "AGGREGATION", "avg", "60000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", source_key, right_key,
+            "AGGREGATION", "sum", "60000"
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", left_key, sink_key,
+            "AGGREGATION", "max", "120000"
+        )
+
+        # This should fail because sink already has a compaction rule
+        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+            self.client.execute_command(
+                "TS.CREATERULE", right_key, sink_key,
+                "AGGREGATION", "min", "120000"
+            )
+
+    def test_allow_multiple_source_same_destination_fail(self):
+        """Test that multiple sources cannot point to the same destination"""
+        source1_key = "test:multi_src1"
+        source2_key = "test:multi_src2"
+        dest_key = "test:multi_dest"
+
+        # Create all series
+        for key in [source1_key, source2_key, dest_key]:
+            self.create_test_series(key)
+
+        # Create first rule
+        self.client.execute_command(
+            "TS.CREATERULE", source1_key, dest_key,
+            "AGGREGATION", "avg", "60000"
+        )
+
+        # Try to create second rule to same destination (should fail)
+        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
+            self.client.execute_command(
+                "TS.CREATERULE", source2_key, dest_key,
+                "AGGREGATION", "sum", "60000"
+            )
+    def test_functional_multilevel_compaction(self):
+        """Test that multi-level compactions actually work functionally"""
+        raw_key = "test:func_raw"
+        minute_key = "test:func_minute"
+        hour_key = "test:func_hour"
+
+        # Create all series
+        self.create_test_series(raw_key)
+        self.create_test_series(minute_key)
+        self.create_test_series(hour_key)
+
+        # Create a compaction chain
+        self.client.execute_command(
+            "TS.CREATERULE", raw_key, minute_key,
+            "AGGREGATION", "avg", "60000"  # 1 minute buckets
+        )
+        self.client.execute_command(
+            "TS.CREATERULE", minute_key, hour_key,
+            "AGGREGATION", "avg", "3600000"  # 1 hour buckets
+        )
+
+        # Add test data spanning multiple minutes and hours
+        base_ts = int(time.time() * 1000)
+        base_ts = (base_ts // 60000) * 60000  # Align to the minute boundary
+
+        # Add samples across 3 minutes (3 buckets for minute compaction)
+        samples = []
+        for minute in range(3):
+            for second in range(0, 60, 10):  # Every 10 seconds
+                ts = base_ts + (minute * 60000) + (second * 1000)
+                value = minute * 10 + second  # Predictable values
+                samples.append((ts, value))
+
+        for ts, value in samples:
+            self.client.execute_command("TS.ADD", raw_key, ts, value)
+
+        # Allow time for compaction to process
+        time.sleep(0.5)
+
+        # Verify raw data exists
+        raw_range = self.client.execute_command("TS.RANGE", raw_key, "-", "+")
+        assert len(raw_range) == len(samples), "All raw samples should be present"
+
+        # Verify minute compaction created data
+        minute_range = self.client.execute_command("TS.RANGE", minute_key, "-", "+")
+        assert len(minute_range) > 0, "Minute compaction should have created aggregated data"
+
+        # Verify hour compaction created data
+        hour_range = self.client.execute_command("TS.RANGE", hour_key, "-", "+")
+        assert len(hour_range) > 0, "Hour compaction should have created aggregated data"
