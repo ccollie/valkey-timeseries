@@ -65,15 +65,15 @@ class TestTSDeleteRule(ValkeyTimeSeriesTestCaseBase):
         assert "key does not exist" in str(exc_info.value).lower()
 
     def test_delete_rule_no_rule_exists(self):
-        """Test error when no rule exists between source and dest."""
+        """Test error when no rule exists between a source and dest."""
         source_key = "source"
         dest_key = "dest"
         self.client.execute_command("TS.CREATE", source_key)
         self.client.execute_command("TS.CREATE", dest_key)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(Exception, match="TSDB: compaction rule does not exist") as exc_info:
             self.client.execute_command("TS.DELETERULE", source_key, dest_key)
-        assert "compaction rule does not exist" in str(exc_info.value)
+
 
     def test_delete_rule_wrong_source(self):
         """Test error when dest series source doesn't match the provided source."""
@@ -81,9 +81,8 @@ class TestTSDeleteRule(ValkeyTimeSeriesTestCaseBase):
         source2_key = "source2"
         self.client.execute_command("TS.CREATE", source2_key)
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(Exception, match="TSDB: compaction rule does not exist") as exc_info:
             self.client.execute_command("TS.DELETERULE", source2_key, dest_key)
-        assert "source series is not the source of the compaction rule" in str(exc_info.value)
 
     def test_delete_rule_functional_verification(self):
         """Test that rule deletion actually stops compaction."""

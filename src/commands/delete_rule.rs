@@ -36,31 +36,15 @@ pub fn delete_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     );
 
     let dest_id = dest_series.id;
+    let Some(_rule) = source_series.remove_compaction_rule(dest_id) else {
+        return Err(ValkeyError::Str("TSDB: compaction rule does not exist"));
+    };
 
-    if dest_series.src_series.unwrap_or_default() != source_series.id {
-        return Err(ValkeyError::Str(
-            "TSDB: source series is not the source of the compaction rule",
-        ));
-    }
+    // Clear the src_series field in the destination series
+    dest_series.src_series = None;
 
-    // Check if the rule exists
-    let rule_index = source_series
-        .rules
-        .iter()
-        .position(|rule| rule.dest_id == dest_id);
+    // Replicate the command
+    ctx.replicate_verbatim();
 
-    if let Some(index) = rule_index {
-        // Remove the rule from the source series
-        source_series.rules.remove(index);
-
-        // Clear the src_series field in the destination series
-        dest_series.src_series = None;
-
-        // Replicate the command
-        ctx.replicate_verbatim();
-
-        VALKEY_OK
-    } else {
-        Err(ValkeyError::Str("TSDB: compaction rule does not exist"))
-    }
+    VALKEY_OK
 }

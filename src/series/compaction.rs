@@ -713,8 +713,12 @@ impl TimeSeries {
         self.rules.push(rule);
     }
 
-    pub fn remove_compaction_rule(&mut self, dest_id: SeriesRef) {
-        self.rules.retain(|rule| rule.dest_id != dest_id);
+    pub fn remove_compaction_rule(&mut self, dest_id: SeriesRef) -> Option<CompactionRule> {
+        let Some(index) = self.rules.iter().position(|rule| rule.dest_id == dest_id) else {
+            // No rule found for this destination ID
+            return None;
+        };
+        Some(self.rules.remove(index))
     }
 
     pub fn get_rule_by_dest_id(&self, dest_id: SeriesRef) -> Option<&CompactionRule> {
