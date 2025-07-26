@@ -784,10 +784,8 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
         return None;
     }
     let rule = parent.get_rule_by_dest_id(series.id)?;
-    let Some(start) = rule.bucket_start else {
-        // no data
-        return None;
-    };
+    let start = rule.bucket_start?;
+
     let value = rule.aggregator.current()?;
     let sample = Sample::new(start, value);
     Some(sample)
