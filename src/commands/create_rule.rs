@@ -29,7 +29,7 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Validate that sourceKey is different from destKey
     if source_key == dest_key {
         return Err(ValkeyError::Str(
-            "TSDB: source and destination key cannot be the same",
+            "TSDB: the source key and destination key should be different",
         ));
     }
 
@@ -54,13 +54,19 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let dest_id = dest_series.id;
 
-    if source_series.is_compaction() {
+    if dest_series.is_compaction() && dest_series.src_series != Some(source_id) {
         return Err(ValkeyError::Str(
-            "TSDB: the source key already has a source rule",
+            "TSDB: the destination key already has a src rule",
         ));
     }
 
-    if dest_series.is_compaction() && dest_series.src_series != Some(source_id) {
+    // check for duplicate compaction rule
+    if source_series
+        .rules
+        .iter()
+        .any(|rule| rule.dest_id == dest_id)
+    {
+        // match error from redis-ts
         return Err(ValkeyError::Str(
             "TSDB: the destination key already has a src rule",
         ));
@@ -69,20 +75,9 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Parse aggregation options
     let rule = parse_args(&mut args, dest_id)?;
 
-    check_new_rule_circular_dependency(ctx, &mut source_series, &rule)?;
+    check_new_rule_circular_dependency(ctx, &mut source_series, &mut dest_series)?;
 
-    // add or replace in the list of compaction rules in `source_series`
-    if let Some(existing) = source_series
-        .rules
-        .iter_mut()
-        .find(|rule| rule.dest_id == dest_id)
-    {
-        existing.align_timestamp = rule.align_timestamp;
-        existing.bucket_duration = rule.bucket_duration;
-        existing.aggregator = rule.aggregator;
-    } else {
-        source_series.rules.push(rule)
-    }
+    source_series.rules.push(rule);
     // Add the rule to the destination series
     dest_series.src_series = Some(source_id);
 
