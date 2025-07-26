@@ -9,7 +9,7 @@ use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef,
 use get_size::GetSize;
 use logger_rust::*;
 use smallvec::SmallVec;
-use topologic::AcyclicDependencyGraph;
+use topo_sort::{SortResults, TopoSort};
 use valkey_module::{raw, Context, DetachedContext, NotifyEvent, ValkeyError, ValkeyResult};
 
 const PARALLEL_THRESHOLD: usize = 2;
@@ -794,7 +794,7 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
 }
 
 pub fn check_circular_dependencies(ctx: &Context, series: &mut TimeSeries) -> ValkeyResult<()> {
-    let graph = build_compaction_dependency_graph(ctx, series)?;
+    let graph = build_dependency_graph(ctx, series)?;
     if graph.is_empty() {
         return Ok(());
     }
@@ -805,49 +805,66 @@ pub fn check_circular_dependencies(ctx: &Context, series: &mut TimeSeries) -> Va
 pub fn check_new_rule_circular_dependency(
     ctx: &Context,
     series: &mut TimeSeries,
-    rule: &CompactionRule,
+    dest: &mut TimeSeries,
 ) -> ValkeyResult<()> {
     if series.rules.is_empty() {
         return Ok(());
     }
 
-    let mut graph = build_compaction_dependency_graph(ctx, series)?;
+    let mut graph = build_dependency_graph(ctx, series)?;
     if graph.is_empty() {
+        log_debug!("check_new_rule_circular_dependency: Graph is emoty.");
         return Ok(());
     }
 
     // Check if the new rule would create a circular dependency
-    if graph.depend_on(series.id, rule.dest_id).is_err() {
+    log_info!("candidate rule {} -> {}", series.id, dest.id);
+    graph.insert(series.id, vec![dest.id]);
+    build_dependency_graph_internal(ctx, dest, &mut graph)?;
+
+    let SortResults::Full(nodes) = graph.into_vec_nodes() else {
         return Err(ValkeyError::Str(
             error_consts::COMPACTION_CIRCULAR_DEPENDENCY,
         ));
-    }
+    };
+
+    log_debug!("Sorted nodes: {:?}", nodes);
 
     Ok(())
 }
 
-pub fn build_compaction_dependency_graph(
+pub fn build_dependency_graph(
     ctx: &Context,
     series: &mut TimeSeries,
-) -> ValkeyResult<AcyclicDependencyGraph<SeriesRef>> {
-    fn build(
-        ctx: &Context,
-        source_series: &mut TimeSeries,
-        graph: &mut AcyclicDependencyGraph<SeriesRef>,
-    ) -> ValkeyResult<()> {
-        let src_id = source_series.id;
-        let mut destinations = get_compaction_series(ctx, source_series);
-        for dest in destinations.iter_mut() {
-            graph
-                .depend_on(src_id, dest.id)
-                .map_err(|_| ValkeyError::Str(error_consts::COMPACTION_CIRCULAR_DEPENDENCY))?;
-            build(ctx, dest, graph)?;
-        }
-        Ok(())
+) -> ValkeyResult<TopoSort<SeriesRef>> {
+    let mut graph = TopoSort::with_capacity(10);
+
+    if !series.rules.is_empty() {
+        build_dependency_graph_internal(ctx, series, &mut graph)?;
     }
 
-    let mut graph = AcyclicDependencyGraph::new();
-    build(ctx, series, &mut graph)?;
-
     Ok(graph)
+}
+
+fn build_dependency_graph_internal(
+    ctx: &Context,
+    source_series: &mut TimeSeries,
+    graph: &mut TopoSort<SeriesRef>,
+) -> ValkeyResult<()> {
+    let mut destinations = get_compaction_series(ctx, source_series);
+    if destinations.is_empty() {
+        return Ok(());
+    }
+    let dest_ids = destinations.iter().map(|x| x.id).collect::<Vec<_>>();
+    log_info!("{} -> {:?}", source_series.id, dest_ids);
+    graph.insert(source_series.id, dest_ids);
+    if graph.cycle_detected() {
+        return Err(ValkeyError::Str(
+            error_consts::COMPACTION_CIRCULAR_DEPENDENCY,
+        ));
+    }
+    for dest in destinations.iter_mut() {
+        build_dependency_graph_internal(ctx, dest, graph)?;
+    }
+    Ok(())
 }
