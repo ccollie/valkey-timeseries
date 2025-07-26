@@ -155,7 +155,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         self.setup_source_and_dest_series(source_key, dest_key)
         # Create rule with aligned timestamps (align to start of bucket)
         self.client.execute_command('TS.CREATERULE', source_key, dest_key,
-                                    'AGGREGATION', 'avg', 1000, 'ALIGN', 1000)
+                                    'AGGREGATION', 'avg', 1000, 1000)
 
         # Add samples with specific timing
         timestamps = [1050, 1150, 1250, 1550, 1750]
