@@ -20,11 +20,16 @@ pub fn get(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let key = &args[1];
     let sample = with_timeseries(ctx, key, true, move |series| {
-        Ok(if latest {
-            get_latest_compaction_sample(ctx, series)
+        if latest {
+            let Some(value) = get_latest_compaction_sample(ctx, series) else {
+                return Ok(series.last_sample);
+            };
+            Ok(Some(value))
+        } else if series.last_sample.is_none() {
+            Ok(series.last_sample)
         } else {
-            series.last_sample
-        })
+            Ok(None)
+        }
     })?;
 
     Ok(match sample {

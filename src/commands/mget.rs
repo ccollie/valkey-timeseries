@@ -108,7 +108,11 @@ pub fn process_mget_request(
         Some(AclPermissions::ACCESS),
         move |acc, series, key| {
             let sample = if options.latest {
-                get_latest_compaction_sample(ctx, series)
+                if let Some(value) = get_latest_compaction_sample(ctx, series) {
+                    Some(value)
+                } else {
+                    series.last_sample
+                }
             } else {
                 series.last_sample
             };
