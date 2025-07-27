@@ -8,7 +8,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
-        # Create series with various labels
+        # Create multi series with various labels
         client.execute_command('TS.CREATE', 'ts1', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node1')
         client.execute_command('TS.CREATE', 'ts2', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node2')
         client.execute_command('TS.CREATE', 'ts3', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'node1')
@@ -152,7 +152,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Delete series with unique labels
-        # self.client.execute_command('DEL', 'ts9')
+        self.client.execute_command('DEL', 'ts9')
 
         # Verify unique labels are no longer returned
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'location=datacenter')
@@ -162,7 +162,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         """Test TS.LABELNAMES with complex filter combinations"""
         self.setup_test_data(self.client)
 
-        # Complex filter: CPU metrics that are not usage type
+        # Complex filter: CPU metrics that are not a usage type
         result = sorted(self.client.execute_command('TS.LABELNAMES',
                                                     'FILTER', 'name=cpu', 'type!=usage'))
         assert result == [b'name', b'node', b'type']

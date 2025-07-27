@@ -173,7 +173,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         assert b'network' in result
 
         # Delete a time series
-        # self.client.execute_command('DEL', 'ts6')  # ts6 has name=network
+        self.client.execute_command('DEL', 'ts6')  # ts6 has name=network
 
         # Verify the deleted label value is no longer returned
         result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'name=network')
@@ -206,7 +206,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
 
     def test_label_values_with_empty_database(self):
         """Test TS.LABELVALUES with an empty database"""
-        # Ensure database is empty
+        # Ensure a database is empty
         self.client.execute_command('FLUSHALL')
 
         # Verify no values are returned for any label
