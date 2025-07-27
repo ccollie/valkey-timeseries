@@ -50,23 +50,17 @@ pub fn get_timeseries(
     permissions: Option<AclPermissions>,
     must_exist: bool,
 ) -> ValkeyResult<Option<SeriesGuard>> {
-    if let Some(permissions) = permissions {
-        check_key_permissions(ctx, &key, &permissions)?;
-    }
-
-    let redis_key = ctx.open_key(&key);
-    match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-        Err(_) => Err(ValkeyError::WrongType),
-        Ok(Some(_)) => Ok(Some(SeriesGuard {
-            key: redis_key,
-            key_inner: key,
-        })),
-        Ok(None) => {
-            if must_exist {
-                return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
+    match SeriesGuard::new(ctx, key, &permissions) {
+        Ok(guard) => Ok(Some(guard)),
+        Err(e) => match e {
+            ValkeyError::Str(err) if err == error_consts::KEY_NOT_FOUND => {
+                if must_exist {
+                    return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
+                }
+                Ok(None)
             }
-            Ok(None)
-        }
+            _ => Err(e),
+        },
     }
 }
 

@@ -1,8 +1,10 @@
+use crate::error_consts;
+use crate::series::acl::check_key_permissions;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::TimeSeries;
 use std::ops::{Deref, DerefMut};
 use valkey_module::key::ValkeyKey;
-use valkey_module::{Context, ValkeyString};
+use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub struct SeriesGuard {
     pub(super) key_inner: ValkeyString,
@@ -10,6 +12,27 @@ pub struct SeriesGuard {
 }
 
 impl SeriesGuard {
+    pub fn new(
+        ctx: &Context,
+        key: ValkeyString,
+        acls: &Option<AclPermissions>,
+    ) -> ValkeyResult<SeriesGuard> {
+        // check permissions if provided
+        if let Some(permissions) = acls {
+            check_key_permissions(ctx, &key, permissions)?;
+        }
+        let valkey_key = ctx.open_key(&key);
+        // get series from valkey
+        match valkey_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+            Ok(Some(_)) => {
+                let guard = SeriesGuard::open(ctx, key);
+                Ok(guard)
+            }
+            Ok(None) => Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
+            Err(e) => Err(e),
+        }
+    }
+
     pub(crate) fn open(ctx: &Context, key: ValkeyString) -> Self {
         let key_ = ValkeyKey::open(ctx.ctx, &key);
         SeriesGuard {
