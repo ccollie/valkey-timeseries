@@ -58,7 +58,7 @@ pub const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
 pub(super) const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
 pub(super) const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
 pub const COMPACTION_POLICY_CONFIG_NAME: &str = "ts-compaction-policy";
-pub(super) const DEFAULT_COMPACTION_POLICY_STRING: &str = "";
+pub(super) const COMPACTION_POLICY_DEFAULT_STRING: &str = "";
 
 pub const MIN_THREADS: i64 = 1;
 pub const MAX_THREADS: i64 = 16;
@@ -120,7 +120,7 @@ lazy_static! {
     pub(super) static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
     pub(super) static ref COMPACTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
+        ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING));
     pub(super) static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(
             None,

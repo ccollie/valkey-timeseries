@@ -157,7 +157,7 @@ valkey_module! {
             ["ts-encoding", &*config::CHUNK_ENCODING_STRING, config::CHUNK_ENCODING_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
             ["ts-decimal-digits", &*config::DECIMAL_DIGITS_STRING, config::DECIMAL_DIGITS_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_rounding_config_set))],
             ["ts-duplicate-policy", &*config::DUPLICATE_POLICY_STRING, config::DUPLICATE_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
-            ["ts-compaction-policy", &*config::COMPACTION_POLICY_STRING, config::DEFAULT_COMPACTION_POLICY_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
+            ["ts-compaction-policy", &*config::COMPACTION_POLICY_STRING, config::COMPACTION_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
             ["ts-ignore-max-time-diff", &*config::IGNORE_MAX_TIME_DIFF_STRING, config::IGNORE_MAX_TIME_DIFF_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
             ["ts-ignore-max-value-diff", &*config::IGNORE_MAX_VALUE_DIFF_STRING, config::IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_float_config_set))],
             ["ts-retention-policy", &*config::RETENTION_POLICY_STRING, config::RETENTION_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
