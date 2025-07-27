@@ -152,6 +152,13 @@ pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString
     })
 }
 
+pub fn remove_series_from_index(ts: &TimeSeries) {
+    let guard = TIMESERIES_INDEX.guard();
+    let index = get_timeseries_index_for_db(ts._db, &guard);
+    index.remove_timeseries(ts);
+    drop(guard);
+}
+
 pub fn clear_timeseries_index(ctx: &Context) {
     let db = get_current_db(ctx);
     let map = TIMESERIES_INDEX.pin();

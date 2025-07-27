@@ -4,11 +4,14 @@ use valkey_module::{
     native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleString, ValkeyString,
 };
 
-use crate::common::db::{get_current_db, set_current_db};
+use crate::common::db::get_current_db;
 use crate::series::defrag_series;
-use crate::series::index::{next_timeseries_id, with_timeseries_index};
+use crate::series::index::{
+    get_timeseries_index_for_db, next_timeseries_id, with_timeseries_index, TIMESERIES_INDEX,
+};
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
+use logger_rust::log_debug;
 use std::os::raw::{c_int, c_void};
 use valkey_module::raw;
 
@@ -42,17 +45,11 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
 );
 
 fn remove_series_from_index(ts: &TimeSeries) {
-    let guard = valkey_module::MODULE_CONTEXT.lock();
-    let saved_db = get_current_db(&guard);
-    if saved_db != ts._db {
-        set_current_db(&guard, ts._db);
-    }
-    with_timeseries_index(&guard, |ts_index| {
-        ts_index.remove_timeseries(ts);
-    });
-    if saved_db != ts._db {
-        set_current_db(&guard, saved_db);
-    }
+    let guard = TIMESERIES_INDEX.guard();
+    let index = get_timeseries_index_for_db(ts._db, &guard);
+    index.remove_timeseries(ts);
+    log_debug!("Series {} removed from index", ts.id);
+    drop(guard);
 }
 
 unsafe extern "C" fn rdb_save(rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
@@ -78,8 +75,11 @@ unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
 #[allow(unused)]
 unsafe extern "C" fn free(value: *mut c_void) {
     let sm = value.cast::<TimeSeries>();
-    // remove_series_from_index(&*sm);
-    drop(Box::from_raw(sm));
+    let series = Box::from_raw(sm);
+    // todo: it may be helpful to push index deletion to rayon::spawn
+    log_debug!("Dropping TimeSeries: {:?}", series);
+    remove_series_from_index(&series);
+    drop(series);
 }
 
 #[allow(non_snake_case, unused)]
@@ -104,10 +104,10 @@ unsafe extern "C" fn copy(
 }
 
 unsafe extern "C" fn unlink(_key: *mut RedisModuleString, value: *const c_void) {
-    let series = &*value.cast::<TimeSeries>();
     if value.is_null() {
         return;
     }
+    let series = &*value.cast::<TimeSeries>();
     remove_series_from_index(series);
 }
 

@@ -1,4 +1,4 @@
-use crate::common::db::{get_current_db, set_current_db};
+use crate::common::db::get_current_db;
 use crate::series::index::*;
 use crate::series::{get_timeseries_mut, with_timeseries_mut, TimeSeries};
 use std::os::raw::c_void;
@@ -50,6 +50,7 @@ fn handle_loaded(ctx: &Context, key: &[u8]) {
         series._db = get_current_db(ctx);
         if !index.has_id(series.id) {
             index.index_timeseries(&series, key);
+
             // On module load, our series id generator would have been reset to zero. We have to ensure
             // that after a load the counter has the value of the highest series id
             TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
@@ -64,21 +65,19 @@ fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
     // fetch the series from the new
     let valkey_key = ctx.create_string(key);
     let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
+        logging::log_warning("Failed to load series for key move");
         return;
     };
-    series._db = new_db;
+    let guard = TIMESERIES_INDEX.guard();
 
     // remove the series from the old db index
-    set_current_db(ctx, old_db);
-    with_timeseries_index(ctx, |index| {
-        index.remove_timeseries(&series);
-    });
+    let old_index = get_timeseries_index_for_db(old_db, &guard);
+    old_index.remove_timeseries(&series);
 
     // add the series to the new db index
-    set_current_db(ctx, new_db);
-    with_timeseries_index(ctx, |index| {
-        index.index_timeseries(&series, key);
-    });
+    series._db = new_db;
+    let new_index = get_timeseries_index_for_db(new_db, &guard);
+    new_index.index_timeseries(&series, key);
 }
 
 // handle events that require removing the series from the index
@@ -115,13 +114,6 @@ pub(super) fn generic_key_events_handler(
     event: &str,
     key: &[u8],
 ) {
-    // todo: AddPostNotificationJob(ctx, event, key);
-    ctx.log_notice(&format!(
-        "Received event: {} for key: {}",
-        event,
-        String::from_utf8_lossy(key)
-    ));
-
     hashify::fnc_map_ignore_case!(event.as_bytes(),
         "loaded" => {
             ctx.log_notice("Loaded event received");
