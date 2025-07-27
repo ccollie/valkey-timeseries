@@ -114,9 +114,8 @@ pub(super) fn generic_key_events_handler(
     event: &str,
     key: &[u8],
 ) {
-    hashify::fnc_map_ignore_case!(event.as_bytes(),
+    hashify::fnc_map!(event.as_bytes(),
         "loaded" => {
-            ctx.log_notice("Loaded event received");
             handle_loaded(ctx, key);
         },
         "move_from" => {
