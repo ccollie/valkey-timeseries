@@ -162,19 +162,21 @@ impl MemoryPostings {
     }
 
     pub fn rename_series_key(&mut self, old_key: &[u8], new_key: &[u8]) -> Option<SeriesRef> {
-        // TODO: figure out how to avoid this allocation
-        let old_key = IndexKey::from(old_key);
-        if let Some(id) = self.key_to_id.remove(&old_key) {
-            let key = new_key.to_vec().into_boxed_slice();
-            self.id_to_key.remove(&id);
-            self.id_to_key.insert(id, key);
+        let old_key_index = IndexKey::from(old_key);
 
-            let new_key = IndexKey::from(new_key);
-            self.key_to_id.insert(new_key, id);
-            Some(id)
-        } else {
-            None
-        }
+        // Check if the old key exists before making any changes
+        let id = self.key_to_id.get(&old_key_index).copied()?;
+
+        // Prepare new key data (do allocations first)
+        let new_key_vec = new_key.to_vec().into_boxed_slice();
+        let new_key_index = IndexKey::from(new_key);
+
+        // Now perform atomic updates
+        self.key_to_id.remove(&old_key_index);
+        self.key_to_id.insert(new_key_index, id);
+        self.id_to_key.insert(id, new_key_vec);
+
+        Some(id)
     }
 
     pub fn count(&self) -> usize {
