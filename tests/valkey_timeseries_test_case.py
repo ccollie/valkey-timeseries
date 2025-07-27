@@ -43,9 +43,6 @@ class CompactionRule:
 
 class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
 
-    # Global Parameterized Configs
-    use_random_seed = 'no'
-
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
@@ -256,11 +253,29 @@ class ValkeyInfo:
 
 def parse_info_response(response):
     """Helper function to parse TS.INFO list response into a dictionary."""
+
+    # Keys that contain integer values
+    integer_keys = {
+        'totalSamples',
+        'memoryUsage',
+        'firstTimestamp',
+        'lastTimestamp',
+        'retentionTime',
+        'chunkCount',
+        'chunkSize'
+    }
+
     info_dict = {}
     it = iter(response)
     for key in it:
         key_str = key.decode('utf-8')
         value = next(it)
+        if key_str in integer_keys:
+            # Convert to integer if the key is in the integer keys set
+            if isinstance(value, bytes):
+                info_dict[key_str] = int(value.decode('utf-8'))
+            else:
+                info_dict[key_str] = int(value)
         if key_str == 'rules':
             # Handle rules separately
             info_dict[key_str] = []
