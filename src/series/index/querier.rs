@@ -30,7 +30,7 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::str;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub fn series_by_matchers(
     ctx: &Context,
@@ -175,19 +175,41 @@ fn collect_series(
         (0, 0, false)
     };
     let mut series = Vec::new();
+    let permissions = if require_permissions {
+        Some(AclPermissions::ACCESS)
+    } else {
+        None
+    };
     for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
         let real_key = ctx.create_string(key.as_bytes());
-        if require_permissions && !check_key_read_permission(ctx, &real_key) {
-            if raise_permission_error {
-                let msg = error_consts::PERMISSION_DENIED;
-                return Err(ValkeyError::Str(msg));
-            } else {
-                continue;
+
+        // NOTE: unless the index is out of sync, getting a valid series at this point should not fail
+        let guard = match SeriesGuard::new(ctx, real_key, &permissions) {
+            Ok(guard) => guard,
+            Err(e) => {
+                match e {
+                    ValkeyError::Str(error_consts::KEY_NOT_FOUND) => {
+                        // If the key is not found, we can skip it
+                        ctx.log_warning("Failed to find series key in index");
+                        // TODO: mark the series as stale?
+                        continue;
+                    }
+                    ValkeyError::Str(error_consts::PERMISSION_DENIED) => {
+                        if raise_permission_error {
+                            return Err(e);
+                        } else {
+                            // skip series that we can't access
+                            continue;
+                        }
+                    }
+                    _ => {
+                        // If we get any other error, we should propagate it
+                        return Err(e);
+                    }
+                }
             }
         };
 
-        // NOTE: unless the index is out of sync, getting a valid series at this point should not fail
-        let guard = SeriesGuard::open(ctx, real_key);
         if has_range {
             let ts = guard.get_series();
             if !ts.has_samples_in_range(start, end) {
