@@ -30,7 +30,7 @@ class TestFlushDb(ValkeyTimeSeriesTestCaseBase):
         for key in keys:
             assert self.client.exists(key)
 
-        keys = self.client.execute_command("TS.QUERYINDEX", 'key=~"ts:flush*"')
+        keys = self.client.execute_command("TS.QUERYINDEX", 'sensor=temp')
         assert len(keys) == 3
 
         # Flush the database
