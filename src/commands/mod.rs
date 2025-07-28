@@ -20,7 +20,6 @@ mod rev_range;
 mod stats;
 
 mod create_rule;
-mod test_cmd;
 
 pub use arg_parse::*;
 pub use create_rule::*;
@@ -44,5 +43,3 @@ pub use query_index::*;
 pub use range::*;
 pub use rev_range::*;
 pub use stats::*;
-
-pub use test_cmd::*;

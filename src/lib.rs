@@ -141,7 +141,6 @@ valkey_module! {
         ["TS.STATS", commands::stats, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CREATERULE", commands::create_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.TEST", commands::test_cmd, "readonly", 0, 0, 0, "read timeseries"]
     ]
     event_handlers: [
         [@SET @STRING @EVICTED @EXPIRED @TRIMMED: remove_key_events_handler],
