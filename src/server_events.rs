@@ -164,7 +164,7 @@ unsafe extern "C" fn on_flush_event(
     sub_event: u64,
     data: *mut c_void,
 ) {
-    if sub_event != raw::REDISMODULE_SUBEVENT_FLUSHDB_START {
+    if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_START {
         FLUSHING_IN_PROCESS.store(true, std::sync::atomic::Ordering::Relaxed);
     } else if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
         let ctx = Context::new(ctx);
