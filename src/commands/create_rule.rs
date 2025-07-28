@@ -54,7 +54,7 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let dest_id = dest_series.id;
 
-    if dest_series.is_compaction() && dest_series.src_series != Some(source_id) {
+    if dest_series.is_compaction() {
         return Err(ValkeyError::Str(
             "TSDB: the destination key already has a src rule",
         ));
