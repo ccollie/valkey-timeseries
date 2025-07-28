@@ -328,7 +328,9 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
     ## ========= Compaction Config Tests ========= ##
     def set_policy(self, policy: str) -> None:
         """Helper to set the compaction policy"""
-        self.client.execute_command("CONFIG SET ts-compaction-policy {}".format(policy))
+        cmd = f"CONFIG SET ts.ts-compaction-policy {policy}"
+        print(f"Setting compaction policy: {cmd}")
+        assert self.client.execute_command(cmd) == b"OK", f"Failed to set compaction policy: {policy}"
 
     def test_basic_compaction_policy_on_new_key(self):
         """Test that the compaction policy is applied when creating new series with TS.ADD"""
@@ -363,7 +365,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
             CompactionRule(f"{source_key}_MAX_15000", 15000, "max", 0)
         ]
 
-        assert self.set_policy(policy_config) == b"OK"
+        self.set_policy(policy_config)
 
         # Add a sample to a non-existent key
         self.client.execute_command('TS.ADD', source_key, 2000, 30.0)
@@ -377,7 +379,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         policy_config = "sum:60s:1h:5s|^metrics:cpu:*"
         suffix = "SUM_60000_5000"
 
-        assert self.set_policy(policy_config) == b"OK"
+        self.set_policy(policy_config)
 
         # Test matching key
         matching_key = 'metrics:cpu:server1'
@@ -406,11 +408,11 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         for agg in aggregations:
             # Clear previous config
-            assert self.set_policy("none") == b"OK"
+            self.set_policy("none")
 
             policy_config = f"{agg}:1M:1h:10s"
             suffix = f"{agg.upper()}_60000_10000"
-            assert self.set_policy(policy_config) == b"OK"
+            self.set_policy(policy_config)
 
             expected_rules = [
                 CompactionRule(f'test_{agg}:sensor1_{suffix}', 60000, agg, 10000)
@@ -427,7 +429,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         # Set compaction policy
         policy_config = "sum:30s:1h:5s"
         suffix = "SUM_30000_5000"
-        assert self.set_policy(policy_config) == b"OK"
+        self.set_policy(policy_config)
 
         # Create destination
         dest_key = f'existing:test_{suffix}'
@@ -456,7 +458,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         """Test compaction policy with timestamp alignment"""
         policy_config = "range:10M:6h:5s"
         suffix = "RANGE_600000_5000"
-        assert self.set_policy(policy_config) == b"OK"
+        self.set_policy(policy_config)
 
         # Create source via TS.ADD
         source_key = 'aligned:test'
@@ -470,7 +472,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Check for alignment parameter (rule format: [dest, bucket_duration, aggregation, alignment])
         found_rule = any(
-            rule[0] == dest_key and len(rule) >= 4 and rule[3] == 0
+            rule.dest_key == dest_key and rule.alignment == 5000
             for rule in rules
         )
         assert found_rule, "Expected rule with alignment not found"
@@ -478,7 +480,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
     def test_empty_compaction_policy_config(self):
         """Test that an empty compaction policy config doesn't create rules"""
         # Set empty policy
-        self.client.execute_command('CONFIG SET ts-compaction-policy none')
+        self.set_policy('none')
 
         # Create series via TS.ADD
         source_key = 'no_policy:test'
@@ -493,7 +495,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         """Test that setting new compaction policy replaces old one for new series"""
         # Set an initial policy
         initial_policy = "min:2M:1h"
-        assert self.set_policy(initial_policy) == b"OK"
+        self.set_policy(initial_policy)
 
         # Create series with initial policy
         first_key = 'initial:test'
@@ -507,7 +509,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Change policy
         new_policy = "max:1M:2h"
-        assert self.set_policy(new_policy) == b"OK"
+        self.set_policy(new_policy)
 
         # Create destination for new policy
         self.client.execute_command('TS.CREATE', 'new_dest:test')
@@ -530,7 +532,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         policy_config = "avg:1M:1h:5s"
         suffix = "AVG_60000_5000"
 
-        assert self.set_policy(policy_config) == b"OK"
+        self.set_policy(policy_config)
 
         # Create destination
         self.client.execute_command('TS.CREATE', 'labeled_dest:sensor1')
@@ -554,12 +556,12 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         # Check compaction rule
         rules = info.get('rules', [])
         assert len(rules) >= 1
-        assert any(rule[0] == dest_key for rule in rules)
+        assert any(rule.dest_key == dest_key for rule in rules)
 
     def test_compaction_rules_functional_after_creation(self):
         """Test that compaction rules created from config actually work"""
         policy_config = "sum:1M:1h"
-        assert self.set_policy(policy_config) == b"OK"
+        self.set_policy(policy_config)
 
         # Create the source and add multiple samples
         source_key = 'functional:test'
