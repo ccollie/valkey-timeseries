@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::memory_postings::{handle_equal_match, MemoryPostings, PostingsBitmap, EMPTY_BITMAP};
+use super::postings::{handle_equal_match, Postings, PostingsBitmap, EMPTY_BITMAP};
 use super::{with_timeseries_index, TimeSeriesIndex};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
@@ -134,7 +134,7 @@ pub fn get_cardinality_by_matchers_list(
 
 fn collect_series_keys(
     ctx: &Context,
-    postings: &MemoryPostings,
+    postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
     date_range: Option<TimestampRange>,
 ) -> Vec<ValkeyString> {
@@ -162,7 +162,7 @@ fn collect_series_keys(
 
 fn collect_series(
     ctx: &Context,
-    postings: &MemoryPostings,
+    postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
     date_range: Option<TimestampRange>,
     require_permissions: bool,
@@ -217,7 +217,7 @@ pub fn postings_for_matchers(
 }
 
 pub(crate) fn postings_for_matchers_internal<'a>(
-    ix: &'a MemoryPostings,
+    ix: &'a Postings,
     matchers: &Matchers,
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     if matchers.is_empty() {
@@ -264,7 +264,7 @@ pub(crate) fn postings_for_matchers_internal<'a>(
 }
 
 fn process_or_matchers<'a>(
-    ix: &'a MemoryPostings,
+    ix: &'a Postings,
     matchers: &[Vec<Matcher>],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     if matchers.len() == 1 {
@@ -284,7 +284,7 @@ fn process_or_matchers<'a>(
 }
 
 fn process_and_matchers<'a>(
-    ix: &'a MemoryPostings,
+    ix: &'a Postings,
     matchers: &[Matcher],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     postings_for_matcher_slice(ix, matchers)
@@ -293,7 +293,7 @@ fn process_and_matchers<'a>(
 /// `postings_for_matchers` assembles a single postings iterator against the index
 /// based on the given matchers.
 pub(super) fn postings_for_matcher_slice<'a>(
-    ix: &'a MemoryPostings,
+    ix: &'a Postings,
     ms: &[Matcher],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     if ms.is_empty() {
@@ -456,10 +456,7 @@ fn is_subtracting_matcher(m: &Matcher, label_must_be_set: &AHashSet<&str>) -> bo
     matches!(m.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual) && m.matches("")
 }
 
-fn inverse_postings_for_matcher<'a>(
-    ix: &'a MemoryPostings,
-    m: &Matcher,
-) -> Cow<'a, PostingsBitmap> {
+fn inverse_postings_for_matcher<'a>(ix: &'a Postings, m: &Matcher) -> Cow<'a, PostingsBitmap> {
     match &m.matcher {
         PredicateMatch::NotEqual(pv) => handle_equal_match(ix, &m.label, pv),
         // If the matcher being inverted is ="", we just want all the values.

@@ -2,8 +2,8 @@ use ahash::AHashMap;
 use std::collections::hash_map::Entry;
 use std::sync::RwLock;
 
-use super::memory_postings::{MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
+use super::postings::{Postings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::{InternedLabel, Label, SeriesLabel};
@@ -13,7 +13,7 @@ use std::mem::size_of;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub struct TimeSeriesIndex {
-    pub(crate) inner: RwLock<MemoryPostings>,
+    pub(crate) inner: RwLock<Postings>,
 }
 
 impl Default for TimeSeriesIndex {
@@ -34,7 +34,7 @@ impl Clone for TimeSeriesIndex {
 impl TimeSeriesIndex {
     pub fn new() -> Self {
         TimeSeriesIndex {
-            inner: RwLock::new(MemoryPostings::default()),
+            inner: RwLock::new(Postings::default()),
         }
     }
 
@@ -195,7 +195,7 @@ impl TimeSeriesIndex {
 
     pub fn with_postings<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
-        F: FnOnce(&MemoryPostings, &mut STATE) -> R,
+        F: FnOnce(&Postings, &mut STATE) -> R,
     {
         let inner = self.inner.read().unwrap();
         f(&inner, state)
@@ -204,7 +204,7 @@ impl TimeSeriesIndex {
     #[cfg(test)]
     pub fn with_postings_mut<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
-        F: FnOnce(&mut MemoryPostings, &mut STATE) -> R,
+        F: FnOnce(&mut Postings, &mut STATE) -> R,
     {
         let mut inner = self.inner.write().unwrap();
         f(&mut inner, state)

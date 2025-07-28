@@ -24,7 +24,7 @@ pub type PostingsIndex = TreeMap<IndexKey, PostingsBitmap>;
 pub type KeyType = Box<[u8]>;
 
 #[derive(Clone)]
-pub struct MemoryPostings {
+pub struct Postings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
@@ -38,10 +38,10 @@ pub struct MemoryPostings {
     pub(super) stale_ids: PostingsBitmap,
 }
 
-impl Default for MemoryPostings {
+impl Default for Postings {
     fn default() -> Self {
         init_croaring_allocator();
-        MemoryPostings {
+        Postings {
             label_index: PostingsIndex::new(),
             id_to_key: IntMap::default(),
             key_to_id: Default::default(),
@@ -50,7 +50,7 @@ impl Default for MemoryPostings {
     }
 }
 
-impl MemoryPostings {
+impl Postings {
     #[allow(dead_code)]
     pub(super) fn clear(&mut self) {
         self.label_index.clear();
@@ -461,7 +461,7 @@ impl MemoryPostings {
 }
 
 pub(super) fn handle_equal_match<'a>(
-    ix: &'a MemoryPostings,
+    ix: &'a Postings,
     label: &str,
     value: &PredicateValue,
 ) -> Cow<'a, PostingsBitmap> {
@@ -482,14 +482,14 @@ pub(super) fn handle_equal_match<'a>(
 }
 
 // return postings for series which has the label `label
-fn with_label<'a>(ix: &'a MemoryPostings, label: &str) -> Cow<'a, PostingsBitmap> {
+fn with_label<'a>(ix: &'a Postings, label: &str) -> Cow<'a, PostingsBitmap> {
     let mut state = ();
     let postings = ix.postings_for_label_matching(label, &mut state, |_value, _| true);
     Cow::Owned(postings)
 }
 
 pub(super) fn handle_not_equal_match<'a>(
-    ix: &'a MemoryPostings,
+    ix: &'a Postings,
     label: &str,
     value: &PredicateValue,
 ) -> Cow<'a, PostingsBitmap> {
@@ -529,7 +529,7 @@ pub(super) fn handle_not_equal_match<'a>(
 }
 
 pub(super) fn handle_regex_equal_match<'a>(
-    postings: &'a MemoryPostings,
+    postings: &'a Postings,
     matcher: &Matcher,
 ) -> Cow<'a, PostingsBitmap> {
     if matcher.is_empty_matcher() {
@@ -544,7 +544,7 @@ pub(super) fn handle_regex_equal_match<'a>(
 }
 
 pub(super) fn handle_regex_not_equal_match<'a>(
-    postings: &'a MemoryPostings,
+    postings: &'a Postings,
     matcher: &Matcher,
 ) -> Cow<'a, PostingsBitmap> {
     let matches_empty = matcher.is_empty_matcher();
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_memory_postings_add_and_remove() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add postings
         postings.add_posting_for_label_value(1, "label1", "value1");
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_memory_postings_all_postings() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         postings.add_id_to_all_postings(1);
         postings.add_id_to_all_postings(2);
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_postings_multiple_values_same_label() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add postings for multiple values of the same label
         postings.add_posting_for_label_value(1, "label1", "value1");
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn test_postings_with_duplicate_values() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add some postings
         postings.add_posting_for_label_value(1, "label", "value1");
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn test_postings_all_values_match() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add some postings
         postings.add_posting_for_label_value(1, "label", "value1");
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_postings_with_large_number_of_values() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
         let label_name = "large_label";
         let num_values = 10_000;
 
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_postings_with_unicode_characters() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add postings with Unicode characters
         postings.add_posting_for_label_value(1, "标签", "值1");
@@ -745,7 +745,7 @@ mod tests {
     // postings_without_labels
     #[test]
     fn test_postings_without_labels_all_series_have_label() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add postings for three series, all having "common_label"
         postings.add_posting_for_label_value(1, "common_label", "value1");
@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_postings_without_labels_empty_array() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add some postings
         postings.add_posting_for_label_value(1, "label1", "value1");
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_postings_without_labels_mixed_existing_and_non_existing() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add some postings
         postings.add_posting_for_label_value(1, "label1", "value1");
@@ -823,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_postings_without_labels_with_nonexistent_labels() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add some postings
         postings.add_posting_for_label_value(1, "label1", "value1");
@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn test_postings_without_labels_multiple_labels() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add postings for multiple series with different label combinations
         postings.add_posting_for_label_value(1, "label1", "value1");
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn test_memory_postings_set_timeseries_key() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         postings.set_timeseries_key(1, b"key1");
         postings.set_timeseries_key(2, b"key2");
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn test_memory_postings_remove_timeseries() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
         let mut series = TimeSeries::new();
         series.id = 1;
         series.labels = InternedMetricName::new(&[
@@ -927,7 +927,7 @@ mod tests {
 
     #[test]
     fn test_memory_postings_postings_by_labels() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         postings.add_posting_for_label_value(1, "label1", "value1");
         postings.add_posting_for_label_value(1, "label2", "value2");
@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_existing_key() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add a key
         postings.set_timeseries_key(1, b"test_key");
@@ -972,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_nonexistent_key() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Mark a nonexistent key as stale
         let result = postings.mark_key_as_stale(b"nonexistent_key");
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_multiple_keys() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add multiple keys
         postings.set_timeseries_key(1, b"key1");
@@ -1013,7 +1013,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_and_query_impact() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Set up keys and postings
         postings.set_timeseries_key(1, b"key1");
@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_and_has_stale_ids() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Initially no stale IDs
         assert!(!postings.has_stale_ids());
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_same_key_twice() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add a key
         postings.set_timeseries_key(1, b"key1");
@@ -1067,7 +1067,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_with_unicode_keys() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add keys with Unicode characters
         let unicode_key = "测试键".as_bytes();
@@ -1087,7 +1087,7 @@ mod tests {
 
     #[test]
     fn test_mark_key_as_stale_and_remove_stale_ids() {
-        let mut postings = MemoryPostings::default();
+        let mut postings = Postings::default();
 
         // Add keys and postings
         postings.set_timeseries_key(1, b"key1");

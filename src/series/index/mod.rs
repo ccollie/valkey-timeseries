@@ -1,8 +1,8 @@
 use rayon::iter::ParallelIterator;
 use std::sync::atomic::AtomicU64;
 mod index_key;
-mod memory_postings;
 mod posting_stats;
+mod postings;
 mod querier;
 mod timeseries_index;
 
@@ -15,7 +15,7 @@ use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::time::current_time_millis;
 use crate::series::acl::check_key_permissions;
-use crate::series::index::memory_postings::MemoryPostings;
+use crate::series::index::postings::Postings;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{get_timeseries_mut, SeriesGuardMut, SeriesRef, TimeSeries};
@@ -63,7 +63,7 @@ where
 
 pub fn with_timeseries_postings<F, R>(ctx: &Context, f: F) -> R
 where
-    F: FnOnce(&MemoryPostings) -> R,
+    F: FnOnce(&Postings) -> R,
 {
     let db = get_current_db(ctx);
     let guard = TIMESERIES_INDEX.guard();
