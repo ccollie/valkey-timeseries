@@ -72,7 +72,7 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
 fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
-    set_log_level(LogLevel::Both);
+    set_log_level(LogLevel::Console);
     // start_series_background_worker(ctx);
 
     match register_server_events(ctx) {
