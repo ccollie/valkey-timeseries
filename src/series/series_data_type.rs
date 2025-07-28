@@ -12,7 +12,6 @@ use crate::series::index::{
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
 use crate::server_events::is_flushing_in_process;
-use logger_rust::log_debug;
 use std::os::raw::{c_int, c_void};
 use valkey_module::raw;
 
@@ -54,7 +53,6 @@ fn remove_series_from_index(ts: &TimeSeries) {
     let guard = TIMESERIES_INDEX.guard();
     let index = get_timeseries_index_for_db(ts._db, &guard);
     index.remove_timeseries(ts);
-    log_debug!("Series {} removed from index", ts.id);
     drop(guard);
 }
 
@@ -83,7 +81,6 @@ unsafe extern "C" fn free(value: *mut c_void) {
     let sm = value.cast::<TimeSeries>();
     let series = Box::from_raw(sm);
     // todo: it may be helpful to push index deletion to a background thread
-    log_debug!("Dropping TimeSeries: {:?}", series);
     remove_series_from_index(&series);
     drop(series);
 }
