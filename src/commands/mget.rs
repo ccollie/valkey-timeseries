@@ -1,5 +1,5 @@
-use crate::commands::arg_parse::{find_last_token_instance, parse_label_list, CommandArgToken};
-use crate::commands::parse_series_selector_list;
+use crate::commands::arg_parse::CommandArgToken;
+use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
@@ -8,15 +8,16 @@ use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;
 use crate::series::range_utils::get_series_labels;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
+use blart::AsBytes;
 use valkey_module::{
-    AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult,
+    AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
     ValkeyString, ValkeyValue,
 };
 
 /// TS.MGET
+///   [LATEST]
 ///   [WITHLABELS | SELECTED_LABELS label...]
 ///   [FILTER filterExpr...]
-///   [LATEST]
 pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(ValkeyError::WrongArity);
@@ -44,8 +45,6 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 /// To avoid this, we need to check backwards for variadic command arguments and remove them
 /// before handling the rest of the arguments.
 pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> {
-    // Look for all variadic tokens in the command, processing from right to left
-    // until no more tokens are found
     let supported_tokens = &[
         CommandArgToken::SelectedLabels,
         CommandArgToken::Filter,
@@ -54,20 +53,35 @@ pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> 
     ];
 
     let mut options = MGetRequest::default();
+
+    let Some(filter_index) = args
+        .iter()
+        .rposition(|arg| arg.as_bytes().eq_ignore_ascii_case(b"FILTER"))
+    else {
+        return Err(ValkeyError::WrongArity);
+    };
+
     let mut args = args;
+    let filter_args = args.split_off(filter_index);
 
-    while let Some((token, token_position)) = find_last_token_instance(&args, supported_tokens) {
-        // Split off the token and its arguments from the main args
-        let token_with_args = args.split_off(token_position);
+    if filter_args.len() < 2 {
+        return Err(ValkeyError::WrongArity);
+    }
 
-        let mut arg_iterator = token_with_args.into_iter().skip(1).peekable();
+    let mut args = args.into_iter().skip(1).peekable(); // Skip the command name
+
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_bytes())
+            .ok_or(ValkeyError::Str(error_consts::INVALID_ARGUMENT))?;
 
         match token {
             CommandArgToken::SelectedLabels => {
-                options.selected_labels = parse_label_list(&mut arg_iterator, &[])?;
-            }
-            CommandArgToken::Filter => {
-                options.filters = parse_series_selector_list(&mut arg_iterator, &[])?;
+                options.selected_labels = parse_label_list(&mut args, supported_tokens)?;
+                if options.selected_labels.is_empty() {
+                    return Err(ValkeyError::Str(
+                        "TSDB: SELECT_LABELS should have at least 1 parameter",
+                    ));
+                }
             }
             CommandArgToken::WithLabels => {
                 options.with_labels = true;
@@ -75,9 +89,23 @@ pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> 
             CommandArgToken::Latest => {
                 options.latest = true;
             }
-            _ => unreachable!("Token should be one of the supported tokens"),
+            CommandArgToken::Filter => {
+                return Err(ValkeyError::Str("TSDB: FILTER must be the last argument"));
+            }
+            _ => return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT)),
         }
     }
+
+    if options.with_labels && !options.selected_labels.is_empty() {
+        return Err(ValkeyError::Str(
+            error_consts::WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED,
+        ));
+    }
+
+    let mut args = filter_args.into_iter().skip(1).peekable();
+    options.filters = parse_series_selector_list(&mut args, &[])?;
+
+    args.done()?;
 
     if options.filters.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));

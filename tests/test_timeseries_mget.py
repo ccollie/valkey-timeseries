@@ -158,14 +158,11 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Missing FILTER
-        self.verify_error_response(
-            self.client,
-            'TS.MGET',
-            "wrong number of arguments for 'TS.MGET' command"
-        )
+        with pytest.raises(ResponseError, match="wrong number of arguments for 'TS.MGET' command"):
+            self.client.execute_command('TS.MGET')
 
         # Unknown option
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError):
             self.client.execute_command('TS.MGET', 'UNKNOWN_OPTION', 'FILTER', 'name=empty')
 
         with pytest.raises(ResponseError):
@@ -193,16 +190,17 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Delete one of the series
-        # self.client.execute_command('DEL', 'ts1')
+        self.client.execute_command('DEL', 'ts1')
 
         # Get all CPU metrics
         result = self.client.execute_command('TS.MGET', 'FILTER', 'name=cpu')
         result.sort(key=lambda x: x[0])
 
         # Should only return remaining series
-        assert len(result) == 2
+        assert len(result) == 3
         assert result[0][0] == b'ts2'
         assert result[1][0] == b'ts5'
+        assert result[2][0] == b'ts6'
 
     def test_mget_with_latest_samples(self):
         """Test that TS.MGET returns only the latest sample for each series"""

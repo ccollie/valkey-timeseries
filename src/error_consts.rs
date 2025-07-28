@@ -47,7 +47,7 @@ pub const KEY_WRITE_PERMISSION_ERROR: &str =
 pub const KEY_UPDATE_PERMISSION_ERROR: &str = "TSDB: key update permission error";
 pub const KEY_DELETE_PERMISSION_ERROR: &str = "TSDB: key delete permission error";
 pub const DUPLICATE_KEY: &str = "TSDB: key already exists";
-pub const MISSING_FILTER: &str = "TSDB: at least one filter required";
+pub const MISSING_FILTER: &str = "TSDB: please provide at least one matcher";
 pub const INVALID_TIMESTAMP_FILTER: &str = "TSDB: FILTER_BY_TS one or more arguments are missing";
 pub const INVALID_REGEX: &str = "TSDB: invalid regex";
 pub const INVALID_IGNORE_OPTIONS: &str = "TSDB: invalid ignore options";
@@ -71,5 +71,5 @@ pub const COMMAND_DESERIALIZATION_ERROR: &str = "TSDB: command deserialization e
 pub const CLUSTER_MODE_ERROR: &str = "TSDB: cluster mode not supported";
 pub const NO_CLUSTER_NODES_AVAILABLE: &str = "TSDB: no cluster nodes available";
 pub const WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED: &str =
-    "TSDB: WITHLABELS and SELECTED_LABELS are mutually exclusive";
+    "TSDB: cannot accept WITHLABELS and SELECT_LABELS together";
 pub const COMPACTION_CIRCULAR_DEPENDENCY: &str = "TSDB: circular dependency in compaction rules";
