@@ -212,7 +212,7 @@ pub fn calc_bucket_start(
 ) -> Timestamp {
     let diff = ts - align_timestamp;
     let delta = bucket_duration as i64;
-    ts - ((diff % delta + delta) % delta)
+    0.max(ts - ((diff % delta + delta) % delta))
 }
 
 #[cfg(test)]
