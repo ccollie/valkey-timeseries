@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
 
-/// This atomic is used to indicate that the module is in the midst of a FLUSHALL or FLUSHDB operation.
+/// This variable is used to indicate that the module is in the midst of a `FLUSHALL` or `FLUSHDB` operation.
 /// It is set to true when the operation starts and set to false when it ends.
 ///
 /// We use this to optimize index management during deletes. To be specific, if all keys are being removed, there's
@@ -14,9 +14,7 @@ use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResul
 /// only sent after ALL the appropriate keys are deleted, so from the `free` callback alone it is not obvious if
 /// all keys are being removed.
 ///
-/// We therefore set this sentinel value using a command filter that intercepts the FLUSHALL and FLUSHDB commands.
-/// We then use it in the `free` callback to determine if we should update the index or not. It gets reset
-/// when the flushdb notification is received.
+/// All interested parties should use the `is_flushing_in_process` function to check if a flush is in process.
 static FLUSHING_IN_PROCESS: AtomicBool = AtomicBool::new(false);
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
