@@ -2,8 +2,22 @@ use crate::common::db::get_current_db;
 use crate::series::index::*;
 use crate::series::{get_timeseries_mut, with_timeseries_mut, TimeSeries};
 use std::os::raw::c_void;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
+
+/// This atomic is used to indicate that the module is in the midst of a FLUSHALL or FLUSHDB operation.
+/// It is set to true when the operation starts and set to false when it ends.
+///
+/// We use this to optimize index management during deletes. To be specific, if all keys are being removed, there's
+/// no need for individual updates as happens per single `free`. However, in Valkey, the "flushdb" notification is
+/// only sent after ALL the appropriate keys are deleted, so from the `free` callback alone it is not obvious if
+/// all keys are being removed.
+///
+/// We therefore set this sentinel value using a command filter that intercepts the FLUSHALL and FLUSHDB commands.
+/// We then use it in the `free` callback to determine if we should update the index or not. It gets reset
+/// when the flushdb notification is received.
+static FLUSHING_IN_PROCESS: AtomicBool = AtomicBool::new(false);
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);
@@ -87,11 +101,6 @@ pub(super) fn remove_key_events_handler(
     event: &str,
     key: &[u8],
 ) {
-    ctx.log_notice(&format!(
-        "Received event: {} for key: {}",
-        event,
-        String::from_utf8_lossy(key)
-    ));
     // If the event is one of the ones that require removing the series from the index, we
     // remove it from the index
     if hashify::tiny_set!(
@@ -101,7 +110,6 @@ pub(super) fn remove_key_events_handler(
         "evicted",
         "expire",
         "expired",
-        "set",
         "trimmed"
     ) {
         remove_key_from_index(ctx, key);
@@ -146,13 +154,19 @@ pub(super) fn generic_key_events_handler(
     );
 }
 
+pub fn is_flushing_in_process() -> bool {
+    FLUSHING_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 unsafe extern "C" fn on_flush_event(
     ctx: *mut raw::RedisModuleCtx,
     _eid: raw::RedisModuleEvent,
     sub_event: u64,
     data: *mut c_void,
 ) {
-    if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
+    if sub_event != raw::REDISMODULE_SUBEVENT_FLUSHDB_START {
+        FLUSHING_IN_PROCESS.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
         let ctx = Context::new(ctx);
         let fi: &raw::RedisModuleFlushInfo = unsafe { &*(data as *mut raw::RedisModuleFlushInfo) };
 
@@ -161,6 +175,8 @@ unsafe extern "C" fn on_flush_event(
         } else {
             clear_timeseries_index(&ctx);
         }
+
+        FLUSHING_IN_PROCESS.store(false, std::sync::atomic::Ordering::Relaxed);
     };
 }
 
@@ -181,7 +197,7 @@ unsafe extern "C" fn on_swap_db_event(
     }
 }
 
-fn register_server_event_handler(
+pub fn register_server_event_handler(
     ctx: &Context,
     server_event: u64,
     inner_callback: raw::RedisModuleEventCallback,
