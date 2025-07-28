@@ -117,3 +117,118 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         assert 'size' in first_chunk
         assert first_chunk['samples'] > 0
         assert first_chunk['size'] > 0
+
+    def test_info_reflects_single_rule_creation(self):
+        """Test that TS.INFO shows rules after TS.CREATERULE"""
+        source_key = 'ts_source'
+        dest_key = 'ts_dest'
+
+        # Create source and destination series
+        self.client.execute_command('TS.CREATE', source_key)
+        self.client.execute_command('TS.CREATE', dest_key)
+
+        # Verify no rules initially
+        source_info = self.ts_info(source_key, True)
+        dest_info = self.ts_info(dest_key, True)
+        assert 'rules' not in source_info or len(source_info['rules']) == 0
+        assert 'sourceKey' not in dest_info
+
+        # Create a compaction rule
+        self.client.execute_command(
+            'TS.CREATERULE', source_key, dest_key,
+            'AGGREGATION', 'avg', '60000'  # 1 minute buckets
+        )
+
+        # Verify rule appears in source TS.INFO
+        source_info = self.ts_info(source_key, True)
+        assert 'rules' in source_info
+        assert len(source_info['rules']) == 1
+
+        rule = source_info['rules'][0]
+        assert rule.dest_key == dest_key  # destination key
+        assert rule.bucket_duration == 60000     # bucket duration
+        assert rule.aggregation == 'avg'     # aggregation type
+
+        # Verify destination shows source key
+        dest_info = self.ts_info(dest_key, True)
+        assert 'sourceKey' in dest_info
+        assert dest_info['sourceKey'] == source_key
+
+    def test_info_reflects_various_rule_aggregation_types(self):
+        """Test that TS.INFO correctly shows different aggregation types"""
+        source_key = 'ts_agg_source'
+        align_ts = 1000
+
+        aggregations = [
+            ('avg', 'ts_avg'),
+            ('sum', 'ts_sum'),
+            ('min', 'ts_min'),
+            ('max', 'ts_max'),
+            ('count', 'ts_count'),
+            ('first', 'ts_first'),
+            ('last', 'ts_last'),
+            ('std.p', 'ts_stdp'),
+            ('std.s', 'ts_stds'),
+            ('var.p', 'ts_varp'),
+            ('var.s', 'ts_vars')
+        ]
+
+        # Create a source series
+        self.client.execute_command('TS.CREATE', source_key)
+
+        # Create destination series and rules
+        for agg_type, dest_key in aggregations:
+            self.client.execute_command('TS.CREATE', dest_key)
+            self.client.execute_command(
+                'TS.CREATERULE', source_key, dest_key,
+                'AGGREGATION', agg_type, '60000', align_ts
+            )
+
+        # Verify all aggregation types appear correctly
+        source_info = self.ts_info(source_key, True)
+        assert 'rules' in source_info
+        rules = source_info['rules']
+        assert len(rules) == len(aggregations)
+        print(rules)
+
+        for rule in rules:
+            aggr = list(filter(lambda item: item[0] == rule.aggregation, aggregations))
+            assert len(aggr) == 1
+            dest_key = aggr[0][1]
+            assert rule.dest_key == dest_key
+            assert rule.alignment == align_ts
+            assert rule.bucket_duration == 60000
+
+
+    def test_info_after_rule_deletion(self):
+        """Test that TS.INFO correctly updates after TS.DELETERULE"""
+        source_key = 'ts_del_source'
+        dest_key = 'ts_del_dest'
+
+        # Create series and rule
+        self.client.execute_command('TS.CREATE', source_key)
+        self.client.execute_command('TS.CREATE', dest_key)
+        self.client.execute_command(
+            'TS.CREATERULE', source_key, dest_key,
+            'AGGREGATION', 'avg', '60000'
+        )
+
+        # Verify rule exists
+        source_info = self.ts_info(source_key, True)
+        assert 'rules' in source_info
+        assert len(source_info['rules']) == 1
+
+        dest_info = self.ts_info(dest_key, True)
+        assert 'sourceKey' in dest_info
+        assert dest_info['sourceKey'] == source_key
+
+        # Delete the rule
+        self.client.execute_command('TS.DELETERULE', source_key, dest_key)
+
+        # Verify rule is removed from source
+        source_info = self.ts_info(source_key, True)
+        assert 'rules' not in source_info or len(source_info['rules']) == 0
+
+        # Verify source reference is removed from destination
+        dest_info = self.ts_info(dest_key, True)
+        assert 'sourceKey' not in dest_info
