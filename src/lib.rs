@@ -28,9 +28,7 @@ mod tests;
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::stop_series_background_worker;
-use crate::server_events::{
-    generic_key_events_handler, register_server_events, remove_key_events_handler,
-};
+use crate::server_events::{generic_key_events_handler, register_server_events};
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
@@ -143,7 +141,6 @@ valkey_module! {
         ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
     ]
     event_handlers: [
-        [@SET @STRING @EVICTED @EXPIRED @TRIMMED: remove_key_events_handler],
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
     ]
     configurations: [

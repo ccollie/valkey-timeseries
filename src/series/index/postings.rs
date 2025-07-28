@@ -33,8 +33,8 @@ pub struct Postings {
     /// to have a lot of related keys with the same prefix).
     pub(super) key_to_id: TreeMap<IndexKey, SeriesRef>,
     /// Set of timeseries ids of series that should be removed from the index. This really only
-    /// happens when the series is deleted (via DEL), but we need to keep track of it to clean up the
-    /// index during a gc pass.
+    /// happens when the index is inconsistent (value does not exist in the db but exists in the index)
+    /// Keep track and cleanup from the index during a gc pass.
     pub(super) stale_ids: PostingsBitmap,
 }
 
@@ -354,24 +354,12 @@ impl Postings {
         self.id_to_key.get(&id)
     }
 
-    /// Marks a key as stale by removing it from the index and adding its ID to the stale IDs set.
-    /// Context: when a series is deleted using `DEL`, we have no access to the series data to do a proper
+    #[allow(dead_code)]
+    /// Marks an id as stale by adding its ID to the stale IDs set.
+    /// Context: when a series is evicted, we have no access to the series data to do a proper
     /// cleanup. We remove the key from the index and mark the ID as stale, which will be cleaned up later.
     /// The stale IDs are stored in a bitmap for efficient removal and are checked to ensure that no stale IDs are
     /// returned in queries until they are removed.
-    pub(crate) fn mark_key_as_stale(&mut self, key: &[u8]) -> bool {
-        let old_key = IndexKey::from(key);
-        if let Some(id) = self.key_to_id.remove(&old_key) {
-            self.id_to_key.remove(&id);
-            self.stale_ids.add(id);
-            self.remove_id_from_all_postings(id);
-            true
-        } else {
-            false
-        }
-    }
-
-    #[allow(dead_code)]
     pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
         if let Some(key) = self.id_to_key.remove(&id) {
             let old_key = IndexKey::from(key.as_bytes());
@@ -942,179 +930,5 @@ mod tests {
 
         assert_eq!(result.cardinality(), 1);
         assert!(result.contains(1));
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_existing_key() {
-        let mut postings = Postings::default();
-
-        // Add a key
-        postings.set_timeseries_key(1, b"test_key");
-
-        // Verify the key exists
-        assert!(postings
-            .key_to_id
-            .contains_key(&IndexKey::from(b"test_key".as_ref())));
-        assert!(postings.id_to_key.contains_key(&1));
-        assert!(postings.stale_ids.is_empty());
-
-        // Mark the key as stale
-        let result = postings.mark_key_as_stale(b"test_key");
-
-        // Verify the result and state
-        assert!(result); // Should return true for an existing key
-        assert!(!postings
-            .key_to_id
-            .contains_key(&IndexKey::from(b"test_key".as_ref())));
-        assert!(!postings.id_to_key.contains_key(&1));
-        assert!(postings.stale_ids.contains(1));
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_nonexistent_key() {
-        let mut postings = Postings::default();
-
-        // Mark a nonexistent key as stale
-        let result = postings.mark_key_as_stale(b"nonexistent_key");
-
-        // Verify the result
-        assert!(!result); // Should return false for a nonexistent key
-        assert!(postings.stale_ids.is_empty());
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_multiple_keys() {
-        let mut postings = Postings::default();
-
-        // Add multiple keys
-        postings.set_timeseries_key(1, b"key1");
-        postings.set_timeseries_key(2, b"key2");
-        postings.set_timeseries_key(3, b"key3");
-
-        // Mark key1 as stale
-        let result1 = postings.mark_key_as_stale(b"key1");
-        assert!(result1);
-        assert!(postings.stale_ids.contains(1));
-        assert!(!postings.id_to_key.contains_key(&1));
-
-        // Mark key2 as stale
-        let result2 = postings.mark_key_as_stale(b"key2");
-        assert!(result2);
-        assert!(postings.stale_ids.contains(2));
-        assert!(!postings.id_to_key.contains_key(&2));
-
-        // Verify key3 is still intact
-        assert!(postings
-            .key_to_id
-            .contains_key(&IndexKey::from(b"key3".as_ref())));
-        assert!(postings.id_to_key.contains_key(&3));
-        assert!(!postings.stale_ids.contains(3));
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_and_query_impact() {
-        let mut postings = Postings::default();
-
-        // Set up keys and postings
-        postings.set_timeseries_key(1, b"key1");
-        postings.add_posting_for_label_value(1, "label", "value");
-        postings.add_id_to_all_postings(1);
-
-        // Mark the key as stale
-        postings.mark_key_as_stale(b"key1");
-
-        // Verify that queries exclude stale IDs
-        let postings_result = postings.postings_for_label_value("label", "value");
-        assert!(postings_result.is_empty());
-
-        // Verify all_postings also excludes stale IDs
-        let all_postings = postings.all_postings();
-        assert!(!all_postings.contains(1));
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_and_has_stale_ids() {
-        let mut postings = Postings::default();
-
-        // Initially no stale IDs
-        assert!(!postings.has_stale_ids());
-
-        // Add a key
-        postings.set_timeseries_key(1, b"key1");
-
-        // Mark it as stale
-        postings.mark_key_as_stale(b"key1");
-
-        // Should now have stale IDs
-        assert!(postings.has_stale_ids());
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_same_key_twice() {
-        let mut postings = Postings::default();
-
-        // Add a key
-        postings.set_timeseries_key(1, b"key1");
-
-        // Mark as stale first time
-        let result1 = postings.mark_key_as_stale(b"key1");
-        assert!(result1);
-
-        // Mark as stale the second time (should return false)
-        let result2 = postings.mark_key_as_stale(b"key1");
-        assert!(!result2);
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_with_unicode_keys() {
-        let mut postings = Postings::default();
-
-        // Add keys with Unicode characters
-        let unicode_key = "测试键".as_bytes();
-        postings.set_timeseries_key(1, unicode_key);
-
-        // Mark as stale
-        let result = postings.mark_key_as_stale(unicode_key);
-
-        // Verify
-        assert!(result);
-        assert!(postings.stale_ids.contains(1));
-        assert!(!postings
-            .key_to_id
-            .contains_key(&IndexKey::from(unicode_key)));
-        assert!(!postings.id_to_key.contains_key(&1));
-    }
-
-    #[test]
-    fn test_mark_key_as_stale_and_remove_stale_ids() {
-        let mut postings = Postings::default();
-
-        // Add keys and postings
-        postings.set_timeseries_key(1, b"key1");
-        postings.add_posting_for_label_value(1, "label", "value");
-        postings.add_id_to_all_postings(1);
-
-        // Mark as stale
-        postings.mark_key_as_stale(b"key1");
-
-        // Should have stale IDs now
-        assert!(postings.has_stale_ids());
-
-        // Run remove_stale_ids to clean up
-        postings.remove_stale_ids(None, 100);
-
-        // Should no longer have stale IDs
-        assert!(!postings.has_stale_ids());
-
-        // Verify cleanup was complete
-        assert!(postings.stale_ids.is_empty());
-        assert!(
-            postings.label_index.is_empty()
-                || !postings
-                    .label_index
-                    .get(&*ALL_POSTINGS_KEY)
-                    .unwrap_or(&*EMPTY_BITMAP)
-                    .contains(1)
-        );
     }
 }

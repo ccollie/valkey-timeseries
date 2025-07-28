@@ -44,15 +44,6 @@ fn handle_key_rename(ctx: &Context, old_key: &[u8], new_key: &[u8]) {
     })
 }
 
-fn remove_key_from_index(ctx: &Context, key: &[u8]) {
-    with_timeseries_index(ctx, |ts_index| {
-        // At this point, the key has already been deleted by Valkey, so we no longer have access to the
-        // labels and values of the series. We mark the series as deleted in the index and schedule "gc"
-        // run which scans the index and removes the id
-        ts_index.mark_key_as_stale(key)
-    });
-}
-
 fn handle_loaded(ctx: &Context, key: &[u8]) {
     let _key = ctx.create_string(key);
     let Ok(Some(mut series)) = get_timeseries_mut(ctx, &_key, false, None) else {
@@ -92,28 +83,6 @@ fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
     series._db = new_db;
     let new_index = get_timeseries_index_for_db(new_db, &guard);
     new_index.index_timeseries(&series, key);
-}
-
-// handle events that require removing the series from the index
-pub(super) fn remove_key_events_handler(
-    ctx: &Context,
-    _event_type: NotifyEvent,
-    event: &str,
-    key: &[u8],
-) {
-    // If the event is one of the ones that require removing the series from the index, we
-    // remove it from the index
-    if hashify::tiny_set!(
-        event.as_bytes(),
-        "del",
-        "evict",
-        "evicted",
-        "expire",
-        "expired",
-        "trimmed"
-    ) {
-        remove_key_from_index(ctx, key);
-    }
 }
 
 pub(super) fn generic_key_events_handler(

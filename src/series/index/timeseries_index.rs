@@ -215,14 +215,6 @@ impl TimeSeriesIndex {
         inner.rename_series_key(old_key, new_key).is_some()
     }
 
-    /// Immediately after a series is removed, it's data still exist in the index. This function marks the key as stale, so the index
-    /// can be cleaned up lazily. This is a workaround for the fact that we don't have access to the series data when the server 'del'
-    /// and associated events are triggered.
-    pub fn mark_key_as_stale(&self, key: &[u8]) {
-        let mut inner = self.inner.write().unwrap();
-        inner.mark_key_as_stale(key);
-    }
-
     pub fn mark_id_as_stale(&self, id: SeriesRef) {
         let mut inner = self.inner.write().unwrap();
         inner.mark_id_as_stale(id);
