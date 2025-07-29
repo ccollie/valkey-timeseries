@@ -683,8 +683,6 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
     let bucket_start = ctx.rule.calc_bucket_start(ts);
     // Add the sample to the destination series
     // todo: specify to ignore whatever adjustments
-    log_debug!("add_dest_bucket: {value} @ {ts} during range calculation.");
-
     match ctx
         .dest
         .add(bucket_start, value, Some(DuplicatePolicy::KeepLast))
@@ -815,22 +813,21 @@ pub fn check_new_rule_circular_dependency(
 
     let mut graph = build_dependency_graph(ctx, series)?;
     if graph.is_empty() {
-        log_debug!("check_new_rule_circular_dependency: Graph is emoty.");
         return Ok(());
     }
 
     // Check if the new rule would create a circular dependency
-    log_info!("candidate rule {} -> {}", series.id, dest.id);
+    // log_info!("candidate rule {} -> {}", series.id, dest.id);
     graph.insert(series.id, vec![dest.id]);
     build_dependency_graph_internal(ctx, dest, &mut graph)?;
 
-    let SortResults::Full(nodes) = graph.into_vec_nodes() else {
+    let SortResults::Full(_nodes) = graph.into_vec_nodes() else {
         return Err(ValkeyError::Str(
             error_consts::COMPACTION_CIRCULAR_DEPENDENCY,
         ));
     };
 
-    log_debug!("Sorted nodes: {:?}", nodes);
+    // log_debug!("Sorted nodes: {:?}", nodes);
 
     Ok(())
 }
@@ -858,7 +855,6 @@ fn build_dependency_graph_internal(
         return Ok(());
     }
     let dest_ids = destinations.iter().map(|x| x.id).collect::<Vec<_>>();
-    log_info!("{} -> {:?}", source_series.id, dest_ids);
     graph.insert(source_series.id, dest_ids);
     if graph.cycle_detected() {
         return Err(ValkeyError::Str(
