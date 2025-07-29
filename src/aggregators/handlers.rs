@@ -174,18 +174,24 @@ impl AggregationHandler for RangeAggregator {
         }
     }
     fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        raw::save_double(rdb, self.min);
-        raw::save_double(rdb, self.max);
         rdb_save_bool(rdb, self.init);
+        if self.init {
+            raw::save_double(rdb, self.min);
+            raw::save_double(rdb, self.max);
+        }
     }
 }
 
 impl RangeAggregator {
     fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let min = raw::load_double(rdb)?;
-        let max = raw::load_double(rdb)?;
         let init = rdb_load_bool(rdb)?;
-        Ok(Self { min, max, init })
+        if init {
+            let min = raw::load_double(rdb)?;
+            let max = raw::load_double(rdb)?;
+            Ok(Self { min, max, init })
+        } else {
+            Ok(Self::default())
+        }
     }
 }
 
