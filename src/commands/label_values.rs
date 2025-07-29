@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
@@ -94,7 +95,11 @@ fn on_label_values_request_done(
         if let (ValkeyValue::BulkString(a), ValkeyValue::BulkString(b)) = (a, b) {
             a.cmp(b)
         } else {
-            panic!("BUG: Unexpected value type in TS.LABELVALUES response");
+            let log_ctx = ctx.lock();
+            log_ctx.log_warning(
+                "BUG: Unexpected value type in TS.LABELVALUES response",
+            );
+            Ordering::Greater
         }
     });
     // Handle the results from the remote nodes
