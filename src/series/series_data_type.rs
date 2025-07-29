@@ -1,4 +1,4 @@
-use valkey_module::REDISMODULE_AUX_BEFORE_RDB;
+use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
 use valkey_module::{logging, RedisModuleTypeMethods};
 use valkey_module::{
     native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleString, ValkeyString,
@@ -11,9 +11,11 @@ use crate::series::index::{
 };
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
-use crate::server_events::is_flushing_in_process;
 use std::os::raw::{c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::raw;
+use valkey_module::server_events::FlushSubevent;
+use valkey_module_macros::flush_event_handler;
 
 /// TimeSeries Module data type RDB encoding version.
 const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
@@ -43,6 +45,27 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         aux_save2: None,
     },
 );
+
+/// This variable is used to indicate that the module is in the midst of a `FLUSHALL` or `FLUSHDB` operation.
+/// It is set to true when the operation starts and set to false when it ends.
+///
+/// We use this to optimize index management during deletes. To be specific, if all keys are being removed, there's
+/// no need for individual updates as happens per single `free`. However, in Valkey, the "flushdb" notification is
+/// only sent after ALL the appropriate keys are deleted, so from the `free` callback alone it is not obvious if
+/// all keys are being removed.
+///
+/// All interested parties should use the `is_flushing_in_process` function to check if a flush is in process.
+static IS_FLUSHING: AtomicBool = AtomicBool::new(false);
+
+#[flush_event_handler]
+fn flushed_event_handler(_ctx: &Context, flush_event: FlushSubevent) {
+    IS_FLUSHING.store(FlushSubevent::Started == flush_event, Ordering::SeqCst);
+}
+
+#[inline]
+pub fn is_flushing_in_process() -> bool {
+    IS_FLUSHING.load(Ordering::Relaxed)
+}
 
 fn remove_series_from_index(ts: &TimeSeries) {
     // if we are in the middle of a flush, we don't want to remove the series from the index

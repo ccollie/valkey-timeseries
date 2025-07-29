@@ -2,20 +2,8 @@ use crate::common::db::get_current_db;
 use crate::series::index::*;
 use crate::series::{get_timeseries_mut, with_timeseries_mut, TimeSeries};
 use std::os::raw::c_void;
-use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
-
-/// This variable is used to indicate that the module is in the midst of a `FLUSHALL` or `FLUSHDB` operation.
-/// It is set to true when the operation starts and set to false when it ends.
-///
-/// We use this to optimize index management during deletes. To be specific, if all keys are being removed, there's
-/// no need for individual updates as happens per single `free`. However, in Valkey, the "flushdb" notification is
-/// only sent after ALL the appropriate keys are deleted, so from the `free` callback alone it is not obvious if
-/// all keys are being removed.
-///
-/// All interested parties should use the `is_flushing_in_process` function to check if a flush is in process.
-static FLUSHING_IN_PROCESS: AtomicBool = AtomicBool::new(false);
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);
@@ -121,19 +109,13 @@ pub(super) fn generic_key_events_handler(
     );
 }
 
-pub fn is_flushing_in_process() -> bool {
-    FLUSHING_IN_PROCESS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 unsafe extern "C" fn on_flush_event(
     ctx: *mut raw::RedisModuleCtx,
     _eid: raw::RedisModuleEvent,
     sub_event: u64,
     data: *mut c_void,
 ) {
-    if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_START {
-        FLUSHING_IN_PROCESS.store(true, std::sync::atomic::Ordering::Relaxed);
-    } else if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
+    if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
         let ctx = Context::new(ctx);
         let fi: &raw::RedisModuleFlushInfo = unsafe { &*(data as *mut raw::RedisModuleFlushInfo) };
 
@@ -142,8 +124,6 @@ unsafe extern "C" fn on_flush_event(
         } else {
             clear_timeseries_index(&ctx);
         }
-
-        FLUSHING_IN_PROCESS.store(false, std::sync::atomic::Ordering::Relaxed);
     };
 }
 
@@ -180,7 +160,7 @@ pub fn register_server_event_handler(
         )
     };
     if res != raw::REDISMODULE_OK as i32 {
-        return Err(ValkeyError::Str("Failed subscribing to server event"));
+        return Err(ValkeyError::Str("TSDB: failed subscribing to server event"));
     }
 
     Ok(())
