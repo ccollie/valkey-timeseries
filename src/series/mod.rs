@@ -10,7 +10,6 @@ pub mod request_types;
 mod sample_merge;
 pub mod serialization;
 pub mod series_data_type;
-mod series_fetcher;
 mod tasks;
 mod time_series;
 #[cfg(test)]
