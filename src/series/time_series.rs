@@ -56,7 +56,7 @@ pub struct TimeSeries {
     pub src_series: Option<TimeseriesId>,
     pub rules: Vec<CompactionRule>,
     /// Internal bookkeeping for current db. Simplifies event handling related to indexing.
-    /// This is not part of the time series data itself, not is it stored to rdb.
+    /// This is not part of the time series data itself, nor is it stored to rdb.
     pub(crate) _db: i32,
 }
 
