@@ -51,6 +51,15 @@ pub const MISSING_FILTER: &str = "TSDB: please provide at least one matcher";
 pub const INVALID_TIMESTAMP_FILTER: &str = "TSDB: FILTER_BY_TS one or more arguments are missing";
 pub const INVALID_REGEX: &str = "TSDB: invalid regex";
 pub const INVALID_IGNORE_OPTIONS: &str = "TSDB: invalid ignore options";
+pub const COULD_NOT_PARSE_IGNORE: &str = "TSDB: Couldn't parse IGNORE";
+pub const NEGATIVE_IGNORE_VALUES: &str = "TSDB: IGNORE values cannot be negative";
+
+pub const COULD_NOT_PARSE_LABELS: &str = "TSDB: Couldn't not parse LABELS";
+pub const COULD_NOT_PARSE_RETENTION: &str = "TSDB: Couldn't parse RETENTION";
+pub const COULD_NOT_PARSE_AGGREGATION: &str = "TSDB: Couldn't parse AGGREGATION";
+pub const COULD_NOT_PARSE_MIN: &str = "TSDB: Couldn't parse MIN";
+pub const COULD_NOT_PARSE_MAX: &str = "TSDB: Couldn't parse MAX";
+
 pub const NO_SERIES_FOUND: &str = "TSDB no series found";
 pub const SAMPLE_TOO_OLD: &str = "TSDB: sample timestamp exceeds retention period";
 pub const SERIES_NOT_FOUND: &str = "TSDB: series not found";

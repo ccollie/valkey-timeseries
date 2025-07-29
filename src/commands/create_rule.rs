@@ -8,6 +8,7 @@ use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
     VALKEY_OK,
 };
+use crate::error_consts;
 
 ///
 /// TS.CREATERULE sourceKey destKey AGGREGATION aggregator bucketDuration [alignTimestamp]
@@ -93,7 +94,7 @@ pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 fn parse_args(args: &mut CommandArgIterator, dest_id: SeriesRef) -> ValkeyResult<CompactionRule> {
     let aggregation = args.next_str()?;
     if !aggregation.eq_ignore_ascii_case("AGGREGATION") {
-        return Err(ValkeyError::Str("TSDB: missing AGGREGATION keyword"));
+        return Err(ValkeyError::Str(error_consts::COULD_NOT_PARSE_AGGREGATION));
     }
     let aggregation_type = AggregationType::try_from(args.next_str()?)?;
     let duration_str = args

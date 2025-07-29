@@ -274,12 +274,12 @@ pub fn parse_integer_arg(
             return Err(ValkeyError::Str(error_consts::INVALID_INTEGER));
         }
         if num > i64::MAX as f64 {
-            return Err(ValkeyError::Str("ERR: value is too large"));
+            return Err(ValkeyError::Str("TSDB: value is too large"));
         }
         num as i64
     };
     if !allow_negative && value < 0 {
-        let msg = format!("ERR: {name} must be a non-negative integer");
+        let msg = format!("TSDB: {name} must be a non-negative integer");
         return Err(ValkeyError::String(msg));
     }
     Ok(value)
@@ -308,7 +308,7 @@ pub fn parse_duration_arg(arg: &ValkeyString) -> ValkeyResult<Duration> {
     if let Ok(value) = arg.parse_integer() {
         if value < 0 {
             return Err(ValkeyError::Str(
-                "ERR: invalid duration, must be a non-negative integer",
+                "TSDB: invalid duration, must be a non-negative integer",
             ));
         }
         return Ok(Duration::from_millis(value as u64));
@@ -413,9 +413,9 @@ pub fn parse_timestamp_range(args: &mut CommandArgIterator) -> ValkeyResult<Time
 
 pub fn parse_retention(args: &mut CommandArgIterator) -> ValkeyResult<Duration> {
     if let Ok(next) = args.next_str() {
-        parse_duration(next).map_err(|_e| ValkeyError::Str(error_consts::INVALID_DURATION))
+        parse_duration(next).map_err(|_e| ValkeyError::Str(error_consts::COULD_NOT_PARSE_RETENTION))
     } else {
-        Err(ValkeyError::Str("ERR missing RETENTION value"))
+        Err(ValkeyError::Str(error_consts::COULD_NOT_PARSE_RETENTION))
     }
 }
 
@@ -451,9 +451,9 @@ pub fn parse_timestamp_filter(
 
 pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFilter> {
     let min = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str("TSDB cannot parse value filter min parameter"))?;
+        .map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_MIN))?;
     let max = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str("TSDB cannot parse value filter max parameter"))?;
+        .map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_MAX))?;
     if max < min {
         return Err(ValkeyError::Str(
             "TSDB filter min parameter is greater than max",
@@ -581,7 +581,7 @@ pub fn parse_aggregation_options(
         .map_err(|_e| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?;
     let aggregator = AggregationType::try_from(agg_str)?;
     let bucket_duration = parse_duration_arg(&args.next_arg()?)
-        .map_err(|_e| ValkeyError::Str("Error parsing bucket_duration"))?;
+        .map_err(|_e| ValkeyError::Str("TSDB: Couldn't parse bucket duration"))?;
 
     let mut aggr: AggregationOptions = AggregationOptions {
         aggregation: aggregator,
@@ -629,17 +629,17 @@ pub fn parse_grouping_params(args: &mut CommandArgIterator) -> ValkeyResult<Rang
     let label = args.next_str()?;
     let token = args
         .next_str()
-        .map_err(|_| ValkeyError::Str("ERR: missing REDUCE"))?;
+        .map_err(|_| ValkeyError::Str("TSDB: missing REDUCE"))?;
     if !token.eq_ignore_ascii_case(CMD_ARG_REDUCE) {
-        let msg = format!("ERR: expected \"{CMD_ARG_REDUCE}\", found \"{token}\"");
+        let msg = format!("TSDB: expected \"{CMD_ARG_REDUCE}\", found \"{token}\"");
         return Err(ValkeyError::String(msg));
     }
     let agg_str = args
         .next_str()
-        .map_err(|_e| ValkeyError::Str("ERR: Error parsing grouping reducer"))?;
+        .map_err(|_e| ValkeyError::Str("TSDB: error parsing grouping reducer"))?;
 
     let aggregator = AggregationType::try_from(agg_str).map_err(|_| {
-        let msg = format!("ERR: invalid grouping aggregator \"{agg_str}\"");
+        let msg = format!("TSDB: invalid grouping aggregator \"{agg_str}\"");
         ValkeyError::String(msg)
     })?;
 
@@ -654,7 +654,7 @@ pub fn parse_significant_digit_rounding(
 ) -> ValkeyResult<RoundingStrategy> {
     let next = args.next_u64()?;
     if next > MAX_SIGNIFICANT_DIGITS as u64 {
-        let msg = format!("ERR SIGNIFICANT_DIGITS must be between 0 and {MAX_SIGNIFICANT_DIGITS}");
+        let msg = format!("TSDB: SIGNIFICANT_DIGITS must be between 0 and {MAX_SIGNIFICANT_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
     Ok(RoundingStrategy::SignificantDigits(next as i32))
@@ -675,11 +675,14 @@ pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResul
     // ignoreMaxTimediff
     let mut str = args.next_str()?;
     let ignore_max_timediff =
-        parse_duration_ms(str).map_err(|_| ValkeyError::Str("Invalid ignoreMaxTimediff"))?;
+        parse_duration_ms(str).map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_IGNORE))?;
     // ignoreMaxValDiff
     str = args.next_str()?;
     let ignore_max_val_diff =
-        parse_number(str).map_err(|_| ValkeyError::Str("Invalid ignoreMaxValDiff"))?;
+        parse_number(str).map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_IGNORE))?;
+    if ignore_max_timediff < 0 || ignore_max_val_diff < 0.0 {
+        return Err(ValkeyError::Str(error_consts::NEGATIVE_IGNORE_VALUES));
+    }
     Ok((ignore_max_timediff, ignore_max_val_diff))
 }
 

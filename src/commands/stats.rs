@@ -18,9 +18,9 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         1 => {
             let next = parse_integer_arg(&args[0], "LIMIT", false)?;
             if next > usize::MAX as i64 {
-                return Err(ValkeyError::Str("ERR LIMIT too large"));
+                return Err(ValkeyError::Str("TSDB: LIMIT too large"));
             } else if next == 0 {
-                return Err(ValkeyError::Str("ERR LIMIT must be greater than 0"));
+                return Err(ValkeyError::Str("TSDB: LIMIT must be greater than 0"));
             }
             next as usize
         }

@@ -15,7 +15,7 @@ pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let key = args
         .next()
-        .ok_or(ValkeyError::Str("Err missing key argument"))?;
+        .ok_or(ValkeyError::WrongArity)?;
 
     with_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE), |series| {
         let opts = options_from_series(series);
