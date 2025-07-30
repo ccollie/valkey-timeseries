@@ -135,7 +135,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'nonexistent=value')
         assert result == []
 
-        # Filter with time range that excludes all series
+        # Filter with a time range that excludes all series
         result = self.client.execute_command('TS.LABELVALUES', 'name', 'START', 5000, "FILTER", 'type=usage')
         assert result == []
 
@@ -156,11 +156,11 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         # )
 
         # Invalid time format
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError):
             self.client.execute_command('TS.LABELVALUES', 'name', 'START', 'invalid-time')
 
         # Invalid limit format
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError):
             self.client.execute_command('TS.LABELVALUES', 'name', 'LIMIT', 'invalid-limit')
 
 
