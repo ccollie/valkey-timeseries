@@ -182,6 +182,10 @@ impl TryFrom<u8> for AggregationType {
             5 => Ok(AggregationType::Max),
             6 => Ok(AggregationType::Sum),
             7 => Ok(AggregationType::Range),
+            8 => Ok(AggregationType::StdS),
+            9 => Ok(AggregationType::StdP),
+            10 => Ok(AggregationType::VarS),
+            11 => Ok(AggregationType::VarP),
             _ => Err(ValkeyError::Str("TSDB: invalid AGGREGATION value")),
         }
     }
@@ -198,7 +202,10 @@ impl From<AggregationType> for u8 {
             AggregationType::Max => 5,
             AggregationType::Sum => 6,
             AggregationType::Range => 7,
-            _ => unreachable!(),
+            AggregationType::StdS => 8,
+            AggregationType::StdP => 9,
+            AggregationType::VarS => 10,
+            AggregationType::VarP => 11,
         }
     }
 }
@@ -399,4 +406,49 @@ mod tests {
     fn aggregation_try_from_str_returns_error_for_invalid_value() {
         assert!(AggregationType::try_from("invalid").is_err());
     }
+
+    #[test]
+    fn aggregation_type_to_u8_conversion() {
+        assert_eq!(u8::from(AggregationType::Avg), 0);
+        assert_eq!(u8::from(AggregationType::Count), 1);
+        assert_eq!(u8::from(AggregationType::First), 2);
+        assert_eq!(u8::from(AggregationType::Last), 3);
+        assert_eq!(u8::from(AggregationType::Min), 4);
+        assert_eq!(u8::from(AggregationType::Max), 5);
+        assert_eq!(u8::from(AggregationType::Sum), 6);
+        assert_eq!(u8::from(AggregationType::Range), 7);
+        assert_eq!(u8::from(AggregationType::StdS), 8);
+        assert_eq!(u8::from(AggregationType::StdP), 9);
+        assert_eq!(u8::from(AggregationType::VarS), 10);
+        assert_eq!(u8::from(AggregationType::VarP), 11);
+    }
+
+    #[test]
+    fn aggregation_type_from_u8_conversion() {
+        assert_eq!(AggregationType::try_from(0u8).unwrap(), AggregationType::Avg);
+        assert_eq!(AggregationType::try_from(1u8).unwrap(), AggregationType::Count);
+        assert_eq!(AggregationType::try_from(2u8).unwrap(), AggregationType::First);
+        assert_eq!(AggregationType::try_from(3u8).unwrap(), AggregationType::Last);
+        assert_eq!(AggregationType::try_from(4u8).unwrap(), AggregationType::Min);
+        assert_eq!(AggregationType::try_from(5u8).unwrap(), AggregationType::Max);
+        assert_eq!(AggregationType::try_from(6u8).unwrap(), AggregationType::Sum);
+        assert_eq!(AggregationType::try_from(7u8).unwrap(), AggregationType::Range);
+        assert_eq!(AggregationType::try_from(8u8).unwrap(), AggregationType::StdS);
+        assert_eq!(AggregationType::try_from(9u8).unwrap(), AggregationType::StdP);
+        assert_eq!(AggregationType::try_from(10u8).unwrap(), AggregationType::VarS);
+        assert_eq!(AggregationType::try_from(11u8).unwrap(), AggregationType::VarP);
+    }
+
+    #[test]
+    fn aggregation_type_from_u8_invalid_values() {
+        assert!(AggregationType::try_from(12u8).is_err());
+        assert!(AggregationType::try_from(255u8).is_err());
+
+        // Test that the error message is correct
+        match AggregationType::try_from(12u8) {
+            Err(err) => assert_eq!(err.to_string(), "TSDB: invalid AGGREGATION value"),
+            Ok(_) => panic!("Expected error for invalid u8 value"),
+        }
+    }
+
 }
