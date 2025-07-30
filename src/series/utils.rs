@@ -13,6 +13,7 @@ use valkey_module::key::ValkeyKeyWritable;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
+use crate::series::chunks::ChunkEncoding;
 
 pub fn with_timeseries<R>(
     ctx: &Context,
@@ -165,8 +166,8 @@ pub fn add_default_compactions(
         return Ok(());
     };
 
-    let base_config = TimeSeriesOptions::from_config();
-    // base_config.chunk_compression = ChunkEncoding::Uncompressed;
+    let mut base_config = TimeSeriesOptions::from_config();
+    base_config.chunk_compression = ChunkEncoding::Uncompressed;
 
     // create a new series for each compaction rule
     let mut rules = Vec::with_capacity(compaction_rules.len());
