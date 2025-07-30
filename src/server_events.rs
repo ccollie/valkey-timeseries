@@ -1,4 +1,4 @@
-use crate::common::db::get_current_db;
+use crate::common::db::{get_current_db, set_current_db};
 use crate::series::index::*;
 use crate::series::{get_timeseries_mut, with_timeseries_mut, TimeSeries};
 use std::os::raw::c_void;
@@ -116,12 +116,13 @@ unsafe extern "C" fn on_flush_event(
     data: *mut c_void,
 ) {
     if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
-        let ctx = Context::new(ctx);
         let fi: &raw::RedisModuleFlushInfo = unsafe { &*(data as *mut raw::RedisModuleFlushInfo) };
 
         if fi.dbnum == -1 {
             clear_all_timeseries_indexes();
         } else {
+            let ctx = Context::new(ctx);
+            set_current_db(&ctx, fi.dbnum);
             clear_timeseries_index(&ctx);
         }
     };
