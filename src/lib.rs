@@ -27,7 +27,6 @@ mod tests;
 
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::stop_series_background_worker;
 use crate::server_events::{generic_key_events_handler, register_server_events};
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;
@@ -73,7 +72,6 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
     set_log_level(LogLevel::Console);
-    // start_series_background_worker(ctx);
 
     match register_server_events(ctx) {
         Ok(_) => Status::Ok,
@@ -87,7 +85,6 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 
 fn deinitialize(ctx: &Context) -> Status {
     ctx.log_notice("deinitialize");
-    stop_series_background_worker(ctx);
     Status::Ok
 }
 

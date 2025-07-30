@@ -10,7 +10,7 @@ pub mod request_types;
 mod sample_merge;
 pub mod serialization;
 pub mod series_data_type;
-mod tasks;
+mod background_tasks;
 mod time_series;
 #[cfg(test)]
 mod time_series_tests;
@@ -23,7 +23,6 @@ pub use compaction_policy::*;
 pub use defrag::defrag_series;
 pub use guard::*;
 pub use sample_merge::*;
-pub use tasks::*;
 pub use time_series::*;
 pub use timestamp_range::*;
 pub use types::*;
