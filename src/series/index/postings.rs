@@ -189,11 +189,6 @@ impl Postings {
             .unwrap_or(&*EMPTY_BITMAP)
     }
 
-    #[allow(dead_code)]
-    pub fn max_id(&self) -> SeriesRef {
-        self.all_postings().maximum().unwrap_or_default()
-    }
-
     pub(super) fn has_id(&self, id: SeriesRef) -> bool {
         self.id_to_key.contains_key(&id)
     }
@@ -356,7 +351,8 @@ impl Postings {
 
     #[allow(dead_code)]
     /// Marks an id as stale by adding its ID to the stale IDs set.
-    /// Context: when a series is evicted, we have no access to the series data to do a proper
+    /// Context: used in the case of possible index sync issues. When the index is queried and an id is returned
+    /// with no corresponding series, we have no access to the series data to do a proper
     /// cleanup. We remove the key from the index and mark the ID as stale, which will be cleaned up later.
     /// The stale IDs are stored in a bitmap for efficient removal and are checked to ensure that no stale IDs are
     /// returned in queries until they are removed.
@@ -364,9 +360,9 @@ impl Postings {
         if let Some(key) = self.id_to_key.remove(&id) {
             let old_key = IndexKey::from(key.as_bytes());
             self.key_to_id.remove(&old_key);
-            self.stale_ids.add(id);
-            self.remove_id_from_all_postings(id);
         }
+        self.stale_ids.add(id);
+        self.remove_id_from_all_postings(id);
     }
 
     #[cfg(test)]
@@ -386,7 +382,7 @@ impl Postings {
     /// ## Returns
     /// * `Option<IndexKey>` - The next key to continue processing from, or None if processing is complete
     ///
-    pub(super) fn remove_stale_ids(
+    pub(crate) fn remove_stale_ids(
         &mut self,
         start_prefix: Option<IndexKey>,
         count: usize,
@@ -397,7 +393,7 @@ impl Postings {
         }
 
         let mut keys_processed = 0;
-        let mut keys_to_process = Vec::new();
+        let mut keys_to_process = Vec::with_capacity(count);
         let mut next_key = None;
 
         // Determine the prefix to use for iteration
