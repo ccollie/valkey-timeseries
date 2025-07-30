@@ -200,8 +200,7 @@ impl TimeSeriesIndex {
         let inner = self.inner.read().unwrap();
         f(&inner, state)
     }
-
-    #[cfg(test)]
+    
     pub fn with_postings_mut<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
         F: FnOnce(&mut Postings, &mut STATE) -> R,
@@ -239,13 +238,18 @@ impl TimeSeriesIndex {
     }
 
     pub fn optimize(&self) {
-        let mut inner = self.inner.write().unwrap();
+        // locking is split to not totally block the index
         let mut keys_to_remove = Vec::new();
-        for (key, bmp) in inner.label_index.iter_mut() {
-            if bmp.is_empty() {
-                keys_to_remove.push(key.clone());
+        {
+            let inner = self.inner.read().unwrap();
+            for (key, bmp) in inner.label_index.iter() {
+                if bmp.is_empty() {
+                    keys_to_remove.push(key.clone());
+                }
             }
         }
+        
+        let mut inner = self.inner.write().unwrap();
         for key in keys_to_remove {
             inner.label_index.remove(&key);
         }
