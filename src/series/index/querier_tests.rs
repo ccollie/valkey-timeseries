@@ -73,12 +73,13 @@ mod tests {
         let copy = matchers.to_vec().clone();
         let filter = Matchers::with_matchers(None, copy);
         let p = postings_for_matchers(ix, &filter).unwrap();
-        let actual: Vec<_> = p
+        let mut actual: Vec<_> = p
             .iter()
             .flat_map(|id| series_data.get(&id))
             .cloned()
             .collect();
 
+        actual.sort();
         actual
     }
 
@@ -119,14 +120,18 @@ mod tests {
         }
 
         let cases = vec![
-            // TestCase {
-            //     matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
-            //     exp: to_label_vec(&[
-            //         labels_from_strings(&["n", "1"]),
-            //         labels_from_strings(&["n", "2"]),
-            //         labels_from_strings(&["n", "2.5"]),
-            //     ]),
-            // },
+            TestCase {
+                matchers: vec![
+                    Matcher::create(Equal, "n", "1").unwrap(),
+                    Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
+                ],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1"]),
+                    labels_from_strings(&["n", "1", "i", "a"]),
+                    labels_from_strings(&["n", "1", "i", "b"]),
+                    labels_from_strings(&["n", "1", "i", "\n"]),
+                ]),
+            },
             // ----------------------------------------------------------------
             TestCase {
                 matchers: vec![Matcher::create(Equal, "n", "1").unwrap()],
@@ -451,29 +456,29 @@ mod tests {
                 exp: vec![labels_from_strings(&["n", "2"])],
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "n", "2|2\\.5").unwrap()],
+                matchers: vec![Matcher::create(RegexEqual, "n", "2|2.5").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "2"]),
                     labels_from_strings(&["n", "2.5"]),
                 ]),
             },
             // Empty value.
-            // TestCase {
-            //     matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
-            //     exp: to_label_vec(&[
-            //         labels_from_strings(&["n", "1"]),
-            //         labels_from_strings(&["n", "2"]),
-            //         labels_from_strings(&["n", "2.5"]),
-            //     ]),
-            // },
-            // TestCase {
-            //     matchers: vec![Matcher::create(RegexEqual, "i", "(c||d)").unwrap()],
-            //     exp: to_label_vec(&[
-            //         labels_from_strings(&["n", "1"]),
-            //         labels_from_strings(&["n", "2"]),
-            //         labels_from_strings(&["n", "2.5"]),
-            //     ]),
-            // },
+            TestCase {
+                matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1"]),
+                    labels_from_strings(&["n", "2"]),
+                    labels_from_strings(&["n", "2.5"]),
+                ]),
+            },
+            TestCase {
+                matchers: vec![Matcher::create(RegexEqual, "i", "(c||d)").unwrap()],
+                exp: to_label_vec(&[
+                    labels_from_strings(&["n", "1"]),
+                    labels_from_strings(&["n", "2"]),
+                    labels_from_strings(&["n", "2.5"]),
+                ]),
+            },
             // Test shortcut for i=~".*"
             TestCase {
                 matchers: vec![Matcher::create(RegexEqual, "i", ".*").unwrap()],
@@ -565,12 +570,16 @@ mod tests {
             let name = format!("{{{name}}}");
             exp.clear();
 
+            let mut case = case;
+            case.exp.sort();
+
             for labels in case.exp {
                 let val = label_vec_to_string(&labels);
                 exp.insert(val);
             }
 
             let actual = get_labels_by_matcher(&ix, &case.matchers, &series_data);
+
             for labels in actual {
                 let current = label_vec_to_string(&labels);
                 let found = exp.remove(&current);

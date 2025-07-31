@@ -331,22 +331,25 @@ pub(super) fn postings_for_matcher_slice<'a>(
     let mut its: SmallVec<_, 4> = SmallVec::new();
     let mut not_its: SmallVec<Cow<PostingsBitmap>, 4> = SmallVec::new();
 
-    let mut has_subtracting_matchers = false;
-    let mut has_intersecting_matchers = false;
-
     let mut sorted_matchers: SmallVec<(&Matcher, bool, bool), 4> = SmallVec::new();
     // See which label must be non-empty.
     // Optimization for a case like {l=~".", l!="1"}.
     let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(ms.len());
+
+    let mut has_subtracting_matchers = false;
+    let mut has_intersecting_matchers = false;
     for m in ms {
         let matches_empty = m.matches("");
         if !matches_empty {
             label_must_be_set.insert(&m.label);
         }
-        let is_subtracting = is_subtracting_matcher(m, &label_must_be_set);
 
-        has_subtracting_matchers |= is_subtracting;
-        has_intersecting_matchers |= !is_subtracting;
+        let is_subtracting = is_subtracting_matcher(m, &label_must_be_set);
+        if is_subtracting {
+            has_subtracting_matchers = true;
+        } else {
+            has_intersecting_matchers = true;
+        }
 
         sorted_matchers.push((m, matches_empty, is_subtracting))
     }
