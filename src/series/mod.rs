@@ -1,4 +1,5 @@
 pub mod acl;
+mod background_tasks;
 pub mod chunks;
 mod compaction;
 mod compaction_policy;
@@ -10,7 +11,6 @@ pub mod request_types;
 mod sample_merge;
 pub mod serialization;
 pub mod series_data_type;
-mod background_tasks;
 mod time_series;
 #[cfg(test)]
 mod time_series_tests;

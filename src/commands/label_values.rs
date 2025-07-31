@@ -1,10 +1,10 @@
-use std::cmp::Ordering;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
 use crate::fanout::{perform_remote_label_values_request, LabelValuesRequest, LabelValuesResponse};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{
@@ -96,9 +96,7 @@ fn on_label_values_request_done(
             a.cmp(b)
         } else {
             let log_ctx = ctx.lock();
-            log_ctx.log_warning(
-                "BUG: Unexpected value type in TS.LABELVALUES response",
-            );
+            log_ctx.log_warning("BUG: Unexpected value type in TS.LABELVALUES response");
             Ordering::Greater
         }
     });

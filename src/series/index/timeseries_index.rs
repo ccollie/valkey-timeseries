@@ -200,7 +200,7 @@ impl TimeSeriesIndex {
         let inner = self.inner.read().unwrap();
         f(&inner, state)
     }
-    
+
     pub fn with_postings_mut<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
         F: FnOnce(&mut Postings, &mut STATE) -> R,
@@ -248,7 +248,7 @@ impl TimeSeriesIndex {
                 }
             }
         }
-        
+
         let mut inner = self.inner.write().unwrap();
         for key in keys_to_remove {
             inner.label_index.remove(&key);

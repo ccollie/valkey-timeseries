@@ -1,7 +1,9 @@
 use crate::common::db::set_current_db;
 use crate::common::hash::{BuildNoHashHasher, IntMap};
 use crate::common::parallel::maybe_par_iter;
-use crate::series::index::{optimize_all_timeseries_indexes, with_timeseries_index, IndexKey, TIMESERIES_INDEX};
+use crate::series::index::{
+    optimize_all_timeseries_indexes, with_timeseries_index, IndexKey, TIMESERIES_INDEX,
+};
 use crate::series::{get_timeseries_mut, SeriesRef};
 use ahash::HashMapExt;
 use blart::AsBytes;
@@ -9,13 +11,11 @@ use papaya::HashMap;
 use smallvec::SmallVec;
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
-use valkey_module::{
-    Context, Status, ValkeyString,
-};
+use valkey_module::{Context, Status, ValkeyString};
 
 use valkey_module_macros::cron_event_handler;
 
-const RETENTION_CLEANUP_TICKS: u64 = 10;  // run retention cleanup every RETENTION_CLEANUP_TICKS cron ticks
+const RETENTION_CLEANUP_TICKS: u64 = 10; // run retention cleanup every RETENTION_CLEANUP_TICKS cron ticks
 const SERIES_TRIM_BATCH_SIZE: usize = 50; // number of series to trim in one batch
 const STALE_ID_CLEANUP_TICKS: u64 = 25; // run stale id clean up every STALE_ID_CLEANUP_TICKS cron ticks
 const STALE_ID_BATCH_SIZE: usize = 25;
@@ -27,8 +27,7 @@ type StaleIdCursorMap = HashMap<i32, Option<IndexKey>, BuildNoHashHasher<i32>>;
 static CRON_TICKS: AtomicU64 = AtomicU64::new(0);
 static SERIES_TRIM_CURSORS: LazyLock<Mutex<SeriesCursorMap>> =
     LazyLock::new(|| Mutex::new(SeriesCursorMap::new()));
-static STALE_ID_CURSORS: LazyLock<StaleIdCursorMap> =
-    LazyLock::new(StaleIdCursorMap::default);
+static STALE_ID_CURSORS: LazyLock<StaleIdCursorMap> = LazyLock::new(StaleIdCursorMap::default);
 
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
@@ -95,7 +94,6 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
     if fetch_keys_batch(ctx, last_processed + 1, &mut keys) {
         let mut series_to_trim = Vec::with_capacity(SERIES_TRIM_BATCH_SIZE);
         for (&id, key) in keys.iter() {
-
             let Ok(Some(series)) = get_timeseries_mut(ctx, key, false, None) else {
                 to_delete.push(id);
                 last_processed = id;
@@ -141,7 +139,9 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
     if processed == 0 {
         ctx.log_debug("No series to trim");
     } else {
-        ctx.log_notice(&format!("Processed: {processed} Deleted Samples: {total_deletes} samples"));
+        ctx.log_notice(&format!(
+            "Processed: {processed} Deleted Samples: {total_deletes} samples"
+        ));
     }
 
     processed
@@ -226,7 +226,6 @@ pub fn process_remove_stale_series() {
         remove_stale_series_internal(db);
     });
 }
-
 
 #[cron_event_handler]
 fn cron_event_handler(ctx: &Context, _hz: u64) {

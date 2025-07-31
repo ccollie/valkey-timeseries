@@ -425,18 +425,54 @@ mod tests {
 
     #[test]
     fn aggregation_type_from_u8_conversion() {
-        assert_eq!(AggregationType::try_from(0u8).unwrap(), AggregationType::Avg);
-        assert_eq!(AggregationType::try_from(1u8).unwrap(), AggregationType::Count);
-        assert_eq!(AggregationType::try_from(2u8).unwrap(), AggregationType::First);
-        assert_eq!(AggregationType::try_from(3u8).unwrap(), AggregationType::Last);
-        assert_eq!(AggregationType::try_from(4u8).unwrap(), AggregationType::Min);
-        assert_eq!(AggregationType::try_from(5u8).unwrap(), AggregationType::Max);
-        assert_eq!(AggregationType::try_from(6u8).unwrap(), AggregationType::Sum);
-        assert_eq!(AggregationType::try_from(7u8).unwrap(), AggregationType::Range);
-        assert_eq!(AggregationType::try_from(8u8).unwrap(), AggregationType::StdS);
-        assert_eq!(AggregationType::try_from(9u8).unwrap(), AggregationType::StdP);
-        assert_eq!(AggregationType::try_from(10u8).unwrap(), AggregationType::VarS);
-        assert_eq!(AggregationType::try_from(11u8).unwrap(), AggregationType::VarP);
+        assert_eq!(
+            AggregationType::try_from(0u8).unwrap(),
+            AggregationType::Avg
+        );
+        assert_eq!(
+            AggregationType::try_from(1u8).unwrap(),
+            AggregationType::Count
+        );
+        assert_eq!(
+            AggregationType::try_from(2u8).unwrap(),
+            AggregationType::First
+        );
+        assert_eq!(
+            AggregationType::try_from(3u8).unwrap(),
+            AggregationType::Last
+        );
+        assert_eq!(
+            AggregationType::try_from(4u8).unwrap(),
+            AggregationType::Min
+        );
+        assert_eq!(
+            AggregationType::try_from(5u8).unwrap(),
+            AggregationType::Max
+        );
+        assert_eq!(
+            AggregationType::try_from(6u8).unwrap(),
+            AggregationType::Sum
+        );
+        assert_eq!(
+            AggregationType::try_from(7u8).unwrap(),
+            AggregationType::Range
+        );
+        assert_eq!(
+            AggregationType::try_from(8u8).unwrap(),
+            AggregationType::StdS
+        );
+        assert_eq!(
+            AggregationType::try_from(9u8).unwrap(),
+            AggregationType::StdP
+        );
+        assert_eq!(
+            AggregationType::try_from(10u8).unwrap(),
+            AggregationType::VarS
+        );
+        assert_eq!(
+            AggregationType::try_from(11u8).unwrap(),
+            AggregationType::VarP
+        );
     }
 
     #[test]
@@ -450,5 +486,4 @@ mod tests {
             Ok(_) => panic!("Expected error for invalid u8 value"),
         }
     }
-
 }

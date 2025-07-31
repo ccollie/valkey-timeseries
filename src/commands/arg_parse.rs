@@ -654,7 +654,8 @@ pub fn parse_significant_digit_rounding(
 ) -> ValkeyResult<RoundingStrategy> {
     let next = args.next_u64()?;
     if next > MAX_SIGNIFICANT_DIGITS as u64 {
-        let msg = format!("TSDB: SIGNIFICANT_DIGITS must be between 0 and {MAX_SIGNIFICANT_DIGITS}");
+        let msg =
+            format!("TSDB: SIGNIFICANT_DIGITS must be between 0 and {MAX_SIGNIFICANT_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
     Ok(RoundingStrategy::SignificantDigits(next as i32))
@@ -674,8 +675,8 @@ pub fn parse_decimal_digit_rounding(
 pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResult<(i64, f64)> {
     // ignoreMaxTimediff
     let mut str = args.next_str()?;
-    let ignore_max_timediff =
-        parse_duration_ms(str).map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_IGNORE))?;
+    let ignore_max_timediff = parse_duration_ms(str)
+        .map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_IGNORE))?;
     // ignoreMaxValDiff
     str = args.next_str()?;
     let ignore_max_val_diff =

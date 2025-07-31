@@ -1,8 +1,8 @@
-use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
 use valkey_module::{logging, RedisModuleTypeMethods};
 use valkey_module::{
     native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleString, ValkeyString,
 };
+use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
 
 use crate::common::db::get_current_db;
 use crate::series::defrag_series;

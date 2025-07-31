@@ -13,9 +13,7 @@ pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let mut args = args.into_iter().skip(1).peekable();
 
-    let key = args
-        .next()
-        .ok_or(ValkeyError::WrongArity)?;
+    let key = args.next().ok_or(ValkeyError::WrongArity)?;
 
     with_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE), |series| {
         let opts = options_from_series(series);
