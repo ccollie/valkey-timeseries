@@ -455,22 +455,22 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
     def test_range_error_handling(self):
         """Test error conditions for TS.RANGE"""
         # Wrong number of arguments
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="wrong number of arguments"):
             self.client.execute_command('TS.RANGE', 'ts1')
-        assert "wrong number of arguments" in str(excinfo.value).lower()
-        with pytest.raises(ResponseError) as excinfo:
+
+        with pytest.raises(ResponseError, match="wrong number of arguments"):
             self.client.execute_command('TS.RANGE', 'ts1', '-')
-        assert "wrong number of arguments" in str(excinfo.value).lower()
 
         # Invalid start/end timestamp
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="invalid start timestamp"):
             self.client.execute_command('TS.RANGE', 'ts1', 'invalid', '+')
-        assert "invalid start timestamp" in str(excinfo.value).lower()
-        with pytest.raises(ResponseError) as excinfo:
+
+        with pytest.raises(ResponseError, match="invalid end timestamp"):
             self.client.execute_command('TS.RANGE', 'ts1', '-', 'invalid')
-        assert "invalid end timestamp" in str(excinfo.value).lower()
 
         # Invalid filter values
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="TSDB: Couldn't parse MIN"):
             self.client.execute_command('TS.RANGE', 'ts1', '-', '+', 'FILTER_BY_VALUE', 'a', 'b')
-        assert "cannot parse value filter" in str(excinfo.value).lower()
+
+        with pytest.raises(ResponseError, match="TSDB: Couldn't parse MAX"):
+            self.client.execute_command('TS.RANGE', 'ts1', '-', '+', 'FILTER_BY_VALUE', 1000, 'b')
