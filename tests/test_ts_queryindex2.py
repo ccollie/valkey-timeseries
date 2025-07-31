@@ -76,8 +76,10 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts5']
 
         # Match all with .* pattern
+        # NOTE: Prometheus has a **cough** interesting behavior where `.*` matches all series
+        # regardless of whether they have the label or not. So paradoxically, this matches all series.
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"'))
-        assert len(result) == 6  # All series with label 'n'
+        assert len(result) == 8  # All series with label 'n'
 
         # Match non-empty values with .+
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~".+"'))
@@ -120,10 +122,10 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Match newline character
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=\n'))
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i="\n"'))
         assert result == [b'ts4']
 
-        # Match with regex for special character
+        # Match with regex for a special character
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~"\\n"'))
         assert result == [b'ts4']
 
@@ -136,8 +138,8 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Empty query should return error
-        self.verify_error_response(self.client, 'TS.QUERYINDEX',
-                                   "wrong number of arguments for 'TS.QUERYINDEX' command")
+        with pytest.raises(ResponseError, match="wrong number of arguments for 'TS.QUERYINDEX' command"):
+            self.client.execute_command('TS.QUERYINDEX')
 
         # Invalid filter format
         # Commented out because any valid identifier is possibly a Prometheus vector selector.
@@ -187,8 +189,10 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Match all series with a wildcard
+        # NOTE: Prometheus has a **cough** interesting behavior where `.*` matches all series
+        # regardless of whether they have the label or not. So paradoxically, this matches all series.
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"'))
-        assert len(result) == 6  # All series with n label
+        assert len(result) == 8  # All series
 
         # Match all and filter with another condition
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"', 'i=a'))
