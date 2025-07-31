@@ -56,12 +56,6 @@ pub fn extract_string_value(token: &str) -> ParseResult<Cow<str>> {
         return Ok(Cow::Borrowed(s));
     }
 
-    if s.contains('\n') {
-        return Err(ParseError::SyntaxError(
-            "Unexpected newline in string literal".to_string(),
-        ));
-    }
-
     if quote_ch == '\'' {
         let needs_unquote = s.contains(['\\', '\'', '"']);
         if !needs_unquote {
