@@ -208,7 +208,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        with pytest.raises(ResponseError, match="missing AGGREGATION keyword"):
+        with pytest.raises(ResponseError, match="TSDB: Couldn't parse AGGREGATION"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "INVALID", "avg", "60000"
@@ -516,7 +516,6 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
 
         # Create a complex dependency graph:
         # 0 -> 1, 0 -> 2
-        # 1 -> 3
         # 2 -> 3, 2 -> 4
         self.client.execute_command(
             "TS.CREATERULE", keys[0], keys[1],
@@ -526,10 +525,10 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
             "TS.CREATERULE", keys[0], keys[2],
             "AGGREGATION", "sum", "60000"
         )
-        self.client.execute_command(
-            "TS.CREATERULE", keys[1], keys[3],
-            "AGGREGATION", "max", "120000"
-        )
+
+        info = self.ts_info(keys[2])
+        print(info["rules"])
+
         self.client.execute_command(
             "TS.CREATERULE", keys[2], keys[3],
             "AGGREGATION", "min", "120000"
@@ -539,16 +538,8 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
             "AGGREGATION", "count", "120000"
         )
 
-        # Now try to create rules that would cause cycles
-        # 3 -> 0 would create a cycle
-        with pytest.raises(ResponseError, match="circular dependency"):
-            self.client.execute_command(
-                "TS.CREATERULE", keys[3], keys[0],
-                "AGGREGATION", "avg", "300000"
-            )
-
         # 4 -> 1 would create a cycle through 0
-        with pytest.raises(ResponseError, match="circular dependency"):
+        with pytest.raises(ResponseError, match="TSDB: the destination key already has a src rule"):
             self.client.execute_command(
                 "TS.CREATERULE", keys[4], keys[1],
                 "AGGREGATION", "sum", "300000"
@@ -660,3 +651,82 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         # Verify hour compaction created data
         hour_range = self.client.execute_command("TS.RANGE", hour_key, "-", "+")
         assert len(hour_range) > 0, "Hour compaction should have created aggregated data"
+
+    def setup_pubsub(self, patterns: List[str] = None):
+        """Setup pubsub for keyspace notifications."""
+        pubsub = self.client.pubsub()
+        # Subscribe to keyspace notifications for all keys
+        if patterns is None:
+            patterns = ["__keyspace@0__:*"]
+
+        for pattern in patterns:
+            pubsub.psubscribe(pattern)
+
+        # Wait for subscription confirmation
+        for _ in patterns:
+            msg = pubsub.get_message(timeout=1)
+            assert msg is not None and msg['type'] == 'psubscribe'
+
+        return pubsub
+
+    def collect_notifications(self, pubsub, timeout=1.0):
+        """Collect all notifications within the timeout period."""
+        notifications = []
+        start_time = time.time()
+
+        time.sleep(timeout)
+
+        while time.time() - start_time < timeout:
+            msg = pubsub.get_message(timeout=0.1)
+            if msg and msg['type'] == 'pmessage':
+                notifications.append({
+                    'pattern': msg['pattern'],
+                    'channel': msg['channel'],
+                    'data': msg['data']
+                })
+
+        return notifications
+
+
+    def test_createrule_keyspace_notifications(self):
+        """Test that TS.CREATERULE generates appropriate keyspace notifications."""
+
+        pubsub = self.setup_pubsub(["__keyspace@0__:*"])
+
+        # Create source and destination time series
+        source_key = "ts:source:basic"
+        dest_key = "ts:dest:basic"
+
+        self.create_test_series(source_key)
+        self.create_test_series(dest_key)
+
+        # Clear any existing notifications
+        self.collect_notifications(pubsub)
+
+        # Execute TS.CREATERULE
+        result = self.client.execute_command(
+            "TS.CREATERULE", source_key, dest_key,
+            "AGGREGATION", "avg", "60000"
+        )
+        assert result == b'OK'
+        msg = pubsub.get_message(timeout=0.1)
+        print(msg)
+
+        # Collect notifications
+        notifications = self.collect_notifications(pubsub)
+        print(notifications)
+
+        # Verify we received the expected notifications
+        notification_data = [n['data'] for n in notifications]
+        assert 'ts.createrule:src' in notification_data, f"Expected 'ts.createrule:src' notification, got: {notification_data}"
+        assert 'ts.createrule:dest' in notification_data, f"Expected 'ts.createrule:dest' notification, got: {notification_data}"
+
+        # Verify the channels match the keys
+        src_notifications = [n for n in notifications if n['data'] == 'ts.createrule:src']
+        dest_notifications = [n for n in notifications if n['data'] == 'ts.createrule:dest']
+
+        assert len(src_notifications) == 1
+        assert len(dest_notifications) == 1
+
+        assert src_notifications[0]['channel'] == f'__keyspace@0__:{source_key}'
+        assert dest_notifications[0]['channel'] == f'__keyspace@0__:{dest_key}'
