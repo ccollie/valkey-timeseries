@@ -92,7 +92,6 @@ fn parse_prometheus_selector_internal(
 }
 
 /// support RedisTimeseries style selectors
-/// See https://redis.io/docs/latest/commands/ts.mget/
 fn parse_redis_ts_predicate(
     label: String,
     operator_token: Token,
