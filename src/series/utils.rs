@@ -3,6 +3,7 @@ use crate::common::db::get_current_db;
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::acl::check_key_permissions;
+use crate::series::chunks::ChunkEncoding;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
@@ -13,7 +14,6 @@ use valkey_module::key::ValkeyKeyWritable;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
-use crate::series::chunks::ChunkEncoding;
 
 pub fn with_timeseries<R>(
     ctx: &Context,
