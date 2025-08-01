@@ -1,6 +1,6 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::series::index::*;
-use crate::series::{get_timeseries_mut, with_timeseries_mut, TimeSeries};
+use crate::series::{get_timeseries, get_timeseries_mut, with_timeseries_mut, TimeSeries};
 use std::os::raw::c_void;
 use std::sync::Mutex;
 use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
@@ -24,9 +24,14 @@ fn reindex_series(ctx: &Context, series: &TimeSeries, key: &[u8]) -> ValkeyResul
     })
 }
 
-fn handle_key_rename(ctx: &Context, old_key: &[u8], new_key: &[u8]) {
+fn handle_key_rename(ctx: &Context, _old_key: &[u8], new_key: &[u8]) {
     with_timeseries_index(ctx, |index| {
-        index.rename_series(old_key, new_key);
+        let key = ctx.create_string(new_key);
+        let Ok(Some(series)) = get_timeseries(ctx, key, None, false) else {
+            logging::log_warning("Failed to load series for key rename");
+            return;
+        };
+        index.reindex_timeseries(&series, new_key)
     })
 }
 

@@ -16,9 +16,12 @@
 #[cfg(test)]
 mod tests {
     use crate::labels::matchers::{MatchOp, Matcher, Matchers};
-    use crate::labels::Label;
-    use crate::series::index::{postings_for_matchers, TimeSeriesIndex};
-    use crate::series::SeriesRef;
+    use crate::labels::{InternedMetricName, Label};
+    use crate::parser::metric_name::parse_metric_name;
+    use crate::series::index::{
+        next_timeseries_id, postings_for_matchers, IndexKey, TimeSeriesIndex,
+    };
+    use crate::series::{SeriesRef, TimeSeries};
     use std::collections::{HashMap, HashSet};
 
     fn labels_from_strings<S: Into<String> + Clone>(ss: &[S]) -> Vec<Label> {
@@ -591,5 +594,159 @@ mod tests {
                 "Evaluating {name}\nextra result(s): {exp:?}"
             );
         }
+    }
+
+    fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
+        let mut ts = TimeSeries::new();
+        ts.id = next_timeseries_id();
+
+        let labels = parse_metric_name(prometheus_name).unwrap();
+        ts.labels = InternedMetricName::new(&labels);
+        ts
+    }
+
+    #[test]
+    fn test_querying_after_reindex() {
+        let index = TimeSeriesIndex::new();
+
+        // Create a time series with specific labels
+        let ts = create_series_from_metric_name(
+            r#"cpu_usage{instance="server1",region="us-west-2",env="prod"}"#,
+        );
+        let old_key = b"ts:cpu_usage:old";
+
+        // Index the series with the old key
+        index.index_timeseries(&ts, old_key);
+
+        // Verify we can query by labels before rename
+        let labels = ts.labels.to_label_vec();
+        let result_before = index.posting_by_labels(&labels).unwrap();
+        assert_eq!(result_before, Some(ts.id));
+
+        // Verify we can query by specific label combinations before rename
+        let instance_labels = vec![Label {
+            name: "instance".to_string(),
+            value: "server1".to_string(),
+        }];
+        let postings_before = index.posting_by_labels(&instance_labels).unwrap();
+        assert_eq!(postings_before, Some(ts.id));
+
+        // Test querying with matchers before rename
+        let mut state = ();
+        index.with_postings(&mut state, |postings, _| {
+            let instance_postings = postings.postings_for_label_value("instance", "server1");
+            assert!(instance_postings.contains(ts.id));
+
+            let region_postings = postings.postings_for_label_value("region", "us-west-2");
+            assert!(region_postings.contains(ts.id));
+
+            let env_postings = postings.postings_for_label_value("env", "prod");
+            assert!(env_postings.contains(ts.id));
+        });
+
+        // Now rename the series
+        let new_key = b"ts:cpu_usage:new";
+        index.reindex_timeseries(&ts, new_key);
+
+        // Verify the same queries still work after rename
+        let result_after = index.posting_by_labels(&labels).unwrap();
+        assert_eq!(
+            result_after,
+            Some(ts.id),
+            "Should still find series by labels after rename"
+        );
+
+        // Verify querying by specific label combinations still works
+        let postings_after = index.posting_by_labels(&instance_labels).unwrap();
+        assert_eq!(
+            postings_after,
+            Some(ts.id),
+            "Should still find series by instance label after rename"
+        );
+
+        // Test querying with matchers after rename
+        index.with_postings(&mut state, |postings, _| {
+            let instance_postings = postings.postings_for_label_value("instance", "server1");
+            assert!(
+                instance_postings.contains(ts.id),
+                "Should find series by instance after rename"
+            );
+
+            let region_postings = postings.postings_for_label_value("region", "us-west-2");
+            assert!(
+                region_postings.contains(ts.id),
+                "Should find series by region after rename"
+            );
+
+            let env_postings = postings.postings_for_label_value("env", "prod");
+            assert!(
+                env_postings.contains(ts.id),
+                "Should find series by env after rename"
+            );
+
+            // Verify the old key is no longer in the mapping
+            let old_key_index = IndexKey::from(old_key.as_slice());
+            assert!(
+                postings.key_to_id.get(&old_key_index).is_none(),
+                "Old key should be removed"
+            );
+
+            // Verify new key points to correct series ID
+            let new_key_index = IndexKey::from(new_key.as_slice());
+            assert_eq!(
+                postings.key_to_id.get(&new_key_index),
+                Some(&ts.id),
+                "New key should point to series ID"
+            );
+
+            // Verify series ID maps to the new key
+            let expected_new_key = new_key.to_vec().into_boxed_slice();
+            assert_eq!(
+                postings.id_to_key.get(&ts.id),
+                Some(&expected_new_key),
+                "Series ID should map to new key"
+            );
+        });
+
+        // Test more queries after rename
+        let matchers = vec![
+            Matcher::create(MatchOp::Equal, "instance", "server1").unwrap(),
+            Matcher::create(MatchOp::Equal, "region", "us-west-2").unwrap(),
+        ];
+        let filter = Matchers::with_matchers(None, matchers);
+
+        let complex_query_result = postings_for_matchers(&index, &filter).unwrap();
+        assert!(
+            complex_query_result.contains(ts.id),
+            "Query should still work after rename"
+        );
+
+        let regex_matchers = vec![
+            Matcher::create(MatchOp::RegexEqual, "instance", "server.*").unwrap(),
+            Matcher::create(MatchOp::Equal, "env", "prod").unwrap(),
+        ];
+        let regex_filter = Matchers::with_matchers(None, regex_matchers);
+
+        let regex_query_result = postings_for_matchers(&index, &regex_filter).unwrap();
+        assert!(
+            regex_query_result.contains(ts.id),
+            "Query should still work after rename"
+        );
+
+        // Verify that the new key is present in the index
+        index.with_postings(&mut state, |postings, _| {
+            let new_key_index = IndexKey::from(new_key.as_slice());
+            assert!(
+                postings.key_to_id.contains_key(&new_key_index),
+                "New key should be present in index"
+            );
+
+            // Verify that the series ID maps to the new key
+            assert_eq!(
+                postings.id_to_key.get(&ts.id),
+                Some(&new_key.to_vec().into_boxed_slice()),
+                "Series ID should map to new key"
+            );
+        });
     }
 }

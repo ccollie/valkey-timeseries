@@ -1,7 +1,7 @@
 use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
-use crate::labels::SeriesLabel;
+use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use blart::map::Entry as ARTEntry;
@@ -147,6 +147,22 @@ impl Postings {
         let key = new_key.to_vec().into_boxed_slice();
         self.id_to_key.insert(id, key);
         self.key_to_id.insert(new_key.into(), id);
+    }
+
+    pub fn index_timeseries(&mut self, ts: &TimeSeries, key: &[u8]) {
+        debug_assert!(ts.id != 0);
+        let id = ts.id;
+        let measurement = ts.labels.get_measurement();
+        if !measurement.is_empty() {
+            // todo: error !
+        }
+
+        for InternedLabel { name, value } in ts.labels.iter() {
+            self.add_posting_for_label_value(id, name, value);
+        }
+
+        self.add_id_to_all_postings(id);
+        self.set_timeseries_key(id, key);
     }
 
     pub fn remove_timeseries(&mut self, series: &TimeSeries) {

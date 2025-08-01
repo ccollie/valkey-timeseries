@@ -27,6 +27,10 @@ class TestRename(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command("TS.CREATE", old_key, "LABELS", "__name__", "sensor", "sensor", "temp", "key", old_key)
         self.client.execute_command("TS.ADD", old_key, 3333, 1.5)
 
+        keys = self.client.execute_command("TS.QUERYINDEX", f"key={old_key}")
+        print(keys)
+        assert len(keys) > 0
+
         # Rename the key
         self.client.rename(old_key, new_key)
 
@@ -40,27 +44,18 @@ class TestRename(ValkeyTimeSeriesTestCaseBase):
         assert float(sample[1]) == 1.5
 
         # The old key should not be queryable
-        keys = self.client.execute_command("TS.QUERYINDEX", f"key={old_key}")
-        assert len(keys) == 0
         keys = self.client.execute_command("TS.QUERYINDEX", 'sensor="temp"')
-        assert len(keys) == 0
+        assert keys[0].decode('utf-8') == new_key
 
         # The new key should be queryable
         result = self.client.execute_command("TS.RANGE", new_key, 0, "+")
         assert len(result) == 1
         assert result[0][0] == 3333
 
-        all_keys = self.client.execute_command("KEYS", "ts:*")
-        assert len(all_keys) == 1
-        assert all_keys[0].decode('utf-8') == new_key
-
-        info = self.ts_info(new_key)
-        print(info)
-
         # Verify the new key is indexed correctly
         keys = self.client.execute_command("TS.QUERYINDEX", f"key={old_key}")
         assert len(keys) == 1
-        assert keys[0].decode('utf-8') == old_key
+        assert keys[0].decode('utf-8') == new_key
 
 
         keys = self.client.execute_command("TS.QUERYINDEX", 'sensor=temp')

@@ -6,7 +6,7 @@ use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{Postings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
-use crate::labels::{InternedLabel, Label, SeriesLabel};
+use crate::labels::{Label, SeriesLabel};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size::GetSize;
@@ -57,24 +57,13 @@ impl TimeSeriesIndex {
     pub fn index_timeseries(&self, ts: &TimeSeries, key: &[u8]) {
         debug_assert!(ts.id != 0);
         let mut inner = self.inner.write().unwrap();
-
-        let id = ts.id;
-        let measurement = ts.labels.get_measurement();
-        if !measurement.is_empty() {
-            // todo: error !
-        }
-
-        for InternedLabel { name, value } in ts.labels.iter() {
-            inner.add_posting_for_label_value(id, name, value);
-        }
-
-        inner.add_id_to_all_postings(id);
-        inner.set_timeseries_key(id, key);
+        inner.index_timeseries(ts, key);
     }
 
     pub fn reindex_timeseries(&self, series: &TimeSeries, key: &[u8]) {
-        self.remove_timeseries(series);
-        self.index_timeseries(series, key);
+        let mut inner = self.inner.write().unwrap();
+        inner.remove_timeseries(series);
+        inner.index_timeseries(series, key);
     }
 
     pub fn remove_timeseries(&self, series: &TimeSeries) {
