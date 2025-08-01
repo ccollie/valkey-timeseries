@@ -258,6 +258,20 @@ mod tests {
         });
     }
 
+    #[test]
+    fn test_selector_with_newline() {
+        let input = r#"label="\n""#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert!(result.name.is_none());
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 1);
+
+            let temperature_matcher = &matchers[0];
+            assert_matcher(temperature_matcher, "label", MatchOp::Equal, "\n");
+        });
+    }
+
     // https://redis.io/docs/latest/commands/ts.queryindex/
     #[test]
     fn redis_ts_selector_equal_with_lists() {
