@@ -1,7 +1,7 @@
 use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
-use crate::labels::{InternedLabel, SeriesLabel};
+use crate::labels::SeriesLabel;
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use blart::map::Entry as ARTEntry;
@@ -995,5 +995,4 @@ mod tests {
         assert_eq!(result.cardinality(), 1);
         assert!(result.contains(1));
     }
-
 }
