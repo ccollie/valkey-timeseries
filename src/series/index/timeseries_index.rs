@@ -238,24 +238,6 @@ impl TimeSeriesIndex {
         (old_count - inner.stale_ids.cardinality()) as usize // Return number of removed IDs
     }
 
-    pub fn optimize(&self) {
-        // locking is split to not totally block the index
-        let mut keys_to_remove = Vec::new();
-        {
-            let inner = self.inner.read().unwrap();
-            for (key, bmp) in inner.label_index.iter() {
-                if bmp.is_empty() {
-                    keys_to_remove.push(key.clone());
-                }
-            }
-        }
-
-        let mut inner = self.inner.write().unwrap();
-        for key in keys_to_remove {
-            inner.label_index.remove(&key);
-        }
-    }
-
     pub fn optimize_incremental(
         &self,
         start_prefix: Option<IndexKey>,
