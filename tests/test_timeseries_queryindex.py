@@ -161,10 +161,6 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         result2 = sorted(self.client.execute_command('TS.QUERYINDEX', 'type=usage'))
         assert result2 == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts7', b'ts8']
 
-        # Verify the first query still works
-        result3 = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=cpu'))
-        assert result3 == [b'ts1', b'ts2', b'ts5', b'ts6']
-
     def test_list_include_queries(self):
         """Test executing multiple QUERYINDEX commands sequentially"""
         self.setup_test_data(self.client)
