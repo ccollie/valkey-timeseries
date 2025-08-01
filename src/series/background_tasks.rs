@@ -1,14 +1,13 @@
 use crate::common::db::set_current_db;
 use crate::common::hash::{BuildNoHashHasher, IntMap};
 use crate::common::parallel::maybe_par_iter;
-use crate::series::index::{
-    optimize_all_timeseries_indexes, with_timeseries_index, IndexKey, TIMESERIES_INDEX,
-};
+use crate::series::index::{with_db_index, with_timeseries_index, IndexKey, TIMESERIES_INDEX};
 use crate::series::{get_timeseries_mut, SeriesRef};
 use ahash::HashMapExt;
 use blart::AsBytes;
-use papaya::HashMap;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{Context, Status, ValkeyString};
@@ -19,15 +18,27 @@ const RETENTION_CLEANUP_TICKS: u64 = 10; // run retention cleanup every RETENTIO
 const SERIES_TRIM_BATCH_SIZE: usize = 50; // number of series to trim in one batch
 const STALE_ID_CLEANUP_TICKS: u64 = 25; // run stale id clean up every STALE_ID_CLEANUP_TICKS cron ticks
 const STALE_ID_BATCH_SIZE: usize = 25;
-const INDEX_OPTIMIZE_TICKS: u64 = 25000; // run index optimization every INDEX_OPTIMIZE_TICKS cron ticks
+const INDEX_OPTIMIZE_TICKS: u64 = 6000; // interval in cron ticks to run index optimization (1 min at 100hz)
+const INDEX_OPTIMIZE_BATCH_SIZE: usize = 50;
+
+#[derive(Debug, Default)]
+struct IndexMeta {
+    /// Cursor for the last stale eseries id processed in the index
+    stale_id_cursor: Option<IndexKey>,
+    /// Cursor for the last optimized key in the index
+    optimize_cursor: Option<IndexKey>,
+    last_updated: u64, // last time the index was updated
+}
 
 type SeriesCursorMap = IntMap<i32, SeriesRef>;
-type StaleIdCursorMap = HashMap<i32, Option<IndexKey>, BuildNoHashHasher<i32>>;
+type IndexCursorMap = HashMap<i32, IndexMeta, BuildNoHashHasher<i32>>;
 
 static CRON_TICKS: AtomicU64 = AtomicU64::new(0);
 static SERIES_TRIM_CURSORS: LazyLock<Mutex<SeriesCursorMap>> =
     LazyLock::new(|| Mutex::new(SeriesCursorMap::new()));
-static STALE_ID_CURSORS: LazyLock<StaleIdCursorMap> = LazyLock::new(StaleIdCursorMap::default);
+
+static INDEX_CURSORS: LazyLock<Mutex<IndexCursorMap>> =
+    LazyLock::new(|| Mutex::new(IndexCursorMap::default()));
 
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
@@ -68,14 +79,20 @@ fn set_trim_cursor(db: i32, cursor: SeriesRef) {
     }
 }
 
+const INDEX_LOCK_POISON_MSG: &str = "Failed to lock INDEX_CURSORS";
+
 fn get_stale_id_cursor(db: i32) -> Option<IndexKey> {
-    let map = STALE_ID_CURSORS.pin();
-    map.get(&db).and_then(|meta| meta.clone())
+    let map = INDEX_CURSORS.lock().expect(INDEX_LOCK_POISON_MSG);
+    match map.get(&db) {
+        Some(meta) => meta.stale_id_cursor.clone(),
+        None => None,
+    }
 }
 
 fn set_stale_id_cursor(db: i32, cursor: Option<IndexKey>) {
-    let map = STALE_ID_CURSORS.pin();
-    map.insert(db, cursor);
+    let mut map = INDEX_CURSORS.lock().expect(INDEX_LOCK_POISON_MSG);
+    let meta = map.entry(db).or_default();
+    meta.stale_id_cursor = cursor;
 }
 
 /// Perform active expiration of time series data for series which have a retention set.
@@ -227,6 +244,48 @@ pub fn process_remove_stale_series() {
     });
 }
 
+fn optimize_indices() {
+    let db_ids = get_used_dbs();
+    if db_ids.is_empty() {
+        return;
+    }
+
+    let mut cursors: Vec<_> = Vec::with_capacity(db_ids.len());
+    {
+        let mut map = INDEX_CURSORS.lock().expect(INDEX_LOCK_POISON_MSG);
+        for &db in &db_ids {
+            let Some(cursor) = map.get(&db) else {
+                map.remove(&db);
+                continue;
+            };
+            cursors.push((db, cursor.optimize_cursor.clone()));
+        }
+    }
+
+    if cursors.is_empty() {
+        return; // nothing to optimize
+    }
+
+    let results = cursors
+        .into_par_iter()
+        .map(|(db, cursor)| {
+            let new_cursor = with_db_index(db, |index| {
+                index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE)
+            });
+            (db, new_cursor)
+        })
+        .collect::<Vec<_>>();
+
+    // Store the updated cursors back in INDEX_CURSORS
+    {
+        let mut map = INDEX_CURSORS.lock().expect(INDEX_LOCK_POISON_MSG);
+        for (db, new_cursor) in results {
+            let meta = map.entry(db).or_default();
+            meta.optimize_cursor = new_cursor;
+        }
+    }
+}
+
 #[cron_event_handler]
 fn cron_event_handler(ctx: &Context, _hz: u64) {
     // relaxed ordering is fine here since this code is not run threaded
@@ -240,7 +299,7 @@ fn schedule_periodic_tasks(ctx: &Context, ticks: u64) {
     }
 
     if should_run_task(ticks, INDEX_OPTIMIZE_TICKS) {
-        rayon::spawn(optimize_all_timeseries_indexes);
+        rayon::spawn(optimize_indices);
     }
 
     if should_run_task(ticks, RETENTION_CLEANUP_TICKS) {

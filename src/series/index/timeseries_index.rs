@@ -7,6 +7,7 @@ use super::postings::{Postings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::{InternedLabel, Label, SeriesLabel};
+use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size::GetSize;
 use std::mem::size_of;
@@ -253,6 +254,15 @@ impl TimeSeriesIndex {
         for key in keys_to_remove {
             inner.label_index.remove(&key);
         }
+    }
+
+    pub fn optimize_incremental(
+        &self,
+        start_prefix: Option<IndexKey>,
+        count: usize,
+    ) -> Option<IndexKey> {
+        let mut inner = self.inner.write().unwrap();
+        inner.optimize_postings(start_prefix, count)
     }
 }
 

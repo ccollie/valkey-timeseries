@@ -1,7 +1,7 @@
 use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
-use crate::labels::SeriesLabel;
+use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use blart::map::Entry as ARTEntry;
@@ -437,6 +437,74 @@ impl Postings {
             // Clear stale_ids if we've processed all keys
             if next_key.is_none() {
                 self.stale_ids.clear();
+            }
+        }
+
+        next_key
+    }
+
+    /// Incrementally optimizes posting bitmaps for better memory usage and performance.
+    ///
+    /// This method processes at most `count` keys starting from `start_prefix`,
+    /// performing the following optimizations on each bitmap:
+    /// 1. Remove the bitmap if it is empty
+    /// 2. Call run_optimize() to optimize the bitmap's internal structure
+    /// 3. Call shrink_to_fit() to reduce memory overhead
+    ///
+    /// ### Arguments
+    /// * `start_prefix` - The key to start processing from (inclusive)
+    /// * `count` - Maximum number of keys to process in this batch
+    ///
+    /// ### Returns
+    /// * `Option<IndexKey>` - The next key to continue processing from, or None if processing is complete
+    ///
+    pub(crate) fn optimize_postings(
+        &mut self,
+        start_prefix: Option<IndexKey>,
+        count: usize,
+    ) -> Option<IndexKey> {
+        let mut keys_to_process = Vec::with_capacity(count);
+        let mut next_key = None;
+
+        if start_prefix.is_none() {
+            let key = &*ALL_POSTINGS_KEY;
+            if let Some(bitmap) = self.label_index.get_mut(key) {
+                bitmap.run_optimize();
+                bitmap.shrink_to_fit();
+            }
+        }
+
+        // Determine the prefix to use for iteration
+        let prefix_bytes = start_prefix.map_or_else(Vec::new, |k| k.as_bytes().to_vec());
+
+        // Collect keys to process
+        for (keys_processed, (key, _)) in self.label_index.prefix(&prefix_bytes).enumerate() {
+            if keys_processed >= count {
+                // Save the key we stopped at as the next starting point
+                next_key = Some(key.clone());
+                break;
+            }
+
+            keys_to_process.push(key.clone());
+        }
+
+        // Process collected keys
+        for key in keys_to_process {
+            if let Some(mut bitmap) = self.label_index.remove(&key) {
+                // 1. Check if bitmap is empty and skip if so
+                if bitmap.is_empty() {
+                    // Don't reinsert empty bitmaps - this removes them
+                    continue;
+                }
+
+                // 2. Optimize the bitmap's internal structure
+                bitmap.run_optimize();
+
+                // 3. Shrink to fit to reduce memory overhead
+                bitmap.shrink_to_fit();
+
+                // Reinsert the optimized bitmap
+                self.label_index.insert(key, bitmap);
             }
         }
 
@@ -927,4 +995,5 @@ mod tests {
         assert_eq!(result.cardinality(), 1);
         assert!(result.contains(1));
     }
+
 }
