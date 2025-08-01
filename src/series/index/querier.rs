@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::postings::{handle_equal_match, Postings, PostingsBitmap, EMPTY_BITMAP};
-use super::{with_timeseries_index, TimeSeriesIndex};
+use super::{with_timeseries_postings, TimeSeriesIndex};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
 use crate::error_consts;
@@ -43,36 +43,32 @@ pub fn series_by_matchers(
         return Ok(Vec::new());
     }
 
-    with_timeseries_index(ctx, |index| {
-        let mut state = ();
-
-        index.with_postings(&mut state, move |inner, _| {
-            let first = postings_for_matchers_internal(inner, &matchers[0])?;
-            if matchers.len() == 1 {
-                return collect_series(
-                    ctx,
-                    inner,
-                    first.iter(),
-                    range,
-                    require_permissions,
-                    raise_permission_error,
-                );
-            }
-            // todo: use chili here ?
-            let mut result = first.into_owned();
-            for matcher in &matchers[1..] {
-                let postings = postings_for_matchers_internal(inner, matcher)?;
-                result.and_inplace(&postings);
-            }
-            collect_series(
+    with_timeseries_postings(ctx, |postings| {
+        let first = postings_for_matchers_internal(postings, &matchers[0])?;
+        if matchers.len() == 1 {
+            return collect_series(
                 ctx,
-                inner,
-                result.iter(),
+                postings,
+                first.iter(),
                 range,
                 require_permissions,
                 raise_permission_error,
-            )
-        })
+            );
+        }
+        // todo: use chili here ?
+        let mut result = first.into_owned();
+        for matcher in &matchers[1..] {
+            let bitmap = postings_for_matchers_internal(postings, matcher)?;
+            result.and_inplace(&bitmap);
+        }
+        collect_series(
+            ctx,
+            postings,
+            result.iter(),
+            range,
+            require_permissions,
+            raise_permission_error,
+        )
     })
 }
 
@@ -85,24 +81,20 @@ pub fn series_keys_by_matchers(
         return Ok(Vec::new());
     }
 
-    with_timeseries_index(ctx, |index| {
-        let mut state = ();
-
-        index.with_postings(&mut state, move |inner, _| {
-            let first = postings_for_matchers_internal(inner, &matchers[0])?;
-            if matchers.len() == 1 {
-                let keys = collect_series_keys(ctx, inner, first.iter(), range);
-                return Ok(keys);
-            }
-            // todo: use chili here ?
-            let mut result = first.into_owned();
-            for matcher in &matchers[1..] {
-                let postings = postings_for_matchers_internal(inner, matcher)?;
-                result.and_inplace(&postings);
-            }
-            let keys = collect_series_keys(ctx, inner, result.iter(), range);
-            Ok(keys)
-        })
+    with_timeseries_postings(ctx, |postings| {
+        let first = postings_for_matchers_internal(postings, &matchers[0])?;
+        if matchers.len() == 1 {
+            let keys = collect_series_keys(ctx, postings, first.iter(), range);
+            return Ok(keys);
+        }
+        // todo: use chili here ?
+        let mut result = first.into_owned();
+        for matcher in &matchers[1..] {
+            let bitmap = postings_for_matchers_internal(postings, matcher)?;
+            result.and_inplace(&bitmap);
+        }
+        let keys = collect_series_keys(ctx, postings, result.iter(), range);
+        Ok(keys)
     })
 }
 
