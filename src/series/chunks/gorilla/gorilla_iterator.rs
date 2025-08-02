@@ -16,6 +16,7 @@ pub struct GorillaIterator<'a> {
     value: f64,
     last_timestamp: i64,
     last_value: f64,
+    last_idx: usize,
 }
 
 impl GorillaIterator<'_> {
@@ -25,6 +26,7 @@ impl GorillaIterator<'_> {
         let last_timestamp = encoder.last_ts;
         let last_value = encoder.last_value;
         let reader = BufferedReader::new(buf);
+        let last_idx = num_samples - 1;
 
         GorillaIterator {
             reader,
@@ -37,6 +39,7 @@ impl GorillaIterator<'_> {
             timestamp_delta: 0,
             last_timestamp,
             last_value,
+            last_idx,
         }
     }
 
@@ -138,7 +141,7 @@ impl Iterator for GorillaIterator<'_> {
         Some(match self.idx {
             0 => self.read_first_sample(),
             1 => self.read_second_sample(),
-            _ if self.idx == self.num_samples - 1 => self.read_last_sample(),
+            n if n == self.last_idx => self.read_last_sample(),
             _ => self.read_nth_sample(),
         })
     }
