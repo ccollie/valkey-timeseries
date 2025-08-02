@@ -115,6 +115,7 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
 
         # 2. Move the second key to db 1
         self.client.move(keys[1], 1)
+        self.client.select(0)
 
         # 3. Delete the third key
         self.client.delete(keys[2])
@@ -127,7 +128,7 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
 
         assert not self.client.exists(keys[1])
         self.client.select(1)
-        assert self.client.exists(key)
+        assert self.client.exists(keys[1])
         self.client.select(0)
 
         assert not self.client.exists(keys[2])
@@ -138,7 +139,7 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         assert result[0][0] == self.start_ts
 
         self.client.select(1)
-        key = keys[1].decode('utf-8')
+        key = keys[1]
         result = self.client.execute_command("TS.RANGE", key, 0, "+")
 
         assert len(result) == 1
