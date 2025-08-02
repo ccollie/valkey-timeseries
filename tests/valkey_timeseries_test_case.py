@@ -21,6 +21,12 @@ class CompactionRule:
         else:
             self.alignment = int(alignment)
 
+    def __key(self):
+        return self.dest_key, self.bucket_duration, self.aggregation, self.alignment
+
+    def __hash__(self):
+        return hash(self.__key())
+
     def __eq__(self, other):
         if isinstance(other, list):
             if len(other) != 4:
@@ -109,51 +115,51 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
             else:
                 assert info_dict[k] == v, f"Expected {k} to be {v}, but got {info_dict[k]}"
 
-    def validate_rules(self, key, rules: List[CompactionRule], check_dest: bool = True):
+    def validate_rules(self, key, expected_rules: List[CompactionRule], check_dest: bool = True):
         """ Validate the compaction rules of the timeseries.
         """
         info_dict = self.ts_info(key)
         if 'rules' not in info_dict:
-            assert len(rules) == 0, f"Expected no rules, but got {len(rules)} rules: {rules}"
+            assert len(expected_rules) == 0, f"Expected no rules, but got {len(expected_rules)} rules: {expected_rules}"
             return
 
         actual_rules = info_dict['rules']
-        assert len(actual_rules) == len(rules), f"Expected {len(rules)} rules, but got {len(actual_rules)}"
+        assert len(actual_rules) == len(expected_rules), f"Expected {len(expected_rules)} rules, but got {len(actual_rules)}"
 
         # Convert actual rules to a set for easy comparison
         actual_rule_set = set()
         for rule in actual_rules:
             if isinstance(rule, CompactionRule):
-                # Create a hashable tuple representation
-                rule_tuple = (rule.dest_key, rule.bucket_duration, rule.aggregation, rule.alignment)
-                actual_rule_set.add(rule_tuple)
+                actual_rule_set.add(rule)
             else:
                 raise TypeError(f"Unexpected type for actual rule: {type(rule)}")
 
         # Convert expected rules to a set
         expected_rule_set = set()
-        for rule in rules:
+        for rule in expected_rules:
             if isinstance(rule, CompactionRule):
-                rule_tuple = (rule.dest_key, rule.bucket_duration, rule.aggregation, rule.alignment)
-                expected_rule_set.add(rule_tuple)
+                expected_rule_set.add(rule)
             else:
                 raise TypeError(f"Unexpected type for expected rule: {type(rule)}")
 
         # Find rules in the series but not in the expected list
         extra_rules = actual_rule_set - expected_rule_set
         if extra_rules:
-            extra_rules_formatted = [CompactionRule(*rule_tuple) for rule_tuple in extra_rules]
-            assert False, f"Found unexpected rules in series: {extra_rules_formatted}"
+            print(f"Expected rules: {expected_rule_set}")
+            print(f"Actual rules: {actual_rule_set}")
+            assert False, f"Found unexpected rules in series: {extra_rules}"
 
         # Find rules in the expected list but not in the series
         missing_rules = expected_rule_set - actual_rule_set
         if missing_rules:
-            missing_rules_formatted = [CompactionRule(*rule_tuple) for rule_tuple in missing_rules]
+            print(f"Expected rules: {expected_rule_set}")
+            print(f"Actual rules: {actual_rule_set}")
+            missing_rules_formatted = [rule in missing_rules]
             assert False, f"Expected rules not found in series: {missing_rules_formatted}"
 
         # If we get here, all rules match exactly
         if check_dest:
-            for rule in rules:
+            for rule in expected_rules:
                 if not isinstance(rule, CompactionRule):
                     raise TypeError(f"Expected rule to be of type CompactionRule, but got {type(rule)}")
                 dest_key = rule.dest_key
