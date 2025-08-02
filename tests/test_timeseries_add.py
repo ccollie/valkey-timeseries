@@ -58,17 +58,11 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command("TS.ADD", "ts_auto_create", timestamp, 44.5)
         assert result == timestamp
 
-        # Verify the sample was added
-        client = self.server.get_new_client()
-        info = client.execute_command("TS.INFO", "ts_auto_create")
-        print("info", info)
-
         # Verify the timeseries was created
         assert self.client.execute_command("EXISTS", "ts_auto_create") == 1
 
         # Verify the sample was added
         samples = self.client.execute_command("TS.RANGE", "ts_auto_create", "-", "+")
-        print(samples)
 
         assert samples == [[timestamp, b'44.5']]
 
@@ -242,8 +236,6 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command(
             "TS.ADD", "ts_invalid", 160000, 10.0, "CHUNK_SIZE", "invalid"
         )
-        info = self.ts_info("ts_invalid")
-        print(info)
 
         # Test with invalid chunk size
         with pytest.raises(ResponseError):
@@ -274,7 +266,6 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the value was rounded to the specified precision
         samples = self.client.execute_command("TS.RANGE", "ts_decimal", "-", "+")
-        print(samples)
         assert samples[0][1] == b'123.46'  # Rounded to 2 decimal places
 
     def test_add_with_significant_digits(self):
@@ -288,7 +279,6 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the value was rounded to the specified precision
         samples = self.client.execute_command("TS.RANGE", "ts_significant", "-", "+")
-        print(samples)
         assert samples[0][1] == b'123'  # 3 significant digits
 
     def test_add_sample_before_first(self):
@@ -329,7 +319,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
     def set_policy(self, policy: str) -> None:
         """Helper to set the compaction policy"""
         cmd = f"CONFIG SET ts.ts-compaction-policy {policy}"
-        print(f"Setting compaction policy: {cmd}")
+        # print(f"Setting compaction policy: {cmd}")
         assert self.client.execute_command(cmd) == b"OK", f"Failed to set compaction policy: {policy}"
 
     def test_basic_compaction_policy_on_new_key(self):
@@ -356,12 +346,12 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
     def test_multiple_compaction_policies_applied(self):
         """Test that multiple compaction policies are applied to matching series"""
         # Configure multiple policies
-        policy_config = "avg:1M:2h:10s;sum:5M:1h;max:15s:30M"
+        policy_config = "avg:1M:2h:10s;sum:5M:1h:20s;max:15s:30M"
         source_key = 'sensor:temp1'
 
         expected_rules = [
             CompactionRule(f"{source_key}_AVG_60000_10000", 60000, "avg", 10000),
-            CompactionRule(f"{source_key}_SUM_300000_360000", 300000, "avg", 360000),
+            CompactionRule(f"{source_key}_SUM_300000_20000", 300000, "sum", 20000),
             CompactionRule(f"{source_key}_MAX_15000", 15000, "max", 0)
         ]
 
@@ -520,7 +510,7 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         dest_key = f"{second_key}_MAX_60000"
         expected_rules = [
-            CompactionRule(dest_key, 120000, "max")
+            CompactionRule(dest_key, 60000, "max")
         ]
 
         # Validate that new rules are applied
@@ -560,14 +550,14 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
     def test_compaction_rules_functional_after_creation(self):
         """Test that compaction rules created from config actually work"""
-        policy_config = "sum:1M:1h"
+        policy_config = "sum:1M:1h:5000"
         self.set_policy(policy_config)
 
         # Create the source and add multiple samples
         source_key = 'functional:test'
         base_ts = 10000
 
-        dest_key = f"{source_key}_SUM_60000"
+        dest_key = f"{source_key}_SUM_60000_5000"
 
         expected_rules = [
             CompactionRule(dest_key, 60000, "sum", 5000)
@@ -590,4 +580,4 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
         assert len(dest_samples) >= 1, "No compacted samples found"
 
         # Verify the sum aggregation (10 + 20 + 30 = 60)
-        assert dest_samples[0][1] == 60.0, f"Expected sum of 60, got {dest_samples[0][1]}"
+        assert dest_samples[0][1] == b'60', f"Expected sum of 60, got {dest_samples[0][1]}"
