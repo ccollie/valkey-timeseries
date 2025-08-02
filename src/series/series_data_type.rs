@@ -1,4 +1,4 @@
-use valkey_module::{logging, RedisModuleTypeMethods};
+use valkey_module::{logging, RedisModuleIO, RedisModuleTypeMethods};
 use valkey_module::{
     native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleString, ValkeyString,
 };
@@ -13,7 +13,6 @@ use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
-use valkey_module::raw;
 use valkey_module::server_events::FlushSubevent;
 use valkey_module_macros::flush_event_handler;
 
@@ -79,12 +78,12 @@ fn remove_series_from_index(ts: &TimeSeries) {
     drop(guard);
 }
 
-unsafe extern "C" fn rdb_save(rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
+unsafe extern "C" fn rdb_save(rdb: *mut RedisModuleIO, value: *mut c_void) {
     let series = &*value.cast::<TimeSeries>();
     rdb_save_series(series, rdb);
 }
 
-unsafe extern "C" fn rdb_load(rdb: *mut raw::RedisModuleIO, enc_ver: c_int) -> *mut c_void {
+unsafe extern "C" fn rdb_load(rdb: *mut RedisModuleIO, enc_ver: c_int) -> *mut c_void {
     match rdb_load_series(rdb, enc_ver) {
         Ok(series) => Box::into_raw(Box::new(series)) as *mut std::ffi::c_void,
         Err(e) => {
