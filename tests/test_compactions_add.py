@@ -52,8 +52,11 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.create_source_and_dest_series(source_key, dest_key)
         self.add_compaction_rule(source_key, dest_key, "avg", 10000)  # 10-second buckets
 
+        info = self.ts_info(source_key)
+        print(info)
+
         # Add samples spanning multiple buckets
-        base_ts = int(time.time() * 1000)
+        base_ts = 1000
         samples = [
             (base_ts, 10.0),
             (base_ts + 5000, 20.0),    # Same bucket
@@ -65,12 +68,12 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
             self.add_sample(source_key, ts, value)
 
         # Verify the source series has all samples
-        source_samples = self.get_samples(source_key, 0, "+")
+        source_samples = self.client.execute_command("TS.RANGE", source_key, 0, "+")
         print(source_samples)
         assert len(source_samples) == 4
 
         # Verify compaction created aggregated samples
-        dest_samples = self.get_samples(dest_key, 0, "+")
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, 0, "+")
         print(dest_samples)
         assert len(dest_samples) >= 1  # At least one completed bucket
 
@@ -97,7 +100,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
                 self.client.execute_command("TS.ADD", source_key, ts, value)
 
             # Verify compaction occurred
-            dest_samples = self.get_samples(dest_key)
+            dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
             assert len(dest_samples) >= 1
 
             # Verify aggregation results
@@ -136,7 +139,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         for ts, value in samples:
             self.client.execute_command("TS.ADD", source_key, ts, value)
 
-        dest_samples = self.get_samples(dest_key, 0, "+")
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, 0, "+")
         assert len(dest_samples) >= 1
 
         # Verify the first bucket is aligned correctly
@@ -162,8 +165,12 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         ]
 
         for ts, value in samples:
-            self.client.execute_command("TS.ADD", source_key, ts, value)
+            res = self.client.execute_command("TS.ADD", source_key, ts, value)
+            print(f"Adding sample: {ts}, {value} : ({res})")
 
+        info = self.ts_info(source_key)
+        print(info)
+        
         # Verify source maintains all samples in correct order
         source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
         print(source_samples)
@@ -186,21 +193,21 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.create_source_and_dest_series(source_key, dest_key)
         self.add_compaction_rule(source_key, dest_key, "sum", 5000)  # 5 second buckets
 
-        base_ts = int(time.time() * 1000)
+        base_ts = 100000
 
         # Add samples to the first bucket
         self.client.execute_command("TS.ADD", source_key, base_ts, 10.0)
         self.client.execute_command("TS.ADD", source_key, base_ts + 2000, 20.0)
 
         # Verify no compaction yet (bucket not finalized)
-        dest_samples = self.get_samples(dest_key)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         assert len(dest_samples) == 0
 
         # Add sample to new bucket - should finalize the previous bucket
         self.client.execute_command("TS.ADD", source_key, base_ts + 7000, 30.0)
 
         # Now the first bucket should be finalized and compacted
-        dest_samples = self.get_samples(dest_key)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         assert len(dest_samples) == 1
         assert dest_samples[0][1] == b'30'  # sum: 10 + 20
 
@@ -222,7 +229,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         print(src_samples)
 
         # Verify initial compaction
-        dest_samples = self.get_samples(dest_key)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         print(dest_samples)
         initial_count = len(dest_samples)
         initial_value = dest_samples[0][1] if initial_count > 0 else None
@@ -231,7 +238,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.add_sample(source_key, base_ts + 2000, 20.0)
 
         # Verify compaction was recalculated
-        dest_samples_after = self.get_samples(dest_key)
+        dest_samples_after = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         print(dest_samples_after)
         assert len(dest_samples_after) >= initial_count
 
@@ -268,14 +275,14 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
             self.add_sample(source_key, base_ts, value)
 
         # Verify both destinations received compacted data
-        dest1_samples = self.get_samples(dest_key_1)
-        dest2_samples = self.get_samples(dest_key_2)
+        dest1_samples = self.client.execute_command("TS.RANGE", dest_key_1, "-", "+")
+        dest2_samples = self.client.execute_command("TS.RANGE", dest_key_2, "-", "+")
 
         assert len(dest1_samples) >= 1  # At least one 10s bucket completed
         assert len(dest2_samples) >= 1  # At least one 20s bucket completed
 
         # Verify aggregation differences
-        # dest1 should have avg of first bucket: (10 + 20) / 2 = 15
+        # dest1 should have avg of the first bucket: (10 + 20) / 2 = 15
         assert dest1_samples[0][1] == 15.0
 
         # dest2 should have max of first 20s bucket: max(10, 20, 30, 40) = 40
@@ -343,7 +350,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
             pytest.fail(f"Compaction error handling failed: {e}")
 
         # Verify source series still accepts samples
-        source_samples = self.get_samples(source_key)
+        source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
         assert len(source_samples) == 3
 
     def test_compaction_performance_with_many_samples(self):
@@ -381,32 +388,36 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         assert duration < 10.0, f"Compaction took too long: {duration}s"
 
     def test_compaction_maintains_consistent_state(self):
-        """Test that compaction maintains consistent state across operations"""
+        """Test that compaction maintains a consistent state across operations"""
         source_key = "test:source:consistent"
         dest_key = "test:dest:consistent"
 
         self.create_source_and_dest_series(source_key, dest_key)
         self.add_compaction_rule(source_key, dest_key, "sum", 5000)
 
-        base_ts = int(time.time() * 1000)
+        base_ts = 100000
 
         # Add samples in mixed order to test state consistency
         operations = [
-            ("add", base_ts, 10.0),
-            ("add", base_ts + 2000, 20.0),
-            ("add", base_ts + 7000, 30.0),    # New bucket
-            ("add", base_ts + 1000, 15.0),    # Upsert in first bucket
-            ("add", base_ts + 8000, 35.0),    # Add to second bucket
-            ("add", base_ts + 12000, 40.0),   # Third bucket
+            (base_ts, 10.0),
+            (base_ts + 2000, 20.0),
+            (base_ts + 7000, 30.0),    # New bucket
+            (base_ts + 1000, 15.0),    # Upsert in first bucket
+            (base_ts + 8000, 35.0),    # Add to the second bucket
+            (base_ts + 12000, 40.0),   # Third bucket
         ]
 
-        for op, ts, value in operations:
-            if op == "add":
-                self.add_sample(source_key, ts, value)
+        for ts, value in operations:
+            self.add_sample(source_key, ts, value)
 
-        # Verify final state is consistent
-        source_samples = self.get_samples(source_key)
-        dest_samples = self.get_samples(dest_key)
+        info = self.ts_info(source_key)
+        print(info)
+
+        # Verify that the final state is consistent
+        source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
+        print(source_samples)
+        dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
+        print(dest_samples)
 
         # Source should have all samples
         assert len(source_samples) == len(operations)
