@@ -347,7 +347,12 @@ impl TimeSeries {
         };
         let (start_index, end_index) = range;
         let chunks = &self.chunks[start_index..=end_index];
-        get_range_parallel(chunks, start_time, end_time).unwrap_or_default()
+        let mut samples = get_range_parallel(chunks, start_time, end_time).unwrap_or_default();
+        if chunks.len() > 1 {
+            // If we have multiple chunks, we need to sort the samples by timestamp
+            samples.sort_by_key(|s| s.timestamp);
+        }
+        samples
     }
 
     pub fn get_range_filtered(
@@ -449,7 +454,12 @@ impl TimeSeries {
             Ok(vec![])
         } else {
             let metas = meta_map.into_values().collect::<Vec<_>>();
-            fetch_parallel(&metas)
+            let mut samples = fetch_parallel(&metas)?;
+            if len > 1 {
+                // If we have multiple chunks, we need to sort the samples by timestamp
+                samples.sort_by_key(|s| s.timestamp);
+            }
+            Ok(samples)
         }
     }
 
