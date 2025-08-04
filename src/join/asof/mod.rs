@@ -210,12 +210,12 @@ impl AsofJoinState for AsofJoinNearestState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum AsofJoinStrategy {
-    /// selects the last row in the right series whose ‘on’ key is less than or equal to the left’s key
+    /// selects the last sample in the right series whose value is less than or equal to the left’s value
     #[default]
     Backward,
-    /// selects the first row in the right series whose ‘on’ key is greater than or equal to the left’s key.
+    /// selects the first sample in the right series whose value is greater than or equal to the left’s value.
     Forward,
-    /// selects the right in the right series whose 'on' key is nearest to the left's key.
+    /// selects the sample in the right series whose value is nearest to the left's value.
     Nearest,
 }
 
