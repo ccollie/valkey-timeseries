@@ -25,11 +25,12 @@ use get_size::GetSize;
 use num_traits::PrimInt;
 use serde::{Deserialize, Serialize};
 use std::io::Result;
+use valkey_module::digest::Digest;
 
 /// BufferedWriter
 ///
 /// BufferedWriter writes bytes to a buffer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, GetSize)]
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, Serialize, Deserialize, GetSize)]
 pub struct BufferedWriter {
     buf: Vec<u8>,
     pos: u32, // position in the last byte in the buffer
@@ -126,6 +127,11 @@ impl BufferedWriter {
 
     pub fn shrink_to_fit(&mut self) {
         self.buf.shrink_to_fit();
+    }
+
+    pub fn debug_digest(&self, dig: &mut Digest) {
+        dig.add_string_buffer(&self.buf);
+        dig.add_long_long(self.pos as i64);
     }
 }
 

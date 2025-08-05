@@ -1,6 +1,7 @@
 use valkey_module::{logging, RedisModuleIO, RedisModuleTypeMethods};
 use valkey_module::{
-    native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleString, ValkeyString,
+    native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString,
+    ValkeyString,
 };
 use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
 
@@ -13,6 +14,7 @@ use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
+use valkey_module::digest::Digest;
 use valkey_module::server_events::FlushSubevent;
 use valkey_module_macros::flush_event_handler;
 
@@ -29,7 +31,7 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         aof_rewrite: None,
         free: Some(free),
         mem_usage: Some(mem_usage),
-        digest: None,
+        digest: Some(series_digest),
         aux_load: None,
         aux_save: None,
         aux_save_triggers: REDISMODULE_AUX_BEFORE_RDB as i32,
@@ -150,4 +152,13 @@ unsafe extern "C" fn defrag(
         Ok(_) => 0,
         Err(_) => 1,
     }
+}
+
+/// # Safety
+/// Raw handler for the Timeseries digest callback.
+unsafe extern "C" fn series_digest(md: *mut RedisModuleDigest, value: *mut c_void) {
+    let mut digest = Digest::new(md);
+    let val = &*(value.cast::<TimeSeries>());
+    val.debug_digest(&mut digest);
+    digest.end_sequence();
 }

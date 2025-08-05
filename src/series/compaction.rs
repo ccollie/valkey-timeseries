@@ -15,7 +15,7 @@ use valkey_module::{raw, Context, DetachedContext, NotifyEvent, ValkeyError, Val
 const PARALLEL_THRESHOLD: usize = 2;
 const TEMP_VEC_LEN: usize = 6;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq)]
 pub struct CompactionRule {
     pub dest_id: SeriesRef,
     pub aggregator: Aggregator,

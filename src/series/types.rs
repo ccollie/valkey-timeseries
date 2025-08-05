@@ -14,11 +14,12 @@ use get_size::GetSize;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
 use valkey_module::{raw, ValkeyError, ValkeyResult, ValkeyValue};
 
-#[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize)]
+#[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize, Hash)]
 /// The policy to use when a duplicate sample is encountered
 pub enum DuplicatePolicy {
     /// Block the sample and return an error
@@ -169,6 +170,14 @@ pub struct SampleDuplicatePolicy {
     pub max_time_delta: u64,
     /// The maximum difference between the new and existing value to consider them duplicates
     pub max_value_delta: f64,
+}
+
+impl Hash for SampleDuplicatePolicy {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.policy.hash(state);
+        self.max_time_delta.hash(state);
+        self.max_value_delta.to_bits().hash(state);
+    }
 }
 
 impl SampleDuplicatePolicy {

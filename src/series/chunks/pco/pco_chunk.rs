@@ -1,5 +1,6 @@
 use crate::common::binary_search::{find_last_ge_index, ExponentialSearch};
 use crate::common::constants::VEC_BASE_SIZE;
+use crate::common::hash::hash_f64;
 use crate::common::parallel::join;
 use crate::common::pool::{get_pooled_vec_f64, get_pooled_vec_i64, PooledVecF64, PooledVecI64};
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
@@ -18,7 +19,9 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 use std::mem::size_of;
+use valkey_module::digest::Digest;
 use valkey_module::{raw, RedisModuleIO, ValkeyResult};
 
 /// `PcoChunk` holds sample data encoded using Pco compression.
@@ -46,6 +49,18 @@ impl Default for PcoChunk {
             timestamps: Vec::new(),
             values: Vec::new(),
         }
+    }
+}
+
+impl Hash for PcoChunk {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.min_time.hash(state);
+        self.max_time.hash(state);
+        self.max_size.hash(state);
+        self.count.hash(state);
+        self.timestamps.hash(state);
+        self.values.hash(state);
+        hash_f64(self.last_value, state);
     }
 }
 
@@ -539,6 +554,16 @@ impl Chunk for PcoChunk {
             timestamps,
             values,
         })
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        dig.add_long_long(self.min_time);
+        dig.add_long_long(self.max_time);
+        dig.add_long_long(self.max_size as i64);
+        dig.add_string_buffer(self.last_value.to_le_bytes().as_ref());
+        dig.add_long_long(self.count as i64);
+        dig.add_string_buffer(&self.timestamps);
+        dig.add_string_buffer(&self.values);
     }
 }
 

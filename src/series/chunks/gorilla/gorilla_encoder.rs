@@ -3,6 +3,7 @@ use super::serialization::{load_bitwriter_from_rdb, save_bitwriter_to_rdb};
 use super::varbit::write_varbit;
 use super::varbit_xor::write_varbit_xor;
 use super::GorillaIterator;
+use crate::common::hash::hash_f64;
 use crate::common::rdb::{
     rdb_load_timestamp, rdb_load_u8, rdb_load_usize, rdb_save_timestamp, rdb_save_u8,
     rdb_save_usize,
@@ -10,7 +11,10 @@ use crate::common::rdb::{
 use crate::common::Sample;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
+use std::ffi::c_longlong;
+use std::hash::Hash;
 use std::mem::size_of_val;
+use valkey_module::digest::Digest;
 use valkey_module::error::Error as ValkeyError;
 use valkey_module::raw;
 
@@ -36,6 +40,19 @@ impl GetSize for GorillaEncoder {
             + size_of_val(&self.leading_bits)
             + size_of_val(&self.trailing_bits)
             + size_of_val(&self.timestamp_delta)
+    }
+}
+
+impl Hash for GorillaEncoder {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.writer.hash(state);
+        self.num_samples.hash(state);
+        self.first_ts.hash(state);
+        self.leading_bits.hash(state);
+        self.trailing_bits.hash(state);
+        self.timestamp_delta.hash(state);
+        self.last_ts.hash(state);
+        hash_f64(self.num_samples as f64, state);
     }
 }
 
@@ -190,6 +207,19 @@ impl GorillaEncoder {
             trailing_bits,
             timestamp_delta,
         })
+    }
+
+    pub fn debug_digest(&self, dig: &mut Digest) {
+        dig.add_string_buffer("GorillaEncoder".as_bytes());
+        self.writer.debug_digest(dig);
+        dig.add_long_long(self.num_samples as c_longlong);
+        dig.add_long_long(self.first_ts);
+        dig.add_long_long(self.last_ts);
+        dig.add_long_long(self.leading_bits.into());
+        dig.add_long_long(self.trailing_bits.into());
+        dig.add_long_long(self.timestamp_delta);
+        let bits = self.last_value.to_bits();
+        dig.add_long_long(bits as c_longlong);
     }
 }
 

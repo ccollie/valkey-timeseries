@@ -154,7 +154,7 @@ impl<T> Default for NoHashHasher<T> {
 /// Types which are safe to use with `NoHashHasher`.
 ///
 /// This marker trait is an option for types to enable themselves for use
-/// with `NoHashHasher`. In order to be safe, the `Hash` impl needs to
+/// with `NoHashHasher`. To be safe, the `Hash` impl needs to
 /// satisfy the following constraint:
 ///
 /// > **One of the `Hasher::write_{u8,u16,u32,u64,usize,i8,i16,i32,i64,isize}`

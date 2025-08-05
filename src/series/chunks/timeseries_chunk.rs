@@ -13,9 +13,10 @@ use crate::series::{
 use core::mem::size_of;
 use get_size::GetSize;
 use std::cmp::Ordering;
+use valkey_module::digest::Digest;
 use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
 
-#[derive(Debug, Clone, PartialEq, GetSize)]
+#[derive(Debug, Clone, Hash, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {
     Uncompressed(UncompressedChunk),
     Gorilla(GorillaChunk),
@@ -434,6 +435,15 @@ impl Chunk for TimeSeriesChunk {
             _ => return Err(ValkeyError::Str("Invalid chunk type")),
         };
         Ok(chunk)
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        use TimeSeriesChunk::*;
+        match self {
+            Uncompressed(chunk) => chunk.debug_digest(dig),
+            Gorilla(chunk) => chunk.debug_digest(dig),
+            Pco(chunk) => chunk.debug_digest(dig),
+        }
     }
 }
 

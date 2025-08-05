@@ -8,12 +8,13 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::vec;
+use valkey_module::digest::Digest;
 use valkey_module::{raw, ValkeyError, ValkeyResult};
 
 pub const MIN_CHUNK_SIZE: usize = 48;
 pub const MAX_CHUNK_SIZE: usize = 1048576;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, GetSize)]
+#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Serialize, Deserialize, GetSize)]
 #[non_exhaustive]
 pub enum ChunkEncoding {
     Uncompressed = 1,
@@ -106,7 +107,10 @@ pub trait Chunk: Sized {
     }
 
     fn save_rdb(&self, rdb: *mut raw::RedisModuleIO);
+
     fn load_rdb(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self>;
+
+    fn debug_digest(&self, dig: &mut Digest);
 }
 
 pub struct ChunkSampleIterator<'a> {

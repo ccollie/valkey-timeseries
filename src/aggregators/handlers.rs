@@ -3,6 +3,7 @@
 // License: Apache License 2.0
 
 use super::AggregationType;
+use crate::common::hash::hash_f64;
 use crate::common::rdb::{
     rdb_load_bool, rdb_load_optional_f64, rdb_load_u8, rdb_load_usize, rdb_save_bool,
     rdb_save_optional_f64, rdb_save_u8, rdb_save_usize,
@@ -10,6 +11,7 @@ use crate::common::rdb::{
 use enum_dispatch::enum_dispatch;
 use get_size::GetSize;
 use std::fmt::Display;
+use std::hash::Hash;
 use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString};
 
 type Value = f64;
@@ -60,6 +62,12 @@ impl FirstAggregator {
     }
 }
 
+impl Hash for FirstAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.0.unwrap_or(f64::NAN), state);
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct LastAggregator(Option<Value>);
 impl AggregationHandler for LastAggregator {
@@ -83,6 +91,12 @@ impl LastAggregator {
         Self: Sized,
     {
         rdb_load_optional_f64(rdb).map(Self)
+    }
+}
+
+impl Hash for LastAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.0.unwrap_or(f64::NAN), state);
     }
 }
 
@@ -115,6 +129,12 @@ impl MinAggregator {
     }
 }
 
+impl Hash for MinAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.0.unwrap_or(f64::NAN), state);
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MaxAggregator(Option<Value>);
 impl AggregationHandler for MaxAggregator {
@@ -141,6 +161,12 @@ impl MaxAggregator {
         Self: Sized,
     {
         rdb_load_optional_f64(rdb).map(Self)
+    }
+}
+
+impl Hash for MaxAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.0.unwrap_or(f64::NAN), state);
     }
 }
 
@@ -195,6 +221,14 @@ impl RangeAggregator {
     }
 }
 
+impl Hash for RangeAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.init.hash(state);
+        hash_f64(self.min, state);
+        hash_f64(self.max, state);
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct AvgAggregator {
     count: usize,
@@ -230,6 +264,13 @@ impl AvgAggregator {
     }
 }
 
+impl Hash for AvgAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.sum, state);
+        self.count.hash(state);
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct SumAggregator(Value);
 impl AggregationHandler for SumAggregator {
@@ -257,6 +298,12 @@ impl SumAggregator {
     }
 }
 
+impl Hash for SumAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.0, state);
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct CountAggregator(usize);
 impl AggregationHandler for CountAggregator {
@@ -281,6 +328,12 @@ impl CountAggregator {
     fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
         let value = rdb_load_usize(rdb)?;
         Ok(Self(value))
+    }
+}
+
+impl Hash for CountAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
     }
 }
 
@@ -342,6 +395,14 @@ impl Display for AggStd {
     }
 }
 
+impl Hash for AggStd {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.sum, state);
+        hash_f64(self.sum_2, state);
+        self.count.hash(state);
+    }
+}
+
 // boxed to minimize size of stack Aggregator enum
 pub(crate) type OnlineAggregator = Box<AggStd>;
 
@@ -350,7 +411,7 @@ fn load_online_aggregator(rdb: *mut RedisModuleIO) -> ValkeyResult<OnlineAggrega
     Ok(Box::new(inner))
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarPAggregator(OnlineAggregator);
 impl AggregationHandler for VarPAggregator {
     fn update(&mut self, value: Value) {
@@ -381,7 +442,7 @@ impl VarPAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarSAggregator(OnlineAggregator);
 impl AggregationHandler for VarSAggregator {
     fn update(&mut self, value: Value) {
@@ -414,7 +475,7 @@ impl VarSAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdPAggregator(OnlineAggregator);
 impl AggregationHandler for StdPAggregator {
     fn update(&mut self, value: Value) {
@@ -445,7 +506,7 @@ impl StdPAggregator {
     }
 }
 
-#[derive(Clone, Default, Debug, PartialEq, GetSize)]
+#[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdSAggregator(OnlineAggregator);
 impl AggregationHandler for StdSAggregator {
     fn update(&mut self, value: Value) {
@@ -479,7 +540,7 @@ impl StdSAggregator {
 }
 
 #[enum_dispatch(AggregationHandler)]
-#[derive(Clone, Debug, PartialEq, GetSize)]
+#[derive(Clone, Debug, Hash, PartialEq, GetSize)]
 pub enum Aggregator {
     First(FirstAggregator),
     Last(LastAggregator),

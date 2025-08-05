@@ -10,6 +10,10 @@ use crate::error::{TsdbError, TsdbResult};
 use crate::labels::{InternedLabel, InternedMetricName};
 use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::compaction::CompactionRule;
+use crate::series::digest::{
+    calc_compaction_digest, calc_duplicate_policy_digest, calc_metric_name_digest,
+    calc_rounding_digest,
+};
 use crate::series::index::next_timeseries_id;
 use crate::series::sample_merge::merge_samples;
 use crate::series::DuplicatePolicy;
@@ -21,6 +25,7 @@ use std::mem::size_of;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use std::vec;
+use valkey_module::digest::Digest;
 use valkey_module::logging;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -28,7 +33,7 @@ pub type TimeseriesId = u64;
 pub type SeriesRef = u64;
 
 /// Represents a time series consisting of chunks of samples, each with a timestamp and value.
-#[derive(Clone, Debug, PartialEq, GetSize)]
+#[derive(Clone, Debug, Hash, PartialEq, GetSize)]
 pub struct TimeSeries {
     /// fixed internal id used in indexing
     pub id: SeriesRef,
@@ -58,13 +63,6 @@ pub struct TimeSeries {
     /// Internal bookkeeping for current db. Simplifies event handling related to indexing.
     /// This is not part of the time series data itself, nor is it stored to rdb.
     pub(crate) _db: i32,
-}
-
-/// Hash based on the metric name, which should be unique in the db
-impl Hash for TimeSeries {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.labels.hash(state);
-    }
 }
 
 impl TimeSeries {
@@ -803,6 +801,53 @@ impl TimeSeries {
 
     pub fn is_compaction(&self) -> bool {
         self.src_series.is_some()
+    }
+
+    pub(crate) fn debug_digest(&self, digest: &mut Digest) {
+        // hash labels
+        calc_metric_name_digest(&self.labels, digest);
+        let retention_msecs = self.retention.as_millis() as i64;
+        digest.add_long_long(retention_msecs);
+
+        // Handle sample_duplicates
+        calc_duplicate_policy_digest(&self.sample_duplicates, digest);
+
+        digest.add_string_buffer(self.chunk_compression.name().as_bytes());
+
+        if let Some(rounding) = &self.rounding {
+            calc_rounding_digest(rounding, digest);
+        } else {
+            digest.add_string_buffer(b"none");
+        }
+        digest.add_long_long(self.chunk_size_bytes as i64);
+
+        digest.add_long_long(self.chunks.len() as i64);
+        for chunk in self.chunks.iter() {
+            chunk.debug_digest(digest);
+        }
+
+        digest.add_long_long(self.total_samples as i64);
+        digest.add_long_long(self.first_timestamp);
+        if let Some(sample) = &self.last_sample {
+            digest.add_long_long(sample.timestamp);
+            digest.add_string_buffer(sample.value.to_le_bytes().as_ref());
+        } else {
+            digest.add_long_long(-1); // indicate no last sample
+        }
+
+        let src_id = if let Some(id) = self.src_series {
+            id as i64
+        } else {
+            -1 // use -1 to indicate no source series
+        };
+        digest.add_long_long(src_id);
+        // add rules
+        digest.add_long_long(self.rules.len() as i64);
+        for rule in self.rules.iter() {
+            calc_compaction_digest(rule, digest);
+        }
+
+        digest.end_sequence()
     }
 }
 

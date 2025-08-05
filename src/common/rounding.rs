@@ -6,7 +6,7 @@ use std::fmt::Display;
 pub const MAX_SIGNIFICANT_DIGITS: u8 = 16;
 pub const MAX_DECIMAL_DIGITS: u8 = 16;
 
-#[derive(Clone, Debug, PartialEq, Copy, GetSize)]
+#[derive(Clone, Debug, Hash, PartialEq, Copy, GetSize)]
 pub enum RoundingStrategy {
     SignificantDigits(i32),
     DecimalDigits(i32),

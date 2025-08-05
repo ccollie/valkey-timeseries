@@ -9,6 +9,8 @@ use ahash::AHashSet;
 use core::mem::size_of;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
+use valkey_module::digest::Digest;
 use valkey_module::{raw, RedisModuleIO, ValkeyResult};
 
 // todo: move to constants
@@ -36,6 +38,16 @@ impl GetSize for UncompressedChunk {
         size_of::<usize>() +  // self.max_size
         size_of::<usize>() +  // self.max_elements
         self.samples.capacity() * size_of::<Sample>() // todo: add capacity
+    }
+}
+
+impl Hash for UncompressedChunk {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.max_size.hash(state);
+        self.max_elements.hash(state);
+        for sample in &self.samples {
+            sample.hash(state);
+        }
     }
 }
 
@@ -407,6 +419,17 @@ impl Chunk for UncompressedChunk {
             samples,
             max_elements,
         })
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        dig.add_string_buffer("UncompressedChunk".as_bytes());
+        dig.add_long_long(self.max_size as i64);
+        dig.add_long_long(self.max_elements as i64);
+        for sample in &self.samples {
+            let value = sample.value.to_bits().to_le_bytes();
+            dig.add_long_long(sample.timestamp);
+            dig.add_string_buffer(&value);
+        }
     }
 }
 

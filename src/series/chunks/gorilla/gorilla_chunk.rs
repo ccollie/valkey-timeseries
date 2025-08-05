@@ -12,10 +12,11 @@ use ahash::AHashSet;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
+use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
 /// `GorillaChunk` is a chunk of timeseries data encoded using Gorilla XOR encoding.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Hash, PartialEq, Serialize, Deserialize, GetSize)]
 pub struct GorillaChunk {
     pub(crate) encoder: GorillaEncoder,
     pub max_size: usize,
@@ -333,6 +334,11 @@ impl Chunk for GorillaChunk {
         let encoder = GorillaEncoder::rdb_load(rdb)?;
         let chunk = GorillaChunk { encoder, max_size };
         Ok(chunk)
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        self.encoder.debug_digest(dig);
+        dig.add_long_long(self.max_size as i64);
     }
 }
 

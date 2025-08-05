@@ -4,6 +4,7 @@ pub mod chunks;
 mod compaction;
 mod compaction_policy;
 mod defrag;
+mod digest;
 mod guard;
 pub mod index;
 pub mod range_utils;

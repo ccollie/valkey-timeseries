@@ -1,3 +1,4 @@
+use crate::common::hash::hash_f64;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -68,7 +69,7 @@ impl PartialOrd for Sample {
 impl Hash for Sample {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.timestamp.hash(state);
-        self.value.to_bits().hash(state);
+        hash_f64(self.value, state);
     }
 }
 
