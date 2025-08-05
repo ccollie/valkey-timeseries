@@ -10,7 +10,6 @@ use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
-use logger_rust::log_debug;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use valkey_module::digest::Digest;
