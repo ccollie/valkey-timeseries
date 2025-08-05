@@ -10,6 +10,7 @@ use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
+use logger_rust::log_debug;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use valkey_module::digest::Digest;
@@ -170,23 +171,23 @@ impl Chunk for GorillaChunk {
     fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<usize> {
         let ts = sample.timestamp;
         let mut duplicate_found = false;
-
-        if self.is_empty() {
+        let count = self.len();
+        if count == 0 {
             self.add_sample(&sample)?;
             return Ok(1);
         }
-
-        let count = self.len();
         let mut xor_encoder = GorillaEncoder::new();
-
         let mut iter = self.encoder.iter();
-
         if ts < self.first_timestamp() {
-            // add sample to the beginning
+            // add a sample to the beginning
             push_sample(&mut xor_encoder, &sample)?;
+            // Add all existing samples after the new one
+            for item in iter {
+                let current = item?;
+                push_sample(&mut xor_encoder, &current)?;
+            }
         } else {
             let mut current = Sample::default();
-
             // add previous samples
             for item in iter.by_ref() {
                 current = item?;
@@ -195,23 +196,24 @@ impl Chunk for GorillaChunk {
                 }
                 push_sample(&mut xor_encoder, &current)?;
             }
-
             if current.timestamp == ts {
                 duplicate_found = true;
                 current.value = dp_policy.duplicate_value(ts, current.value, sample.value)?;
                 push_sample(&mut xor_encoder, &current)?;
-                iter.next();
             } else {
                 push_sample(&mut xor_encoder, &sample)?;
+                // Add the current sample that caused the break (if it exists and is valid)
+                if current.timestamp > ts {
+                    push_sample(&mut xor_encoder, &current)?;
+                }
+            }
+
+            for item in iter {
+                let current = item?;
+                push_sample(&mut xor_encoder, &current)?;
             }
         }
 
-        for item in iter {
-            let current = item?;
-            push_sample(&mut xor_encoder, &current)?;
-        }
-
-        // todo: do a self.encoder.buf.take()
         self.encoder = xor_encoder;
         let size = if duplicate_found { count } else { count + 1 };
         Ok(size)

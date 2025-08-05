@@ -10,6 +10,14 @@ mod tests {
     use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;
 
+    fn create_test_series() -> TimeSeries {
+        let options = TimeSeriesOptions {
+            chunk_size: Some(1024),
+            ..Default::default()
+        };
+        TimeSeries::with_options(options).unwrap()
+    }
+
     fn create_chunk(size: Option<usize>) -> TimeSeriesChunk {
         TimeSeriesChunk::Gorilla(GorillaChunk::with_max_size(size.unwrap_or(1024)))
     }
@@ -33,6 +41,20 @@ mod tests {
                 .unwrap();
         }
         chunk
+    }
+
+    fn assert_sample_added(result: SampleAddResult, expected_sample: Sample) {
+        match result {
+            SampleAddResult::Ok(sample) => assert_eq!(sample, expected_sample),
+            _ => panic!("Expected SampleAddResult::Ok, got {result:?}"),
+        }
+    }
+
+    fn assert_duplicate(result: SampleAddResult) {
+        match result {
+            SampleAddResult::Duplicate => {}
+            _ => panic!("Expected SampleAddResult::Duplicate, got {result:?}"),
+        }
     }
 
     #[test]
@@ -336,6 +358,173 @@ mod tests {
             timestamp2,
             "Last sample should update after adding a later sample"
         );
+    }
+
+    #[test]
+    fn test_upsert_sample_into_empty_series() {
+        let mut series = create_test_series();
+
+        let sample = Sample {
+            timestamp: 100,
+            value: 1.0,
+        };
+        let result = series.add(sample.timestamp, sample.value, None);
+
+        assert_sample_added(result, sample);
+        assert_eq!(series.len(), 1);
+        assert_eq!(series.first_timestamp, 100);
+        assert_eq!(series.last_sample, Some(sample));
+    }
+
+    #[test]
+    fn test_upsert_sample_before_existing_samples() {
+        let mut series = create_test_series();
+
+        // Add initial samples in order
+        series.add(100, 1.0, None);
+        series.add(200, 2.0, None);
+        series.add(300, 3.0, None);
+
+        // Add a sample before all existing samples
+        let early_sample = Sample {
+            timestamp: 50,
+            value: 0.5,
+        };
+        let result = series.add(early_sample.timestamp, early_sample.value, None);
+
+        assert_sample_added(result, early_sample);
+        assert_eq!(series.len(), 4);
+        assert_eq!(series.first_timestamp, 50);
+
+        // Verify samples are in chronological order
+        let samples = series.get_range(0, 400);
+        assert_eq!(samples.len(), 4);
+        assert_eq!(samples[0].timestamp, 50);
+        assert_eq!(samples[1].timestamp, 100);
+        assert_eq!(samples[2].timestamp, 200);
+        assert_eq!(samples[3].timestamp, 300);
+    }
+
+    #[test]
+    fn test_upsert_sample_in_middle_of_existing_samples() {
+        let mut series = create_test_series();
+
+        // Add initial samples with gaps
+        series.add(100, 1.0, None);
+        series.add(300, 3.0, None);
+        series.add(500, 5.0, None);
+
+        // Insert sample in the middle
+        let middle_sample = Sample {
+            timestamp: 200,
+            value: 2.0,
+        };
+        let result = series.add(middle_sample.timestamp, middle_sample.value, None);
+
+        assert_sample_added(result, middle_sample);
+        assert_eq!(series.len(), 4);
+
+        // Verify insertion order
+        let samples = series.get_range(0, 600);
+        assert_eq!(samples.len(), 4);
+        assert_eq!(samples[0].timestamp, 100);
+        assert_eq!(samples[1].timestamp, 200);
+        assert_eq!(samples[2].timestamp, 300);
+        assert_eq!(samples[3].timestamp, 500);
+    }
+
+    #[test]
+    fn test_upsert_multiple_out_of_order_samples() {
+        let mut series = create_test_series();
+
+        // Add samples in random order
+        let mut samples_to_add = [(300, 3.0), (100, 1.0), (500, 5.0), (200, 2.0), (400, 4.0)];
+
+        for (ts, value) in samples_to_add.iter() {
+            series.add(*ts, *value, None);
+        }
+
+        assert_eq!(series.len(), 5);
+
+        samples_to_add.sort_by_key(|(ts, _)| *ts);
+        // Verify they're stored in chronological order
+        samples_to_add.iter().zip(series.iter()).for_each(|(a, b)| {
+            assert_eq!(a.0, b.timestamp);
+            assert_eq!(a.1, b.value);
+        });
+    }
+
+    #[test]
+    fn test_upsert_with_duplicate_policy() {
+        let mut series = create_test_series();
+
+        // Add an initial sample
+        series.add(100, 1.0, None);
+
+        // Add duplicate with KeepLast policy (default)
+        let result = series.add(100, 2.0, Some(DuplicatePolicy::KeepLast));
+        assert!(result.is_ok());
+        assert_eq!(series.len(), 1);
+
+        // Verify the value was updated
+        let samples = series.get_range(0, 200);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].value, 2.0);
+
+        // Add duplicate with KeepFirst policy
+        let result = series.add(100, 10.0, Some(DuplicatePolicy::KeepFirst));
+        assert!(result.is_ok());
+        assert_eq!(series.len(), 1);
+
+        // Verify the value was updated
+        let samples = series.get_range(0, 200);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].value, 2.0);
+
+        // Add duplicate with Sum policy
+        let result = series.add(100, 10.0, Some(DuplicatePolicy::Sum));
+        assert!(result.is_ok());
+        assert_eq!(series.len(), 1);
+
+        // Verify the value was updated
+        let samples = series.get_range(0, 200);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].value, 12.0);
+
+        // Add duplicate with Block
+        let result = series.add(100, 500.0, Some(DuplicatePolicy::Block));
+        assert_duplicate(result);
+        assert_eq!(series.len(), 1);
+
+        // Verify the value was NOT updated
+        let samples = series.get_range(0, 200);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].value, 12.0);
+    }
+
+    #[test]
+    fn test_upsert_updates_series_metadata() {
+        let mut series = create_test_series();
+
+        // Add an initial sample
+        series.add(200, 2.0, None);
+        assert_eq!(series.first_timestamp, 200);
+        assert_eq!(series.last_sample.unwrap().timestamp, 200);
+
+        // Add an earlier sample (should update first_timestamp)
+        series.add(100, 1.0, None);
+        assert_eq!(series.first_timestamp, 100);
+        assert_eq!(series.last_sample.unwrap().timestamp, 200); // last should remain
+
+        // Add a later sample (should update last_sample)
+        series.add(300, 3.0, None);
+        assert_eq!(series.first_timestamp, 100); // first should remain
+        assert_eq!(series.last_sample.unwrap().timestamp, 300);
+
+        // Add a middle sample (should not change boundaries)
+        series.add(150, 1.5, None);
+        assert_eq!(series.first_timestamp, 100);
+        assert_eq!(series.last_sample.unwrap().timestamp, 300);
     }
 
     #[test]
