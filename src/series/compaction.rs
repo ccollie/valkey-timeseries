@@ -26,11 +26,11 @@ pub struct CompactionRule {
 
 impl GetSize for CompactionRule {
     fn get_size(&self) -> usize {
-        self.dest_id.get_size()
+        size_of::<SeriesRef>() // dest_id
             + self.aggregator.get_size()
-            + self.bucket_duration.get_size()
-            + self.align_timestamp.get_size()
-            + self.bucket_start.get_size()
+            + size_of::<u64>() // bucket_duration
+            + size_of::<Timestamp>() // align_timestamp
+            + size_of::<Option<Timestamp>>() // bucket_start
     }
 }
 
