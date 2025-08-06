@@ -471,7 +471,17 @@ impl TimeSeries {
         )
     }
 
-    pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SeriesSampleIterator<'_> {
+    pub fn range_iter(
+        &self,
+        start: Timestamp,
+        end: Timestamp,
+        check_retention: bool,
+    ) -> SeriesSampleIterator<'_> {
+        let start = if check_retention {
+            start.max(self.get_min_timestamp())
+        } else {
+            start
+        };
         SeriesSampleIterator::new(self, start, end, &None, &None)
     }
 
