@@ -47,20 +47,22 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
 
         # Initially compacted value should be sum of all samples (50 + 51 + 52 + 53 + 54 = 260)
         initial_compacted = self.get_compacted_samples(dest_key)
-        assert len(initial_compacted) == 1
+        # all samples should be in one bucket, so the bucket is not closed
+        assert len(initial_compacted) == 0
+
         expected_sum = sum([10.0 + i for i in range(5)])
-        assert initial_compacted[0][1] == expected_sum
+        latest = self.client.execute_command('TS.GET', dest_key, 'LATEST')
+        assert int(latest[1]) == expected_sum
 
         # Delete middle samples (1100, 1200)
         deleted = self.client.execute_command('TS.DEL', source_key, 1100, 1200)
         assert deleted == 2
 
         # Compacted value should be recalculated without deleted samples
-        updated_compacted = self.get_compacted_samples(dest_key)
-        assert len(updated_compacted) == 1
+        latest = self.client.execute_command('TS.GET', dest_key, 'LATEST')
         # Should be sum of 10.0, 13.0, 14.0 = 37.0
         expected_new_sum = 10.0 + 13.0 + 14.0
-        assert updated_compacted[0][1] == expected_new_sum
+        assert int(latest[1]) == expected_new_sum
 
     def test_del_complete_bucket_removal(self):
         """Test deleting all samples within a compaction bucket"""
