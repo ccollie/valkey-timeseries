@@ -70,21 +70,6 @@ impl CompactionRule {
         (start, end)
     }
 
-    pub fn calculate_range(
-        &self,
-        start: Timestamp,
-        end: Timestamp,
-        series: &TimeSeries,
-    ) -> (Timestamp, Timestamp) {
-        let iter = series.range_iter(start, end);
-        let mut aggregator = self.aggregator.clone();
-        aggregator.reset();
-        for sample in iter {
-            aggregator.update(sample.value);
-        }
-        (start, end)
-    }
-
     fn reset(&mut self) {
         self.aggregator.reset();
         self.bucket_start = None;
@@ -231,6 +216,10 @@ fn finalize_current_bucket(
     new_bucket_start: Timestamp,
 ) -> TsdbResult<()> {
     // Finalize the current bucket
+    log_debug!(
+        "finalize_current_bucket. Aggregator {:?}",
+        ctx.rule.aggregator
+    );
     let aggregated_value = ctx.rule.aggregator.finalize();
     let current_bucket_start = ctx.rule.bucket_start.expect(
         "finalize_current_bucket should be called when current bucket start is already set",
@@ -253,7 +242,7 @@ fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     let bucket_start = ctx.rule.calc_bucket_start(ts);
 
     log_info!(
-        "handle_compaction_upsert({}, {} @ {}",
+        "handle_compaction_upsert({}, {} @ {})",
         ctx.parent.id,
         sample.value,
         sample.timestamp
@@ -288,11 +277,13 @@ fn recalculate_current_bucket(
     bucket_end: Timestamp,
 ) -> TsdbResult<()> {
     // Reset the aggregator and recalculate from all samples in the bucket
-    ctx.rule.aggregator.reset();
-
-    for sample in ctx.parent.range_iter(bucket_start, bucket_end) {
-        ctx.rule.aggregator.update(sample.value);
-    }
+    calculate_range(
+        ctx.parent,
+        &mut ctx.rule.aggregator,
+        bucket_start,
+        bucket_end,
+        null_ts_filter,
+    );
 
     // reset would have cleared the bucket_start, so we need to set it again
     ctx.rule.bucket_start = Some(bucket_start);
@@ -326,22 +317,13 @@ where
     bucket_aggregator.reset();
 
     // Aggregate all samples in this bucket
-    let mut has_samples = false;
-    let sample_iter = ctx
-        .parent
-        .range_iter(bucket_start, bucket_end)
-        .filter(|sample| filter(sample.timestamp));
-
-    for sample in sample_iter {
-        bucket_aggregator.update(sample.value);
-        log_debug!(
-            "Updated {} aggregator with sample value: {} during range calculation.",
-            ctx.rule.aggregator.aggregation_type(),
-            sample.value
-        );
-
-        has_samples = true;
-    }
+    let has_samples = calculate_range(
+        ctx.parent,
+        &mut bucket_aggregator,
+        bucket_start,
+        bucket_end,
+        &filter,
+    );
 
     if has_samples {
         let aggregated_value = bucket_aggregator.finalize();
@@ -400,7 +382,22 @@ fn handle_single_bucket_removal(
     // Check if the entire bucket is being removed
     if removal_start <= bucket_start && removal_end >= bucket_end {
         // Remove the entire bucket from destination
-        ctx.dest.remove_range(bucket_start, bucket_end)?;
+        if !ctx.dest.is_empty() {
+            ctx.dest.remove_range(bucket_start, bucket_end)?;
+        }
+        return Ok(());
+    }
+
+    // If no samples are written in this bucket yet, we're dealing with the current aggregation
+    if ctx.dest.is_empty() {
+        // Aggregate all samples in this bucket
+        calculate_range(
+            ctx.parent,
+            &mut ctx.rule.aggregator,
+            bucket_start,
+            bucket_end,
+            |ts| ts < removal_start || ts > removal_end,
+        );
         return Ok(());
     }
 
@@ -471,7 +468,7 @@ fn handle_current_bucket_adjustment(
 
         // Re-aggregate samples that are not in the removal range
         let bucket_samples = series
-            .range_iter(current_bucket_start, current_bucket_end)
+            .range_iter(current_bucket_start, current_bucket_end, true)
             .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
         for sample in bucket_samples {
@@ -706,6 +703,38 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
     }
 }
 
+fn calculate_range<F>(
+    series: &TimeSeries,
+    aggregator: &mut Aggregator,
+    start: Timestamp,
+    end: Timestamp,
+    filter: F,
+) -> bool
+where
+    F: Fn(Timestamp) -> bool,
+{
+    log_debug!(
+        "Aggregating {} for range [{start}..{end}] for series",
+        aggregator.aggregation_type()
+    );
+    let mut has_samples = false;
+    aggregator.reset();
+    for sample in series
+        .range_iter(start, end, true)
+        .filter(|sample| filter(sample.timestamp))
+    {
+        aggregator.update(sample.value);
+        log_debug!("Aggregated sample: {} @ {}", sample.value, sample.timestamp);
+        has_samples = true;
+    }
+    log_debug!(
+        "{} value for range [{start}..{end}] - {:?}",
+        aggregator.aggregation_type(),
+        aggregator.current()
+    );
+    has_samples
+}
+
 impl TimeSeries {
     pub fn add_compaction_rule(&mut self, rule: CompactionRule) {
         self.rules.push(rule);
@@ -781,14 +810,20 @@ impl TimeSeries {
 
 pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -> Option<Sample> {
     let src_id = series.src_series?;
-    let parent = get_destination_series(ctx, src_id)?;
+    let Ok(Some(parent)) = get_series_by_id(ctx, src_id, false, None) else {
+        // No source series or it doesn't exist
+        return None;
+    };
     if parent.is_empty() {
+        // No samples in the source series
         return None;
     }
     let rule = parent.get_rule_by_dest_id(series.id)?;
     let start = rule.bucket_start?;
 
-    let value = rule.aggregator.current()?;
+    let agg = rule.aggregator.clone();
+    let value = agg.finalize();
+
     let sample = Sample::new(start, value);
     Some(sample)
 }
