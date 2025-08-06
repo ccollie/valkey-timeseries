@@ -24,8 +24,10 @@ pub fn get(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             if let Some(value) = get_latest_compaction_sample(ctx, series) {
                 return Ok(Some(value));
             };
+            Ok(None)
+        } else {
+            Ok(series.last_sample)
         }
-        Ok(series.last_sample)
     })?;
 
     Ok(match sample {
