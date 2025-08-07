@@ -281,7 +281,7 @@ fn recalculate_current_bucket(
         ctx.parent,
         &mut ctx.rule.aggregator,
         bucket_start,
-        bucket_end,
+        bucket_end - 1,
         null_ts_filter,
     );
 
@@ -321,7 +321,7 @@ where
         ctx.parent,
         &mut bucket_aggregator,
         bucket_start,
-        bucket_end,
+        bucket_end - 1,
         &filter,
     );
 
@@ -383,7 +383,7 @@ fn handle_single_bucket_removal(
     if removal_start <= bucket_start && removal_end >= bucket_end {
         // Remove the entire bucket from destination
         if !ctx.dest.is_empty() {
-            ctx.dest.remove_range(bucket_start, bucket_end)?;
+            ctx.dest.remove_range(bucket_start, bucket_end - 1)?;
         }
         return Ok(());
     }
@@ -395,7 +395,7 @@ fn handle_single_bucket_removal(
             ctx.parent,
             &mut ctx.rule.aggregator,
             bucket_start,
-            bucket_end,
+            bucket_end - 1,
             |ts| ts < removal_start || ts > removal_end,
         );
         return Ok(());
@@ -436,7 +436,7 @@ fn handle_multiple_bucket_removal(
             } else {
                 // Middle buckets are completely removed
                 ctx.dest
-                    .remove_range(current_bucket_start, current_bucket_start)?;
+                    .remove_range(current_bucket_start, bucket_end - 1)?;
             }
         }
 
