@@ -50,7 +50,7 @@ class CompactionRule:
 class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
 
     @pytest.fixture(autouse=True)
-    def setup_test(self, setup):
+    def setup_test(self):
         args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
         server_path = f"{os.path.dirname(os.path.realpath(__file__))}/build/binaries/{os.environ['SERVER_VERSION']}/valkey-server"
 
@@ -145,15 +145,11 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         # Find rules in the series but not in the expected list
         extra_rules = actual_rule_set - expected_rule_set
         if extra_rules:
-            print(f"Expected rules: {expected_rule_set}")
-            print(f"Actual rules: {actual_rule_set}")
             assert False, f"Found unexpected rules in series: {extra_rules}"
 
         # Find rules in the expected list but not in the series
         missing_rules = expected_rule_set - actual_rule_set
         if missing_rules:
-            print(f"Expected rules: {expected_rule_set}")
-            print(f"Actual rules: {actual_rule_set}")
             missing_rules_formatted = [rule in missing_rules]
             assert False, f"Expected rules not found in series: {missing_rules_formatted}"
 
@@ -184,15 +180,16 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         stats = self.parse_valkey_info("STATS")
         stats.get('active_defrag_misses')
     """
-    def parse_valkey_info(self, section):
+    def valkey_info(self, section="all"):
+        self.client.info_obj()
         mem_info = self.client.execute_command('INFO ' + section)
-        lines = mem_info.decode('utf-8').split('\r\n')        
+        lines = mem_info.decode('utf-8').split('\r\n')
         stats_dict = {}
         for line in lines:
             if ':' in line:
                 key, value = line.split(':', 1)
                 stats_dict[key.strip()] = value.strip()
-        return stats_dict
+        return ValkeyInfo(stats_dict)
 
 
 class ValkeyInfo:
@@ -209,8 +206,12 @@ class ValkeyInfo:
         return self.info['aof_rewrite_in_progress'] == 1
 
     def num_keys(self, db=0):
-        if 'db{}'.format(db) in self.info:
-            return self.info['db{}'.format(db)]['keys']
+        key = 'db{}'.format(db)
+
+        if key in self.info:
+            value = self.info[key]['keys']
+            return int(value)
+
         return 0
 
     def get_master_repl_offset(self):
