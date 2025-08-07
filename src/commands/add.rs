@@ -104,8 +104,9 @@ fn handle_add(
         false
     };
 
-    // `ignored` is true when the sample is not added because it is before retention. If there's not
-    // a change, we don't want to run compaction.
+    // `ignored` is true when the sample is not added because the timestamp or value delta is below
+    // the appropriate threshold.
+    // If there's not a change, we don't want to run compaction.
     // Question: should we replicate the command in this case?
     if !ignored && !series.rules.is_empty() {
         let sample = Sample::new(ts, value);
