@@ -60,7 +60,7 @@ impl<'a> FilteredSampleIterator<'a> {
     }
 }
 
-impl<'a> Iterator for FilteredSampleIterator<'a> {
+impl Iterator for FilteredSampleIterator<'_> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
