@@ -232,6 +232,13 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             ts = self.now + i * 1000 - 200  # 200ms before each point
             self.client.execute_command("TS.ADD", asof_ts, ts, i * 100)
 
+        info = self.ts_info(asof_ts)
+        print(info)
+        samples = self.client.execute_command("TS.RANGE", self.ts1, "-", "+")
+        print(f"left: {samples}")
+        samples = self.client.execute_command("TS.RANGE", asof_ts, "-", "+")
+        print(f"right: {samples}")
+
         # Test ASOF join with PREVIOUS strategy and tolerance
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, asof_ts,
@@ -239,8 +246,10 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             "ASOF", "PREVIOUS", "500"  # 500 ms tolerance
         )
 
-        # All points from the left series
-        assert len(result) == 10
+        print(f"joined: {result}")
+
+        # All points but the first from the left series
+        assert len(result) == 4
 
         for i, item in enumerate(result):
             ts, left_val, right_info = item

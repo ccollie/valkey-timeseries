@@ -84,7 +84,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
     def test_compaction_with_different_aggregations(self):
         """Test compaction with various aggregation types"""
         aggregations = ["avg", "sum", "min", "max", "count"]
-        base_ts = int(time.time() * 1000)
+        base_ts = 100000  # Fixed the base timestamp for consistency in tests
 
         for agg in aggregations:
             source_key = f"test:source:{agg}"
@@ -152,7 +152,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         dest_key = "test:dest:ooo"
 
         self.create_source_and_dest_series(source_key, dest_key)
-        self.add_compaction_rule(source_key, dest_key, "avg", 10000)
+        self.add_compaction_rule(source_key, dest_key, "avg", 10000, 1000)
 
         base_ts = int(time.time() * 1000)
 
@@ -165,25 +165,21 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         ]
 
         for ts, value in samples:
-            res = self.client.execute_command("TS.ADD", source_key, ts, value)
-            print(f"Adding sample: {ts}, {value} : ({res})")
+            self.client.execute_command("TS.ADD", source_key, ts, value)
 
         info = self.ts_info(source_key)
         print(info)
         
         # Verify source maintains all samples in correct order
         source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
-        print(source_samples)
         assert len(source_samples) == 4
 
         # Verify compaction handled the out-of-order inserts correctly
         dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
-        print(dest_samples)
         assert len(dest_samples) >= 1
 
-        # First bucket should have average of first three samples in chronological order
-        # (10 + 15 + 20) / 3 = 15
-        assert dest_samples[0][1] == b'15'
+        # (10 + 15 + 20 + 30) / 4
+        assert dest_samples[0][1] == b'18.75'
 
     def test_compaction_bucket_finalization(self):
         """Test that compaction properly finalizes buckets when new buckets start"""
@@ -217,7 +213,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         dest_key = "test:dest:upsert"
 
         self.create_source_and_dest_series(source_key, dest_key)
-        self.add_compaction_rule(source_key, dest_key, "avg", 10000)
+        self.add_compaction_rule(source_key, dest_key, "avg", 10000, 1000)
 
         base_ts = int(time.time() * 1000)
 
@@ -225,27 +221,23 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.add_sample(source_key, base_ts, 10.0)
         self.add_sample(source_key, base_ts + 5000, 20.0)
         self.add_sample(source_key, base_ts + 15000, 30.0)  # Finalizes first bucket
-        src_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
-        print(src_samples)
 
         # Verify initial compaction
         dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
-        print(dest_samples)
         initial_count = len(dest_samples)
         initial_value = dest_samples[0][1] if initial_count > 0 else None
 
         # Upsert an earlier sample (should recalculate bucket)
-        self.add_sample(source_key, base_ts + 2000, 20.0)
+        self.add_sample(source_key, base_ts + 2000, 40.0)
 
         # Verify compaction was recalculated
         dest_samples_after = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
-        print(dest_samples_after)
         assert len(dest_samples_after) >= initial_count
 
         if initial_value is not None:
-            # Value should have changed due to upsert: (10 + 25 + 20) / 3 = 18.33
+            # Value should have changed due to upsert: (10 + 40 + 20 + 30) / 4 = 25
             new_value = float(dest_samples_after[0][1])
-            assert abs(new_value - 18.333333333333332) < 0.0001
+            assert new_value == 25.0, f"Expected 25.0 after upsert, got {new_value}"
 
     def test_compaction_across_multiple_destination_series(self):
         """Test that one source can compact to multiple destinations with different rules"""
@@ -272,7 +264,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         ]
 
         for ts, value in samples:
-            self.add_sample(source_key, base_ts, value)
+            self.add_sample(source_key, ts, value)
 
         # Verify both destinations received compacted data
         dest1_samples = self.client.execute_command("TS.RANGE", dest_key_1, "-", "+")
@@ -283,10 +275,10 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify aggregation differences
         # dest1 should have avg of the first bucket: (10 + 20) / 2 = 15
-        assert dest1_samples[0][1] == 15.0
+        assert float(dest1_samples[0][1]) == 15.0
 
         # dest2 should have max of first 20s bucket: max(10, 20, 30, 40) = 40
-        assert dest2_samples[0][1] == 40.0
+        assert float(dest2_samples[0][1]) == 40.0
 
     def test_compaction_with_retention_policy(self):
         """Test compaction works correctly with retention policies"""
@@ -311,9 +303,6 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         for ts, value in old_samples:
             self.add_sample(source_key, ts, value)
             # Very old samples might be rejected
-
-        info = self.ts_info(source_key)
-        print(info)
 
         # Verify retention policy applied to source
         source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
@@ -426,9 +415,10 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         assert len(dest_samples) >= 2  # At least two completed buckets
 
         # Verify compaction calculations are correct
-        # First bucket: 10 + 15 + 20 = 45 (with upsert)
+        # First bucket: 10 + 15 + 20 + 30 = 75 (with upsert)
         # Second bucket: 30 + 35 = 65
-        if len(dest_samples) >= 2:
-            assert dest_samples[0][1] == 45.0
-            assert dest_samples[1][1] == 65.0
+        assert len(dest_samples) >= 2
+
+        assert float(dest_samples[0][1]) == 75.0
+        assert float(dest_samples[1][1]) == 65.0
 

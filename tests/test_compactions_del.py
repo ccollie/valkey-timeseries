@@ -76,18 +76,24 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         self.add_samples_to_source(source_key, 1000, 3, 100, 10.0)  # Bucket 1: 1000-1999
         self.add_samples_to_source(source_key, 2000, 3, 100, 20.0)  # Bucket 2: 2000-2999
 
-        # Should have 2 compacted values
-        initial_compacted = self.get_compacted_samples(dest_key)
-        assert len(initial_compacted) == 2
+        dest_info = self.ts_info(dest_key, True)
+        print(f"Destination info: {dest_info}")
 
-        # Delete entire first bucket
+        # Should have 1 compacted value, since the second bucket is not closed yet
+        initial_compacted = self.get_compacted_samples(dest_key)
+        assert len(initial_compacted) == 1
+
+        # Delete the entire first bucket
         deleted = self.client.execute_command('TS.DEL', source_key, 1000, 1999)
         assert deleted == 3
+        samples = self.client.execute_command('TS.RANGE', source_key, 0, '+')
+        print(f"Samples after deletion: {samples}")
 
-        # Should only have second bucket's compacted value
-        updated_compacted = self.get_compacted_samples(dest_key)
-        assert len(updated_compacted) == 1
-        assert updated_compacted[0][0] == 2000  # Second bucket timestamp
+        # Should only have the second bucket's compacted value
+        latest = self.client.execute_command('TS.GET', dest_key, 'LATEST')
+        samples = self.client.execute_command('TS.RANGE', dest_key, 0, '+')
+        print(f"Compacted samples after deletion: {samples}")
+        assert int(latest[1]) == 21  # Average of 21.0
 
     def test_del_multiple_buckets_partial(self):
         """Test deleting samples across multiple compaction buckets"""
@@ -102,9 +108,9 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
             start_ts = 1000 + bucket * 1000
             self.add_samples_to_source(source_key, start_ts, 3, 100, 10.0 + bucket * 10)
 
-        # Should have 4 compacted values
+        # Should have 3 compacted values, since the last bucket is not closed
         initial_compacted = self.get_compacted_samples(dest_key)
-        assert len(initial_compacted) == 4
+        assert len(initial_compacted) == 3
 
         # Delete samples spanning buckets 1 and 2 (1500-2500)
         deleted = self.client.execute_command('TS.DEL', source_key, 1500, 2500)
@@ -131,7 +137,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
             # Add samples
             self.add_samples_to_source(source_key, 1000, 10, 50, 5.0)
 
-            # Get initial compacted value
+            # Get the initially compacted value
             initial = self.get_compacted_samples(dest_key)
             assert len(initial) == 1
 
@@ -146,7 +152,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
             # For most aggregations, the value should change after deletion
             if agg not in ['count']:  # count might have special behavior
                 # We expect the aggregated value to be different after deletion
-                # (exact comparison depends on aggregation type and deleted values)
+                # (exact comparison depends on an aggregation type and deleted values)
                 pass
 
     def test_del_with_aligned_timestamps(self):
@@ -281,7 +287,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         assert 3000 in timestamps
         assert 2000 not in timestamps
 
-    def _test_del_compaction_error_recovery(self):
+    def test_del_compaction_error_recovery(self):
         """Test error handling during compaction after deletion"""
         source_key = 'source:error'
         dest_key = 'dest:error'
@@ -304,7 +310,6 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         assert isinstance(compacted, list)
         assert isinstance(source_samples, list)
 
-    @pytest.mark.skipif(reason="Ignored until server events issue is resolved")
     def test_del_multiple_compaction_rules(self):
         """Test deletion with multiple compaction rules on same source"""
         source_key = 'source:multi_rules'
@@ -352,7 +357,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
 
         initial = self.get_compacted_samples(dest_key)
         initial_count = len(initial)
-        assert initial_count == 10
+        assert initial_count == 9 # last bucket is not closed yet
 
         # Delete large range spanning multiple buckets
         deleted = self.client.execute_command('TS.DEL', source_key, 3000, 8000)
@@ -364,4 +369,4 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
 
         # Verify remaining data integrity
         source_samples = self.client.execute_command('TS.RANGE', source_key, 0, '+')
-        assert len(source_samples) > 0  # Should still have data outside deleted range
+        assert len(source_samples) > 0  # Should still have data outside the deleted range
