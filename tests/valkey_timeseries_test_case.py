@@ -105,6 +105,15 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
 
         return info_dict
 
+    def num_keys(self, db=0, client=None):
+        dbKey = f"db{db}"
+        if client is None:
+            client = self.client
+        allKeys = client.info("all").keys()
+        if dbKey in allKeys:
+            return client.info("all")["db{}".format(db)]["keys"]
+        return 0
+
     def validate_ts_info_values(self, key, expected_info_dict):
         """ Validate the values of the timeseries info.
         """
@@ -181,7 +190,6 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         stats.get('active_defrag_misses')
     """
     def valkey_info(self, section="all"):
-        self.client.info_obj()
         mem_info = self.client.execute_command('INFO ' + section)
         lines = mem_info.decode('utf-8').split('\r\n')
         stats_dict = {}
@@ -204,15 +212,6 @@ class ValkeyInfo:
     def is_aof_rewrite_in_progress(self):
         """Return True if there is a aof rewrite in progress."""
         return self.info['aof_rewrite_in_progress'] == 1
-
-    def num_keys(self, db=0):
-        key = 'db{}'.format(db)
-
-        if key in self.info:
-            value = self.info[key]['keys']
-            return int(value)
-
-        return 0
 
     def get_master_repl_offset(self):
         return self.info['master_repl_offset']
