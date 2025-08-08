@@ -326,9 +326,6 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         for timestamp, value in samples:
             self.client.execute_command("TS.ADD", source_key, timestamp, value)
 
-        # Allow some time for compaction to process
-        time.sleep(0.1)
-
         # Verify aggregated data exists in destination
         dest_range = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         assert len(dest_range) > 0, "Expected aggregated data in destination series"
@@ -637,9 +634,6 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         for ts, value in samples:
             self.client.execute_command("TS.ADD", raw_key, ts, value)
 
-        # Allow time for compaction to process
-        time.sleep(0.5)
-
         # Verify raw data exists
         raw_range = self.client.execute_command("TS.RANGE", raw_key, "-", "+")
         assert len(raw_range) == len(samples), "All raw samples should be present"
@@ -648,9 +642,9 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         minute_range = self.client.execute_command("TS.RANGE", minute_key, "-", "+")
         assert len(minute_range) > 0, "Minute compaction should have created aggregated data"
 
-        # Verify hour compaction created data
-        hour_range = self.client.execute_command("TS.RANGE", hour_key, "-", "+")
-        assert len(hour_range) > 0, "Hour compaction should have created aggregated data"
+        # Verify hour compaction created data. The bucket is not closed yet, so we should see the latest data
+        latest = self.client.execute_command("TS.GET", hour_key, "LATEST")
+        assert latest is not None, "Latest hour compaction data should exist"
 
     def setup_pubsub(self, patterns: List[str] = None):
         """Setup pubsub for keyspace notifications."""
