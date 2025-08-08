@@ -9,6 +9,7 @@ use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef,
 use get_size::GetSize;
 use logger_rust::*;
 use smallvec::SmallVec;
+use std::cmp::Ordering;
 use topo_sort::{SortResults, TopoSort};
 use valkey_module::{raw, Context, DetachedContext, NotifyEvent, ValkeyError, ValkeyResult};
 
@@ -182,7 +183,7 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
 
     log_info!(
             "handle_sample_compaction({}): series_id:{}, sample: {} @ {}, sample_bucket_start: {}, bucket_start: {:?}",
-            ctx.rule.aggregator.aggregation_type(), ctx.parent.id, sample.value, sample.timestamp, sample_bucket_start, ctx.rule.bucket_start
+            ctx.rule.aggregator.aggregation_type(), ctx.dest.id, sample.value, sample.timestamp, sample_bucket_start, ctx.rule.bucket_start
         );
 
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
@@ -192,18 +193,25 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
         return Ok(());
     };
 
-    if sample_bucket_start == current_bucket_start {
-        // Sample belongs to the current aggregation bucket
-        log_info!("Sample belongs to the current aggregation bucket: {current_bucket_start}");
-        ctx.rule.aggregator.update(sample.value);
-    } else if sample_bucket_start > current_bucket_start {
-        // Sample starts a new bucket - finalize the current bucket first
-        log_info!("Sample starts a new bucket ({sample_bucket_start} > {current_bucket_start}). Finalize the current bucket first");
-        finalize_current_bucket(ctx, sample, sample_bucket_start)?;
-    } else {
-        let bucket_end = sample_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
-        // Sample is in an older bucket (shouldn't happen for new samples, but handle gracefully)
-        recalculate_bucket(ctx, sample_bucket_start, bucket_end, null_ts_filter)?;
+    match sample_bucket_start.cmp(&current_bucket_start) {
+        Ordering::Equal => {
+            // Sample belongs to the current aggregation bucket
+            log_info!("Sample belongs to the current aggregation bucket: {current_bucket_start}");
+            ctx.rule.aggregator.update(sample.value);
+        }
+        Ordering::Greater => {
+            // Sample starts a new bucket - finalize the current bucket first
+            log_info!("Sample starts a new bucket ({sample_bucket_start} > {current_bucket_start}). Finalize the current bucket first");
+            finalize_current_bucket(ctx, sample, sample_bucket_start)?;
+        }
+        Ordering::Less => {
+            log_debug!(
+                "Sample is in an older bucket: {sample_bucket_start} < {current_bucket_start}"
+            );
+            let bucket_end = sample_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+            // Sample is in an older bucket (shouldn't happen for new samples, but handle gracefully)
+            recalculate_bucket(ctx, sample_bucket_start, bucket_end, null_ts_filter)?;
+        }
     }
 
     Ok(())
@@ -243,7 +251,7 @@ fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
 
     log_info!(
         "handle_compaction_upsert({}, {} @ {})",
-        ctx.parent.id,
+        ctx.dest.id,
         sample.value,
         sample.timestamp
     );
@@ -332,7 +340,7 @@ where
     } else {
         // No samples in this bucket anymore, remove it from destination
         log_debug!("No samples in this bucket anymore, remove it from destination");
-        ctx.dest.remove_range(bucket_start, bucket_start)?;
+        ctx.dest.remove_range(bucket_start, bucket_end - 1)?;
     }
 
     Ok(())
@@ -577,17 +585,13 @@ where
     F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
 {
     // Process current series compaction rules
-    let parent_result = execute_compaction_rules(ctx, series, value, f);
+    execute_compaction_rules(ctx, series, value, f)?;
 
     // Collect child series
-    let child_series: Vec<_> = series
+    let child_series = series
         .rules
         .iter()
-        .filter_map(|rule| get_destination_series(ctx, rule.dest_id))
-        .collect();
-
-    // Handle the processing result after collecting children to avoid borrow conflicts
-    parent_result?;
+        .filter_map(|rule| get_destination_series(ctx, rule.dest_id));
 
     // Recursively process child series
     for mut child in child_series {
