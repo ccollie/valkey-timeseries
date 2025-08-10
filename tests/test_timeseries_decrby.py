@@ -149,19 +149,16 @@ class TestTsDecrby(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.ADD', 'ts_err', 1000, 10.0)
 
         # Wrong number of arguments
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="wrong number of arguments"):
             self.client.execute_command('TS.DECRBY', 'ts_err')
-        assert "wrong number of arguments" in str(excinfo.value).lower()
 
         # Non-numeric decrement value
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="invalid value"):
             self.client.execute_command('TS.DECRBY', 'ts_err', 'not_a_number')
-        assert "invalid value" in str(excinfo.value).lower()
 
         # Invalid timestamp
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="invalid timestamp"):
             self.client.execute_command('TS.DECRBY', 'ts_err', 5.0, 'TIMESTAMP', 'invalid_ts')
-        assert "invalid timestamp" in str(excinfo.value).lower()
 
         # Timestamp older than the last sample
         with pytest.raises(ResponseError) as excinfo:
@@ -170,6 +167,5 @@ class TestTsDecrby(ValkeyTimeSeriesTestCaseBase):
 
         # Wrong type of key
         self.client.set('string_key', 'hello')
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="WRONGTYPE"):
             self.client.execute_command('TS.DECRBY', 'string_key', 1.0)
-        assert "WRONGTYPE" in str(excinfo.value)
