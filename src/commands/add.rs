@@ -144,6 +144,6 @@ fn replicate_and_notify(ctx: &Context, args: Vec<ValkeyString>, timestamp: Optio
         ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", &key);
     } else {
         ctx.replicate_verbatim();
-        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", &args[2]);
+        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", &args[1]);
     }
 }
