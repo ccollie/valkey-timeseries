@@ -762,27 +762,12 @@ impl TimeSeries {
         start_ts: Timestamp,
         end_ts: Timestamp,
     ) -> TsdbResult<usize> {
-        // First, handle the compaction rule adjustments
-        self.remove_compaction_range(ctx, start_ts, end_ts)?;
-
         // Then remove the actual data from the source series
         let deleted_count = self.remove_range(start_ts, end_ts)?;
 
-        if deleted_count == 0 {
-            return Ok(0);
+        if deleted_count > 0 && !self.rules.is_empty() {
+            remove_compaction_range(ctx, self, start_ts, end_ts)?;
         }
-
-        if self.rules.is_empty() {
-            // No compaction rules, nothing to do
-            return Ok(deleted_count);
-        }
-
-        // Update any ongoing aggregations that might be affected
-        let mut rules = std::mem::take(&mut self.rules);
-        for rule in &mut rules {
-            handle_current_bucket_adjustment(self, rule, start_ts, end_ts);
-        }
-        self.rules = rules;
 
         Ok(deleted_count)
     }
@@ -799,16 +784,6 @@ impl TimeSeries {
             return Ok(());
         }
         upsert_compaction(ctx, self, value)
-    }
-
-    /// Remove a range from all compactions
-    pub fn remove_compaction_range(
-        &mut self,
-        ctx: &Context,
-        start: Timestamp,
-        end: Timestamp,
-    ) -> TsdbResult<()> {
-        remove_compaction_range(ctx, self, start, end)
     }
 }
 

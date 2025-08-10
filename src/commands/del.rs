@@ -22,15 +22,10 @@ pub fn del(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             ));
         }
 
-        let deleted = series
+        series
             .remove_range_with_compaction(ctx, start_ts, end_ts)
-            .map_err(|_e| ValkeyError::String("TSDB: error deleting range".to_string()))?; // todo: better error
-
-        if deleted > 0 {
-            series.remove_compaction_range(ctx, start_ts, end_ts)?;
-        }
-
-        Ok(deleted)
+            .map_err(|_e| ValkeyError::String("TSDB: error deleting range".to_string()))
+        // todo: better error
     })?;
 
     ctx.replicate_verbatim();
