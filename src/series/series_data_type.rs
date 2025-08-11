@@ -1,4 +1,8 @@
-use valkey_module::{logging, RedisModuleIO, RedisModuleTypeMethods};
+use std::ffi::{c_char, CString};
+use valkey_module::{
+    logging, raw, CallOptionResp, CallOptionsBuilder, CallReply, CallResult, RedisModuleIO,
+    RedisModuleTypeMethods,
+};
 use valkey_module::{
     native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString,
     ValkeyString,
@@ -15,6 +19,7 @@ use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::digest::Digest;
+use valkey_module::logging::{log_io_error, ValkeyLogLevel};
 use valkey_module::server_events::FlushSubevent;
 use valkey_module_macros::flush_event_handler;
 
@@ -28,7 +33,7 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         version: valkey_module::TYPE_METHOD_VERSION,
         rdb_load: Some(rdb_load),
         rdb_save: Some(rdb_save),
-        aof_rewrite: None,
+        aof_rewrite: Some(aof_rewrite),
         free: Some(free),
         mem_usage: Some(mem_usage),
         digest: Some(series_digest),
@@ -161,4 +166,46 @@ unsafe extern "C" fn series_digest(md: *mut RedisModuleDigest, value: *mut c_voi
     let val = &*(value.cast::<TimeSeries>());
     val.debug_digest(&mut digest);
     digest.end_sequence();
+}
+
+unsafe extern "C" fn aof_rewrite(
+    aof: *mut RedisModuleIO,
+    key: *mut RedisModuleString,
+    _value: *mut c_void,
+) {
+    let guard = valkey_module::MODULE_CONTEXT.lock();
+    let ctx = Context::new(guard.ctx);
+    let key_string = ValkeyString::from_redis_module_string(guard.ctx, key);
+
+    // Use DUMP command to serialize the TimeSeries data
+    let call_options = CallOptionsBuilder::new()
+        .script_mode()
+        .resp(CallOptionResp::Resp3)
+        .errors_as_replies()
+        .build();
+
+    let res = ctx.call_ext::<_, CallResult>("DUMP", &call_options, &[&key_string]);
+
+    if let Ok(CallReply::String(val)) = res {
+        // Emit RESTORE command to AOF
+        let restore_cmd = CString::new("RESTORE").unwrap();
+        let format_str = CString::new("slb").unwrap(); // string, long, binary
+        let dump_data = val.as_bytes();
+
+        raw::RedisModule_EmitAOF.unwrap()(
+            aof,
+            restore_cmd.as_ptr(),
+            format_str.as_ptr(),
+            key,
+            0i64, // TTL = 0 (no expiration)
+            dump_data.as_ptr().cast::<c_char>(),
+            dump_data.len(),
+        );
+    } else {
+        log_io_error(
+            aof,
+            ValkeyLogLevel::Warning,
+            &format!("Failed to DUMP key: {:?}", res),
+        );
+    }
 }
