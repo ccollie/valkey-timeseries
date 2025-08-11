@@ -2,8 +2,8 @@ use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::series::{
-    get_timeseries_mut, multi_series_merge_samples, PerSeriesSamples, SampleAddResult,
-    SeriesGuardMut,
+    create_and_store_series, get_timeseries_mut, multi_series_merge_samples, PerSeriesSamples,
+    SampleAddResult, SeriesGuardMut, TimeSeriesOptions,
 };
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -142,6 +142,8 @@ fn parse_args<'a>(
 
     let mut index: usize = 0;
     let mut arg_index: usize = 0;
+
+    let options = TimeSeriesOptions::from_config();
     while index < args.len() {
         let key = &args[index];
         let mut raw_timestamp = &args[index + 1];
@@ -152,13 +154,18 @@ fn parse_args<'a>(
 
         // if series_samples is new, we need to look up the series by key
         let mut res = if series_samples.samples.is_empty() {
-            match get_timeseries_mut(ctx, key, true, Some(AclPermissions::UPDATE)) {
+            match get_timeseries_mut(ctx, key, false, Some(AclPermissions::UPDATE)) {
                 Ok(Some(guard)) => {
                     series_samples.series = Some(guard);
                     series_samples.err = SampleAddResult::Ok(Sample::default());
                     SampleAddResult::Ok(Sample::default())
                 }
-                Ok(None) => SampleAddResult::InvalidKey,
+                Ok(None) => {
+                    let guard = create_and_store_series(ctx, key, options.clone(), true, true)?;
+                    series_samples.series = Some(guard);
+                    series_samples.err = SampleAddResult::Ok(Sample::default());
+                    SampleAddResult::Ok(Sample::default())
+                }
                 Err(_) => SampleAddResult::InvalidPermissions,
             }
         } else {
