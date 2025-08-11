@@ -16,6 +16,7 @@ pub const INVALID_VALUE: &str = "TSDB: invalid value";
 pub const INVALID_BOOLEAN: &str = "TSDB: invalid boolean argument";
 pub const INVALID_CHUNK_ENCODING: &str = "TSDB: invalid chunk encoding method";
 pub const MISSING_CHUNK_ENCODING: &str = "TSDB: missing chunk encoding method";
+pub const CANNOT_PARSE_CHUNK_SIZE: &str = "TSDB: couldn't parse CHUNK_SIZE";
 pub const INVALID_CHUNK_SIZE: &str = "TSDB: invalid chunk size";
 pub const INVALID_DUPLICATE_POLICY: &str = "TSDB: invalid duplicate policy";
 pub const MISSING_DUPLICATE_POLICY: &str = "TSDB: missing duplicate policy value";
@@ -53,14 +54,14 @@ pub const MISSING_FILTER: &str = "TSDB: please provide at least one matcher";
 pub const INVALID_TIMESTAMP_FILTER: &str = "TSDB: FILTER_BY_TS one or more arguments are missing";
 pub const INVALID_REGEX: &str = "TSDB: invalid regex";
 pub const INVALID_IGNORE_OPTIONS: &str = "TSDB: invalid ignore options";
-pub const COULD_NOT_PARSE_IGNORE: &str = "TSDB: Couldn't parse IGNORE";
+pub const CANNOT_PARSE_IGNORE: &str = "TSDB: Couldn't parse IGNORE";
 pub const NEGATIVE_IGNORE_VALUES: &str = "TSDB: IGNORE values cannot be negative";
 
-pub const COULD_NOT_PARSE_LABELS: &str = "TSDB: Couldn't parse LABELS";
-pub const COULD_NOT_PARSE_RETENTION: &str = "TSDB: Couldn't parse RETENTION";
-pub const COULD_NOT_PARSE_AGGREGATION: &str = "TSDB: Couldn't parse AGGREGATION";
-pub const COULD_NOT_PARSE_MIN: &str = "TSDB: Couldn't parse MIN";
-pub const COULD_NOT_PARSE_MAX: &str = "TSDB: Couldn't parse MAX";
+pub const CANNOT_PARSE_LABELS: &str = "TSDB: Couldn't parse LABELS";
+pub const CANNOT_PARSE_RETENTION: &str = "TSDB: Couldn't parse RETENTION";
+pub const CANNOT_PARSE_AGGREGATION: &str = "TSDB: Couldn't parse AGGREGATION";
+pub const CANNOT_PARSE_MIN: &str = "TSDB: Couldn't parse MIN";
+pub const CANNOT_PARSE_MAX: &str = "TSDB: Couldn't parse MAX";
 
 pub const NO_SERIES_FOUND: &str = "TSDB no series found";
 pub const SAMPLE_TOO_OLD: &str = "TSDB: sample timestamp exceeds retention period";
@@ -84,3 +85,4 @@ pub const NO_CLUSTER_NODES_AVAILABLE: &str = "TSDB: no cluster nodes available";
 pub const WITH_LABELS_AND_SELECTED_LABELS_SPECIFIED: &str =
     "TSDB: cannot accept WITHLABELS and SELECT_LABELS together";
 pub const COMPACTION_CIRCULAR_DEPENDENCY: &str = "TSDB: circular dependency in compaction rules";
+pub const COMPACTION_RULE_NOT_FOUND: &str = "TSDB: compaction rule does not exist";

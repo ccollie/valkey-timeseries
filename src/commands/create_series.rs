@@ -1,18 +1,16 @@
 use crate::commands::arg_parse::{
     parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
-    parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options,
-    parse_label_value_pairs, parse_metric_name, parse_retention, parse_significant_digit_rounding,
-    CommandArgIterator, CommandArgToken,
+    parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options, parse_metric_name,
+    parse_retention, parse_significant_digit_rounding, CommandArgToken,
 };
 use crate::error_consts;
 use crate::labels::Label;
-use crate::series::{create_and_store_series, TimeSeriesOptions};
-use smallvec::SmallVec;
+use crate::series::{create_and_store_series, DuplicatePolicy, TimeSeriesOptions};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK};
 
 /// Create a new time series
 ///
-/// TS.CREATE-SERIES key
+/// TS.CREATE key
 ///   [METRIC metric]
 ///   [RETENTION retentionPeriod]
 ///   [ENCODING <pco|gorilla|uncompressed|compressed>]
@@ -32,15 +30,17 @@ pub fn create(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 pub fn parse_create_options(
     args: Vec<ValkeyString>,
 ) -> ValkeyResult<(ValkeyString, TimeSeriesOptions)> {
-    let mut args = args.into_iter().skip(1).peekable();
+    if args.len() < 2 {
+        return Err(ValkeyError::WrongArity);
+    }
 
-    let key = args
-        .next()
-        .ok_or(ValkeyError::Str("Err missing key argument"))?;
+    let mut args = args;
+    let key = args.remove(1);
 
     let options = parse_series_options(
-        &mut args,
+        args,
         TimeSeriesOptions::default(),
+        1,
         &[CommandArgToken::OnDuplicate],
     )?;
 
@@ -54,67 +54,87 @@ pub fn parse_create_options(
 }
 
 pub fn parse_series_options(
-    args: &mut CommandArgIterator,
+    args: Vec<ValkeyString>,
     options: TimeSeriesOptions,
+    skip: usize,
     invalid_args: &[CommandArgToken],
 ) -> ValkeyResult<TimeSeriesOptions> {
-    let metric_set = false;
+    let mut metric_set = false;
 
     let mut options = options;
 
-    while let Some(arg) = args.next() {
+    // Labels are variadic, so we handle them first to make parsing easier.
+    let pos = args.iter().rposition(|x| x.eq_ignore_ascii_case(b"labels"));
+
+    // Extract and process labels if they exist
+    let args = if let Some(pos) = pos {
+        let mut args_inner = args;
+        let label_section = args_inner.split_off(pos);
+        // Skip the "LABELS" token itself and parse the remaining elements
+        if label_section.len() > 1 {
+            options.labels = parse_labels(&label_section[1..])?;
+        }
+        metric_set = true;
+        args_inner
+    } else {
+        args
+    };
+
+    // Process the remaining arguments (skipping the key)
+    let mut args_iter = args.into_iter().skip(skip).peekable();
+
+    while let Some(arg) = args_iter.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         if invalid_args.contains(&token) {
             return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
         }
+
         match token {
             CommandArgToken::ChunkSize => {
-                let arg = args.next_str()?;
+                let arg = args_iter
+                    .next_str()
+                    .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_CHUNK_SIZE))?;
                 options.chunk_size = Some(parse_chunk_size(arg)?)
             }
             CommandArgToken::Encoding => {
-                options.chunk_compression = parse_chunk_compression(args)?;
+                options.chunk_compression = parse_chunk_compression(&mut args_iter)?;
             }
             CommandArgToken::DecimalDigits => {
                 if options.rounding.is_some() {
                     return Err(ValkeyError::Str(error_consts::ROUNDING_ALREADY_SET));
                 }
-                let rounding = parse_decimal_digit_rounding(args)?;
+                let rounding = parse_decimal_digit_rounding(&mut args_iter)?;
                 options.rounding = Some(rounding);
             }
             CommandArgToken::DuplicatePolicy => {
-                options.sample_duplicate_policy.policy = Option::from(parse_duplicate_policy(args)?)
+                let Some(arg) = args_iter.next() else {
+                    return Err(ValkeyError::Str(error_consts::MISSING_DUPLICATE_POLICY));
+                };
+                let policy: DuplicatePolicy = DuplicatePolicy::try_from(arg.as_slice())?;
+                options.sample_duplicate_policy.policy = Option::from(policy)
             }
             CommandArgToken::OnDuplicate => {
-                options.on_duplicate = Some(parse_duplicate_policy(args)?);
+                options.on_duplicate = Some(parse_duplicate_policy(&mut args_iter)?);
             }
             CommandArgToken::Metric => {
                 if metric_set {
                     return Err(ValkeyError::Str(error_consts::METRIC_ALREADY_SET));
                 }
-                let metric = args.next_string()?;
+                let metric = args_iter.next_string()?;
                 options.labels = parse_metric_name(&metric)?;
             }
-            CommandArgToken::Labels => {
-                if metric_set {
-                    return Err(ValkeyError::Str(error_consts::METRIC_ALREADY_SET));
-                }
-                options.labels = parse_labels(args, invalid_args)?;
-            }
             CommandArgToken::Ignore => {
-                let (ignore_max_timediff, ignore_max_val_diff) = parse_ignore_options(args)?;
-                if ignore_max_timediff < 0 || ignore_max_val_diff < 0.0 {
-                    return Err(ValkeyError::Str(error_consts::INVALID_IGNORE_OPTIONS));
-                }
+                let (ignore_max_timediff, ignore_max_val_diff) =
+                    parse_ignore_options(&mut args_iter)?;
                 options.sample_duplicate_policy.max_time_delta = ignore_max_timediff as u64;
                 options.sample_duplicate_policy.max_value_delta = ignore_max_val_diff;
             }
-            CommandArgToken::Retention => options.retention(parse_retention(args)?),
+            CommandArgToken::Retention => options.retention(parse_retention(&mut args_iter)?),
             CommandArgToken::SignificantDigits => {
                 if options.rounding.is_some() {
                     return Err(ValkeyError::Str(error_consts::ROUNDING_ALREADY_SET));
                 }
-                options.rounding = Some(parse_significant_digit_rounding(args)?);
+                options.rounding = Some(parse_significant_digit_rounding(&mut args_iter)?);
             }
             _ => {
                 return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
@@ -125,31 +145,26 @@ pub fn parse_series_options(
     Ok(options)
 }
 
-const VALID_SERIES_OPTIONS_ARGS: [CommandArgToken; 9] = [
-    CommandArgToken::Metric,
-    CommandArgToken::Labels,
-    CommandArgToken::Retention,
-    CommandArgToken::Encoding,
-    CommandArgToken::ChunkSize,
-    CommandArgToken::Ignore,
-    CommandArgToken::DuplicatePolicy,
-    CommandArgToken::SignificantDigits,
-    CommandArgToken::DecimalDigits,
-];
-
-fn parse_labels(
-    args: &mut CommandArgIterator,
-    invalid_args: &[CommandArgToken],
-) -> ValkeyResult<Vec<Label>> {
-    let mut stop_tokens: SmallVec<CommandArgToken, 16> = SmallVec::from(VALID_SERIES_OPTIONS_ARGS);
-    if !invalid_args.is_empty() {
-        stop_tokens.retain(|token| !invalid_args.contains(token));
+/// Parse labels from the command arguments. It's variadic, so it should be the last argument
+/// in the command, otherwise we end in ambiguity
+fn parse_labels(args: &[ValkeyString]) -> ValkeyResult<Vec<Label>> {
+    if args.len() < 2 || args.len() % 2 != 0 {
+        return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_LABELS));
     }
-    let label_map = parse_label_value_pairs(args, &stop_tokens)?;
 
-    let mut labels = Vec::new();
-    for (label_name, label_value) in label_map {
-        labels.push(Label::new(label_name, label_value));
+    let mut labels = Vec::with_capacity(args.len() / 2);
+
+    for arg in args.chunks(2) {
+        let name = &arg[0];
+        let value = &arg[1];
+
+        if name.is_empty() || value.is_empty() {
+            return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
+        }
+
+        let label = Label::new(name.to_string_lossy(), value.to_string_lossy());
+        labels.push(label);
     }
+
     Ok(labels)
 }

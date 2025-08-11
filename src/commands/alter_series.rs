@@ -6,20 +6,28 @@ use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
 };
 
+/// Alter a time series
+///
+/// TS.ALTER key
+///   [RETENTION retentionPeriod]
+///   [DUPLICATE_POLICY duplicatePolicy]
+///   [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
+///   [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
+///   [LABELS label1=value1 label2=value2 ...]
 pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(ValkeyError::WrongArity);
     }
 
-    let mut args = args.into_iter().skip(1).peekable();
-
-    let key = args.next().ok_or(ValkeyError::WrongArity)?;
+    let mut args = args;
+    let key = args.remove(1);
 
     with_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE), |series| {
         let opts = options_from_series(series);
         let options = parse_series_options(
-            &mut args,
+            args,
             opts,
+            1,
             &[CommandArgToken::Encoding, CommandArgToken::OnDuplicate],
         )?;
 

@@ -124,27 +124,35 @@ impl DuplicatePolicy {
     }
 }
 
+fn get_policy_from_bytes(bytes: &[u8]) -> Option<DuplicatePolicy> {
+    use DuplicatePolicy::*;
+    hashify::tiny_map_ignore_case! {
+        bytes,
+        "block" => Block,
+        "first"  => KeepFirst,
+        "last"   => KeepLast,
+        "min"    => Min,
+        "max"    => Max,
+        "sum"    => Sum,
+    }
+}
+
 impl FromStr for DuplicatePolicy {
     type Err = ValkeyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        use DuplicatePolicy::*;
-
-        let res = hashify::tiny_map_ignore_case! {
-            s.as_bytes(),
-            "block" => Block,
-            "first"  => KeepFirst,
-            "last"   => KeepLast,
-            "min"    => Min,
-            "max"    => Max,
-            "sum"    => Sum,
-        };
-
-        if let Some(policy) = res {
+        if let Some(policy) = get_policy_from_bytes(s.as_bytes()) {
             Ok(policy)
         } else {
             Err(ValkeyError::Str(error_consts::INVALID_DUPLICATE_POLICY))
         }
+    }
+}
+
+impl TryFrom<&[u8]> for DuplicatePolicy {
+    type Error = ValkeyError;
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        get_policy_from_bytes(bytes).ok_or(ValkeyError::Str(error_consts::INVALID_DUPLICATE_POLICY))
     }
 }
 

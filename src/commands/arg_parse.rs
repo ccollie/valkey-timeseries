@@ -362,11 +362,11 @@ pub fn parse_chunk_size(arg: &str) -> ValkeyResult<usize> {
     }
 
     if arg.is_empty() {
-        return Err(ValkeyError::Str(error_consts::INVALID_CHUNK_SIZE));
+        return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_CHUNK_SIZE));
     }
 
     let chunk_size = parse_number_internal(arg)
-        .map_err(|_e| ValkeyError::Str(error_consts::INVALID_CHUNK_SIZE))?;
+        .map_err(|_e| ValkeyError::Str(error_consts::CANNOT_PARSE_CHUNK_SIZE))?;
 
     if chunk_size != chunk_size.floor() {
         return get_error_result();
@@ -413,9 +413,9 @@ pub fn parse_timestamp_range(args: &mut CommandArgIterator) -> ValkeyResult<Time
 
 pub fn parse_retention(args: &mut CommandArgIterator) -> ValkeyResult<Duration> {
     if let Ok(next) = args.next_str() {
-        parse_duration(next).map_err(|_e| ValkeyError::Str(error_consts::COULD_NOT_PARSE_RETENTION))
+        parse_duration(next).map_err(|_e| ValkeyError::Str(error_consts::CANNOT_PARSE_RETENTION))
     } else {
-        Err(ValkeyError::Str(error_consts::COULD_NOT_PARSE_RETENTION))
+        Err(ValkeyError::Str(error_consts::CANNOT_PARSE_RETENTION))
     }
 }
 
@@ -451,9 +451,9 @@ pub fn parse_timestamp_filter(
 
 pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFilter> {
     let min = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_MIN))?;
+        .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_MIN))?;
     let max = parse_number_with_unit(args.next_str()?)
-        .map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_MAX))?;
+        .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_MAX))?;
     if max < min {
         return Err(ValkeyError::Str(
             "TSDB filter min parameter is greater than max",
@@ -675,12 +675,12 @@ pub fn parse_decimal_digit_rounding(
 pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResult<(i64, f64)> {
     // ignoreMaxTimediff
     let mut str = args.next_str()?;
-    let ignore_max_timediff = parse_duration_ms(str)
-        .map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_IGNORE))?;
+    let ignore_max_timediff =
+        parse_duration_ms(str).map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_IGNORE))?;
     // ignoreMaxValDiff
     str = args.next_str()?;
     let ignore_max_val_diff =
-        parse_number(str).map_err(|_| ValkeyError::Str(error_consts::COULD_NOT_PARSE_IGNORE))?;
+        parse_number(str).map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_IGNORE))?;
     if ignore_max_timediff < 0 || ignore_max_val_diff < 0.0 {
         return Err(ValkeyError::Str(error_consts::NEGATIVE_IGNORE_VALUES));
     }

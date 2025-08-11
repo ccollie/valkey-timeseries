@@ -48,14 +48,9 @@ fn create_series_and_update(
     is_increment: bool,
 ) -> ValkeyResult {
     let key_name = args.remove(1);
-    let mut remaining_args = args.into_iter().skip(2).peekable();
     const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
 
-    let options = parse_series_options(
-        &mut remaining_args,
-        TimeSeriesOptions::from_config(),
-        INVALID_ARGS,
-    )?;
+    let options = parse_series_options(args, TimeSeriesOptions::from_config(), 2, INVALID_ARGS)?;
     create_and_store_series(ctx, &key_name, options)?;
 
     let Some(mut series) = get_timeseries_mut(ctx, &key_name, true, Some(AclPermissions::INSERT))?

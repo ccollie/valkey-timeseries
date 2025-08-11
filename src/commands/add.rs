@@ -40,9 +40,8 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     // clones because of replicate_and_notify
     let original_args = args.clone();
-    let mut args = args.into_iter().skip(4).peekable();
 
-    let options = parse_series_options(&mut args, TimeSeriesOptions::from_config(), &[])?;
+    let options = parse_series_options(args, TimeSeriesOptions::from_config(), 4, &[])?;
 
     let key = &original_args[1];
     create_and_store_series(ctx, key, options)?;
