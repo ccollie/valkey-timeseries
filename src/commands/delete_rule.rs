@@ -1,5 +1,8 @@
+use crate::error_consts;
 use crate::series::get_timeseries_mut;
-use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK};
+use valkey_module::{
+    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
+};
 
 ///
 /// TS.DELETERULE sourceKey destKey
@@ -30,14 +33,15 @@ pub fn delete_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     );
 
     // Get destination time series (must exist, writable)
-    let mut dest_series = get_timeseries_mut(ctx, dest_key, true, Some(AclPermissions::UPDATE))?
-        .expect(
-        "BUG in delete_rule: should have returned a value before this point (must_exist = true)",
-    );
+    let Some(mut dest_series) =
+        get_timeseries_mut(ctx, dest_key, true, Some(AclPermissions::UPDATE))?
+    else {
+        return Err(ValkeyError::Str(error_consts::COMPACTION_RULE_NOT_FOUND));
+    };
 
     let dest_id = dest_series.id;
     let Some(_rule) = source_series.remove_compaction_rule(dest_id) else {
-        return Err(ValkeyError::Str("TSDB: compaction rule does not exist"));
+        return Err(ValkeyError::Str(error_consts::COMPACTION_RULE_NOT_FOUND));
     };
 
     // Clear the src_series field in the destination series
@@ -45,6 +49,9 @@ pub fn delete_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     // Replicate the command
     ctx.replicate_verbatim();
+
+    ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.deleterule:src", source_key);
+    ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.deleterule:dest", dest_key);
 
     VALKEY_OK
 }
