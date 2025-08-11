@@ -59,7 +59,7 @@ else
 fi
 
 TEST_FRAMEWORK_REPO="https://github.com/valkey-io/valkey-test-framework"
-TEST_FRAMEWORK_DIR="tests/build/valkeytestframework"
+TEST_FRAMEWORK_DIR="tests/valkeytestframework"
 
 if [ -d "$TEST_FRAMEWORK_DIR" ]; then
     echo "valkeytestframework found."
