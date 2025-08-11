@@ -10,7 +10,7 @@ use crate::series::{
     SampleDuplicatePolicy,
 };
 use lazy_static::lazy_static;
-use std::sync::atomic::{AtomicI64, AtomicU64};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use valkey_module::configuration::ConfigurationContext;
@@ -152,12 +152,12 @@ fn handle_config_update() {
     let rounding = *ROUNDING_STRATEGY
         .lock()
         .expect("error unlocking rounding strategy");
-    let chunk_size_bytes = CHUNK_SIZE.load(std::sync::atomic::Ordering::SeqCst) as usize;
+    let chunk_size_bytes = CHUNK_SIZE.load(Ordering::Relaxed) as usize;
     let chunk_encoding = *CHUNK_ENCODING
         .lock()
         .expect("error unlocking chunk encoding");
 
-    let max_time_delta = IGNORE_MAX_TIME_DIFF.load(std::sync::atomic::Ordering::SeqCst) as u64;
+    let max_time_delta = IGNORE_MAX_TIME_DIFF.load(Ordering::Relaxed) as u64;
 
     let max_value_delta = *IGNORE_MAX_VALUE_DIFF
         .lock()
@@ -167,7 +167,7 @@ fn handle_config_update() {
         .lock()
         .expect("error unlocking retention period");
 
-    let series_worker_interval = SERIES_WORKER_INTERVAL.load(std::sync::atomic::Ordering::SeqCst);
+    let series_worker_interval = SERIES_WORKER_INTERVAL.load(Ordering::Relaxed);
 
     let modified = ConfigSettings {
         retention_period: if retention_period.as_millis() > 0 {
@@ -238,7 +238,7 @@ pub(crate) fn on_string_config_set(
         "ts-chunk-size" => {
             let chunk_size = parse_number(&value_str)? as usize;
             validate_chunk_size(chunk_size)?;
-            CHUNK_SIZE.store(chunk_size as i64, std::sync::atomic::Ordering::SeqCst);
+            CHUNK_SIZE.store(chunk_size as i64, Ordering::SeqCst);
             Ok(())
         }
         "ts-duplicate-policy" => DuplicatePolicy::try_from(value_str)
@@ -291,7 +291,7 @@ pub(crate) fn on_duration_config_set(
                 IGNORE_MAX_TIME_DIFF_MIN,
                 IGNORE_MAX_TIME_DIFF_MAX,
             )?;
-            IGNORE_MAX_TIME_DIFF.store(duration, std::sync::atomic::Ordering::SeqCst);
+            IGNORE_MAX_TIME_DIFF.store(duration, Ordering::SeqCst);
             Ok(())
         }
         "ts-series-worker-interval" => {
@@ -301,7 +301,7 @@ pub(crate) fn on_duration_config_set(
                 SERIES_WORKER_INTERVAL_MIN,
                 SERIES_WORKER_INTERVAL_MAX,
             )?;
-            SERIES_WORKER_INTERVAL.store(duration as u64, std::sync::atomic::Ordering::SeqCst);
+            SERIES_WORKER_INTERVAL.store(duration as u64, Ordering::SeqCst);
 
             Ok(())
         }
@@ -312,7 +312,7 @@ pub(crate) fn on_duration_config_set(
                 MULTI_SHARD_COMMAND_TIMEOUT_MIN,
                 MULTI_SHARD_COMMAND_TIMEOUT_MAX,
             )?;
-            MULTI_SHARD_COMMAND_TIMEOUT.store(duration as u64, std::sync::atomic::Ordering::SeqCst);
+            MULTI_SHARD_COMMAND_TIMEOUT.store(duration as u64, Ordering::SeqCst);
             Ok(())
         }
         _ => Err(ValkeyError::Str("Unknown configuration parameter")),
