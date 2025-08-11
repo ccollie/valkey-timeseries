@@ -56,7 +56,7 @@ pub const INVALID_IGNORE_OPTIONS: &str = "TSDB: invalid ignore options";
 pub const COULD_NOT_PARSE_IGNORE: &str = "TSDB: Couldn't parse IGNORE";
 pub const NEGATIVE_IGNORE_VALUES: &str = "TSDB: IGNORE values cannot be negative";
 
-pub const COULD_NOT_PARSE_LABELS: &str = "TSDB: Couldn't not parse LABELS";
+pub const COULD_NOT_PARSE_LABELS: &str = "TSDB: Couldn't parse LABELS";
 pub const COULD_NOT_PARSE_RETENTION: &str = "TSDB: Couldn't parse RETENTION";
 pub const COULD_NOT_PARSE_AGGREGATION: &str = "TSDB: Couldn't parse AGGREGATION";
 pub const COULD_NOT_PARSE_MIN: &str = "TSDB: Couldn't parse MIN";
