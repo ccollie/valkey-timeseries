@@ -1,10 +1,8 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::commands::parse_series_options;
 use crate::common::{Sample, Timestamp};
-use crate::error_consts;
 use crate::series::{
-    add_default_compactions, create_and_store_series, get_timeseries_mut, SampleAddResult,
-    TimeSeries, TimeSeriesOptions,
+    create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
 };
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -44,13 +42,7 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_series_options(args, TimeSeriesOptions::from_config(), 4, &[])?;
 
     let key = &original_args[1];
-    create_and_store_series(ctx, key, options)?;
-
-    let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? else {
-        return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
-    };
-
-    add_default_compactions(ctx, &mut series, key)?;
+    let mut series = create_and_store_series(ctx, key, options, true, true)?;
 
     handle_add(
         ctx,

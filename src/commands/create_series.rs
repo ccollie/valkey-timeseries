@@ -22,7 +22,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 pub fn create(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let (parsed_key, options) = parse_create_options(args)?;
 
-    create_and_store_series(ctx, &parsed_key, options)?;
+    let _ = create_and_store_series(ctx, &parsed_key, options, true, false)?;
 
     VALKEY_OK
 }

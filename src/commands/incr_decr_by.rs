@@ -3,8 +3,7 @@ use crate::commands::{parse_series_options, CommandArgToken};
 use crate::common::Timestamp;
 use crate::error_consts;
 use crate::series::{
-    add_default_compactions, create_and_store_series, get_timeseries_mut, SampleAddResult,
-    TimeSeries, TimeSeriesOptions,
+    create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
 };
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -51,14 +50,8 @@ fn create_series_and_update(
     const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
 
     let options = parse_series_options(args, TimeSeriesOptions::from_config(), 2, INVALID_ARGS)?;
-    create_and_store_series(ctx, &key_name, options)?;
+    let mut series = create_and_store_series(ctx, &key_name, options, true, true)?;
 
-    let Some(mut series) = get_timeseries_mut(ctx, &key_name, true, Some(AclPermissions::INSERT))?
-    else {
-        return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
-    };
-
-    add_default_compactions(ctx, &mut series, &key_name)?;
     handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
 }
 

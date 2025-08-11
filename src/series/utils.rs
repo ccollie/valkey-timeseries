@@ -147,15 +147,27 @@ pub fn create_and_store_internal(
     Ok(())
 }
 
-pub fn create_and_store_series(
-    ctx: &Context,
+pub fn create_and_store_series<'a>(
+    ctx: &'a Context,
     key: &ValkeyString,
     options: TimeSeriesOptions,
-) -> ValkeyResult<()> {
-    create_and_store_internal(ctx, key, options, true)
+    notify: bool,
+    add_compactions: bool,
+) -> ValkeyResult<SeriesGuardMut<'a>> {
+    create_and_store_internal(ctx, key, options, notify)?;
+
+    let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? else {
+        return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
+    };
+
+    if add_compactions {
+        // If compactions are enabled, add the default compaction rules
+        add_default_compactions(ctx, &mut series, key)?
+    }
+    Ok(series)
 }
 
-pub fn add_default_compactions(
+fn add_default_compactions(
     ctx: &Context,
     series: &mut TimeSeries,
     key: &ValkeyString,
