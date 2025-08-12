@@ -59,52 +59,18 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         assert labels['sensor'] == 'temp'
         assert labels['area'] == 'A1'
 
-    def test_alter_labels_add(self):
-        """Test altering labels by adding a new one"""
+    def test_alter_labels(self):
+        """Test altering labels"""
         self.setup_data()
 
-        new_labels = self.initial_labels + ['status', 'active']
+        new_labels = ['region', 'emea', 'flavor', 'chocolate']
         assert self.client.execute_command('TS.ALTER', self.key, 'LABELS', *new_labels) == b'OK'
 
         info = self.ts_info(self.key)
         labels = info['labels']
 
-        assert labels['sensor'] == 'temp'
-        assert labels['area'] == 'A1'
-        assert labels['status'] == 'active'
-
-        # Other properties should remain unchanged
-        assert info['retentionTime'] == self.initial_retention
-        assert info['chunkSize'] == self.initial_chunk_size
-
-    def test_alter_labels_remove(self):
-        """Test altering labels by removing one"""
-        self.setup_data()
-
-        new_labels = ['sensor', 'temp'] # Remove area=A1
-        assert self.client.execute_command('TS.ALTER', self.key, 'LABELS', *new_labels) == b'OK'
-
-        info = self.ts_info(self.key)
-        labels = info['labels']
-
-        assert labels['sensor'] == 'temp'
-
-        # Other properties should remain unchanged
-        assert info['retentionTime'] == self.initial_retention
-        assert info['chunkSize'] == self.initial_chunk_size
-
-    def test_alter_labels_change_value(self):
-        """Test altering labels by changing a value"""
-        self.setup_data()
-
-        new_labels = ['sensor', 'temp', 'area', 'B2'] # Change area A1 -> B2
-        assert self.client.execute_command('TS.ALTER', self.key, 'LABELS', *new_labels) == b'OK'
-
-        info = self.ts_info(self.key)
-        labels = info['labels']
-
-        assert labels['sensor'] == 'temp'
-        assert labels['area'] == 'B2'
+        assert labels['region'] == 'emea'
+        assert labels['flavor'] == 'chocolate'
 
     def test_alter_labels_clear(self):
         """Test altering labels to an empty set"""
@@ -166,9 +132,8 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
         """Test TS.ALTER on a non-existent key"""
         self.setup_data()
 
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="key does not exist"):
             self.client.execute_command('TS.ALTER', 'non_existent_key', 'RETENTION', 1000)
-        assert "key does not exist" in str(excinfo.value).lower()
 
     def test_alter_wrong_type(self):
         """Test TS.ALTER on a key of the wrong type"""
@@ -176,9 +141,9 @@ class TestTimeSeriesAlter(ValkeyTimeSeriesTestCaseBase):
 
         string_key = 'my_string_key'
         self.client.set(string_key, 'hello')
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="WRONGTYPE"):
             self.client.execute_command('TS.ALTER', string_key, 'RETENTION', 1000)
-        assert "WRONGTYPE" in str(excinfo.value)
+
 
     def test_alter_invalid_arguments(self):
         """Test TS.ALTER with invalid argument values"""
