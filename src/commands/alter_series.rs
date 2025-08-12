@@ -3,7 +3,6 @@ use crate::commands::parse_series_options;
 use crate::labels::InternedMetricName;
 use crate::series::index::with_timeseries_index;
 use crate::series::{with_timeseries_mut, SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions};
-use logger_rust::log_debug;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
 };
@@ -81,8 +80,6 @@ fn update_series(
     }
 
     if let Some(labels) = options.labels {
-        log_debug!("TS.ALTER: Options.labels = {:?}", labels);
-        log_debug!("TS.ALTER: series.labels = {:?}", series.labels);
         has_changed = true;
 
         // reindex the series
