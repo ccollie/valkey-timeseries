@@ -422,7 +422,6 @@ impl Chunk for UncompressedChunk {
     }
 
     fn debug_digest(&self, dig: &mut Digest) {
-        dig.add_string_buffer("UncompressedChunk".as_bytes());
         dig.add_long_long(self.max_size as i64);
         dig.add_long_long(self.max_elements as i64);
         for sample in &self.samples {

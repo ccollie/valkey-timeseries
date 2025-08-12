@@ -210,7 +210,6 @@ impl GorillaEncoder {
     }
 
     pub fn debug_digest(&self, dig: &mut Digest) {
-        dig.add_string_buffer("GorillaEncoder".as_bytes());
         self.writer.debug_digest(dig);
         dig.add_long_long(self.num_samples as c_longlong);
         dig.add_long_long(self.first_ts);
