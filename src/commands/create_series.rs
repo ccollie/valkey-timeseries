@@ -37,12 +37,7 @@ pub fn parse_create_options(
     let mut args = args;
     let key = args.remove(1);
 
-    let options = parse_series_options(
-        args,
-        TimeSeriesOptions::default(),
-        1,
-        &[CommandArgToken::OnDuplicate],
-    )?;
+    let options = parse_series_options(args, 1, &[CommandArgToken::OnDuplicate])?;
 
     // if options.labels.is_empty() {
     //     return Err(ValkeyError::Str(
@@ -55,13 +50,12 @@ pub fn parse_create_options(
 
 pub fn parse_series_options(
     args: Vec<ValkeyString>,
-    options: TimeSeriesOptions,
-    skip: usize,
+    args_to_skip: usize,
     invalid_args: &[CommandArgToken],
 ) -> ValkeyResult<TimeSeriesOptions> {
     let mut metric_set = false;
 
-    let mut options = options;
+    let mut options = TimeSeriesOptions::from_config();
 
     // Labels are variadic, so we handle them first to make parsing easier.
     let pos = args.iter().rposition(|x| x.eq_ignore_ascii_case(b"labels"));
@@ -72,7 +66,9 @@ pub fn parse_series_options(
         let label_section = args_inner.split_off(pos);
         // Skip the "LABELS" token itself and parse the remaining elements
         if label_section.len() > 1 {
-            options.labels = parse_labels(&label_section[1..])?;
+            options.labels = Some(parse_labels(&label_section[1..])?);
+        } else {
+            options.labels = Some(Vec::new()); // we explicitly set it to empty if no labels are provided
         }
         metric_set = true;
         args_inner
@@ -81,7 +77,7 @@ pub fn parse_series_options(
     };
 
     // Process the remaining arguments (skipping the key)
-    let mut args_iter = args.into_iter().skip(skip).peekable();
+    let mut args_iter = args.into_iter().skip(args_to_skip).peekable();
 
     while let Some(arg) = args_iter.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
@@ -111,7 +107,9 @@ pub fn parse_series_options(
                     return Err(ValkeyError::Str(error_consts::MISSING_DUPLICATE_POLICY));
                 };
                 let policy: DuplicatePolicy = DuplicatePolicy::try_from(arg.as_slice())?;
-                options.sample_duplicate_policy.policy = Option::from(policy)
+                let mut ignore_options = options.sample_duplicate_policy.unwrap_or_default();
+                ignore_options.policy = Some(policy);
+                options.sample_duplicate_policy = Some(ignore_options);
             }
             CommandArgToken::OnDuplicate => {
                 options.on_duplicate = Some(parse_duplicate_policy(&mut args_iter)?);
@@ -121,13 +119,15 @@ pub fn parse_series_options(
                     return Err(ValkeyError::Str(error_consts::METRIC_ALREADY_SET));
                 }
                 let metric = args_iter.next_string()?;
-                options.labels = parse_metric_name(&metric)?;
+                options.labels = Some(parse_metric_name(&metric)?);
             }
             CommandArgToken::Ignore => {
                 let (ignore_max_timediff, ignore_max_val_diff) =
                     parse_ignore_options(&mut args_iter)?;
-                options.sample_duplicate_policy.max_time_delta = ignore_max_timediff as u64;
-                options.sample_duplicate_policy.max_value_delta = ignore_max_val_diff;
+                let mut ignore_options = options.sample_duplicate_policy.unwrap_or_default();
+                ignore_options.max_time_delta = ignore_max_timediff as u64;
+                ignore_options.max_value_delta = ignore_max_val_diff;
+                options.sample_duplicate_policy = Some(ignore_options);
             }
             CommandArgToken::Retention => options.retention(parse_retention(&mut args_iter)?),
             CommandArgToken::SignificantDigits => {

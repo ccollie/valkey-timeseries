@@ -1,7 +1,9 @@
 use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::parse_series_options;
+use crate::labels::InternedMetricName;
 use crate::series::index::with_timeseries_index;
-use crate::series::{with_timeseries_mut, TimeSeries, TimeSeriesOptions};
+use crate::series::{with_timeseries_mut, SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions};
+use logger_rust::log_debug;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
 };
@@ -23,10 +25,8 @@ pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let key = args.remove(1);
 
     with_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE), |series| {
-        let opts = options_from_series(series);
         let options = parse_series_options(
             args,
-            opts,
             1,
             &[CommandArgToken::Encoding, CommandArgToken::OnDuplicate],
         )?;
@@ -42,11 +42,22 @@ pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 }
 
 fn options_from_series(series: &TimeSeries) -> TimeSeriesOptions {
+    let policy_default = SampleDuplicatePolicy::default();
+    let sample_duplicates = if series.sample_duplicates == policy_default {
+        None
+    } else {
+        Some(series.sample_duplicates)
+    };
+    let labels = if series.labels.is_empty() {
+        None
+    } else {
+        Some(series.labels.to_label_vec())
+    };
     TimeSeriesOptions {
         retention: Some(series.retention),
         chunk_size: Some(series.chunk_size_bytes),
-        labels: series.labels.to_label_vec(),
-        sample_duplicate_policy: series.sample_duplicates,
+        labels,
+        sample_duplicate_policy: sample_duplicates,
         chunk_compression: series.chunk_compression,
         rounding: series.rounding,
         ..Default::default()
@@ -60,14 +71,7 @@ fn update_series(
     key: &ValkeyString,
 ) -> bool {
     let mut has_changed = false;
-    if let Some(retention) = options.retention {
-        if retention != series.retention {
-            series.retention = retention;
-            has_changed = true;
-        }
-    }
 
-    // TODO: !!!!!
     if let Some(chunk_size) = options.chunk_size {
         if chunk_size != series.chunk_size_bytes {
             // todo: recompress the chunks
@@ -76,42 +80,36 @@ fn update_series(
         }
     }
 
-    if options.sample_duplicate_policy != series.sample_duplicates {
-        series.sample_duplicates = options.sample_duplicate_policy;
-        has_changed = true;
-    }
-
-    let mut labels_changed = false;
-    // see if labels have changed
-    if series.labels.len() != options.labels.len() {
-        labels_changed = true;
-    } else {
-        for label in options.labels.iter() {
-            if let Some(value) = series.labels.get_value(&label.name) {
-                if value != label.value {
-                    labels_changed = true;
-                    break;
-                }
-            } else {
-                labels_changed = true;
-                break;
-            }
-        }
-    }
-
-    if labels_changed {
+    if let Some(labels) = options.labels {
+        log_debug!("TS.ALTER: Options.labels = {:?}", labels);
+        log_debug!("TS.ALTER: series.labels = {:?}", series.labels);
         has_changed = true;
 
         // reindex the series
         with_timeseries_index(ctx, |ts_index| {
             ts_index.remove_timeseries(series);
             // update labels in series
-            series.labels.clear();
-            for label in options.labels {
-                series.labels.add_label(&label.name, &label.value);
-            }
+            series.labels = if labels.is_empty() {
+                InternedMetricName::default()
+            } else {
+                InternedMetricName::new(&labels)
+            };
             ts_index.index_timeseries(series, key.as_slice());
         });
+    }
+
+    if let Some(retention) = options.retention {
+        if retention != series.retention {
+            series.retention = retention;
+            has_changed = true;
+        }
+    }
+
+    if let Some(duplicate_policy) = options.sample_duplicate_policy {
+        if duplicate_policy != series.sample_duplicates {
+            series.sample_duplicates = duplicate_policy;
+            has_changed = true;
+        }
     }
 
     has_changed

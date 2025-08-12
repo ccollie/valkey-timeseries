@@ -1,9 +1,7 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::commands::parse_series_options;
 use crate::common::{Sample, Timestamp};
-use crate::series::{
-    create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
-};
+use crate::series::{create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
@@ -39,7 +37,7 @@ pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // clones because of replicate_and_notify
     let original_args = args.clone();
 
-    let options = parse_series_options(args, TimeSeriesOptions::from_config(), 4, &[])?;
+    let options = parse_series_options(args, 4, &[])?;
 
     let key = &original_args[1];
     let mut series = create_and_store_series(ctx, key, options, true, true)?;

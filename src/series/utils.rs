@@ -197,7 +197,7 @@ fn add_default_compactions(
         let options = TimeSeriesOptions {
             src_id: Some(series.id),
             retention: Some(Duration::from_millis(retention)),
-            labels,
+            labels: Some(labels),
             ..base_config
         };
 

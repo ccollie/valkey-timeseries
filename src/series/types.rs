@@ -350,8 +350,8 @@ pub struct TimeSeriesOptions {
     pub chunk_compression: ChunkEncoding,
     pub chunk_size: Option<usize>,
     pub retention: Option<Duration>,
-    pub sample_duplicate_policy: SampleDuplicatePolicy,
-    pub labels: Vec<Label>,
+    pub sample_duplicate_policy: Option<SampleDuplicatePolicy>,
+    pub labels: Option<Vec<Label>>,
     pub rounding: Option<RoundingStrategy>,
     pub on_duplicate: Option<DuplicatePolicy>,
 }
@@ -392,11 +392,11 @@ impl TimeSeriesOptions {
             chunk_compression: chunk_encoding,
             chunk_size: Some(chunk_size),
             rounding,
-            sample_duplicate_policy: SampleDuplicatePolicy {
+            sample_duplicate_policy: Some(SampleDuplicatePolicy {
                 policy: Some(policy),
                 max_time_delta,
                 max_value_delta,
-            },
+            }),
             ..Default::default()
         }
     }
@@ -409,8 +409,8 @@ impl Default for TimeSeriesOptions {
             chunk_compression: ChunkEncoding::default(),
             chunk_size: Some(CHUNK_SIZE_DEFAULT as usize),
             retention: None,
-            sample_duplicate_policy: SampleDuplicatePolicy::default(),
-            labels: vec![],
+            sample_duplicate_policy: None,
+            labels: None,
             rounding: None,
             on_duplicate: None,
         }
@@ -424,8 +424,8 @@ impl From<&ConfigSettings> for TimeSeriesOptions {
             chunk_compression: settings.chunk_encoding,
             chunk_size: Some(settings.chunk_size_bytes),
             retention: settings.retention_period,
-            sample_duplicate_policy: settings.duplicate_policy,
-            labels: vec![],
+            sample_duplicate_policy: Some(settings.duplicate_policy),
+            labels: None,
             rounding: settings.rounding,
             on_duplicate: None,
         }

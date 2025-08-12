@@ -86,7 +86,7 @@ impl TimeSeries {
             *retention
         });
         res.rounding = options.rounding;
-        res.sample_duplicates = options.sample_duplicate_policy;
+        res.sample_duplicates = options.sample_duplicate_policy.unwrap_or_default();
 
         // todo: make sure labels are sorted and dont contain __name__
         // if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
@@ -95,7 +95,11 @@ impl TimeSeries {
         //     ));
         // }
 
-        res.labels = InternedMetricName::new(&options.labels);
+        res.labels = if let Some(labels) = options.labels {
+            InternedMetricName::new(&labels)
+        } else {
+            InternedMetricName::default()
+        };
         res.src_series = options.src_id;
         res.id = next_timeseries_id();
 

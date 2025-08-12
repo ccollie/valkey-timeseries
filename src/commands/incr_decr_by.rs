@@ -2,9 +2,7 @@ use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::commands::{parse_series_options, CommandArgToken};
 use crate::common::Timestamp;
 use crate::error_consts;
-use crate::series::{
-    create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries, TimeSeriesOptions,
-};
+use crate::series::{create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
@@ -49,7 +47,7 @@ fn create_series_and_update(
     let key_name = args.remove(1);
     const INVALID_ARGS: &[CommandArgToken] = &[CommandArgToken::OnDuplicate];
 
-    let options = parse_series_options(args, TimeSeriesOptions::from_config(), 2, INVALID_ARGS)?;
+    let options = parse_series_options(args, 2, INVALID_ARGS)?;
     let mut series = create_and_store_series(ctx, &key_name, options, true, true)?;
 
     handle_update(ctx, &mut series, &key_name, timestamp, delta, is_increment)
