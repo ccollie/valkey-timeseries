@@ -148,7 +148,10 @@ pub fn parse_series_options(
 /// Parse labels from the command arguments. It's variadic, so it should be the last argument
 /// in the command, otherwise we end in ambiguity
 fn parse_labels(args: &[ValkeyString]) -> ValkeyResult<Vec<Label>> {
-    if args.len() < 2 || args.len() % 2 != 0 {
+    if args.is_empty() {
+        return Ok(Vec::new());
+    }
+    if args.len() % 2 != 0 {
         return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_LABELS));
     }
 
