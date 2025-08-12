@@ -24,7 +24,7 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         assert info['lastTimestamp'] == ts2
         assert labels is None or len(labels) == 0
         # assert info['rules'] == []
-        assert info['duplicatePolicy'] is None
+        assert info['duplicatePolicy'] == "block" # default
 
     def test_info_with_options(self):
         """Test TS.INFO on a time series created with options"""
@@ -74,16 +74,13 @@ class TestTimeseriesInfo(ValkeyTimeSeriesTestCaseBase):
         assert info['lastTimestamp'] == 0
         assert labels['status'] == 'init'
         # assert info['rules'] == []
-        assert info['duplicatePolicy'] is None
+        assert info['duplicatePolicy'] == "block" # default
         assert labels['status'] == 'init' # No data chunks yet
 
     def test_info_non_existent_key(self):
         """Test TS.INFO on a non-existent key"""
-        with pytest.raises(ResponseError) as excinfo:
+        with pytest.raises(ResponseError, match="key does not exist"):
             self.client.execute_command('TS.INFO', 'ts_nonexistent')
-        # Error message might vary slightly based on Valkey version/implementation
-        assert "key does not exist" in str(excinfo.value).lower() or \
-               "ERR TSDB: the key does not exist" in str(excinfo.value) # Common variations
 
     def test_info_wrong_type(self):
         """Test TS.INFO on a key of the wrong type"""
