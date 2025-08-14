@@ -57,12 +57,6 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTestCase):
         self.server, self.client = self.create_server(testdir = self.testdir,  server_path=server_path, args=args)
         logging.info("startup args are: %s", args)
 
-    def get_custom_args(self):
-        self.set_server_version(os.environ['SERVER_VERSION'])
-        return {
-            'loadmodule': os.getenv('MODULE_PATH'),
-        }
-
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
             client.execute_command(cmd)
