@@ -12,7 +12,7 @@
 // limitations under the License.
 
 // https://github.com/prometheus/prometheus/blob/main/tsdb/index/postings_test.go
-// https://github.com/prometheus/prometheus/blob/main/tsdb/querier_test.go
+// https://github.com/prometheus/prometheus/blob/main/tsdb/querier_test.go (see func TestPostingsForMatchers())
 #[cfg(test)]
 mod tests {
     use crate::labels::matchers::{MatchOp, Matcher, Matchers};
