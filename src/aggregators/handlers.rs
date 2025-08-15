@@ -24,12 +24,14 @@ pub trait AggregationHandler {
     fn empty_value(&self) -> Value {
         f64::NAN
     }
-    fn finalize(&self) -> f64 {
-        if let Some(v) = self.current() {
+    fn finalize(&mut self) -> f64 {
+        let result = if let Some(v) = self.current() {
             v
         } else {
             self.empty_value()
-        }
+        };
+        self.reset();
+        result
     }
     fn save_to_rdb(&self, rdb: *mut RedisModuleIO);
 }

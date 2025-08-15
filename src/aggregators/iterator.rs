@@ -81,7 +81,6 @@ impl AggregationHelper {
             self.aggregator.finalize()
         };
         let timestamp = self.calculate_bucket_start();
-        self.aggregator.reset();
         self.all_nans = true;
         Sample { timestamp, value }
     }

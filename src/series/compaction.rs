@@ -236,7 +236,6 @@ fn finalize_current_bucket(
     add_dest_bucket(ctx, current_bucket_start, aggregated_value)?;
 
     // Start a new bucket with the new sample
-    ctx.rule.aggregator.reset();
     ctx.rule.aggregator.update(new_sample.value);
     ctx.rule.bucket_start = Some(new_bucket_start);
 
@@ -800,7 +799,7 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
     let rule = parent.get_rule_by_dest_id(series.id)?;
     let start = rule.bucket_start?;
 
-    let agg = rule.aggregator.clone();
+    let mut agg = rule.aggregator.clone();
     let value = agg.finalize();
 
     let sample = Sample::new(start, value);
