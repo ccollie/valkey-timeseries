@@ -23,6 +23,8 @@ pub type PostingsIndex = TreeMap<IndexKey, PostingsBitmap>;
 /// Type for the key of the index.
 pub type KeyType = Box<[u8]>;
 
+/// `Postings` is the core in-memory inverted index for time series data. It is designed for efficient
+/// querying and retrieving of time series based on their labels.
 #[derive(Clone)]
 pub struct Postings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
@@ -59,8 +61,8 @@ impl Postings {
         self.stale_ids.clear();
     }
 
-    // swap the inner value with some other value
-    // this is specifically to handle the `swapdb` event callback
+    /// `swap` the inner value with some other value
+    /// this is specifically to handle the `swapdb` event callback
     pub fn swap(&mut self, other: &mut Self) {
         std::mem::swap(&mut self.label_index, &mut other.label_index);
         std::mem::swap(&mut self.id_to_key, &mut other.id_to_key);
