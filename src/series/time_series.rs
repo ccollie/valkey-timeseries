@@ -1,7 +1,7 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
-use crate::common::parallel::{join, par_try_for_each_mut};
+use crate::common::parallel::{join, maybe_par_iter, par_try_for_each_mut};
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
@@ -22,7 +22,7 @@ use get_size::GetSize;
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use std::vec;
 use valkey_module::digest::Digest;
@@ -647,12 +647,26 @@ impl TimeSeries {
         if let Some((start_index, end_index)) = self.get_chunk_index_bounds(min_timestamp, end_time)
         {
             // Check if any chunk in the range has samples within the time range
-            for index in start_index..=end_index {
-                let chunk = &self.chunks[index];
-                if chunk.has_samples_in_range(min_timestamp, end_time) {
-                    return true;
-                }
-            }
+            let chunks = &self.chunks[start_index..=end_index];
+            // if we're uncompressed, do simple linear search, else use parallel search
+            return if !self.is_compressed() {
+                // Uncompressed chunks, iterate linearly
+                chunks
+                    .iter()
+                    .any(|c| c.has_samples_in_range(start_time, end_time))
+            } else {
+                // Compressed chunks, check each chunk in parallel
+                let has_samples: AtomicBool = AtomicBool::new(false);
+                maybe_par_iter(2, chunks, |chunk| {
+                    if has_samples.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if chunk.has_samples_in_range(start_time, end_time) {
+                        has_samples.store(true, Ordering::Relaxed);
+                    }
+                });
+                has_samples.load(Ordering::Relaxed)
+            };
         }
 
         false

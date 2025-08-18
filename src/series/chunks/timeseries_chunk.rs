@@ -102,12 +102,14 @@ impl TimeSeriesChunk {
     }
 
     pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
-        if !self.overlaps(start_time, end_time) {
+        if self.is_empty() || !self.overlaps(start_time, end_time) {
             return false;
         }
+
         if self.range_iter(start_time, end_time).next().is_some() {
             return true;
         }
+
         false
     }
 

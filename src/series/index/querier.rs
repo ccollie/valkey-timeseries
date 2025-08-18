@@ -16,12 +16,11 @@ use super::postings::{handle_equal_match, Postings, PostingsBitmap, EMPTY_BITMAP
 use super::{with_timeseries_postings, TimeSeriesIndex};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
-use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
-use crate::series::acl::check_key_read_permission;
+use crate::series::acl::{check_key_permissions, check_key_read_permission};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesGuard, SeriesRef, TimeSeries, TimestampRange};
 use ahash::AHashSet;
@@ -131,6 +130,7 @@ fn collect_series_keys(
     date_range: Option<TimestampRange>,
 ) -> Vec<ValkeyString> {
     let mut keys = Vec::new();
+
     for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
         let real_key = ctx.create_string(key.as_bytes());
         if check_key_read_permission(ctx, &real_key) {
@@ -143,7 +143,7 @@ fn collect_series_keys(
             let redis_key = ctx.open_key(key);
             if let Ok(Some(series)) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
                 let (start, end) = date_range.get_series_range(series, now, true);
-                series.overlaps(start, end)
+                series.has_samples_in_range(start, end)
             } else {
                 false
             }
@@ -160,59 +160,73 @@ fn collect_series(
     require_permissions: bool,
     raise_permission_error: bool,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
-    let (start, end, has_range) = if let Some(date_range) = date_range {
-        let (start, end) = date_range.get_timestamps(None);
-        (start, end, true)
-    } else {
-        (0, 0, false)
-    };
-    let mut series = Vec::new();
-    let permissions = if require_permissions {
-        Some(AclPermissions::ACCESS)
-    } else {
-        None
-    };
+    let mut keys = Vec::with_capacity(8);
+
     for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
         let real_key = ctx.create_string(key.as_bytes());
-
-        // NOTE: unless the index is out of sync, getting a valid series at this point should not fail
-        let guard = match SeriesGuard::new(ctx, real_key, &permissions) {
-            Ok(guard) => guard,
-            Err(e) => {
-                match e {
-                    ValkeyError::Str(error_consts::KEY_NOT_FOUND) => {
-                        // If the key is not found, we can skip it
-                        ctx.log_warning("Failed to find series key in index");
-                        // TODO: mark the series as stale?
-                        continue;
-                    }
-                    ValkeyError::Str(error_consts::PERMISSION_DENIED) => {
-                        if raise_permission_error {
-                            return Err(e);
-                        } else {
-                            // skip series that we can't access
-                            continue;
-                        }
-                    }
-                    _ => {
-                        // If we get any other error, we should propagate it
-                        return Err(e);
-                    }
+        // check permissions if provided
+        if require_permissions {
+            if let Err(err) = check_key_permissions(ctx, &real_key, &AclPermissions::ACCESS) {
+                if raise_permission_error {
+                    return Err(err);
+                } else {
+                    // skip series that we can't access
+                    continue;
                 }
             }
-        };
-
-        if has_range {
-            let ts = guard.get_series();
-            if !ts.has_samples_in_range(start, end) {
-                // if the series is empty, we don't need to add it to the list
-                continue;
-            }
         }
-        series.push(guard);
+
+        keys.push(real_key);
     }
 
-    Ok(series)
+    if keys.is_empty() {
+        // If we didn't find any series, return an empty vector.
+        return Ok(Vec::new());
+    }
+
+    if let Some(date_range) = date_range {
+        // If we have a date range, filter the series by it.
+        let (start, end) = date_range.get_timestamps(None);
+        // keep these values alive
+
+        let mut series = Vec::with_capacity(keys.len());
+
+        // at some point we should parallelize this.
+        for key in keys.into_iter() {
+            // SAFETY: we have already checked permissions above.
+            let valkey_key = ctx.open_key(&key);
+            // get series from valkey
+            match valkey_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+                Ok(Some(ts)) => {
+                    if ts.has_samples_in_range(start, end) {
+                        // SAFETY: we have already checked permissions above.
+                        let guard = SeriesGuard::open(ctx, key);
+                        series.push(guard);
+                    } else {
+                        continue;
+                    }
+                }
+                Ok(None) => {
+                    ctx.log_warning("Failed to find series key in index");
+                    // todo: mark the series as stale?
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        return Ok(series);
+    }
+
+    // If we don't have a date range, we can return all the series.
+    let res = keys
+        .into_iter()
+        .map(|key| {
+            // SAFETY: we have already checked permissions above.
+            SeriesGuard::new(ctx, key, &None)
+        })
+        .collect::<ValkeyResult<Vec<SeriesGuard>>>()?;
+
+    Ok(res)
 }
 
 /// `postings_for_matchers` assembles a single postings iterator against the series index
@@ -417,7 +431,7 @@ pub(super) fn postings_for_matcher_slice<'a>(
                     // l!=""
                     (true, false) => {
                         // If the label can't be empty and is a Not, but the inner matcher can
-                        // be empty we need to use inverse_postings_for_matcher.
+                        // be empty, we need to use inverse_postings_for_matcher.
                         let inverse = m.clone().inverse();
                         let it = inverse_postings_for_matcher(ix, &inverse);
                         if it.is_empty() {
