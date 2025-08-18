@@ -26,7 +26,6 @@ pub(super) fn calc_duplicate_policy_digest(policy: &SampleDuplicatePolicy, diges
 }
 
 pub(super) fn calc_compaction_digest(rule: &CompactionRule, digest: &mut Digest) {
-    digest.add_string_buffer(b"rule");
     digest.add_long_long(rule.dest_id as i64);
     digest.add_long_long(rule.bucket_duration as i64);
     digest.add_long_long(rule.align_timestamp);
