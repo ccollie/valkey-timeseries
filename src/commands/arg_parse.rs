@@ -1,12 +1,12 @@
 use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
-use crate::common::rounding::{RoundingStrategy, MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS};
-use crate::common::time::current_time_millis;
 use crate::common::Timestamp;
+use crate::common::rounding::{MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, RoundingStrategy};
+use crate::common::time::current_time_millis;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
 use crate::labels::matchers::Matchers;
-use crate::labels::{parse_series_selector, Label};
+use crate::labels::{Label, parse_series_selector};
 use crate::parser::number::parse_number;
 use crate::parser::{
     metric_name::parse_metric_name as parse_metric, number::parse_number as parse_number_internal,
@@ -47,6 +47,7 @@ const CMD_ARG_FALSE: &str = "FALSE";
 const CMD_ARG_FILTER: &str = "FILTER";
 const CMD_ARG_FILTER_BY_TS: &str = "FILTER_BY_TS";
 const CMD_ARG_FILTER_BY_VALUE: &str = "FILTER_BY_VALUE";
+const CMD_ARG_FILTER_BY_RANGE: &str = "FILTER_BY_RANGE";
 const CMD_ARG_FULL: &str = "FULL";
 const CMD_ARG_GROUP_BY: &str = "GROUPBY";
 const CMD_ARG_IGNORE: &str = "IGNORE";
@@ -97,6 +98,7 @@ pub enum CommandArgToken {
     False,
     Filter,
     FilterByTs,
+    FilterByRange,
     FilterByValue,
     Full,
     GroupBy,
@@ -152,6 +154,7 @@ impl CommandArgToken {
             CommandArgToken::False => CMD_ARG_FALSE,
             CommandArgToken::Filter => CMD_ARG_FILTER,
             CommandArgToken::FilterByTs => CMD_ARG_FILTER_BY_TS,
+            CommandArgToken::FilterByRange => CMD_ARG_FILTER_BY_RANGE,
             CommandArgToken::FilterByValue => CMD_ARG_FILTER_BY_VALUE,
             CommandArgToken::Full => CMD_ARG_FULL,
             CommandArgToken::GroupBy => CMD_ARG_GROUP_BY,
@@ -216,6 +219,7 @@ pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
         "FILTER" => CommandArgToken::Filter,
         "FILTER_BY_TS" => CommandArgToken::FilterByTs,
         "FILTER_BY_VALUE" => CommandArgToken::FilterByValue,
+        "FILTER_BY_RANGE" => CommandArgToken::FilterByRange,
         "FULL" => CommandArgToken::Full,
         "GROUPBY" => CommandArgToken::GroupBy,
         "IGNORE" => CommandArgToken::Ignore,
@@ -357,7 +361,9 @@ pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {
 
 pub fn parse_chunk_size(arg: &str) -> ValkeyResult<usize> {
     fn get_error_result() -> ValkeyResult<usize> {
-        let msg = format!("TSDB: CHUNK_SIZE value must be an integer multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
+        let msg = format!(
+            "TSDB: CHUNK_SIZE value must be an integer multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]"
+        );
         Err(ValkeyError::String(msg))
     }
 
@@ -773,7 +779,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
                 } else {
                     let msg = format!("TSDB: invalid argument '{token}'");
                     Err(ValkeyError::String(msg))
-                }
+                };
             }
         }
     }
@@ -872,9 +878,8 @@ pub(crate) fn parse_metadata_command_args(
     args: &mut CommandArgIterator,
     require_matchers: bool,
 ) -> ValkeyResult<MatchFilterOptions> {
-    const ARG_TOKENS: [CommandArgToken; 3] = [
-        CommandArgToken::End,
-        CommandArgToken::Start,
+    const ARG_TOKENS: [CommandArgToken; 2] = [
+        CommandArgToken::FilterByRange,
         CommandArgToken::Limit,
     ];
 
@@ -886,13 +891,10 @@ pub(crate) fn parse_metadata_command_args(
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
-            CommandArgToken::Start => {
-                let next = args.next_str()?;
-                start_value = Some(parse_timestamp_arg(next, "START")?);
-            }
-            CommandArgToken::End => {
-                let next = args.next_str()?;
-                end_value = Some(parse_timestamp_arg(next, "END")?);
+            CommandArgToken::FilterByRange => {
+                let range = parse_timestamp_range(args)?;
+                start_value = Some(range.start);
+                end_value = Some(range.end);
             }
             CommandArgToken::Filter => {
                 let m = parse_series_selector_list(args, &ARG_TOKENS)?;

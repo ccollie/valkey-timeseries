@@ -12,8 +12,8 @@ use valkey_module::{
     ValkeyString, ValkeyValue,
 };
 
-// TS.LABELVALUES label [START fromTimestamp] [END fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
-// https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
+/// TS.LABELVALUES label [FILTER_BY_RANGE fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
+/// https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
 pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 3 {
         return Err(WrongArity);

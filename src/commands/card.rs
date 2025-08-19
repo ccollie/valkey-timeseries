@@ -13,7 +13,7 @@ use valkey_module::{
 };
 
 ///
-/// TS.CARD [START fromTimestamp] [END toTimestamp] [FILTER filter...]
+/// TS.CARD [FILTER_BY_RANGE fromTimestamp toTimestamp] [FILTER filter...]
 ///
 /// returns the number of unique time series that match a certain label set.
 pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {

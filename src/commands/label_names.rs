@@ -10,7 +10,7 @@ use valkey_module::{
 };
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
-/// TS.LABELNAMES [START startTimestamp] [END endTimestamp] [LIMIT limit] FILTER seriesMatcher...
+/// TS.LABELNAMES [FILTER_BY_RANGE fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
 pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, true)?;
