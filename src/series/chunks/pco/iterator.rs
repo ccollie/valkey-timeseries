@@ -1,9 +1,9 @@
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
+use pco::FULL_BATCH_N;
 use pco::data_types::Number;
 use pco::errors::PcoError;
 use pco::standalone::{FileDecompressor, MaybeChunkDecompressor};
-use pco::FULL_BATCH_N;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 const EMPTY_SLICE: [u8; 0] = [];
@@ -186,8 +186,8 @@ fn convert_error(_err: PcoError) -> ValkeyError {
 #[cfg(test)]
 mod tests {
     use crate::common::Sample;
-    use crate::series::chunks::pco::pco_utils::{compress_timestamps, compress_values};
     use crate::series::chunks::pco::PcoSampleIterator;
+    use crate::series::chunks::pco::pco_utils::{compress_timestamps, compress_values};
     use crate::tests::generators::DataGenerator;
     use crate::tests::generators::RandAlgo::MackeyGlass;
     use std::time::Duration;

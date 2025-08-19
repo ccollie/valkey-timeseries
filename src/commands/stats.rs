@@ -1,7 +1,7 @@
 use crate::commands::arg_parse::parse_integer_arg;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_stats_request, StatsRequest};
-use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats, StatsMaxHeap};
+use crate::fanout::{StatsRequest, perform_remote_stats_request};
+use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, with_timeseries_index};
 use ahash::AHashMap;
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;

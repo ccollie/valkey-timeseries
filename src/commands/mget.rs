@@ -2,7 +2,7 @@ use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_mget_request, MultiGetResponse};
+use crate::fanout::{MultiGetResponse, perform_remote_mget_request};
 use crate::labels::Label;
 use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;

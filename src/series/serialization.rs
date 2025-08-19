@@ -1,10 +1,10 @@
-use crate::common::rdb::*;
 use crate::common::Sample;
+use crate::common::rdb::*;
 use crate::labels::InternedMetricName;
 use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::compaction::CompactionRule;
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeseriesId};
-use valkey_module::{raw, ValkeyResult};
+use valkey_module::{ValkeyResult, raw};
 
 pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     raw::save_unsigned(rdb, series.id);

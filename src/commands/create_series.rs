@@ -1,12 +1,12 @@
 use crate::commands::arg_parse::{
-    parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
+    CommandArgToken, parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
     parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options, parse_metric_name,
-    parse_retention, parse_significant_digit_rounding, CommandArgToken,
+    parse_retention, parse_significant_digit_rounding,
 };
 use crate::error_consts;
 use crate::labels::Label;
-use crate::series::{create_and_store_series, DuplicatePolicy, TimeSeriesOptions};
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK};
+use crate::series::{DuplicatePolicy, TimeSeriesOptions, create_and_store_series};
+use valkey_module::{Context, NextArg, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Create a new time series
 ///

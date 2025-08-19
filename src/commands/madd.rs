@@ -2,8 +2,8 @@ use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::series::{
-    create_and_store_series, get_timeseries_mut, multi_series_merge_samples, PerSeriesSamples,
-    SampleAddResult, SeriesGuardMut, TimeSeriesOptions,
+    PerSeriesSamples, SampleAddResult, SeriesGuardMut, TimeSeriesOptions, create_and_store_series,
+    get_timeseries_mut, multi_series_merge_samples,
 };
 use ahash::AHashMap;
 use smallvec::SmallVec;

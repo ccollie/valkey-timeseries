@@ -3,7 +3,7 @@ use std::collections::hash_map::Entry;
 use std::sync::RwLock;
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
-use super::postings::{Postings, PostingsBitmap, ALL_POSTINGS_KEY_NAME};
+use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::{Label, SeriesLabel};

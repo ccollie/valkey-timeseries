@@ -1,6 +1,6 @@
 use super::join_right_iter::JoinRightIter;
-use super::{convert_join_item, JoinType, JoinValue};
 use super::{JoinAsOfIter, JoinkitExt};
+use super::{JoinType, JoinValue, convert_join_item};
 use crate::common::Sample;
 use joinkit::Joinkit;
 

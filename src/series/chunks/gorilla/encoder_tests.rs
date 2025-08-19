@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::common::time::current_time_millis;
     use crate::common::Sample;
+    use crate::common::time::current_time_millis;
     use crate::series::chunks::gorilla::GorillaEncoder;
     use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;

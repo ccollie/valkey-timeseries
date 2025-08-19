@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 use super::traits::BitWrite;
-use super::utils::{zigzag_encode, MSB};
+use super::utils::{MSB, zigzag_encode};
 use get_size::GetSize;
 use num_traits::PrimInt;
 use serde::{Deserialize, Serialize};

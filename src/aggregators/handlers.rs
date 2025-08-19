@@ -12,7 +12,7 @@ use enum_dispatch::enum_dispatch;
 use get_size::GetSize;
 use std::fmt::Display;
 use std::hash::Hash;
-use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString, raw};
 
 type Value = f64;
 

@@ -1,8 +1,8 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::regex::parse_regex_anchored;
+use crate::parser::ParseError;
 use crate::parser::lex::Token;
 use crate::parser::utils::escape_ident;
-use crate::parser::ParseError;
 use enquote::enquote;
 use regex::Regex;
 use smallvec::SmallVec;

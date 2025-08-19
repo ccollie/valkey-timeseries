@@ -1,14 +1,14 @@
+use crate::common::Timestamp;
 use crate::common::encoding::{read_uvarint, write_uvarint};
 use crate::common::parallel::join;
 use crate::common::pool::get_pooled_buffer;
-use crate::common::Timestamp;
 use crate::error::{TsdbError, TsdbResult};
+use pco::DEFAULT_COMPRESSION_LEVEL;
 use pco::data_types::Number;
 use pco::errors::PcoError;
 use pco::standalone::{
     simple_compress, simple_compress_into, simple_decompress, simple_decompress_into,
 };
-use pco::DEFAULT_COMPRESSION_LEVEL;
 use pco::{ChunkConfig, DeltaSpec};
 use std::error::Error;
 

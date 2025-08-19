@@ -189,10 +189,14 @@ mod tests {
                 Ok(v) => {
                     if v.is_nan() {
                         if !expected.is_nan() {
-                            panic!("unexpected value returned from parse_positive_number({s}); got {v}; want {expected}")
+                            panic!(
+                                "unexpected value returned from parse_positive_number({s}); got {v}; want {expected}"
+                            )
                         }
                     } else if v != expected {
-                        panic!("unexpected value returned from parse_positive_number({s}); got {v}; want {expected}")
+                        panic!(
+                            "unexpected value returned from parse_positive_number({s}); got {v}; want {expected}"
+                        )
                     }
                 }
             }

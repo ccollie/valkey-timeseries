@@ -1,20 +1,20 @@
-use crate::common::binary_search::{find_last_ge_index, ExponentialSearch};
+use crate::common::binary_search::{ExponentialSearch, find_last_ge_index};
 use crate::common::constants::VEC_BASE_SIZE;
 use crate::common::hash::hash_f64;
 use crate::common::parallel::join;
-use crate::common::pool::{get_pooled_vec_f64, get_pooled_vec_i64, PooledVecF64, PooledVecI64};
+use crate::common::pool::{PooledVecF64, PooledVecI64, get_pooled_vec_f64, get_pooled_vec_i64};
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
+use crate::series::chunks::Chunk;
 use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::pco::PcoSampleIterator;
 use crate::series::chunks::pco::pco_utils::{
     compress_timestamps, compress_values, decompress_timestamps, decompress_values,
 };
-use crate::series::chunks::pco::PcoSampleIterator;
 use crate::series::chunks::utils::get_timestamp_index_bounds;
-use crate::series::chunks::Chunk;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use std::mem::size_of;
 use valkey_module::digest::Digest;
-use valkey_module::{raw, RedisModuleIO, ValkeyResult};
+use valkey_module::{RedisModuleIO, ValkeyResult, raw};
 
 /// `PcoChunk` holds sample data encoded using Pco compression.
 /// https://github.com/mwlon/pcodec
@@ -625,9 +625,9 @@ fn remove_values_in_range(
 #[cfg(test)]
 mod tests {
     use crate::common::{Sample, Timestamp};
-    use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
     use crate::series::chunks::Chunk;
     use crate::series::chunks::PcoChunk;
+    use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
     use crate::series::{DuplicatePolicy, SampleAddResult};
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;

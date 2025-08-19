@@ -1,7 +1,7 @@
 use crate::error_consts;
+use crate::series::TimeSeries;
 use crate::series::acl::check_key_permissions;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::TimeSeries;
 use std::ops::{Deref, DerefMut};
 use valkey_module::key::ValkeyKey;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};

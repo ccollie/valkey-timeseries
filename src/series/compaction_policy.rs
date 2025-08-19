@@ -304,7 +304,7 @@ fn parse_compaction_policy(val: &str) -> ValkeyResult<CompactionPolicy> {
             _ => {
                 return Err(ValkeyError::String(
                     "TSDB: invalid align timestamp in compaction policy".to_string(),
-                ))
+                ));
             }
         }
     } else {
@@ -483,20 +483,24 @@ mod tests {
     fn test_invalid_regex_filter() {
         let result = parse_compaction_policy_with_filter("avg:60:2h:0|[invalid");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid regex filter"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid regex filter")
+        );
     }
 
     #[test]
     fn test_empty_filter() {
         let result = parse_compaction_policy_with_filter("avg:60:2h:0|");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("empty regex filter"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("empty regex filter")
+        );
     }
 
     #[test]

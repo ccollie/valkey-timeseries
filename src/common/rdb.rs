@@ -1,9 +1,9 @@
-use crate::common::rounding::RoundingStrategy;
 use crate::common::Timestamp;
+use crate::common::rounding::RoundingStrategy;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
-use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
+use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, raw};
 
 const STALE_NAN: f64 = f64::from_bits(0x7ff0000000000002);
 

@@ -5,9 +5,9 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
-use logger_rust::{set_log_level, LogLevel};
+use logger_rust::{LogLevel, set_log_level};
 use valkey_module::{
-    configuration::ConfigurationFlags, valkey_module, Context, Status, ValkeyString, Version,
+    Context, Status, ValkeyString, Version, configuration::ConfigurationFlags, valkey_module,
 };
 
 pub mod aggregators;

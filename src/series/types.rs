@@ -2,14 +2,14 @@ use crate::common::rdb::rdb_load_string;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::{Sample, Timestamp};
 use crate::config::{
-    ConfigSettings, CHUNK_ENCODING, CHUNK_SIZE, CHUNK_SIZE_DEFAULT, DUPLICATE_POLICY,
+    CHUNK_ENCODING, CHUNK_SIZE, CHUNK_SIZE_DEFAULT, ConfigSettings, DUPLICATE_POLICY,
     IGNORE_MAX_TIME_DIFF, IGNORE_MAX_VALUE_DIFF, RETENTION_PERIOD, ROUNDING_STRATEGY,
 };
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::labels::Label;
-use crate::series::chunks::ChunkEncoding;
 use crate::series::SeriesRef;
+use crate::series::chunks::ChunkEncoding;
 use get_size::GetSize;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
-use valkey_module::{raw, ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue, raw};
 
 #[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize, Hash)]
 /// The policy to use when a duplicate sample is encountered

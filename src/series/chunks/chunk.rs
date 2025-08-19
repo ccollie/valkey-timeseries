@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::vec;
 use valkey_module::digest::Digest;
-use valkey_module::{raw, ValkeyError, ValkeyResult};
+use valkey_module::{ValkeyError, ValkeyResult, raw};
 
 pub const MIN_CHUNK_SIZE: usize = 48;
 pub const MAX_CHUNK_SIZE: usize = 1048576;
@@ -170,7 +170,9 @@ impl Iterator for ChunkSampleIterator<'_> {
 
 pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
     fn get_error_result() -> TsdbResult<()> {
-        let msg = format!("TSDB: CHUNK_SIZE value must be a multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
+        let msg = format!(
+            "TSDB: CHUNK_SIZE value must be a multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]"
+        );
         Err(TsdbError::InvalidConfiguration(msg))
     }
 

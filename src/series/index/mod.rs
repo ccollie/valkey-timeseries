@@ -16,7 +16,7 @@ use crate::series::acl::check_key_permissions;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{get_timeseries_mut, SeriesGuardMut, SeriesRef, TimeSeries};
+use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
 pub use index_key::IndexKey;
 pub use posting_stats::*;
 pub use querier::*;

@@ -1,7 +1,7 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_label_values_request, LabelValuesRequest, LabelValuesResponse};
+use crate::fanout::{LabelValuesRequest, LabelValuesResponse, perform_remote_label_values_request};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::cmp::Ordering;

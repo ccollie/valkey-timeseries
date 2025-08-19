@@ -7,14 +7,14 @@ use crate::iterators::{FilteredSampleIterator, SampleIter};
 use crate::series::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use crate::series::types::ValueFilter;
 use crate::series::{
-    chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
     DuplicatePolicy, SampleAddResult,
+    chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
 };
 use core::mem::size_of;
 use get_size::GetSize;
 use std::cmp::Ordering;
 use valkey_module::digest::Digest;
-use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
+use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, raw};
 
 #[derive(Debug, Clone, Hash, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {

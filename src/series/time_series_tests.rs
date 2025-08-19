@@ -729,7 +729,7 @@ mod tests {
         })
         .unwrap();
         ts.add(200, 2.0, None); // Sets last_timestamp to 200
-                                // Minimum timestamp allowed is 200 - 100 = 100
+        // Minimum timestamp allowed is 200 - 100 = 100
 
         let samples = vec![
             Sample {

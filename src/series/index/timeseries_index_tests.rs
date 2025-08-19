@@ -3,7 +3,7 @@ mod tests {
     use crate::labels::InternedMetricName;
     use crate::parser::metric_name::parse_metric_name;
     use crate::series::index::index_key::IndexKey;
-    use crate::series::index::{next_timeseries_id, TimeSeriesIndex};
+    use crate::series::index::{TimeSeriesIndex, next_timeseries_id};
     use crate::series::time_series::TimeSeries;
     use blart::AsBytes;
 

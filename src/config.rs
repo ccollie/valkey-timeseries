@@ -4,10 +4,10 @@ use crate::common::rounding::RoundingStrategy;
 use crate::error_consts;
 use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
-use crate::series::chunks::{validate_chunk_size, ChunkEncoding};
+use crate::series::chunks::{ChunkEncoding, validate_chunk_size};
 use crate::series::{
-    add_compaction_policies_from_config, clear_compaction_policy_config, DuplicatePolicy,
-    SampleDuplicatePolicy,
+    DuplicatePolicy, SampleDuplicatePolicy, add_compaction_policies_from_config,
+    clear_compaction_policy_config,
 };
 use lazy_static::lazy_static;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};

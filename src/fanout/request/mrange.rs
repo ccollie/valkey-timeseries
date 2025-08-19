@@ -20,10 +20,10 @@ use crate::fanout::request::series_chunk::{deserialize_sample_data, serialize_sa
 use crate::fanout::serialization::samples_to_chunk;
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::SeriesLabel;
+use crate::series::ValueFilter;
 use crate::series::request_types::{
     AggregationOptions, MRangeOptions, MRangeSeriesResult, RangeGroupingOptions,
 };
-use crate::series::ValueFilter;
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use smallvec::SmallVec;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
@@ -467,10 +467,10 @@ mod tests {
     use super::*;
     use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
+    use crate::labels::Label;
     use crate::labels::matchers::{
         Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
     };
-    use crate::labels::Label;
     use crate::series::TimestampRange;
 
     fn make_sample_matchers() -> Matchers {

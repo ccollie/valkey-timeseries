@@ -19,7 +19,7 @@ mod tests {
     use crate::labels::{InternedMetricName, Label};
     use crate::parser::metric_name::parse_metric_name;
     use crate::series::index::{
-        next_timeseries_id, postings_for_matchers, IndexKey, TimeSeriesIndex,
+        IndexKey, TimeSeriesIndex, next_timeseries_id, postings_for_matchers,
     };
     use crate::series::{SeriesRef, TimeSeries};
     use std::collections::{HashMap, HashSet};

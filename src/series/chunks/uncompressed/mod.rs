@@ -1,9 +1,9 @@
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
-use crate::common::{Sample, Timestamp, SAMPLE_SIZE};
+use crate::common::{SAMPLE_SIZE, Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::merge::merge_samples;
 use crate::series::chunks::Chunk;
+use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use core::mem::size_of;
@@ -11,7 +11,7 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use valkey_module::digest::Digest;
-use valkey_module::{raw, RedisModuleIO, ValkeyResult};
+use valkey_module::{RedisModuleIO, ValkeyResult, raw};
 
 // todo: move to constants
 pub const MAX_UNCOMPRESSED_SAMPLES: usize = 256;
@@ -434,7 +434,7 @@ impl Chunk for UncompressedChunk {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::{Sample, SAMPLE_SIZE};
+    use crate::common::{SAMPLE_SIZE, Sample};
     use crate::series::chunks::{Chunk, UncompressedChunk};
     use crate::series::{DuplicatePolicy, SampleAddResult};
 

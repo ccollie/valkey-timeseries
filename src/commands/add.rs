@@ -1,7 +1,7 @@
 use crate::commands::arg_parse::{parse_timestamp, parse_value_arg};
 use crate::commands::parse_series_options;
 use crate::common::{Sample, Timestamp};
-use crate::series::{create_and_store_series, get_timeseries_mut, SampleAddResult, TimeSeries};
+use crate::series::{SampleAddResult, TimeSeries, create_and_store_series, get_timeseries_mut};
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };

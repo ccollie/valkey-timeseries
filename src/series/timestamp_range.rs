@@ -1,7 +1,7 @@
+use crate::common::Timestamp;
 use crate::common::constants::MAX_TIMESTAMP;
 use crate::common::humanize::humanize_duration_ms;
 use crate::common::time::current_time_millis;
-use crate::common::Timestamp;
 use crate::error_consts;
 use crate::parser::duration::parse_duration_value;
 use crate::parser::timestamp::parse_timestamp;
@@ -301,9 +301,9 @@ impl RangeBounds<TimestampValue> for TimestampValue {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::Sample;
     use crate::common::constants::MAX_TIMESTAMP;
     use crate::common::time::current_time_millis;
-    use crate::common::Sample;
     use crate::error_consts::INVALID_TIMESTAMP;
     use crate::series::timestamp_range::TimestampValue;
     use crate::series::{TimeSeries, TimestampRange};

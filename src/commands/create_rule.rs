@@ -1,13 +1,13 @@
 use crate::aggregators::AggregationType;
-use crate::commands::{parse_duration, CommandArgIterator};
+use crate::commands::{CommandArgIterator, parse_duration};
 use crate::error_consts;
 use crate::parser::timestamp::parse_timestamp;
 use crate::series::{
-    check_new_rule_circular_dependency, get_timeseries_mut, CompactionRule, SeriesRef,
+    CompactionRule, SeriesRef, check_new_rule_circular_dependency, get_timeseries_mut,
 };
 use valkey_module::{
-    AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
-    VALKEY_OK,
+    AclPermissions, Context, NextArg, NotifyEvent, VALKEY_OK, ValkeyError, ValkeyResult,
+    ValkeyString,
 };
 
 ///

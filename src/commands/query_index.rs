@@ -1,10 +1,10 @@
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_index_query_request, IndexQueryResponse};
+use crate::fanout::{IndexQueryResponse, perform_remote_index_query_request};
 use crate::labels::matchers::Matchers;
 use crate::labels::parse_series_selector;
+use crate::series::TimestampRange;
 use crate::series::index::series_keys_by_matchers;
 use crate::series::request_types::MatchFilterOptions;
-use crate::series::TimestampRange;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{
     BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyResult, ValkeyString, ValkeyValue,

@@ -131,8 +131,8 @@ fn scan_duration_segment(s: &str) -> ParseResult<(f64, &str)> {
 mod tests {
     use super::*;
     use crate::parser::duration::{
-        parse_duration_value, parse_positive_duration_value, scan_duration_segment, MILLIS_PER_DAY,
-        MILLIS_PER_MINUTE, MILLIS_PER_SECOND,
+        MILLIS_PER_DAY, MILLIS_PER_MINUTE, MILLIS_PER_SECOND, parse_duration_value,
+        parse_positive_duration_value, scan_duration_segment,
     };
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
-use crate::labels::matchers::Matchers;
 use crate::labels::Label;
+use crate::labels::matchers::Matchers;
 use crate::series::{TimestampRange, ValueFilter};
 use valkey_module::{ValkeyString, ValkeyValue};
 

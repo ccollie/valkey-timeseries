@@ -3,11 +3,11 @@ use super::response_generated::{
 };
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::error_consts;
-use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::request::ValkeyResult;
+use crate::fanout::request::common::load_flatbuffers_object;
 use crate::fanout::serialization::{Deserialized, Serialized};
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
-use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats};
+use crate::series::index::{PostingStat, PostingsStats, with_timeseries_index};
 use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
 use valkey_module::{Context, ValkeyError};
 

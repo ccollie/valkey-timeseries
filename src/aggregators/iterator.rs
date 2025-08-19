@@ -414,7 +414,7 @@ mod tests {
         let result: Vec<Sample> = iterator.collect();
 
         assert_eq!(result.len(), 0); // Last bucket with default value
-                                     // assert!(result[0].value.is_nan() || result[0].value == 0.0);
+        // assert!(result[0].value.is_nan() || result[0].value == 0.0);
     }
 
     #[test]

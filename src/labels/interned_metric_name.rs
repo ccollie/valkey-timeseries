@@ -5,7 +5,7 @@ use enquote::enquote;
 use get_size::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
-use valkey_module::{raw, ValkeyResult, ValkeyValue};
+use valkey_module::{ValkeyResult, ValkeyValue, raw};
 use yasi::InternedString;
 
 const VALUE_SEPARATOR: &str = "=";

@@ -2,8 +2,9 @@ use crate::common::constants::META_KEY_LABEL;
 use crate::common::rounding::RoundingStrategy;
 use crate::series::index::with_timeseries_index;
 use crate::series::{
+    SeriesRef, TimeSeries,
     chunks::{Chunk, TimeSeriesChunk},
-    get_timeseries, SeriesRef, TimeSeries,
+    get_timeseries,
 };
 use blart::AsBytes;
 use smallvec::SmallVec;

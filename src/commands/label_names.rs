@@ -1,6 +1,6 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_label_names_request, LabelNamesResponse};
+use crate::fanout::{LabelNamesResponse, perform_remote_label_names_request};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;

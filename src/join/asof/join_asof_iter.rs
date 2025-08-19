@@ -1,4 +1,4 @@
-use super::{join_asof_samples, AsofJoinStrategy};
+use super::{AsofJoinStrategy, join_asof_samples};
 use crate::common::Sample;
 use crate::join::JoinValue;
 use joinkit::EitherOrBoth;

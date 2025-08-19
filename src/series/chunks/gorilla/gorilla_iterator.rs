@@ -1,7 +1,7 @@
+use super::GorillaEncoder;
 use super::buffered_read::BufferedReader;
 use super::varbit::read_varbit_int;
 use super::varbit_xor::read_varbit_xor;
-use super::GorillaEncoder;
 use crate::common::Sample;
 use crate::error::{TsdbError, TsdbResult};
 

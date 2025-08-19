@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 use super::traits::{BitRead, Error};
-use super::utils::{zigzag_decode, DROP_MSB, MSB};
+use super::utils::{DROP_MSB, MSB, zigzag_decode};
 
 /// BufferedReader
 ///

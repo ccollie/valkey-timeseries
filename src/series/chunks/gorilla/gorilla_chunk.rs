@@ -414,9 +414,9 @@ impl Iterator for GorillaChunkIterator<'_> {
 #[cfg(test)]
 mod tests {
     use crate::common::Sample;
+    use crate::series::DuplicatePolicy;
     use crate::series::chunks::chunk::Chunk;
     use crate::series::chunks::gorilla::gorilla_chunk::GorillaChunk;
-    use crate::series::DuplicatePolicy;
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
 

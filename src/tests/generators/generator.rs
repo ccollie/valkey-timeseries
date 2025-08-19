@@ -1,7 +1,7 @@
 use crate::tests::generators::create_rng;
 use crate::tests::generators::mackey_glass::mackey_glass;
-use rand::prelude::StdRng;
 use rand::Rng;
+use rand::prelude::StdRng;
 use std::ops::Range;
 
 pub struct UniformGenerator {

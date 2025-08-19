@@ -20,8 +20,8 @@ use crate::{config, error_consts};
 use core::time::Duration;
 use papaya::HashMap;
 use std::os::raw::{c_char, c_uchar};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::{
     BlockedClient, Context, RedisModuleTimerID, Status, ThreadSafeContext, ValkeyModuleCtx,
 };

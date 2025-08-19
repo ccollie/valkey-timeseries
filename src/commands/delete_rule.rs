@@ -1,7 +1,7 @@
 use crate::error_consts;
 use crate::series::get_timeseries_mut;
 use valkey_module::{
-    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
+    AclPermissions, Context, NotifyEvent, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString,
 };
 
 ///

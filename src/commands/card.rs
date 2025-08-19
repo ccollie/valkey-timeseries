@@ -1,12 +1,12 @@
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_card_request, CardinalityResponse};
+use crate::fanout::{CardinalityResponse, perform_remote_card_request};
 use crate::labels::matchers::Matchers;
+use crate::series::TimestampRange;
 use crate::series::index::{
     get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
 };
 use crate::series::request_types::MatchFilterOptions;
-use crate::series::TimestampRange;
 use valkey_module::{
     AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult,
     ValkeyString, ValkeyValue,

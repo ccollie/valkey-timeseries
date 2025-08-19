@@ -5,8 +5,8 @@ use crate::error::TsdbResult;
 use crate::error_consts;
 use crate::series::chunks::{Chunk, TimeSeriesChunk};
 use crate::series::index::get_series_key_by_id;
-use crate::series::{find_last_ge_index, DuplicatePolicy, SampleAddResult, TimeSeries};
-use smallvec::{smallvec, SmallVec};
+use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, find_last_ge_index};
+use smallvec::{SmallVec, smallvec};
 use std::ops::DerefMut;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
 

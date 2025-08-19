@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::postings::{handle_equal_match, Postings, PostingsBitmap, EMPTY_BITMAP};
-use super::{with_timeseries_postings, TimeSeriesIndex};
+use super::postings::{EMPTY_BITMAP, Postings, PostingsBitmap, handle_equal_match};
+use super::{TimeSeriesIndex, with_timeseries_postings};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::time::current_time_millis;
 use crate::error_consts::MISSING_FILTER;
@@ -86,7 +86,7 @@ pub fn series_keys_by_matchers(
             let keys = collect_series_keys(ctx, postings, first.iter(), range);
             return Ok(keys);
         }
-        // todo: use chili here ?
+
         let mut result = first.into_owned();
         for matcher in &matchers[1..] {
             let bitmap = postings_for_matchers_internal(postings, matcher)?;

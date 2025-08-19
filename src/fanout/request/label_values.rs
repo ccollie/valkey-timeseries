@@ -12,8 +12,8 @@ use crate::fanout::request::common::{
 use crate::fanout::serialization::{Deserialized, Serialized};
 use crate::fanout::{CommandMessageType, MultiShardCommand, TrackerEnum};
 use crate::labels::matchers::Matchers;
-use crate::series::request_types::MatchFilterOptions;
 use crate::series::TimestampRange;
+use crate::series::request_types::MatchFilterOptions;
 use flatbuffers::FlatBufferBuilder;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 

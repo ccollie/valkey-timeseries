@@ -6,8 +6,8 @@ mod tests {
     use crate::error::TsdbError;
     use crate::series::chunks::merge::merge_by_capacity;
     use crate::series::{
-        chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
         DuplicatePolicy, SampleAddResult,
+        chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
     };
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;

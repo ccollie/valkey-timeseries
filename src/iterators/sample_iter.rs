@@ -1,7 +1,7 @@
 use crate::common::Sample;
 use crate::iterators::vec_sample_iterator::VecSampleIterator;
-use crate::series::chunks::{ChunkSampleIterator, GorillaChunkIterator, PcoSampleIterator};
 use crate::series::SeriesSampleIterator;
+use crate::series::chunks::{ChunkSampleIterator, GorillaChunkIterator, PcoSampleIterator};
 
 #[derive(Default)]
 pub enum SampleIter<'a> {

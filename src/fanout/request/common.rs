@@ -2,8 +2,8 @@ use super::response_generated::Label as ResponseLabel;
 use crate::common::encoding::{
     read_signed_varint, read_uvarint, write_signed_varint, write_uvarint,
 };
-use crate::fanout::request::request_generated::{DateRange, DateRangeArgs};
 use crate::fanout::CommandMessageType;
+use crate::fanout::request::request_generated::{DateRange, DateRangeArgs};
 use crate::labels::Label;
 use crate::series::TimestampRange;
 use flatbuffers::{FlatBufferBuilder, Verifiable, WIPOffset};

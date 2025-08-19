@@ -1,9 +1,9 @@
-use super::lex::{expect_one_of_tokens, expect_token, get_next_token, Token};
+use super::lex::{Token, expect_one_of_tokens, expect_token, get_next_token};
 use super::parse_error::unexpected;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::Label;
-use crate::parser::utils::extract_string_value;
 use crate::parser::ParseResult;
+use crate::parser::utils::extract_string_value;
 use logos::{Lexer, Logos};
 
 /// specialized parser for a `Prometheus` compatible metric name (as opposed to a metric selector).

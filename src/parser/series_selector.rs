@@ -2,7 +2,7 @@ use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::matchers::{
     MatchOp, Matcher, Matchers, PredicateMatch, PredicateValue, ValueList,
 };
-use crate::parser::lex::{expect_one_of_tokens, expect_token, Token};
+use crate::parser::lex::{Token, expect_one_of_tokens, expect_token};
 use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
 use crate::parser::{ParseError, ParseResult};
@@ -157,7 +157,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
                     _last_token.as_str(),
                     "OR or }",
                     None,
-                ))
+                ));
             }
         }
     }

@@ -154,11 +154,7 @@ pub const fn op_unless(left: f64, right: f64) -> f64 {
 /// convert true to x, false to NaN.
 #[inline]
 pub const fn to_comparison_value(b: bool, x: f64) -> f64 {
-    if b {
-        x
-    } else {
-        f64::NAN
-    }
+    if b { x } else { f64::NAN }
 }
 
 pub(crate) fn cmp(x: f64, y: f64) -> f64 {
@@ -221,11 +217,7 @@ macro_rules! make_comparison_func_bool {
             if left.is_nan() {
                 return f64::NAN;
             }
-            if $func(left, right) {
-                1_f64
-            } else {
-                0_f64
-            }
+            if $func(left, right) { 1_f64 } else { 0_f64 }
         }
     };
 }

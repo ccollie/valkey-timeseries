@@ -1,9 +1,9 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::series::index::*;
-use crate::series::{get_timeseries, get_timeseries_mut, with_timeseries_mut, TimeSeries};
+use crate::series::{TimeSeries, get_timeseries, get_timeseries_mut, with_timeseries_mut};
 use std::os::raw::c_void;
 use std::sync::Mutex;
-use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyError, ValkeyResult};
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, logging, raw};
 
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);

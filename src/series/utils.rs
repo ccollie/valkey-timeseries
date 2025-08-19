@@ -7,7 +7,7 @@ use crate::series::chunks::ChunkEncoding;
 use crate::series::index::{next_timeseries_id, with_timeseries_index};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
-    create_compaction_rules_from_config, SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions,
+    SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions, create_compaction_rules_from_config,
 };
 use std::time::Duration;
 use valkey_module::key::ValkeyKeyWritable;

@@ -2,9 +2,9 @@ use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::parse_series_options;
 use crate::labels::InternedMetricName;
 use crate::series::index::with_timeseries_index;
-use crate::series::{with_timeseries_mut, SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions};
+use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions, with_timeseries_mut};
 use valkey_module::{
-    AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, VALKEY_OK,
+    AclPermissions, Context, NotifyEvent, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString,
 };
 
 /// Alter a time series

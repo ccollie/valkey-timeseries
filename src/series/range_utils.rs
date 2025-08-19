@@ -2,8 +2,8 @@ use crate::aggregators::{AggregateIterator, AggregationHandler, AggregationType,
 use crate::common::parallel::join;
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
-use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
 use crate::series::TimeSeries;
+use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
 use std::cmp::Ordering;
 
 #[allow(dead_code)]
