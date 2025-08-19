@@ -9,6 +9,7 @@ mod mrange;
     dead_code,
     unused_imports,
     unused_lifetimes,
+    unsafe_op_in_unsafe_fn,
     clippy::derivable_impls,
     clippy::needless_lifetimes,
     clippy::extra_unused_lifetimes
@@ -23,6 +24,7 @@ mod label_values;
     dead_code,
     unused_imports,
     unused_lifetimes,
+    unsafe_op_in_unsafe_fn,
     clippy::derivable_impls,
     clippy::needless_lifetimes,
     clippy::extra_unused_lifetimes
@@ -41,8 +43,8 @@ pub use mget::*;
 pub use mrange::*;
 pub use stats::*;
 
-use crate::fanout::request::serialization::{Deserialized, Serialized};
 use crate::fanout::TrackerEnum;
+use crate::fanout::request::serialization::{Deserialized, Serialized};
 pub use common::MessageHeader;
 use valkey_module::{Context, ValkeyResult};
 
