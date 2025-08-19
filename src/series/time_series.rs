@@ -1,14 +1,15 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
-use crate::common::parallel::{join, maybe_par_iter, par_try_for_each_mut};
+use crate::common::parallel::{join, par_try_for_each_mut};
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::labels::{InternedLabel, InternedMetricName};
-use crate::series::chunks::{validate_chunk_size, Chunk, ChunkEncoding, TimeSeriesChunk};
+use crate::series::DuplicatePolicy;
+use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk, validate_chunk_size};
 use crate::series::compaction::CompactionRule;
 use crate::series::digest::{
     calc_compaction_digest, calc_duplicate_policy_digest, calc_metric_name_digest,
@@ -16,9 +17,10 @@ use crate::series::digest::{
 };
 use crate::series::index::next_timeseries_id;
 use crate::series::sample_merge::merge_samples;
-use crate::series::DuplicatePolicy;
 use crate::{config, error_consts};
 use get_size::GetSize;
+use orx_parallel::ParallelizableCollectionMut;
+use orx_parallel::{ParIter, Parallelizable};
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -550,7 +552,6 @@ impl TimeSeries {
         debug_assert!(start_ts <= end_ts);
 
         let mut deleted_samples = 0;
-        let mut chunks_deleted: usize = 0;
 
         fn remove_internal(
             chunk: &mut TimeSeriesChunk,
@@ -571,10 +572,10 @@ impl TimeSeries {
         if let Some((start_index, end_index)) = self.get_chunk_index_bounds(start_ts, end_ts) {
             let is_compressed = self.is_compressed();
 
-            let chunks = &mut self
-                .chunks
-                .get_disjoint_mut([start_index..=end_index])
-                .expect("TimeSeries::remove_range(): range out of bounds")[0];
+            let chunks_deleted: AtomicBool = AtomicBool::new(false);
+
+            let mut chunks = self.chunks.as_mut_slice();
+            chunks = &mut chunks[start_index..=end_index];
 
             let len = chunks.len();
             if !is_compressed || len == 1 {
@@ -583,32 +584,29 @@ impl TimeSeries {
                 for chunk in chunks.iter_mut() {
                     deleted_samples += remove_internal(chunk, start_ts, end_ts)?;
                     if chunk.is_empty() {
-                        chunks_deleted += 1;
+                        chunks_deleted.store(true, Ordering::Relaxed);
                     }
                 }
             } else {
                 let deleted_count: AtomicUsize = AtomicUsize::new(0);
-                let deleted_chunks: AtomicUsize = AtomicUsize::new(0);
-
                 par_try_for_each_mut(chunks, |chunk| {
-                    let len = chunk.len();
                     match remove_internal(chunk, start_ts, end_ts) {
                         Ok(count) => {
-                            deleted_count.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
-                            if count == len {
-                                deleted_chunks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            deleted_count.fetch_add(count, Ordering::SeqCst);
+                            if chunk.is_empty() {
+                                chunks_deleted.store(true, Ordering::Relaxed);
                             }
                             Ok(())
                         }
                         Err(e) => Err(e),
                     }
                 })?;
-                deleted_samples = deleted_count.load(std::sync::atomic::Ordering::Relaxed);
-                chunks_deleted = deleted_chunks.load(std::sync::atomic::Ordering::Relaxed);
+
+                deleted_samples = deleted_count.load(Ordering::Relaxed);
             }
 
             // Remove empty chunks
-            if chunks_deleted > 0 {
+            if chunks_deleted.load(Ordering::Relaxed) {
                 let saved_len = self.chunks.len();
                 self.chunks.retain(|chunk| !chunk.is_empty());
                 if self.chunks.len() < saved_len {
@@ -656,16 +654,13 @@ impl TimeSeries {
                     .any(|c| c.has_samples_in_range(start_time, end_time))
             } else {
                 // Compressed chunks, check each chunk in parallel
-                let has_samples: AtomicBool = AtomicBool::new(false);
-                maybe_par_iter(2, chunks, |chunk| {
-                    if has_samples.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    if chunk.has_samples_in_range(start_time, end_time) {
-                        has_samples.store(true, Ordering::Relaxed);
-                    }
-                });
-                has_samples.load(Ordering::Relaxed)
+                if chunks.len() == 1 {
+                    chunks[0].has_samples_in_range(start_time, end_time)
+                } else {
+                    chunks
+                        .par()
+                        .any(|&chunk| chunk.has_samples_in_range(start_time, end_time))
+                }
             };
         }
 
@@ -799,26 +794,10 @@ impl TimeSeries {
     }
 
     pub fn optimize(&mut self) {
-        fn optimize_internal(chunks: &mut [TimeSeriesChunk]) {
-            match chunks {
-                [] => {}
-                [chunk] => {
-                    let _ = chunk.optimize();
-                }
-                [first, second] => {
-                    let _ = join(|| first.optimize(), || second.optimize());
-                }
-                _ => {
-                    let mid = chunks.len() / 2;
-                    let (left, right) = chunks.split_at_mut(mid);
-                    let _ = join(|| optimize_internal(left), || optimize_internal(right));
-                }
-            }
-        }
-
         // todo: merge chunks if possible
-        // trim
-        optimize_internal(&mut self.chunks)
+        self.chunks.par_mut().for_each(|chunk| {
+            let _ = chunk.optimize();
+        });
     }
 
     #[cfg(test)]

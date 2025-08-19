@@ -1,5 +1,5 @@
-use crate::aggregators::{calc_bucket_start, AggregationHandler, Aggregator};
-use crate::common::parallel::{Parallel, ParallelExt};
+use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
+use crate::common::parallel::Parallel;
 use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
@@ -8,10 +8,12 @@ use crate::series::index::{get_series_by_id, with_timeseries_postings};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size::GetSize;
 use logger_rust::*;
+use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::sync::Mutex;
 use topo_sort::{SortResults, TopoSort};
-use valkey_module::{raw, Context, DetachedContext, NotifyEvent, ValkeyError, ValkeyResult};
+use valkey_module::{Context, DetachedContext, NotifyEvent, ValkeyError, ValkeyResult, raw};
 
 const PARALLEL_THRESHOLD: usize = 2;
 const TEMP_VEC_LEN: usize = 6;
@@ -182,9 +184,14 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     let sample_bucket_start = ctx.rule.calc_bucket_start(ts);
 
     log_info!(
-            "handle_sample_compaction({}): series_id:{}, sample: {} @ {}, sample_bucket_start: {}, bucket_start: {:?}",
-            ctx.rule.aggregator.aggregation_type(), ctx.dest.id, sample.value, sample.timestamp, sample_bucket_start, ctx.rule.bucket_start
-        );
+        "handle_sample_compaction({}): series_id:{}, sample: {} @ {}, sample_bucket_start: {}, bucket_start: {:?}",
+        ctx.rule.aggregator.aggregation_type(),
+        ctx.dest.id,
+        sample.value,
+        sample.timestamp,
+        sample_bucket_start,
+        ctx.rule.bucket_start
+    );
 
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // First sample for this rule - initialize the aggregation
@@ -201,7 +208,9 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
         }
         Ordering::Greater => {
             // Sample starts a new bucket - finalize the current bucket first
-            log_info!("Sample starts a new bucket ({sample_bucket_start} > {current_bucket_start}). Finalize the current bucket first");
+            log_info!(
+                "Sample starts a new bucket ({sample_bucket_start} > {current_bucket_start}). Finalize the current bucket first"
+            );
             finalize_current_bucket(ctx, sample, sample_bucket_start)?;
         }
         Ordering::Less => {
@@ -636,44 +645,50 @@ where
         return Ok(());
     }
 
-    let destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
-    let mut worker = CompactionWorker::new();
+    let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
     let log_ctx = DetachedContext::new();
 
-    worker.maybe_par(PARALLEL_THRESHOLD, destinations, |worker, item| {
-        let rule = item.0;
-        let mut dest_guard = item.1;
-        let mut cctx = CompactionContext {
-            parent: series,
-            dest: &mut dest_guard,
-            rule,
-            value,
-            log_ctx: &log_ctx,
-            added: false,
-        };
-        match f(&mut cctx, value) {
-            Ok(_) => {
-                if cctx.added {
-                    worker.added.push(dest_guard.id);
+    let errors = Mutex::new(Vec::new());
+    let added: Vec<SeriesRef> = destinations
+        .par_mut()
+        .filter_map(|(rule, dest_guard)| {
+            let mut cctx = CompactionContext {
+                parent: series,
+                dest: dest_guard,
+                rule,
+                value,
+                log_ctx: &log_ctx,
+                added: false,
+            };
+            match f(&mut cctx, value) {
+                Ok(_) => {
+                    if cctx.added {
+                        Some(dest_guard.id)
+                    } else {
+                        None
+                    }
+                }
+                Err(error) => {
+                    let msg = format!(
+                        "Failed to handle compaction rule for series {}: {error}",
+                        dest_guard.id,
+                    );
+                    log_ctx.log_warning(&msg);
+                    let mut guard = errors.lock().unwrap();
+                    guard.push(error);
+                    None
                 }
             }
-            Err(error) => {
-                let msg = format!(
-                    "Failed to handle compaction rule for series {}: {error}",
-                    dest_guard.id,
-                );
-                log_ctx.log_warning(&msg);
-                worker.errors.push(error);
-            }
-        }
-    });
+        })
+        .collect();
 
     // Notify about the compaction results
-    if !worker.added.is_empty() {
-        notify_compaction(ctx, &worker.added);
+    if !added.is_empty() {
+        notify_compaction(ctx, &added);
     }
 
-    let Some(first_error) = worker.errors.first().cloned() else {
+    let errors = errors.into_inner().unwrap_or_default();
+    let Some(first_error) = errors.first().cloned() else {
         return Ok(());
     };
     Err(first_error)

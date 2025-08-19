@@ -1,7 +1,7 @@
 [package]
 name = "valkey-timeseries"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.86"
 readme = "README.md"
 repository = "https://github.com/ccollie/valkey-timeseries"
@@ -25,6 +25,7 @@ get-size = { version = "^0.1", features = ["derive"] }
 hashify = { version = "^0.2" }
 linkme = "0.3.33"
 logos = "0.15"
+orx-parallel = "3.0"
 min-max-heap = "1.3"
 num-traits = "0.2"
 joinkit = "0.2.0"
@@ -44,7 +45,7 @@ rayon = "1.11"
 regex = "1.11.1"
 strum = { version = "0.27", features = ["derive"] }
 strum_macros = "0.27"
-yasi = "0.1.5"
+yasi = "=0.1.5"
 logger-rust = "0.2.12"
 
 [dev-dependencies]

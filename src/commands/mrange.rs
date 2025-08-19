@@ -1,9 +1,9 @@
 use super::parse_mrange_options;
-use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::Sample;
+use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::error_consts;
 use crate::fanout::cluster::is_clustered;
-use crate::fanout::{perform_remote_mrange_request, MultiRangeResponse};
+use crate::fanout::{MultiRangeResponse, perform_remote_mrange_request};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::acl::check_metadata_permissions;
@@ -16,6 +16,7 @@ use crate::series::request_types::{
 };
 use crate::series::{SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
+use orx_parallel::{ParIter, ParallelizableCollection};
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::collections::BTreeMap;
 use valkey_module::{
@@ -213,9 +214,8 @@ fn handle_aggregation_and_grouping(
         })
         .collect();
 
-    // todo: chili
     raw_series_groups
-        .par_iter()
+        .par()
         .map(|group| {
             let key = format!("{}={}", groupings.group_label, group.label_value);
             let aggregates = aggregate_grouped_samples(group, options, aggregations);
@@ -434,7 +434,6 @@ fn group_sharded_series(
     let reducer_name_str = grouping.aggregation.name();
     let group_by_label_name_str = &grouping.group_label;
 
-    // todo: chili
     grouped_by_key
         .par_iter()
         .map(|(group_key_str, series_results_in_group)| {

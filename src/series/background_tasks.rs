@@ -1,14 +1,12 @@
 use crate::common::db::set_current_db;
 use crate::common::hash::{BuildNoHashHasher, IntMap};
-use crate::common::parallel::maybe_par_iter;
-use crate::series::index::{with_db_index, with_timeseries_index, IndexKey, TIMESERIES_INDEX};
-use crate::series::{get_timeseries_mut, SeriesRef};
+use crate::series::index::{IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index};
+use crate::series::{SeriesRef, get_timeseries_mut};
 use ahash::HashMapExt;
 use blart::AsBytes;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use smallvec::SmallVec;
+use orx_parallel::{IntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{Context, Status, ValkeyString};
 
@@ -43,9 +41,9 @@ static INDEX_CURSORS: LazyLock<Mutex<IndexCursorMap>> =
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 
-fn get_used_dbs() -> SmallVec<i32, 16> {
+fn get_used_dbs() -> Vec<i32> {
     let index = TIMESERIES_INDEX.pin();
-    let mut keys: SmallVec<i32, 16> = index.keys().copied().collect();
+    let mut keys: Vec<i32> = index.keys().copied().collect();
     keys.sort();
     keys
 }
@@ -126,17 +124,17 @@ fn trim_series(ctx: &Context, db: i32) -> usize {
             processed += 1;
             last_processed = id;
         }
-        let processed_count: AtomicUsize = AtomicUsize::default();
         // trimming is lightweight, so we set the threshold higher to minimize the number of threads spawned
-        maybe_par_iter(5, series_to_trim, |mut series| {
-            let Ok(deletes) = series.trim() else {
-                // todo: log this
-                return;
-            };
-            processed_count.fetch_add(deletes, Ordering::SeqCst); // this is ugly
-        });
-
-        total_deletes = processed_count.load(Ordering::Relaxed);
+        total_deletes = series_to_trim
+            .par_mut()
+            .map(|series| {
+                let Ok(deletes) = series.trim() else {
+                    // log
+                    return 0;
+                };
+                deletes
+            })
+            .sum();
     } else {
         ctx.log_debug("No more series to trim");
         last_processed = 0;
@@ -239,9 +237,9 @@ pub fn process_remove_stale_series() {
         return;
     }
     // process the databases in parallel
-    maybe_par_iter(2, &db_ids[..], |&db| {
-        remove_stale_series_internal(db);
-    });
+    db_ids
+        .par()
+        .for_each(|&db| remove_stale_series_internal(db));
 }
 
 fn optimize_indices() {
@@ -253,7 +251,7 @@ fn optimize_indices() {
     let mut cursors: Vec<_> = Vec::with_capacity(db_ids.len());
     {
         let mut map = INDEX_CURSORS.lock().expect(INDEX_LOCK_POISON_MSG);
-        for &db in &db_ids {
+        for &db in db_ids.iter() {
             let Some(cursor) = map.get(&db) else {
                 map.remove(&db);
                 continue;
@@ -267,7 +265,7 @@ fn optimize_indices() {
     }
 
     let results = cursors
-        .into_par_iter()
+        .into_par()
         .map(|(db, cursor)| {
             let new_cursor = with_db_index(db, |index| {
                 index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE)
