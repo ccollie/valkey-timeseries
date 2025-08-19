@@ -1,4 +1,4 @@
-use super::index_key::{format_key_for_label_value, get_key_for_label_prefix, IndexKey};
+use super::index_key::{IndexKey, format_key_for_label_value, get_key_for_label_prefix};
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::{InternedLabel, SeriesLabel};
@@ -536,13 +536,13 @@ pub(super) fn handle_equal_match<'a>(
     value: &PredicateValue,
 ) -> Cow<'a, PostingsBitmap> {
     match value {
-        PredicateValue::String(ref s) => {
+        PredicateValue::String(s) => {
             if s.is_empty() {
                 return ix.postings_without_label(label);
             }
             ix.postings_for_label_value(label, s)
         }
-        PredicateValue::List(ref val) => match val.len() {
+        PredicateValue::List(val) => match val.len() {
             0 => ix.postings_without_label(label),
             1 => ix.postings_for_label_value(label, &val[0]),
             _ => Cow::Owned(ix.postings(label, val)),
@@ -565,7 +565,7 @@ pub(super) fn handle_not_equal_match<'a>(
 ) -> Cow<'a, PostingsBitmap> {
     // the time series has a label named label
     match value {
-        PredicateValue::String(ref s) => {
+        PredicateValue::String(s) => {
             if s.is_empty() {
                 return with_label(ix, label);
             }
@@ -578,7 +578,7 @@ pub(super) fn handle_not_equal_match<'a>(
                 Cow::Owned(result)
             }
         }
-        PredicateValue::List(ref values) => {
+        PredicateValue::List(values) => {
             match values.len() {
                 0 => with_label(ix, label), // TODO !!
                 _ => {
@@ -986,12 +986,16 @@ mod tests {
 
         postings.remove_timeseries(&series);
 
-        assert!(postings
-            .postings_for_label_value("label1", "value1")
-            .is_empty());
-        assert!(postings
-            .postings_for_label_value("label2", "value2")
-            .is_empty());
+        assert!(
+            postings
+                .postings_for_label_value("label1", "value1")
+                .is_empty()
+        );
+        assert!(
+            postings
+                .postings_for_label_value("label2", "value2")
+                .is_empty()
+        );
         assert!(postings.all_postings().is_empty());
     }
 

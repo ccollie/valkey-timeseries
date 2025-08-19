@@ -144,7 +144,7 @@ impl Display for JoinType {
             JoinType::Anti => {
                 write!(f, "ANTI JOIN")?;
             }
-            JoinType::AsOf(ref options) => {
+            JoinType::AsOf(options) => {
                 write!(f, "ASOF JOIN {}", options.strategy)?;
                 if !options.tolerance.is_zero() {
                     write!(f, " TOLERANCE {}", humanize_duration(&options.tolerance))?;

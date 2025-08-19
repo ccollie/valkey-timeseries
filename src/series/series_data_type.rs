@@ -1,25 +1,25 @@
-use std::ffi::{c_char, CString};
+use std::ffi::{CString, c_char};
 use valkey_module::{
-    logging, raw, CallOptionResp, CallOptionsBuilder, CallReply, CallResult, RedisModuleIO,
-    RedisModuleTypeMethods,
-};
-use valkey_module::{
-    native_types::ValkeyType, RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString,
-    ValkeyString,
+    CallOptionResp, CallOptionsBuilder, CallReply, CallResult, RedisModuleIO,
+    RedisModuleTypeMethods, logging, raw,
 };
 use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
+use valkey_module::{
+    RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString, ValkeyString,
+    native_types::ValkeyType,
+};
 
 use crate::common::db::get_current_db;
+use crate::series::TimeSeries;
 use crate::series::defrag_series;
 use crate::series::index::{
-    get_timeseries_index_for_db, next_timeseries_id, with_timeseries_index, TIMESERIES_INDEX,
+    TIMESERIES_INDEX, get_timeseries_index_for_db, next_timeseries_id, with_timeseries_index,
 };
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
-use crate::series::TimeSeries;
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::digest::Digest;
-use valkey_module::logging::{log_io_error, ValkeyLogLevel};
+use valkey_module::logging::{ValkeyLogLevel, log_io_error};
 use valkey_module::server_events::FlushSubevent;
 use valkey_module_macros::flush_event_handler;
 
@@ -86,7 +86,7 @@ fn remove_series_from_index(ts: &TimeSeries) {
 }
 
 unsafe extern "C" fn rdb_save(rdb: *mut RedisModuleIO, value: *mut c_void) {
-    let series = &*value.cast::<TimeSeries>();
+    let series = unsafe { &*value.cast::<TimeSeries>() };
     rdb_save_series(series, rdb);
 }
 
@@ -108,7 +108,7 @@ unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
 #[allow(unused)]
 unsafe extern "C" fn free(value: *mut c_void) {
     let sm = value.cast::<TimeSeries>();
-    let series = Box::from_raw(sm);
+    let series = unsafe { Box::from_raw(sm) };
     // todo: it may be helpful to push index deletion to a background thread
     remove_series_from_index(&series);
     drop(series);
@@ -122,7 +122,7 @@ unsafe extern "C" fn copy(
 ) -> *mut c_void {
     let guard = valkey_module::MODULE_CONTEXT.lock();
     with_timeseries_index(&guard, |index| {
-        let old_series = &*value.cast::<TimeSeries>();
+        let old_series = unsafe { &*value.cast::<TimeSeries>() };
         let mut new_series = old_series.clone();
         new_series._db = get_current_db(&guard);
         new_series.id = next_timeseries_id();
@@ -139,7 +139,7 @@ unsafe extern "C" fn unlink(_key: *mut RedisModuleString, value: *const c_void) 
     if value.is_null() {
         return;
     }
-    let series = &*value.cast::<TimeSeries>();
+    let series = unsafe { &*value.cast::<TimeSeries>() };
     remove_series_from_index(series);
 }
 
@@ -152,7 +152,7 @@ unsafe extern "C" fn defrag(
         return 0;
     }
     // Convert the pointer to a TimeSeries so we can operate on it.
-    let series: &mut TimeSeries = &mut *(*value).cast::<TimeSeries>();
+    let series: &mut TimeSeries = unsafe { &mut *(*value).cast::<TimeSeries>() };
     match defrag_series(series) {
         Ok(_) => 0,
         Err(_) => 1,
@@ -163,7 +163,7 @@ unsafe extern "C" fn defrag(
 /// Raw handler for the Timeseries digest callback.
 unsafe extern "C" fn series_digest(md: *mut RedisModuleDigest, value: *mut c_void) {
     let mut digest = Digest::new(md);
-    let val = &*(value.cast::<TimeSeries>());
+    let val = unsafe { &*(value.cast::<TimeSeries>()) };
     val.debug_digest(&mut digest);
     digest.end_sequence();
 }
@@ -192,15 +192,17 @@ unsafe extern "C" fn aof_rewrite(
         let format_str = CString::new("slb").unwrap(); // string, long, binary
         let dump_data = val.as_bytes();
 
-        raw::RedisModule_EmitAOF.unwrap()(
-            aof,
-            restore_cmd.as_ptr(),
-            format_str.as_ptr(),
-            key,
-            0i64, // TTL = 0 (no expiration)
-            dump_data.as_ptr().cast::<c_char>(),
-            dump_data.len(),
-        );
+        unsafe {
+            raw::RedisModule_EmitAOF.unwrap()(
+                aof,
+                restore_cmd.as_ptr(),
+                format_str.as_ptr(),
+                key,
+                0i64, // TTL = 0 (no expiration)
+                dump_data.as_ptr().cast::<c_char>(),
+                dump_data.len(),
+            );
+        }
     } else {
         log_io_error(
             aof,
