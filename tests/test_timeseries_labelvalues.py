@@ -73,11 +73,11 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
 
         # Get values for the 'age' label with time range
         # First timestamp should exclude the 'old' series
-        result = self.client.execute_command('TS.LABELVALUES', 'age', 'START', 1000, "FILTER", 'common=1')
+        result = self.client.execute_command('TS.LABELVALUES', 'age', 'FILTER_BY_RANGE', 1000, "+", "FILTER", 'common=1')
         assert result == [b'new']
 
         # Get values with end time range
-        result = self.client.execute_command('TS.LABELVALUES', 'age', 'END', 1500, "FILTER", 'common=1')
+        result = self.client.execute_command('TS.LABELVALUES', 'age', 'FILTER_BY_RANGE', '-', 1500, "FILTER", 'common=1')
         assert result == [b'old']
 
         # Get values with both start and end time range
@@ -87,7 +87,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.CREATE', 'ts_2', 'LABELS', 'name', 'bob', 'age', '45', 'common', '1')
         self.client.execute_command('TS.ADD', 'ts_2', 1700, 200)
 
-        result = self.client.execute_command('TS.LABELVALUES', 'name', 'START', 900, 'END', 2000, "FILTER", 'common=1')
+        result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER_BY_RANGE', 900, 2000, "FILTER", 'common=1')
         assert result == [b'alice', b'bob']
 
     def test_label_values_with_limit(self):
@@ -110,8 +110,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         # Get values with filter, time range, and limit
         result = self.client.execute_command(
             'TS.LABELVALUES', 'type',
-            'START', 500,
-            'END', 2500,
+            'FILTER_BY_RANGE', 500, 2500,
             'LIMIT', 1,
             'FILTER', 'name=~"c.*"',
         )
@@ -121,8 +120,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         # Different combination of parameters
         result = sorted(self.client.execute_command(
             'TS.LABELVALUES', 'node',
-            'START', 900,
-            'LIMIT', 5,
+            'FILTER_BY_RANGE', 900, '+',
             'FILTER', 'datacenter=dc1'
         ))
         assert result == [b'server1', b'server2']
@@ -136,7 +134,7 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         assert result == []
 
         # Filter with a time range that excludes all series
-        result = self.client.execute_command('TS.LABELVALUES', 'name', 'START', 5000, "FILTER", 'type=usage')
+        result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER_BY_RANGE', 5000, '+', "FILTER", 'type=usage')
         assert result == []
 
     def test_label_values_error_cases(self):

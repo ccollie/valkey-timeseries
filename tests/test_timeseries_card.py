@@ -109,23 +109,23 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         # Filter all temp sensors with data between timestamps 1000-2000
-        result = self.client.execute_command('TS.CARD', 'START', 1000, 'END', 2000, 'FILTER', 'sensor=temp')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 2000, 'FILTER', 'sensor=temp')
         assert result == 2  # Both ts1 and ts2 have data in this range
 
         # Filter temp sensors with data in a narrower range
-        result = self.client.execute_command('TS.CARD', 'START', 1000, 'END', 1200, 'FILTER', 'sensor=temp')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 1200, 'FILTER', 'sensor=temp')
         assert result == 1  # Only ts1 has data in this early range
 
         # Filter for data after a specific time
-        result = self.client.execute_command('TS.CARD', 'START', 2600, 'END', 3000, 'FILTER', 'sensor!=light')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 2600, 3000, 'FILTER', 'sensor!=light')
         assert result == 1  # Only ts4 has data after timestamp 2600
 
         # Filter that matches series but outside their data range
-        result = self.client.execute_command('TS.CARD', 'START', 3000, 'END', 4000, 'FILTER', 'sensor=temp')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 3000, 4000, 'FILTER', 'sensor=temp')
         assert result == 0  # No temp sensors have data after timestamp 3000
 
         # Filter with very wide range
-        result = self.client.execute_command('TS.CARD', 'START', 0, 'END', 5000, 'FILTER', 'sensor!=light')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 0, 5000, 'FILTER', 'sensor!=light')
         assert result == 4  # All except ts_nodata because it has no data points
 
     def test_card_timestamp_parameter_formats(self):
@@ -134,19 +134,19 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         # Test with string timestamps
-        result = self.client.execute_command('TS.CARD', 'START', '1000', 'END', '2000', 'FILTER', 'sensor=temp')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', '1000', '2000', 'FILTER', 'sensor=temp')
         assert result == 2
 
         # Test with - as min timestamp
-        result = self.client.execute_command('TS.CARD', 'START', '-', 'END', 2000, 'FILTER', 'sensor=temp')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', '-', 2000, 'FILTER', 'sensor=temp')
         assert result == 2
 
         # Test with + as max timestamp
-        result = self.client.execute_command('TS.CARD', 'START', 1000, 'END', '+', 'FILTER', 'sensor=temp')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, '+', 'FILTER', 'sensor=temp')
         assert result == 2
 
         # Test with both - and +
-        result = self.client.execute_command('TS.CARD', 'START', '-', 'END', '+', 'FILTER', 'sensor=humidity')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', '-', '+', 'FILTER', 'sensor=humidity')
         assert result == 1
 
     def test_card_with_recently_added_series(self):
@@ -171,7 +171,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         assert with_data_count == 1
 
         # Test with date range that includes the new point
-        range_count = self.client.execute_command('TS.CARD', 'START', 2900, 'END', 3100, 'FILTER', 'sensor=motion')
+        range_count = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 2900, 3100, 'FILTER', 'sensor=motion')
         assert range_count == 1
 
     def test_card_after_deleting_samples(self):
@@ -185,14 +185,14 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.ADD', 'ts_del', 2000, 200)
 
         # Initial count with data
-        result_before = self.client.execute_command('TS.CARD', 'START', 1000, 'END', 2000, 'FILTER', 'sensor=deletion')
+        result_before = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 2000, 'FILTER', 'sensor=deletion')
         assert result_before == 1
 
         # Delete samples
         self.client.execute_command('TS.DEL', 'ts_del', 1000, 2000)
 
         # Count after deletion (within range)
-        result_after = self.client.execute_command('TS.CARD', 'START', 1000, 'END', 2000, 'FILTER', 'sensor=deletion')
+        result_after = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 2000, 'FILTER', 'sensor=deletion')
         assert result_after == 0  # No data in range
 
         # Count without range should still show the series
@@ -243,7 +243,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         assert result == 10  # Indexes 20-29
 
         # Count with a time range
-        result = self.client.execute_command('TS.CARD', 'START', base_ts, 'END', base_ts + 25, 'FILTER', 'batch=yes')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', base_ts, base_ts + 25, 'FILTER', 'batch=yes')
         assert result == 26  # Indexes 0-25
 
         # Count with a complex filter
@@ -257,7 +257,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
 
         # This should fail as a date range without filters is not allowed
         with pytest.raises(ResponseError) as excinfo:
-            self.client.execute_command('TS.CARD', 'START', 1000, 'END', 2000)
+            self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 2000)
 
         error_msg = str(excinfo.value).lower()
         assert "requires at least one matcher" in error_msg or "wrong number of arguments" in error_msg
@@ -285,11 +285,11 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
 
         # Invalid timestamp format
         with pytest.raises(ResponseError):
-            self.client.execute_command('TS.CARD', 'START', 'not-a-time', 'END', 2000, 'FILTER', 'sensor=temp')
+            self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'not-a-time', 2000, 'FILTER', 'sensor=temp')
 
         # Missing timestamp
         with pytest.raises(ResponseError):
-            self.client.execute_command('TS.CARD', 'START', 'FILTER', 'sensor=temp')
+            self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'FILTER', 'sensor=temp')
 
         # Missing filter value
         with pytest.raises(ResponseError):

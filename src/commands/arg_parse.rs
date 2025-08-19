@@ -878,10 +878,8 @@ pub(crate) fn parse_metadata_command_args(
     args: &mut CommandArgIterator,
     require_matchers: bool,
 ) -> ValkeyResult<MatchFilterOptions> {
-    const ARG_TOKENS: [CommandArgToken; 2] = [
-        CommandArgToken::FilterByRange,
-        CommandArgToken::Limit,
-    ];
+    const ARG_TOKENS: [CommandArgToken; 2] =
+        [CommandArgToken::FilterByRange, CommandArgToken::Limit];
 
     let mut matchers = Vec::with_capacity(4);
     let mut start_value: Option<TimestampValue> = None;

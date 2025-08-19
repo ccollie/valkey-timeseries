@@ -67,16 +67,11 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.ADD', 'ts3', now + 200, 30, 'LABELS', 'name', 'cpu', 'ts3', '3')
         self.client.execute_command('TS.ADD', 'ts9', now + 500, 40, 'LABELS', 'name', 'cpu', 'ts9', '9')
 
-        # Query with START parameter only
-        result = self.client.execute_command('TS.LABELNAMES', 'START', now + 150, 'FILTER', 'name=cpu')
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 150, "+", 'FILTER', 'name=cpu')
         assert result == [b'name', b'ts3', b'ts9']
 
-        # Query with END parameter only
-        result = self.client.execute_command('TS.LABELNAMES', 'END', now + 150, 'FILTER', 'name=cpu')
-        assert result == [b'name', b'ts1', b'ts2']
-
         # Query with both START and END
-        result = self.client.execute_command('TS.LABELNAMES', 'START', now + 50, 'END', now + 250, 'FILTER', 'name=cpu')
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 50, now + 250, 'FILTER', 'name=cpu')
         assert result == [b'name', b'ts2', b'ts3']
 
     def test_labelnames_with_combined_parameters(self):
@@ -94,8 +89,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
         # Query with filter and time range
         result = self.client.execute_command('TS.LABELNAMES',
-                                                    'START', now,
-                                                    'END', now + 150,
+                                                    'FILTER_BY_RANGE', now, now + 150,
                                                     'FILTER', 'name=~"c.*"',
                                                     )
         assert result == [b'name', b'node', b'type']
@@ -111,7 +105,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         # Time range that doesn't match any samples
         now = 1000
         self.client.execute_command('TS.ADD', 'ts1', now, 10)
-        result = self.client.execute_command('TS.LABELNAMES', 'START', now + 2000, 'FILTER', 'name=cpu')
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 2000, "+", 'FILTER', 'name=cpu')
         assert result == []
 
     def test_labelnames_with_limit(self):
@@ -140,8 +134,8 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         #                            "Invalid filter: invalid_filter")
 
         # Invalid time format
-        self.verify_error_response(self.client, 'TS.LABELNAMES START invalid_time',
-                                   "TSDB: invalid START timestamp")
+        self.verify_error_response(self.client, 'TS.LABELNAMES FILTER_BY_RANGE invalid_time',
+                                   "TSDB: invalid start timestamp.")
 
         # Invalid limit format
         self.verify_error_response(self.client, 'TS.LABELNAMES LIMIT invalid_limit',
