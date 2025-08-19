@@ -8,8 +8,8 @@ use crate::series::chunks::{GorillaChunk, PcoChunk, TimeSeriesChunk, Uncompresse
 use bincode::config::Configuration;
 use bincode::serde::{decode_from_slice, encode_into_std_write};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
 use std::sync::LazyLock;
 use valkey_module::{ValkeyError, ValkeyResult};

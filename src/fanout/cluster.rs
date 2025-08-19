@@ -7,8 +7,8 @@ use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 use valkey_module::{
-    Context, Status, ValkeyModuleCtx, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_FAIL,
-    VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
+    Context, REDISMODULE_NODE_MASTER, Status, VALKEYMODULE_NODE_FAIL, VALKEYMODULE_NODE_ID_LEN,
+    VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK, ValkeyModuleCtx,
 };
 use valkey_module::{ContextFlags, ValkeyModule_GetMyClusterID};
 
@@ -181,7 +181,7 @@ unsafe fn load_targets_for_fanout(
     // master_id and ip are not null terminated, so we add 1 for null terminator for safety
     const MASTER_ID_LEN: usize = (VALKEYMODULE_NODE_ID_LEN + 1) as usize;
 
-    let nodes = std::slice::from_raw_parts(nodes_list, num_nodes);
+    let nodes = unsafe { std::slice::from_raw_parts(nodes_list, num_nodes) };
     let mut master_id = String::new();
 
     for node_id in nodes {
@@ -214,7 +214,9 @@ unsafe fn load_targets_for_fanout(
                 master_id = String::from_utf8_lossy(buf).into_owned();
             };
 
-            if let Ok(address) = raw_to_cstring(*node_id, VALKEYMODULE_NODE_ID_LEN as usize) {
+            if let Ok(address) =
+                unsafe { raw_to_cstring(*node_id, VALKEYMODULE_NODE_ID_LEN as usize) }
+            {
                 shard_id_to_target
                     .entry(master_id.clone())
                     .or_default()
@@ -226,8 +228,12 @@ unsafe fn load_targets_for_fanout(
     }
 
     if !nodes_list.is_null() {
-        valkey_module::ValkeyModule_FreeClusterNodesList
-            .expect("ValkeyModule_FreeClusterNodesList function does not exist")(nodes_list);
+        unsafe {
+            valkey_module::ValkeyModule_FreeClusterNodesList
+                .expect("ValkeyModule_FreeClusterNodesList function does not exist")(
+                nodes_list
+            );
+        }
     }
 }
 
@@ -260,6 +266,6 @@ pub fn get_current_node() -> CString {
 }
 
 unsafe fn raw_to_cstring(ptr: *const c_char, len: usize) -> Result<CString, std::ffi::NulError> {
-    let bytes = std::slice::from_raw_parts(ptr, len);
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     CString::new(bytes.as_bytes())
 }
