@@ -37,7 +37,7 @@ impl SeriesLabel for InternedLabel<'_> {
 }
 
 /// A time series is optionally identified by a series of label-value pairs used to retrieve the
-/// series in queries. Given that these label are used to group semantically similar time series,
+/// series in queries. Given that these labels are used to group semantically similar time series,
 /// they are necessarily duplicated. We take advantage of this fact to intern label-value pairs,
 /// meaning that only a single allocation is made per unique pair, irrespective of the number of
 /// series it occurs in.
@@ -69,7 +69,7 @@ impl InternedMetricName {
         self.0.clear();
     }
 
-    /// adds new label to mn with the given key and value.
+    /// adds a new label to mn with the given key and value.
     pub fn add_label(&mut self, key: &str, value: &str) {
         let full_label = format!("{key}{VALUE_SEPARATOR}{value}");
         let interned_value = InternedString::intern(full_label);
