@@ -172,9 +172,17 @@ fn build_grouped_labels(
     group_label_name: &str,
     group_label_value: &str,
     reducer_name_str: &str,
-    source_identifiers: &[String],
+    source_identifiers: &[&str],
 ) -> Vec<Option<Label>> {
-    let sources = source_identifiers.join(",");
+    let capacity =
+        source_identifiers.iter().map(|s| s.len()).sum::<usize>() + source_identifiers.len() - 1; // for commas and equal signs
+    let mut sources: String = String::with_capacity(capacity);
+    for (i, source) in source_identifiers.iter().enumerate() {
+        if i > 0 {
+            sources.push(',');
+        }
+        sources.push_str(source);
+    }
     vec![
         Some(Label {
             name: group_label_name.into(),
@@ -389,10 +397,10 @@ fn group_series_by_label_internal<'a>(
     }
 
     for (label_value_str, group_data) in grouped.iter_mut() {
-        let source_keys: Vec<String> = group_data
+        let source_keys: Vec<&str> = group_data
             .series
             .iter()
-            .map(|m| m.source_key.clone())
+            .map(|m| m.source_key.as_str())
             .collect();
         group_data.labels = build_grouped_labels(
             group_by_label_name,
@@ -437,9 +445,9 @@ fn group_sharded_series(
     grouped_by_key
         .par_iter()
         .map(|(group_key_str, series_results_in_group)| {
-            let source_keys: Vec<String> = series_results_in_group
+            let source_keys: Vec<&str> = series_results_in_group
                 .iter()
-                .map(|m| m.key.clone())
+                .map(|m| m.key.as_str())
                 .collect();
 
             let group_defining_val_str = group_key_str
