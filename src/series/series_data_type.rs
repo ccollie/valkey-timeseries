@@ -207,7 +207,7 @@ unsafe extern "C" fn aof_rewrite(
         log_io_error(
             aof,
             ValkeyLogLevel::Warning,
-            &format!("Failed to DUMP key: {:?}", res),
+            &format!("Failed to DUMP key: {res:?}"),
         );
     }
 }
