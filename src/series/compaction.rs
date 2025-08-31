@@ -1,5 +1,4 @@
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
-use crate::common::parallel::Parallel;
 use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
@@ -76,35 +75,6 @@ impl CompactionRule {
     fn reset(&mut self) {
         self.aggregator.reset();
         self.bucket_start = None;
-    }
-}
-
-#[derive(Clone)]
-struct CompactionWorker {
-    added: SmallVec<SeriesRef, TEMP_VEC_LEN>,
-    errors: SmallVec<TsdbError, 2>,
-}
-
-impl CompactionWorker {
-    fn new() -> Self {
-        Self {
-            added: SmallVec::new(),
-            errors: SmallVec::new(),
-        }
-    }
-}
-
-impl Parallel for CompactionWorker {
-    fn create(&self) -> Self {
-        Self {
-            added: SmallVec::new(),
-            errors: self.errors.clone(),
-        }
-    }
-
-    fn merge(&mut self, other: Self) {
-        self.added.extend(other.added);
-        self.errors.extend(other.errors);
     }
 }
 
