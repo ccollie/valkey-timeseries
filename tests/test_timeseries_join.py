@@ -259,7 +259,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
                 # The right timestamp should be slightly earlier
                 assert isinstance(right_info, list)
                 right_ts, right_val = right_info
-                assert right_ts == self.now + i * 1000 - 200
+                assert right_ts == self.now + (i + 1) * 1000 - 200
                 assert float(right_val) == i * 100
             else:
                 # For points 5-9, no match within tolerance
