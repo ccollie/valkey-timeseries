@@ -690,7 +690,7 @@ mod tests {
         assert_eq!(temp_rules.len(), 1);
         assert!(temp_rules.contains_key("temperature_MAX_60000"));
 
-        // Test key matching second filter
+        // Test key matching the second filter
         let pressure_rules = config.create_compaction_rules("pressure_gauge").unwrap();
         assert_eq!(pressure_rules.len(), 1);
         assert!(pressure_rules.contains_key("pressure_gauge_MIN_30000"));
@@ -723,7 +723,7 @@ mod tests {
         let config_str = r#"avg:60s:1h|^(temp|cpu)_.*$;max:30s:30m|.*_sensor$"#;
         config.add_policies_from_config(config_str, false).unwrap();
 
-        // Test keys matching first pattern
+        // Test keys matching the first pattern
         let temp_rules = config.create_compaction_rules("temp_indoor").unwrap();
         assert_eq!(temp_rules.len(), 1);
         assert!(temp_rules.contains_key("temp_indoor_AVG_60000"));
@@ -732,7 +732,7 @@ mod tests {
         assert_eq!(cpu_rules.len(), 1);
         assert!(cpu_rules.contains_key("cpu_load_AVG_60000"));
 
-        // Test key matching second pattern
+        // Test key matching the second pattern
         let sensor_rules = config.create_compaction_rules("humidity_sensor").unwrap();
         assert_eq!(sensor_rules.len(), 1);
         assert!(sensor_rules.contains_key("humidity_sensor_MAX_30000"));
@@ -818,7 +818,7 @@ mod tests {
         let upper_rules = config.create_compaction_rules("TEMPERATURE");
         assert!(upper_rules.is_some());
 
-        // Should not match (case sensitive)
+        // Should not match (case-sensitive)
         let lower_rules = config.create_compaction_rules("temperature");
         assert!(lower_rules.is_none());
     }
@@ -841,7 +841,7 @@ mod tests {
         let rules2 = config.create_compaction_rules("test").unwrap();
         assert_eq!(rules2.len(), 2); // Should have both
 
-        // Replace with new policy
+        // Replace with the new policy
         let config_str3 = "max:45s:45m:0";
         config.add_policies_from_config(config_str3, true).unwrap();
 

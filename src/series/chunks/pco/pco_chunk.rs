@@ -116,7 +116,7 @@ impl PcoChunk {
         self.count = timestamps.len();
         self.last_value = values[values.len() - 1];
 
-        // use rayon to run compression in parallel
+        // use chili to run compression in parallel
         // first we steal the result buffers to avoid allocation and issues with the BC
         let mut t_data = std::mem::take(&mut self.timestamps);
         let mut v_data = std::mem::take(&mut self.values);
@@ -162,7 +162,6 @@ impl PcoChunk {
     ) -> TsdbResult<()> {
         timestamps.reserve(self.count);
         values.reserve(self.count);
-        // todo: dynamically calculate cutoff or just use chili
         let (timestamps, values) = join(
             || decompress_timestamps(&self.timestamps, timestamps),
             || decompress_values(&self.values, values),
@@ -570,7 +569,7 @@ impl Chunk for PcoChunk {
 fn get_timestamp_index(timestamps: &[Timestamp], ts: Timestamp, start_ofs: usize) -> (usize, bool) {
     let stamps = &timestamps[start_ofs..];
     // For regularly spaced timestamps, we can get extreme levels of compression. Also, since pco is
-    // intended for "cold" storage we can have larger than normal numbers of samples.
+    // intended for "cold" storage, we can have larger than normal numbers of samples.
     // If we pass a threshold, see if we should use an exponential search
     let idx = if should_use_exponential_search(stamps, ts) {
         stamps

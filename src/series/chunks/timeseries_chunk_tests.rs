@@ -1015,7 +1015,7 @@ mod tests {
 
         let capacity = dest_chunk.estimate_remaining_sample_capacity();
 
-        // Fill the destination chunk to have more than a quarter but less than full capacity of source
+        // Fill the destination chunk to have more than a quarter but less than full capacity of the source
         let dest_samples = generate_random_samples(capacity / 2);
         dest_chunk.set_data(&dest_samples).unwrap();
 

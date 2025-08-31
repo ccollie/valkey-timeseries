@@ -125,7 +125,7 @@ pub(crate) const fn op_default(left: f64, right: f64) -> f64 {
     left
 }
 
-/// returns left if right is not NaN. Otherwise, NaN is returned.
+/// Returns left if right is not NaN. Otherwise, NaN is returned.
 #[inline]
 pub(crate) const fn op_if(left: f64, right: f64) -> f64 {
     if right.is_nan() {
