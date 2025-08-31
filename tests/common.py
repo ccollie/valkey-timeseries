@@ -9,6 +9,7 @@ RDB_PATH = os.path.join(CWD, 'rdbs')
 LOG_DIR = os.path.abspath(os.path.join(CWD, "../logs"))
 
 PORT = 6379
+SERVER_PATH = f"{os.path.dirname(os.path.realpath(__file__))}/build/binaries/{os.environ['SERVER_VERSION']}/valkey-server"
 
 def get_platform():
     return platform.lower()
