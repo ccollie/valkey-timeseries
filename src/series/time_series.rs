@@ -1,7 +1,7 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
-use crate::common::parallel::{join, par_try_for_each_mut};
+use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
@@ -19,12 +19,11 @@ use crate::series::index::next_timeseries_id;
 use crate::series::sample_merge::merge_samples;
 use crate::{config, error_consts};
 use get_size::GetSize;
-use orx_parallel::ParallelizableCollectionMut;
-use orx_parallel::{ParIter, Parallelizable};
+use orx_parallel::ParIterResult;
+use orx_parallel::{IntoParIter, ParIter, Parallelizable, ParallelizableCollectionMut};
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use std::vec;
 use valkey_module::digest::Digest;
@@ -572,8 +571,6 @@ impl TimeSeries {
         if let Some((start_index, end_index)) = self.get_chunk_index_bounds(start_ts, end_ts) {
             let is_compressed = self.is_compressed();
 
-            let chunks_deleted: AtomicBool = AtomicBool::new(false);
-
             let mut chunks = self.chunks.as_mut_slice();
             chunks = &mut chunks[start_index..=end_index];
 
@@ -583,35 +580,20 @@ impl TimeSeries {
                 // If not compressed, we can iterate over the chunks directly
                 for chunk in chunks.iter_mut() {
                     deleted_samples += remove_internal(chunk, start_ts, end_ts)?;
-                    if chunk.is_empty() {
-                        chunks_deleted.store(true, Ordering::Relaxed);
-                    }
                 }
             } else {
-                let deleted_count: AtomicUsize = AtomicUsize::new(0);
-                par_try_for_each_mut(chunks, |chunk| {
-                    match remove_internal(chunk, start_ts, end_ts) {
-                        Ok(count) => {
-                            deleted_count.fetch_add(count, Ordering::SeqCst);
-                            if chunk.is_empty() {
-                                chunks_deleted.store(true, Ordering::Relaxed);
-                            }
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    }
-                })?;
-
-                deleted_samples = deleted_count.load(Ordering::Relaxed);
+                deleted_samples = chunks
+                    .into_par()
+                    .map(|chunk| remove_internal(chunk, start_ts, end_ts))
+                    .into_fallible_result()
+                    .sum()?;
             }
 
             // Remove empty chunks
-            if chunks_deleted.load(Ordering::Relaxed) {
-                let saved_len = self.chunks.len();
-                self.chunks.retain(|chunk| !chunk.is_empty());
-                if self.chunks.len() < saved_len {
-                    self.chunks.shrink_to_fit();
-                }
+            let saved_len = self.chunks.len();
+            self.chunks.retain(|chunk| !chunk.is_empty());
+            if self.chunks.len() < saved_len {
+                self.chunks.shrink_to_fit();
             }
 
             // Update metadata
@@ -624,12 +606,12 @@ impl TimeSeries {
 
     /// Checks if the time series has at least one sample in the given time range.
     ///
-    /// # Arguments
+    /// ## Arguments
     ///
     /// * `start_time` - Start timestamp (inclusive)
     /// * `end_time` - End timestamp (inclusive)
     ///
-    /// # Returns
+    /// ## Returns
     ///
     /// `true` if at least one sample exists in the given range, `false` otherwise
     pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
@@ -1026,30 +1008,12 @@ fn get_range_parallel(
     start: Timestamp,
     end: Timestamp,
 ) -> TsdbResult<Vec<Sample>> {
-    match chunks {
-        [] => Ok(vec![]),
-        [chunk] => chunk.get_range(start, end),
-        [first, second] => {
-            let (left_samples, right_samples) = join(
-                || first.get_range(start, end),
-                || second.get_range(start, end),
-            );
-            let mut samples = left_samples?;
-            samples.extend(right_samples?);
-            Ok(samples)
-        }
-        _ => {
-            let mid = chunks.len() / 2;
-            let (left, right) = chunks.split_at(mid);
-            let (left_samples, right_samples) = join(
-                || get_range_parallel(left, start, end),
-                || get_range_parallel(right, start, end),
-            );
-            let mut samples = left_samples?;
-            samples.extend(right_samples?);
-            Ok(samples)
-        }
-    }
+    chunks
+        .into_par()
+        .map(|chunk| chunk.get_range(start, end))
+        .into_fallible_result()
+        .flat_map(|x| x)
+        .collect()
 }
 
 #[cfg(test)]
