@@ -17,7 +17,7 @@ byte-pool = "0.2"
 cfg-if = "1.0"
 chili = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
-croaring = "2.3"
+croaring = "2.4"
 enquote = "1.1"
 enum_dispatch = "0.3"
 flatbuffers = "25.2"
@@ -45,8 +45,8 @@ rayon = "1.11"
 regex = "1.11"
 strum = { version = "0.27", features = ["derive"] }
 strum_macros = "0.27"
-yasi = "=0.1.5"
 logger-rust = "0.2.12"
+hashbrown = "0.16.0"
 
 [dev-dependencies]
 test-case = "3.3.1"

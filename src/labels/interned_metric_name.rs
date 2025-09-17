@@ -1,12 +1,12 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
+use crate::common::string_interner::InternedString;
 use enquote::enquote;
 use get_size::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
 use valkey_module::{ValkeyResult, ValkeyValue, raw};
-use yasi::InternedString;
 
 const VALUE_SEPARATOR: &str = "=";
 const EMPTY_LABEL: &str = "";
@@ -41,6 +41,11 @@ impl SeriesLabel for InternedLabel<'_> {
 /// they are necessarily duplicated. We take advantage of this fact to intern label-value pairs,
 /// meaning that only a single allocation is made per unique pair, irrespective of the number of
 /// series it occurs in.
+///
+/// We choose to store the label/value pair as a single interned string in the format "key=value". This reduces
+/// the memory overhead associated with storing separate strings for keys and values (8 bytes vs 16 bytes on 64-bit systems).
+///
+/// The labels are stored in a sorted order to allow for efficient comparison and retrieval.
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
 pub struct InternedMetricName(Vec<InternedString>);
 
@@ -89,7 +94,7 @@ impl InternedMetricName {
         }
     }
 
-    pub fn get_tag(&self, key: &str) -> Option<InternedLabel> {
+    pub fn get_tag(&'_ self, key: &str) -> Option<InternedLabel<'_>> {
         if let Some(label) = self.0.iter().find(|x| {
             if let Some((k, _)) = x.split_once(VALUE_SEPARATOR) {
                 k == key
@@ -136,7 +141,7 @@ impl InternedMetricName {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = InternedLabel> {
+    pub fn iter(&'_ self) -> impl Iterator<Item = InternedLabel<'_>> {
         self.0.iter().filter_map(|x| {
             if let Some((name, value)) = x.split_once(VALUE_SEPARATOR) {
                 Some(InternedLabel { name, value })
