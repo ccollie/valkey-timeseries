@@ -11,8 +11,6 @@ mod tests {
     };
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
-    use valkey_module::{ValkeyError, ValkeyResult};
-    use crate::error_consts;
 
     /// A test helper function for asserting floating point numbers are within the
     /// machine epsilon because strict comparison of floating point numbers is
@@ -2555,9 +2553,8 @@ mod tests {
 
     /// Deserializes TimeSeriesChunk coming from a cluster node.
     pub fn deserialize_chunk(data: &[u8]) -> TimeSeriesChunk {
-        TimeSeriesChunk::deserialize(data.as_ref()).unwrap()
+        TimeSeriesChunk::deserialize(data).unwrap()
     }
-
 
     #[test]
     fn test_timeseries_chunk_serialization_empty_chunks() {
@@ -2579,7 +2576,10 @@ mod tests {
     fn test_timeseries_chunk_serialization_single_sample() {
         for &encoding in CHUNK_TYPES.iter() {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
-            let sample = Sample { timestamp: 1000, value: 42.5 };
+            let sample = Sample {
+                timestamp: 1000,
+                value: 42.5,
+            };
             chunk.add_sample(&sample).unwrap();
 
             let serialized = serialize_chunk(chunk.clone());
@@ -2650,5 +2650,4 @@ mod tests {
             assert_eq!(original_samples, deserialized_samples);
         }
     }
-
 }
