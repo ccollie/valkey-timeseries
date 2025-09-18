@@ -11,6 +11,8 @@ mod tests {
     };
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
+    use valkey_module::{ValkeyError, ValkeyResult};
+    use crate::error_consts;
 
     /// A test helper function for asserting floating point numbers are within the
     /// machine epsilon because strict comparison of floating point numbers is
@@ -2540,4 +2542,113 @@ mod tests {
             assert!(!chunk.has_samples_in_range(15, 15)); // Overlaps chunk but no sample at exactly 15
         }
     }
+
+    // ----- Serialization Tests -----
+    /// Serializes a TimeSeriesChunk for fanout.
+    fn serialize_chunk(chunk: TimeSeriesChunk) -> Vec<u8> {
+        // estimate of the size needed
+        let capacity = chunk.len() * chunk.bytes_per_sample();
+        let mut data: Vec<u8> = Vec::with_capacity(capacity);
+        chunk.serialize(&mut data);
+        data
+    }
+
+    /// Deserializes TimeSeriesChunk coming from a cluster node.
+    pub fn deserialize_chunk(data: &[u8]) -> TimeSeriesChunk {
+        TimeSeriesChunk::deserialize(data.as_ref()).unwrap()
+    }
+
+
+    #[test]
+    fn test_timeseries_chunk_serialization_empty_chunks() {
+        for &encoding in CHUNK_TYPES.iter() {
+            // Test serialization of empty chunk
+            let empty_chunk = TimeSeriesChunk::new(encoding, 1024);
+            assert!(empty_chunk.is_empty());
+
+            let serialized = serialize_chunk(empty_chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(empty_chunk, deserialized);
+            assert_eq!(empty_chunk.get_encoding(), deserialized.get_encoding());
+            assert!(deserialized.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_single_sample() {
+        for &encoding in CHUNK_TYPES.iter() {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let sample = Sample { timestamp: 1000, value: 42.5 };
+            chunk.add_sample(&sample).unwrap();
+
+            let serialized = serialize_chunk(chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(chunk, deserialized);
+            assert_eq!(chunk.get_encoding(), deserialized.get_encoding());
+            assert_eq!(chunk.len(), deserialized.len());
+            assert_eq!(chunk.first_timestamp(), deserialized.first_timestamp());
+            assert_eq!(chunk.last_timestamp(), deserialized.last_timestamp());
+
+            let original_samples = chunk.get_range(0, i64::MAX).unwrap();
+            let deserialized_samples = deserialized.get_range(0, i64::MAX).unwrap();
+            assert_eq!(original_samples, deserialized_samples);
+        }
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_multiple_samples() {
+        for &encoding in CHUNK_TYPES.iter() {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let samples = generate_random_samples(50);
+
+            for sample in &samples {
+                chunk.add_sample(sample).unwrap();
+            }
+
+            let serialized = serialize_chunk(chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(chunk, deserialized);
+            assert_eq!(chunk.get_encoding(), deserialized.get_encoding());
+            assert_eq!(chunk.len(), deserialized.len());
+            assert_eq!(chunk.first_timestamp(), deserialized.first_timestamp());
+            assert_eq!(chunk.last_timestamp(), deserialized.last_timestamp());
+
+            let original_samples = chunk.get_range(0, i64::MAX).unwrap();
+            let deserialized_samples = deserialized.get_range(0, i64::MAX).unwrap();
+            assert_eq!(original_samples, deserialized_samples);
+        }
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_large_dataset() {
+        for &encoding in CHUNK_TYPES.iter() {
+            let mut chunk = TimeSeriesChunk::new(encoding, 8192); // Larger chunk size
+            let samples = generate_random_samples(500); // Large dataset
+
+            for sample in &samples {
+                if let Err(TsdbError::CapacityFull(_)) = chunk.add_sample(sample) {
+                    break; // Stop when chunk is full
+                }
+            }
+
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let serialized = serialize_chunk(chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(chunk, deserialized);
+            assert_eq!(chunk.get_encoding(), deserialized.get_encoding());
+            assert_eq!(chunk.len(), deserialized.len());
+
+            let original_samples = chunk.get_range(0, i64::MAX).unwrap();
+            let deserialized_samples = deserialized.get_range(0, i64::MAX).unwrap();
+            assert_eq!(original_samples, deserialized_samples);
+        }
+    }
+
 }
