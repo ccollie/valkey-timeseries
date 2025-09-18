@@ -1,14 +1,11 @@
 use super::label_names_fanout_operation::exec_label_names_fanout_request;
-use crate::commands::{
-    arg_parse::parse_metadata_command_args, fanout::generated::LabelNamesResponse,
-};
+use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::fanout::is_clustered;
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
 use valkey_module::{
-    AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult,
-    ValkeyString, ValkeyValue,
+    AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
@@ -26,7 +23,7 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
         return exec_label_names_fanout_request(ctx, options);
     }
-    let mut names = process_label_names_request(ctx, &options)?;
+    let names = process_label_names_request(ctx, &options)?;
 
     let labels = names
         .into_iter()

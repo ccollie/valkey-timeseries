@@ -25,7 +25,7 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.CARD in cluster mode requires at least one matcher",
             ));
         }
-      
+
         return exec_cardinality_fanout_request(ctx, options);
     }
     let counter = calculate_cardinality(ctx, options.date_range, &options.matchers)?;

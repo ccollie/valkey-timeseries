@@ -133,7 +133,7 @@ fn get_shard(s: &str) -> &Mutex<HashSet<Holder>> {
     unsafe { POOL.get_unchecked(index) }
 }
 
-static LOCK_ERROR:&str = "string interner shard lock poisoned";
+static LOCK_ERROR: &str = "string interner shard lock poisoned";
 
 /// Interns the given string slice and returns a [`Symbol`] representing it.
 ///
@@ -170,7 +170,9 @@ pub fn intern(key: &str) -> Symbol {
 /// assert_eq!(string_interner::size(), 0);
 /// ```
 pub fn size() -> usize {
-    POOL.iter().map(|shard| shard.lock().expect(LOCK_ERROR).len()).sum()
+    POOL.iter()
+        .map(|shard| shard.lock().expect(LOCK_ERROR).len())
+        .sum()
 }
 
 /// Returns the total number of slots currently allocated in the interner.
