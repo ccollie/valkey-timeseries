@@ -1,6 +1,7 @@
 pub const CANNOT_ADD_SAMPLE: &str = "TSDB: could not add sample";
 pub const CHUNK_SPLIT: &str = "TSDB: could not split chunk";
 pub const CAPACITY_FULL: &str = "TSDB: chunk at full capacity";
+pub const CHUNK_COMPRESSION: &str = "TSDB: cannot compress chunk";
 pub const CHUNK_DECOMPRESSION: &str = "TSDB: cannot decompress chunk";
 pub const DUPLICATE_LABEL: &str = "TSDB: duplicate label";
 pub const DUPLICATE_LABELS: &str = "TSDB: duplicate labels";

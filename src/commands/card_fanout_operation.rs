@@ -1,0 +1,56 @@
+use super::fanout::generated::{CardinalityRequest, CardinalityResponse, DateRange};
+use super::utils::reply_with_i64;
+use crate::commands::calculate_cardinality;
+use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_matchers_list};
+use crate::fanout::{FanoutOperation, FanoutTarget, exec_fanout_request_base};
+use crate::series::TimestampRange;
+use crate::series::request_types::MatchFilterOptions;
+use valkey_module::{Context, ValkeyResult, ValkeyValue};
+
+pub struct CardFanoutOperation {
+    options: MatchFilterOptions,
+    result: usize,
+}
+
+impl CardFanoutOperation {
+    pub fn new(options: MatchFilterOptions) -> Self {
+        Self { options, result: 0 }
+    }
+}
+
+impl FanoutOperation<CardinalityRequest, CardinalityResponse> for CardFanoutOperation {
+    fn name() -> &'static str {
+        "cardinality"
+    }
+
+    fn get_local_response(
+        ctx: &Context,
+        req: CardinalityRequest,
+    ) -> ValkeyResult<CardinalityResponse> {
+        let date_range: Option<TimestampRange> = req.range.map(|r| r.into());
+        let matchers = deserialize_matchers_list(Some(req.filters))?;
+        let count = calculate_cardinality(ctx, date_range, &matchers)? as u64;
+        Ok(CardinalityResponse { cardinality: count })
+    }
+
+    fn generate_request(&mut self) -> CardinalityRequest {
+        let filters = serialize_matchers_list(&self.options.matchers).expect("serialize matchers");
+        let range: Option<DateRange> = self.options.date_range.map(|r| r.into());
+        CardinalityRequest { range, filters }
+    }
+
+    fn on_response(&mut self, resp: CardinalityResponse, _target: FanoutTarget) {
+        self.result += resp.cardinality as usize;
+    }
+
+    fn generate_reply(&mut self, ctx: &Context) {
+        reply_with_i64(ctx, self.result as i64);
+    }
+}
+
+pub(super) fn exec_cardinality_fanout_request(
+    ctx: &Context,
+    options: MatchFilterOptions,
+) -> ValkeyResult<ValkeyValue> {
+    exec_fanout_request_base(ctx, CardFanoutOperation::new(options))
+}

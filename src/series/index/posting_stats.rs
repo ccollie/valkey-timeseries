@@ -1,4 +1,7 @@
 use std::cmp::Ordering;
+use std::collections::HashMap;
+use valkey_module::ValkeyValue;
+use valkey_module::redisvalue::ValkeyValueKey;
 
 /// Stat holds values for a single cardinality statistic.
 #[derive(Debug, Clone, Default)]
@@ -16,6 +19,62 @@ pub struct PostingsStats {
     pub num_label_pairs: usize,
     pub num_labels: usize,
     pub series_count: u64,
+}
+
+impl From<PostingsStats> for ValkeyValue {
+    fn from(stats: PostingsStats) -> Self {
+        (&stats).into()
+    }
+}
+
+impl From<&PostingsStats> for ValkeyValue {
+    fn from(stats: &PostingsStats) -> Self {
+        let mut data = HashMap::with_capacity(4);
+        data.insert(
+            "numSeries".into(),
+            ValkeyValue::Integer(stats.series_count as i64),
+        );
+        data.insert(
+            "numLabels".into(),
+            ValkeyValue::Integer(stats.num_labels as i64),
+        );
+        data.insert(
+            "numLabelPairs".into(),
+            ValkeyValue::Integer(stats.num_label_pairs as i64),
+        );
+        data.insert(
+            "seriesCountByMetricName".into(),
+            stats_slice_to_value(&stats.cardinality_metrics_stats),
+        );
+        data.insert(
+            "labelValueCountByLabelName".into(),
+            stats_slice_to_value(&stats.cardinality_label_stats),
+        );
+        data.insert(
+            "memoryInBytesByLabelPair".into(),
+            stats_slice_to_value(&stats.label_value_stats),
+        );
+        data.insert(
+            "seriesCountByLabelPair".into(),
+            stats_slice_to_value(&stats.label_value_pairs_stats),
+        );
+
+        ValkeyValue::Map(data)
+    }
+}
+
+fn stats_slice_to_value(items: &[PostingStat]) -> ValkeyValue {
+    let res: Vec<ValkeyValue> = items.iter().map(posting_stat_to_value).collect();
+    ValkeyValue::Array(res)
+}
+
+fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
+    let mut res: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::with_capacity(1);
+    res.insert(
+        ValkeyValueKey::from(&stat.name),
+        ValkeyValue::Integer(stat.count as i64),
+    );
+    ValkeyValue::Map(res)
 }
 
 #[derive(Debug)]

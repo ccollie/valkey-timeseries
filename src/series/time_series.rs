@@ -40,7 +40,7 @@ pub struct TimeSeries {
     pub id: SeriesRef,
     /// The label/value pairs
     pub labels: InternedMetricName,
-    /// How long data is kept before being removed
+    /// Duration for which data is retained before automatic removal
     pub retention: Duration,
     /// Policy for handling duplicate samples
     pub sample_duplicates: SampleDuplicatePolicy,

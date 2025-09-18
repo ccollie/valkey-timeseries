@@ -1,5 +1,9 @@
 use crate::common::binary_search::{ExponentialSearch, find_last_ge_index};
 use crate::common::constants::VEC_BASE_SIZE;
+use crate::common::encoding::{
+    try_read_byte_slice, try_read_f64_le, try_read_uvarint, write_byte_slice, write_f64_le,
+    write_uvarint,
+};
 use crate::common::hash::hash_f64;
 use crate::common::parallel::join;
 use crate::common::pool::{PooledVecF64, PooledVecI64, get_pooled_vec_f64, get_pooled_vec_i64};
@@ -18,7 +22,6 @@ use crate::series::chunks::utils::get_timestamp_index_bounds;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
-use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use std::mem::size_of;
 use valkey_module::digest::Digest;
@@ -26,7 +29,7 @@ use valkey_module::{RedisModuleIO, ValkeyResult, raw};
 
 /// `PcoChunk` holds sample data encoded using Pco compression.
 /// https://github.com/mwlon/pcodec
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GetSize)]
+#[derive(Debug, Clone, PartialEq, GetSize)]
 pub struct PcoChunk {
     pub min_time: Timestamp,
     pub max_time: Timestamp,
@@ -555,6 +558,68 @@ impl Chunk for PcoChunk {
         })
     }
 
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        // Write min_time as signed varint (timestamp)
+        write_uvarint(dest, self.min_time as u64);
+
+        // Write max_time as signed varint (timestamp)
+        write_uvarint(dest, self.max_time as u64);
+
+        // Write max_size as unsigned varint
+        write_uvarint(dest, self.max_size as u64);
+
+        // Write last_value as f64
+        write_f64_le(dest, self.last_value);
+
+        // Write count as unsigned varint
+        write_uvarint(dest, self.count as u64);
+
+        // Write timestamps vector length and data
+        write_byte_slice(dest, &self.timestamps);
+
+        // Write values vector length and data
+        write_byte_slice(dest, &self.values);
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        let mut buf = buf;
+
+        // Read min_time
+        let min_time = read_uvarint(&mut buf)? as i64;
+
+        // Read max_time
+        let max_time = read_uvarint(&mut buf)? as i64;
+
+        // Read max_size
+        let max_size = read_uvarint(&mut buf)? as usize;
+
+        // Read last_value
+        let last_value = try_read_f64_le(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+
+        // Read count
+        let count = read_uvarint(&mut buf)? as usize;
+
+        // Read timestamps vector
+        let timestamps = try_read_byte_slice(&mut buf)
+            .map_err(|_| TsdbError::ChunkDecoding)?
+            .to_vec();
+
+        // Read values vector
+        let values = try_read_byte_slice(&mut buf)
+            .map_err(|_| TsdbError::ChunkDecoding)?
+            .to_vec();
+
+        Ok(PcoChunk {
+            min_time,
+            max_time,
+            max_size,
+            last_value,
+            count,
+            timestamps,
+            values,
+        })
+    }
+
     fn debug_digest(&self, dig: &mut Digest) {
         dig.add_long_long(self.min_time);
         dig.add_long_long(self.max_time);
@@ -564,6 +629,10 @@ impl Chunk for PcoChunk {
         dig.add_string_buffer(&self.timestamps);
         dig.add_string_buffer(&self.values);
     }
+}
+
+fn read_uvarint(buf: &mut &[u8]) -> TsdbResult<u64> {
+    try_read_uvarint(buf).map_err(|_| TsdbError::ChunkDecoding)
 }
 
 fn get_timestamp_index(timestamps: &[Timestamp], ts: Timestamp, start_ofs: usize) -> (usize, bool) {

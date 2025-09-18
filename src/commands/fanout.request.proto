@@ -1,0 +1,189 @@
+// Copyright 2024 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package valkey_timeseries.fanout;
+
+
+message DateRange {
+  int64 start = 1;
+  int64 end = 2;
+}
+
+message ValueRange {
+  double min = 1;
+  double max = 2;
+}
+
+enum MatcherOpType {
+  EQUAL = 0;
+  NOT_EQUAL = 1;
+  REGEX_EQUAL = 2;
+  REGEX_NOT_EQUAL = 3;
+}
+
+enum MatchersConnector  {
+  AND = 0;
+  OR = 1;
+}
+
+message MatcherListValue {
+  repeated string values = 1;
+}
+
+message MatcherPredicateValue {
+  oneof label_value {
+    string value = 1;
+    MatcherListValue values = 2;
+  }
+}
+
+message Matcher {
+  string label = 1;
+  MatcherOpType op = 2;
+  oneof value {
+    bool empty = 3;
+    string single = 4;
+    MatcherListValue list = 5;
+  }
+}
+
+message MatcherList {
+  repeated Matcher matchers = 1;
+}
+
+message OrMatcherList {
+  repeated MatcherList filters = 1;
+}
+
+message Matchers {
+  optional string name = 1;
+  oneof filters {
+    MatcherList and_filters = 2;
+    OrMatcherList or_filters = 3;
+  }
+}
+
+message MultiGetRequest {
+  bool with_labels = 1;
+  repeated string selected_labels = 2;
+  repeated Matchers filters = 3;
+  bool latest = 4;
+}
+
+message RangeRequest {
+  DateRange range = 1;
+  uint32 count = 2;
+  repeated int64 timestamp_filter = 3;
+  ValueRange value_filter = 4;
+  optional AggregationOptions aggregation = 5;
+}
+
+message IndexQueryRequest {
+  DateRange range = 1;
+  repeated Matchers filters = 2;
+}
+
+message LabelNamesRequest {
+  DateRange range = 1;
+  repeated Matchers filters = 2;
+}
+
+message LabelValuesRequest {
+  string label = 1;
+  DateRange range = 2;
+  repeated Matchers filters = 3;
+}
+
+message CardinalityRequest {
+  DateRange range = 1;
+  repeated Matchers filters = 2;
+}
+
+message MetadataRequest {
+  DateRange range = 1;
+  repeated Matchers filters = 2;
+  uint32 limit = 3;
+}
+
+message SearchQueryRequest {
+  int64 start = 1;
+  int64 end = 2;
+  Matchers filters = 3;
+  uint32 limit = 4;
+}
+
+message StatsRequest {
+  uint32 limit = 1;
+}
+
+message ClusterMessage {
+  uint64 request_id = 1;
+  int32 db = 2;
+}
+
+enum AggregationType {
+  SUM = 0;
+  AVG = 1;
+  MIN = 2;
+  MAX = 3;
+  FIRST = 4;
+  LAST = 5;
+  COUNT = 6;
+  RANGE = 7;
+  STD_S = 8;
+  STD_P = 9;
+  VAR_S = 10;
+  VAR_P = 11;
+}
+
+message GroupingOptions {
+  string group_label = 1;
+  AggregationType aggregation = 2;
+}
+
+enum BucketTimestampType {
+  START = 0;
+  END = 1;
+  MID = 2;
+}
+
+enum BucketAlignmentType {
+  DEFAULT = 0;
+  ALIGN_START = 1;
+  ALIGN_END = 2;
+  TIMESTAMP = 3;
+}
+
+message AggregationOptions {
+  AggregationType aggregator = 1;
+  uint32 bucket_duration = 2;
+  int64 alignment_timestamp = 3;
+  BucketTimestampType bucket_timestamp_type = 4;
+  BucketAlignmentType bucket_alignment = 5;
+  bool report_empty = 6;
+}
+
+message MultiRangeRequest {
+  DateRange range = 1;
+  optional uint32 count = 2;
+  repeated int64 timestamp_filter = 3;
+  ValueRange value_filter = 4;
+  optional AggregationOptions aggregation = 5;
+  optional GroupingOptions grouping = 6;
+  repeated Matchers filters = 7;
+  bool with_labels = 8;
+  repeated string selected_labels = 9;
+}

@@ -23,14 +23,13 @@ use super::traits::BitWrite;
 use super::utils::{MSB, zigzag_encode};
 use get_size::GetSize;
 use num_traits::PrimInt;
-use serde::{Deserialize, Serialize};
 use std::io::Result;
 use valkey_module::digest::Digest;
 
 /// BufferedWriter
 ///
 /// BufferedWriter writes bytes to a buffer.
-#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, Serialize, Deserialize, GetSize)]
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, GetSize)]
 pub struct BufferedWriter {
     buf: Vec<u8>,
     pos: u32, // position in the last byte in the buffer

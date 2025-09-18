@@ -1,6 +1,8 @@
-use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::cluster::is_clustered;
-use crate::fanout::{LabelNamesResponse, perform_remote_label_names_request};
+use super::label_names_fanout_operation::exec_label_names_fanout_request;
+use crate::commands::{
+    arg_parse::parse_metadata_command_args, fanout::generated::LabelNamesResponse,
+};
+use crate::fanout::is_clustered;
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
@@ -21,13 +23,10 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.LABELNAMES in cluster mode requires at least one matcher",
             ));
         }
-        // in cluster mode, we need to send the request to all nodes
-        perform_remote_label_names_request(ctx, options, on_label_names_request_done)?;
-        // We will reply later, from the thread
-        return Ok(ValkeyValue::NoReply);
+
+        return exec_label_names_fanout_request(ctx, options);
     }
     let mut names = process_label_names_request(ctx, &options)?;
-    names.sort();
 
     let labels = names
         .into_iter()
@@ -59,19 +58,4 @@ pub fn process_label_names_request(
     let names = names.into_iter().take(limit).collect::<Vec<_>>();
 
     Ok(names)
-}
-
-fn on_label_names_request_done(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    _req: MatchFilterOptions,
-    res: Vec<LabelNamesResponse>,
-) {
-    let count = res.iter().map(|result| result.names.len()).sum();
-    let mut names = Vec::with_capacity(count);
-    for result in res.into_iter() {
-        let list = result.names.into_iter().map(ValkeyValue::BulkString);
-        names.extend(list);
-    }
-
-    ctx.reply(Ok(ValkeyValue::Array(names)));
 }

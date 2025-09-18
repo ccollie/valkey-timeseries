@@ -1,4 +1,5 @@
 use super::{GorillaEncoder, GorillaIterator};
+use crate::common::encoding::{try_read_uvarint, write_uvarint};
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -10,13 +11,12 @@ use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size::GetSize;
-use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
 /// `GorillaChunk` is a chunk of timeseries data encoded using Gorilla XOR encoding.
-#[derive(Debug, Clone, Hash, PartialEq, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, PartialEq, Hash, GetSize)]
 pub struct GorillaChunk {
     pub(crate) encoder: GorillaEncoder,
     pub max_size: usize,
@@ -120,6 +120,9 @@ impl Chunk for GorillaChunk {
     fn len(&self) -> usize {
         self.encoder.num_samples
     }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn last_value(&self) -> f64 {
         self.encoder.last_value
     }
@@ -129,6 +132,7 @@ impl Chunk for GorillaChunk {
     fn max_size(&self) -> usize {
         self.max_size
     }
+
     fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
         if self.is_empty() || start_ts > self.last_timestamp() || end_ts < self.first_timestamp() {
             return Ok(0);
@@ -335,6 +339,21 @@ impl Chunk for GorillaChunk {
         let encoder = GorillaEncoder::rdb_load(rdb)?;
         let chunk = GorillaChunk { encoder, max_size };
         Ok(chunk)
+    }
+
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        write_uvarint(dest, self.max_size as u64);
+        self.encoder.serialize(dest);
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        let mut buf = buf;
+        let max_size = try_read_uvarint(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+        let encoder = GorillaEncoder::deserialize(buf)?;
+        Ok(GorillaChunk {
+            encoder,
+            max_size: max_size as usize,
+        })
     }
 
     fn debug_digest(&self, dig: &mut Digest) {

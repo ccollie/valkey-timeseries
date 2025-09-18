@@ -1,17 +1,15 @@
+use super::mget_fanout_operation::exec_mget_fanout_request;
 use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
-use crate::fanout::cluster::is_clustered;
-use crate::fanout::{MultiGetResponse, perform_remote_mget_request};
+use crate::fanout::is_clustered;
 use crate::labels::Label;
 use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;
 use crate::series::range_utils::get_series_labels;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
-use blart::AsBytes;
 use valkey_module::{
-    AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
-    ValkeyString, ValkeyValue,
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
 /// TS.MGET
@@ -26,8 +24,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_mget_options(args)?;
 
     if is_clustered(ctx) {
-        perform_remote_mget_request(ctx, options, on_mget_request_done)?;
-        return Ok(ValkeyValue::NoReply);
+        return exec_mget_fanout_request(ctx, options);
     }
 
     let mget_results = process_mget_request(ctx, options)?;
@@ -56,7 +53,7 @@ pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> 
 
     let Some(filter_index) = args
         .iter()
-        .rposition(|arg| arg.as_bytes().eq_ignore_ascii_case(b"FILTER"))
+        .rposition(|arg| arg.as_slice().eq_ignore_ascii_case(b"FILTER"))
     else {
         return Err(ValkeyError::WrongArity);
     };
@@ -71,7 +68,7 @@ pub fn parse_mget_options(args: Vec<ValkeyString>) -> ValkeyResult<MGetRequest> 
     let mut args = args.into_iter().skip(1).peekable(); // Skip the command name
 
     while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(arg.as_bytes())
+        let token = parse_command_arg_token(arg.as_slice())
             .ok_or(ValkeyError::Str(error_consts::INVALID_ARGUMENT))?;
 
         match token {
@@ -158,21 +155,4 @@ pub fn process_mget_request(
     )?;
 
     Ok(series)
-}
-
-fn on_mget_request_done(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    _req: MGetRequest,
-    res: Vec<MultiGetResponse>,
-) {
-    let count = res.iter().map(|s| s.series.len()).sum::<usize>();
-    let mut arr = Vec::with_capacity(count);
-
-    for s in res.into_iter() {
-        for series in s.series.into_iter().filter(|s| s.value.is_some()) {
-            arr.push(series.into());
-        }
-    }
-
-    ctx.reply(Ok(ValkeyValue::Array(arr)));
 }

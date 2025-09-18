@@ -12,14 +12,13 @@ use crate::series::SeriesRef;
 use crate::series::chunks::ChunkEncoding;
 use get_size::GetSize;
 use num_traits::Zero;
-use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::time::Duration;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue, raw};
 
-#[derive(Debug, Default, PartialEq, Deserialize, Serialize, Clone, Copy, GetSize, Hash)]
+#[derive(Debug, Default, PartialEq, Clone, Copy, GetSize, Hash)]
 /// The policy to use when a duplicate sample is encountered
 pub enum DuplicatePolicy {
     /// Block the sample and return an error
@@ -577,7 +576,7 @@ mod tests {
             max_value_delta: 0.001,
         };
 
-        // Test time delta check - within threshold
+        // Test time delta check - within a threshold
         let last_sample = Sample {
             timestamp: 100,
             value: 10.0,
@@ -595,7 +594,7 @@ mod tests {
         };
         assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
 
-        // Test value delta check - within threshold
+        // Test value delta check - within a threshold
         let current_sample = Sample {
             timestamp: 105,
             value: 10.0005,
@@ -634,7 +633,7 @@ mod tests {
             value: 10.0,
         };
 
-        // With original Block policy - should not be considered duplicate
+        // With the original Block policy - should not be considered duplicate
         assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
 
         // With override to KeepLast - should be considered duplicate
@@ -662,7 +661,7 @@ mod tests {
             value: 30.0,
         };
 
-        // With zero time delta, should not detect as duplicate based on time
+        // With a zero time delta, should not detect as duplicate based on time
         assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
 
         // But still should detect as duplicate based on value

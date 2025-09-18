@@ -1,4 +1,4 @@
-use crate::common::rdb::rdb_load_string;
+use crate::common::rdb::{rdb_load_u8, rdb_save_u8};
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};
@@ -14,7 +14,7 @@ use core::mem::size_of;
 use get_size::GetSize;
 use std::cmp::Ordering;
 use valkey_module::digest::Digest;
-use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, raw};
+use valkey_module::{RedisModuleIO, ValkeyResult};
 
 #[derive(Debug, Clone, Hash, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {
@@ -45,6 +45,14 @@ impl TimeSeriesChunk {
             Uncompressed(chunk) => chunk.is_full(),
             Gorilla(chunk) => chunk.is_full(),
             Pco(chunk) => chunk.is_full(),
+        }
+    }
+
+    pub fn get_encoding(&self) -> ChunkEncoding {
+        match self {
+            TimeSeriesChunk::Uncompressed(_) => ChunkEncoding::Uncompressed,
+            TimeSeriesChunk::Gorilla(_) => ChunkEncoding::Gorilla,
+            TimeSeriesChunk::Pco(_) => ChunkEncoding::Pco,
         }
     }
 
@@ -429,14 +437,57 @@ impl Chunk for TimeSeriesChunk {
 
     fn load_rdb(rdb: *mut RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self> {
         use TimeSeriesChunk::*;
-        let chunk_type = rdb_load_string(rdb)?;
-        let chunk = match chunk_type.as_str() {
-            "uncompressed" => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
-            "gorilla" => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
-            "pco" => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
-            _ => return Err(ValkeyError::Str("Invalid chunk type")),
+        let chunk_type_byte = rdb_load_u8(rdb)?;
+        let chunk_type: ChunkEncoding = chunk_type_byte.try_into()?;
+        let chunk = match chunk_type {
+            ChunkEncoding::Uncompressed => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::Gorilla => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::Pco => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
         };
         Ok(chunk)
+    }
+
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        use TimeSeriesChunk::*;
+        match self {
+            Uncompressed(chunk) => {
+                dest.push(ChunkEncoding::Uncompressed as u8);
+                chunk.serialize(dest)
+            }
+            Gorilla(chunk) => {
+                dest.push(ChunkEncoding::Gorilla as u8);
+                chunk.serialize(dest)
+            }
+            Pco(chunk) => {
+                dest.push(ChunkEncoding::Pco as u8);
+                chunk.serialize(dest)
+            }
+        }
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        use TimeSeriesChunk::*;
+        if buf.is_empty() {
+            return Err(TsdbError::DecodingError(
+                "Empty buffer deserializing chunk".to_string(),
+            ));
+        }
+        // The first byte indicates the chunk type
+        let chunk_type = ChunkEncoding::try_from(buf[0])?;
+        match chunk_type {
+            ChunkEncoding::Uncompressed => {
+                let chunk = UncompressedChunk::deserialize(&buf[1..])?;
+                Ok(Uncompressed(chunk))
+            }
+            ChunkEncoding::Gorilla => {
+                let chunk = GorillaChunk::deserialize(&buf[1..])?;
+                Ok(Gorilla(chunk))
+            }
+            ChunkEncoding::Pco => {
+                let chunk = PcoChunk::deserialize(&buf[1..])?;
+                Ok(Pco(chunk))
+            }
+        }
     }
 
     fn debug_digest(&self, dig: &mut Digest) {
@@ -450,12 +501,8 @@ impl Chunk for TimeSeriesChunk {
 }
 
 fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut RedisModuleIO) {
-    let chunk_type = match chunk {
-        TimeSeriesChunk::Uncompressed(_) => "uncompressed",
-        TimeSeriesChunk::Gorilla(_) => "gorilla",
-        TimeSeriesChunk::Pco(_) => "pco",
-    };
-    raw::save_string(rdb, chunk_type);
+    let chunk_type: u8 = chunk.get_encoding() as u8;
+    rdb_save_u8(rdb, chunk_type);
 }
 
 impl PartialOrd for TimeSeriesChunk {

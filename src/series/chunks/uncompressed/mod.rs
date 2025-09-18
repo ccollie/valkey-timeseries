@@ -1,4 +1,6 @@
-use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
+use crate::common::encoding::write_f64_le;
+use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_uvarint};
+use crate::common::rdb::{rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usize};
 use crate::common::{SAMPLE_SIZE, Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
@@ -8,15 +10,17 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use core::mem::size_of;
 use get_size::GetSize;
-use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult, raw};
 
 // todo: move to constants
 pub const MAX_UNCOMPRESSED_SAMPLES: usize = 256;
+const FLAG_SERIALIZE_UNCOMPRESSED: u8 = 0b00000001;
+const FLAG_SERIALIZE_GORILLA: u8 = 0b00000010;
+const FLAG_SERIALIZE_PCO: u8 = 0b00000100;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UncompressedChunk {
     pub max_size: usize,
     pub samples: Vec<Sample>,
@@ -198,6 +202,46 @@ impl UncompressedChunk {
 
         Some((start_idx, end_idx))
     }
+
+    fn serialize_raw(&self, buf: &mut Vec<u8>) {
+        write_uvarint(buf, self.max_size as u64);
+        write_uvarint(buf, self.max_elements as u64);
+        write_uvarint(buf, self.samples.len() as u64);
+
+        for sample in &self.samples {
+            // assume non-zero timestamps
+            write_uvarint(buf, sample.timestamp as u64);
+            write_f64_le(buf, sample.value);
+        }
+    }
+
+    fn deserialize_raw(buf: &[u8]) -> TsdbResult<Self> {
+        let mut buf = buf;
+
+        let max_size = read_usize(&mut buf)?;
+        let max_elements = read_usize(&mut buf)?;
+        let len = read_usize(&mut buf)?;
+        let mut samples = Vec::with_capacity(len);
+        for _ in 0..len {
+            let ts = try_read_uvarint(&mut buf).map_err(|_| TsdbError::ChunkDecoding)? as i64;
+            let val = try_read_f64_le(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+            samples.push(Sample {
+                timestamp: ts,
+                value: val,
+            });
+        }
+        Ok(UncompressedChunk {
+            max_size,
+            samples,
+            max_elements,
+        })
+    }
+}
+
+fn read_usize(buf: &mut &[u8]) -> TsdbResult<usize> {
+    let value = try_read_uvarint(buf)
+        .map_err(|_| TsdbError::DecodingError("Failed to read usize".into()))?;
+    Ok(value as usize)
 }
 
 fn binary_search_samples_by_timestamp(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
@@ -392,6 +436,8 @@ impl Chunk for UncompressedChunk {
 
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         // todo: compress ?
+        // forward compat - write encoding flag
+        rdb_save_u8(rdb, FLAG_SERIALIZE_UNCOMPRESSED);
         rdb_save_usize(rdb, self.max_size);
         rdb_save_usize(rdb, self.max_elements);
         rdb_save_usize(rdb, self.samples.len());
@@ -402,6 +448,8 @@ impl Chunk for UncompressedChunk {
     }
 
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
+        // forward compat - read encoding flag
+        let _flag = rdb_load_u8(rdb)? as u8;
         let max_size = rdb_load_usize(rdb)?;
         let max_elements = rdb_load_usize(rdb)?;
         let len = rdb_load_usize(rdb)?;
@@ -419,6 +467,19 @@ impl Chunk for UncompressedChunk {
             samples,
             max_elements,
         })
+    }
+
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        dest.push(FLAG_SERIALIZE_UNCOMPRESSED);
+        self.serialize_raw(dest);
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        if buf.len() < 2 {
+            return Err(TsdbError::ChunkDecoding);
+        }
+        let _ = buf[0]; // forward compat - encoding flag placeholder
+        Self::deserialize_raw(&buf[1..])
     }
 
     fn debug_digest(&self, dig: &mut Digest) {

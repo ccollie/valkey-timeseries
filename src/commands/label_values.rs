@@ -1,19 +1,17 @@
+use super::label_values_fanout_operation::exec_label_values_fanout_request;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
-use crate::fanout::cluster::is_clustered;
-use crate::fanout::{LabelValuesRequest, LabelValuesResponse, perform_remote_label_values_request};
+use crate::fanout::is_clustered;
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
-use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{
-    AclPermissions, BlockedClient, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
-    ValkeyString, ValkeyValue,
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
-/// TS.LABELVALUES label [FILTER_BY_RANGE fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
-/// https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
+// TS.LABELVALUES label [START fromTimestamp] [END fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
+// https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
 pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 3 {
         return Err(WrongArity);
@@ -29,18 +27,11 @@ pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             ));
         }
 
-        let options = LabelValuesRequest {
-            label_name,
-            range: label_args.date_range,
-            filters: label_args.matchers,
-        };
         // in cluster mode, we need to send the request to all nodes
-        perform_remote_label_values_request(ctx, options, on_label_values_request_done)?;
-        // We will reply later, from the thread
-        return Ok(ValkeyValue::NoReply);
+        return exec_label_values_fanout_request(ctx, label_name, label_args);
     }
-    let mut names = process_label_values_request(ctx, &label_name, &label_args)?;
-    names.sort();
+
+    let names = process_label_values_request(ctx, &label_name, &label_args)?;
 
     let label_values = names
         .into_iter()
@@ -77,29 +68,4 @@ pub fn process_label_values_request(
     let names = names.into_iter().take(limit).collect::<Vec<_>>();
 
     Ok(names)
-}
-
-fn on_label_values_request_done(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    _req: LabelValuesRequest,
-    res: Vec<LabelValuesResponse>,
-) {
-    let count = res.iter().map(|result| result.values.len()).sum();
-    let mut values = Vec::with_capacity(count);
-    for result in res.into_iter() {
-        // Handle the results from the remote nodes
-        values.extend(result.values.into_iter().map(ValkeyValue::BulkString));
-    }
-    // Sort the values
-    values.sort_by(|a, b| {
-        if let (ValkeyValue::BulkString(a), ValkeyValue::BulkString(b)) = (a, b) {
-            a.cmp(b)
-        } else {
-            let log_ctx = ctx.lock();
-            log_ctx.log_warning("BUG: Unexpected value type in TS.LABELVALUES response");
-            Ordering::Greater
-        }
-    });
-    // Handle the results from the remote nodes
-    ctx.reply(Ok(ValkeyValue::Array(values)));
 }

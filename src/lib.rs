@@ -5,6 +5,7 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
+use crate::fanout::init_fanout;
 use logger_rust::{LogLevel, set_log_level};
 use valkey_module::{
     Context, Status, ValkeyString, Version, configuration::ConfigurationFlags, valkey_module,
@@ -73,6 +74,7 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 
     set_log_level(LogLevel::Console);
 
+    init_fanout(ctx);
     match register_server_events(ctx) {
         Ok(_) => Status::Ok,
         Err(e) => {

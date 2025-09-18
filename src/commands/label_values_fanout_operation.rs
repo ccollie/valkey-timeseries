@@ -1,0 +1,77 @@
+use super::fanout::generated::{DateRange, LabelValuesRequest, LabelValuesResponse};
+use super::utils::reply_with_btree_set;
+use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::process_label_values_request;
+use crate::fanout::FanoutOperation;
+use crate::fanout::{FanoutTarget, exec_fanout_request_base};
+use crate::labels::matchers::Matchers;
+use crate::series::TimestampRange;
+use crate::series::request_types::MatchFilterOptions;
+use std::collections::BTreeSet;
+use valkey_module::{Context, ValkeyResult, ValkeyValue};
+
+pub struct LabelValuesFanoutOperation {
+    pub label: String,
+    pub options: MatchFilterOptions,
+    results: BTreeSet<String>,
+}
+
+impl LabelValuesFanoutOperation {
+    pub fn new(label: String, options: MatchFilterOptions) -> Self {
+        Self {
+            label,
+            options,
+            results: BTreeSet::new(),
+        }
+    }
+}
+
+impl FanoutOperation<LabelValuesRequest, LabelValuesResponse> for LabelValuesFanoutOperation {
+    fn name() -> &'static str {
+        "label_values"
+    }
+
+    fn get_local_response(
+        ctx: &Context,
+        req: LabelValuesRequest,
+    ) -> ValkeyResult<LabelValuesResponse> {
+        let date_range: Option<TimestampRange> = req.range.map(|x| x.into());
+        let matchers: Vec<Matchers> = deserialize_matchers_list(Some(req.filters))?;
+        let options = MatchFilterOptions {
+            date_range,
+            matchers,
+            ..Default::default()
+        };
+        process_label_values_request(ctx, &req.label, &options)
+            .map(|values| LabelValuesResponse { values })
+    }
+
+    fn generate_request(&mut self) -> LabelValuesRequest {
+        let range: Option<DateRange> = self.options.date_range.map(|r| r.into());
+        let filters = serialize_matchers_list(self.options.matchers.as_ref())
+            .expect("serialize matchers list");
+        LabelValuesRequest {
+            label: self.label.clone(),
+            range,
+            filters,
+        }
+    }
+
+    fn on_response(&mut self, resp: LabelValuesResponse, _target: FanoutTarget) {
+        for value in resp.values {
+            self.results.insert(value);
+        }
+    }
+
+    fn generate_reply(&mut self, ctx: &Context) {
+        reply_with_btree_set(ctx, &self.results);
+    }
+}
+
+pub(super) fn exec_label_values_fanout_request(
+    ctx: &Context,
+    label: String,
+    options: MatchFilterOptions,
+) -> ValkeyResult<ValkeyValue> {
+    exec_fanout_request_base(ctx, LabelValuesFanoutOperation::new(label, options))
+}

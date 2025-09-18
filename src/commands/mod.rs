@@ -19,7 +19,19 @@ mod range;
 mod rev_range;
 mod stats;
 
+mod card_fanout_operation;
 mod create_rule;
+mod fanout;
+mod label_names_fanout_operation;
+mod label_values_fanout_operation;
+mod mget_fanout_operation;
+mod mrange_fanout_operation;
+mod mrange_impl;
+mod query_index_fanout_operation;
+mod stats_fanout_operation;
+mod utils;
+
+pub(super) use crate::fanout::exec_fanout_request_base;
 
 pub use arg_parse::*;
 pub use create_rule::*;

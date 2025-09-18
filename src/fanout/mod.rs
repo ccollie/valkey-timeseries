@@ -1,109 +1,20 @@
-pub mod cluster;
-mod coordinator;
-pub mod request;
-mod results_tracker;
+mod cluster_message;
+mod cluster_rpc;
+mod fanout_error;
+mod fanout_operation;
+mod fanout_targets;
+pub mod serialization;
+mod snowflake;
+mod utils;
 
-use crate::series::index::PostingsStats;
-use crate::series::request_types::{MGetRequest, MRangeOptions, MatchFilterOptions};
-pub use coordinator::send_multi_shard_request;
-pub use request::*;
-use results_tracker::*;
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult};
+use valkey_module::Context;
 
-pub fn perform_remote_command<T: MultiShardCommand, F>(
-    ctx: &Context,
-    request: T::REQ,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, T::REQ, Vec<T::RES>) + Send + 'static,
-    TrackerEnum: From<ResultsTracker<T>>,
-{
-    send_multi_shard_request::<T, _>(ctx, request, on_done)
-}
+use super::fanout::cluster_rpc::register_cluster_message_handlers;
+pub use fanout_error::*;
+pub use fanout_operation::*;
+pub use fanout_targets::FanoutTarget;
+pub use utils::*;
 
-pub fn perform_remote_mget_request<F>(
-    ctx: &Context,
-    request: MGetRequest,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, MGetRequest, Vec<MultiGetResponse>)
-        + Send
-        + 'static,
-{
-    perform_remote_command::<MGetShardedCommand, _>(ctx, request, on_done)
-}
-
-pub fn perform_remote_card_request<F>(
-    ctx: &Context,
-    request: MatchFilterOptions,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, MatchFilterOptions, Vec<CardinalityResponse>)
-        + Send
-        + 'static,
-{
-    send_multi_shard_request::<CardinalityCommand, F>(ctx, request, on_done)
-}
-
-pub fn perform_remote_label_names_request<F>(
-    ctx: &Context,
-    request: MatchFilterOptions,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, MatchFilterOptions, Vec<LabelNamesResponse>)
-        + Send
-        + 'static,
-{
-    send_multi_shard_request::<LabelNamesCommand, F>(ctx, request, on_done)
-}
-
-pub fn perform_remote_label_values_request<F>(
-    ctx: &Context,
-    request: LabelValuesRequest,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, LabelValuesRequest, Vec<LabelValuesResponse>)
-        + Send
-        + 'static,
-{
-    send_multi_shard_request::<LabelValuesCommand, F>(ctx, request, on_done)
-}
-
-pub fn perform_remote_index_query_request<F>(
-    ctx: &Context,
-    request: MatchFilterOptions,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, MatchFilterOptions, Vec<IndexQueryResponse>)
-        + Send
-        + 'static,
-{
-    send_multi_shard_request::<IndexQueryCommand, F>(ctx, request, on_done)
-}
-
-pub fn perform_remote_stats_request<F>(ctx: &Context, limit: usize, on_done: F) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, StatsRequest, Vec<PostingsStats>) + Send + 'static,
-{
-    let request = StatsRequest { limit };
-    send_multi_shard_request::<StatsCommand, F>(ctx, request, on_done)
-}
-
-pub fn perform_remote_mrange_request<F>(
-    ctx: &Context,
-    request: MRangeOptions,
-    on_done: F,
-) -> ValkeyResult<u64>
-where
-    F: FnOnce(&ThreadSafeContext<BlockedClient>, MRangeOptions, Vec<MultiRangeResponse>)
-        + Send
-        + 'static,
-{
-    send_multi_shard_request::<MultiRangeCommand, F>(ctx, request, on_done)
+pub(crate) fn init_fanout(ctx: &Context) {
+    register_cluster_message_handlers(ctx)
 }

@@ -1,5 +1,5 @@
 use crate::common::Timestamp;
-use crate::common::encoding::{read_uvarint, write_uvarint};
+use crate::common::encoding::{try_read_uvarint, write_uvarint};
 use crate::common::parallel::join;
 use crate::common::pool::get_pooled_buffer;
 use crate::error::{TsdbError, TsdbResult};
@@ -203,24 +203,10 @@ pub fn decompress_samples_internal(
     }
 
     let mut input = compressed;
-    let Some((count, ofs)) = read_uvarint(input, 0) else {
-        return Err(TsdbError::CannotDeserialize("count".to_string()));
-    };
-
-    input = &input[ofs..];
-    let Some((_data_len, ofs)) = read_uvarint(input, 0) else {
-        return Err(TsdbError::CannotDeserialize("data_len".to_string()));
-    };
-
-    input = &input[ofs..];
-    let Some((ts_len, ofs)) = read_uvarint(input, 0) else {
-        return Err(TsdbError::CannotDeserialize("ts_len".to_string()));
-    };
-
-    input = &input[ofs..];
-    let Some((value_len, _)) = read_uvarint(input, 0) else {
-        return Err(TsdbError::CannotDeserialize("value_len".to_string()));
-    };
+    let count = try_read_uvarint(&mut input)?;
+    let _data_len = try_read_uvarint(&mut input)?;
+    let ts_len = try_read_uvarint(&mut input)?;
+    let value_len = try_read_uvarint(&mut input)?;
 
     // Ensure we have enough data
     if input.len() < (ts_len + value_len) as usize {
@@ -273,24 +259,6 @@ fn read_usize(input: &mut &[u8], field: &str) -> TsdbResult<usize> {
 
     *input = rest;
     Ok(usize::from_le_bytes(buf))
-}
-
-fn write_buf(dest: &mut Vec<u8>, data: &[u8]) {
-    let len = data.len();
-    write_usize(dest, len);
-    dest.extend_from_slice(data);
-}
-
-fn read_buf(input: &mut &[u8]) -> TsdbResult<Vec<u8>> {
-    let size = read_usize(input, "buffer size")?;
-    if input.len() < size {
-        return Err(TsdbError::CannotDeserialize(
-            "insufficient data for buffer".to_string(),
-        ));
-    }
-    let (data, rest) = input.split_at(size);
-    *input = rest;
-    Ok(data.to_vec())
 }
 
 fn map_err(e: PcoError) -> TsdbError {

@@ -1,0 +1,191 @@
+use super::fanout::generated::{
+    DateRange, MultiRangeRequest, MultiRangeResponse, SeriesResponse, ValueRange,
+};
+use crate::commands::fanout::matchers::serialize_matchers_list;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
+use std::collections::BTreeMap;
+
+use super::mrange_impl::{build_grouped_labels, process_mrange_query};
+use crate::common::Sample;
+use crate::fanout::FanoutTarget;
+use crate::fanout::{FanoutOperation, exec_fanout_request_base};
+use crate::iterators::{MultiSeriesSampleIter, SampleIter};
+use crate::series::range_utils::group_reduce;
+use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
+
+pub struct MultiRangeFanoutOperation {
+    options: MRangeOptions,
+    series: Vec<MultiRangeResponse>,
+}
+
+impl MultiRangeFanoutOperation {
+    pub fn new(options: MRangeOptions) -> Self {
+        Self {
+            options,
+            series: Vec::new(),
+        }
+    }
+}
+
+pub(super) fn execute_mrange_fanout_operation(
+    ctx: &Context,
+    options: MRangeOptions,
+) -> ValkeyResult<ValkeyValue> {
+    let operation = MultiRangeFanoutOperation::new(options);
+    exec_fanout_request_base(ctx, operation)
+}
+
+impl FanoutOperation<MultiRangeRequest, MultiRangeResponse> for MultiRangeFanoutOperation {
+    fn name() -> &'static str {
+        "mrange"
+    }
+
+    fn get_local_response(
+        ctx: &Context,
+        req: MultiRangeRequest,
+    ) -> ValkeyResult<MultiRangeResponse> {
+        let options: MRangeOptions = req.try_into()?;
+        let series = process_mrange_query(ctx, options, true)?;
+
+        // Convert MRangeSeriesResult to SeriesResponse
+        let serialized: Result<Vec<SeriesResponse>, _> =
+            series.into_iter().map(|x| x.try_into()).collect();
+
+        Ok(MultiRangeResponse {
+            series: serialized?,
+        })
+    }
+
+    fn generate_request(&mut self) -> MultiRangeRequest {
+        serialize_request(&self.options)
+    }
+
+    fn on_response(&mut self, resp: MultiRangeResponse, _target: FanoutTarget) {
+        self.series.push(resp);
+    }
+
+    fn generate_reply(&mut self, ctx: &Context) {
+        let mut all_series: Vec<MRangeSeriesResult> = Vec::with_capacity(self.series.len());
+        // todo: parallelize
+        for response in self.series.drain(..) {
+            for series in response.series {
+                let Ok(decoded_series) = series.try_into() else {
+                    // todo: better error
+                    ctx.reply(Err(ValkeyError::Str(
+                        "Failed to decode series from remote node",
+                    )));
+                    return;
+                };
+                all_series.push(decoded_series);
+            }
+        }
+        let series = if let Some(grouping) = &self.options.grouping {
+            group_sharded_series(all_series, grouping)
+        } else {
+            all_series
+        };
+
+        // todo: reply directly without intermediate conversion
+        let result = ValkeyValue::Array(series.into_iter().map(|x| x.into()).collect());
+        ctx.reply(Ok(result));
+    }
+}
+
+fn serialize_request(request: &MRangeOptions) -> MultiRangeRequest {
+    let range: Option<DateRange> = Some(request.date_range.into());
+    let mut selected_labels = Vec::with_capacity(request.selected_labels.len());
+    for name in &request.selected_labels {
+        selected_labels.push(name.clone());
+    }
+    let timestamp_filter = match &request.timestamp_filter {
+        Some(filter) => filter.clone(),
+        None => vec![],
+    };
+
+    let aggregation = request.aggregation.map(|agg| agg.into());
+    let grouping = request.grouping.as_ref().map(|g| g.into());
+
+    let count = request.count.map(|c| c as u32);
+
+    // Checks for correct values should have been done before in the command parser
+    // so we can safely unwrap here
+    let filters =
+        serialize_matchers_list(&request.filters).expect("Failed to serialize matchers list");
+
+    MultiRangeRequest {
+        range,
+        with_labels: request.with_labels,
+        selected_labels,
+        filters,
+        value_filter: request.value_filter.map(|x| ValueRange {
+            min: x.min,
+            max: x.max,
+        }),
+        timestamp_filter,
+        count,
+        aggregation,
+        grouping,
+    }
+}
+
+/// Apply GROUPBY/REDUCE to the series coming from remote nodes
+fn group_sharded_series(
+    metas: Vec<MRangeSeriesResult>,
+    grouping: &RangeGroupingOptions,
+) -> Vec<MRangeSeriesResult> {
+    fn handle_reducer(
+        series_results: &[MRangeSeriesResult],
+        grouping_opts: &RangeGroupingOptions,
+    ) -> Vec<Sample> {
+        let iterators: Vec<SampleIter> = series_results
+            .iter()
+            .map(|meta| SampleIter::Slice(meta.samples.iter()))
+            .collect();
+        let multi_iter = MultiSeriesSampleIter::new(iterators);
+        let aggregation = grouping_opts.aggregation;
+        group_reduce(multi_iter, aggregation)
+    }
+
+    let mut grouped_by_key: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
+
+    for meta in metas.into_iter() {
+        if let Some(label_value_for_grouping) = &meta.group_label_value {
+            let key = format!("{}={}", grouping.group_label, label_value_for_grouping);
+            grouped_by_key.entry(key).or_default().push(meta);
+        }
+    }
+
+    let reducer_name_str = grouping.aggregation.name();
+    let group_by_label_name_str = &grouping.group_label;
+
+    grouped_by_key
+        .par_iter()
+        .map(|(group_key_str, series_results_in_group)| {
+            let source_keys: Vec<String> = series_results_in_group
+                .iter()
+                .map(|m| m.key.clone())
+                .collect();
+
+            let group_defining_val_str = group_key_str
+                .rsplit_once('=')
+                .map(|(_, val)| val)
+                .unwrap_or("");
+
+            let samples = handle_reducer(series_results_in_group, grouping);
+            let final_labels = build_grouped_labels(
+                group_by_label_name_str,
+                group_defining_val_str,
+                reducer_name_str,
+                &source_keys,
+            );
+            MRangeSeriesResult {
+                group_label_value: None,
+                key: group_key_str.clone(),
+                samples,
+                labels: final_labels,
+            }
+        })
+        .collect::<Vec<_>>()
+}

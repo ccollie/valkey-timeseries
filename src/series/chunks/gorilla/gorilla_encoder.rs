@@ -4,13 +4,17 @@ use super::serialization::{load_bitwriter_from_rdb, save_bitwriter_to_rdb};
 use super::varbit::write_varbit;
 use super::varbit_xor::write_varbit_xor;
 use crate::common::Sample;
+use crate::common::encoding::{
+    try_read_byte_slice, try_read_f64_le, try_read_signed_varint as read_varint, try_read_uvarint,
+    write_byte_slice, write_f64_le, write_uvarint,
+};
 use crate::common::hash::hash_f64;
 use crate::common::rdb::{
     rdb_load_timestamp, rdb_load_u8, rdb_load_usize, rdb_save_timestamp, rdb_save_u8,
     rdb_save_usize,
 };
+use crate::error::{TsdbError, TsdbResult};
 use get_size::GetSize;
-use serde::{Deserialize, Serialize};
 use std::ffi::c_longlong;
 use std::hash::Hash;
 use std::mem::size_of_val;
@@ -18,7 +22,7 @@ use valkey_module::digest::Digest;
 use valkey_module::error::Error as ValkeyError;
 use valkey_module::raw;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GorillaEncoder {
     writer: BufferedWriter,
     leading_bits: u8,
@@ -177,35 +181,95 @@ impl GorillaEncoder {
     }
 
     pub fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
-        save_bitwriter_to_rdb(rdb, &self.writer);
         rdb_save_usize(rdb, self.num_samples);
         rdb_save_timestamp(rdb, self.first_ts);
         rdb_save_timestamp(rdb, self.last_ts);
         raw::save_double(rdb, self.last_value);
+        raw::save_signed(rdb, self.timestamp_delta);
         rdb_save_u8(rdb, self.leading_bits);
         rdb_save_u8(rdb, self.trailing_bits);
-        raw::save_signed(rdb, self.timestamp_delta);
+        save_bitwriter_to_rdb(rdb, &self.writer);
     }
 
     pub fn rdb_load(rdb: *mut raw::RedisModuleIO) -> Result<GorillaEncoder, ValkeyError> {
-        let writer = load_bitwriter_from_rdb(rdb)?;
         let num_samples = rdb_load_usize(rdb)?;
         let first_ts = rdb_load_timestamp(rdb)?;
-        let timestamp = rdb_load_timestamp(rdb)?;
+        let last_ts = rdb_load_timestamp(rdb)?;
         let value = raw::load_double(rdb)?;
+        let timestamp_delta = raw::load_signed(rdb)?;
         let leading_bits = rdb_load_u8(rdb)?;
         let trailing_bits = rdb_load_u8(rdb)?;
-        let timestamp_delta = raw::load_signed(rdb)?;
+        let writer = load_bitwriter_from_rdb(rdb)?;
 
         Ok(GorillaEncoder {
             writer,
             num_samples,
             first_ts,
-            last_ts: timestamp,
+            last_ts,
             last_value: value,
             leading_bits,
             trailing_bits,
             timestamp_delta,
+        })
+    }
+
+    pub fn serialize(&self, buf: &mut Vec<u8>) {
+        // Serialize scalar fields
+        write_uvarint(buf, self.num_samples as u64);
+        write_uvarint(buf, self.first_ts as u64);
+        write_uvarint(buf, self.last_ts as u64);
+        write_f64_le(buf, self.last_value);
+
+        // delta is verified to be > 0 when adding samples
+        write_uvarint(buf, self.timestamp_delta as u64);
+
+        buf.push(self.leading_bits);
+        buf.push(self.trailing_bits);
+
+        // Serialize buffered writer data
+        write_byte_slice(buf, self.writer.get_ref());
+
+        // Serialize writer position
+        write_uvarint(buf, self.writer.position() as u64);
+    }
+
+    pub fn deserialize(buf: &[u8]) -> TsdbResult<GorillaEncoder> {
+        let mut buf = buf;
+
+        // Deserialize scalar fields
+        let num_samples = read_usize(&mut buf)?;
+        let first_ts = read_timestamp(&mut buf)?;
+        let last_ts = read_timestamp(&mut buf)?;
+        let last_value = try_read_f64_le(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+        let timestamp_delta = read_unsigned_varint(&mut buf)? as i64; // yes, this is intended
+
+        if buf.len() < 2 {
+            // todo: log "Buffer too short for leading_bits"
+            return Err(TsdbError::ChunkDecoding);
+        }
+        let leading_bits = buf[0];
+        let trailing_bits = buf[1];
+
+        buf = &buf[2..];
+
+        // Deserialize buffered writer data
+        let writer_buf = try_read_byte_slice(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+
+        // Deserialize the writer position
+        let writer_pos = read_usize(&mut buf)?;
+
+        // Reconstruct the buffered writer
+        let writer = BufferedWriter::hydrate(writer_buf.to_vec(), writer_pos as u32);
+
+        Ok(GorillaEncoder {
+            writer,
+            leading_bits,
+            trailing_bits,
+            timestamp_delta,
+            num_samples,
+            first_ts,
+            last_ts,
+            last_value,
         })
     }
 
@@ -244,6 +308,21 @@ impl PartialEq<Self> for GorillaEncoder {
         }
         self.writer == other.writer
     }
+}
+
+fn read_signed_varint(buf: &mut &[u8]) -> TsdbResult<i64> {
+    read_varint(buf).map_err(|_| TsdbError::ChunkDecoding)
+}
+fn read_unsigned_varint(buf: &mut &[u8]) -> TsdbResult<u64> {
+    try_read_uvarint(buf).map_err(|_| TsdbError::ChunkDecoding)
+}
+
+fn read_timestamp(buf: &mut &[u8]) -> TsdbResult<i64> {
+    read_unsigned_varint(buf).map(|delta| delta as i64)
+}
+
+fn read_usize(buf: &mut &[u8]) -> TsdbResult<usize> {
+    read_unsigned_varint(buf).map(|v| v as usize)
 }
 
 impl Eq for GorillaEncoder {}

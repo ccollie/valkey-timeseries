@@ -1,3 +1,63 @@
+use crate::error::TsdbError;
+use std::fmt;
+use valkey_module::ValkeyError;
+
+/// Decoding varint error.
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DecodeError {
+    /// The buffer does not contain a valid LEB128 encoding.
+    Overflow,
+    /// The buffer does not contain enough data to decode.
+    InsufficientData {
+        /// Requested number of bytes to decode the value.
+        requested: usize,
+        /// The number of bytes available in the buffer.
+        available: usize,
+    },
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodeError::Overflow => write!(f, "decoded value would overflow the target type"),
+            DecodeError::InsufficientData {
+                available,
+                requested,
+            } => write!(
+                f,
+                "not enough bytes to decode value: {available} available, but {requested} requested",
+            ),
+        }
+    }
+}
+
+impl From<DecodeError> for TsdbError {
+    fn from(err: DecodeError) -> Self {
+        TsdbError::DecodingError(err.to_string())
+    }
+}
+
+impl From<DecodeError> for ValkeyError {
+    fn from(err: DecodeError) -> Self {
+        let msg = format!("TSDB: decoding error: {err}");
+        ValkeyError::String(msg)
+    }
+}
+
+impl DecodeError {
+    /// Creates a new `DecodeError::InsufficientData` indicating that the buffer does not have enough data
+    /// to decode a value.
+    #[inline]
+    pub const fn insufficient_data(available: usize, requested: usize) -> Self {
+        Self::InsufficientData {
+            available,
+            requested,
+        }
+    }
+}
+
+pub type DecodeResult<T> = Result<T, DecodeError>;
 /// Writes an unsigned varint to the buffer
 pub(crate) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
@@ -14,20 +74,37 @@ pub(crate) fn write_signed_varint(buf: &mut Vec<u8>, value: i64) {
     write_uvarint(buf, unsigned);
 }
 
-/// Reads an unsigned varint from the buffer
-/// Returns the value and the number of bytes consumed, or None if invalid
-pub(crate) fn read_uvarint(buf: &[u8], start_offset: usize) -> Option<(u64, usize)> {
-    if start_offset >= buf.len() {
-        return None;
+pub(crate) fn write_byte_slice(buf: &mut Vec<u8>, slice: &[u8]) {
+    buf.reserve(slice.len() + 3);
+    write_uvarint(buf, slice.len() as u64);
+    if slice.is_empty() {
+        return;
+    }
+    buf.extend_from_slice(slice);
+}
+
+pub(crate) fn try_read_byte_slice<'a>(buf: &mut &'a [u8]) -> DecodeResult<&'a [u8]> {
+    let len = try_read_uvarint(buf)? as usize;
+
+    if len > buf.len() {
+        return Err(DecodeError::insufficient_data(buf.len(), len)); // Not enough data
     }
 
+    let slice = &buf[..len];
+    *buf = &buf[len..];
+    Ok(slice)
+}
+
+/// Reads an unsigned varint from the buffer
+/// Returns the value and the number of bytes consumed, or None if invalid
+pub(crate) fn try_read_uvarint(buf: &mut &[u8]) -> DecodeResult<u64> {
     let mut value: u64 = 0;
     let mut shift = 0;
-    let mut current_offset = start_offset;
+    let mut current_offset = 0;
 
     loop {
         if current_offset >= buf.len() {
-            return None; // Unexpected end of buffer
+            return Err(DecodeError::Overflow); // Unexpected end of buffer
         }
 
         let byte = buf[current_offset];
@@ -41,20 +118,43 @@ pub(crate) fn read_uvarint(buf: &[u8], start_offset: usize) -> Option<(u64, usiz
         shift += 7;
         if shift > 63 {
             // Protect against malicious inputs
-            return None;
+            return Err(DecodeError::Overflow);
         }
     }
+    *buf = &buf[current_offset..];
 
-    Some((value, current_offset - start_offset))
+    Ok(value)
 }
 
 /// Reads a signed varint from the buffer using zigzag encoding
-pub(crate) fn read_signed_varint(buf: &[u8], start_offset: usize) -> Option<(i64, usize)> {
-    read_uvarint(buf, start_offset).map(|(unsigned, bytes_read)| {
-        // Decode zigzag encoding
-        let signed = zigzag_decode(unsigned);
-        (signed, bytes_read)
-    })
+pub(crate) fn try_read_signed_varint(buf: &mut &[u8]) -> DecodeResult<i64> {
+    try_read_uvarint(buf).map(zigzag_decode)
+}
+
+pub(crate) fn write_u64_le(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn try_read_u64_le(buf: &mut &[u8]) -> DecodeResult<u64> {
+    const U64_BYTE_SIZE: usize = size_of::<u64>();
+
+    if buf.len() < U64_BYTE_SIZE {
+        return Err(DecodeError::insufficient_data(buf.len(), U64_BYTE_SIZE));
+    }
+    let mut array = [0u8; U64_BYTE_SIZE];
+    array.copy_from_slice(&buf[..U64_BYTE_SIZE]);
+    *buf = &buf[U64_BYTE_SIZE..];
+    Ok(u64::from_le_bytes(array))
+}
+
+pub(crate) fn write_f64_le(buf: &mut Vec<u8>, value: f64) {
+    let bits = value.to_bits();
+    write_u64_le(buf, bits)
+}
+
+#[inline]
+pub(crate) fn try_read_f64_le(buf: &mut &[u8]) -> DecodeResult<f64> {
+    try_read_u64_le(buf).map(f64::from_bits)
 }
 
 // see: http://stackoverflow.com/a/2211086/56332

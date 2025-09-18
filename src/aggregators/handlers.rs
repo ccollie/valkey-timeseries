@@ -347,14 +347,6 @@ pub struct AggStd {
 }
 
 impl AggStd {
-    fn from_str(buf: &str) -> AggStd {
-        let t = serde_json::from_str::<(Value, Value, usize)>(buf).unwrap();
-        Self {
-            sum: t.0,
-            sum_2: t.1,
-            count: t.2,
-        }
-    }
     fn add(&mut self, value: Value) {
         self.sum += value;
         self.sum_2 += value * value;
@@ -392,8 +384,11 @@ impl AggStd {
 
 impl Display for AggStd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let repr = serde_json::to_string(&(self.sum, self.sum_2, self.count)).unwrap();
-        write!(f, "{repr}")
+        write!(
+            f,
+            "sum: {}, sum2: {}, count: {}",
+            self.sum, self.sum_2, self.count
+        )
     }
 }
 

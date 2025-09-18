@@ -1,6 +1,6 @@
+use super::card_fanout_operation::exec_cardinality_fanout_request;
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::cluster::is_clustered;
-use crate::fanout::{CardinalityResponse, perform_remote_card_request};
+use crate::fanout::is_clustered;
 use crate::labels::matchers::Matchers;
 use crate::series::TimestampRange;
 use crate::series::index::{
@@ -8,8 +8,7 @@ use crate::series::index::{
 };
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{
-    AclPermissions, BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult,
-    ValkeyString, ValkeyValue,
+    AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
 ///
@@ -26,10 +25,8 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.CARD in cluster mode requires at least one matcher",
             ));
         }
-        // in cluster mode, we need to send the request to all nodes
-        perform_remote_card_request(ctx, options, on_cardinality_request_done)?;
-        // We will reply later, from the thread
-        return Ok(ValkeyValue::NoReply);
+      
+        return exec_cardinality_fanout_request(ctx, options);
     }
     let counter = calculate_cardinality(ctx, options.date_range, &options.matchers)?;
 
@@ -82,13 +79,4 @@ pub fn calculate_cardinality(
         }
     };
     Ok(count)
-}
-
-fn on_cardinality_request_done(
-    ctx: &ThreadSafeContext<BlockedClient>,
-    _req: MatchFilterOptions,
-    res: Vec<CardinalityResponse>,
-) {
-    let count: usize = res.iter().map(|r| r.count).sum();
-    ctx.reply(Ok(ValkeyValue::from(count)));
 }

@@ -1,4 +1,4 @@
-use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
+pub(crate) use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::labels::Label;
 use crate::labels::matchers::Matchers;
