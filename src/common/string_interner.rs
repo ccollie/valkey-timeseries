@@ -133,6 +133,8 @@ fn get_shard(s: &str) -> &Mutex<HashSet<Holder>> {
     unsafe { POOL.get_unchecked(index) }
 }
 
+static LOCK_ERROR:&str = "string interner shard lock poisoned";
+
 /// Interns the given string slice and returns a [`Symbol`] representing it.
 ///
 /// If the string was already interned, returns the existing [`Symbol`].
@@ -140,7 +142,7 @@ fn get_shard(s: &str) -> &Mutex<HashSet<Holder>> {
 ///
 /// # Example
 /// ```rust
-/// use string_interner;
+/// use crate::common::string_interner::*;
 ///
 /// let sym = string_interner::intern("hello");
 /// ```
@@ -157,18 +159,18 @@ pub fn intern(key: &str) -> Symbol {
 ///
 /// # Example
 /// ```rust
-/// use string_interner;
+/// use crate::common::string_interner;
 ///
-/// assert_eq!(asylum::size(), 0);
+/// assert_eq!(string_interner::size(), 0);
 ///
 /// let sym = string_interner::intern("hello");
-/// assert_eq!(asylum::size(), 1);
+/// assert_eq!(string_interner::size(), 1);
 ///
 /// drop(sym);
-/// assert_eq!(asylum::size(), 0);
+/// assert_eq!(string_interner::size(), 0);
 /// ```
 pub fn size() -> usize {
-    POOL.iter().map(|shard| shard.lock().unwrap().len()).sum()
+    POOL.iter().map(|shard| shard.lock().expect(LOCK_ERROR).len()).sum()
 }
 
 /// Returns the total number of slots currently allocated in the interner.
@@ -177,13 +179,13 @@ pub fn size() -> usize {
 ///
 /// # Example
 /// ```rust
-/// use string_interner;
+/// use crate::common::string_interner;
 ///
 /// let cap = string_interner::capacity();
 /// ```
 pub fn capacity() -> usize {
     POOL.iter()
-        .map(|shard| shard.lock().unwrap().capacity())
+        .map(|shard| shard.lock().expect(LOCK_ERROR).capacity())
         .sum()
 }
 
@@ -201,7 +203,7 @@ pub fn capacity() -> usize {
 /// ```
 pub fn shrink_to_fit() {
     POOL.iter()
-        .for_each(|shard| shard.lock().unwrap().shrink_to_fit());
+        .for_each(|shard| shard.lock().expect(LOCK_ERROR).shrink_to_fit());
 }
 
 /// Returns the total memory usage in bytes of interned strings.
@@ -228,7 +230,7 @@ pub fn memory_usage() -> usize {
 ///
 /// # Example
 /// ```rust
-/// use string_interner;
+/// use crate::common::string_interner;
 ///
 /// let sym = string_interner::intern("hello");
 /// let string: &str = sym.as_str();
@@ -250,7 +252,7 @@ impl Symbol {
     ///
     /// # Example
     /// ```rust
-    /// use string_interner::Symbol;
+    /// use crate::common:string_interner::Symbol;
     ///
     /// let sym = string_interner::new("hello");
     /// ```
@@ -262,9 +264,9 @@ impl Symbol {
     ///
     /// # Example
     /// ```rust
-    /// use asylum;
+    /// use crate::common::string_interner;
     ///
-    /// let sym = asylum::intern("hello");
+    /// let sym = string_interner::intern("hello");
     /// assert_eq!(sym.as_str(), "hello");
     /// ```
     pub fn as_str(&self) -> &str {
@@ -277,7 +279,7 @@ impl Symbol {
     ///
     /// # Example
     /// ```rust
-    /// use string_interner;
+    /// use crate::common::string_interner;
     ///
     /// let sym = string_interner::intern("hello");
     /// let count = sym.count();
