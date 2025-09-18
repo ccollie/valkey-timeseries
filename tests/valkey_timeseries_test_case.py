@@ -507,7 +507,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseBase):
         test_name: str,
         cluster_enabled=True,
         is_primary=True,
-    ) -> (ValkeyServerHandle, Valkey, str):
+    ) -> Tuple[ValkeyServerHandle, Valkey, str]:
         """Launch server node and return a tuple of the server handle, a client to the server
         and the log file path"""
         server_path = os.getenv("VALKEY_SERVER_PATH")
