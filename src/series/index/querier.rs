@@ -463,6 +463,13 @@ pub(super) fn postings_for_matcher_slice<'a>(
         }
     }
 
+    // optimization: if we have a single iterator and no not_its, return it directly, saving a clone.
+    if its.len() == 1 && not_its.is_empty() {
+        return Ok(its
+            .pop()
+            .expect("unexpected out of bounds error running matchers"));
+    }
+
     // sort by cardinality first to reduce the amount of work
     its.sort_by_key(|a| a.cardinality());
 
