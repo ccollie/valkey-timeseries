@@ -329,8 +329,16 @@ pub(super) fn postings_for_matcher_slice<'a>(
     }
     if ms.len() == 1 {
         let m = &ms[0];
-        if m.label.is_empty() && m.label.is_empty() {
+        if m.label.is_empty() && m.matcher.is_empty() {
             return Ok(Cow::Borrowed(ix.all_postings()));
+        }
+        // shortcut the handling of simple equality matchers
+        if !m.is_negative_matcher() && !m.matches_empty() {
+            let it = ix.postings_for_matcher(m);
+            if it.is_empty() {
+                return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+            }
+            return Ok(it);
         }
     }
 

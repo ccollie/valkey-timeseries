@@ -602,7 +602,7 @@ pub(super) fn handle_regex_equal_match<'a>(
     postings: &'a Postings,
     matcher: &Matcher,
 ) -> Cow<'a, PostingsBitmap> {
-    if matcher.is_empty_matcher() {
+    if matcher.matches_empty() {
         return postings.postings_without_label(&matcher.label);
     }
     let mut state = matcher;
@@ -617,7 +617,7 @@ pub(super) fn handle_regex_not_equal_match<'a>(
     postings: &'a Postings,
     matcher: &Matcher,
 ) -> Cow<'a, PostingsBitmap> {
-    let matches_empty = matcher.is_empty_matcher();
+    let matches_empty = matcher.matches_empty();
     if matches_empty {
         return with_label(postings, &matcher.label);
     }

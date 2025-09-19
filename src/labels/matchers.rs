@@ -111,6 +111,14 @@ impl PredicateValue {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        match self {
+            PredicateValue::List(s) => s.is_empty(),
+            PredicateValue::String(s) => s.is_empty(),
+            PredicateValue::Empty => true,
+        }
+    }
+
     fn cost(&self) -> usize {
         match self {
             PredicateValue::Empty => 0,
@@ -236,6 +244,19 @@ impl PredicateMatch {
             PredicateMatch::RegexEqual(_) => MatchOp::RegexEqual,
             PredicateMatch::RegexNotEqual(_) => MatchOp::RegexNotEqual,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => value.is_empty(),
+            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
+                re.regex.as_str().is_empty() // should not happen, but be complete
+            }
+        }
+    }
+
+    pub fn matches_empty(&self) -> bool {
+        self.matches("")
     }
 
     pub fn matches(&self, other: &str) -> bool {
@@ -377,8 +398,12 @@ impl Matcher {
         }
     }
 
-    pub fn is_empty_matcher(&self) -> bool {
+    pub fn matches_empty(&self) -> bool {
         self.matches("")
+    }
+
+    pub fn is_negative_matcher(&self) -> bool {
+        matches!(self.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual)
     }
 
     pub fn is_metric_name_filter(&self) -> bool {
