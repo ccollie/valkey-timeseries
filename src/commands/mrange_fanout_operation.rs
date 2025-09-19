@@ -2,17 +2,16 @@ use super::fanout::generated::{
     DateRange, MultiRangeRequest, MultiRangeResponse, SeriesResponse, ValueRange,
 };
 use crate::commands::fanout::matchers::serialize_matchers_list;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
-use std::collections::BTreeMap;
-
-use super::mrange_impl::{build_grouped_labels, process_mrange_query};
 use crate::common::Sample;
 use crate::fanout::FanoutTarget;
 use crate::fanout::{FanoutOperation, exec_fanout_request_base};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
+use crate::series::mrange::{build_mrange_grouped_labels, process_mrange_query};
 use crate::series::range_utils::group_reduce;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
+use orx_parallel::IntoParIter;
+use orx_parallel::ParIter;
+use std::collections::BTreeMap;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
 
 pub struct MultiRangeFanoutOperation {
@@ -161,28 +160,30 @@ fn group_sharded_series(
     let group_by_label_name_str = &grouping.group_label;
 
     grouped_by_key
-        .par_iter()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_par()
         .map(|(group_key_str, series_results_in_group)| {
-            let source_keys: Vec<String> = series_results_in_group
-                .iter()
-                .map(|m| m.key.clone())
-                .collect();
-
             let group_defining_val_str = group_key_str
                 .rsplit_once('=')
                 .map(|(_, val)| val)
                 .unwrap_or("");
 
-            let samples = handle_reducer(series_results_in_group, grouping);
-            let final_labels = build_grouped_labels(
+            let samples = handle_reducer(&series_results_in_group, grouping);
+
+            let source_keys: Vec<String> =
+                series_results_in_group.into_iter().map(|m| m.key).collect();
+
+            let final_labels = build_mrange_grouped_labels(
                 group_by_label_name_str,
                 group_defining_val_str,
                 reducer_name_str,
                 &source_keys,
             );
+
             MRangeSeriesResult {
                 group_label_value: None,
-                key: group_key_str.clone(),
+                key: group_key_str,
                 samples,
                 labels: final_labels,
             }

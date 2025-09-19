@@ -1,8 +1,8 @@
 use crate::commands::mrange_fanout_operation::execute_mrange_fanout_operation;
-use crate::commands::mrange_impl::process_mrange_query;
 use crate::commands::parse_mrange_options;
 use crate::error_consts;
 use crate::fanout::is_clustered;
+use crate::series::mrange::process_mrange_query;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.MRANGE fromTimestamp toTimestamp

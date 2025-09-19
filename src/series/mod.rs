@@ -7,6 +7,7 @@ mod defrag;
 mod digest;
 mod guard;
 pub mod index;
+pub mod mrange;
 pub mod range_utils;
 pub mod request_types;
 mod sample_merge;
