@@ -1,13 +1,13 @@
 use crate::common::hash::IntMap;
-use crate::common::parallel::{Parallel, ParallelExt};
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
 use crate::error_consts;
 use crate::series::chunks::{Chunk, TimeSeriesChunk};
 use crate::series::index::get_series_key_by_id;
 use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, find_last_ge_index};
+use orx_parallel::ParIterResult;
+use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::{SmallVec, smallvec};
-use std::ops::DerefMut;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
 
 /// Appending to a GorillaChunk is a streaming operation, but adding out-of-order samples is an O(n) operation.
@@ -63,20 +63,18 @@ impl GroupedSamples {
     fn handle_merge(
         &self,
         chunk: &mut TimeSeriesChunk,
-        group: &GroupedSamples,
         policy: DuplicatePolicy,
     ) -> SmallVec<(usize, SampleAddResult), 8> {
         // Merge samples into this chunk
-        match chunk.merge_samples(&group.samples, Some(policy)) {
+        match chunk.merge_samples(&self.samples, Some(policy)) {
             Ok(chunk_results) => chunk_results
                 .iter()
-                .zip(group.indices.iter().cloned())
+                .zip(self.indices.iter().cloned())
                 .map(|(res, index)| (index, *res))
                 .collect::<SmallVec<_, 8>>(),
             Err(_e) => {
                 let err = SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE);
-                group
-                    .indices
+                self.indices
                     .iter()
                     .cloned()
                     .map(|index| (index, err))
@@ -126,33 +124,8 @@ impl<'a> PerSeriesSamples<'a> {
     }
 
     pub fn sort_by_index(&mut self) {
-        // Sort indexed samples by original index
+        // Sort indexed samples by the original index
         self.samples.sort_by_key(|sample| sample.index);
-    }
-}
-
-#[derive(Clone)]
-struct MergeWorker {
-    chunk_results: SmallVec<(usize, SampleAddResult), 8>,
-}
-
-impl MergeWorker {
-    fn new() -> Self {
-        Self {
-            chunk_results: Default::default(),
-        }
-    }
-}
-
-impl Parallel for MergeWorker {
-    fn create(&self) -> Self {
-        Self {
-            chunk_results: Default::default(),
-        }
-    }
-
-    fn merge(&mut self, other: Self) {
-        self.chunk_results.extend(other.chunk_results);
     }
 }
 
@@ -251,21 +224,46 @@ pub(super) fn merge_samples(
     // Group samples by chunk. Map is chunk_idx -> Vec<(original_index, sample)>
     let chunk_groups =
         group_samples_by_chunk(series, samples, &mut results, earliest_allowed_timestamp)?;
-    let mut chunks = std::mem::take(&mut series.chunks);
-    let mut worker = MergeWorker::new();
-    worker.maybe_par_idx(2, chunks.deref_mut(), |worker, index, chunk| {
-        let group = chunk_groups
-            .get(&index)
-            .expect("Chunk index should exist in chunk groups");
 
-        let results = group.handle_merge(chunk, group, policy);
-        worker.chunk_results.extend(results);
-    });
+    let chunk_results = if chunk_groups.len() == 1 {
+        // If all samples belong to a single chunk, handle it directly without parallelism
+        let (chunk_idx, group) = chunk_groups.into_iter().next().unwrap();
+        let chunk = &mut series.chunks[chunk_idx];
+        group.handle_merge(chunk, policy)
+    } else {
+        let mut chunks = std::mem::take(&mut series.chunks);
+        // orx-parallel does not currently support enumerate(), so we have to find the index manually :-(
+        let timestamps: SmallVec<Timestamp, 8> =
+            chunks.iter().map(|c| c.first_timestamp()).collect();
 
-    series.chunks = chunks;
+        let result = chunks
+            .par_mut()
+            .filter_map(|chunk| {
+                // orx-parallel does not currently support enumerate(), so we have to find the index manually :-(
+                // This is not ideal, but chunks are usually few, so it should be ok
+                let chunk_idx = timestamps
+                    .iter()
+                    .position(|&t| t == chunk.first_timestamp())
+                    .unwrap();
+                if let Some(group) = chunk_groups.get(&chunk_idx) {
+                    let res = group.handle_merge(chunk, policy);
+                    Some(res)
+                } else {
+                    None
+                }
+            })
+            .reduce(|mut acc, items| {
+                acc.extend(items);
+                acc
+            })
+            .expect("error unwrapping results in merge_samples");
+
+        series.chunks = chunks;
+        result
+    };
 
     // Map results back to original indices
-    for (orig_idx, result) in worker.chunk_results.into_iter() {
+    for (orig_idx, result) in chunk_results.into_iter() {
         results[orig_idx] = result;
 
         // Update metadata for successful additions
@@ -286,24 +284,6 @@ pub(super) fn merge_samples(
     Ok(results)
 }
 
-struct SeriesWorker {
-    chunk_results: SmallVec<(usize, SampleAddResult), 8>,
-    err: Option<ValkeyError>,
-}
-
-impl Parallel for SeriesWorker {
-    fn create(&self) -> Self {
-        Self {
-            chunk_results: Default::default(),
-            err: None,
-        }
-    }
-
-    fn merge(&mut self, other: Self) {
-        self.chunk_results.extend(other.chunk_results);
-    }
-}
-
 /// Merges samples across multiple series, supporting parallel processing when applicable.
 ///
 /// ### Parameters
@@ -315,36 +295,30 @@ impl Parallel for SeriesWorker {
 ///
 ///
 pub fn multi_series_merge_samples(
-    groups: &mut [PerSeriesSamples],
+    groups: Vec<PerSeriesSamples>,
     ctx: Option<&Context>,
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-    let mut worker = SeriesWorker {
-        chunk_results: SmallVec::new(),
-        err: None,
-    };
-
+    if groups.is_empty() {
+        return Ok(smallvec![]);
+    }
     let thread_ctx = ctx.map(|ctx| ThreadSafeContext::with_blocked_client(ctx.block_client()));
+    let mut groups = groups;
 
-    worker.maybe_par(2, groups, |worker, input| {
-        if worker.err.is_some() {
-            return;
-        }
+    if groups.len() == 1 {
+        return add_samples_internal(&mut groups[0], &thread_ctx);
+    }
 
-        match add_samples_internal(input, &thread_ctx) {
-            Ok(results) => {
-                worker.chunk_results.extend(results);
-            }
-            Err(e) => {
-                worker.err = Some(e);
-            }
-        }
-    });
+    let res = groups
+        .par_mut()
+        .map(|group| add_samples_internal(group, &thread_ctx))
+        .into_fallible_result()
+        .reduce(|mut acc, item| {
+            acc.extend(item);
+            acc
+        })?
+        .unwrap();
 
-    let Some(err) = worker.err else {
-        return Ok(worker.chunk_results);
-    };
-
-    Err(err)
+    Ok(res)
 }
 
 fn add_samples_internal(

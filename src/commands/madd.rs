@@ -34,7 +34,7 @@ struct SeriesSamples<'a> {
 ///
 /// The code is a bit involved, but the goal of this implementation is to parallelize the
 /// processing of the samples. The idea is to split the input into groups of samples that
-/// belong to the same series, and then process each group in parallel. Using `TimeSeries::merge_samples`
+/// belong to the same series, and then process each group in parallel. `TimeSeries::merge_samples`
 /// allows us to add multiple samples at once per series, while parallelizing across series blocks.
 /// Because of that there is extra bookkeeping to do, including mapping results back to the
 /// original input and returning results in input order.
@@ -90,7 +90,7 @@ fn handle_update(
     ctx: &Context,
     input_map: &mut AHashMap<&ValkeyString, SeriesSamples>,
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-    let mut per_series_samples: SmallVec<PerSeriesSamples, 4> = SmallVec::new();
+    let mut per_series_samples: Vec<PerSeriesSamples> = Vec::with_capacity(4); // usually we have just a few series
 
     let mut errors: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
 
@@ -125,7 +125,7 @@ fn handle_update(
         }
     }
 
-    let mut results = multi_series_merge_samples(&mut per_series_samples, Some(ctx))?;
+    let mut results = multi_series_merge_samples(per_series_samples, Some(ctx))?;
     // add errors to the results
     results.extend(errors);
     results.sort_by_key(|(index, _)| *index);
