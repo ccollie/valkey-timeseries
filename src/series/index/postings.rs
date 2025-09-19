@@ -316,7 +316,7 @@ impl Postings {
         acc
     }
 
-    pub fn postings_without_label(&self, label: &str) -> Cow<PostingsBitmap> {
+    pub fn postings_without_label(&'_ self, label: &str) -> Cow<'_, PostingsBitmap> {
         let all = self.all_postings();
         let to_remove = self.postings_for_all_label_values(label);
         if to_remove.is_empty() {
@@ -352,7 +352,7 @@ impl Postings {
         }
     }
 
-    pub fn postings_for_matcher(&self, matcher: &Matcher) -> Cow<PostingsBitmap> {
+    pub fn postings_for_matcher(&'_ self, matcher: &Matcher) -> Cow<'_, PostingsBitmap> {
         match matcher.matcher {
             PredicateMatch::Equal(ref value) => handle_equal_match(self, &matcher.label, value),
             PredicateMatch::NotEqual(ref value) => {
