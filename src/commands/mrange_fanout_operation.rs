@@ -11,8 +11,9 @@ use crate::series::range_utils::group_reduce;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
 use orx_parallel::IntoParIter;
 use orx_parallel::ParIter;
+use orx_parallel::ParIterResult;
 use std::collections::BTreeMap;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
 pub struct MultiRangeFanoutOperation {
     options: MRangeOptions,
@@ -66,20 +67,16 @@ impl FanoutOperation<MultiRangeRequest, MultiRangeResponse> for MultiRangeFanout
     }
 
     fn generate_reply(&mut self, ctx: &Context) {
-        let mut all_series: Vec<MRangeSeriesResult> = Vec::with_capacity(self.series.len());
-        // todo: parallelize
-        for response in self.series.drain(..) {
-            for series in response.series {
-                let Ok(decoded_series) = series.try_into() else {
-                    // todo: better error
-                    ctx.reply(Err(ValkeyError::Str(
-                        "Failed to decode series from remote node",
-                    )));
-                    return;
-                };
-                all_series.push(decoded_series);
-            }
-        }
+        let series = std::mem::take(&mut self.series);
+        let all_series = series
+            .into_par()
+            .flat_map(deserialize_multi_range_response)
+            .reduce(|mut acc, item| {
+                acc.extend(item);
+                acc
+            })
+            .unwrap_or_default();
+
         let series = if let Some(grouping) = &self.options.grouping {
             group_sharded_series(all_series, grouping)
         } else {
@@ -90,6 +87,18 @@ impl FanoutOperation<MultiRangeRequest, MultiRangeResponse> for MultiRangeFanout
         let result = ValkeyValue::Array(series.into_iter().map(|x| x.into()).collect());
         ctx.reply(Ok(result));
     }
+}
+
+fn deserialize_multi_range_response(
+    response: MultiRangeResponse,
+) -> ValkeyResult<Vec<MRangeSeriesResult>> {
+    // series from other nodes are mostly encoded, so we parallelize the decoding
+    response
+        .series
+        .into_par()
+        .map(|item| item.try_into())
+        .into_fallible_result()
+        .collect()
 }
 
 fn serialize_request(request: &MRangeOptions) -> MultiRangeRequest {
