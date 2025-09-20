@@ -33,7 +33,7 @@ pub fn deserialize_chunk(chunk: &SampleData) -> ValkeyResult<TimeSeriesChunk> {
     let data = &chunk.data;
 
     let encoding = CompressionType::try_from(chunk.compression)
-        .map_err(|_| ValkeyError::Str("Invalid compression type in SampleData"))?;
+        .map_err(|_| ValkeyError::Str(error_consts::CHUNK_DECOMPRESSION))?;
 
     let deserialized = TimeSeriesChunk::deserialize(data.as_ref())
         .map_err(|_| ValkeyError::Str(error_consts::CHUNK_DECOMPRESSION))?; // ?? better error

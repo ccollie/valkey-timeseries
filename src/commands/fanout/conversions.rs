@@ -15,6 +15,7 @@ use crate::series::request_types::{
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{
     aggregators::BucketTimestamp,
+    error_consts,
     series::index::{PostingStat, PostingsStats},
 };
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
@@ -207,7 +208,7 @@ impl TryFrom<&FanoutGroupingOptions> for RangeGroupingOptions {
         let aggregation: FanoutAggregationType = value
             .aggregation
             .try_into()
-            .map_err(|_| ValkeyError::Str("Invalid aggregation type in grouping options"))?; // todo: serialization error
+            .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?; // todo: serialization error
         Ok(RangeGroupingOptions {
             aggregation: aggregation.into(),
             group_label: value.group_label.clone(),
@@ -222,7 +223,7 @@ impl TryFrom<FanoutGroupingOptions> for RangeGroupingOptions {
         let aggregation: FanoutAggregationType = value
             .aggregation
             .try_into()
-            .map_err(|_| ValkeyError::Str("Invalid aggregation type in grouping options"))?; // todo: serialization error
+            .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?; // todo: serialization error
         Ok(RangeGroupingOptions {
             aggregation: aggregation.into(),
             group_label: value.group_label,
