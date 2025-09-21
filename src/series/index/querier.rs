@@ -12,19 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::postings::{EMPTY_BITMAP, Postings, PostingsBitmap, handle_equal_match};
+use super::postings::{EMPTY_BITMAP, KeyType, Postings, PostingsBitmap, handle_equal_match};
 use super::{TimeSeriesIndex, with_timeseries_postings};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::time::current_time_millis;
+use crate::common::hash::IntMap;
+use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
     MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
 };
-use crate::series::acl::{check_key_permissions, check_key_read_permission};
-use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::{SeriesGuard, SeriesRef, TimeSeries, TimestampRange};
-use ahash::AHashSet;
+use crate::series::acl::check_key_read_permission;
+use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
+use ahash::{AHashSet, HashMapExt};
 use blart::AsBytes;
+use orx_parallel::IterIntoParIter;
+use orx_parallel::ParIter;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -35,8 +37,6 @@ pub fn series_by_matchers(
     ctx: &Context,
     matchers: &[Matchers],
     range: Option<TimestampRange>,
-    require_permissions: bool,
-    raise_permission_error: bool,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
     if matchers.is_empty() {
         return Ok(Vec::new());
@@ -45,14 +45,7 @@ pub fn series_by_matchers(
     with_timeseries_postings(ctx, |postings| {
         let first = postings_for_matchers_internal(postings, &matchers[0])?;
         if matchers.len() == 1 {
-            return collect_series(
-                ctx,
-                postings,
-                first.iter(),
-                range,
-                require_permissions,
-                raise_permission_error,
-            );
+            return collect_series(ctx, postings, first.iter(), range);
         }
         // todo: use chili here ?
         let mut result = first.into_owned();
@@ -60,14 +53,7 @@ pub fn series_by_matchers(
             let bitmap = postings_for_matchers_internal(postings, matcher)?;
             result.and_inplace(&bitmap);
         }
-        collect_series(
-            ctx,
-            postings,
-            result.iter(),
-            range,
-            require_permissions,
-            raise_permission_error,
-        )
+        collect_series(ctx, postings, result.iter(), range)
     })
 }
 
@@ -83,8 +69,7 @@ pub fn series_keys_by_matchers(
     with_timeseries_postings(ctx, |postings| {
         let first = postings_for_matchers_internal(postings, &matchers[0])?;
         if matchers.len() == 1 {
-            let keys = collect_series_keys(ctx, postings, first.iter(), range);
-            return Ok(keys);
+            return collect_series_keys(ctx, postings, first.iter(), range);
         }
 
         let mut result = first.into_owned();
@@ -92,8 +77,7 @@ pub fn series_keys_by_matchers(
             let bitmap = postings_for_matchers_internal(postings, matcher)?;
             result.and_inplace(&bitmap);
         }
-        let keys = collect_series_keys(ctx, postings, result.iter(), range);
-        Ok(keys)
+        collect_series_keys(ctx, postings, result.iter(), range)
     })
 }
 
@@ -128,28 +112,26 @@ fn collect_series_keys(
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
     date_range: Option<TimestampRange>,
-) -> Vec<ValkeyString> {
-    let mut keys = Vec::new();
-
-    for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
-        let real_key = ctx.create_string(key.as_bytes());
-        if check_key_read_permission(ctx, &real_key) {
-            keys.push(real_key);
-        }
-    }
+) -> ValkeyResult<Vec<ValkeyString>> {
     if let Some(date_range) = date_range {
-        let now = Some(current_time_millis());
-        keys.retain(|key| {
-            let redis_key = ctx.open_key(key);
-            if let Ok(Some(series)) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-                let (start, end) = date_range.get_series_range(series, now, true);
-                series.has_samples_in_range(start, end)
-            } else {
-                false
-            }
-        });
+        let series = collect_series(ctx, postings, ids, Some(date_range))?;
+        let keys = series.into_iter().map(|g| g.key_inner).collect();
+        return Ok(keys);
     }
-    keys
+
+    let keys = ids
+        .filter_map(|id| {
+            let key = postings.get_key_by_id(id)?;
+            let real_key = ctx.create_string(key.as_bytes());
+            if check_key_read_permission(ctx, &real_key) {
+                Some(real_key)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(keys)
 }
 
 fn collect_series(
@@ -157,76 +139,114 @@ fn collect_series(
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
     date_range: Option<TimestampRange>,
-    require_permissions: bool,
-    raise_permission_error: bool,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
-    let mut keys = Vec::with_capacity(8);
+    let capacity_estimate = ids.size_hint().1.unwrap_or(8);
 
-    for key in ids.filter_map(|id| postings.get_key_by_id(id)) {
-        let real_key = ctx.create_string(key.as_bytes());
-        // check permissions if provided
-        if require_permissions {
-            if let Err(err) = check_key_permissions(ctx, &real_key, &AclPermissions::ACCESS) {
-                if raise_permission_error {
-                    return Err(err);
-                } else {
-                    // skip series that we can't access
-                    continue;
-                }
-            }
-        }
+    let iter = ids.filter_map(|id| postings.get_key_by_id(id));
 
-        keys.push(real_key);
+    let mut result: Vec<SeriesGuard> = Vec::with_capacity(capacity_estimate);
+    for key in iter {
+        let guard = match get_guard_from_key(ctx, key) {
+            Ok(Some(g)) => g,
+            Ok(None) => continue,
+            Err(err) => return Err(err),
+        };
+        result.push(guard);
     }
 
-    if keys.is_empty() {
-        // If we didn't find any series, return an empty vector.
+    if result.is_empty() {
+        return Ok(result);
+    }
+
+    let Some(date_range) = date_range else {
+        return Ok(result);
+    };
+
+    if result.len() == 1 {
+        // SAFETY: we have already checked above that we have at least one element.
+        let series = unsafe { result.get_unchecked(0) };
+        let (start, end) = date_range.get_timestamps(None);
+        return if series.has_samples_in_range(start, end) {
+            Ok(result)
+        } else {
+            Ok(Vec::new())
+        };
+    }
+
+    let (start, end) = date_range.get_timestamps(None);
+    let ids = result
+        .iter()
+        .map(|guard| {
+            let series = guard.get_series();
+            (series, series.id)
+        })
+        .iter_into_par()
+        .filter_map(|(series, id)| {
+            if series.has_samples_in_range(start, end) {
+                Some(id)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if ids.len() == result.len() {
+        // all series are in range, return early
+        return Ok(result);
+    }
+
+    if ids.is_empty() {
+        // no series are in range, return early
         return Ok(Vec::new());
     }
 
-    if let Some(date_range) = date_range {
-        // If we have a date range, filter the series by it.
-        let (start, end) = date_range.get_timestamps(None);
-        // keep these values alive
-
-        let mut series = Vec::with_capacity(keys.len());
-
-        // at some point we should parallelize this.
-        for key in keys.into_iter() {
-            // SAFETY: we have already checked permissions above.
-            let valkey_key = ctx.open_key(&key);
-            // get series from valkey
-            match valkey_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-                Ok(Some(ts)) => {
-                    if ts.has_samples_in_range(start, end) {
-                        // SAFETY: we have already checked permissions above.
-                        let guard = SeriesGuard::open(ctx, key);
-                        series.push(guard);
-                    } else {
-                        continue;
-                    }
-                }
-                Ok(None) => {
-                    ctx.log_warning("Failed to find series key in index");
-                    // todo: mark the series as stale?
-                }
-                Err(e) => return Err(e),
+    // if we have only a few series in range, do a brute-force search in the result set
+    if ids.len() < 32 {
+        result.retain(|guard| {
+            let id = guard.id;
+            ids.contains(&id)
+        });
+    } else {
+        // many series are in range, do a hashmap lookup
+        let mut guard_map: IntMap<u64, SeriesGuard> = IntMap::with_capacity(capacity_estimate);
+        for guard in result {
+            let series = guard.get_series();
+            guard_map.insert(series.id, guard);
+        }
+        result = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(guard) = guard_map.remove(&id) {
+                result.push(guard);
             }
         }
-
-        return Ok(series);
     }
 
-    // If we don't have a date range, we can return all the series.
-    let res = keys
-        .into_iter()
-        .map(|key| {
-            // SAFETY: we have already checked permissions above.
-            SeriesGuard::new(ctx, key, &None)
-        })
-        .collect::<ValkeyResult<Vec<SeriesGuard>>>()?;
+    Ok(result)
+}
 
-    Ok(res)
+fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<SeriesGuard>> {
+    let real_key = ctx.create_string(key.as_bytes());
+    let perms = Some(AclPermissions::ACCESS);
+    match SeriesGuard::new(ctx, real_key, perms) {
+        Ok(g) => Ok(Some(g)),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("permission") {
+                return Err(ValkeyError::Str(
+                    error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
+                ));
+            }
+            if msg.as_str() == error_consts::KEY_NOT_FOUND {
+                let msg = format!(
+                    "Failed to find series key in index: {}",
+                    str::from_utf8(key.as_bytes()).unwrap_or("<invalid utf8>")
+                );
+                ctx.log_warning(&msg);
+                return Ok(None);
+            }
+            Err(err)
+        }
+    }
 }
 
 /// `postings_for_matchers` assembles a single postings iterator against the series index
