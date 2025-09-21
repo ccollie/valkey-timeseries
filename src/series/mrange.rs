@@ -14,7 +14,7 @@ use crate::series::request_types::{
 };
 use crate::series::{SeriesSampleIterator, TimeSeries, TimestampValue};
 use ahash::AHashMap;
-use orx_parallel::{IntoParIter, ParIter};
+use orx_parallel::{IterIntoParIter, ParIter};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub struct MRangeSeriesMeta<'a> {
@@ -133,8 +133,7 @@ fn handle_aggregation_and_grouping(
 
     grouped_series_map
         .into_iter()
-        .collect::<Vec<_>>()
-        .into_par()
+        .iter_into_par()
         .map(|(label_value, group_data)| {
             let series_refs = group_data
                 .series
@@ -197,8 +196,7 @@ fn handle_grouping(
 
     grouped_series_map
         .into_iter()
-        .collect::<Vec<_>>()
-        .into_par()
+        .iter_into_par()
         .map(|(label_value, group_data)| handle_one(grouping, options, label_value, group_data))
         .collect::<Vec<_>>()
 }

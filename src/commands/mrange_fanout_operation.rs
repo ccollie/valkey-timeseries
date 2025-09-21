@@ -9,9 +9,9 @@ use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::series::mrange::{build_mrange_grouped_labels, process_mrange_query};
 use crate::series::range_utils::group_reduce;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
-use orx_parallel::IntoParIter;
 use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
+use orx_parallel::{IntoParIter, IterIntoParIter};
 use std::collections::BTreeMap;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
@@ -170,8 +170,7 @@ fn group_sharded_series(
 
     grouped_by_key
         .into_iter()
-        .collect::<Vec<_>>()
-        .into_par()
+        .iter_into_par()
         .map(|(group_key_str, series_results_in_group)| {
             let group_defining_val_str = group_key_str
                 .rsplit_once('=')
