@@ -51,7 +51,7 @@ pub fn get_timeseries(
     permissions: Option<AclPermissions>,
     must_exist: bool,
 ) -> ValkeyResult<Option<SeriesGuard>> {
-    match SeriesGuard::new(ctx, key, &permissions) {
+    match SeriesGuard::new(ctx, key, permissions) {
         Ok(guard) => Ok(Some(guard)),
         Err(e) => match e {
             ValkeyError::Str(err) if err == error_consts::KEY_NOT_FOUND => {

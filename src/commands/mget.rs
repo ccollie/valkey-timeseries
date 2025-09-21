@@ -8,9 +8,7 @@ use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;
 use crate::series::range_utils::get_series_labels;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
-use valkey_module::{
-    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
-};
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.MGET
 ///   [LATEST]
@@ -126,33 +124,27 @@ pub fn process_mget_request(
     let mut series = vec![];
 
     let opts: MatchFilterOptions = options.filters.into();
-    with_matched_series(
-        ctx,
-        &mut series,
-        &opts,
-        Some(AclPermissions::ACCESS),
-        move |acc, series, key| {
-            let sample = if options.latest {
-                if let Some(value) = get_latest_compaction_sample(ctx, series) {
-                    Some(value)
-                } else {
-                    series.last_sample
-                }
+    with_matched_series(ctx, &mut series, &opts, move |acc, series, key| {
+        let sample = if options.latest {
+            if let Some(value) = get_latest_compaction_sample(ctx, series) {
+                Some(value)
             } else {
                 series.last_sample
-            };
-            let labels = get_series_labels(series, with_labels, selected_labels)
-                .into_iter()
-                .map(|label| label.map(|x| Label::new(x.name, x.value)))
-                .collect();
+            }
+        } else {
+            series.last_sample
+        };
+        let labels = get_series_labels(series, with_labels, selected_labels)
+            .into_iter()
+            .map(|label| label.map(|x| Label::new(x.name, x.value)))
+            .collect();
 
-            acc.push(MGetSeriesData {
-                sample,
-                labels,
-                series_key: key,
-            });
-        },
-    )?;
+        acc.push(MGetSeriesData {
+            sample,
+            labels,
+            series_key: key,
+        });
+    })?;
 
     Ok(series)
 }

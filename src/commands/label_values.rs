@@ -6,9 +6,7 @@ use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;
-use valkey_module::{
-    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
-};
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 // TS.LABELVALUES label [START fromTimestamp] [END fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
@@ -52,17 +50,11 @@ pub fn process_label_values_request(
 
     let mut names: BTreeSet<String> = BTreeSet::new();
 
-    with_matched_series(
-        ctx,
-        &mut names,
-        options,
-        Some(AclPermissions::ACCESS),
-        |acc, ts, _| {
-            if let Some(label) = ts.get_label(label_name) {
-                acc.insert(label.value.into());
-            }
-        },
-    )?;
+    with_matched_series(ctx, &mut names, options, |acc, ts, _| {
+        if let Some(label) = ts.get_label(label_name) {
+            acc.insert(label.value.into());
+        }
+    })?;
 
     let limit = options.limit.unwrap_or(names.len());
     let names = names.into_iter().take(limit).collect::<Vec<_>>();

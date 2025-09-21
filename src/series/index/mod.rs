@@ -11,11 +11,8 @@ use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
 use crate::common::hash::BuildNoHashHasher;
-use crate::common::time::current_time_millis;
-use crate::series::acl::check_key_permissions;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MatchFilterOptions;
-use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
 pub use index_key::IndexKey;
 pub use posting_stats::*;
@@ -84,54 +81,26 @@ pub fn with_matched_series<F, STATE>(
     ctx: &Context,
     acc: &mut STATE,
     filter: &MatchFilterOptions,
-    acls: Option<AclPermissions>,
     mut f: F,
 ) -> ValkeyResult<()>
 where
     F: FnMut(&mut STATE, &TimeSeries, ValkeyString),
 {
-    let keys = series_keys_by_matchers(ctx, &filter.matchers, None)?;
-    if keys.is_empty() {
-        return Ok(());
-    }
-    if let Some(acls) = acls {
-        let perm = &acls;
-        for key in &keys {
-            check_key_permissions(ctx, key, perm)?;
-        }
-    }
-
-    let now = Some(current_time_millis());
-
-    for key in keys {
-        let redis_key = ctx.open_key(&key);
-        // get series from redis
-        match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-            Ok(Some(series)) => {
-                if let Some(range) = filter.date_range {
-                    let (start, end) = range.get_series_range(series, now, true);
-                    if series.has_samples_in_range(start, end) {
-                        f(acc, series, key);
-                    }
-                } else {
-                    f(acc, series, key);
-                }
-            }
-            Err(e) => {
-                return Err(e);
-            }
-            _ => {}
-        }
+    let mut matched_series = series_by_matchers(ctx, &filter.matchers, filter.date_range)?;
+    for guard in matched_series.iter_mut() {
+        let series = guard.get_series();
+        let key = guard.key_inner.safe_clone(ctx);
+        f(acc, series, key);
     }
     Ok(())
 }
 
 pub fn get_series_by_id(
-    ctx: &Context,
+    ctx: &'_ Context,
     id: SeriesRef,
     must_exist: bool,
     permissions: Option<AclPermissions>,
-) -> ValkeyResult<Option<SeriesGuardMut>> {
+) -> ValkeyResult<Option<SeriesGuardMut<'_>>> {
     let map = TIMESERIES_INDEX.pin();
     let db = get_current_db(ctx);
     let Some(index) = map.get(&db) else {

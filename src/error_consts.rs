@@ -48,7 +48,8 @@ pub const KEY_WRITE_PERMISSION_ERROR: &str =
     "TSDB: the current user does not have permissions to write to a given key";
 pub const KEY_UPDATE_PERMISSION_ERROR: &str = "TSDB: key update permission error";
 pub const KEY_DELETE_PERMISSION_ERROR: &str = "TSDB: key delete permission error";
-pub const ALL_KEYS_PERMISSION_ERROR: &str = "TSDB: current user doesn't have read permission to one or more keys that match the specified filter";
+pub const ALL_KEYS_READ_PERMISSION_ERROR: &str = "TSDB: current user doesn't have read permission to one or more keys that match the specified filter";
+pub const ALL_KEYS_WRITE_PERMISSION_ERROR: &str = "TSDB: current user doesn't have write permission to one or more keys that match the specified filter";
 pub const DUPLICATE_KEY: &str = "TSDB: key already exists";
 pub const MISSING_FILTER: &str = "TSDB: please provide at least one matcher";
 pub const INVALID_TIMESTAMP_FILTER: &str = "TSDB: FILTER_BY_TS one or more arguments are missing";

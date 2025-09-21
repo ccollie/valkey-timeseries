@@ -7,9 +7,7 @@ use crate::series::index::{
     get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
 };
 use crate::series::request_types::MatchFilterOptions;
-use valkey_module::{
-    AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
-};
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 ///
 /// TS.CARD [FILTER_BY_RANGE fromTimestamp toTimestamp] [FILTER filter...]
@@ -38,8 +36,6 @@ pub fn calculate_cardinality(
     date_range: Option<TimestampRange>,
     matchers: &[Matchers],
 ) -> ValkeyResult<usize> {
-    const PERMISSIONS: Option<AclPermissions> = Some(AclPermissions::ACCESS);
-
     let count = match (date_range, matchers.is_empty()) {
         (None, true) => {
             // todo: check to see if user can read all keys, otherwise error
@@ -59,15 +55,9 @@ pub fn calculate_cardinality(
                 ..Default::default()
             };
             let mut counter = 0;
-            with_matched_series(
-                ctx,
-                &mut counter,
-                &options,
-                PERMISSIONS,
-                |count: &mut usize, _, _| {
-                    *count += 1;
-                },
-            )?;
+            with_matched_series(ctx, &mut counter, &options, |count: &mut usize, _, _| {
+                *count += 1;
+            })?;
             counter
         }
         _ => {

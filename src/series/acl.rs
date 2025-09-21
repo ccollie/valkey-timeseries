@@ -46,5 +46,5 @@ pub fn check_key_permissions(
 pub fn check_metadata_permissions(ctx: &Context) -> ValkeyResult<()> {
     let perms = AclPermissions::ACCESS;
     check_key_permissions(ctx, &ALL_KEYS, &perms)
-        .map_err(|_| ValkeyError::Str(error_consts::ALL_KEYS_PERMISSION_ERROR))
+        .map_err(|_| ValkeyError::Str(error_consts::ALL_KEYS_READ_PERMISSION_ERROR))
 }

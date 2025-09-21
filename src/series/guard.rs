@@ -15,11 +15,11 @@ impl SeriesGuard {
     pub fn new(
         ctx: &Context,
         key: ValkeyString,
-        acls: &Option<AclPermissions>,
+        acls: Option<AclPermissions>,
     ) -> ValkeyResult<SeriesGuard> {
         // check permissions if provided
         if let Some(permissions) = acls {
-            check_key_permissions(ctx, &key, permissions)?;
+            check_key_permissions(ctx, &key, &permissions)?;
         }
         let valkey_key = ctx.open_key(&key);
         // get series from valkey
