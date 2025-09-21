@@ -238,8 +238,8 @@ impl Chunk for GorillaChunk {
                     Ok(())
                 }
                 err @ Err(TsdbError::CapacityFull(_)) => Err(err.unwrap_err()),
-                Err(_e) => {
-                    // todo: log error
+                Err(e) => {
+                    log::warn!("error in gorilla chunk merge : {:?}", e);
                     res.push(SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE));
                     Ok(())
                 }

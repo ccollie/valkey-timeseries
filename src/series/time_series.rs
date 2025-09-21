@@ -89,7 +89,6 @@ impl TimeSeries {
         res.rounding = options.rounding;
         res.sample_duplicates = options.sample_duplicate_policy.unwrap_or_default();
 
-        // todo: make sure labels are sorted and dont contain __name__
         // if !options.labels.iter().any(|x| x.name == METRIC_NAME_LABEL) {
         //     return Err(TsdbError::InvalidMetric(
         //         "ERR missing metric name".to_string(),
@@ -389,7 +388,6 @@ impl TimeSeries {
         let (index, found) = get_chunk_index(&self.chunks, start_time);
         if found {
             let chunk = &self.chunks[index];
-            // todo: better error handling
             let mut samples = chunk
                 .get_range(start_time, start_time)
                 .map_err(|_e| ValkeyError::Str(error_consts::ERROR_FETCHING_SAMPLE))?;

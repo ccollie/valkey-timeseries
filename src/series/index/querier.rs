@@ -47,7 +47,7 @@ pub fn series_by_matchers(
         if matchers.len() == 1 {
             return collect_series(ctx, postings, first.iter(), range);
         }
-        // todo: use chili here ?
+
         let mut result = first.into_owned();
         for matcher in &matchers[1..] {
             let bitmap = postings_for_matchers_internal(postings, matcher)?;

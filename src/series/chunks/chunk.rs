@@ -171,7 +171,6 @@ impl<'a> ChunkSampleIterator<'a> {
     }
 }
 
-// todo: implement next_chunk
 impl Iterator for ChunkSampleIterator<'_> {
     type Item = Sample;
 

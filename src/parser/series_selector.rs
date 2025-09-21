@@ -59,7 +59,6 @@ pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResul
     }
 
     let text = match tok {
-        // todo: pass in a flag to indicate if we are in a prometheus selector
         Identifier => unescape_ident(text)?.to_string(),
         StringLiteral => {
             let value = extract_string_value(text)?;

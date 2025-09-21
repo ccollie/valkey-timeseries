@@ -244,7 +244,7 @@ impl GorillaEncoder {
         let timestamp_delta = read_unsigned_varint(&mut buf)? as i64; // yes, this is intended
 
         if buf.len() < 2 {
-            // todo: log "Buffer too short for leading_bits"
+            log::warn!("buffer too short for leading_bits");
             return Err(TsdbError::ChunkDecoding);
         }
         let leading_bits = buf[0];

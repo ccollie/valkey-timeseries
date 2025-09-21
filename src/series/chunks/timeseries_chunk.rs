@@ -232,7 +232,6 @@ impl TimeSeriesChunk {
             return Ok(0);
         }
         let samples = sample_iter.collect::<Vec<Sample>>();
-        // todo: handle error
         let res = self.merge_samples(&samples, duplicate_policy)?;
         Ok(res.iter().filter(|s| s.is_ok()).count())
     }
