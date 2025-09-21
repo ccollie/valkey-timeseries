@@ -131,7 +131,7 @@ impl TimeSeriesChunk {
         }
     }
 
-    pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SampleIter {
+    pub fn range_iter(&'_ self, start: Timestamp, end: Timestamp) -> SampleIter<'_> {
         use TimeSeriesChunk::*;
         match self {
             Uncompressed(chunk) => chunk.range_iter(start, end),
