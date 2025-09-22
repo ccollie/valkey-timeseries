@@ -626,6 +626,9 @@ impl TimeSeries {
         {
             // Check if any chunk in the range has samples within the time range
             let chunks = &self.chunks[start_index..=end_index];
+            if chunks.len() == 1 {
+                return chunks[0].has_samples_in_range(start_time, end_time);
+            }
             // if we're uncompressed, do simple linear search, else use parallel search
             return if !self.is_compressed() {
                 // Uncompressed chunks, iterate linearly
@@ -634,13 +637,9 @@ impl TimeSeries {
                     .any(|c| c.has_samples_in_range(start_time, end_time))
             } else {
                 // Compressed chunks, check each chunk in parallel
-                if chunks.len() == 1 {
-                    chunks[0].has_samples_in_range(start_time, end_time)
-                } else {
-                    chunks
-                        .par()
-                        .any(|&chunk| chunk.has_samples_in_range(start_time, end_time))
-                }
+                chunks
+                    .par()
+                    .any(|&chunk| chunk.has_samples_in_range(start_time, end_time))
             };
         }
 
@@ -1006,6 +1005,11 @@ fn get_range_parallel(
     start: Timestamp,
     end: Timestamp,
 ) -> TsdbResult<Vec<Sample>> {
+    if chunks.len() == 1 {
+        let chunk = &chunks[0];
+        let samples = chunk.get_range(start, end)?;
+        return Ok(samples);
+    }
     chunks
         .into_par()
         .map(|chunk| chunk.get_range(start, end))
