@@ -5,10 +5,11 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
+use crate::config::register_config;
 use crate::fanout::init_fanout;
-use logger_rust::{LogLevel, set_log_level};
+use logger_rust::{set_log_level, LogLevel};
 use valkey_module::{
-    Context, Status, ValkeyString, Version, configuration::ConfigurationFlags, valkey_module,
+    valkey_module, Context, Status, ValkeyString, Version,
 };
 
 pub mod aggregators;
@@ -74,7 +75,9 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 
     set_log_level(LogLevel::Console);
 
+    register_config(ctx);
     init_fanout(ctx);
+
     match register_server_events(ctx) {
         Ok(_) => Status::Ok,
         Err(e) => {
@@ -141,27 +144,6 @@ valkey_module! {
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
-    ]
-    configurations: [
-        i64: [
-            ["ts-num-threads", &*config::NUM_THREADS, config::DEFAULT_THREADS, config::MIN_THREADS, config::MAX_THREADS, ConfigurationFlags::DEFAULT, None],
-        ],
-        string: [
-            ["ts-chunk-size", &*config::CHUNK_SIZE_STRING, config::CHUNK_SIZE_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
-            ["ts-series-worker-interval", &*config::SERIES_WORKER_INTERVAL_STRING, config::SERIES_WORKER_INTERVAL_DEFAULT, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
-            ["ts-encoding", &*config::CHUNK_ENCODING_STRING, config::CHUNK_ENCODING_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
-            ["ts-decimal-digits", &*config::DECIMAL_DIGITS_STRING, config::DECIMAL_DIGITS_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_rounding_config_set))],
-            ["ts-duplicate-policy", &*config::DUPLICATE_POLICY_STRING, config::DUPLICATE_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
-            ["ts-compaction-policy", &*config::COMPACTION_POLICY_STRING, config::COMPACTION_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_string_config_set))],
-            ["ts-ignore-max-time-diff", &*config::IGNORE_MAX_TIME_DIFF_STRING, config::IGNORE_MAX_TIME_DIFF_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
-            ["ts-ignore-max-value-diff", &*config::IGNORE_MAX_VALUE_DIFF_STRING, config::IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_float_config_set))],
-            ["ts-retention-policy", &*config::RETENTION_POLICY_STRING, config::RETENTION_POLICY_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
-            ["ts-significant-digits", &*config::SIGNIFICANT_DIGITS_STRING, config::SIGNIFICANT_DIGITS_DEFAULT_STRING, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_rounding_config_set))],
-            ["ts-multi-shard-command-timeout", &*config::MULTI_SHARD_COMMAND_TIMEOUT_STRING, config::MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT, ConfigurationFlags::DEFAULT, None, Some(Box::new(config::on_duration_config_set))],
-        ],
-        bool: [],
-        enum: [],
-        module_args_as_configuration: true,
     ]
 }
 
