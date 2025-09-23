@@ -21,6 +21,7 @@ use valkey_module::{
     ConfigurationValue, Context, RedisModule_LoadConfigs, ValkeyError, ValkeyGILGuard,
     ValkeyResult, ValkeyString,
 };
+use valkey_module_macros::config_changed_event_handler;
 
 /// Minimal Valkey version that supports the TimeSeries Module
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
@@ -71,13 +72,14 @@ const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
 const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 const DEFAULT_COMPACTION_POLICY: &str = "";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Debug)]
 pub struct ConfigSettings {
     pub retention_period: Option<Duration>,
     pub chunk_encoding: ChunkEncoding,
     pub chunk_size_bytes: usize,
     pub rounding: Option<RoundingStrategy>,
     pub duplicate_policy: SampleDuplicatePolicy,
+    pub compaction_policy: String,
 }
 
 impl Default for ConfigSettings {
@@ -88,6 +90,7 @@ impl Default for ConfigSettings {
             chunk_encoding: ChunkEncoding::Gorilla,
             rounding: None,
             duplicate_policy: SampleDuplicatePolicy::default(),
+            compaction_policy: String::new(),
         }
     }
 }
@@ -132,51 +135,71 @@ lazy_static! {
         ValkeyGILGuard::new(ValkeyString::create(None, MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT));
 }
 
-#[allow(dead_code)]
-fn handle_config_update_internal() {
-    let policy = *DUPLICATE_POLICY
-        .lock()
-        .expect("error unlocking duplicate policy");
-    let rounding = *ROUNDING_STRATEGY
-        .lock()
-        .expect("error unlocking rounding strategy");
-    let chunk_size_bytes = CHUNK_SIZE.load(Ordering::Relaxed) as usize;
-    let chunk_encoding = *CHUNK_ENCODING
-        .lock()
-        .expect("error unlocking chunk encoding");
-
-    let max_time_delta = IGNORE_MAX_TIME_DIFF.load(Ordering::Relaxed) as u64;
-
-    let max_value_delta = *IGNORE_MAX_VALUE_DIFF
-        .lock()
-        .expect("error unlocking max value diff");
-
-    let retention_period = *RETENTION_PERIOD
-        .lock()
-        .expect("error unlocking retention period");
-
-    let modified = ConfigSettings {
-        retention_period: if retention_period.as_millis() > 0 {
-            Some(retention_period)
-        } else {
-            None
-        },
-        chunk_encoding,
-        chunk_size_bytes,
-        rounding,
-
-        duplicate_policy: SampleDuplicatePolicy {
-            policy: Some(policy),
-            max_time_delta,
-            max_value_delta,
-        },
-    };
-
+#[config_changed_event_handler]
+fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
+    if changed_configs.is_empty() {
+        return;
+    }
     let mut cfg = CONFIG_SETTINGS
-        .write()
-        .expect("Failed to acquire write lock on CONFIG_SETTINGS");
+        .read()
+        .expect("Failed to acquire read lock on CONFIG_SETTINGS")
+        .clone();
 
-    *cfg = modified;
+    let mut modified = false;
+    for &name in changed_configs {
+        hashify::fnc_map_ignore_case!(name.as_bytes(),
+            "ts-chunk-size" => {
+                cfg.chunk_size_bytes = CHUNK_SIZE.load(Ordering::Relaxed) as usize;
+                modified = true;
+            },
+            "ts-duplicate-policy" => {
+                cfg.duplicate_policy.policy = Some(*DUPLICATE_POLICY.lock().unwrap());
+                modified = true;
+            },
+            "ts-encoding" => {
+                cfg.chunk_encoding = *CHUNK_ENCODING.lock().unwrap();
+                modified = true;
+            },
+            "ts-num-threads" => {
+                // nothing to do here
+            },
+            "ts-retention-policy" => {
+                let period = *RETENTION_PERIOD.lock().unwrap();
+                cfg.retention_period = if period.is_zero() { None } else { Some(period) };
+                modified = true;
+            },
+            "ts-ignore-max-time-diff" => {
+                cfg.duplicate_policy.max_time_delta = IGNORE_MAX_TIME_DIFF.load(Ordering::Relaxed) as u64;
+                modified = true;
+            },
+            "ts-ignore-max-value-diff" => {
+                cfg.duplicate_policy.max_value_delta = *IGNORE_MAX_VALUE_DIFF.lock().unwrap();
+                modified = true;
+            },
+            "ts-decimal-digits" => {
+                cfg.rounding = *ROUNDING_STRATEGY.lock().unwrap();
+                modified = true;
+            },
+            "ts-significant-digits" => {
+            },
+            "ts-compaction-policy" => {
+            },
+            "ts-multi-shard-command-timeout" => {
+                // nothing to do here
+            },
+            _ => {}
+        );
+        if modified {
+            break;
+        }
+    }
+    if modified {
+        log::info!("Configuration updated: {cfg:?}");
+        CONFIG_SETTINGS
+            .write()
+            .expect("Failed to acquire write lock on CONFIG_SETTINGS")
+            .clone_from(&cfg);
+    }
 }
 
 fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> ValkeyResult<i64> {
