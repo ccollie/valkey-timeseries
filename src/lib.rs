@@ -7,10 +7,8 @@ extern crate valkey_module_macros;
 
 use crate::config::register_config;
 use crate::fanout::init_fanout;
-use logger_rust::{set_log_level, LogLevel};
-use valkey_module::{
-    valkey_module, Context, Status, ValkeyString, Version,
-};
+use logger_rust::{LogLevel, set_log_level};
+use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
 
 pub mod aggregators;
 pub(crate) mod commands;
@@ -27,6 +25,7 @@ mod series;
 mod server_events;
 mod tests;
 
+// use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::server_events::{generic_key_events_handler, register_server_events};
@@ -70,22 +69,28 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
     Status::Ok
 }
 
-fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
+fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
     set_log_level(LogLevel::Console);
 
-    register_config(ctx);
+    if let Err(e) = register_config(ctx, args) {
+        let msg = format!("Failed to register config: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
+    }
+
     init_fanout(ctx);
 
-    match register_server_events(ctx) {
-        Ok(_) => Status::Ok,
-        Err(e) => {
-            let msg = format!("Failed to register server events: {e}");
-            ctx.log_warning(&msg);
-            Status::Err
-        }
+    if let Err(e) = register_server_events(ctx) {
+        let msg = format!("Failed to register server events: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
     }
+
+    // init_background_tasks(ctx);
+    ctx.log_notice("valkey-timeseries module initialized");
+    Status::Ok
 }
 
 fn deinitialize(ctx: &Context) -> Status {

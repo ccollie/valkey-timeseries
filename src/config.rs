@@ -14,11 +14,12 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use valkey_module::configuration::{
-    ConfigurationContext, ConfigurationFlags, register_i64_configuration,
-    register_string_configuration,
+    ConfigurationContext, ConfigurationFlags, get_i64_default_config_value,
+    get_string_default_config_value, register_i64_configuration, register_string_configuration,
 };
 use valkey_module::{
-    ConfigurationValue, Context, ValkeyError, ValkeyGILGuard, ValkeyResult, ValkeyString,
+    ConfigurationValue, Context, RedisModule_LoadConfigs, ValkeyError, ValkeyGILGuard,
+    ValkeyResult, ValkeyString,
 };
 
 /// Minimal Valkey version that supports the TimeSeries Module
@@ -62,12 +63,13 @@ pub const RETENTION_POLICY_MAX: i64 = 10 * ONE_YEAR_MS; //
 const IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING: &str = "0";
 const RETENTION_POLICY_DEFAULT_STRING: &str = "0";
 const IGNORE_MAX_TIME_DIFF_DEFAULT_STRING: &str = "0";
+
 const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
 const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
-const COMPACTION_POLICY_CONFIG_NAME: &str = "ts-compaction-policy";
 const COMPACTION_POLICY_DEFAULT_STRING: &str = "";
 const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
 const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
+const DEFAULT_COMPACTION_POLICY: &str = "";
 
 #[derive(Clone, Copy)]
 pub struct ConfigSettings {
@@ -256,12 +258,12 @@ fn update_compaction_policy(v: &str) -> ValkeyResult<()> {
 }
 
 fn update_num_threads(val: &str) -> ValkeyResult<()> {
-    let threads = parse_number(val)? as i64;
-    if !(MIN_THREADS..=MAX_THREADS).contains(&threads) {
-        return Err(ValkeyError::String(format!(
-            "Invalid value ({threads}) for \"ts-num-threads\". Must be in the range [{MIN_THREADS}, {MAX_THREADS}]",
-        )));
-    }
+    let threads = parse_number_in_range(
+        "ts-num-threads",
+        val,
+        MIN_THREADS as f64,
+        MAX_THREADS as f64,
+    )? as i64;
     NUM_THREADS.store(threads, Ordering::SeqCst);
     Ok(())
 }
@@ -319,56 +321,60 @@ fn update_multi_shard_command_timeout(val: &str) -> ValkeyResult<()> {
     Ok(())
 }
 
-fn on_string_config_set(
+fn on_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
     val: &'static ValkeyGILGuard<ValkeyString>,
 ) -> Result<(), ValkeyError> {
     let v = val.get(config_ctx).to_string_lossy();
 
-    match name {
-        "ts-chunk-size" => update_chunk_size(&v),
-        "ts-duplicate-policy" => update_duplicate_policy(&v),
-        "ts-encoding" => update_chunk_encoding(&v),
-        "ts-compaction-policy" => update_compaction_policy(&v),
-        "ts-num-threads" => update_num_threads(&v),
-        _ => Err(ValkeyError::Str("Unknown configuration parameter")),
-    }
+    hashify::fnc_map_ignore_case!(name.as_bytes(),
+        "ts-chunk-size" => {
+           return update_chunk_size(&v)
+        },
+        "ts-duplicate-policy" => {
+            return update_duplicate_policy(&v)
+        },
+        "ts-encoding" => {
+            return update_chunk_encoding(&v)
+        },
+        "ts-compaction-policy" => {
+            return update_compaction_policy(&v)
+        },
+        "ts-num-threads" => {
+            return update_num_threads(&v)
+        },
+        "ts-ignore-max-value-diff" => {
+            return update_ignore_max_value_diff(&v)
+        },
+        "ts-decimal-digits" => {
+             return update_decimal_digits(&v)
+        },
+        "ts-significant-digits" => {
+             return update_significant_digits(&v)
+        },
+        "ts-retention-policy" => {
+            return update_retention_policy(&v)
+        },
+        "ts-ignore-max-time-diff" => {
+            return update_ignore_max_time_diff(&v)
+        },
+        "ts-multi-shard-command-timeout" => {
+            return update_multi_shard_command_timeout(&v)
+        },
+        _ => {
+        }
+    );
+    Err(ValkeyError::Str("Unknown configuration parameter"))
 }
 
-fn on_duration_config_set(
-    config_ctx: &ConfigurationContext,
-    name: &str,
-    val: &'static ValkeyGILGuard<ValkeyString>,
-) -> Result<(), ValkeyError> {
-    let v = val.get(config_ctx).to_string_lossy();
-    match name {
-        "ts-retention-policy" => update_retention_policy(&v),
-        "ts-ignore-max-time-diff" => update_ignore_max_time_diff(&v),
-        "ts-multi-shard-command-timeout" => update_multi_shard_command_timeout(&v),
-        _ => Err(ValkeyError::Str("Unknown configuration parameter")),
-    }
-}
-
-fn on_float_config_set(
-    config_ctx: &ConfigurationContext,
-    name: &str,
-    val: &'static ValkeyGILGuard<ValkeyString>,
-) -> Result<(), ValkeyError> {
-    let v = val.get(config_ctx).to_string_lossy();
-    match name {
-        "ts-ignore-max-value-diff" => update_ignore_max_value_diff(&v),
-        _ => Err(ValkeyError::Str("Unknown configuration parameter")),
-    }
-}
-
-fn update_decimal_digits(val: &ValkeyString) -> ValkeyResult<()> {
-    let digits = if val.as_slice().eq_ignore_ascii_case(b"none") {
+fn update_decimal_digits(val: &str) -> ValkeyResult<()> {
+    let digits = if val.eq_ignore_ascii_case("none") {
         0
     } else {
         parse_number_in_range(
             "ts-decimal-digits",
-            &val.to_string_lossy(),
+            val,
             DECIMAL_DIGITS_MIN as f64,
             DECIMAL_DIGITS_MAX as f64,
         )? as i64
@@ -396,13 +402,13 @@ fn update_decimal_digits(val: &ValkeyString) -> ValkeyResult<()> {
     }
 }
 
-fn update_significant_digits(val: &ValkeyString) -> ValkeyResult<()> {
-    let digits = if val.as_slice().eq_ignore_ascii_case(b"none") {
+fn update_significant_digits(val: &str) -> ValkeyResult<()> {
+    let digits = if val.eq_ignore_ascii_case("none") {
         0
     } else {
         parse_number_in_range(
             "ts-significant-digits",
-            &val.to_string_lossy(),
+            val,
             SIGNIFICANT_DIGITS_MIN as f64,
             SIGNIFICANT_DIGITS_MAX as f64,
         )? as i64
@@ -430,19 +436,6 @@ fn update_significant_digits(val: &ValkeyString) -> ValkeyResult<()> {
     }
 }
 
-fn on_rounding_config_set(
-    config_ctx: &ConfigurationContext,
-    name: &str,
-    val: &'static ValkeyGILGuard<ValkeyString>,
-) -> Result<(), ValkeyError> {
-    let v = val.get(config_ctx);
-    match name {
-        "ts-decimal-digits" => update_decimal_digits(&v),
-        "ts-significant-digits" => update_significant_digits(&v),
-        _ => Err(ValkeyError::Str("Unknown configuration parameter")),
-    }
-}
-
 fn on_thread_config_set(
     _config_ctx: &ConfigurationContext,
     _name: &str,
@@ -465,12 +458,68 @@ fn on_chunk_size_config_set(
     Ok(())
 }
 
-pub(super) fn register_config(ctx: &Context) {
+fn get_string_default<'a>(
+    args: &'a [ValkeyString],
+    name: &str,
+    default: &'a str,
+) -> ValkeyResult<&'a str> {
+    match get_string_default_config_value(args, name, default) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let msg = format!("Error getting default string config value for {name}: {e}");
+            log::error!("{msg}");
+            Err(ValkeyError::String(msg))
+        }
+    }
+}
+
+fn get_i64_default(args: &[ValkeyString], name: &str, default: i64) -> ValkeyResult<i64> {
+    match get_i64_default_config_value(args, name, default) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let msg = format!("Error getting default config value for {name}: {e}");
+            log::error!("{msg}");
+            Err(ValkeyError::String(msg))
+        }
+    }
+}
+
+fn register_string_config(
+    ctx: &Context,
+    args: &[ValkeyString],
+    name: &str,
+    storage: &'static ValkeyGILGuard<ValkeyString>,
+    default: &str,
+) -> ValkeyResult<()> {
+    let config_default = get_string_default(args, name, default)?;
+    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+        ctx,
+        name,
+        storage,
+        config_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_config_set)),
+    );
+    Ok(())
+}
+
+pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyResult<()> {
+    let chunk_size_default = get_i64_default(args, "ts-chunk-size", CHUNK_SIZE_DEFAULT)?;
+    // validate default chunk size
+    if let Err(e) = validate_chunk_size(chunk_size_default as usize) {
+        let msg = format!(
+            "Error validating default chunk size ({}): {}. Please correct the 'ts-chunk-size' configuration parameter.",
+            chunk_size_default,
+            e.to_string().as_str(),
+        );
+        log::error!("{msg}");
+    }
     register_i64_configuration(
         ctx,
         "ts-chunk-size",
         &CHUNK_SIZE,
-        CHUNK_SIZE_DEFAULT,
+        chunk_size_default,
         CHUNK_SIZE_MIN,
         CHUNK_SIZE_MAX,
         ConfigurationFlags::DEFAULT,
@@ -478,11 +527,12 @@ pub(super) fn register_config(ctx: &Context) {
         Some(Box::new(on_chunk_size_config_set)),
     );
 
+    let num_threads_default = get_i64_default(args, "ts-num-threads", DEFAULT_THREADS)?;
     register_i64_configuration(
         ctx,
         "ts-num-threads",
         &NUM_THREADS,
-        DEFAULT_THREADS, // todo: num_cpus::get() as i64,
+        num_threads_default,
         1,
         MAX_THREADS,
         ConfigurationFlags::DEFAULT,
@@ -490,93 +540,73 @@ pub(super) fn register_config(ctx: &Context) {
         Some(Box::new(on_thread_config_set)),
     );
 
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    register_string_config(
         ctx,
+        args,
         "ts-encoding",
         &CHUNK_ENCODING_STRING,
         CHUNK_ENCODING_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_string_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-duplicate-policy",
         &DUPLICATE_POLICY_STRING,
         DEFAULT_DUPLICATE_POLICY.as_str(),
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_string_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-compaction-policy",
         &COMPACTION_POLICY_STRING,
-        "",
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_string_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+        DEFAULT_COMPACTION_POLICY,
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-decimal-digits",
         &DECIMAL_DIGITS_STRING,
         DECIMAL_DIGITS_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_rounding_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-significant-digits",
         &SIGNIFICANT_DIGITS_STRING,
         SIGNIFICANT_DIGITS_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_rounding_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-retention-policy",
         &RETENTION_POLICY_STRING,
         RETENTION_POLICY_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_duration_config_set)),
-    );
+    )?;
 
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    register_string_config(
         ctx,
+        args,
         "ts-ignore-max-time-diff",
         &IGNORE_MAX_TIME_DIFF_STRING,
         IGNORE_MAX_TIME_DIFF_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_duration_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-ignore-max-value-diff",
         &IGNORE_MAX_VALUE_DIFF_STRING,
         IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_float_config_set)),
-    );
-
-    register_string_configuration::<ValkeyGILGuard<ValkeyString>>(
+    )?;
+    register_string_config(
         ctx,
+        args,
         "ts-multi-shard-command-timeout",
         &MULTI_SHARD_COMMAND_TIMEOUT_STRING,
         MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT,
-        ConfigurationFlags::DEFAULT,
-        None,
-        Some(Box::new(on_duration_config_set)),
-    );
+    )?;
+
+    // Initialize config settings
+    unsafe { RedisModule_LoadConfigs.unwrap()(ctx.ctx) };
+
+    Ok(())
 }
