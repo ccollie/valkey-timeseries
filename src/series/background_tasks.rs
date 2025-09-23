@@ -1,23 +1,26 @@
-use crate::common::db::set_current_db;
+use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::{BuildNoHashHasher, IntMap};
-use crate::series::index::{IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index};
-use crate::series::{SeriesRef, get_timeseries_mut};
+use crate::series::index::{
+    IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
+};
+use crate::series::{SeriesGuardMut, SeriesRef, get_timeseries_mut};
 use ahash::HashMapExt;
 use blart::AsBytes;
 use orx_parallel::{IntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
-use valkey_module::{Context, Status, ValkeyString};
+use std::time::Duration;
+use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext};
 
 use valkey_module_macros::cron_event_handler;
 
-const RETENTION_CLEANUP_TICKS: u64 = 10; // run retention cleanup every RETENTION_CLEANUP_TICKS cron ticks
+const RETENTION_CLEANUP_INTERVAL: Duration = Duration::from_secs(10); // minimum interval between retention cleanups
 const SERIES_TRIM_BATCH_SIZE: usize = 50; // number of series to trim in one batch
-const STALE_ID_CLEANUP_TICKS: u64 = 25; // run stale id clean up every STALE_ID_CLEANUP_TICKS cron ticks
+const STALE_ID_CLEANUP_INTERVAL: Duration = Duration::from_secs(15); // minimum interval between stale id cleanups
 const STALE_ID_BATCH_SIZE: usize = 25;
-const INDEX_OPTIMIZE_TICKS: u64 = 6000; // interval in cron ticks to run index optimization (1 min at 100hz)
 const INDEX_OPTIMIZE_BATCH_SIZE: usize = 50;
+const INDEX_OPTIMIZE_INTERVAL: Duration = Duration::from_secs(60); // minimum interval between index optimizations
 
 #[derive(Debug, Default)]
 struct IndexMeta {
@@ -31,7 +34,12 @@ struct IndexMeta {
 type SeriesCursorMap = IntMap<i32, SeriesRef>;
 type IndexCursorMap = HashMap<i32, IndexMeta, BuildNoHashHasher<i32>>;
 
+type DispatchMap =
+    papaya::HashMap<u64, Vec<fn(&ThreadSafeContext<BlockedClient>)>, BuildNoHashHasher<u64>>;
+
 static CRON_TICKS: AtomicU64 = AtomicU64::new(0);
+static CRON_INTERVAL_MS: AtomicU64 = AtomicU64::new(100); // default to 100ms interval
+
 static SERIES_TRIM_CURSORS: LazyLock<Mutex<SeriesCursorMap>> =
     LazyLock::new(|| Mutex::new(SeriesCursorMap::new()));
 
@@ -40,6 +48,73 @@ static INDEX_CURSORS: LazyLock<Mutex<IndexCursorMap>> =
 
 // During maintenance tasks, we only process one db during a cycle. We use this atomic to keep track of the current db
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
+
+static DISPATCH_MAP: LazyLock<DispatchMap> = LazyLock::new(|| DispatchMap::default());
+
+pub(crate) fn init_background_tasks(ctx: &Context) {
+    // transform hz to milliseconds
+    let interval_ms = get_ticks_interval(ctx);
+    CRON_INTERVAL_MS.store(interval_ms, Ordering::Relaxed);
+
+    let cron_interval = Duration::from_millis(interval_ms);
+
+    register_task(ctx, RETENTION_CLEANUP_INTERVAL, cron_interval, process_trim);
+
+    register_task(
+        ctx,
+        STALE_ID_CLEANUP_INTERVAL,
+        cron_interval,
+        process_remove_stale_series,
+    );
+
+    register_task(
+        ctx,
+        INDEX_OPTIMIZE_INTERVAL,
+        cron_interval,
+        optimize_indices,
+    );
+}
+
+fn register_task(
+    ctx: &Context,
+    task_interval: Duration,
+    cron_interval: Duration,
+    f: fn(&ThreadSafeContext<BlockedClient>),
+) {
+    let floored_interval = floor_duration(task_interval, cron_interval);
+    if floored_interval.is_zero() {
+        ctx.log_warning(&format!(
+            "register_task: interval is zero (task_interval={task_interval:?}, cron_interval={cron_interval:?})",
+        ));
+        return;
+    }
+    if cron_interval.is_zero() {
+        panic!("register_task: cron_interval is zero");
+    }
+    let interval_ticks = std::cmp::max(
+        1,
+        floored_interval.as_millis() as u64 / cron_interval.as_millis() as u64,
+    );
+
+    let map = DISPATCH_MAP.pin();
+    map.update_or_insert_with(
+        interval_ticks,
+        |handlers| {
+            let mut v = handlers.clone();
+            v.push(f);
+            v
+        },
+        || vec![f],
+    );
+}
+
+// Floor 'd' down to nearest interval 'interval'
+fn floor_duration(d: Duration, interval: Duration) -> Duration {
+    let nanos = d.as_nanos();
+    let int_nanos = interval.as_nanos();
+    let floored = (nanos / int_nanos) * int_nanos;
+    Duration::from_nanos(floored as u64)
+}
 
 fn get_used_dbs() -> Vec<i32> {
     let index = TIMESERIES_INDEX.pin();
@@ -93,105 +168,7 @@ fn set_stale_id_cursor(db: i32, cursor: Option<IndexKey>) {
     meta.stale_id_cursor = cursor;
 }
 
-/// Perform active expiration of time series data for series which have a retention set.
-fn trim_series(ctx: &Context, db: i32) -> usize {
-    if set_current_db(ctx, db) == Status::Err {
-        ctx.log_warning(&format!("Failed to select db {db}"));
-        return 0;
-    }
-    let cursor = get_trim_cursor(db);
-    let mut processed = 0;
-    let mut last_processed = cursor;
-    let mut keys = IntMap::with_capacity(SERIES_TRIM_BATCH_SIZE);
-    let mut to_delete = Vec::with_capacity(SERIES_TRIM_BATCH_SIZE);
-    let mut total_deletes: usize = 0;
-
-    if fetch_keys_batch(ctx, last_processed + 1, &mut keys) {
-        let mut series_to_trim = Vec::with_capacity(SERIES_TRIM_BATCH_SIZE);
-        for (&id, key) in keys.iter() {
-            let Ok(Some(series)) = get_timeseries_mut(ctx, key, false, None) else {
-                to_delete.push(id);
-                last_processed = id;
-                continue;
-            };
-
-            if series.retention.is_zero() || series.is_empty() {
-                // no need to trim series with no data or retention
-                continue;
-            }
-
-            series_to_trim.push(series);
-            processed += 1;
-            last_processed = id;
-        }
-        // trimming is lightweight, so we set the threshold higher to minimize the number of threads spawned
-        total_deletes = series_to_trim
-            .par_mut()
-            .map(|series| {
-                let Ok(deletes) = series.trim() else {
-                    // log
-                    return 0;
-                };
-                deletes
-            })
-            .sum();
-    } else {
-        ctx.log_debug("No more series to trim");
-        last_processed = 0;
-    }
-
-    set_trim_cursor(db, last_processed);
-
-    if !to_delete.is_empty() {
-        // mark non-existing series for removal from the index
-        with_timeseries_index(ctx, |index| {
-            for id in to_delete {
-                index.mark_id_as_stale(id)
-            }
-        });
-    }
-
-    if processed == 0 {
-        ctx.log_debug("No series to trim");
-    } else {
-        ctx.log_notice(&format!(
-            "Processed: {processed} Deleted Samples: {total_deletes} samples"
-        ));
-    }
-
-    processed
-}
-
-fn fetch_keys_batch(
-    ctx: &Context,
-    start_id: SeriesRef,
-    ids: &mut IntMap<SeriesRef, ValkeyString>,
-) -> bool {
-    with_timeseries_index(ctx, |index| {
-        let mut state = ();
-        index.with_postings(&mut state, |postings, _| {
-            let all_postings = postings.all_postings();
-            let mut cursor = all_postings.cursor();
-            cursor.reset_at_or_after(start_id);
-            let mut buf = [0_u64; SERIES_TRIM_BATCH_SIZE];
-            let n = cursor.read_many(&mut buf);
-            if n == 0 {
-                return false; // no more keys to fetch
-            }
-            let mut added = 0;
-            for &id in &buf[..n] {
-                if let Some(k) = postings.get_key_by_id(id) {
-                    let key = ctx.create_string(k.as_bytes());
-                    ids.insert(id, key);
-                    added += 1;
-                }
-            }
-            added > 0
-        })
-    })
-}
-
-pub fn process_trim(ctx: &Context) {
+fn process_trim(ctx: &ThreadSafeContext<BlockedClient>) {
     let mut processed = 0;
 
     let mut db = next_db();
@@ -209,6 +186,99 @@ pub fn process_trim(ctx: &Context) {
         }
         turns += 1;
     }
+}
+
+/// Perform active expiration of time series data for series which have a retention set.
+fn trim_series(ctx: &ThreadSafeContext<BlockedClient>, db: i32) -> usize {
+    let cursor = get_trim_cursor(db);
+
+    logger_rust::log_debug!("cron_event_handler: cursor={cursor}");
+    let ctx_ = ctx.lock();
+    if set_current_db(&ctx_, db) == Status::Err {
+        log::warn!("Failed to select db {db}");
+        return 0;
+    }
+    logger_rust::log_debug!("cron_event_handler: about to fetch series batch");
+    let mut batch = fetch_series_batch(&ctx_, cursor + 1, |series| {
+        !series.retention.is_zero() && !series.is_empty()
+    });
+    logger_rust::log_debug!("cron_event_handler: fetched {} series", batch.len());
+
+    if batch.is_empty() {
+        log::debug!("No series to trim");
+        set_trim_cursor(db, 0);
+        return 0;
+    }
+    let last_processed = batch.last().map(|s| s.id).unwrap_or(0);
+    let processed = batch.len();
+
+    let total_deletes = batch
+        .par_mut()
+        .map(|series| {
+            let Ok(deletes) = series.trim() else {
+                log::warn!("Failed to trim series {}", series.prometheus_metric_name());
+                return 0;
+            };
+            deletes
+        })
+        .sum();
+
+    drop(ctx_);
+
+    set_trim_cursor(db, last_processed);
+
+    if processed == 0 {
+        log::debug!("No series to trim");
+    } else {
+        log::info!("Processed: {processed} Deleted Samples: {total_deletes} samples");
+    }
+
+    processed
+}
+
+fn fetch_series_batch(
+    ctx: &'_ Context,
+    start_id: SeriesRef,
+    pred: fn(&SeriesGuardMut) -> bool,
+) -> Vec<SeriesGuardMut<'_>> {
+    with_timeseries_postings(ctx, |postings| {
+        let all_postings = postings.all_postings();
+        let mut cursor = all_postings.cursor();
+        cursor.reset_at_or_after(start_id);
+        let mut buf = [0_u64; SERIES_TRIM_BATCH_SIZE];
+        let n = cursor.read_many(&mut buf);
+
+        let mut stale_ids = Vec::new();
+        if n == 0 {
+            return vec![]; // no more keys to fetch
+        }
+
+        let mut result = Vec::with_capacity(n);
+        for &id in &buf[..n] {
+            if let Some(k) = postings.get_key_by_id(id) {
+                let key = ctx.create_string(k.as_bytes());
+                let Ok(Some(series)) = get_timeseries_mut(ctx, &key, false, None) else {
+                    stale_ids.push(id);
+                    continue;
+                };
+
+                if pred(&series) {
+                    result.push(series);
+                }
+            }
+        }
+        logger_rust::log_debug!("fetch_series_batch: fetched {} series", result.len());
+
+        if !stale_ids.is_empty() {
+            // mark non-existing series for removal from the index
+            with_timeseries_index(ctx, |index| {
+                for id in stale_ids {
+                    index.mark_id_as_stale(id)
+                }
+            });
+        }
+        result
+    })
 }
 
 fn remove_stale_series_internal(db: i32) {
@@ -231,7 +301,7 @@ fn remove_stale_series_internal(db: i32) {
     }
 }
 
-pub fn process_remove_stale_series() {
+fn process_remove_stale_series(_ctx: &ThreadSafeContext<BlockedClient>) {
     let db_ids = get_used_dbs();
     if db_ids.is_empty() {
         return;
@@ -242,7 +312,7 @@ pub fn process_remove_stale_series() {
         .for_each(|&db| remove_stale_series_internal(db));
 }
 
-fn optimize_indices() {
+fn optimize_indices(_ctx: &ThreadSafeContext<BlockedClient>) {
     let db_ids = get_used_dbs();
     if db_ids.is_empty() {
         return;
@@ -288,24 +358,50 @@ fn optimize_indices() {
 fn cron_event_handler(ctx: &Context, _hz: u64) {
     // relaxed ordering is fine here since this code is not run threaded
     let ticks = CRON_TICKS.fetch_add(1, Ordering::Relaxed);
-    schedule_periodic_tasks(ctx, ticks);
+    let save_db = get_current_db(ctx);
+    dispatch_tasks(ctx, ticks);
+    // i'm not sure if this is necessary
+    set_current_db(ctx, save_db);
 }
 
-fn schedule_periodic_tasks(ctx: &Context, ticks: u64) {
-    if should_run_task(ticks, STALE_ID_CLEANUP_TICKS) {
-        rayon::spawn(process_remove_stale_series);
+fn dispatch_tasks(ctx: &Context, ticks: u64) {
+    logger_rust::log_debug!("cron_event_handler: ticks={ticks}");
+    let map = DISPATCH_MAP.pin();
+    let tasks = map
+        .iter()
+        .flat_map(|(&x, fns)| if ticks % x == 0 { Some(fns) } else { None })
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    drop(map);
+    logger_rust::log_debug!("cron_event_handler: tasks={tasks:?}");
+    if tasks.is_empty() {
+        return;
     }
 
-    if should_run_task(ticks, INDEX_OPTIMIZE_TICKS) {
-        rayon::spawn(optimize_indices);
+    // Create a thread-safe context for use in spawned threads
+    for task in tasks.into_iter() {
+        let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
+        rayon::spawn(move || task(&thread_ctx));
     }
+}
 
-    if should_run_task(ticks, RETENTION_CLEANUP_TICKS) {
-        process_trim(ctx);
-    }
+fn get_hz(ctx: &Context) -> u64 {
+    let server_info = ctx.server_info("");
+    server_info
+        .field("hz")
+        .and_then(|v| v.parse_integer().ok())
+        .unwrap_or(10) as u64
+}
+
+fn get_ticks_interval(ctx: &Context) -> u64 {
+    let hz = get_hz(ctx);
+    get_ticks_interval_from_hz(hz)
 }
 
 #[inline]
-fn should_run_task(current_ticks: u64, interval_ticks: u64) -> bool {
-    current_ticks % interval_ticks == 0
+fn get_ticks_interval_from_hz(hz: u64) -> u64 {
+    let hz = if hz == 0 { 10 } else { hz };
+    1000 / hz
 }

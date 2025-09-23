@@ -25,7 +25,7 @@ mod series;
 mod server_events;
 mod tests;
 
-// use crate::series::background_tasks::init_background_tasks;
+use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::server_events::{generic_key_events_handler, register_server_events};
@@ -88,7 +88,8 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
-    // init_background_tasks(ctx);
+    init_background_tasks(ctx);
+
     ctx.log_notice("valkey-timeseries module initialized");
     Status::Ok
 }

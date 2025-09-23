@@ -1,5 +1,5 @@
 pub mod acl;
-mod background_tasks;
+pub mod background_tasks;
 pub mod chunks;
 mod compaction;
 mod compaction_policy;
