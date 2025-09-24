@@ -1,5 +1,5 @@
 use crate::parser::parse_error::{ParseError, ParseResult};
-use chrono::DateTime;
+use speedate::DateTime;
 
 /// Parses a string into a unix timestamp (milliseconds). Accepts a positive integer or an RFC3339 timestamp.
 /// Included here only to avoid having to include chrono in the public API
@@ -7,9 +7,9 @@ pub fn parse_timestamp(s: &str, auto_scale: bool) -> ParseResult<i64> {
     let value = if let Ok(dt) = parse_numeric_timestamp(s, auto_scale) {
         dt
     } else {
-        let value = DateTime::parse_from_rfc3339(s)
-            .map_err(|_| ParseError::InvalidTimestamp(s.to_string()))?;
-        value.timestamp_millis()
+        let value =
+            DateTime::parse_str(s).map_err(|_| ParseError::InvalidTimestamp(s.to_string()))?;
+        value.timestamp_ms()
     };
     if value < 0 {
         return Err(ParseError::InvalidTimestamp(s.to_string()));

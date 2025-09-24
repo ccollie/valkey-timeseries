@@ -15,7 +15,6 @@ bon = "3.7"
 byte-pool = "0.2"
 cfg-if = "1.0"
 chili = "0.2"
-chrono = { version = "0.4"}
 croaring = "2.4"
 enquote = "1.1"
 enum_dispatch = "0.3"
@@ -33,6 +32,7 @@ pco = "0.4"
 prost = "0.14"
 rand = { version = "0.9", features = ["small_rng"] }
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
+speedate = "0.17"
 thiserror = "2.0"
 topo_sort = "0.4"
 valkey-module = "0.1"
