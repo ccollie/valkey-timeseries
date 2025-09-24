@@ -134,12 +134,12 @@ impl PcoChunk {
             || compress_values(&mut v_data, values),
         );
 
-        ts_result?;
-        value_result?;
-
         // then we put the buffers back
         self.timestamps = t_data;
         self.values = v_data;
+
+        ts_result?;
+        value_result?;
 
         self.count = timestamps.len();
         self.timestamps.shrink_to_fit();
