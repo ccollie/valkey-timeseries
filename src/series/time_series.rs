@@ -1,7 +1,6 @@
 use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
-use crate::common::parallel::join;
 use crate::common::rounding::RoundingStrategy;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
@@ -423,6 +422,7 @@ impl TimeSeries {
             }
         }
 
+        #[inline]
         fn meta_fetch(meta: &ChunkMeta) -> TsdbResult<Vec<Sample>> {
             meta.chunk.samples_by_timestamps(&meta.timestamps)
         }
@@ -431,22 +431,12 @@ impl TimeSeries {
             match slice {
                 [] => Ok(vec![]),
                 [meta] => meta_fetch(meta),
-                [first, second] => {
-                    let (left_samples, right_samples) =
-                        join(|| meta_fetch(first), || meta_fetch(second));
-                    let mut samples = left_samples?;
-                    samples.extend(right_samples?);
-                    Ok(samples)
-                }
-                _ => {
-                    let mid = slice.len() / 2;
-                    let (left, right) = slice.split_at(mid);
-                    let (left_samples, right_samples) =
-                        join(|| fetch_parallel(left), || fetch_parallel(right));
-                    let mut samples = left_samples?;
-                    samples.extend(right_samples?);
-                    Ok(samples)
-                }
+                _ => slice
+                    .par()
+                    .map(|meta| meta_fetch(meta))
+                    .into_fallible_result()
+                    .flat_map(|r| r)
+                    .collect(),
             }
         }
 
