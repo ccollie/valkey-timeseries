@@ -367,7 +367,6 @@ impl Postings {
         self.id_to_key.get(&id)
     }
 
-    #[allow(dead_code)]
     /// Marks an id as stale by adding its ID to the stale IDs set.
     /// Context: used in the case of possible index sync issues. When the index is queried and an id is returned
     /// with no corresponding series, we have no access to the series data to do a proper
