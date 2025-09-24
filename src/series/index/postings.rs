@@ -411,35 +411,37 @@ impl Postings {
         }
 
         let mut keys_processed = 0;
-        let mut keys_to_process = Vec::with_capacity(count);
+        let mut keys_to_remove = Vec::new();
         let mut next_key = None;
 
         // Determine the prefix to use for iteration
         let prefix_bytes = start_prefix.map_or_else(Vec::new, |k| k.as_bytes().to_vec());
 
-        // Collect keys to process
-        for (key, _) in self.label_index.prefix(&prefix_bytes) {
-            if keys_processed >= count {
+        for (key, bitmap) in self.label_index.prefix_mut(&prefix_bytes) {
+            // Remove stale IDs from the bitmap
+            let should_remove = if !bitmap.is_empty() {
+                bitmap.andnot_inplace(&self.stale_ids);
+                bitmap.is_empty()
+            } else {
+                true
+            };
+
+            if should_remove && key != &*ALL_POSTINGS_KEY {
+                keys_to_remove.push(key.clone());
+            }
+
+            if keys_processed == count {
                 // Save the key we stopped at as the next starting point
                 next_key = Some(key.clone());
                 break;
             }
 
-            keys_to_process.push(key.clone());
             keys_processed += 1;
         }
 
-        // Process collected keys
-        for key in keys_to_process {
-            if let Some(mut bitmap) = self.label_index.remove(&key) {
-                // Remove stale IDs from the bitmap
-                bitmap.andnot_inplace(&self.stale_ids);
-
-                // Only reinsert if the bitmap is not empty
-                if !bitmap.is_empty() {
-                    self.label_index.insert(key, bitmap);
-                }
-            }
+        // Process empty keys
+        for key in keys_to_remove {
+            self.label_index.remove(&key);
         }
 
         // Clean up id_to_key and key_to_id maps for all stale IDs
@@ -481,53 +483,55 @@ impl Postings {
         start_prefix: Option<IndexKey>,
         count: usize,
     ) -> Option<IndexKey> {
-        let mut keys_to_process = Vec::with_capacity(count);
         let mut next_key = None;
 
         if start_prefix.is_none() {
             let key = &*ALL_POSTINGS_KEY;
-            if let Some(bitmap) = self.label_index.get_mut(key) {
-                bitmap.run_optimize();
-                bitmap.shrink_to_fit();
+            if let Some(all_postings) = self.label_index.get_mut(key) {
+                optimize_bitmap(all_postings);
             }
         }
 
+        let mut keys_to_delete = Vec::new();
+        let mut keys_processed: usize = 0;
         // Determine the prefix to use for iteration
         let prefix_bytes = start_prefix.map_or_else(Vec::new, |k| k.as_bytes().to_vec());
 
         // Collect keys to process
-        for (keys_processed, (key, _)) in self.label_index.prefix(&prefix_bytes).enumerate() {
-            if keys_processed >= count {
+        for (key, bitmap) in self.label_index.prefix_mut(&prefix_bytes) {
+            if bitmap.is_empty() && key != &*ALL_POSTINGS_KEY {
+                keys_to_delete.push(key.clone());
+                continue;
+            }
+            if keys_processed == count {
                 // Save the key we stopped at as the next starting point
                 next_key = Some(key.clone());
                 break;
             }
 
-            keys_to_process.push(key.clone());
+            optimize_bitmap(bitmap);
+
+            keys_processed += 1;
         }
 
-        // Process collected keys
-        for key in keys_to_process {
-            if let Some(mut bitmap) = self.label_index.remove(&key) {
-                // 1. Check if bitmap is empty and skip if so
-                if bitmap.is_empty() {
-                    // Don't reinsert empty bitmaps - this removes them
-                    continue;
-                }
-
-                // 2. Optimize the bitmap's internal structure
-                bitmap.run_optimize();
-
-                // 3. Shrink to fit to reduce memory overhead
-                bitmap.shrink_to_fit();
-
-                // Reinsert the optimized bitmap
-                self.label_index.insert(key, bitmap);
-            }
+        // Remove empty bitmaps collected earlier
+        for key in keys_to_delete {
+            self.label_index.remove(&key);
         }
 
         next_key
     }
+}
+
+/// Optimizes a bitmap in place for better memory usage and performance.
+/// This applies run_optimize() and shrink_to_fit() operations to the bitmap
+/// if it exists in the index.
+fn optimize_bitmap(bitmap: &mut PostingsBitmap) {
+    // Optimize the bitmap's internal structure
+    bitmap.run_optimize();
+
+    // Shrink to fit to reduce memory overhead
+    bitmap.shrink_to_fit();
 }
 
 pub(super) fn handle_equal_match<'a>(
