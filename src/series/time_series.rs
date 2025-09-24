@@ -243,7 +243,7 @@ impl TimeSeries {
         sample: Sample,
         duplicate_policy_override: Option<DuplicatePolicy>,
     ) -> SampleAddResult {
-        let dp_policy = self
+        let duplicate_policy = self
             .sample_duplicates
             .resolve_policy(duplicate_policy_override);
         let chunks_len = self.chunks.len();
@@ -251,7 +251,13 @@ impl TimeSeries {
             if self.is_older_than_retention(sample.timestamp) {
                 return SampleAddResult::TooOld;
             }
-            let chunk = self.chunks.get_mut(0).expect("chunks.is_empty() in upsert");
+            debug_assert!(!self.chunks.is_empty(), "chunks.is_empty() in upsert");
+            let chunk = match self.chunks.get_mut(0) {
+                Some(chunk) => chunk,
+                None => {
+                    return SampleAddResult::Error("Internal error: no chunks available in upsert");
+                }
+            };
             (chunk, chunks_len == 1)
         } else {
             let (pos, _found) = get_chunk_index(&self.chunks, sample.timestamp);
@@ -265,7 +271,7 @@ impl TimeSeries {
         // Try to upsert in the existing chunk if it doesn't need splitting
         if !chunk.should_split() {
             let old_size = chunk.len();
-            let (size, res) = chunk.upsert(sample, dp_policy);
+            let (size, res) = chunk.upsert(sample, duplicate_policy);
             if res.is_ok() {
                 self.total_samples += size - old_size;
                 if is_last {
@@ -279,7 +285,7 @@ impl TimeSeries {
         // Handle the case where we need to split the chunk
         match chunk.split() {
             Ok(mut new_chunk) => {
-                let (size, res) = new_chunk.upsert(sample, dp_policy);
+                let (size, res) = new_chunk.upsert(sample, duplicate_policy);
                 if !res.is_ok() {
                     return res;
                 }
@@ -479,7 +485,7 @@ impl TimeSeries {
     }
 
     pub fn overlaps(&self, start_ts: Timestamp, end_ts: Timestamp) -> bool {
-        self.last_timestamp() >= start_ts && self.first_timestamp <= end_ts
+        !self.is_empty() && self.last_timestamp() >= start_ts && self.first_timestamp <= end_ts
     }
 
     pub fn is_older_than_retention(&self, timestamp: Timestamp) -> bool {
@@ -604,7 +610,7 @@ impl TimeSeries {
     /// `true` if at least one sample exists in the given range, `false` otherwise
     pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
         // Check if the time series could possibly have samples in the range
-        if !self.overlaps(start_time, end_time) || self.is_empty() {
+        if !self.overlaps(start_time, end_time) {
             return false;
         }
 
