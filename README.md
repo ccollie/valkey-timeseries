@@ -4,10 +4,6 @@
 The goal of this module is to provide a simple, efficient, and easy-to-use time series data type for Valkey, as
 well as provide a superset of the _RedisTimeSeries_ API.
 
-### WARNING !!!!
-This is a work in progress and a moving target. It is not yet ready for production or even casual use. It probably doesn't work. 
-On any day of the week it may not even build :-)
-
 ## Features
 - In-memory storage for time series data
 - Configurable data retention period
@@ -137,6 +133,7 @@ cargo build --release --features valkey_8_0
 ```
 
 This can also be done by specifying SERVER_VERSION=8.0.0 and then running `./build.sh`
+
 
 ## License
 valkey-timeseries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
