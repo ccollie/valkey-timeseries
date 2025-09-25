@@ -1,5 +1,6 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::{BuildNoHashHasher, IntMap};
+use crate::common::threads::thread_pool::spawn;
 use crate::series::index::{
     IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
 };
@@ -306,7 +307,7 @@ fn process_remove_stale_series(_ctx: &ThreadSafeContext<BlockedClient>) {
     if db_ids.is_empty() {
         return;
     }
-    // process the databases in parallel
+    // process the databases in threads
     db_ids
         .par()
         .for_each(|&db| remove_stale_series_internal(db));
@@ -383,7 +384,7 @@ fn dispatch_tasks(ctx: &Context, ticks: u64) {
     // Create a thread-safe context for use in spawned threads
     for task in tasks.into_iter() {
         let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
-        rayon::spawn(move || task(&thread_ctx));
+        spawn(move || task(&thread_ctx));
     }
 }
 

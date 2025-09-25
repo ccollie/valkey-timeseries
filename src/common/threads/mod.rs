@@ -2,6 +2,7 @@ mod join;
 pub mod thread_pool;
 
 pub use join::*;
+pub use thread_pool::*;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicUsize;
 

@@ -1,5 +1,5 @@
 use crate::aggregators::{AggregateIterator, AggregationHandler, AggregationType, Aggregator};
-use crate::common::parallel::join;
+use crate::common::threads::join;
 use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::TimeSeries;
@@ -168,7 +168,7 @@ pub(crate) fn group_reduce(
     let mut aggregator: Aggregator = aggregation.into();
 
     let mut current = if let Some(current) = samples.next() {
-        aggregator.update(current.value);
+        let _ = aggregator.update(current.value);
         current
     } else {
         return vec![];
@@ -178,14 +178,14 @@ pub(crate) fn group_reduce(
 
     for next in samples {
         if next.timestamp == current.timestamp {
-            aggregator.update(next.value);
+            let _ = aggregator.update(next.value);
         } else {
             let value = aggregator.finalize();
             result.push(Sample {
                 timestamp: current.timestamp,
                 value,
             });
-            aggregator.update(next.value);
+            let _ = aggregator.update(next.value);
             current = next;
         }
     }

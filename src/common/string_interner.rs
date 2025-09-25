@@ -147,7 +147,9 @@ static LOCK_ERROR: &str = "string interner shard lock poisoned";
 /// let sym = string_interner::intern("hello");
 /// ```
 pub fn intern(key: &str) -> Symbol {
-    let mut shard = get_shard(key).lock().expect("intern(): shard lock poisoned");
+    let mut shard = get_shard(key)
+        .lock()
+        .expect("intern(): shard lock poisoned");
     let holder = shard.get_or_insert_with(key, Holder::new);
     if holder.count() == 0 {
         MEMORY_USAGE.fetch_add(holder.get_size(), Ordering::Relaxed);
@@ -326,7 +328,9 @@ impl Drop for Symbol {
             std::sync::atomic::fence(Ordering::Acquire);
 
             let key = self.as_str();
-            let mut shard = get_shard(key).lock().expect("intern(): shard lock poisoned in Symbol::drop()");
+            let mut shard = get_shard(key)
+                .lock()
+                .expect("intern(): shard lock poisoned in Symbol::drop()");
             let holder = shard
                 .take(key)
                 .expect("string interner: dropping symbol without holder in map");
@@ -550,7 +554,7 @@ mod test {
     use std::sync::Mutex;
     use std::thread;
 
-    // prevent tests from running in parallel
+    // prevent tests from running in threads
     static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

@@ -5,7 +5,7 @@ pub mod db;
 pub mod encoding;
 pub mod hash;
 pub mod humanize;
-pub mod parallel;
+pub mod threads;
 pub mod pool;
 pub mod rdb;
 pub mod rounding;

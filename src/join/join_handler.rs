@@ -1,7 +1,7 @@
 use crate::aggregators::aggregate;
 use crate::common::Sample;
 use crate::common::binop::BinopFunc;
-use crate::common::parallel::join;
+use crate::common::threads::join;
 use crate::join::{JoinOptions, JoinType, JoinValue, create_join_iter};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
