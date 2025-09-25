@@ -5,9 +5,9 @@ use crate::common::encoding::{
     write_uvarint,
 };
 use crate::common::hash::hash_f64;
-use crate::common::threads::join;
 use crate::common::pool::{PooledVecF64, PooledVecI64, get_pooled_vec_f64, get_pooled_vec_i64};
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
+use crate::common::threads::join;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};

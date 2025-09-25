@@ -1,6 +1,6 @@
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::{BuildNoHashHasher, IntMap};
-use crate::common::threads::thread_pool::spawn;
+use crate::common::threads::spawn;
 use crate::series::index::{
     IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
 };

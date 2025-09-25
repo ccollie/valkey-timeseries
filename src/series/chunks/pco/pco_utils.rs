@@ -1,7 +1,7 @@
 use crate::common::Timestamp;
 use crate::common::encoding::{try_read_uvarint, write_uvarint};
-use crate::common::threads::join;
 use crate::common::pool::get_pooled_buffer;
+use crate::common::threads::join;
 use crate::error::{TsdbError, TsdbResult};
 use pco::DEFAULT_COMPRESSION_LEVEL;
 use pco::data_types::Number;

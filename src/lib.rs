@@ -5,6 +5,7 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
+use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::init_fanout;
 use logger_rust::{LogLevel, set_log_level};
@@ -73,6 +74,7 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
     set_log_level(LogLevel::Console);
+    // let _ = logging::setup();
 
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");
@@ -88,6 +90,7 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
+    init_thread_pool();
     init_background_tasks(ctx);
 
     ctx.log_notice("valkey-timeseries module initialized");

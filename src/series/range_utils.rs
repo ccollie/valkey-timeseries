@@ -4,6 +4,7 @@ use crate::common::{Sample, Timestamp};
 use crate::labels::InternedLabel;
 use crate::series::TimeSeries;
 use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
+use orx_parallel::{ParIter, Parallelizable};
 use std::cmp::Ordering;
 
 #[allow(dead_code)]
@@ -85,37 +86,7 @@ pub fn get_multi_series_range(
     series: &[&TimeSeries],
     range_options: &MRangeOptions,
 ) -> Vec<Vec<Sample>> {
-    fn get_samples_internal(
-        series: &[&TimeSeries],
-        range_options: &RangeOptions,
-    ) -> Vec<Vec<Sample>> {
-        match series {
-            [] => vec![],
-            [meta] => {
-                let samples = get_range(meta, range_options, true);
-                vec![samples]
-            }
-            [first, second] => {
-                let (first_samples, second_samples) = join(
-                    || get_range(first, range_options, true),
-                    || get_range(second, range_options, true),
-                );
-                vec![first_samples, second_samples]
-            }
-            _ => {
-                let (first, rest) = series.split_at(series.len() / 2);
-                let (mut first_samples, rest_samples) = join(
-                    || get_samples_internal(first, range_options),
-                    || get_samples_internal(rest, range_options),
-                );
-
-                first_samples.extend(rest_samples);
-                first_samples
-            }
-        }
-    }
-
-    let options: RangeOptions = RangeOptions {
+    let range_options: RangeOptions = RangeOptions {
         date_range: range_options.date_range,
         count: range_options.count,
         aggregation: range_options.aggregation,
@@ -123,7 +94,25 @@ pub fn get_multi_series_range(
         value_filter: range_options.value_filter,
     };
 
-    get_samples_internal(series, &options)
+    match series {
+        [] => vec![],
+        [meta] => {
+            let samples = get_range(meta, &range_options, true);
+            vec![samples]
+        }
+        [first, second] => {
+            // use a lower overhead method for two series
+            let (a, b) = join(
+                || get_range(first, &range_options, true),
+                || get_range(second, &range_options, true),
+            );
+            vec![a, b]
+        }
+        _ => series
+            .par()
+            .map(|x| get_range(x, &range_options, true))
+            .collect(),
+    }
 }
 
 pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(
@@ -168,7 +157,7 @@ pub(crate) fn group_reduce(
     let mut aggregator: Aggregator = aggregation.into();
 
     let mut current = if let Some(current) = samples.next() {
-        let _ = aggregator.update(current.value);
+        aggregator.update(current.value);
         current
     } else {
         return vec![];
@@ -178,14 +167,14 @@ pub(crate) fn group_reduce(
 
     for next in samples {
         if next.timestamp == current.timestamp {
-            let _ = aggregator.update(next.value);
+            aggregator.update(next.value);
         } else {
             let value = aggregator.finalize();
             result.push(Sample {
                 timestamp: current.timestamp,
                 value,
             });
-            let _ = aggregator.update(next.value);
+            aggregator.update(next.value);
             current = next;
         }
     }
