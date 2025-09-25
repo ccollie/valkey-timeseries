@@ -7,7 +7,7 @@
 /// The global scope is lazily initialized and reused across calls.
 /// # Example
 /// ```rust
-/// use valkey_tslib::common::parallel::join;
+/// use valkey_tslib::common::threads::join;
 /// let (a, b) = join(
 ///     || {
 ///         // do something
