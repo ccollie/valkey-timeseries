@@ -32,6 +32,7 @@ mod ts_queryindex;
 mod ts_queryindex_fanout_command;
 mod ts_range;
 mod utils;
+mod anomaly;
 
 pub use command_parser::*;
 pub use ts_createrule::*;

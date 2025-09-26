@@ -30,6 +30,7 @@ mod parser;
 mod series;
 mod server_events;
 mod tests;
+mod anomaly;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
