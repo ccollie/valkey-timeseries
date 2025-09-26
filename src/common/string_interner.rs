@@ -1,7 +1,7 @@
 /*
  * The MIT License (MIT)
  *
- * Copyright (c) 2025 Davide Di Carlo
+ * Original Copyright (c) 2025 Davide Di Carlo
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -27,13 +27,13 @@
 
 //! *A safe place for your strings.*
 //!
-//! **asylum** is a fast, lightweight string interner with automatic cleanup to prevent memory bloat.
+//! A fast, lightweight string interner with automatic cleanup to prevent memory bloat.
 //!
 //! It stores each unique string once, supports fast equality checks,
 //! and automatically removes unused strings to keep memory usage low.
 
 use ahash::AHasher;
-use get_size::GetSize;
+use get_size2::GetSize;
 use orx_parallel::IterIntoParIter;
 use orx_parallel::ParIter;
 use std::borrow::Borrow;
@@ -41,6 +41,7 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::Hash;
 
+use crate::common::hash::BuildNoHashHasher;
 use crate::common::threads::spawn;
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -48,14 +49,12 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::common::hash::BuildNoHashHasher;
-
 type TableHasher = AHasher;
 type StringHashMap = papaya::HashMap<u64, StringHashSet, BuildNoHashHasher<u64>>;
 type StringHashSet = papaya::HashSet<Holder>;
 
 const MAX_SHARDS: usize = 64;
-static STRING_TABLE: LazyLock<StringHashMap> = LazyLock::new(|| Default::default());
+static STRING_TABLE: LazyLock<StringHashMap> = LazyLock::new(Default::default);
 
 static MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
 
@@ -71,7 +70,8 @@ fn get_shard_hash(s: &str) -> u64 {
     hash ^= hash >> 19;
     hash ^= hash >> 13;
     hash ^= hash >> 5;
-    hash as u64 % (MAX_SHARDS as u64)
+
+    hash as u64
 }
 
 /// Interns the given string slice and returns a [`Symbol`] representing it.
@@ -88,34 +88,38 @@ fn get_shard_hash(s: &str) -> u64 {
 ///
 pub fn intern(key: &str) -> Symbol {
     let hash = get_shard_hash(key);
+    let bucket = hash % MAX_SHARDS as u64;
 
     let map = STRING_TABLE.pin();
 
-    let shard = map.get_or_insert_with(hash, || {
+    let shard = map.get_or_insert_with(bucket, || {
         let shard = StringHashSet::default();
-        // we specifically add the new value here since we know it doesn't exist, and we're the only writer,
-        // this simplifies the logic a bit below
+        // We specifically add the new value here since we know it doesn't exist, and we're the only writer.
+        // Saves a lookup below when a new shard is created.
         insert_new_string(key, &shard);
         shard
     });
 
     let guard = shard.guard();
+
     if let Some(holder) = shard.get(key, &guard) {
         return holder.symbol();
     }
 
-    insert_new_string(key, shard)
+    // The first time we see this string, insert it
+    insert_new_string(key, shard);
+    let Some(holder) = shard.get(key, &guard) else {
+        unreachable!("string interner: just inserted key but can't find it");
+    };
+    holder.symbol()
 }
 
-fn insert_new_string(s: &str, shard: &StringHashSet) -> Symbol {
+fn insert_new_string(s: &str, shard: &StringHashSet) {
     let holder = Holder::new(s);
-    let symbol = holder.symbol();
     let guard = shard.guard();
     let size = holder.get_size();
-    shard.insert(holder, &guard);
-
     MEMORY_USAGE.fetch_add(size, Ordering::Relaxed);
-    symbol
+    shard.insert(holder, &guard);
 }
 
 /// Returns the number of currently interned strings.
@@ -220,7 +224,7 @@ const _: [(); size_of::<usize>()] = [(); size_of::<Symbol>()];
 impl Symbol {
     /// Creates a new [`Symbol`] for the given string slice.
     ///
-    /// This method is actually the same as calling `asylum::intern` directly.
+    /// This method is actually the same as calling `string_interner::intern` directly.
     ///
     /// # Arguments
     /// - `key`: The string slice to intern.
@@ -261,7 +265,7 @@ impl Symbol {
     /// assert_eq!(count, 1);
     /// ```
     pub fn count(&self) -> usize {
-        self.atom().count()
+        self.atom().ref_count()
     }
 
     fn atom(&self) -> &Atom {
@@ -299,10 +303,13 @@ impl Drop for Symbol {
             std::sync::atomic::fence(Ordering::Acquire);
             let key = self.as_str();
             let hash = get_shard_hash(key);
+            let bucket = hash % MAX_SHARDS as u64;
+
             let map = STRING_TABLE.pin();
             let shard = map
-                .get(&hash)
+                .get(&bucket)
                 .expect("string interner: dropping symbol but shard not found");
+
             let guard = shard.guard();
             if shard.remove(key, &guard) {
                 // we don't have access to the holder here, so we calculate its size
@@ -312,7 +319,7 @@ impl Drop for Symbol {
             } else {
                 debug_assert!(
                     false,
-                    "string interner: dropping symbol but key not found in set"
+                    "string interner: dropping symbol but key not found in set: {key}"
                 );
             }
         }
@@ -340,7 +347,7 @@ impl Holder {
     }
 
     fn count(&self) -> usize {
-        self.atom().count()
+        self.atom().ref_count()
     }
 
     fn symbol(&self) -> Symbol {
@@ -415,7 +422,7 @@ impl Atom {
         &self.buf
     }
 
-    fn count(&self) -> usize {
+    fn ref_count(&self) -> usize {
         self.count.load(Ordering::Relaxed)
     }
 
@@ -445,7 +452,7 @@ impl InternedString {
         self.0.as_str()
     }
 
-    pub fn count(&self) -> usize {
+    pub fn ref_count(&self) -> usize {
         self.0.count()
     }
 }
@@ -530,6 +537,7 @@ impl From<String> for InternedString {
 #[cfg(test)]
 mod test {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
     use std::thread;
 
@@ -613,5 +621,237 @@ mod test {
                     });
             })
             .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_usage_increases_with_new_strings() {
+        MEMORY_USAGE.store(0, Ordering::SeqCst);
+
+        // Intern a new string
+        let symbol1 = intern("test_string_1");
+        let usage_after_first = memory_usage();
+
+        assert!(
+            usage_after_first > 0,
+            "Memory usage should increase after interning a string. After: {usage_after_first}"
+        );
+
+        // Intern another string
+        let symbol2 = intern("test_string_2_longer");
+        let usage_after_second = memory_usage();
+
+        assert!(
+            usage_after_second > usage_after_first,
+            "Memory usage should increase after interning another string. After first: {usage_after_first}, After second: {usage_after_second}"
+        );
+
+        // Clean up
+        drop(symbol1);
+        drop(symbol2);
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_usage_same_string_twice() {
+        MEMORY_USAGE.store(0, Ordering::SeqCst);
+
+        // Intern the same string twice
+        let symbol1 = intern("duplicate_string");
+        let usage_after_first = memory_usage();
+
+        let symbol2 = intern("duplicate_string");
+        let usage_after_second = memory_usage();
+
+        assert_eq!(
+            usage_after_first, usage_after_second,
+            "Memory usage should not increase when interning the same string twice"
+        );
+
+        assert!(
+            usage_after_first > 0,
+            "Memory usage should increase after first intern"
+        );
+
+        // Clean up
+        drop(symbol1);
+        drop(symbol2);
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_usage_decreases_on_drop() {
+        MEMORY_USAGE.store(0, Ordering::SeqCst);
+
+        let symbol = intern("temporary_string");
+        let usage_with_symbol = memory_usage();
+
+        assert!(
+            usage_with_symbol > 0,
+            "Memory usage should increase after interning"
+        );
+
+        drop(symbol);
+
+        // Give some time for cleanup
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let usage_after_drop = memory_usage();
+
+        assert!(
+            usage_after_drop <= usage_with_symbol,
+            "Memory usage should decrease or stay same after dropping symbol. With symbol: {usage_with_symbol}, After drop: {usage_after_drop}",
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_usage_with_multiple_references() {
+        MEMORY_USAGE.store(0, Ordering::SeqCst);
+
+        let symbol1 = intern("shared_string");
+        let usage_after_intern = memory_usage();
+
+        // Clone the symbol (should not increase memory usage)
+        let symbol2 = symbol1.clone();
+        let symbol3 = symbol1.clone();
+        let usage_after_clones = memory_usage();
+
+        assert_eq!(
+            usage_after_intern, usage_after_clones,
+            "Memory usage should not change when cloning symbols"
+        );
+
+        // Drop one reference (should not decrease memory usage yet)
+        drop(symbol1);
+        let usage_after_first_drop = memory_usage();
+
+        assert_eq!(
+            usage_after_clones, usage_after_first_drop,
+            "Memory usage should not change when dropping one of multiple references"
+        );
+
+        // Drop second reference (should not decrease memory usage yet)
+        drop(symbol2);
+        let usage_after_second_drop = memory_usage();
+
+        assert_eq!(
+            usage_after_first_drop, usage_after_second_drop,
+            "Memory usage should not change when dropping second of multiple references"
+        );
+
+        // Drop last reference (should decrease memory usage)
+        drop(symbol3);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        let usage_after_all_drops = memory_usage();
+
+        assert!(
+            usage_after_all_drops <= usage_after_second_drop,
+            "Memory usage should decrease after dropping all references"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_usage_with_different_string_sizes() {
+        MEMORY_USAGE.store(0, Ordering::Relaxed);
+
+        // Short string
+        let short_symbol = intern("a");
+        let usage_after_short = memory_usage();
+
+        // Long string
+        let long_string = "a".repeat(1000);
+        let long_symbol = intern(&long_string);
+        let usage_after_long = memory_usage();
+
+        let short_increase = usage_after_short;
+        let long_increase = usage_after_long - usage_after_short;
+
+        assert!(
+            long_increase > short_increase,
+            "Memory increase should be larger for longer strings. Short increase: {short_increase}, Long increase: {long_increase}",
+        );
+
+        drop(short_symbol);
+        drop(long_symbol);
+    }
+
+    #[test]
+    #[serial]
+    fn test_interned_string_memory_tracking() {
+        MEMORY_USAGE.store(0, Ordering::Relaxed);
+
+        let interned_str = InternedString::intern("test_interned_string");
+        let usage_after_intern = memory_usage();
+
+        assert!(
+            usage_after_intern > 0,
+            "Memory usage should increase after creating InternedString"
+        );
+
+        let cloned_str = interned_str.clone();
+        let usage_after_clone = memory_usage();
+
+        assert_eq!(
+            usage_after_intern, usage_after_clone,
+            "Memory usage should not change when cloning InternedString"
+        );
+
+        drop(interned_str);
+        let usage_after_first_drop = memory_usage();
+
+        assert_eq!(
+            usage_after_clone, usage_after_first_drop,
+            "Memory usage should not change when dropping one InternedString reference"
+        );
+
+        drop(cloned_str);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        let usage_after_all_drops = memory_usage();
+
+        assert!(
+            usage_after_all_drops <= usage_after_first_drop,
+            "Memory usage should decrease after dropping all InternedString references. \nUsage after first drop: {usage_after_first_drop}, Usage after all drops: {usage_after_all_drops}",
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_memory_usage_accuracy() {
+        MEMORY_USAGE.store(0, Ordering::Relaxed);
+
+        // Create a predictable string
+        let test_string = "memory_test_string";
+        let symbol = intern(test_string);
+        let increase = memory_usage();
+        
+        assert!(
+            increase > 0,
+            "Memory usage should increase after interning a string"
+        );
+
+        // The increase should at least include the string length
+        // Plus overhead for Holder and Atom structures
+        let expected_minimum = test_string.len();
+
+        assert!(
+            increase >= expected_minimum,
+            "Memory increase ({increase}) should be at least the string length ({expected_minimum})",
+        );
+
+        // Should also account for structural overhead
+        let expected_with_overhead =
+            test_string.len() + size_of::<Holder>() + size_of::<Atom>() + size_of::<AtomicUsize>();
+
+        assert!(
+            increase >= expected_with_overhead - 50, // Allow some margin for Box overhead variations
+            "Memory increase ({increase}) should account for structural overhead (expected ~{expected_with_overhead})",
+        );
+
+        // we drop here otherwise the compiler would cause a drop just after interning
+        drop(symbol);
     }
 }
