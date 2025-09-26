@@ -32,91 +32,34 @@
 //! It stores each unique string once, supports fast equality checks,
 //! and automatically removes unused strings to keep memory usage low.
 
-use hashbrown::HashSet;
-
+use ahash::AHasher;
 use get_size::GetSize;
+use orx_parallel::IterIntoParIter;
+use orx_parallel::ParIter;
 use std::borrow::Borrow;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::Hash;
+
+use crate::common::threads::spawn;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{LazyLock, Mutex};
 
-static POOL: LazyLock<[Mutex<HashSet<Holder>>; 64]> = LazyLock::new(|| {
-    [
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-    ]
-});
+use crate::common::hash::BuildNoHashHasher;
+
+type TableHasher = AHasher;
+type StringHashMap = papaya::HashMap<u64, StringHashSet, BuildNoHashHasher<u64>>;
+type StringHashSet = papaya::HashSet<Holder>;
+
+const MAX_SHARDS: usize = 64;
+static STRING_TABLE: LazyLock<StringHashMap> = LazyLock::new(|| Default::default());
 
 static MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
 
-fn get_shard(s: &str) -> &Mutex<HashSet<Holder>> {
+fn get_shard_hash(s: &str) -> u64 {
     let bytes = s.as_bytes();
 
     let len = bytes.len() as u8;
@@ -128,12 +71,8 @@ fn get_shard(s: &str) -> &Mutex<HashSet<Holder>> {
     hash ^= hash >> 19;
     hash ^= hash >> 13;
     hash ^= hash >> 5;
-
-    let index = hash as usize % POOL.len();
-    unsafe { POOL.get_unchecked(index) }
+    hash as u64 % (MAX_SHARDS as u64)
 }
-
-static LOCK_ERROR: &str = "string interner shard lock poisoned";
 
 /// Interns the given string slice and returns a [`Symbol`] representing it.
 ///
@@ -146,15 +85,37 @@ static LOCK_ERROR: &str = "string interner shard lock poisoned";
 ///
 /// let sym = string_interner::intern("hello");
 /// ```
+///
 pub fn intern(key: &str) -> Symbol {
-    let mut shard = get_shard(key)
-        .lock()
-        .expect("intern(): shard lock poisoned");
-    let holder = shard.get_or_insert_with(key, Holder::new);
-    if holder.count() == 0 {
-        MEMORY_USAGE.fetch_add(holder.get_size(), Ordering::Relaxed);
+    let hash = get_shard_hash(key);
+
+    let map = STRING_TABLE.pin();
+
+    let shard = map.get_or_insert_with(hash, || {
+        let shard = StringHashSet::default();
+        // we specifically add the new value here since we know it doesn't exist, and we're the only writer,
+        // this simplifies the logic a bit below
+        insert_new_string(key, &shard);
+        shard
+    });
+
+    let guard = shard.guard();
+    if let Some(holder) = shard.get(key, &guard) {
+        return holder.symbol();
     }
-    holder.symbol()
+
+    insert_new_string(key, shard)
+}
+
+fn insert_new_string(s: &str, shard: &StringHashSet) -> Symbol {
+    let holder = Holder::new(s);
+    let symbol = holder.symbol();
+    let guard = shard.guard();
+    let size = holder.get_size();
+    shard.insert(holder, &guard);
+
+    MEMORY_USAGE.fetch_add(size, Ordering::Relaxed);
+    symbol
 }
 
 /// Returns the number of currently interned strings.
@@ -172,25 +133,8 @@ pub fn intern(key: &str) -> Symbol {
 /// assert_eq!(string_interner::size(), 0);
 /// ```
 pub fn size() -> usize {
-    POOL.iter()
-        .map(|shard| shard.lock().expect(LOCK_ERROR).len())
-        .sum()
-}
-
-/// Returns the total number of slots currently allocated in the interner.
-///
-/// This may be larger than [size] due to internal capacity growth.
-///
-/// # Example
-/// ```rust
-/// use crate::common::string_interner;
-///
-/// let cap = string_interner::capacity();
-/// ```
-pub fn capacity() -> usize {
-    POOL.iter()
-        .map(|shard| shard.lock().expect(LOCK_ERROR).capacity())
-        .sum()
+    let map = STRING_TABLE.pin();
+    map.iter().map(|(_, shard)| shard.len()).sum::<usize>()
 }
 
 /// Reduces the memory usage by shrinking the interner's capacity
@@ -206,8 +150,35 @@ pub fn capacity() -> usize {
 /// string_interner::shrink_to_fit();
 /// ```
 pub fn shrink_to_fit() {
-    POOL.iter()
-        .for_each(|shard| shard.lock().expect(LOCK_ERROR).shrink_to_fit());
+    let mut map = STRING_TABLE.pin_owned();
+    map.retain(|_, shard| !shard.is_empty());
+
+    // according to papaya docs, iter() blocks, so we spawn a thread to avoid blocking the caller
+    spawn(move || {
+        // unfortunately, papaya HashSet doesn't have a shrink_to_fit method, so we do it manually
+        // by creating a new set and swapping it
+        let shards = map
+            .iter()
+            .iter_into_par()
+            .map(|(&key, shard)| {
+                let guard = shard.owned_guard();
+                let new_shard = {
+                    let new_shard = StringHashSet::with_capacity(shard.len());
+                    for holder in shard.iter(&guard) {
+                        new_shard.insert(holder.clone(), &guard);
+                    }
+                    new_shard
+                };
+                drop(guard);
+                (key, new_shard)
+            })
+            .collect::<Vec<_>>();
+
+        for (key, shard) in shards {
+            // Insert directly instead of using update
+            map.insert(key, shard);
+        }
+    })
 }
 
 /// Returns the total memory usage in bytes of interned strings.
@@ -307,7 +278,7 @@ impl AsRef<str> for Symbol {
 
 impl Clone for Symbol {
     fn clone(&self) -> Self {
-        unsafe { self.atom().incr_count() };
+        self.atom().incr_count();
         Self { ptr: self.ptr }
     }
 }
@@ -324,23 +295,31 @@ unsafe impl Sync for Symbol {}
 
 impl Drop for Symbol {
     fn drop(&mut self) {
-        if unsafe { self.atom().decr_count() } == 1 {
+        if self.atom().decr_count() == 1 {
             std::sync::atomic::fence(Ordering::Acquire);
-
             let key = self.as_str();
-            let mut shard = get_shard(key)
-                .lock()
-                .expect("intern(): shard lock poisoned in Symbol::drop()");
-            let holder = shard
-                .take(key)
-                .expect("string interner: dropping symbol without holder in map");
-            MEMORY_USAGE.fetch_sub(holder.get_size(), Ordering::Relaxed);
-            drop(shard);
-            drop(holder);
+            let hash = get_shard_hash(key);
+            let map = STRING_TABLE.pin();
+            let shard = map
+                .get(&hash)
+                .expect("string interner: dropping symbol but shard not found");
+            let guard = shard.guard();
+            if shard.remove(key, &guard) {
+                // we don't have access to the holder here, so we calculate its size
+                let atom_size = self.atom().get_size();
+                let size = size_of::<Holder>() + atom_size;
+                MEMORY_USAGE.fetch_sub(size, Ordering::Relaxed);
+            } else {
+                debug_assert!(
+                    false,
+                    "string interner: dropping symbol but key not found in set"
+                );
+            }
         }
     }
 }
 
+#[derive(Clone)]
 struct Holder {
     ptr: NonNull<Atom>,
 }
@@ -365,7 +344,7 @@ impl Holder {
     }
 
     fn symbol(&self) -> Symbol {
-        unsafe { self.atom().incr_count() };
+        self.atom().incr_count();
         Symbol { ptr: self.ptr }
     }
 }
@@ -440,11 +419,11 @@ impl Atom {
         self.count.load(Ordering::Relaxed)
     }
 
-    unsafe fn incr_count(&self) -> usize {
+    fn incr_count(&self) -> usize {
         self.count.fetch_add(1, Ordering::Relaxed)
     }
 
-    unsafe fn decr_count(&self) -> usize {
+    fn decr_count(&self) -> usize {
         self.count.fetch_sub(1, Ordering::Release)
     }
 }
