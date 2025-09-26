@@ -30,6 +30,7 @@ mod query_index;
 mod query_index_fanout_operation;
 mod range;
 mod utils;
+mod anomaly;
 
 pub use command_args::*;
 pub use create_rule::*;
