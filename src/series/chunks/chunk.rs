@@ -4,7 +4,7 @@ use crate::error_consts;
 use crate::series::chunks::TimeSeriesChunk;
 use crate::series::types::ValueFilter;
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::fmt::Display;
 use std::vec;
 use valkey_module::digest::Digest;

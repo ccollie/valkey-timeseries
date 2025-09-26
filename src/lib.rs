@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 extern crate enum_dispatch;
-extern crate get_size;
+extern crate get_size2;
+#[cfg(test)]
+extern crate serial_test;
 extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;

@@ -1,5 +1,5 @@
 use blart::{AsBytes, NoPrefixesBytes};
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::borrow::Borrow;
 use std::fmt::Display;
 use std::fmt::Write;

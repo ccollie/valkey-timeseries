@@ -3,7 +3,7 @@ use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
 use crate::common::string_interner::InternedString;
 use enquote::enquote;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
 use valkey_module::{ValkeyResult, ValkeyValue, raw};

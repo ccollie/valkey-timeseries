@@ -1,4 +1,4 @@
-use get_size::GetSize;
+use get_size2::GetSize;
 use num_traits::Pow;
 use std::f64;
 use std::fmt::Display;

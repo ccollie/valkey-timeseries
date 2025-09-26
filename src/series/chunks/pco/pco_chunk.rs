@@ -21,7 +21,7 @@ use crate::series::chunks::pco::pco_utils::{
 use crate::series::chunks::utils::get_timestamp_index_bounds;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::hash::Hash;
 use std::mem::size_of;
 use valkey_module::digest::Digest;

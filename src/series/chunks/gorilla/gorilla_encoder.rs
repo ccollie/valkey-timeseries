@@ -14,7 +14,7 @@ use crate::common::rdb::{
     rdb_save_usize,
 };
 use crate::error::{TsdbError, TsdbResult};
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::ffi::c_longlong;
 use std::hash::Hash;
 use std::mem::size_of_val;

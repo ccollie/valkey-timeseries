@@ -10,7 +10,7 @@ use crate::series::chunks::chunk::Chunk;
 use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::mem::size_of;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};

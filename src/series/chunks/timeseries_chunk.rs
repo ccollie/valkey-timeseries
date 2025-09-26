@@ -11,7 +11,7 @@ use crate::series::{
     chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
 };
 use core::mem::size_of;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::cmp::Ordering;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};

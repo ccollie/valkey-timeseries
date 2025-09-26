@@ -9,7 +9,7 @@ use crate::common::rdb::{
     rdb_save_optional_f64, rdb_save_u8, rdb_save_usize,
 };
 use enum_dispatch::enum_dispatch;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::fmt::Display;
 use std::hash::Hash;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString, raw};

@@ -5,7 +5,7 @@ use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::series::index::{get_series_by_id, with_timeseries_postings};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
-use get_size::GetSize;
+use get_size2::GetSize;
 use logger_rust::*;
 use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::SmallVec;

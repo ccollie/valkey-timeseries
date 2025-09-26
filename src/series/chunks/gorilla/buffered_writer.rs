@@ -21,7 +21,7 @@
 // SOFTWARE.
 use super::traits::BitWrite;
 use super::utils::{MSB, zigzag_encode};
-use get_size::GetSize;
+use get_size2::GetSize;
 use num_traits::PrimInt;
 use std::io::Result;
 use valkey_module::digest::Digest;

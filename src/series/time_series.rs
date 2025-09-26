@@ -17,7 +17,7 @@ use crate::series::digest::{
 use crate::series::index::next_timeseries_id;
 use crate::series::sample_merge::merge_samples;
 use crate::{config, error_consts};
-use get_size::GetSize;
+use get_size2::GetSize;
 use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, ParIter, Parallelizable, ParallelizableCollectionMut};
 use smallvec::SmallVec;

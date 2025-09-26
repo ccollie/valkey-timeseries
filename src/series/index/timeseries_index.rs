@@ -9,7 +9,7 @@ use crate::error_consts;
 use crate::labels::{Label, SeriesLabel};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::mem::size_of;
 use valkey_module::{ValkeyError, ValkeyResult};
 

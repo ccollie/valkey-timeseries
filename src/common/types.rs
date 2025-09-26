@@ -1,5 +1,5 @@
 use crate::common::hash::hash_f64;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};

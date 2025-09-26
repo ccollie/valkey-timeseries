@@ -10,7 +10,7 @@ use crate::error_consts;
 use crate::labels::Label;
 use crate::series::SeriesRef;
 use crate::series::chunks::ChunkEncoding;
-use get_size::GetSize;
+use get_size2::GetSize;
 use num_traits::Zero;
 use std::fmt::Display;
 use std::hash::Hash;
