@@ -91,34 +91,39 @@ pub fn intern(key: &str) -> Symbol {
     let bucket = hash % MAX_SHARDS as u64;
 
     let map = STRING_TABLE.pin();
+    let mut added = false;
 
     let shard = map.get_or_insert_with(bucket, || {
         let shard = StringHashSet::default();
-        // We specifically add the new value here since we know it doesn't exist, and we're the only writer.
-        // Saves a lookup below when a new shard is created.
-        insert_new_string(key, &shard);
+        insert_to_shard(&shard, key);
+        added = true;
         shard
     });
 
     let guard = shard.guard();
+    let holder = if let Some(h) = shard.get(key, &guard) {
+        h
+    } else {
+        // The string was not found, we need to insert it
+        insert_to_shard(shard, key);
+        added = true;
+        shard
+            .get(key, &guard)
+            .expect("string interner: just inserted key but can't find it")
+    };
 
-    if let Some(holder) = shard.get(key, &guard) {
-        return holder.symbol();
+    if added {
+        let size = holder.get_size();
+        let m = MEMORY_USAGE.fetch_add(size, Ordering::Release);
+        println!("added string: {}, size = {}, total memory usage = {}", key, size, m + size);
     }
 
-    // The first time we see this string, insert it
-    insert_new_string(key, shard);
-    let Some(holder) = shard.get(key, &guard) else {
-        unreachable!("string interner: just inserted key but can't find it");
-    };
     holder.symbol()
 }
 
-fn insert_new_string(s: &str, shard: &StringHashSet) {
-    let holder = Holder::new(s);
+fn insert_to_shard(shard: &StringHashSet, key: &str)  {
     let guard = shard.guard();
-    let size = holder.get_size();
-    MEMORY_USAGE.fetch_add(size, Ordering::Relaxed);
+    let holder = Holder::new(key);
     shard.insert(holder, &guard);
 }
 
@@ -193,7 +198,14 @@ pub fn shrink_to_fit() {
 /// string_interner::memory_usage();
 /// ```
 pub fn memory_usage() -> usize {
-    MEMORY_USAGE.load(Ordering::Relaxed)
+    // let map = STRING_TABLE.pin();
+    // let total = map.iter()
+    //     .iter_into_par()
+    //     .map(|(_, shard)| {
+    //         let guard = shard.guard();
+    //         shard.iter(&guard).map(|h| h.get_size()).sum::<usize>()
+    //     }).sum::<usize>();
+    MEMORY_USAGE.load(Ordering::Acquire)
 }
 
 /// A lightweight handle to an interned string.
@@ -299,6 +311,7 @@ unsafe impl Sync for Symbol {}
 
 impl Drop for Symbol {
     fn drop(&mut self) {
+        println!("before dropping symbol: {}, refcount = {}", self.as_str(), self.count());
         if self.atom().decr_count() == 1 {
             std::sync::atomic::fence(Ordering::Acquire);
             let key = self.as_str();
@@ -310,13 +323,14 @@ impl Drop for Symbol {
                 .get(&bucket)
                 .expect("string interner: dropping symbol but shard not found");
 
+            println!("really dropping symbol: {}, refcount = {}", self.as_str(), self.count());
+            // we don't have access to the holder here, so we calculate its size
+            let atom_size = self.atom().get_size();
+            let size = size_of::<Holder>() + atom_size;
+            MEMORY_USAGE.fetch_sub(size, Ordering::Release);
+
             let guard = shard.guard();
-            if shard.remove(key, &guard) {
-                // we don't have access to the holder here, so we calculate its size
-                let atom_size = self.atom().get_size();
-                let size = size_of::<Holder>() + atom_size;
-                MEMORY_USAGE.fetch_sub(size, Ordering::Relaxed);
-            } else {
+            if !shard.remove(key, &guard) {
                 debug_assert!(
                     false,
                     "string interner: dropping symbol but key not found in set: {key}"
@@ -663,6 +677,18 @@ mod test {
         let symbol2 = intern("duplicate_string");
         let usage_after_second = memory_usage();
 
+        let count1 = symbol1.count();
+        let count2 = symbol2.count();
+
+        assert_eq!(
+            count1, 2,
+            "Reference count should be 2 after interning same string twice"
+        );
+        assert_eq!(
+            count1, count2,
+            "Reference count should be 2 after interning same string twice"
+        );
+
         assert_eq!(
             usage_after_first, usage_after_second,
             "Memory usage should not increase when interning the same string twice"
@@ -694,7 +720,7 @@ mod test {
         drop(symbol);
 
         // Give some time for cleanup
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        thread::sleep(std::time::Duration::from_millis(5));
 
         let usage_after_drop = memory_usage();
 
@@ -731,7 +757,7 @@ mod test {
             "Memory usage should not change when dropping one of multiple references"
         );
 
-        // Drop second reference (should not decrease memory usage yet)
+        // Drop the second reference (should not decrease memory usage yet)
         drop(symbol2);
         let usage_after_second_drop = memory_usage();
 
@@ -740,9 +766,9 @@ mod test {
             "Memory usage should not change when dropping second of multiple references"
         );
 
-        // Drop last reference (should decrease memory usage)
+        // Drop the last reference (should decrease memory usage)
         drop(symbol3);
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        thread::sleep(std::time::Duration::from_millis(1));
 
         let usage_after_all_drops = memory_usage();
 
@@ -792,6 +818,9 @@ mod test {
         );
 
         let cloned_str = interned_str.clone();
+        let count = interned_str.ref_count();
+        assert_eq!(count, 2, "Reference count should be 2 after cloning");
+
         let usage_after_clone = memory_usage();
 
         assert_eq!(
@@ -800,6 +829,14 @@ mod test {
         );
 
         drop(interned_str);
+        thread::sleep(std::time::Duration::from_millis(5));
+
+        let new_count = cloned_str.ref_count();
+        assert_eq!(
+            new_count, 1,
+            "Reference count should be 1 after dropping one reference"
+        );
+
         let usage_after_first_drop = memory_usage();
 
         assert_eq!(
@@ -808,7 +845,7 @@ mod test {
         );
 
         drop(cloned_str);
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        thread::sleep(std::time::Duration::from_millis(5));
 
         let usage_after_all_drops = memory_usage();
 
@@ -827,7 +864,7 @@ mod test {
         let test_string = "memory_test_string";
         let symbol = intern(test_string);
         let increase = memory_usage();
-        
+
         assert!(
             increase > 0,
             "Memory usage should increase after interning a string"
