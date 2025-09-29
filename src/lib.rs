@@ -30,7 +30,7 @@ mod parser;
 mod series;
 mod server_events;
 mod tests;
-mod anomaly;
+mod analysis;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
@@ -157,30 +157,31 @@ valkey_module! {
         "timeseries",
     ]
     commands: [
-        ["TS.CREATE", commands::ts_create_cmd, "write deny-oom", 1, 1, 1, "write fast timeseries"],
-        ["TS.ALTER", commands::ts_alter_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.ADD", commands::ts_add_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.ADDBULK", commands::ts_addbulk_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.GET", commands::ts_get_cmd, "readonly fast", 1, 1, 1, "fast read timeseries"],
-        ["TS.MGET", commands::ts_mget_cmd, "readonly fast", 0, 0, -1, "fast read timeseries"],
-        ["TS.MADD", commands::ts_madd_cmd, "write deny-oom", 1, -1, 3, "fast write timeseries"],
-        ["TS.DEL", commands::ts_del_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.DECRBY", commands::ts_decrby_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.INCRBY", commands::ts_incrby_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.JOIN", commands::ts_join_cmd, "readonly", 1, 2, 1, "read timeseries"],
-        ["TS.MDEL", commands::ts_mdel_cmd, "write deny-oom", 0, 0, -1, "write timeseries"],
-        ["TS.MRANGE", commands::ts_mrange_cmd, "readonly", 0, 0, -1, "read timeseries"],
-        ["TS.MREVRANGE", commands::ts_mrevrange_cmd, "readonly", 0, 0, -1, "read timeseries"],
-        ["TS.RANGE", commands::ts_range_cmd, "readonly", 1, 1, 1, "read timeseries"],
-        ["TS.REVRANGE", commands::ts_revrange_cmd, "readonly", 1, 1, 1, "read timeseries"],
-        ["TS.INFO", commands::ts_info_cmd, "readonly", 0, 0, 0, "read fast timeseries"],
-        ["TS.QUERYINDEX", commands::ts_queryindex_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.CARD", commands::ts_card_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELNAMES", commands::ts_labelnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELVALUES", commands::ts_labelvalues_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELSTATS", commands::ts_labelstats_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.CREATERULE", commands::ts_createrule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.DELETERULE", commands::ts_deleterule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.CREATE", commands::create, "write deny-oom", 1, 1, 1, "write fast timeseries"],
+        ["TS.ALTER", commands::alter_series, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.ADD", commands::add, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.ADDBULK", commands::add_bulk, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.GET", commands::get, "readonly fast", 1, 1, 1, "fast read timeseries"],
+        ["TS.MGET", commands::mget, "readonly fast", 0, 0, -1, "fast read timeseries"],
+        ["TS.MADD", commands::madd, "write deny-oom", 1, -1, 3, "fast write timeseries"],
+        ["TS.DEL", commands::del, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.DECRBY", commands::decrby, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.INCRBY", commands::incrby, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.JOIN", commands::join, "readonly", 1, 2, 1, "read timeseries"],
+        ["TS.MDEL", commands::mdel, "write deny-oom", 0, 0, -1, "write timeseries"],
+        ["TS.MRANGE", commands::mrange, "readonly", 0, 0, -1, "read timeseries"],
+        ["TS.MREVRANGE", commands::mrevrange, "readonly", 0, 0, -1, "read timeseries"],
+        ["TS.RANGE", commands::range, "readonly", 1, 1, 1, "read timeseries"],
+        ["TS.REVRANGE", commands::rev_range, "readonly", 1, 1, 1, "read timeseries"],
+        ["TS.INFO", commands::info, "readonly", 0, 0, 0, "read fast timeseries"],
+        ["TS.QUERYINDEX", commands::query_index, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.CARD", commands::cardinality, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELNAMES", commands::label_names, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELVALUES", commands::label_values, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELSTATS", commands::label_stats, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.CREATERULE", commands::create_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.ANOMALIES", commands::anomalies, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["TS._DEBUG", commands::debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
     ]
     event_handlers: [
