@@ -140,8 +140,8 @@ impl<T: Clone + Default> Array2D<T> {
     }
 
     /// Convert to a flat vector (row-major order)
-    pub fn as_flat_vec(self) -> Vec<T> {
-        self.data.into_iter().flatten().collect()
+    pub fn get_flat_vec(&self) -> Vec<T> {
+        self.data.iter().flatten().cloned().collect()
     }
 
     /// Convert to the underlying Vec<Vec<T>>

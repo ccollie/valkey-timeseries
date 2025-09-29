@@ -30,7 +30,7 @@ mod query_index;
 mod query_index_fanout_operation;
 mod range;
 mod utils;
-mod anomaly;
+mod anomalies;
 
 pub use command_args::*;
 pub use create_rule::*;
@@ -39,6 +39,7 @@ pub use delete_rule::*;
 pub use add::*;
 pub use add_bulk::*;
 pub use alter_series::*;
+pub use anomalies::*;
 pub use card::*;
 pub use create_series::*;
 pub use del::*;

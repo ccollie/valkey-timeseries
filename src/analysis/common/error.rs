@@ -1,12 +1,11 @@
 //! Error types for the time series module
 
-// No imports needed here, thiserror handles the implementations
 use thiserror::Error;
 use crate::error::TsdbError;
 
-/// Error type for time series operations
+/// Error type for time series analysis operations
 #[derive(Debug, Error)]
-pub enum TimeSeriesError {
+pub enum TimeSeriesAnalysisError {
     /// Invalid input data
     #[error("Invalid input: {0}")]
     InvalidInput(String),
@@ -57,10 +56,6 @@ pub enum TimeSeriesError {
         iterations: usize,
     },
 
-    /// Numerical instability
-    #[error("Numerical instability: {0}")]
-    NumericalInstability(String),
-
     /// Computation error
     #[error("Computation error: {0}")]
     ComputationError(String),
@@ -91,10 +86,6 @@ pub enum TimeSeriesError {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
-    /// I/O error
-    #[error("I/O error: {0}")]
-    IOError(String),
-
     /// Invalid operation
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
@@ -109,4 +100,4 @@ pub enum TimeSeriesError {
 }
 
 /// Result type for time series operations
-pub type Result<T> = std::result::Result<T, TimeSeriesError>;
+pub type TimeSeriesAnalysisResult<T> = Result<T, TimeSeriesAnalysisError>;
