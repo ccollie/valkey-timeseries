@@ -1,7 +1,7 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
+use crate::common::interner::InternedString;
 use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
-use crate::common::string_interner::InternedString;
 use enquote::enquote;
 use get_size2::GetSize;
 use std::collections::HashMap;
@@ -51,8 +51,7 @@ pub struct InternedMetricName(Vec<InternedString>);
 
 impl GetSize for InternedMetricName {
     fn get_size(&self) -> usize {
-        // all actual content is shared by interner, so we only need to count the stack size of the vector
-        self.0.capacity() * size_of::<InternedString>()
+        self.0.get_size()
     }
 }
 
@@ -77,7 +76,7 @@ impl InternedMetricName {
     /// adds a new label to mn with the given key and value.
     pub fn add_label(&mut self, key: &str, value: &str) {
         let full_label = format!("{key}{VALUE_SEPARATOR}{value}");
-        let interned_value = InternedString::intern(full_label);
+        let interned_value = InternedString::intern(&full_label);
         match self.0.binary_search_by_key(&key, |tag| {
             if let Some((k, _)) = tag.split_once(VALUE_SEPARATOR) {
                 k

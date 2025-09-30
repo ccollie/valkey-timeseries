@@ -8,11 +8,12 @@ pub mod humanize;
 pub mod pool;
 pub mod rdb;
 pub mod rounding;
-pub mod string_interner;
 pub mod threads;
 pub mod time;
 pub mod timer;
 mod types;
 pub mod unit_vec;
+pub mod interner;
 
 pub use types::*;
+pub use interner::*;

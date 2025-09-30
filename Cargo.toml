@@ -15,6 +15,7 @@ bon = "3.7.2"
 byte-pool = "0.2.4"
 cfg-if = "1.0.3"
 croaring = "2.4.0"
+dashmap = "6.1"
 enquote = "1.1.0"
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
@@ -32,7 +33,7 @@ prost = "0.14.1"
 rand = { version = "0.9.2", features = ["small_rng"] }
 smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
 speedate = "0.17.0"
-thiserror = "2.0.16"
+thiserror = "2.0.17"
 topo_sort = "0.4.0"
 valkey-module = "0.1.10"
 valkey-module-macros = "0.1.10"
