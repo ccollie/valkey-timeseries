@@ -4,7 +4,7 @@ use crate::common::threads::spawn;
 use crate::series::index::{
     IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
 };
-use crate::series::{SeriesGuardMut, SeriesRef, get_timeseries_mut};
+use crate::series::{SeriesGuardMut, SeriesRef, get_timeseries_mut, TimeSeries};
 use ahash::HashMapExt;
 use blart::AsBytes;
 use orx_parallel::{IntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut};
@@ -240,7 +240,7 @@ fn trim_series(ctx: &ThreadSafeContext<BlockedClient>, db: i32) -> usize {
 fn fetch_series_batch(
     ctx: &'_ Context,
     start_id: SeriesRef,
-    pred: fn(&SeriesGuardMut) -> bool,
+    pred: fn(&TimeSeries) -> bool,
 ) -> Vec<SeriesGuardMut<'_>> {
     with_timeseries_postings(ctx, |postings| {
         let all_postings = postings.all_postings();
