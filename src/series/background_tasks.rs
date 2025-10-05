@@ -4,7 +4,7 @@ use crate::common::threads::spawn;
 use crate::series::index::{
     IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
 };
-use crate::series::{SeriesGuardMut, SeriesRef, get_timeseries_mut, TimeSeries};
+use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
 use ahash::HashMapExt;
 use blart::AsBytes;
 use orx_parallel::{IntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut};
@@ -193,23 +193,23 @@ fn process_trim(ctx: &ThreadSafeContext<BlockedClient>) {
 fn trim_series(ctx: &ThreadSafeContext<BlockedClient>, db: i32) -> usize {
     let cursor = get_trim_cursor(db);
 
-    logger_rust::log_debug!("cron_event_handler: cursor={cursor}");
     let ctx_ = ctx.lock();
     if set_current_db(&ctx_, db) == Status::Err {
         log::warn!("Failed to select db {db}");
         return 0;
     }
-    logger_rust::log_debug!("cron_event_handler: about to fetch series batch");
+
     let mut batch = fetch_series_batch(&ctx_, cursor + 1, |series| {
         !series.retention.is_zero() && !series.is_empty()
     });
-    logger_rust::log_debug!("cron_event_handler: fetched {} series", batch.len());
 
     if batch.is_empty() {
         log::debug!("No series to trim");
         set_trim_cursor(db, 0);
         return 0;
     }
+    log::debug!("cron_event_handler: fetched {} series", batch.len());
+
     let last_processed = batch.last().map(|s| s.id).unwrap_or(0);
     let processed = batch.len();
 
@@ -366,7 +366,6 @@ fn cron_event_handler(ctx: &Context, _hz: u64) {
 }
 
 fn dispatch_tasks(ctx: &Context, ticks: u64) {
-    logger_rust::log_debug!("cron_event_handler: ticks={ticks}");
     let map = DISPATCH_MAP.pin();
     let tasks = map
         .iter()
@@ -376,11 +375,12 @@ fn dispatch_tasks(ctx: &Context, ticks: u64) {
         .collect::<Vec<_>>();
 
     drop(map);
-    logger_rust::log_debug!("cron_event_handler: tasks={tasks:?}");
+
     if tasks.is_empty() {
         return;
     }
 
+    log::debug!("cron_event_handler: tasks={tasks:?}");
     // Create a thread-safe context for use in spawned threads
     for task in tasks.into_iter() {
         let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
