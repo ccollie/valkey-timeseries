@@ -3,68 +3,89 @@ import os
 
 import pytest
 
-from valkey_timeseries_test_case import parse_info_response
+from valkey_timeseries_test_case import parse_info_response, ValkeyTimeSeriesClusterTestCase
 from valkeytestframework.util import waiters
 from valkeytestframework.conftest import resource_port_tracker
-from valkeytestframework.valkey_test_case import ReplicationTestCase
+from typing import List
 
 logger = logging.getLogger(__name__)
 
 REPLICATION_TIMEOUT = 3
 
-class TestTimeSeriesReplication(ReplicationTestCase):
+class TestTimeSeriesReplication(ValkeyTimeSeriesClusterTestCase):
     """Test replication functionality"""
+    
+    # Override default cluster size to 1 primary
+    CLUSTER_SIZE = 1
+    # Override default replica count for replication testing
+    REPLICAS_COUNT = 1
 
-    @pytest.fixture(autouse=True)
-    def setup_test(self, setup):
-        # This is just to avoid a delay on startup for setting up replication.
-        additional_startup_args = {
-            "repl-diskless-sync": "yes",
-            "repl-diskless-sync-delay": "0",
-            'loadmodule': os.getenv('MODULE_PATH')
-        }
-        version = os.environ.get('SERVER_VERSION', 'unstable')
-        server_path = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "tests", "build", "binaries", version, "valkey-server")
-        self.server, self.client = self.create_server(
-            testdir=self.testdir, server_path=server_path, args=additional_startup_args
-        )
-        self.setup_replication(num_replicas=1)
+    def get_config_file_lines(self, test_dir, port) -> List[str]:
+        return [
+            "enable-debug-command yes",
+            f"dir {test_dir}",
+            "repl-diskless-sync yes",
+            "repl-diskless-sync-delay 0",
+            "cluster-enabled yes",
+            f"cluster-config-file nodes_{port}.conf",
+            f"loadmodule {os.getenv('MODULE_PATH')}",
+        ]
+
+    # Add client property for convenience
+    @property
+    def client(self):
+        """Get the primary client"""
+        return self.client_for_primary(0)
+
+    @property
+    def replicas(self):
+        """Get replica nodes for backward compatibility"""
+        return self.get_replication_group(0).replicas
 
     # Wait for replication to propagate
     def wait_for_key_exists(self, key = None):
-        replica = self.replicas[0]
-        self.waitForReplicaToSyncUp(replica)
+        rg = self.get_replication_group(0)
+        rg.wait_for_replica_offset_to_sync_up(0)
+        client = rg.get_replica_connection(0)
+
         if key is not None:
-            client = replica.get_new_client()
             # wait for any key to exist
-            # waiters.wait_for_true(
-            #     lambda: client.execute_command(f"EXISTS {key}") == 1,
-            #     timeout=REPLICATION_TIMEOUT,
-            # )
+            waiters.wait_for_true(
+                lambda: client.execute_command(f"EXISTS {key}") == 1,
+                timeout=REPLICATION_TIMEOUT,
+            )
+    
+    def wait_for_replication(self):
+        rg = self.get_replication_group(0)
+        rg.wait_for_replica_offset_to_sync_up(0)
 
     def test_basic_replication(self):
         """Test that basic time series operations replicate to replicas"""
         # Create a time series on primary
         key = "ts:basic_repl"
-        assert self.client.execute_command(f"TS.CREATE {key}") == b"OK"
+        client = self.client
+        
+        assert client.execute_command(f"TS.CREATE {key}") == b"OK"
 
         # Add samples to primary
         timestamps = [1000, 2000, 3000]
         values = [10.5, 20.3, 30.7]
 
         for ts, val in zip(timestamps, values):
-            self.client.execute_command(f"TS.ADD {key} {ts} {val}")
+            client.execute_command(f"TS.ADD {key} {ts} {val}")
 
         # Wait for replication to propagate
         self.wait_for_key_exists(key)
 
-        # Verify data on replicas
-        for replica in self.replicas:
-            result = replica.client.execute_command(f"TS.RANGE {key} - +")
-            assert len(result) == 3
-            for i, (ts, val) in enumerate(result):
-                assert ts == timestamps[i]
-                assert float(val) == values[i]
+        # Verify data on replica
+        rg = self.get_replication_group(0)
+        replica_client = rg.get_replica_connection(0)
+        
+        result = replica_client.execute_command(f"TS.RANGE {key} - +")
+        assert len(result) == 3
+        for i, (ts, val) in enumerate(result):
+            assert ts == timestamps[i]
+            assert float(val) == values[i]
 
     def test_replication_ts_create_with_labels(self):
         """Test that time series with labels replicate correctly"""
@@ -176,7 +197,15 @@ class TestTimeSeriesReplication(ReplicationTestCase):
         assert self.client.execute_command(f"DEL {key}") == 1
 
         # Wait for deletion to replicate
-        self.wait_for_key_exists(key)
+        rg = self.get_replication_group(0)
+        rg.wait_for_replica_offset_to_sync_up(0)
+        
+        # Verify key doesn't exist on replicas
+        replica_client = rg.get_replica_connection(0)
+        waiters.wait_for_true(
+            lambda: replica_client.execute_command(f"EXISTS {key}") == 0,
+            timeout=REPLICATION_TIMEOUT,
+        )
 
     def test_replication_ts_del_range(self):
         """Test that TS.DEL replicates correctly"""
@@ -197,16 +226,16 @@ class TestTimeSeriesReplication(ReplicationTestCase):
         assert deleted == 2
 
         # Wait for the replicas to sync
-        for replica in self.replicas:
-            self.waitForReplicaToSyncUp(replica)
+        rg = self.get_replication_group(0)
+        rg.wait_for_replica_offset_to_sync_up(0)
 
         # Verify deletion on replicas
-        for replica in self.replicas:
-            result = replica.client.execute_command(f"TS.RANGE {key} - +")
-            assert len(result) == 3
-            assert result[0][0] == 1000
-            assert result[1][0] == 4000
-            assert result[2][0] == 5000
+        replica_client = rg.get_replica_connection(0)
+        result = replica_client.execute_command(f"TS.RANGE {key} - +")
+        assert len(result) == 3
+        assert result[0][0] == 1000
+        assert result[1][0] == 4000
+        assert result[2][0] == 5000
 
     def test_replication_ts_alter(self):
         """Test that TS.ALTER replicates correctly"""
@@ -225,21 +254,21 @@ class TestTimeSeriesReplication(ReplicationTestCase):
         ) == b"OK"
 
         # Wait for the replicas to sync
-        for replica in self.replicas:
-            self.waitForReplicaToSyncUp(replica)
+        rg = self.get_replication_group(0)
+        rg.wait_for_replica_offset_to_sync_up(0)
 
         # Verify changes on replicas
-        for replica in self.replicas:
-            info = replica.client.execute_command(f"TS.INFO {key}")
-            info_dict = parse_info_response(info)
-            assert info_dict["retentionTime"] == new_retention
-            assert info_dict["labels"]["sensor"] == "temp"
-            assert info_dict["labels"]["location"] == "room2"
+        replica_client = rg.get_replica_connection(0)
+        info = replica_client.execute_command(f"TS.INFO {key}")
+        info_dict = parse_info_response(info)
+        assert info_dict["retentionTime"] == new_retention
+        assert info_dict["labels"]["sensor"] == "temp"
+        assert info_dict["labels"]["location"] == "room2"
 
     def test_replication_multiple_keys(self):
         """Test replication with multiple time series keys"""
         num_keys = 10
-        keys = [f"ts:multi_{i}" for i in range(num_keys)]
+        keys = [f"ts:{{node:{i % 2}}}:multi_{i}" for i in range(num_keys)]
 
         # Create multiple time series on primary
         for key in keys:

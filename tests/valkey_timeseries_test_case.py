@@ -3,6 +3,8 @@ import re
 import shutil
 import pytest
 from valkey.commands.timeseries.utils import list_to_dict
+
+from valkeytestframework.util.waiters import wait_for_equal, TEST_MAX_WAIT_TIME_SECONDS
 from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkeytestframework.valkey_test_case import ReplicationTestCase
 from valkeytestframework.valkey_test_case import ValkeyServerHandle
@@ -291,10 +293,19 @@ class ReplicationGroup:
     def get_num_keys(self, db=0):
         client = self.get_primary_connection()
         return client.num_keys(db)
+
     def verify_server_key_count(self, expected_num_keys):
         actual_num_keys = self.get_num_keys()
         assert_num_key_error_msg = f"Actual key number {actual_num_keys} is different from expected key number {expected_num_keys}"
         assert actual_num_keys == expected_num_keys, assert_num_key_error_msg
+
+    def get_primary_repl_offset(self):
+        primary = self.get_primary_connection()
+        return primary.info()["master_repl_offset"]
+
+    def get_replica_repl_offset(self, index):
+        replica_client = self.get_replica_connection(index)
+        return replica_client.info()["slave_repl_offset"]
 
     def get_primary_ts_info(self, key, debug = False):
         """ Get the info of the given key.
@@ -305,6 +316,13 @@ class ReplicationGroup:
         info_dict = parse_info_response(info)
 
         return info_dict
+
+    def wait_for_replica_offset_to_sync_up(self, index):
+        wait_for_equal(
+            lambda: self.get_primary_repl_offset(),
+            self.get_replica_repl_offset(index),
+            timeout=TEST_MAX_WAIT_TIME_SECONDS,
+        )
 
     @staticmethod
     def cleanup(rg):
@@ -422,6 +440,17 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
                 stats_dict[key.strip()] = value.strip()
         return ValkeyInfo(stats_dict)
 
+    def validate_copied_series_correctness(self, client, original_name):
+        """ Validate correctness on a copy of the provided timeseries.
+        """
+        copy_filter_name = f"{original_name}_copy"
+        assert client.execute_command(f'COPY {original_name} {copy_filter_name}') == 1
+        assert client.execute_command('DBSIZE') == 2
+        original_info_dict = self.ts_info(original_name)
+        copy_info_dict = self.ts_info(copy_filter_name)
+
+        assert copy_info_dict == original_info_dict, f"Expected {copy_info_dict} to be equal to {original_info_dict}"
+
 
 
 class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
@@ -431,7 +460,7 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
         args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
         server_path = VALKEY_SERVER_PATH
 
-        self.server, self.client = self.create_server(testdir = self.testdir,  server_path=server_path, args=args)
+        self.server, self.client = self.create_server(testdir = self.testdir, server_path=server_path, args=args)
         logging.info("startup args are: %s", args)
 
     def validate_rules(self, key, expected_rules: List[CompactionRule], check_dest: bool = True):
@@ -481,19 +510,8 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
                 exists = self.client.execute_command("EXISTS", dest_key)
                 assert exists == True, f"Expected destination key '{dest_key}' to exist, but it does not."
 
-    def validate_copied_series_correctness(self, client, original_name):
-        """ Validate correctness on a copy of the provided timeseries.
-        """
-        copy_filter_name = f"{original_name}_copy"
-        assert client.execute_command(f'COPY {original_name} {copy_filter_name}') == 1
-        assert client.execute_command('DBSIZE') == 2
-        original_info_dict = self.ts_info(original_name)
-        copy_info_dict = self.ts_info(copy_filter_name)
 
-        assert copy_info_dict == original_info_dict, f"Expected {copy_info_dict} to be equal to {original_info_dict}"
-
-
-class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseBase):
+class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
     # Default cluster size
     CLUSTER_SIZE = 3
     # Default value for replication
@@ -547,7 +565,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseBase):
         and the log file path"""
         server_path = VALKEY_SERVER_PATH
         testdir = f"{LOGS_DIR}/{test_name}"
-    
+
         os.makedirs(testdir, exist_ok=True)
         curdir = os.getcwd()
         os.chdir(testdir)
@@ -572,13 +590,16 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseBase):
         os.chdir(curdir)
         self.wait_for_logfile(logfile, "Ready to accept connections")
         client.ping()
-        return server, client, logfile            
+        return server, client, logfile
 
     @pytest.fixture(autouse=True)
     def setup_test(self, request):
         replica_count = self.REPLICAS_COUNT
-        if hasattr(request, "param") and request.param["replica_count"]:
-            replica_count = request.param["replica_count"]
+        # Extract parameters from pytest's parametrize decorator
+        if hasattr(request.node, 'callspec') and 'setup_test' in request.node.callspec.params:
+            param_value = request.node.callspec.params['setup_test']
+            if isinstance(param_value, dict) and 'replica_count' in param_value:
+                replica_count = param_value['replica_count']
 
         self.replication_groups: list[ReplicationGroup] = list()
         ports = []
@@ -700,7 +721,10 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseBase):
 
     def get_replication_group(self, index) -> ReplicationGroup:
         return self.replication_groups[index]
-    
+
+    def get_primary_connection(self) -> Valkey:
+        return self.client
+
     def start_new_server(self, is_primary=True) -> Node:
         """Create a new Valkey server instance"""
         server, client, logfile = self.start_server(
