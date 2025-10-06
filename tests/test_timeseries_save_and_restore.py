@@ -1,9 +1,7 @@
-from valkey_test_case import ValkeyServerHandle
 from valkeytestframework.conftest import resource_port_tracker
 from valkeytestframework.util.waiters import wait_for_equal
 
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase, parse_info_response
-
 
 def get_info(client, key):
     """Helper to get the info of a time series."""
