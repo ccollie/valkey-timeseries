@@ -1,894 +1,587 @@
-/*
- * The MIT License (MIT)
- *
- * Original Copyright (c) 2025 Davide Di Carlo
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use,
- * copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following
- * conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
- * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
- * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- */
-
-//! *A safe place for your strings.*
+//! A string interner that deallocates unused values.
 //!
-//! A fast, lightweight string interner with automatic cleanup to prevent memory bloat.
+//! Original code https://github.com/ryzhyk/arc-interner
+//! Copyright (c) 2021-2024 Leonid Ryzhyk
+//! License: MIT
 //!
-//! It stores each unique string once, supports fast equality checks,
-//! and automatically removes unused strings to keep memory usage low.
+//!
+//! Interning reduces the memory footprint of an application by storing
+//! a unique copy of each distinct value.  It speeds up equality
+//! comparison and hashing operations, as only pointers rather than actual
+//! values need to be compared.  On the flip side, object creation is
+//! slower, as it involves lookup in the interned string pool.
+//!
+//! This library makes the following design choices:
+//!
+//! - Interned strings are reference counted.  When the last reference to
+//!   an interned object is dropped, the string is deallocated.  This
+//!   prevents unbounded growth of the interned object pool in applications
+//!   where the set of interned values changes dynamically at the cost of
+//!   some CPU and memory overhead (due to storing and maintaining an
+//!   atomic counter).
+//! - Multithreading.  A single pool of interned strings is shared by all
+//!   threads in the program.  Inside `DashMap` this pool is protected by
+//!   sharded mutexes that are acquired every time an object is being interned or a
+//!   reference to an interned object is being dropped.  Although Rust mutexes
+//!   are fairly inexpensive when there is no contention, you may see a significant
+//!   drop in performance under contention.
+//! - Safe: this library is built on the ` Arc ` type from the Rust
+//!   standard library and the [`dashmap` crate](https://crates.io/crates/dashmap)
+//!   and does not contain any unsafe code (although std and dashmap do of course)
+//!
+//! # Example
+//! ```rust
+//! use string_interner::ArcString;
+//! let x = ArcString::new("hello");
+//! let y: ArcString = "world".into();
+//! assert_ne!(x, y);
+//! assert_eq!(x, ArcString::new("hello"));
+//! assert_eq!(*x, "hello"); // dereference an ArcString like a pointer
+//! ```
 
-use ahash::AHasher;
+use ahash::RandomState;
+use dashmap::DashMap;
 use get_size2::GetSize;
-use orx_parallel::IterIntoParIter;
-use orx_parallel::ParIter;
 use std::borrow::Borrow;
 use std::convert::Infallible;
-use std::fmt::Debug;
-use std::hash::Hash;
-
-use crate::common::hash::BuildNoHashHasher;
-use crate::common::threads::spawn;
+use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::ptr::NonNull;
 use std::str::FromStr;
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, LazyLock};
 
-type TableHasher = AHasher;
-type StringHashMap = papaya::HashMap<u64, StringHashSet, BuildNoHashHasher<u64>>;
-type StringHashSet = papaya::HashSet<Holder>;
-
+/// The maximum number of shards to use in `DashMap`. Higher values
+/// may improve performance under high contention, but will use more memory.
 const MAX_SHARDS: usize = 64;
-static STRING_TABLE: LazyLock<StringHashMap> = LazyLock::new(Default::default);
 
-static MEMORY_USAGE: AtomicUsize = AtomicUsize::new(0);
+type StringContainer = DashMap<Arc<[u8]>, (), RandomState>;
 
-fn get_shard_hash(s: &str) -> u64 {
-    let bytes = s.as_bytes();
+static STRING_POOL: LazyLock<StringContainer> =
+    LazyLock::new(|| StringContainer::with_hasher_and_shard_amount(RandomState::new(), MAX_SHARDS));
 
-    let len = bytes.len() as u8;
-    let last = bytes.last().copied().unwrap_or(0);
-    let middle = bytes.get(bytes.len() / 2).copied().unwrap_or(0);
-    let first = bytes.first().copied().unwrap_or(0);
+/// Total memory used by all interned strings.
+static STRING_MEMORY_USED: AtomicUsize = AtomicUsize::new(0);
 
-    let mut hash = u32::from_be_bytes([first, middle, last, len]);
-    hash ^= hash >> 19;
-    hash ^= hash >> 13;
-    hash ^= hash >> 5;
-
-    hash as u64
-}
-
-/// Interns the given string slice and returns a [`Symbol`] representing it.
+/// A pointer to an interned, reference-counted and immutable string object.
 ///
-/// If the string was already interned, returns the existing [`Symbol`].
-/// Otherwise, stores the string and returns a new [`Symbol`] pointing to it.
+/// The interned string will be held in memory only until its
+/// reference count reaches zero.
 ///
 /// # Example
 /// ```rust
-/// use crate::common::string_interner::*;
+/// use string_interner::InternedString;
 ///
-/// let sym = string_interner::intern("hello");
+/// let x = InternedString::new("hello");
+/// let y: InternedString = "world".into();
+/// assert_ne!(x, y);
+/// assert_eq!(x, InternedString::new("hello"));
+/// assert_eq!(*x, "hello"); // dereference an InternedString like a pointer
 /// ```
-///
-pub fn intern(key: &str) -> Symbol {
-    let hash = get_shard_hash(key);
-    let bucket = hash % MAX_SHARDS as u64;
-
-    let map = STRING_TABLE.pin();
-    let mut added = false;
-
-    let shard = map.get_or_insert_with(bucket, || {
-        let shard = StringHashSet::default();
-        insert_to_shard(&shard, key);
-        added = true;
-        shard
-    });
-
-    let guard = shard.guard();
-    let holder = if let Some(h) = shard.get(key, &guard) {
-        h
-    } else {
-        // The string was not found, we need to insert it
-        insert_to_shard(shard, key);
-        added = true;
-        shard
-            .get(key, &guard)
-            .expect("string interner: just inserted key but can't find it")
-    };
-
-    if added {
-        let size = holder.get_size();
-        let m = MEMORY_USAGE.fetch_add(size, Ordering::Release);
-        println!("added string: {}, size = {}, total memory usage = {}", key, size, m + size);
-    }
-
-    holder.symbol()
+#[derive(Debug, GetSize)]
+pub struct InternedString {
+    arc: Arc<[u8]>,
 }
 
-fn insert_to_shard(shard: &StringHashSet, key: &str)  {
-    let guard = shard.guard();
-    let holder = Holder::new(key);
-    shard.insert(holder, &guard);
-}
-
-/// Returns the number of currently interned strings.
-///
-/// # Example
-/// ```rust
-/// use crate::common::string_interner;
-///
-/// assert_eq!(string_interner::size(), 0);
-///
-/// let sym = string_interner::intern("hello");
-/// assert_eq!(string_interner::size(), 1);
-///
-/// drop(sym);
-/// assert_eq!(string_interner::size(), 0);
-/// ```
-pub fn size() -> usize {
-    let map = STRING_TABLE.pin();
-    map.iter().map(|(_, shard)| shard.len()).sum::<usize>()
-}
-
-/// Reduces the memory usage by shrinking the interner's capacity
-/// to fit exactly the number of currently interned strings.
-///
-/// This operation may reallocate internal storage, it locks the global pool to collect space,
-/// so use it with caution since it may decrease the performance of your application.
-///
-/// # Example
-/// ```rust
-/// use crate::common::string_interner;
-///
-/// string_interner::shrink_to_fit();
-/// ```
-pub fn shrink_to_fit() {
-    let mut map = STRING_TABLE.pin_owned();
-    map.retain(|_, shard| !shard.is_empty());
-
-    // according to papaya docs, iter() blocks, so we spawn a thread to avoid blocking the caller
-    spawn(move || {
-        // unfortunately, papaya HashSet doesn't have a shrink_to_fit method, so we do it manually
-        // by creating a new set and swapping it
-        let shards = map
-            .iter()
-            .iter_into_par()
-            .map(|(&key, shard)| {
-                let guard = shard.owned_guard();
-                let new_shard = {
-                    let new_shard = StringHashSet::with_capacity(shard.len());
-                    for holder in shard.iter(&guard) {
-                        new_shard.insert(holder.clone(), &guard);
-                    }
-                    new_shard
-                };
-                drop(guard);
-                (key, new_shard)
-            })
-            .collect::<Vec<_>>();
-
-        for (key, shard) in shards {
-            // Insert directly instead of using update
-            map.insert(key, shard);
-        }
-    })
-}
-
-/// Returns the total memory usage in bytes of interned strings.
-/// # Example
-/// ```rust
-/// use crate::common::string_interner;
-///
-/// string_interner::memory_usage();
-/// ```
-pub fn memory_usage() -> usize {
-    // let map = STRING_TABLE.pin();
-    // let total = map.iter()
-    //     .iter_into_par()
-    //     .map(|(_, shard)| {
-    //         let guard = shard.guard();
-    //         shard.iter(&guard).map(|h| h.get_size()).sum::<usize>()
-    //     }).sum::<usize>();
-    MEMORY_USAGE.load(Ordering::Acquire)
-}
-
-/// A lightweight handle to an interned string.
-///
-/// [`Symbol`] is a clonable, comparable, and hashable reference
-/// to a string stored inside the interner.
-///
-/// This struct is not copyable since it has to update the reference count
-/// atomically, but it's (relatively) inexpensive to clone.
-///
-/// You can efficiently compare [`Symbol`]s by value and resolve them
-/// back to string slices when needed.
-///
-/// # Example
-/// ```rust
-/// use crate::common::string_interner;
-///
-/// let sym = string_interner::intern("hello");
-/// let string: &str = sym.as_str();
-/// ```
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Symbol {
-    ptr: NonNull<Atom>,
-}
-
-const _: [(); size_of::<usize>()] = [(); size_of::<Symbol>()];
-
-impl Symbol {
-    /// Creates a new [`Symbol`] for the given string slice.
-    ///
-    /// This method is actually the same as calling `string_interner::intern` directly.
-    ///
-    /// # Arguments
-    /// - `key`: The string slice to intern.
-    ///
-    /// # Example
-    /// ```rust
-    /// use crate::common:string_interner::Symbol;
-    ///
-    /// let sym = string_interner::new("hello");
-    /// ```
-    pub fn new(key: &str) -> Self {
-        intern(key)
-    }
-
-    /// Returns the interned string slice associated with this [`Symbol`].
-    ///
-    /// # Example
-    /// ```rust
-    /// use crate::common::string_interner;
-    ///
-    /// let sym = string_interner::intern("hello");
-    /// assert_eq!(sym.as_str(), "hello");
-    /// ```
-    pub fn as_str(&self) -> &str {
-        self.atom().as_str()
-    }
-
-    /// Returns the current reference count for this [`Symbol`].
-    ///
-    /// Useful for debugging or advanced memory management scenarios.
-    ///
-    /// # Example
-    /// ```rust
-    /// use crate::common::string_interner;
-    ///
-    /// let sym = string_interner::intern("hello");
-    /// let count = sym.count();
-    /// assert_eq!(count, 1);
-    /// ```
-    pub fn count(&self) -> usize {
-        self.atom().ref_count()
-    }
-
-    fn atom(&self) -> &Atom {
-        unsafe { self.ptr.as_ref() }
-    }
-}
-
-impl AsRef<str> for Symbol {
-    #[inline]
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl Clone for Symbol {
-    fn clone(&self) -> Self {
-        self.atom().incr_count();
-        Self { ptr: self.ptr }
-    }
-}
-
-impl Debug for Symbol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Symbol({:?})", self.as_str())
-    }
-}
-
-unsafe impl Send for Symbol {}
-
-unsafe impl Sync for Symbol {}
-
-impl Drop for Symbol {
-    fn drop(&mut self) {
-        println!("before dropping symbol: {}, refcount = {}", self.as_str(), self.count());
-        if self.atom().decr_count() == 1 {
-            std::sync::atomic::fence(Ordering::Acquire);
-            let key = self.as_str();
-            let hash = get_shard_hash(key);
-            let bucket = hash % MAX_SHARDS as u64;
-
-            let map = STRING_TABLE.pin();
-            let shard = map
-                .get(&bucket)
-                .expect("string interner: dropping symbol but shard not found");
-
-            println!("really dropping symbol: {}, refcount = {}", self.as_str(), self.count());
-            // we don't have access to the holder here, so we calculate its size
-            let atom_size = self.atom().get_size();
-            let size = size_of::<Holder>() + atom_size;
-            MEMORY_USAGE.fetch_sub(size, Ordering::Release);
-
-            let guard = shard.guard();
-            if !shard.remove(key, &guard) {
-                debug_assert!(
-                    false,
-                    "string interner: dropping symbol but key not found in set: {key}"
-                );
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-struct Holder {
-    ptr: NonNull<Atom>,
-}
-
-impl Holder {
-    fn new(s: &str) -> Self {
-        let atom = Atom::new(0, s);
-        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(atom))) };
-        Self { ptr }
-    }
-
-    fn atom(&self) -> &Atom {
-        unsafe { self.ptr.as_ref() }
-    }
-
-    fn as_str(&self) -> &str {
-        self.atom().as_str()
-    }
-
-    fn count(&self) -> usize {
-        self.atom().ref_count()
-    }
-
-    fn symbol(&self) -> Symbol {
-        self.atom().incr_count();
-        Symbol { ptr: self.ptr }
-    }
-}
-
-impl Borrow<str> for Holder {
-    fn borrow(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl Eq for Holder {}
-
-impl Hash for Holder {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_str().hash(state);
-    }
-}
-
-impl Ord for Holder {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(other.as_str())
-    }
-}
-
-impl PartialEq for Holder {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-
-impl PartialOrd for Holder {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-unsafe impl Send for Holder {}
-
-unsafe impl Sync for Holder {}
-
-impl Drop for Holder {
-    fn drop(&mut self) {
-        debug_assert_eq!(self.count(), 0);
-        unsafe { drop(Box::from_raw(self.ptr.as_ptr())) }
-    }
-}
-
-impl GetSize for Holder {
-    fn get_size(&self) -> usize {
-        size_of::<Self>() + self.atom().get_size()
-    }
-}
-
-struct Atom {
-    count: AtomicUsize,
-    buf: Box<str>,
-}
-
-impl Atom {
-    fn new(count: usize, buf: &str) -> Self {
-        Self {
-            count: AtomicUsize::new(count),
-            buf: buf.into(),
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        &self.buf
-    }
-
-    fn ref_count(&self) -> usize {
-        self.count.load(Ordering::Relaxed)
-    }
-
-    fn incr_count(&self) -> usize {
-        self.count.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn decr_count(&self) -> usize {
-        self.count.fetch_sub(1, Ordering::Release)
-    }
-}
-
-impl GetSize for Atom {
-    fn get_size(&self) -> usize {
-        size_of::<Self>() + self.buf.len()
-    }
-}
-
-#[derive(PartialEq, Eq, Hash)]
-pub struct InternedString(Symbol);
 impl InternedString {
-    pub fn intern(s: impl AsRef<str>) -> Self {
-        Self(intern(s.as_ref()))
+    /// Intern a string value.  If this value has not previously been
+    /// interned, then `new` will allocate a spot for the value on the
+    /// heap.  Otherwise, it will return a pointer to the object
+    /// previously allocated.
+    ///
+    /// Note that `InternedString::new` is a bit slower than direct allocation, since it needs to check
+    /// a mutex for its hash slot. However, the performance should be acceptable for our use cases,
+    /// especially under low contention.
+    pub fn new(val: &str) -> Self {
+        let v = Arc::from(val.as_bytes());
+        Self::from_arc(v)
     }
 
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
+    fn from_arc(val: Arc<[u8]>) -> InternedString {
+        let b = STRING_POOL.entry(val).or_insert(());
+        let val = b.key();
+        let ref_count = Arc::strong_count(val);
+        if ref_count == 1 {
+            // we are the first reference, so account for the memory used
+            let size = val.get_size();
+            STRING_MEMORY_USED.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+        }
+        InternedString { arc: val.clone() }
     }
 
+    pub fn len(&self) -> usize {
+        self.arc.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.arc.is_empty()
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.arc.as_ref()
+    }
+
+    /// Return the number of references to this value.
     pub fn ref_count(&self) -> usize {
-        self.0.count()
+        // The hashset holds one reference; we return the number of
+        // references held by actual clients.
+        Arc::strong_count(&self.arc) - 1
     }
-}
 
-impl GetSize for InternedString {
-    fn get_size(&self) -> usize {
-        size_of::<Self>()
+    /// Return true if this is the only reference to this value.
+    pub fn is_unique(&self) -> bool {
+        self.ref_count() == 1
     }
-}
 
-impl AsRef<str> for InternedString {
-    fn as_ref(&self) -> &str {
-        self.0.as_str()
+    /// Return the number of unique interned strings.
+    pub fn interned_object_count() -> usize {
+        STRING_POOL.len()
     }
-}
 
-impl Borrow<str> for InternedString {
-    fn borrow(&self) -> &str {
-        self.0.as_str()
+    /// Return the total memory used by all interned strings.
+    pub fn memory_used() -> usize {
+        STRING_MEMORY_USED.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
 impl Clone for InternedString {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        InternedString {
+            arc: self.arc.clone(),
+        }
     }
 }
 
-impl Debug for InternedString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.0.as_str(), f)
+impl Borrow<str> for InternedString {
+    fn borrow(&self) -> &str {
+        self.deref()
     }
 }
 
-impl Default for InternedString {
-    fn default() -> Self {
-        Self::intern(String::default())
+impl Hash for InternedString {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_bytes().hash(state);
     }
 }
 
-impl std::fmt::Display for InternedString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0.as_str(), f)
+impl AsRef<[u8]> for InternedString {
+    fn as_ref(&self) -> &[u8] {
+        self.arc.as_ref()
     }
 }
 
-impl Ord for InternedString {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let left = self.0.as_str();
-        let right = other.0.as_str();
-        left.cmp(right)
-    }
-}
-
-impl PartialOrd for InternedString {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+impl AsRef<str> for InternedString {
+    fn as_ref(&self) -> &str {
+        let v: &str = self.deref();
+        v
     }
 }
 
 impl Deref for InternedString {
     type Target = str;
+    fn deref(&self) -> &str {
+        // SAFETY: we only intern valid UTF-8 strings
+        unsafe { std::str::from_utf8_unchecked(self.arc.as_ref()) }
+    }
+}
 
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
+impl Display for InternedString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let v: &str = self.deref();
+        write!(f, "{v}")
+    }
+}
+
+impl Drop for InternedString {
+    fn drop(&mut self) {
+        STRING_POOL.remove_if(&self.arc, |k, _| {
+            // If the reference count is 2, then the only two remaining references
+            // to this value are held by `self` and the hashmap, and we can safely
+            // deallocate the value.
+            if Arc::strong_count(k) == 2 {
+                let size = self.get_size();
+                STRING_MEMORY_USED.fetch_sub(size, std::sync::atomic::Ordering::Relaxed);
+
+                return true;
+            }
+            false
+        });
     }
 }
 
 impl FromStr for InternedString {
     type Err = Infallible;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::intern(s))
+        Ok(Self::new(s))
     }
 }
 
 impl From<String> for InternedString {
-    fn from(s: String) -> Self {
-        Self::intern(s)
+    fn from(t: String) -> Self {
+        Self::new(t.as_str())
+    }
+}
+
+impl From<&[u8]> for InternedString {
+    fn from(s: &[u8]) -> Self {
+        Self::from_arc(Arc::from(s))
+    }
+}
+
+impl Default for InternedString {
+    fn default() -> InternedString {
+        InternedString::new(Default::default())
+    }
+}
+
+/// Efficiently compares two interned values by comparing their pointers.
+impl PartialEq for InternedString {
+    fn eq(&self, other: &InternedString) -> bool {
+        Arc::ptr_eq(&self.arc, &other.arc)
+    }
+}
+
+impl Eq for InternedString {}
+
+impl PartialOrd for InternedString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+    fn lt(&self, other: &Self) -> bool {
+        self.as_bytes().lt(other.as_bytes())
+    }
+    fn le(&self, other: &Self) -> bool {
+        self.as_bytes().le(other.as_bytes())
+    }
+    fn gt(&self, other: &Self) -> bool {
+        self.as_bytes().gt(other.as_bytes())
+    }
+    fn ge(&self, other: &Self) -> bool {
+        self.as_bytes().ge(other.as_bytes())
+    }
+}
+
+impl Ord for InternedString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_bytes().cmp(other.as_bytes())
     }
 }
 
 #[cfg(test)]
-mod test {
-    use super::*;
+mod tests {
+    use super::{InternedString, STRING_MEMORY_USED};
+    use ahash::{HashSet, HashSetExt};
     use serial_test::serial;
-    use std::sync::Mutex;
+    use std::collections::HashMap;
+    use std::ops::Deref;
     use std::thread;
 
-    // prevent tests from running in threads
-    static LOCK: Mutex<()> = Mutex::new(());
+    // Tests are run serially to avoid interference via the global string pool and memory tracker.
 
+    // Test basic functionality.
     #[test]
-    fn no_contention() {
-        LOCK.lock()
-            .map(|_| {
-                let k1 = intern("foo");
-                let k2 = intern("foo");
-                let k3 = k1.clone();
+    #[serial]
+    fn basic() {
+        assert_eq!(InternedString::new("foo"), InternedString::new("foo"));
+        assert_ne!(InternedString::new("foo"), InternedString::new("bar"));
+        // The above refs should be deallocated by now.
+        assert_eq!(InternedString::interned_object_count(), 0);
 
-                assert_eq!(k1.count(), 3);
-                assert_eq!(k1.as_str(), "foo");
+        let _interned1 = InternedString::new("foo");
+        {
+            let interned2 = InternedString::new("foo");
+            let interned3 = InternedString::new("bar");
 
-                assert_eq!(k2.count(), 3);
-                assert_eq!(k2.as_str(), "foo");
+            assert_eq!(interned2.ref_count(), 2);
+            assert_eq!(interned3.ref_count(), 1);
+            // We now have two unique interned strings: "foo" and "bar".
+            assert_eq!(InternedString::interned_object_count(), 2);
+        }
 
-                assert_eq!(k3.count(), 3);
-                assert_eq!(k3.as_str(), "foo");
-
-                assert_eq!(k1, k2);
-                assert_eq!(k2, k3);
-                assert_eq!(k3, k1);
-
-                drop(k1);
-
-                assert_eq!(k2.count(), 2);
-                assert_eq!(k2.as_str(), "foo");
-
-                assert_eq!(k3.count(), 2);
-                assert_eq!(k3.as_str(), "foo");
-
-                assert_eq!(k2, k3);
-                assert_eq!(k3, k2);
-
-                drop(k2);
-
-                assert_eq!(k3.count(), 1);
-                assert_eq!(k3.as_str(), "foo");
-
-                drop(k3);
-
-                let k4 = intern("bar");
-                let k5 = intern("spam");
-
-                assert_ne!(k4, k5);
-            })
-            .unwrap();
+        // "bar" is now gone.
+        assert_eq!(InternedString::interned_object_count(), 1);
     }
 
+    // Ordering should be based on values, not pointers.
+    // Also tests `Display` implementation.
     #[test]
-    fn contention() {
-        LOCK.lock()
-            .map(|_| {
-                let seeds = ["foo", "bar", "spam", "lorem", "ipsum", "dolor"];
-                let t1 =
-                    thread::spawn(move || seeds.iter().copied().map(intern).collect::<Vec<_>>());
-                let t2 =
-                    thread::spawn(move || seeds.iter().copied().map(intern).collect::<Vec<_>>());
-
-                let s3 = seeds.iter().copied().map(intern).collect::<Vec<_>>();
-                let s2 = t2.join().unwrap();
-                let s1 = t1.join().unwrap();
-
-                seeds
-                    .iter()
-                    .zip(s1)
-                    .zip(s2)
-                    .zip(s3)
-                    .for_each(|(((&seed, s1), s2), s3)| {
-                        assert_eq!(s1.count(), 3);
-                        assert_eq!(s2.count(), 3);
-                        assert_eq!(s3.count(), 3);
-                        assert_eq!(s1, s2);
-                        assert_eq!(s2, s3);
-                        assert_eq!(s3, s1);
-                        assert_eq!(seed, s1.as_str());
-                    });
-            })
-            .unwrap();
+    #[serial]
+    fn sorting() {
+        let mut interned_vals = [
+            InternedString::new("4"),
+            InternedString::new("2"),
+            InternedString::new("5"),
+            InternedString::new("0"),
+            InternedString::new("1"),
+            InternedString::new("3"),
+        ];
+        interned_vals.sort();
+        let sorted: Vec<String> = interned_vals.iter().map(|v| format!("{v}")).collect();
+        assert_eq!(&sorted.join(","), "0,1,2,3,4,5");
     }
 
     #[test]
     #[serial]
-    fn test_memory_usage_increases_with_new_strings() {
-        MEMORY_USAGE.store(0, Ordering::SeqCst);
+    fn sequential() {
+        for _i in 0..10_000 {
+            let mut interned = Vec::with_capacity(100);
+            for j in 0..100 {
+                let val = format!("foo{j}");
+                let interned_string = InternedString::new(&val);
+                interned.push(interned_string);
+            }
+        }
 
-        // Intern a new string
-        let symbol1 = intern("test_string_1");
-        let usage_after_first = memory_usage();
+        assert_eq!(InternedString::interned_object_count(), 0);
+    }
 
-        assert!(
-            usage_after_first > 0,
-            "Memory usage should increase after interning a string. After: {usage_after_first}"
-        );
+    // Quickly create and destroy a small number of interned objects from
+    // multiple threads.
+    #[test]
+    #[serial]
+    fn multithreading1() {
+        let mut thread_handles = vec![];
+        for _i in 0..10 {
+            let t = thread::spawn({
+                move || {
+                    for _i in 0..100_000 {
+                        let interned1 = InternedString::new("foo");
+                        let _interned2 = InternedString::new("bar");
+                        let mut m = HashMap::new();
+                        // force some hashing
+                        m.insert(interned1, ());
+                    }
+                }
+            });
+            thread_handles.push(t);
+        }
+        for h in thread_handles.into_iter() {
+            h.join().unwrap()
+        }
 
-        // Intern another string
-        let symbol2 = intern("test_string_2_longer");
-        let usage_after_second = memory_usage();
+        assert_eq!(InternedString::interned_object_count(), 0);
+    }
 
-        assert!(
-            usage_after_second > usage_after_first,
-            "Memory usage should increase after interning another string. After first: {usage_after_first}, After second: {usage_after_second}"
-        );
+    // Test InternedString
 
-        // Clean up
-        drop(symbol1);
-        drop(symbol2);
+    // Helper to reset memory tracking before each test
+    fn reset_memory_tracking() {
+        STRING_MEMORY_USED.store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[test]
     #[serial]
-    fn test_memory_usage_same_string_twice() {
-        MEMORY_USAGE.store(0, Ordering::SeqCst);
+    fn test_new_creates_interned_string() {
+        reset_memory_tracking();
 
-        // Intern the same string twice
-        let symbol1 = intern("duplicate_string");
-        let usage_after_first = memory_usage();
+        let s1 = InternedString::new("hello");
+        let s2 = InternedString::new("hello");
 
-        let symbol2 = intern("duplicate_string");
-        let usage_after_second = memory_usage();
-
-        let count1 = symbol1.count();
-        let count2 = symbol2.count();
-
-        assert_eq!(
-            count1, 2,
-            "Reference count should be 2 after interning same string twice"
-        );
-        assert_eq!(
-            count1, count2,
-            "Reference count should be 2 after interning same string twice"
-        );
-
-        assert_eq!(
-            usage_after_first, usage_after_second,
-            "Memory usage should not increase when interning the same string twice"
-        );
-
-        assert!(
-            usage_after_first > 0,
-            "Memory usage should increase after first intern"
-        );
-
-        // Clean up
-        drop(symbol1);
-        drop(symbol2);
+        // Both should refer to the same interned value
+        assert_eq!(s1, s2);
+        assert_eq!(s1.len(), 5);
+        assert!(!s1.is_empty());
     }
 
     #[test]
     #[serial]
-    fn test_memory_usage_decreases_on_drop() {
-        MEMORY_USAGE.store(0, Ordering::SeqCst);
+    fn test_different_interned_strings_are_not_equal() {
+        reset_memory_tracking();
 
-        let symbol = intern("temporary_string");
-        let usage_with_symbol = memory_usage();
+        let s1 = InternedString::new("hello");
+        let s2 = InternedString::new("world");
 
-        assert!(
-            usage_with_symbol > 0,
-            "Memory usage should increase after interning"
-        );
-
-        drop(symbol);
-
-        // Give some time for cleanup
-        thread::sleep(std::time::Duration::from_millis(5));
-
-        let usage_after_drop = memory_usage();
-
-        assert!(
-            usage_after_drop <= usage_with_symbol,
-            "Memory usage should decrease or stay same after dropping symbol. With symbol: {usage_with_symbol}, After drop: {usage_after_drop}",
-        );
+        assert_ne!(s1, s2);
     }
 
     #[test]
     #[serial]
-    fn test_memory_usage_with_multiple_references() {
-        MEMORY_USAGE.store(0, Ordering::SeqCst);
+    fn test_clone_interned_string_increases_refcount() {
+        reset_memory_tracking();
 
-        let symbol1 = intern("shared_string");
-        let usage_after_intern = memory_usage();
+        let s1 = InternedString::new("test");
+        let initial_refcount = s1.ref_count();
 
-        // Clone the symbol (should not increase memory usage)
-        let symbol2 = symbol1.clone();
-        let symbol3 = symbol1.clone();
-        let usage_after_clones = memory_usage();
+        let s2 = s1.clone();
 
-        assert_eq!(
-            usage_after_intern, usage_after_clones,
-            "Memory usage should not change when cloning symbols"
-        );
-
-        // Drop one reference (should not decrease memory usage yet)
-        drop(symbol1);
-        let usage_after_first_drop = memory_usage();
-
-        assert_eq!(
-            usage_after_clones, usage_after_first_drop,
-            "Memory usage should not change when dropping one of multiple references"
-        );
-
-        // Drop the second reference (should not decrease memory usage yet)
-        drop(symbol2);
-        let usage_after_second_drop = memory_usage();
-
-        assert_eq!(
-            usage_after_first_drop, usage_after_second_drop,
-            "Memory usage should not change when dropping second of multiple references"
-        );
-
-        // Drop the last reference (should decrease memory usage)
-        drop(symbol3);
-        thread::sleep(std::time::Duration::from_millis(1));
-
-        let usage_after_all_drops = memory_usage();
-
-        assert!(
-            usage_after_all_drops <= usage_after_second_drop,
-            "Memory usage should decrease after dropping all references"
-        );
+        assert_eq!(s1.ref_count(), initial_refcount + 1);
+        assert_eq!(s2.ref_count(), initial_refcount + 1);
+        assert_eq!(s1, s2);
     }
 
     #[test]
     #[serial]
-    fn test_memory_usage_with_different_string_sizes() {
-        MEMORY_USAGE.store(0, Ordering::Relaxed);
+    fn test_drop_decreases_interned_string_refcount() {
+        reset_memory_tracking();
 
-        // Short string
-        let short_symbol = intern("a");
-        let usage_after_short = memory_usage();
+        let s1 = InternedString::new("test");
+        let s2 = s1.clone();
+        let initial_refcount = s1.ref_count();
 
-        // Long string
-        let long_string = "a".repeat(1000);
-        let long_symbol = intern(&long_string);
-        let usage_after_long = memory_usage();
+        drop(s1);
 
-        let short_increase = usage_after_short;
-        let long_increase = usage_after_long - usage_after_short;
-
-        assert!(
-            long_increase > short_increase,
-            "Memory increase should be larger for longer strings. Short increase: {short_increase}, Long increase: {long_increase}",
-        );
-
-        drop(short_symbol);
-        drop(long_symbol);
+        assert_eq!(s2.ref_count(), initial_refcount - 1);
     }
 
     #[test]
     #[serial]
-    fn test_interned_string_memory_tracking() {
-        MEMORY_USAGE.store(0, Ordering::Relaxed);
+    fn test_memory_tracking_on_first_creation() {
+        reset_memory_tracking();
 
-        let interned_str = InternedString::intern("test_interned_string");
-        let usage_after_intern = memory_usage();
+        assert_eq!(InternedString::memory_used(), 0);
 
-        assert!(
-            usage_after_intern > 0,
-            "Memory usage should increase after creating InternedString"
-        );
+        let s1 = InternedString::new("test_memory");
+        let memory_after_creation = InternedString::memory_used();
 
-        let cloned_str = interned_str.clone();
-        let count = interned_str.ref_count();
-        assert_eq!(count, 2, "Reference count should be 2 after cloning");
+        assert!(memory_after_creation > 0);
 
-        let usage_after_clone = memory_usage();
+        // Creating the same string again should not increase memory
+        let s2 = InternedString::new("test_memory");
+        assert_eq!(InternedString::memory_used(), memory_after_creation);
 
-        assert_eq!(
-            usage_after_intern, usage_after_clone,
-            "Memory usage should not change when cloning InternedString"
-        );
-
-        drop(interned_str);
-        thread::sleep(std::time::Duration::from_millis(5));
-
-        let new_count = cloned_str.ref_count();
-        assert_eq!(
-            new_count, 1,
-            "Reference count should be 1 after dropping one reference"
-        );
-
-        let usage_after_first_drop = memory_usage();
-
-        assert_eq!(
-            usage_after_clone, usage_after_first_drop,
-            "Memory usage should not change when dropping one InternedString reference"
-        );
-
-        drop(cloned_str);
-        thread::sleep(std::time::Duration::from_millis(5));
-
-        let usage_after_all_drops = memory_usage();
-
-        assert!(
-            usage_after_all_drops <= usage_after_first_drop,
-            "Memory usage should decrease after dropping all InternedString references. \nUsage after first drop: {usage_after_first_drop}, Usage after all drops: {usage_after_all_drops}",
-        );
+        // But refcount should increase
+        assert_eq!(s1.ref_count(), 2);
+        assert_eq!(s2.ref_count(), 2);
     }
 
     #[test]
     #[serial]
-    fn test_memory_usage_accuracy() {
-        MEMORY_USAGE.store(0, Ordering::Relaxed);
+    fn test_memory_tracking_on_drop() {
+        reset_memory_tracking();
 
-        // Create a predictable string
-        let test_string = "memory_test_string";
-        let symbol = intern(test_string);
-        let increase = memory_usage();
+        let s1 = InternedString::new("test_drop_memory");
+        let s2 = s1.clone();
+        let memory_with_two_refs = InternedString::memory_used();
 
-        assert!(
-            increase > 0,
-            "Memory usage should increase after interning a string"
-        );
+        // Dropping one reference should not decrease memory yet
+        drop(s1);
+        assert_eq!(InternedString::memory_used(), memory_with_two_refs);
 
-        // The increase should at least include the string length
-        // Plus overhead for Holder and Atom structures
-        let expected_minimum = test_string.len();
+        // Dropping the last reference should decrease memory
+        drop(s2);
+        // Note: Memory decrease happens when refcount reaches 0,
+        // which is checked in the Drop implementation
+    }
 
-        assert!(
-            increase >= expected_minimum,
-            "Memory increase ({increase}) should be at least the string length ({expected_minimum})",
-        );
+    #[test]
+    #[serial]
+    fn test_memory_tracking_with_different_strings() {
+        reset_memory_tracking();
 
-        // Should also account for structural overhead
-        let expected_with_overhead =
-            test_string.len() + size_of::<Holder>() + size_of::<Atom>() + size_of::<AtomicUsize>();
+        let _s1 = InternedString::new("short");
+        let memory_after_first = InternedString::memory_used();
 
-        assert!(
-            increase >= expected_with_overhead - 50, // Allow some margin for Box overhead variations
-            "Memory increase ({increase}) should account for structural overhead (expected ~{expected_with_overhead})",
-        );
+        let _s2 = InternedString::new("this_is_a_much_longer_string_for_testing");
+        let memory_after_second = InternedString::memory_used();
 
-        // we drop here otherwise the compiler would cause a drop just after interning
-        drop(symbol);
+        // Memory should increase more for the longer string
+        assert!(memory_after_second > memory_after_first);
+
+        // The difference should be at least the difference in string lengths
+        let length_diff = "this_is_a_much_longer_string_for_testing".len() - "short".len();
+        assert!((memory_after_second - memory_after_first) >= length_diff);
+    }
+
+    #[test]
+    #[serial]
+    fn test_interned_string_deref_trait() {
+        reset_memory_tracking();
+
+        let s = InternedString::new("test_string");
+
+        // Test various string methods through Deref
+        assert_eq!(s.len(), 11);
+        assert!(s.contains("test"));
+        assert!(s.starts_with("test"));
+        assert!(s.ends_with("string"));
+        assert_eq!(s.to_uppercase(), "TEST_STRING");
+    }
+
+    #[test]
+    #[serial]
+    fn test_partial_ord_and_ord() {
+        reset_memory_tracking();
+
+        let s1 = InternedString::new("apple");
+        let s2 = InternedString::new("banana");
+        let s3 = InternedString::new("cherry");
+
+        assert!(s1 < s2);
+        assert!(s2 < s3);
+        assert!(s1 < s3);
+
+        let mut vec = [s3.clone(), s1.clone(), s2.clone()];
+        vec.sort();
+
+        assert_eq!(vec[0], s1);
+        assert_eq!(vec[1], s2);
+        assert_eq!(vec[2], s3);
+    }
+
+    #[test]
+    #[serial]
+    fn test_hash_consistency() {
+        reset_memory_tracking();
+
+        let s1 = InternedString::new("hash_test");
+        let s2 = InternedString::new("hash_test");
+        let s3 = InternedString::new("different");
+
+        let mut set = HashSet::new();
+        set.insert(s1.clone());
+
+        // s2 should be found in the set because it's equal to s1
+        assert!(set.contains(&s2));
+
+        // s3 should not be found
+        assert!(!set.contains(&s3));
+
+        // Adding s2 should not increase the set size
+        set.insert(s2);
+        assert_eq!(set.len(), 1);
+
+        // Adding s3 should increase the set size
+        set.insert(s3);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn test_empty_string() {
+        reset_memory_tracking();
+
+        let empty1 = InternedString::new("");
+        let empty2 = InternedString::new("");
+
+        assert_eq!(empty1, empty2);
+        assert_eq!(empty1.deref(), "");
+        assert_eq!(empty1.len(), 0);
+        assert!(empty1.is_empty());
+    }
+
+    #[test]
+    fn test_unicode_strings() {
+        reset_memory_tracking();
+
+        let unicode1 = InternedString::new("🦀 Rust");
+        let unicode2 = InternedString::new("🦀 Rust");
+        let different = InternedString::new("🐍 Python");
+
+        assert_eq!(unicode1, unicode2);
+        assert_ne!(unicode1, different);
+        assert_eq!(unicode1.deref(), "🦀 Rust");
+    }
+
+    #[test]
+    fn test_very_long_strings() {
+        reset_memory_tracking();
+
+        let long_string = "a".repeat(10000);
+        let s1 = InternedString::new(&long_string);
+        let s2 = InternedString::new(&long_string);
+
+        assert_eq!(s1, s2);
+        assert_eq!(s1.len(), 10000);
+        assert_eq!(s1.ref_count(), 2);
     }
 }

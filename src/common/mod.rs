@@ -5,15 +5,15 @@ pub mod db;
 pub mod encoding;
 pub mod hash;
 pub mod humanize;
-pub mod interner;
+// pub mod interner;
 pub mod pool;
 pub mod rdb;
 pub mod rounding;
+pub mod string_interner;
 pub mod threads;
 pub mod time;
 pub mod timer;
 mod types;
 pub mod unit_vec;
 
-pub use interner::*;
 pub use types::*;
