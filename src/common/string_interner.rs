@@ -31,12 +31,12 @@
 //!
 //! # Example
 //! ```rust
-//! use string_interner::ArcString;
-//! let x = ArcString::new("hello");
-//! let y: ArcString = "world".into();
+//! use string_interner::InternedString;
+//! let x = InternedString::new("hello");
+//! let y: InternedString = "world".into();
 //! assert_ne!(x, y);
-//! assert_eq!(x, ArcString::new("hello"));
-//! assert_eq!(*x, "hello"); // dereference an ArcString like a pointer
+//! assert_eq!(x, InternedString::new("hello"));
+//! assert_eq!(*x, "hello"); // dereference an InternedString like a pointer
 //! ```
 
 use ahash::RandomState;
@@ -80,6 +80,8 @@ static STRING_MEMORY_USED: AtomicUsize = AtomicUsize::new(0);
 /// ```
 #[derive(Debug, GetSize)]
 pub struct InternedString {
+    /// The actual string data. We use `Arc<[u8]>` instead of `Arc<String>` to save
+    /// some memory (no need to store the capacity of the string since we're immutable).
     arc: Arc<[u8]>,
 }
 
@@ -172,8 +174,7 @@ impl AsRef<[u8]> for InternedString {
 
 impl AsRef<str> for InternedString {
     fn as_ref(&self) -> &str {
-        let v: &str = self.deref();
-        v
+        self.deref()
     }
 }
 
