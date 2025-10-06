@@ -10,6 +10,7 @@ use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
+#[derive(Default)]
 pub struct LabelValuesFanoutOperation {
     pub label: String,
     pub options: MatchFilterOptions,

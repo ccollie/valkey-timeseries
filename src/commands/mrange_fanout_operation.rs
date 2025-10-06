@@ -15,6 +15,7 @@ use orx_parallel::{IntoParIter, IterIntoParIter};
 use std::collections::BTreeMap;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
+#[derive(Default)]
 pub struct MultiRangeFanoutOperation {
     options: MRangeOptions,
     series: Vec<MultiRangeResponse>,

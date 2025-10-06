@@ -15,6 +15,7 @@ pub enum DecodeError {
         /// The number of bytes available in the buffer.
         available: usize,
     },
+    InvalidUTF8,
 }
 
 impl fmt::Display for DecodeError {
@@ -28,6 +29,7 @@ impl fmt::Display for DecodeError {
                 f,
                 "not enough bytes to decode value: {available} available, but {requested} requested",
             ),
+            DecodeError::InvalidUTF8 => write!(f, "invalid UTF-8 sequence"),
         }
     }
 }
@@ -93,6 +95,14 @@ pub(crate) fn try_read_byte_slice<'a>(buf: &mut &'a [u8]) -> DecodeResult<&'a [u
     let slice = &buf[..len];
     *buf = &buf[len..];
     Ok(slice)
+}
+
+pub(crate) fn try_read_string(buf: &mut &[u8]) -> DecodeResult<String> {
+    let slice = try_read_byte_slice(buf)?;
+    match std::str::from_utf8(slice) {
+        Ok(s) => Ok(s.to_string()),
+        Err(_) => Err(DecodeError::Overflow), // Invalid UTF-8
+    }
 }
 
 /// Reads an unsigned varint from the buffer

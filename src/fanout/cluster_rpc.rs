@@ -1,3 +1,4 @@
+use crate::fanout::registry::get_fanout_request_handler;
 use super::cluster_message::{RequestMessage, serialize_request_message};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::fanout_targets::FanoutTarget;
@@ -23,12 +24,9 @@ pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) type ResponseCallback =
     Arc<dyn Fn(Result<&[u8], FanoutError>, FanoutTarget) + Send + Sync>;
-pub(super) type RequestHandlerCallback =
-    Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
 
 struct InFlightRequest {
     id: u64,
-    request_handler: RequestHandlerCallback,
     response_handler: ResponseCallback,
     outstanding: AtomicU64,
     timer_id: u64,
@@ -94,7 +92,7 @@ pub(super) fn send_cluster_request(
     ctx: &Context,
     request_buf: &[u8],
     targets: &[FanoutTarget],
-    request_handler: RequestHandlerCallback,
+    handler: &str,
     response_handler: ResponseCallback,
     timeout: Option<Duration>,
 ) -> ValkeyResult<()> {
@@ -104,7 +102,7 @@ pub(super) fn send_cluster_request(
     let db = get_current_db(ctx);
 
     let mut buf = Vec::with_capacity(512);
-    serialize_request_message(&mut buf, id, db, request_buf);
+    serialize_request_message(&mut buf, id, db, handler, request_buf);
 
     let mut node_count = 0;
     for node in targets.iter() {
@@ -130,7 +128,6 @@ pub(super) fn send_cluster_request(
 
     let request = InFlightRequest {
         id,
-        request_handler,
         response_handler,
         timer_id,
         outstanding: AtomicU64::new(node_count as u64),
@@ -148,11 +145,12 @@ fn send_message_internal(
     msg_type: u8,
     request_id: u64,
     sender_id: *const c_char,
+    handler: &str,
     buf: &[u8],
 ) -> Status {
     let mut dest = Vec::with_capacity(1024);
     let db = get_current_db(ctx);
-    serialize_request_message(&mut dest, request_id, db, buf);
+    serialize_request_message(&mut dest, request_id, db, handler, buf);
     send_cluster_message(ctx, sender_id, msg_type, buf)
 }
 
@@ -161,9 +159,10 @@ fn send_response_message(
     ctx: &Context,
     request_id: u64,
     sender_id: *const c_char,
+    handler: &str,
     buf: &[u8],
 ) -> Status {
-    send_message_internal(ctx, CLUSTER_RESPONSE_MESSAGE, request_id, sender_id, buf)
+    send_message_internal(ctx, CLUSTER_RESPONSE_MESSAGE, request_id, sender_id, handler, buf)
 }
 
 fn send_error_response(
@@ -174,15 +173,15 @@ fn send_error_response(
 ) -> Status {
     let mut buf: Vec<u8> = Vec::with_capacity(512);
     error.serialize(&mut buf);
-    send_message_internal(ctx, CLUSTER_ERROR_MESSAGE, request_id, target_node, &buf)
+    send_message_internal(ctx, CLUSTER_ERROR_MESSAGE, request_id, target_node, "", &buf)
 }
 
 fn parse_cluster_message(
-    ctx: &Context,
+    ctx: &'_ Context,
     sender_id: Option<*const c_char>,
     payload: *const c_uchar,
     len: u32,
-) -> Option<RequestMessage> {
+) -> Option<RequestMessage<'_>> {
     let buffer = unsafe { std::slice::from_raw_parts(payload, len as usize) };
     match RequestMessage::new(buffer) {
         Ok(msg) => {
@@ -214,16 +213,7 @@ fn parse_cluster_message(
 fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id: *const c_char) {
     let request_id = message.request_id;
 
-    let map = INFLIGHT_REQUESTS.pin();
-    let Some(inflight_request) = map.get(&request_id) else {
-        // The inflight request should always be found.
-        // But if the timer expires, the inflight request will be removed from the map.
-        let msg = format!("BUG: Inflight request not found for request_id: {request_id}",);
-        ctx.log_warning(&msg);
-        return;
-    };
-    let handler = inflight_request.request_handler.clone();
-    drop(map);
+    let handler = get_fanout_request_handler(&message.handler, true);
 
     let save_db = get_current_db(ctx);
     set_current_db(ctx, message.db);
@@ -242,7 +232,7 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
         return;
     };
 
-    if send_response_message(ctx, request_id, sender_id, &dest) == Status::Err {
+    if send_response_message(ctx, request_id, sender_id, &message.handler, &dest) == Status::Err {
         let msg = format!("Failed to send response message to node {sender_id:?}");
         ctx.log_warning(&msg);
     }

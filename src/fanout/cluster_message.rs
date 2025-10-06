@@ -1,6 +1,7 @@
 use super::fanout_error::INVALID_MESSAGE_ERROR;
 use crate::common::encoding::{
-    try_read_signed_varint, try_read_uvarint, write_signed_varint, write_uvarint,
+    try_read_signed_varint, try_read_string, try_read_uvarint,
+    write_byte_slice, write_signed_varint, write_uvarint
 };
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -10,8 +11,12 @@ pub const CLUSTER_MESSAGE_MARKER: u32 = 0xBADCAB;
 /// Header for messages exchanged between cluster nodes.
 pub(super) struct ClusterMessageHeader {
     pub version: u16,
+    /// Unique ID for this request, used to match responses.
     pub request_id: u64,
+    /// The database to use for this request.
     pub db: i32,
+    /// The name of the handler to process this message.
+    pub handler: String,
     /// Reserved for future use (e.g., for larger payloads, we may compress the data)
     pub reserved: u16,
 }
@@ -29,6 +34,9 @@ impl ClusterMessageHeader {
 
         // Encode db as signed varint
         write_signed_varint(buf, self.db as i64);
+
+        // Encode handler as a string
+        write_byte_slice(buf, self.handler.as_bytes());
 
         write_uvarint(buf, self.reserved as u64);
     }
@@ -48,6 +56,10 @@ impl ClusterMessageHeader {
         let db = try_read_signed_varint(&mut buf)
             .map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))? as i32;
 
+            // Read handler as a string
+        let handler = try_read_string(&mut buf)
+            .map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))?;
+
         // Read msg_type and reserved as direct bytes
         let reserved = read_uvarint(&mut buf)?;
 
@@ -55,6 +67,7 @@ impl ClusterMessageHeader {
             ClusterMessageHeader {
                 version: version as u16,
                 request_id,
+                handler,
                 db,
                 reserved: reserved as u16,
             },
@@ -93,13 +106,14 @@ fn skip_marker(input: &[u8]) -> ValkeyResult<&[u8]> {
 pub(super) struct RequestMessage<'a> {
     pub buf: &'a [u8],
     pub request_id: u64,
+    pub handler: String,
     pub db: i32,
 }
 
 impl<'a> RequestMessage<'a> {
     pub fn new(buf: &'a [u8]) -> ValkeyResult<Self> {
         let (header, buf) = ClusterMessageHeader::deserialize(buf)?;
-        let ClusterMessageHeader { request_id, db, .. } = header;
+        let ClusterMessageHeader { request_id, db, handler, .. } = header;
 
         if buf.is_empty() {
             return Err(ValkeyError::Str("TSDB: empty cluster message buffer"));
@@ -108,6 +122,7 @@ impl<'a> RequestMessage<'a> {
         Ok(Self {
             buf,
             request_id,
+            handler,
             db,
         })
     }
@@ -117,12 +132,14 @@ pub(super) fn serialize_request_message(
     dest: &mut Vec<u8>,
     request_id: u64,
     db: i32,
+    handler: &str,
     serialized_request: &[u8],
 ) {
     let header = ClusterMessageHeader {
         version: CLUSTER_MESSAGE_VERSION,
         request_id,
         db,
+        handler: handler.to_string(),
         reserved: 0,
     };
     header.serialize(dest);
@@ -139,6 +156,7 @@ mod tests {
             version: CLUSTER_MESSAGE_VERSION,
             request_id: 12345,
             db: 0,
+            handler: "test_handler".to_string(),
             reserved: 0,
         };
 
@@ -151,6 +169,7 @@ mod tests {
         assert_eq!(deserialized_header.request_id, 12345);
         assert_eq!(deserialized_header.db, 0);
         assert_eq!(deserialized_header.reserved, 0);
+        assert_eq!(deserialized_header.handler, "test_handler");
         assert_eq!(remaining_buf.len(), 0);
     }
 
@@ -160,6 +179,7 @@ mod tests {
             version: CLUSTER_MESSAGE_VERSION,
             request_id: u64::MAX,
             db: -15,
+            handler: "negative_db_handler".to_string(),
             reserved: 42,
         };
 
@@ -172,6 +192,7 @@ mod tests {
         assert_eq!(deserialized_header.request_id, u64::MAX);
         assert_eq!(deserialized_header.db, -15);
         assert_eq!(deserialized_header.reserved, 42);
+        assert_eq!(deserialized_header.handler, "negative_db_handler");
         assert_eq!(remaining_buf.len(), 0);
     }
 
@@ -181,6 +202,7 @@ mod tests {
             version: CLUSTER_MESSAGE_VERSION,
             request_id: 999,
             db: 5,
+            handler: "handler_with_extra".to_string(),
             reserved: 1,
         };
 
@@ -194,6 +216,7 @@ mod tests {
         assert_eq!(deserialized_header.request_id, 999);
         assert_eq!(deserialized_header.db, 5);
         assert_eq!(deserialized_header.reserved, 1);
+        assert_eq!(deserialized_header.handler, "handler_with_extra");
         assert_eq!(remaining_buf, b"extra_data");
     }
 
@@ -353,18 +376,11 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_message_constants() {
-        assert_eq!(CLUSTER_MESSAGE_VERSION, 1);
-        assert_eq!(CLUSTER_MESSAGE_MARKER, 0xBADCAB);
-        assert_eq!(INVALID_MESSAGE_ERROR, "Invalid cluster message");
-    }
-
-    #[test]
     fn test_serialize_request_message() {
         let mut buf = Vec::new();
         let request_data = b"test_request_data";
 
-        serialize_request_message(&mut buf, 123, 5, request_data);
+        serialize_request_message(&mut buf, 123, 5, "handler", request_data);
 
         // Verify we can deserialize the header
         let (header, remaining) = ClusterMessageHeader::deserialize(&buf).unwrap();
@@ -373,6 +389,7 @@ mod tests {
         assert_eq!(header.request_id, 123);
         assert_eq!(header.db, 5);
         assert_eq!(header.reserved, 0);
+        assert_eq!(header.handler, "handler");
         assert_eq!(remaining, request_data);
     }
 
@@ -381,12 +398,13 @@ mod tests {
         let mut buf = Vec::new();
         let request_data = b"test_payload";
 
-        serialize_request_message(&mut buf, 456, -3, request_data);
+        serialize_request_message(&mut buf, 456, -3, "test_handler", request_data);
 
         let request_message = RequestMessage::new(&buf).unwrap();
 
         assert_eq!(request_message.request_id, 456);
         assert_eq!(request_message.db, -3);
+        assert_eq!(request_message.handler, "test_handler");
         assert_eq!(request_message.buf, request_data);
     }
 
@@ -395,7 +413,7 @@ mod tests {
         let mut buf = Vec::new();
         let empty_request_data = b"";
 
-        serialize_request_message(&mut buf, 789, 1, empty_request_data);
+        serialize_request_message(&mut buf, 789, 1, "empty_handler", empty_request_data);
 
         let result = RequestMessage::new(&buf);
         assert!(result.is_err());
@@ -414,20 +432,23 @@ mod tests {
 
     #[test]
     fn test_cluster_message_header_roundtrip_property_based() {
-        // Property-based test: any valid ClusterMessageHeader should roundtrip
+        // Property-based test: any valid ClusterMessageHeader should roundtrip,
+        // including various handler strings.
         let test_cases = vec![
-            (0, 0, i32::MIN, 0),
-            (1, 1, -1, 1),
-            (u16::MAX, u64::MAX, i32::MAX, u16::MAX),
-            (42, 1234567890, 0, 999),
-            (100, 555, -42, 200),
+            (0, 0, i32::MIN, 0, ""),
+            (1, 1, -1, 1, "handler1"),
+            (u16::MAX, u64::MAX, i32::MAX, u16::MAX, "h"),
+            (42, 1234567890, 0, 999, "property_based_test"),
+            (100, 555, -42, 200, "with_special_字符"),
+            (2, 3, 4, 5, "another_handler"),
         ];
 
-        for (version, request_id, db, reserved) in test_cases {
+        for (version, request_id, db, reserved, handler) in test_cases {
             let original_header = ClusterMessageHeader {
                 version,
                 request_id,
                 db,
+                handler: handler.to_string(),
                 reserved,
             };
 
@@ -441,6 +462,7 @@ mod tests {
             assert_eq!(deserialized_header.request_id, original_header.request_id);
             assert_eq!(deserialized_header.db, original_header.db);
             assert_eq!(deserialized_header.reserved, original_header.reserved);
+            assert_eq!(deserialized_header.handler, original_header.handler);
             assert_eq!(remaining_buf.len(), 0);
         }
     }

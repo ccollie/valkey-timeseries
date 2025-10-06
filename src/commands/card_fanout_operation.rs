@@ -7,6 +7,7 @@ use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
+#[derive(Default)]
 pub struct CardFanoutOperation {
     options: MatchFilterOptions,
     result: usize,

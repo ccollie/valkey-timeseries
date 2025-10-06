@@ -8,7 +8,7 @@ use crate::fanout::serialization::Serializable;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{
-    BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
+    BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue,
 };
 
 /// A trait representing a fan-out operation that can be performed across cluster nodes.
@@ -19,7 +19,7 @@ use valkey_module::{
 /// - `Request`: The type representing the request to be sent to the target nodes.
 /// - `Response`: The type representing the response expected from the target nodes.
 ///
-pub trait FanoutOperation<Request, Response>: Send {
+pub trait FanoutOperation<Request, Response>: Default + Send {
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
 
@@ -212,18 +212,18 @@ where
     }
 }
 
-pub struct BaseFanoutInvoker<H, Request, Response>
+pub struct BaseFanoutInvoker<OP, Request, Response>
 where
-    H: FanoutOperation<Request, Response>,
+    OP: FanoutOperation<Request, Response>,
     Request: Send,
     Response: Send,
 {
-    __phantom: std::marker::PhantomData<(H, Request, Response)>,
+    __phantom: std::marker::PhantomData<(OP, Request, Response)>,
 }
 
-impl<H, Request, Response> Default for BaseFanoutInvoker<H, Request, Response>
+impl<OP, Request, Response> Default for BaseFanoutInvoker<OP, Request, Response>
 where
-    H: FanoutOperation<Request, Response>,
+    OP: FanoutOperation<Request, Response>,
     Request: Send,
     Response: Send,
 {
@@ -234,9 +234,9 @@ where
     }
 }
 
-impl<H, Request, Response> RpcInvoker<Request, Response> for BaseFanoutInvoker<H, Request, Response>
+impl<OP, Request, Response> RpcInvoker<Request, Response> for BaseFanoutInvoker<OP, Request, Response>
 where
-    H: FanoutOperation<Request, Response> + 'static,
+    OP: FanoutOperation<Request, Response> + 'static,
     Request: Serializable + Send + 'static,
     Response: Serializable + Send + 'static,
 {
@@ -248,25 +248,6 @@ where
         callback: Box<dyn Fn(FanoutResult<Response>, FanoutTarget) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()> {
-        let handle_request = Arc::new(
-            |ctx: &Context,
-             req_buf: &[u8],
-             dest: &mut Vec<u8>,
-             _target: FanoutTarget|
-             -> ValkeyResult<()> {
-                match Request::deserialize(req_buf) {
-                    Ok(request) => {
-                        let response = H::get_local_response(ctx, request)?;
-                        response.serialize(dest);
-                    }
-                    Err(_e) => {
-                        let msg = _e.to_string();
-                        return Err(ValkeyError::String(msg));
-                    }
-                }
-                Ok(())
-            },
-        );
 
         let response_handler = Arc::new(
             move |res: Result<&[u8], FanoutError>, target: FanoutTarget| match res {
@@ -288,7 +269,7 @@ where
             ctx,
             &buf,
             targets,
-            handle_request,
+            OP::name(),
             response_handler,
             Some(timeout),
         )
