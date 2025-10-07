@@ -89,7 +89,7 @@ where
     already_responded: bool,
     thread_ctx: ThreadSafeContext<BlockedClient>,
     errors: Vec<FanoutError>,
-    __phantom: std::marker::PhantomData<OP>,
+    __phantom: PhantomData<OP>,
 }
 
 impl<OP> FanoutState<OP>
