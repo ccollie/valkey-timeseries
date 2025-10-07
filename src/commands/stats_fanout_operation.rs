@@ -43,7 +43,10 @@ impl Default for StatsFanoutOperation {
     }
 }
 
-impl FanoutOperation<StatsRequest, StatsResponse> for StatsFanoutOperation {
+impl FanoutOperation for StatsFanoutOperation {
+    type Request = StatsRequest;
+    type Response = StatsResponse;
+
     fn name() -> &'static str {
         "stats"
     }

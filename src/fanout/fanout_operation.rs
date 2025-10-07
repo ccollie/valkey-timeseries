@@ -4,12 +4,11 @@ use super::fanout_error::{FanoutError, FanoutResult};
 use super::fanout_targets::{
     FanoutTarget, FanoutTargetMode, compute_query_fanout_mode, get_fanout_targets,
 };
-use crate::fanout::serialization::Serializable;
+use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
+use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use valkey_module::{
-    BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue,
-};
+use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue};
 
 /// A trait representing a fan-out operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
@@ -19,12 +18,17 @@ use valkey_module::{
 /// - `Request`: The type representing the request to be sent to the target nodes.
 /// - `Response`: The type representing the response expected from the target nodes.
 ///
-pub trait FanoutOperation<Request, Response>: Default + Send {
+pub trait FanoutOperation: Default + Send {
+    /// The request type must be serializable and sendable across threads.
+    type Request: Send;
+    /// The response type must be sendable across threads.
+    type Response: Send;
+
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
 
     /// Handle a local request on the current node, returning the response or an error.
-    fn get_local_response(ctx: &Context, req: Request) -> ValkeyResult<Response>;
+    fn get_local_response(ctx: &Context, req: Self::Request) -> ValkeyResult<Self::Response>;
 
     /// Return the timeout duration for the entire fanout operation.
     /// This timeout applies to the overall operation, not individual RPC calls.
@@ -39,10 +43,10 @@ pub trait FanoutOperation<Request, Response>: Default + Send {
     }
 
     /// Generate the request to be sent to each target node.
-    fn generate_request(&mut self) -> Request;
+    fn generate_request(&mut self) -> Self::Request;
 
     /// Called once per successful response from a target node.
-    fn on_response(&mut self, resp: Response, target: FanoutTarget);
+    fn on_response(&mut self, resp: Self::Response, target: FanoutTarget);
 
     fn on_error(&mut self, error: FanoutError, target: FanoutTarget) {
         // Log the error with context
@@ -67,43 +71,40 @@ pub trait FanoutOperation<Request, Response>: Default + Send {
 /// - `Request`: The type representing the request to be sent to the target nodes.
 /// - `Response`: The type representing the response expected from the target nodes.
 ///
-pub trait RpcInvoker<Request, Response>: Send
+pub trait RpcInvoker<OP>: Send
 where
-    Request: Send,
-    Response: Send,
+    OP: FanoutOperation,
 {
     fn invoke_rpc(
         &self,
         context: &Context,
-        req: Request,
+        req: OP::Request,
         targets: &[FanoutTarget],
-        callback: Box<dyn Fn(FanoutResult<Response>, FanoutTarget) + Send + Sync>,
+        callback: Box<dyn Fn(FanoutResult<OP::Response>, FanoutTarget) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()>;
 }
 
 /// Internal structure to manage the state of an ongoing fanout operation.
 /// It tracks outstanding RPCs, errors, and coordinates the final reply generation.
-struct FanoutState<H, Request, Response>
+struct FanoutState<OP>
 where
-    H: FanoutOperation<Request, Response>,
+    OP: FanoutOperation,
 {
-    handler: H,
+    handler: OP,
     outstanding: usize,
     timed_out: bool,
     already_responded: bool,
     thread_ctx: ThreadSafeContext<BlockedClient>,
     errors: Vec<FanoutError>,
-    __phantom: std::marker::PhantomData<(Request, Response)>,
+    __phantom: std::marker::PhantomData<OP>,
 }
 
-impl<H, Request, Response> FanoutState<H, Request, Response>
+impl<OP> FanoutState<OP>
 where
-    H: FanoutOperation<Request, Response>,
-    Request: Send,
-    Response: Send,
+    OP: FanoutOperation,
 {
-    pub fn new(context: &Context, handler: H) -> Self {
+    pub fn new(context: &Context, handler: OP) -> Self {
         let blocked_client = context.block_client();
         Self {
             handler,
@@ -116,7 +117,7 @@ where
         }
     }
 
-    fn generate_request(&mut self) -> Request {
+    fn generate_request(&mut self) -> OP::Request {
         self.handler.generate_request()
     }
 
@@ -155,7 +156,11 @@ where
         }
     }
 
-    fn handle_rpc_callback(&mut self, resp: FanoutResult<Response>, target: FanoutTarget) -> bool {
+    fn handle_rpc_callback(
+        &mut self,
+        resp: FanoutResult<OP::Response>,
+        target: FanoutTarget,
+    ) -> bool {
         if !self.timed_out {
             match resp {
                 Ok(response) => {
@@ -170,9 +175,9 @@ where
         self.rpc_done()
     }
 
-    fn handle_local_request(&mut self, ctx: &Context, request: Request) {
+    fn handle_local_request(&mut self, ctx: &Context, request: OP::Request) {
         let target = FanoutTarget::Local;
-        let resp = match H::get_local_response(ctx, request) {
+        let resp = match OP::get_local_response(ctx, request) {
             Ok(response) => Ok(response),
             Err(err) => Err(err.into()),
         };
@@ -189,7 +194,7 @@ where
     fn generate_error_reply(&self, ctx: &Context) {
         let internal_error_log_prefix: String = format!(
             "Failure(fanout) in operation {}: Internal error on node with address ",
-            H::name()
+            OP::name()
         );
 
         let mut error_message = String::new();
@@ -212,46 +217,41 @@ where
     }
 }
 
-pub struct BaseFanoutInvoker<OP, Request, Response>
+pub struct BaseFanoutInvoker<OP>
 where
-    OP: FanoutOperation<Request, Response>,
-    Request: Send,
-    Response: Send,
+    OP: FanoutOperation,
 {
-    __phantom: std::marker::PhantomData<(OP, Request, Response)>,
+    __phantom: PhantomData<OP>,
 }
 
-impl<OP, Request, Response> Default for BaseFanoutInvoker<OP, Request, Response>
+impl<OP> Default for BaseFanoutInvoker<OP>
 where
-    OP: FanoutOperation<Request, Response>,
-    Request: Send,
-    Response: Send,
+    OP: FanoutOperation,
 {
     fn default() -> Self {
         Self {
-            __phantom: Default::default(),
+            __phantom: PhantomData::<OP> {},
         }
     }
 }
 
-impl<OP, Request, Response> RpcInvoker<Request, Response> for BaseFanoutInvoker<OP, Request, Response>
+impl<OP> RpcInvoker<OP> for BaseFanoutInvoker<OP>
 where
-    OP: FanoutOperation<Request, Response> + 'static,
-    Request: Serializable + Send + 'static,
-    Response: Serializable + Send + 'static,
+    OP: FanoutOperation + 'static,
+    OP::Request: Serializable + Send + 'static,
+    OP::Response: Serializable + Send + 'static,
 {
     fn invoke_rpc(
         &self,
         ctx: &Context,
-        req: Request,
+        req: OP::Request,
         targets: &[FanoutTarget],
-        callback: Box<dyn Fn(FanoutResult<Response>, FanoutTarget) + Send + Sync>,
+        callback: Box<dyn Fn(FanoutResult<OP::Response>, FanoutTarget) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()> {
-
         let response_handler = Arc::new(
             move |res: Result<&[u8], FanoutError>, target: FanoutTarget| match res {
-                Ok(buf) => match Response::deserialize(buf) {
+                Ok(buf) => match OP::Response::deserialize(buf) {
                     Ok(resp) => callback(Ok(resp), target),
                     Err(_e) => {
                         let err = FanoutError::serialization("");
@@ -276,15 +276,15 @@ where
     }
 }
 
-pub fn exec_fanout_request<OP, Request, Response>(
+pub fn exec_fanout_request<OP>(
     ctx: &Context,
-    rpc_invoker: impl RpcInvoker<Request, Response>,
+    rpc_invoker: impl RpcInvoker<OP>,
     operation: OP,
 ) -> ValkeyResult<ValkeyValue>
 where
-    OP: FanoutOperation<Request, Response> + 'static,
-    Request: Serializable + Send + 'static,
-    Response: Serializable + Send + 'static,
+    OP: FanoutOperation + 'static,
+    OP::Request: Serializable + Send + 'static,
+    OP::Response: Serializable + Send + 'static,
 {
     let mut op = operation;
     let timeout = op.get_timeout();
@@ -328,15 +328,12 @@ where
 }
 
 #[inline]
-pub fn exec_fanout_request_base<OP, Request, Response>(
-    ctx: &Context,
-    op: OP,
-) -> ValkeyResult<ValkeyValue>
+pub fn exec_fanout_request_base<OP>(ctx: &Context, op: OP) -> ValkeyResult<ValkeyValue>
 where
-    OP: FanoutOperation<Request, Response> + 'static,
-    Request: Serializable + Send + 'static,
-    Response: Serializable + Send + 'static,
+    OP: FanoutOperation + 'static,
+    OP::Request: Serializable + Send + 'static,
+    OP::Response: Serializable + Send + 'static,
 {
-    let invoker = BaseFanoutInvoker::<OP, Request, Response>::default();
+    let invoker = BaseFanoutInvoker::<OP>::default();
     exec_fanout_request(ctx, invoker, op)
 }

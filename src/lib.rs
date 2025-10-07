@@ -7,6 +7,7 @@ extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
+use crate::commands::register_fanout_operations;
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::init_fanout;
@@ -85,6 +86,11 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     }
 
     init_fanout(ctx);
+    if let Err(e) = register_fanout_operations() {
+        let msg = format!("Failed to register fanout operations: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
+    };
 
     if let Err(e) = register_server_events(ctx) {
         let msg = format!("Failed to register server events: {e}");

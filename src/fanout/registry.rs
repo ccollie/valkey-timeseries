@@ -1,5 +1,5 @@
 use super::fanout_operation::FanoutOperation;
-use super::serialization::Serializable;
+use super::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::FanoutTarget;
 use ahash::AHashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -9,7 +9,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult};
 /// This allows us to store different fanout operations with different
 /// Request/Response types in the same registry.
 pub(super) type RequestHandlerCallback =
-Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
+    Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
 
 /// A registry for fanout operations that allows type-erased storage
 /// and retrieval of [`FanoutOperation`] implementations.
@@ -31,11 +31,11 @@ impl FanoutOperationRegistry {
     /// - `OP`: The operation type implementing FanoutOperation
     /// - `Request`: The request type that must be Serializable
     /// - `Response`: The response type that must be Serializable
-    pub fn register<OP, Request, Response>(&self) -> ValkeyResult<()>
+    pub fn register<OP>(&self) -> ValkeyResult<()>
     where
-        OP: FanoutOperation<Request, Response> + 'static,
-        Request: Serializable + Send + 'static,
-        Response: Serializable + Send + 'static,
+        OP: FanoutOperation + 'static,
+        OP::Request: Serializable + Send + 'static,
+        OP::Response: Serializable + Send + 'static,
     {
         let name = OP::name();
 
@@ -45,7 +45,7 @@ impl FanoutOperationRegistry {
              dest: &mut Vec<u8>,
              _target: FanoutTarget|
              -> ValkeyResult<()> {
-                match Request::deserialize(req_buf) {
+                match OP::Request::deserialize(req_buf) {
                     Ok(request) => {
                         let response = OP::get_local_response(ctx, request)?;
                         response.serialize(dest);
@@ -59,19 +59,20 @@ impl FanoutOperationRegistry {
             },
         );
 
-
-        let mut ops = self.operations.lock().expect("Fanout Registry lock poisoned");
+        let mut ops = self
+            .operations
+            .lock()
+            .expect("Fanout Registry lock poisoned");
 
         if ops.contains_key(name) {
-            return Err(ValkeyError::String(
-                format!("Operation '{name}' is already registered")
-            ));
+            return Err(ValkeyError::String(format!(
+                "Operation '{name}' is already registered"
+            )));
         }
 
         ops.insert(name, request_handler);
         Ok(())
     }
-
 
     /// Execute a registered fanout operation by name.
     ///
@@ -88,17 +89,21 @@ impl FanoutOperationRegistry {
         dest: &mut Vec<u8>,
         target: FanoutTarget,
     ) -> ValkeyResult<()> {
-        let executor = self.get_operation_by_name(name, true)
-            .unwrap();
+        let executor = self.get_operation_by_name(name, true).unwrap();
 
         executor(ctx, payload, dest, target)
     }
 
-    fn get_operation_by_name(&self, name: &str, must_exist: bool) -> Option<RequestHandlerCallback> {
-        let ops = self.operations
+    fn get_operation_by_name(
+        &self,
+        name: &str,
+        must_exist: bool,
+    ) -> Option<RequestHandlerCallback> {
+        let ops = self
+            .operations
             .lock()
             .expect("Fanout Registry lock poisoned");
-        
+
         match ops.get(name) {
             Some(op) => Some(op.clone()),
             None => {
@@ -112,20 +117,20 @@ impl FanoutOperationRegistry {
 
     /// Check if an operation is registered.
     pub fn contains(&self, name: &str) -> bool {
-        self.operations.lock()
-            .unwrap()
-            .contains_key(name)
+        self.operations.lock().unwrap().contains_key(name)
     }
 
     /// Get the list of all registered operation names.
     pub fn list_operations(&self) -> Vec<&'static str> {
-        self.operations.lock()
+        self.operations
+            .lock()
             .map(|ops| ops.keys().copied().collect())
             .unwrap_or_default()
     }
 }
 
-static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> = LazyLock::new(FanoutOperationRegistry::new);
+static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> =
+    LazyLock::new(FanoutOperationRegistry::new);
 
 // Register a fanout operation.
 ///
@@ -133,13 +138,13 @@ static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> = LazyLock::new(Fanout
 /// - `OP`: The operation type implementing FanoutOperation
 /// - `Request`: The request type that must be Serializable
 /// - `Response`: The response type that must be Serializable
-pub fn register_fanout_operation<OP, Request, Response>() -> ValkeyResult<()>
+pub fn register_fanout_operation<OP>() -> ValkeyResult<()>
 where
-    OP: FanoutOperation<Request, Response> + 'static,
-    Request: Serializable + Send + 'static,
-    Response: Serializable + Send + 'static,
+    OP: FanoutOperation + 'static,
+    OP::Request: Serializable + Send + 'static,
+    OP::Response: Serializable + Send + 'static,
 {
-    FANOUT_REGISTRY.register::<OP, Request, Response>()
+    FANOUT_REGISTRY.register::<OP>()
 }
 
 /// Execute a registered fanout operation by name.
@@ -160,9 +165,14 @@ pub fn handle_fanout_request(
 }
 
 pub(super) fn get_fanout_request_handler(name: &str, must_exist: bool) -> RequestHandlerCallback {
-    FANOUT_REGISTRY.get_operation_by_name(name, must_exist).unwrap()
+    FANOUT_REGISTRY
+        .get_operation_by_name(name, must_exist)
+        .unwrap()
 }
 
+pub(crate) fn get_registered_fanout_operations() -> Vec<&'static str> {
+    FANOUT_REGISTRY.list_operations()
+}
 
 #[cfg(test)]
 mod tests {

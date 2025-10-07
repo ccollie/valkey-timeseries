@@ -1,10 +1,10 @@
-use crate::fanout::registry::get_fanout_request_handler;
 use super::cluster_message::{RequestMessage, serialize_request_message};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::fanout_targets::FanoutTarget;
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
+use crate::fanout::registry::get_fanout_request_handler;
 use core::time::Duration;
 use papaya::HashMap;
 use std::os::raw::{c_char, c_int, c_uchar};
@@ -162,7 +162,14 @@ fn send_response_message(
     handler: &str,
     buf: &[u8],
 ) -> Status {
-    send_message_internal(ctx, CLUSTER_RESPONSE_MESSAGE, request_id, sender_id, handler, buf)
+    send_message_internal(
+        ctx,
+        CLUSTER_RESPONSE_MESSAGE,
+        request_id,
+        sender_id,
+        handler,
+        buf,
+    )
 }
 
 fn send_error_response(
@@ -173,7 +180,14 @@ fn send_error_response(
 ) -> Status {
     let mut buf: Vec<u8> = Vec::with_capacity(512);
     error.serialize(&mut buf);
-    send_message_internal(ctx, CLUSTER_ERROR_MESSAGE, request_id, target_node, "", &buf)
+    send_message_internal(
+        ctx,
+        CLUSTER_ERROR_MESSAGE,
+        request_id,
+        target_node,
+        "",
+        &buf,
+    )
 }
 
 fn parse_cluster_message(

@@ -3,10 +3,10 @@ mod cluster_rpc;
 mod fanout_error;
 mod fanout_operation;
 mod fanout_targets;
+mod registry;
 pub mod serialization;
 mod snowflake;
 mod utils;
-mod registry;
 
 use valkey_module::Context;
 

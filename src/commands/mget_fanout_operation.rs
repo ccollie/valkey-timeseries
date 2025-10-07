@@ -25,7 +25,10 @@ impl MGetFanoutOperation {
     }
 }
 
-impl FanoutOperation<MultiGetRequest, MultiGetResponse> for MGetFanoutOperation {
+impl FanoutOperation for MGetFanoutOperation {
+    type Request = MultiGetRequest;
+    type Response = MultiGetResponse;
+
     fn name() -> &'static str {
         "mget"
     }

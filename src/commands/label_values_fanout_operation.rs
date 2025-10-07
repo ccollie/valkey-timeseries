@@ -27,7 +27,10 @@ impl LabelValuesFanoutOperation {
     }
 }
 
-impl FanoutOperation<LabelValuesRequest, LabelValuesResponse> for LabelValuesFanoutOperation {
+impl FanoutOperation for LabelValuesFanoutOperation {
+    type Request = LabelValuesRequest;
+    type Response = LabelValuesResponse;
+
     fn name() -> &'static str {
         "label_values"
     }

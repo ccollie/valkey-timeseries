@@ -19,7 +19,10 @@ impl CardFanoutOperation {
     }
 }
 
-impl FanoutOperation<CardinalityRequest, CardinalityResponse> for CardFanoutOperation {
+impl FanoutOperation for CardFanoutOperation {
+    type Request = CardinalityRequest;
+    type Response = CardinalityResponse;
+
     fn name() -> &'static str {
         "cardinality"
     }

@@ -1,7 +1,7 @@
 use super::fanout_error::INVALID_MESSAGE_ERROR;
 use crate::common::encoding::{
-    try_read_signed_varint, try_read_string, try_read_uvarint,
-    write_byte_slice, write_signed_varint, write_uvarint
+    try_read_signed_varint, try_read_string, try_read_uvarint, write_byte_slice,
+    write_signed_varint, write_uvarint,
 };
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -56,9 +56,9 @@ impl ClusterMessageHeader {
         let db = try_read_signed_varint(&mut buf)
             .map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))? as i32;
 
-            // Read handler as a string
-        let handler = try_read_string(&mut buf)
-            .map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))?;
+        // Read handler as a string
+        let handler =
+            try_read_string(&mut buf).map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))?;
 
         // Read msg_type and reserved as direct bytes
         let reserved = read_uvarint(&mut buf)?;
@@ -113,7 +113,12 @@ pub(super) struct RequestMessage<'a> {
 impl<'a> RequestMessage<'a> {
     pub fn new(buf: &'a [u8]) -> ValkeyResult<Self> {
         let (header, buf) = ClusterMessageHeader::deserialize(buf)?;
-        let ClusterMessageHeader { request_id, db, handler, .. } = header;
+        let ClusterMessageHeader {
+            request_id,
+            db,
+            handler,
+            ..
+        } = header;
 
         if buf.is_empty() {
             return Err(ValkeyError::Str("TSDB: empty cluster message buffer"));
