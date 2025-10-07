@@ -97,10 +97,12 @@ pub(crate) const fn op_mul(left: f64, right: f64) -> f64 {
     left * right
 }
 
-/// Div returns left / right
-/// Todo: protect against div by zero
+/// Div returns left / right. If right is 0, returns NaN.
 #[inline]
 pub(crate) const fn op_div(left: f64, right: f64) -> f64 {
+    if right == 0.0 {
+        return f64::NAN;
+    }
     left / right
 }
 
