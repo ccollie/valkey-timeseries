@@ -29,8 +29,6 @@ impl FanoutOperationRegistry {
     ///
     /// # Type Parameters
     /// - `OP`: The operation type implementing FanoutOperation
-    /// - `Request`: The request type that must be Serializable
-    /// - `Response`: The response type that must be Serializable
     pub fn register<OP>(&self) -> ValkeyResult<()>
     where
         OP: FanoutOperation + 'static,
@@ -136,8 +134,6 @@ static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> =
 ///
 /// # Type Parameters
 /// - `OP`: The operation type implementing FanoutOperation
-/// - `Request`: The request type that must be Serializable
-/// - `Response`: The response type that must be Serializable
 pub fn register_fanout_operation<OP>() -> ValkeyResult<()>
 where
     OP: FanoutOperation + 'static,

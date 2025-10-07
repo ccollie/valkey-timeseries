@@ -10,14 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue};
 
-/// A trait representing a fan-out operation that can be performed across cluster nodes.
+/// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
-///
-/// # Type Parameters
-/// - `Request`: The type representing the request to be sent to the target nodes.
-/// - `Response`: The type representing the response expected from the target nodes.
-///
 pub trait FanoutOperation: Default + Send {
     /// The request type must be serializable and sendable across threads.
     type Request: Send;
@@ -67,10 +62,7 @@ pub trait FanoutOperation: Default + Send {
 /// A trait for invoking fanout operations across cluster nodes.
 /// It manages the sending of requests, handling responses, and coordinating the overall operation.
 /// # Type Parameters
-/// - `H`: The type implementing the `FanoutOperation` trait.
-/// - `Request`: The type representing the request to be sent to the target nodes.
-/// - `Response`: The type representing the response expected from the target nodes.
-///
+/// - `OP`: The type implementing the `FanoutOperation` trait.
 pub trait RpcInvoker<OP>: Send
 where
     OP: FanoutOperation,
