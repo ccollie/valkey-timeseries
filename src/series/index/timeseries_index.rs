@@ -199,11 +199,6 @@ impl TimeSeriesIndex {
         f(&mut inner, state)
     }
 
-    pub fn rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
-        let mut inner = self.inner.write().unwrap();
-        inner.rename_series_key(old_key, new_key).is_some()
-    }
-
     pub fn mark_id_as_stale(&self, id: SeriesRef) {
         let mut inner = self.inner.write().unwrap();
         inner.mark_id_as_stale(id);

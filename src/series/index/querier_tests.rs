@@ -18,9 +18,7 @@ mod tests {
     use crate::labels::matchers::{MatchOp, Matcher, Matchers};
     use crate::labels::{InternedMetricName, Label};
     use crate::parser::metric_name::parse_metric_name;
-    use crate::series::index::{
-        IndexKey, TimeSeriesIndex, next_timeseries_id, postings_for_matchers,
-    };
+    use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_matchers};
     use crate::series::{SeriesRef, TimeSeries};
     use std::collections::{HashMap, HashSet};
 
@@ -684,21 +682,6 @@ mod tests {
                 "Should find series by env after rename"
             );
 
-            // Verify the old key is no longer in the mapping
-            let old_key_index = IndexKey::from(old_key.as_slice());
-            assert!(
-                postings.key_to_id.get(&old_key_index).is_none(),
-                "Old key should be removed"
-            );
-
-            // Verify new key points to correct series ID
-            let new_key_index = IndexKey::from(new_key.as_slice());
-            assert_eq!(
-                postings.key_to_id.get(&new_key_index),
-                Some(&ts.id),
-                "New key should point to series ID"
-            );
-
             // Verify series ID maps to the new key
             let expected_new_key = new_key.to_vec().into_boxed_slice();
             assert_eq!(
@@ -735,12 +718,6 @@ mod tests {
 
         // Verify that the new key is present in the index
         index.with_postings(&mut state, |postings, _| {
-            let new_key_index = IndexKey::from(new_key.as_slice());
-            assert!(
-                postings.key_to_id.contains_key(&new_key_index),
-                "New key should be present in index"
-            );
-
             // Verify that the series ID maps to the new key
             assert_eq!(
                 postings.id_to_key.get(&ts.id),

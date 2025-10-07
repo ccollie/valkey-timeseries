@@ -31,9 +31,6 @@ pub struct Postings {
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
     pub(super) id_to_key: IntMap<SeriesRef, KeyType>, // todo: use an interned string
-    /// Map valkey key to timeseries id. An ART is used for prefix compression (we're likely
-    /// to have a lot of related keys with the same prefix).
-    pub(super) key_to_id: TreeMap<IndexKey, SeriesRef>,
     /// Set of timeseries ids of series that should be removed from the index. This really only
     /// happens when the index is inconsistent (value does not exist in the db but exists in the index)
     /// Keep track and cleanup from the index during a gc pass.
@@ -46,7 +43,6 @@ impl Default for Postings {
         Postings {
             label_index: PostingsIndex::new(),
             id_to_key: IntMap::default(),
-            key_to_id: Default::default(),
             stale_ids: PostingsBitmap::default(),
         }
     }
@@ -57,7 +53,6 @@ impl Postings {
     pub(super) fn clear(&mut self) {
         self.label_index.clear();
         self.id_to_key.clear();
-        self.key_to_id.clear();
         self.stale_ids.clear();
     }
 
@@ -66,7 +61,6 @@ impl Postings {
     pub fn swap(&mut self, other: &mut Self) {
         std::mem::swap(&mut self.label_index, &mut other.label_index);
         std::mem::swap(&mut self.id_to_key, &mut other.id_to_key);
-        std::mem::swap(&mut self.key_to_id, &mut other.key_to_id);
         std::mem::swap(&mut self.stale_ids, &mut other.stale_ids);
     }
 
@@ -148,7 +142,6 @@ impl Postings {
         }
         let key = new_key.to_vec().into_boxed_slice();
         self.id_to_key.insert(id, key);
-        self.key_to_id.insert(new_key.into(), id);
     }
 
     pub fn index_timeseries(&mut self, ts: &TimeSeries, key: &[u8]) {
@@ -169,32 +162,11 @@ impl Postings {
 
     pub fn remove_timeseries(&mut self, series: &TimeSeries) {
         let id = series.id;
-        if let Some(key) = self.id_to_key.remove(&id) {
-            let key = IndexKey::from(key.as_ref());
-            if let Some(existing) = self.key_to_id.remove(&key) {
-                debug_assert_eq!(existing, id);
-            }
-        }
+        if self.id_to_key.remove(&id).is_none() {
+            log::warn!("Tried to remove non-existing series id {id} from index");
+        };
         let labels = series.labels.iter().collect::<Vec<_>>();
         self.remove_posting_by_id_and_labels(id, &labels);
-    }
-
-    pub fn rename_series_key(&mut self, old_key: &[u8], new_key: &[u8]) -> Option<SeriesRef> {
-        let old_key_index = IndexKey::from(old_key);
-
-        // Check if the old key exists before making any changes
-        let id = self.key_to_id.get(&old_key_index).copied()?;
-
-        // Prepare new key data (do allocations first)
-        let new_key_vec = new_key.to_vec().into_boxed_slice();
-        let new_key_index = IndexKey::from(new_key);
-
-        // Now perform atomic updates
-        self.key_to_id.remove(&old_key_index);
-        self.key_to_id.insert(new_key_index, id);
-        self.id_to_key.insert(id, new_key_vec);
-
-        Some(id)
     }
 
     pub fn count(&self) -> usize {
@@ -374,10 +346,7 @@ impl Postings {
     /// The stale IDs are stored in a bitmap for efficient removal and are checked to ensure that no stale IDs are
     /// returned in queries until they are removed.
     pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
-        if let Some(key) = self.id_to_key.remove(&id) {
-            let old_key = IndexKey::from(key.as_bytes());
-            self.key_to_id.remove(&old_key);
-        }
+        let _ = self.id_to_key.remove(&id);
         self.stale_ids.add(id);
         self.remove_id_from_all_postings(id);
     }
@@ -443,14 +412,11 @@ impl Postings {
             self.label_index.remove(&key);
         }
 
-        // Clean up id_to_key and key_to_id maps for all stale IDs
+        // Clean up id_to_key map for all stale IDs
         // This is done in every batch since we need to ensure consistency
         if keys_processed > 0 {
             self.stale_ids.iter().for_each(|id| {
-                if let Some(key) = self.id_to_key.remove(&id) {
-                    let idx_key = IndexKey::from(key.as_ref());
-                    self.key_to_id.remove(&idx_key);
-                }
+                let _ = self.id_to_key.remove(&id);
             });
 
             // Clear stale_ids if we've processed all keys
