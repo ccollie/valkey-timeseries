@@ -2,7 +2,6 @@ use blart::{AsBytes, NoPrefixesBytes};
 use get_size2::GetSize;
 use std::borrow::Borrow;
 use std::fmt::Display;
-use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
@@ -105,25 +104,6 @@ impl Hash for IndexKey {
 }
 
 unsafe impl NoPrefixesBytes for IndexKey {}
-
-pub(crate) fn format_key_for_label_prefix(dest: &mut String, label_name: &str) {
-    dest.clear();
-    // Safety: according to the source, write! does not panic
-    write!(dest, "{label_name}=").expect("write! macro failed");
-}
-
-pub(crate) fn format_key_for_label_value(dest: &mut String, label_name: &str, value: &str) {
-    dest.clear();
-    // according to https://github.com/rust-lang/rust/blob/1.47.0/library/alloc/src/string.rs#L2414-L2427
-    // write! will not return an Err, so the unwrap is safe
-    write!(dest, "{label_name}={value}\0").expect("write! macro failed");
-}
-
-pub(crate) fn get_key_for_label_prefix(label_name: &str) -> String {
-    let mut value = String::with_capacity(label_name.len() + 1);
-    format_key_for_label_prefix(&mut value, label_name);
-    value
-}
 
 #[cfg(test)]
 mod tests {

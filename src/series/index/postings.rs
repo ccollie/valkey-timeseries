@@ -1,4 +1,5 @@
-use super::index_key::{IndexKey, format_key_for_label_value, get_key_for_label_prefix};
+use super::index_key::IndexKey;
+use super::key_buffer::KeyBuffer;
 use crate::common::hash::IntMap;
 use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
 use crate::labels::{InternedLabel, SeriesLabel};
@@ -188,8 +189,8 @@ impl Postings {
         name: &str,
         value: &str,
     ) -> Cow<'a, PostingsBitmap> {
-        let key = IndexKey::for_label_value(name, value);
-        if let Some(bmp) = self.label_index.get(&key) {
+        let key = KeyBuffer::for_label_value(name, value);
+        if let Some(bmp) = self.label_index.get(key.as_bytes()) {
             if self.stale_ids.is_empty() {
                 Cow::Borrowed(bmp)
             } else {
@@ -209,7 +210,7 @@ impl Postings {
     }
 
     pub fn postings_for_all_label_values(&self, label_name: &str) -> PostingsBitmap {
-        let prefix = get_key_for_label_prefix(label_name);
+        let prefix = KeyBuffer::for_prefix(label_name);
         let mut result = PostingsBitmap::new();
         for (_, map) in self.label_index.prefix(prefix.as_bytes()) {
             result |= map;
@@ -224,8 +225,8 @@ impl Postings {
         let mut result = PostingsBitmap::new();
 
         for value in values {
-            let key = IndexKey::for_label_value(name, value);
-            if let Some(bmp) = self.label_index.get(&key) {
+            let key = KeyBuffer::for_label_value(name, value);
+            if let Some(bmp) = self.label_index.get(key.as_bytes()) {
                 result |= bmp;
             }
         }
@@ -246,7 +247,7 @@ impl Postings {
     where
         F: Fn(&str, &mut STATE) -> bool,
     {
-        let prefix = get_key_for_label_prefix(name);
+        let prefix = KeyBuffer::for_prefix(name);
         let start_pos = prefix.len();
         let mut result = PostingsBitmap::new();
 
@@ -263,12 +264,11 @@ impl Postings {
 
     /// Return all series ids corresponding to the given labels
     pub fn postings_by_labels<T: SeriesLabel>(&self, labels: &[T]) -> PostingsBitmap {
-        let mut key: String = String::new();
         let mut first = true;
         let mut acc = PostingsBitmap::new();
 
         for label in labels.iter() {
-            format_key_for_label_value(&mut key, label.name(), label.value());
+            let key = KeyBuffer::for_label_value(label.name(), label.value());
             if let Some(bmp) = self.label_index.get(key.as_bytes()) {
                 if bmp.is_empty() {
                     break;
@@ -307,7 +307,7 @@ impl Postings {
                 let all = self.all_postings();
                 let mut to_remove = PostingsBitmap::new();
                 for label in labels {
-                    let prefix = get_key_for_label_prefix(label);
+                    let prefix = KeyBuffer::for_prefix(label);
                     for (_, map) in self.label_index.prefix(prefix.as_bytes()) {
                         to_remove.or_inplace(map);
                     }
@@ -549,7 +549,7 @@ pub(super) fn handle_not_equal_match<'a>(
         }
         PredicateValue::List(values) => {
             match values.len() {
-                0 => with_label(ix, label), // TODO !!
+                0 => with_label(ix, label),
                 _ => {
                     // get postings for label m.label without values in values
                     let to_remove = ix.postings(label, values);
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_postings_all_postings() {
+    fn test_postings_all_postings() {
         let mut postings = Postings::default();
 
         postings.add_id_to_all_postings(1);
@@ -779,6 +779,88 @@ mod tests {
         assert!(result.contains(1));
         assert!(result.contains(2));
         assert!(result.contains(3));
+    }
+
+    #[test]
+    fn test_postings_for_label_value_exceeds_stack_size() {
+        let mut postings = Postings::default();
+
+        // The STACK_SIZE in KeyBuffer is 64 bytes
+        // We need label_name + "=" + value + "\0" to exceed 64 bytes
+        // Let's create a label name and value that together exceed this
+
+        // Create a label name of 30 characters
+        let label_name = "very_long_label_name_here_1234";
+
+        // Create a value of 40 characters, so total length is:
+        // 30 (label) + 1 (=) + 40 (value) + 1 (\0) = 72 bytes > 64
+        let value = "this_is_a_very_long_value_string_12345";
+
+        // Verify our assumption about the length
+        let total_len = label_name.len() + 1 + value.len() + 1; // +1 for '=', +1 for '\0'
+        assert!(
+            total_len > 64,
+            "Test setup error: combined length should exceed STACK_SIZE"
+        );
+
+        // Add a posting with this long label-value pair
+        postings.add_posting_for_label_value(1, label_name, value);
+        postings.add_posting_for_label_value(2, label_name, value);
+        postings.add_posting_for_label_value(3, label_name, "short");
+
+        // Test that we can retrieve postings for the long label-value pair
+        let result = postings.postings_for_label_value(label_name, value);
+
+        // Verify the result contains the correct series IDs
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(1));
+        assert!(result.contains(2));
+        assert!(!result.contains(3));
+
+        // Test that we can also retrieve the short value
+        let result_short = postings.postings_for_label_value(label_name, "short");
+        assert_eq!(result_short.cardinality(), 1);
+        assert!(result_short.contains(3));
+    }
+
+    #[test]
+    fn test_postings_for_all_label_values_exceeds_stack_size() {
+        let mut postings = Postings::default();
+
+        // The STACK_SIZE in KeyBuffer is 64 bytes
+        // KeyBuffer::for_prefix creates: label_name + "="
+        // We need label_name + "=" to exceed 64 bytes
+
+        // Create a label name of 70 characters to exceed the stack size
+        let label_name = "very_long_label_name_here_that_definitely_exceeds_the_stack_buffer_size";
+
+        // Verify our assumption about the length
+        let prefix_len = label_name.len() + 1; // +1 for '='
+        assert!(
+            prefix_len > 64,
+            "Test setup error: prefix length should exceed STACK_SIZE"
+        );
+
+        // Add multiple postings with different values for the same long label name
+        postings.add_posting_for_label_value(1, label_name, "value1");
+        postings.add_posting_for_label_value(2, label_name, "value2");
+        postings.add_posting_for_label_value(3, label_name, "value3");
+        postings.add_posting_for_label_value(4, "short_label", "value1");
+
+        // Test that we can retrieve all postings for the long label name
+        let result = postings.postings_for_all_label_values(label_name);
+
+        // Verify the result contains all series IDs with the long label name
+        assert_eq!(result.cardinality(), 3);
+        assert!(result.contains(1));
+        assert!(result.contains(2));
+        assert!(result.contains(3));
+        assert!(!result.contains(4)); // This has a different label
+
+        // Also test that we can retrieve postings for the short label
+        let result_short = postings.postings_for_all_label_values("short_label");
+        assert_eq!(result_short.cardinality(), 1);
+        assert!(result_short.contains(4));
     }
 
     // postings_without_labels

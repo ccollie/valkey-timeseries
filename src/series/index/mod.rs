@@ -19,6 +19,7 @@ pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
 
+mod key_buffer;
 #[cfg(test)]
 mod querier_tests;
 #[cfg(test)]
