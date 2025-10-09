@@ -498,12 +498,11 @@ pub(super) fn postings_for_matcher_slice<'a>(
             .expect("unexpected out of bounds error running matchers"));
     }
 
-    // sort by cardinality first to reduce the amount of work
-    its.sort_by_key(|a| a.cardinality());
-
     let mut result = if its.is_empty() {
         ix.all_postings().clone()
     } else {
+        // sort by cardinality first to reduce the amount of work
+        its.sort_by_key(|a| a.cardinality());
         intersection(its)
     };
 
