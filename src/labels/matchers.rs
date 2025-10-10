@@ -2,14 +2,15 @@ use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::regex::parse_regex_anchored;
 use crate::parser::ParseError;
 use crate::parser::lex::Token;
-use crate::parser::utils::escape_ident;
 use enquote::enquote;
 use regex::Regex;
 use smallvec::SmallVec;
 use std::cmp::PartialEq;
+use std::default::Default;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::ops::{Deref, DerefMut};
 
 const EMPTY_TEXT: &str = "";
 
@@ -332,12 +333,12 @@ impl PartialEq for PredicateMatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Matcher {
+pub struct LabelFilter {
     pub label: String,
     pub matcher: PredicateMatch,
 }
 
-impl Matcher {
+impl LabelFilter {
     pub fn create<N, V>(match_op: MatchOp, label: N, value: V) -> Result<Self, ParseError>
     where
         N: Into<String>,
@@ -423,7 +424,7 @@ impl Matcher {
     }
 }
 
-impl Display for Matcher {
+impl Display for LabelFilter {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}{}", self.label, self.op())?;
         match &self.matcher {
@@ -437,7 +438,7 @@ impl Display for Matcher {
     }
 }
 
-impl Hash for Matcher {
+impl Hash for LabelFilter {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.label.hash(state);
         self.matcher.hash(state);
@@ -458,223 +459,241 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
     matches_empty || re.is_match("")
 }
 
-#[derive(Debug, Clone, Hash, PartialEq)]
-pub enum MatcherSetEnum {
-    Or(Vec<Vec<Matcher>>),
-    And(Vec<Matcher>),
+#[derive(Debug, Default, Clone, Hash, PartialEq)]
+pub struct AndMatchers(pub Vec<LabelFilter>);
+
+impl AndMatchers {
+    pub fn new(matchers: Vec<LabelFilter>) -> Self {
+        Self(matchers)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn is_only_metric_name(&self) -> bool {
+        if self.0.len() == 1 {
+            let first = &self.0[0];
+            if first.is_metric_name_filter() {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn get_metric_name(&self) -> Option<&str> {
+        for matcher in self.0.iter() {
+            if matcher.is_metric_name_filter() {
+                return matcher.text();
+            }
+        }
+        None
+    }
+
+    pub fn push(&mut self, matcher: LabelFilter) {
+        self.0.push(matcher);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &LabelFilter> {
+        self.0.iter()
+    }
 }
 
-impl MatcherSetEnum {
-    pub fn is_empty(&self) -> bool {
+impl Display for AndMatchers {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        join_matchers(f, &self.0)
+    }
+}
+
+impl Deref for AndMatchers {
+    type Target = Vec<LabelFilter>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for AndMatchers {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<Vec<LabelFilter>> for AndMatchers {
+    fn from(value: Vec<LabelFilter>) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq)]
+pub enum SeriesSelector {
+    Or(Vec<AndMatchers>),
+    And(AndMatchers),
+}
+
+impl SeriesSelector {
+    pub fn with_matchers(matchers: Vec<LabelFilter>) -> Self {
+        let matchers = AndMatchers::new(matchers);
+        SeriesSelector::And(matchers)
+    }
+
+    pub fn with_or_matchers(or_matchers: Vec<AndMatchers>) -> Self {
+        if or_matchers.len() == 1 {
+            let mut or_matchers = or_matchers;
+            let first = or_matchers.pop().expect("or_matchers is not empty");
+            return Self::And(first);
+        }
+        SeriesSelector::Or(or_matchers)
+    }
+
+    pub fn len(&self) -> usize {
         match self {
-            MatcherSetEnum::Or(or_matchers) => or_matchers.is_empty(),
-            MatcherSetEnum::And(and_matchers) => and_matchers.is_empty(),
+            SeriesSelector::Or(or_matchers) => or_matchers.len(),
+            SeriesSelector::And(and_matchers) => and_matchers.len(),
         }
     }
 
-    fn normalize(self, name: Option<String>) -> (Self, Option<String>) {
-        // now normalize the matchers
-        let mut name = name;
-        let mut matchers = self;
-        match matchers {
-            MatcherSetEnum::And(ref mut and_matchers) => {
-                if !and_matchers.is_empty() {
-                    for (i, matcher) in and_matchers.iter_mut().enumerate() {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            SeriesSelector::Or(or_matchers) => or_matchers.is_empty(),
+            SeriesSelector::And(and_matchers) => and_matchers.is_empty(),
+        }
+    }
+
+    pub fn is_only_metric_name(&self) -> bool {
+        match self {
+            SeriesSelector::Or(_) => false,
+            SeriesSelector::And(and_matchers) => {
+                if and_matchers.len() == 1 {
+                    let first = &and_matchers.0[0];
+                    if first.is_metric_name_filter() && and_matchers.len() == 1 {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    pub fn get_metric_name(&self) -> Option<&str> {
+        match self {
+            SeriesSelector::Or(or_matchers) => {
+                let mut name: Option<&str> = None;
+                let mut count = 0;
+                for and_matchers in or_matchers.iter() {
+                    for matcher in and_matchers.iter() {
                         if matcher.is_metric_name_filter() {
-                            if name.is_none() {
-                                name = matcher.text().map(|text| text.to_string())
+                            let value = matcher.text();
+                            if value != name && count > 0 {
+                                // multiple different names
+                                return None;
                             }
-                            and_matchers.remove(i);
+                            name = value;
+                            count += 1;
                             break;
                         }
                     }
                 }
+                name
             }
-            MatcherSetEnum::Or(ref mut or_matchers) => {
-                if !or_matchers.is_empty() {
-                    if let Some(metric_name) = Self::normalize_matcher_list(or_matchers) {
-                        if name.is_none() {
-                            name = Some(metric_name);
-                        }
-                        if or_matchers.len() == 1 {
-                            let and_matchers = or_matchers.pop().expect("or_matchers is not empty");
-                            return (MatcherSetEnum::And(and_matchers), name);
-                        }
+            SeriesSelector::And(and_matchers) => {
+                for matcher in and_matchers.iter() {
+                    if matcher.is_metric_name_filter() {
+                        return matcher.text();
                     }
                 }
+                None
             }
         }
-
-        (matchers, name)
-    }
-
-    fn normalize_matcher_list(matchers: &mut Vec<Vec<Matcher>>) -> Option<String> {
-        // if we have a __name__ filter, we need to ensure that all matchers have the same name
-        // if so, we pull out the name and return it while removing the __name__ filter from all matchers
-
-        // Track name filters. Use Smallvec instead of HashSet to avoid allocations
-        let mut to_remove: SmallVec<(usize, usize, bool), 4> = SmallVec::new();
-
-        let name = {
-            let mut metric_name: &str = "";
-
-            let first = matchers.first()?;
-            for (i, m) in first.iter().enumerate() {
-                if m.is_metric_name_filter() {
-                    metric_name = m.text().unwrap_or(EMPTY_TEXT);
-                    to_remove.push((0, i, first.len() == 1));
-                    break;
-                }
-            }
-
-            if metric_name.is_empty() {
-                return None;
-            }
-
-            let mut i: usize = 1;
-
-            for match_list in matchers.iter().skip(1) {
-                let mut found = false;
-                for (j, m) in match_list.iter().enumerate() {
-                    if m.is_metric_name_filter() {
-                        let value = m.text().unwrap_or(EMPTY_TEXT);
-                        if value != metric_name {
-                            return None;
-                        }
-                        found = true;
-                        to_remove.push((i, j, match_list.len() == 1));
-                        break;
-                    }
-                }
-                if !found && metric_name.is_empty() {
-                    return None;
-                }
-                i += 1;
-            }
-
-            metric_name.to_string()
-        };
-
-        // remove the __name__ filter from all matchers
-        for (i, j, remove) in to_remove.iter().rev() {
-            if *remove {
-                matchers.remove(*i);
-            } else {
-                matchers[*i].remove(*j);
-            }
-        }
-
-        Some(name)
     }
 }
 
-impl Display for MatcherSetEnum {
+impl Display for SeriesSelector {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match &self {
-            MatcherSetEnum::Or(or_matchers) => {
+            SeriesSelector::Or(or_matchers) => {
                 for (i, matchers) in or_matchers.iter().enumerate() {
                     if i > 0 {
                         write!(f, " or ")?;
                     }
-                    join_matchers(f, matchers)?;
+                    write!(f, "{matchers}")?;
                 }
                 Ok(())
             }
-            MatcherSetEnum::And(and_matchers) => join_matchers(f, and_matchers),
+            SeriesSelector::And(and_matchers) => write!(f, "{and_matchers}"),
         }
     }
 }
 
-impl Default for MatcherSetEnum {
+impl Default for SeriesSelector {
     fn default() -> Self {
-        MatcherSetEnum::And(vec![])
+        SeriesSelector::And(AndMatchers::default())
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Matchers {
-    pub name: Option<String>,
-    pub matchers: MatcherSetEnum,
+impl From<Vec<LabelFilter>> for SeriesSelector {
+    fn from(value: Vec<LabelFilter>) -> Self {
+        SeriesSelector::And(AndMatchers::new(value))
+    }
 }
-
-impl Matchers {
-    pub fn with_matchers(name: Option<String>, matchers: Vec<Matcher>) -> Self {
-        let (matchers, name) = MatcherSetEnum::And(matchers).normalize(name);
-        Matchers { name, matchers }
-    }
-
-    pub fn with_or_matchers(name: Option<String>, or_matchers: Vec<Vec<Matcher>>) -> Self {
-        if or_matchers.len() == 1 {
-            let mut or_matchers = or_matchers;
-            return Self::with_matchers(name, or_matchers.pop().expect("or_matchers is not empty"));
+impl From<Vec<Vec<LabelFilter>>> for SeriesSelector {
+    fn from(value: Vec<Vec<LabelFilter>>) -> Self {
+        if value.len() == 1 {
+            let first = value.into_iter().next().expect("value is not empty");
+            return SeriesSelector::And(AndMatchers::new(first));
         }
-        let (matchers, name) = MatcherSetEnum::Or(or_matchers).normalize(name);
-        Matchers { name, matchers }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.matchers.is_empty()
-    }
-
-    pub fn is_only_metric_name(&self) -> bool {
-        self.name.is_some() && self.matchers.is_empty()
+        let and_matchers: Vec<AndMatchers> = value.into_iter().map(AndMatchers::new).collect();
+        SeriesSelector::Or(and_matchers)
     }
 }
 
-const MATCHER_HASH_ID: u8 = 1;
-const NAME_HASH_ID: u8 = 3;
-const OR_HASH_ID: u8 = 5;
-const AND_HASH_ID: u8 = 7;
+fn join_matchers(f: &mut Formatter<'_>, v: &[LabelFilter]) -> fmt::Result {
+    let mut measurement: &str = "";
+    let mut idx = 0;
+    let mut has_name = false;
+    let mut name_count = 0;
 
-impl Hash for Matchers {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        if let Some(name) = &self.name {
-            state.write_u8(NAME_HASH_ID);
-            name.hash(state);
-        }
-        if !self.matchers.is_empty() {
-            state.write_u8(MATCHER_HASH_ID);
-            // constants added here since an empty Vec<Matcher> is equivalent to an empty Vec<Vec<Matcher>>()
-            match &self.matchers {
-                MatcherSetEnum::Or(_) => {
-                    state.write_u8(OR_HASH_ID);
-                }
-                MatcherSetEnum::And(_) => {
-                    state.write_u8(AND_HASH_ID);
-                }
-            }
-            self.matchers.hash(state);
-        }
-    }
-}
-
-impl Display for Matchers {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        if self.is_empty() {
-            write!(f, "{{}}")?;
-            return Ok(());
-        }
-
-        if let Some(name) = &self.name {
-            write!(f, "{}", escape_ident(name))?;
-        }
-
-        if self.is_only_metric_name() {
-            return Ok(());
-        }
-
-        write!(f, "{{{}}}", &self.matchers)?;
-        Ok(())
-    }
-}
-
-fn join_matchers(f: &mut Formatter<'_>, v: &[Matcher]) -> fmt::Result {
+    // first check if we have a __name__ matcher
     for (i, matcher) in v.iter().enumerate() {
-        if i > 0 {
-            write!(f, ", ")?;
+        if matcher.label == METRIC_NAME_LABEL {
+            name_count += 1;
+            if name_count > 1 {
+                // multiple __name__ matchers - ignore all
+                has_name = false;
+                measurement = "";
+                break;
+            }
+            if matcher.matcher.op() == MatchOp::Equal {
+                idx = i;
+                measurement = matcher.text().unwrap_or(EMPTY_TEXT);
+                has_name = true;
+                continue;
+            }
+        }
+    }
+
+    if has_name && v.len() == 1 {
+        // only __name__ matcher
+        write!(f, "{measurement}")?;
+        return Ok(());
+    }
+
+    write!(f, "{measurement}{{")?;
+    let len = v.len();
+    for (i, matcher) in v.iter().enumerate() {
+        if has_name && i == idx {
+            continue;
         }
         write!(f, "{matcher}")?;
+        if i < len - 1 {
+            write!(f, ",")?;
+        }
     }
+    write!(f, "}}")?;
 
     Ok(())
 }

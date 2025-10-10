@@ -4,7 +4,7 @@ use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_mat
 use crate::commands::process_label_values_request;
 use crate::fanout::FanoutOperation;
 use crate::fanout::{FanoutTarget, exec_fanout_request_base};
-use crate::labels::matchers::Matchers;
+use crate::labels::matchers::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
@@ -40,7 +40,7 @@ impl FanoutOperation for LabelValuesFanoutOperation {
         req: LabelValuesRequest,
     ) -> ValkeyResult<LabelValuesResponse> {
         let date_range: Option<TimestampRange> = req.range.map(|x| x.into());
-        let matchers: Vec<Matchers> = deserialize_matchers_list(Some(req.filters))?;
+        let matchers: Vec<SeriesSelector> = deserialize_matchers_list(Some(req.filters))?;
         let options = MatchFilterOptions {
             date_range,
             matchers,

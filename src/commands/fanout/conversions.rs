@@ -6,7 +6,7 @@ use super::generated::{
 };
 use super::matchers::deserialize_matchers_list;
 use crate::labels::Label;
-use crate::labels::matchers::Matchers;
+use crate::labels::matchers::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
     AggregationOptions, AggregationType, BucketAlignment, MRangeOptions, MatchFilterOptions,
@@ -256,7 +256,7 @@ pub fn deserialize_match_filter_options(
     filters: Option<Vec<FanoutMatchers>>,
 ) -> ValkeyResult<MatchFilterOptions> {
     let date_range: Option<TimestampRange> = range.map(|r| r.into());
-    let matchers: Vec<Matchers> = deserialize_matchers_list(filters)?;
+    let matchers: Vec<SeriesSelector> = deserialize_matchers_list(filters)?;
     Ok(MatchFilterOptions {
         date_range,
         matchers,

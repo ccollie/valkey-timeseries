@@ -14,12 +14,11 @@
 
 use super::postings::{EMPTY_BITMAP, KeyType, Postings, PostingsBitmap, handle_equal_match};
 use super::{TimeSeriesIndex, with_timeseries_postings};
-use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
-    MatchOp, Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue,
+    AndMatchers, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
 };
 use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
@@ -35,7 +34,7 @@ use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeySt
 
 pub fn series_by_matchers(
     ctx: &Context,
-    matchers: &[Matchers],
+    matchers: &[SeriesSelector],
     range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
     if matchers.is_empty() {
@@ -59,7 +58,7 @@ pub fn series_by_matchers(
 
 pub fn series_keys_by_matchers(
     ctx: &Context,
-    matchers: &[Matchers],
+    matchers: &[SeriesSelector],
     range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<ValkeyString>> {
     if matchers.is_empty() {
@@ -83,7 +82,7 @@ pub fn series_keys_by_matchers(
 
 pub fn get_cardinality_by_matchers_list(
     ix: &TimeSeriesIndex,
-    matchers: &[Matchers],
+    matchers: &[SeriesSelector],
 ) -> ValkeyResult<u64> {
     if matchers.is_empty() {
         return Ok(0);
@@ -254,7 +253,7 @@ fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<Serie
 #[allow(dead_code)]
 pub fn postings_for_matchers(
     ix: &TimeSeriesIndex,
-    matchers: &Matchers,
+    matchers: &SeriesSelector,
 ) -> ValkeyResult<PostingsBitmap> {
     let mut state = ();
     ix.with_postings(&mut state, move |inner, _| {
@@ -266,74 +265,36 @@ pub fn postings_for_matchers(
 
 pub(crate) fn postings_for_matchers_internal<'a>(
     ix: &'a Postings,
-    matchers: &Matchers,
+    matchers: &SeriesSelector,
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    if matchers.is_empty() {
-        return Ok(Cow::Borrowed(ix.all_postings()));
-    }
-
-    let mut name_postings: Option<Cow<'a, PostingsBitmap>> = None;
-    let mut other_postings: Option<Cow<'a, PostingsBitmap>> = None;
-
-    if let Some(name) = &matchers.name {
-        let postings_for_name = ix.postings_for_label_value(METRIC_NAME_LABEL, name.as_str());
-        name_postings = Some(postings_for_name);
-    }
-
-    match &matchers.matchers {
-        MatcherSetEnum::And(matchers) => {
-            if !matchers.is_empty() {
-                let postings = process_and_matchers(ix, matchers)?;
-                other_postings = Some(postings);
-            }
-        }
-        MatcherSetEnum::Or(matchers) => {
-            let postings = process_or_matchers(ix, matchers)?;
-            other_postings = Some(postings);
-        }
-    }
-
-    match (name_postings, other_postings) {
-        (Some(name), Some(other)) => {
-            if name.cardinality() < other.cardinality() {
-                let mut result = name.into_owned();
-                result.and_inplace(&other);
-                Ok(Cow::Owned(result))
-            } else {
-                let mut result = other.into_owned();
-                result.and_inplace(&name);
-                Ok(Cow::Owned(result))
-            }
-        }
-        (Some(name), None) => Ok(name),
-        (None, Some(other)) => Ok(other),
-        _ => Ok(Cow::Borrowed(ix.all_postings())),
+    match &matchers {
+        SeriesSelector::And(matchers) => process_and_matchers(ix, matchers),
+        SeriesSelector::Or(matchers) => process_or_matchers(ix, matchers),
     }
 }
 
 fn process_or_matchers<'a>(
     ix: &'a Postings,
-    matchers: &[Vec<Matcher>],
+    matchers: &[AndMatchers],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    if matchers.len() == 1 {
-        let m = matchers
-            .first()
-            .expect("Out of bounds error running matchers");
-        process_and_matchers(ix, m)
-    } else {
-        let mut result = PostingsBitmap::new();
-        // maybe chili here to run in parallel
-        for matcher in matchers {
-            let postings = process_and_matchers(ix, matcher)?;
-            result.or_inplace(&postings);
+    match matchers {
+        [] => Ok(Cow::Borrowed(ix.all_postings())),
+        [m] => process_and_matchers(ix, m),
+        _ => {
+            let mut result = PostingsBitmap::new();
+            // maybe chili here to run in parallel
+            for matcher in matchers {
+                let postings = process_and_matchers(ix, matcher)?;
+                result.or_inplace(&postings);
+            }
+            Ok(Cow::Owned(result))
         }
-        Ok(Cow::Owned(result))
     }
 }
 
 fn process_and_matchers<'a>(
     ix: &'a Postings,
-    matchers: &[Matcher],
+    matchers: &[LabelFilter],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     postings_for_matcher_slice(ix, matchers)
 }
@@ -342,7 +303,7 @@ fn process_and_matchers<'a>(
 /// based on the given matchers.
 pub(super) fn postings_for_matcher_slice<'a>(
     ix: &'a Postings,
-    ms: &[Matcher],
+    ms: &[LabelFilter],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     if ms.is_empty() {
         return Ok(Cow::Borrowed(ix.all_postings()));
@@ -365,7 +326,7 @@ pub(super) fn postings_for_matcher_slice<'a>(
     let mut its: SmallVec<_, 4> = SmallVec::new();
     let mut not_its: SmallVec<Cow<PostingsBitmap>, 4> = SmallVec::new();
 
-    let mut sorted_matchers: SmallVec<(&Matcher, bool, bool), 4> = SmallVec::new();
+    let mut sorted_matchers: SmallVec<(&LabelFilter, bool, bool), 4> = SmallVec::new();
     // See which label must be non-empty.
     // Optimization for a case like {l=~".", l!="1"}.
     let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(ms.len());
@@ -514,14 +475,14 @@ pub(super) fn postings_for_matcher_slice<'a>(
 }
 
 #[inline]
-fn is_subtracting_matcher(m: &Matcher, label_must_be_set: &AHashSet<&str>) -> bool {
+fn is_subtracting_matcher(m: &LabelFilter, label_must_be_set: &AHashSet<&str>) -> bool {
     if !label_must_be_set.contains(&m.label.as_str()) {
         return true;
     }
     matches!(m.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual) && m.matches("")
 }
 
-fn inverse_postings_for_matcher<'a>(ix: &'a Postings, m: &Matcher) -> Cow<'a, PostingsBitmap> {
+fn inverse_postings_for_matcher<'a>(ix: &'a Postings, m: &LabelFilter) -> Cow<'a, PostingsBitmap> {
     match &m.matcher {
         PredicateMatch::NotEqual(pv) => handle_equal_match(ix, &m.label, pv),
         // If the matcher being inverted is ="", we just want all the values.

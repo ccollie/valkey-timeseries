@@ -10,7 +10,7 @@
 //! Licensed under the Apache License, Version 2.0 (the "License");
 #[cfg(test)]
 mod tests {
-    use crate::labels::matchers::{MatchOp, Matcher, Matchers};
+    use crate::labels::matchers::{LabelFilter, MatchOp, SeriesSelector};
     use crate::labels::{InternedMetricName, Label};
     use crate::parser::metric_name::parse_metric_name;
     use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_matchers};
@@ -63,11 +63,11 @@ mod tests {
 
     fn get_labels_by_matcher(
         ix: &TimeSeriesIndex,
-        matchers: &[Matcher],
+        matchers: &[LabelFilter],
         series_data: &HashMap<SeriesRef, Vec<Label>>,
     ) -> Vec<Vec<Label>> {
         let copy = matchers.to_vec().clone();
-        let filter = Matchers::with_matchers(None, copy);
+        let filter = SeriesSelector::with_matchers(copy);
         let p = postings_for_matchers(ix, &filter).unwrap();
         let mut actual: Vec<_> = p
             .iter()
@@ -111,15 +111,15 @@ mod tests {
         }
 
         struct TestCase {
-            matchers: Vec<Matcher>,
+            matchers: Vec<LabelFilter>,
             exp: Vec<Vec<Label>>,
         }
 
         let cases = vec![
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^.*$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -130,7 +130,7 @@ mod tests {
             },
             // ----------------------------------------------------------------
             TestCase {
-                matchers: vec![Matcher::create(Equal, "n", "1").unwrap()],
+                matchers: vec![LabelFilter::create(Equal, "n", "1").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -140,20 +140,20 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(Equal, "i", "a").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(Equal, "i", "a").unwrap(),
                 ],
                 exp: to_label_vec(&[labels_from_strings(&["n", "1", "i", "a"])]),
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(Equal, "i", "missing").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(Equal, "i", "missing").unwrap(),
                 ],
                 exp: vec![],
             },
             TestCase {
-                matchers: vec![Matcher::create(Equal, "missing", "").unwrap()],
+                matchers: vec![LabelFilter::create(Equal, "missing", "").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -165,14 +165,14 @@ mod tests {
             },
             // Not equals
             TestCase {
-                matchers: vec![Matcher::create(NotEqual, "n", "1").unwrap()],
+                matchers: vec![LabelFilter::create(NotEqual, "n", "1").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "2"]),
                     labels_from_strings(&["n", "2.5"]),
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(NotEqual, "i", "").unwrap()],
+                matchers: vec![LabelFilter::create(NotEqual, "i", "").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
                     labels_from_strings(&["n", "1", "i", "b"]),
@@ -180,13 +180,13 @@ mod tests {
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(NotEqual, "missing", "").unwrap()],
+                matchers: vec![LabelFilter::create(NotEqual, "missing", "").unwrap()],
                 exp: vec![],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(NotEqual, "i", "a").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(NotEqual, "i", "a").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -197,20 +197,20 @@ mod tests {
             //----------------------------------------------------------------------------
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(Equal, "i", "a").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(Equal, "i", "a").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(Equal, "i", "missing").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(Equal, "i", "missing").unwrap(),
                 ],
                 exp: vec![],
             },
             TestCase {
-                matchers: vec![Matcher::create(Equal, "missing", "").unwrap()],
+                matchers: vec![LabelFilter::create(Equal, "missing", "").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -222,14 +222,14 @@ mod tests {
             },
             // Not equals.
             TestCase {
-                matchers: vec![Matcher::create(NotEqual, "n", "1").unwrap()],
+                matchers: vec![LabelFilter::create(NotEqual, "n", "1").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "2"]),
                     labels_from_strings(&["n", "2.5"]),
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(NotEqual, "i", "").unwrap()],
+                matchers: vec![LabelFilter::create(NotEqual, "i", "").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
                     labels_from_strings(&["n", "1", "i", "b"]),
@@ -237,13 +237,13 @@ mod tests {
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(NotEqual, "missing", "").unwrap()],
+                matchers: vec![LabelFilter::create(NotEqual, "missing", "").unwrap()],
                 exp: vec![],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(NotEqual, "i", "a").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(NotEqual, "i", "a").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -253,8 +253,8 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(NotEqual, "i", "").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(NotEqual, "i", "").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -264,7 +264,7 @@ mod tests {
             },
             // Regex.
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "n", "^1$").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "n", "^1$").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -274,15 +274,15 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^a$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^a$").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^a?$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^a?$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -290,7 +290,7 @@ mod tests {
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "^$").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "i", "^$").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "2"]),
@@ -299,15 +299,15 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^$").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1"])],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^.*$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -318,8 +318,8 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^.+$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^.+$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -329,7 +329,7 @@ mod tests {
             },
             // Not regex.
             TestCase {
-                matchers: vec![Matcher::create(RegexNotEqual, "i", "").unwrap()],
+                matchers: vec![LabelFilter::create(RegexNotEqual, "i", "").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
                     labels_from_strings(&["n", "1", "i", "b"]),
@@ -337,31 +337,31 @@ mod tests {
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexNotEqual, "n", "^1$").unwrap()],
+                matchers: vec![LabelFilter::create(RegexNotEqual, "n", "^1$").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "2"]),
                     labels_from_strings(&["n", "2.5"]),
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexNotEqual, "n", "1").unwrap()],
+                matchers: vec![LabelFilter::create(RegexNotEqual, "n", "1").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "2"]),
                     labels_from_strings(&["n", "2.5"]),
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexNotEqual, "n", "1|2.5").unwrap()],
+                matchers: vec![LabelFilter::create(RegexNotEqual, "n", "1|2.5").unwrap()],
                 exp: vec![labels_from_strings(&["n", "2"])],
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexNotEqual, "n", "(1|2.5)").unwrap()],
+                matchers: vec![LabelFilter::create(RegexNotEqual, "n", "(1|2.5)").unwrap()],
                 exp: vec![labels_from_strings(&["n", "2"])],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", "^a$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", "^a$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -371,8 +371,8 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", "^a?$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", "^a?$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "b"]),
@@ -381,8 +381,8 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", "^$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", "^$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -392,39 +392,39 @@ mod tests {
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", "^.*$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", "^.*$").unwrap(),
                 ],
                 exp: vec![],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", "^.+$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", "^.+$").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1"])],
             },
             // Combinations.
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(NotEqual, "i", "").unwrap(),
-                    Matcher::create(Equal, "i", "a").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(NotEqual, "i", "").unwrap(),
+                    LabelFilter::create(Equal, "i", "a").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
             },
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(NotEqual, "i", "b").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^(b|a).*$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(NotEqual, "i", "b").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^(b|a).*$").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
             },
             // Set optimization for Regex.
             // Refer to https://github.com/prometheus/prometheus/issues/2651.
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "n", "1|2").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "n", "1|2").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -434,25 +434,25 @@ mod tests {
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "a|b").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "i", "a|b").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
                     labels_from_strings(&["n", "1", "i", "b"]),
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "(a|b)").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "i", "(a|b)").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1", "i", "a"]),
                     labels_from_strings(&["n", "1", "i", "b"]),
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "n", "x1|2").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "n", "x1|2").unwrap()],
                 exp: vec![labels_from_strings(&["n", "2"])],
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "n", "2|2.5").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "n", "2|2.5").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "2"]),
                     labels_from_strings(&["n", "2.5"]),
@@ -460,7 +460,7 @@ mod tests {
             },
             // Empty value.
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "c||d").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "i", "c||d").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "2"]),
@@ -468,7 +468,7 @@ mod tests {
                 ]),
             },
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", "(c||d)").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "i", "(c||d)").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "2"]),
@@ -477,7 +477,7 @@ mod tests {
             },
             // Test shortcut for i=~".*"
             TestCase {
-                matchers: vec![Matcher::create(RegexEqual, "i", ".*").unwrap()],
+                matchers: vec![LabelFilter::create(RegexEqual, "i", ".*").unwrap()],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
                     labels_from_strings(&["n", "1", "i", "a"]),
@@ -490,8 +490,8 @@ mod tests {
             // Test shortcut for n=~".*" and i=~"^.*$"
             TestCase {
                 matchers: vec![
-                    Matcher::create(RegexEqual, "n", ".*").unwrap(),
-                    Matcher::create(RegexEqual, "i", "^.*$").unwrap(),
+                    LabelFilter::create(RegexEqual, "n", ".*").unwrap(),
+                    LabelFilter::create(RegexEqual, "i", "^.*$").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -505,37 +505,37 @@ mod tests {
             // Test shortcut for n=~"^.*$"
             TestCase {
                 matchers: vec![
-                    Matcher::create(RegexEqual, "n", "^.*$").unwrap(),
-                    Matcher::create(Equal, "i", "a").unwrap(),
+                    LabelFilter::create(RegexEqual, "n", "^.*$").unwrap(),
+                    LabelFilter::create(Equal, "i", "a").unwrap(),
                 ],
                 exp: vec![labels_from_strings(&["n", "1", "i", "a"])],
             },
             // Test shortcut for i!~".*"
             TestCase {
-                matchers: vec![Matcher::create(RegexNotEqual, "i", ".*").unwrap()],
+                matchers: vec![LabelFilter::create(RegexNotEqual, "i", ".*").unwrap()],
                 exp: vec![],
             },
             // Test shortcut for n!~"^.*$",  i!~".*". First one triggers empty result.
             TestCase {
                 matchers: vec![
-                    Matcher::create(RegexNotEqual, "n", "^.*$").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", ".*").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "n", "^.*$").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", ".*").unwrap(),
                 ],
                 exp: vec![],
             },
             // Test shortcut i!~".*"
             TestCase {
                 matchers: vec![
-                    Matcher::create(RegexEqual, "n", ".*").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", ".*").unwrap(),
+                    LabelFilter::create(RegexEqual, "n", ".*").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", ".*").unwrap(),
                 ],
                 exp: vec![],
             },
             // Test shortcut i!~".+"
             TestCase {
                 matchers: vec![
-                    Matcher::create(RegexEqual, "n", ".*").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", ".+").unwrap(),
+                    LabelFilter::create(RegexEqual, "n", ".*").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", ".+").unwrap(),
                 ],
                 exp: to_label_vec(&[
                     labels_from_strings(&["n", "1"]),
@@ -546,8 +546,8 @@ mod tests {
             // Test shortcut i!~"^.*$"
             TestCase {
                 matchers: vec![
-                    Matcher::create(Equal, "n", "1").unwrap(),
-                    Matcher::create(RegexNotEqual, "i", "^.*$").unwrap(),
+                    LabelFilter::create(Equal, "n", "1").unwrap(),
+                    LabelFilter::create(RegexNotEqual, "i", "^.*$").unwrap(),
                 ],
                 exp: vec![],
             },
@@ -611,14 +611,32 @@ mod tests {
         }
 
         let series_data = HashMap::from([
-            (1, parse_metric(r#"http_requests{status="200", method="GET"}"#)),
-            (2, parse_metric(r#"http_requests{status="200", method="POST"}"#)),
-            (3, parse_metric(r#"http_requests{status="404", method="GET"}"#)),
-            (4, parse_metric(r#"http_requests{status="500", method="POST"}"#)),
+            (
+                1,
+                parse_metric(r#"http_requests{status="200", method="GET"}"#),
+            ),
+            (
+                2,
+                parse_metric(r#"http_requests{status="200", method="POST"}"#),
+            ),
+            (
+                3,
+                parse_metric(r#"http_requests{status="404", method="GET"}"#),
+            ),
+            (
+                4,
+                parse_metric(r#"http_requests{status="500", method="POST"}"#),
+            ),
             (5, parse_metric(r#"cpu_usage{host="server1", env="prod"}"#)),
             (6, parse_metric(r#"cpu_usage{host="server2", env="prod"}"#)),
-            (7, parse_metric(r#"memory_usage{host="server1", env="staging"}"#)),
-            (8, parse_metric(r#"memory_usage{host="server2", env="staging"}"#)),
+            (
+                7,
+                parse_metric(r#"memory_usage{host="server1", env="staging"}"#),
+            ),
+            (
+                8,
+                parse_metric(r#"memory_usage{host="server2", env="staging"}"#),
+            ),
         ]);
 
         for (&series_ref, metric) in series_data.iter() {
@@ -626,42 +644,19 @@ mod tests {
             add_series(&mut ix, &mut labels_map, series_ref, &labels);
         }
 
-        fn or_matchers_to_string(or_matchers: &Vec<Vec<Matcher>>) -> String {
-            let matcher = Matchers::with_or_matchers(None, or_matchers.clone());
-            matcher.to_string()
-        }
-
         struct TestCase {
             name: &'static str,
-            or_matchers: Vec<Vec<Matcher>>,
-            exp: &'static [&'static str]
+            or_matchers: Vec<Vec<LabelFilter>>,
+            exp: &'static [&'static str],
         }
 
         let cases = vec![
-            // OR with not-equal matchers
-            TestCase {
-                name: "OR with not-equal matchers for status codes",
-                or_matchers: vec![
-                    vec![
-                        Matcher::create(Equal, "__name__", "http_requests").unwrap(),
-                        Matcher::create(NotEqual, "status", "200").unwrap(),
-                    ],
-                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
-                ],
-                exp: &[
-                    r#"http_requests{status="404",method="GET"}"#,
-                    r#"http_requests{status="500",method="POST"}"#,
-                    r#"cpu_usage{host="server1",env="prod"}"#,
-                    r#"cpu_usage{host="server2",env="prod"}"#,
-                ],
-            },
-            // ------------------------------------------------
             // Simple OR with two branches - match different status codes
             TestCase {
                 name: "OR matching status 200 or 404",
                 or_matchers: vec![
-                    vec![Matcher::create(Equal, "status", "200").unwrap()],
-                    vec![Matcher::create(Equal, "status", "404").unwrap()],
+                    vec![LabelFilter::create(Equal, "status", "200").unwrap()],
+                    vec![LabelFilter::create(Equal, "status", "404").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="200", method="GET"}"#,
@@ -673,9 +668,9 @@ mod tests {
             TestCase {
                 name: "OR matching multiple metric names",
                 or_matchers: vec![
-                    vec![Matcher::create(Equal, "__name__", "http_requests").unwrap()],
-                    vec![Matcher::create(Equal, "__name__", "cpu_usage").unwrap()],
-                    vec![Matcher::create(Equal, "__name__", "memory_usage").unwrap()],
+                    vec![LabelFilter::create(Equal, "__name__", "http_requests").unwrap()],
+                    vec![LabelFilter::create(Equal, "__name__", "cpu_usage").unwrap()],
+                    vec![LabelFilter::create(Equal, "__name__", "memory_usage").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="200", method="GET"}"#,
@@ -693,12 +688,12 @@ mod tests {
                 name: "OR with AND conditions - specific host and environment combinations",
                 or_matchers: vec![
                     vec![
-                        Matcher::create(Equal, "host", "server1").unwrap(),
-                        Matcher::create(Equal, "env", "prod").unwrap(),
+                        LabelFilter::create(Equal, "host", "server1").unwrap(),
+                        LabelFilter::create(Equal, "env", "prod").unwrap(),
                     ],
                     vec![
-                        Matcher::create(Equal, "host", "server2").unwrap(),
-                        Matcher::create(Equal, "env", "staging").unwrap(),
+                        LabelFilter::create(Equal, "host", "server2").unwrap(),
+                        LabelFilter::create(Equal, "env", "staging").unwrap(),
                     ],
                 ],
                 exp: &[
@@ -710,8 +705,8 @@ mod tests {
             TestCase {
                 name: "OR with regex matchers for HTTP methods",
                 or_matchers: vec![
-                    vec![Matcher::create(RegexEqual, "method", "^GET$").unwrap()],
-                    vec![Matcher::create(RegexEqual, "method", "^POST$").unwrap()],
+                    vec![LabelFilter::create(RegexEqual, "method", "^GET$").unwrap()],
+                    vec![LabelFilter::create(RegexEqual, "method", "^POST$").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="200", method="GET"}"#,
@@ -725,10 +720,10 @@ mod tests {
                 name: "OR with not-equal matchers for status codes",
                 or_matchers: vec![
                     vec![
-                        Matcher::create(Equal, "__name__", "http_requests").unwrap(),
-                        Matcher::create(NotEqual, "status", "200").unwrap(),
+                        LabelFilter::create(Equal, "__name__", "http_requests").unwrap(),
+                        LabelFilter::create(NotEqual, "status", "200").unwrap(),
                     ],
-                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                    vec![LabelFilter::create(Equal, "env", "prod").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="404",method="GET"}"#,
@@ -741,8 +736,8 @@ mod tests {
             TestCase {
                 name: "OR with one empty branch and one valid branch",
                 or_matchers: vec![
-                    vec![Matcher::create(Equal, "status", "999").unwrap()],
-                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                    vec![LabelFilter::create(Equal, "status", "999").unwrap()],
+                    vec![LabelFilter::create(Equal, "env", "prod").unwrap()],
                 ],
                 exp: &[
                     r#"cpu_usage{host="server1",env="prod"}"#,
@@ -753,8 +748,8 @@ mod tests {
             TestCase {
                 name: "OR with all empty branches - no matches",
                 or_matchers: vec![
-                    vec![Matcher::create(Equal, "status", "999").unwrap()],
-                    vec![Matcher::create(Equal, "env", "development").unwrap()],
+                    vec![LabelFilter::create(Equal, "status", "999").unwrap()],
+                    vec![LabelFilter::create(Equal, "env", "development").unwrap()],
                 ],
                 exp: &[],
             },
@@ -762,10 +757,10 @@ mod tests {
             TestCase {
                 name: "OR with overlapping conditions",
                 or_matchers: vec![
-                    vec![Matcher::create(Equal, "__name__", "http_requests").unwrap()],
+                    vec![LabelFilter::create(Equal, "__name__", "http_requests").unwrap()],
                     vec![
-                        Matcher::create(Equal, "__name__", "http_requests").unwrap(),
-                        Matcher::create(Equal, "status", "200").unwrap(),
+                        LabelFilter::create(Equal, "__name__", "http_requests").unwrap(),
+                        LabelFilter::create(Equal, "status", "200").unwrap(),
                     ],
                 ],
                 exp: &[
@@ -779,8 +774,8 @@ mod tests {
             TestCase {
                 name: "OR with regex not-equal for methods",
                 or_matchers: vec![
-                    vec![Matcher::create(RegexNotEqual, "method", "^GET$").unwrap()],
-                    vec![Matcher::create(Equal, "env", "staging").unwrap()],
+                    vec![LabelFilter::create(RegexNotEqual, "method", "^GET$").unwrap()],
+                    vec![LabelFilter::create(Equal, "env", "staging").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="200",method="POST"}"#,
@@ -795,8 +790,8 @@ mod tests {
             TestCase {
                 name: "OR with complex regex patterns",
                 or_matchers: vec![
-                    vec![Matcher::create(RegexEqual, "status", "^[24]\\d{2}$").unwrap()],
-                    vec![Matcher::create(RegexEqual, "host", "^server[12]$").unwrap()],
+                    vec![LabelFilter::create(RegexEqual, "status", "^[24]\\d{2}$").unwrap()],
+                    vec![LabelFilter::create(RegexEqual, "host", "^server[12]$").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="200",method="GET"}"#,
@@ -812,8 +807,8 @@ mod tests {
             TestCase {
                 name: "OR with missing label checks",
                 or_matchers: vec![
-                    vec![Matcher::create(Equal, "nonexistent_label", "").unwrap()],
-                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                    vec![LabelFilter::create(Equal, "nonexistent_label", "").unwrap()],
+                    vec![LabelFilter::create(Equal, "env", "prod").unwrap()],
                 ],
                 exp: &[
                     r#"http_requests{status="200",method="GET"}"#,
@@ -831,12 +826,12 @@ mod tests {
                 name: "OR mixing positive and negative matchers",
                 or_matchers: vec![
                     vec![
-                        Matcher::create(Equal, "metric_name", "http_requests").unwrap(),
-                        Matcher::create(RegexEqual, "method", "^GET|POST$").unwrap(),
+                        LabelFilter::create(Equal, "__name__", "http_requests").unwrap(),
+                        LabelFilter::create(RegexEqual, "method", "^GET|POST$").unwrap(),
                     ],
                     vec![
-                        Matcher::create(Equal, "env", "staging").unwrap(),
-                        Matcher::create(NotEqual, "host", "server2").unwrap(),
+                        LabelFilter::create(Equal, "env", "staging").unwrap(),
+                        LabelFilter::create(NotEqual, "host", "server2").unwrap(),
                     ],
                 ],
                 exp: &[
@@ -851,7 +846,7 @@ mod tests {
 
         for case in cases {
             let name = case.name;
-            let filter = Matchers::with_or_matchers(None, case.or_matchers.clone());
+            let filter: SeriesSelector = case.or_matchers.into();
             let actual = postings_for_matchers(&ix, &filter).unwrap();
             let actual_ids: HashSet<SeriesRef> = actual.iter().collect();
 
@@ -893,7 +888,7 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(",\n");
 
-                let matcher = or_matchers_to_string(&case.or_matchers);
+                let matcher = filter.to_string();
 
                 panic!(
                     "Case '{name}': \nMatcher: {matcher}\nExpected: {expected}\nMissing: {missing}",
@@ -907,7 +902,8 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(",\n");
 
-                let matcher = or_matchers_to_string(&case.or_matchers);
+                let matcher = filter.to_string();
+
                 panic!(
                     "Test case '{name}': \nMatcher: {matcher}\nunexpected extra metrics found: {extra}",
                 );
@@ -1005,10 +1001,10 @@ mod tests {
 
         // Test more queries after rename
         let matchers = vec![
-            Matcher::create(MatchOp::Equal, "instance", "server1").unwrap(),
-            Matcher::create(MatchOp::Equal, "region", "us-west-2").unwrap(),
+            LabelFilter::create(MatchOp::Equal, "instance", "server1").unwrap(),
+            LabelFilter::create(MatchOp::Equal, "region", "us-west-2").unwrap(),
         ];
-        let filter = Matchers::with_matchers(None, matchers);
+        let filter = SeriesSelector::with_matchers(matchers);
 
         let complex_query_result = postings_for_matchers(&index, &filter).unwrap();
         assert!(
@@ -1017,10 +1013,10 @@ mod tests {
         );
 
         let regex_matchers = vec![
-            Matcher::create(MatchOp::RegexEqual, "instance", "server.*").unwrap(),
-            Matcher::create(MatchOp::Equal, "env", "prod").unwrap(),
+            LabelFilter::create(MatchOp::RegexEqual, "instance", "server.*").unwrap(),
+            LabelFilter::create(MatchOp::Equal, "env", "prod").unwrap(),
         ];
-        let regex_filter = Matchers::with_matchers(None, regex_matchers);
+        let regex_filter = SeriesSelector::with_matchers(regex_matchers);
 
         let regex_query_result = postings_for_matchers(&index, &regex_filter).unwrap();
         assert!(

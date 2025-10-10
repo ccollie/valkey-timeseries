@@ -1,7 +1,7 @@
 pub(crate) use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::labels::Label;
-use crate::labels::matchers::Matchers;
+use crate::labels::matchers::SeriesSelector;
 use crate::series::{TimestampRange, ValueFilter};
 use valkey_module::{ValkeyString, ValkeyValue};
 
@@ -17,12 +17,12 @@ pub struct AggregationOptions {
 #[derive(Default, Clone, Debug)]
 pub struct MatchFilterOptions {
     pub date_range: Option<TimestampRange>,
-    pub matchers: Vec<Matchers>,
+    pub matchers: Vec<SeriesSelector>,
     pub limit: Option<usize>,
 }
 
-impl From<Vec<Matchers>> for MatchFilterOptions {
-    fn from(matchers: Vec<Matchers>) -> Self {
+impl From<Vec<SeriesSelector>> for MatchFilterOptions {
+    fn from(matchers: Vec<SeriesSelector>) -> Self {
         Self {
             matchers,
             ..Default::default()
@@ -30,8 +30,8 @@ impl From<Vec<Matchers>> for MatchFilterOptions {
     }
 }
 
-impl From<Matchers> for MatchFilterOptions {
-    fn from(matcher: Matchers) -> Self {
+impl From<SeriesSelector> for MatchFilterOptions {
+    fn from(matcher: SeriesSelector) -> Self {
         Self {
             matchers: vec![matcher],
             ..Default::default()
@@ -61,7 +61,7 @@ pub struct MRangeOptions {
     pub aggregation: Option<AggregationOptions>,
     pub timestamp_filter: Option<Vec<Timestamp>>,
     pub value_filter: Option<ValueFilter>,
-    pub filters: Vec<Matchers>,
+    pub filters: Vec<SeriesSelector>,
     pub with_labels: bool,
     pub selected_labels: Vec<String>,
     pub grouping: Option<RangeGroupingOptions>,
@@ -99,7 +99,7 @@ impl From<MRangeSeriesResult> for ValkeyValue {
 #[derive(Debug, Default, Clone)]
 pub struct MGetRequest {
     pub with_labels: bool,
-    pub filters: Vec<Matchers>,
+    pub filters: Vec<SeriesSelector>,
     pub selected_labels: Vec<String>,
     pub latest: bool,
 }

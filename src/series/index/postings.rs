@@ -1,7 +1,7 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
 use crate::common::hash::IntMap;
-use crate::labels::matchers::{Matcher, PredicateMatch, PredicateValue};
+use crate::labels::matchers::{LabelFilter, PredicateMatch, PredicateValue};
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
@@ -324,7 +324,7 @@ impl Postings {
         }
     }
 
-    pub fn postings_for_matcher(&'_ self, matcher: &Matcher) -> Cow<'_, PostingsBitmap> {
+    pub fn postings_for_matcher(&'_ self, matcher: &LabelFilter) -> Cow<'_, PostingsBitmap> {
         match matcher.matcher {
             PredicateMatch::Equal(ref value) => handle_equal_match(self, &matcher.label, value),
             PredicateMatch::NotEqual(ref value) => {
@@ -569,7 +569,7 @@ pub(super) fn handle_not_equal_match<'a>(
 
 pub(super) fn handle_regex_equal_match<'a>(
     postings: &'a Postings,
-    matcher: &Matcher,
+    matcher: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
     if matcher.matches_empty() {
         return postings.postings_without_label(&matcher.label);
@@ -584,7 +584,7 @@ pub(super) fn handle_regex_equal_match<'a>(
 
 pub(super) fn handle_regex_not_equal_match<'a>(
     postings: &'a Postings,
-    matcher: &Matcher,
+    matcher: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
     let matches_empty = matcher.matches_empty();
     if matches_empty {

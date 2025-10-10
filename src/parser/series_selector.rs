@@ -1,6 +1,6 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::matchers::{
-    MatchOp, Matcher, Matchers, PredicateMatch, PredicateValue, ValueList,
+    AndMatchers, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector, ValueList,
 };
 use crate::parser::lex::{Token, expect_one_of_tokens, expect_token};
 use crate::parser::parse_error::unexpected;
@@ -39,7 +39,7 @@ const SECONDARY_TOKENS: &[Token] = &[
 ///   * `{"my.dotted.metric", region="east"}` # New style
 ///
 ///  Produces a list of matchers, where each matcher is a label filter.
-pub fn parse_series_selector(s: &str) -> ParseResult<Matchers> {
+pub fn parse_series_selector(s: &str) -> ParseResult<SeriesSelector> {
     if s.is_empty() {
         return Err(ParseError::EmptySeriesSelector);
     }
@@ -49,7 +49,7 @@ pub fn parse_series_selector(s: &str) -> ParseResult<Matchers> {
     Ok(result)
 }
 
-pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<Matchers> {
+pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
     let (tok, text) = expect_one_of_tokens(p, INITIAL_TOKENS)?;
@@ -69,14 +69,14 @@ pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResul
 
     let (tok, _) = expect_one_of_tokens(p, SECONDARY_TOKENS)?;
     match tok {
-        Eof => Ok(Matchers {
-            name: Some(text),
-            ..Default::default()
-        }),
+        Eof => {
+            let matcher = LabelFilter::equals(METRIC_NAME_LABEL.into(), &text);
+            Ok(SeriesSelector::with_matchers(vec![matcher]))
+        }
         LeftBrace => parse_prometheus_selector_internal(p, text),
         _ => {
             let matcher = parse_redis_ts_predicate(text, tok, p)?;
-            Ok(Matchers::with_matchers(None, vec![matcher]))
+            Ok(SeriesSelector::with_matchers(vec![matcher]))
         }
     }
 }
@@ -84,7 +84,7 @@ pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResul
 fn parse_prometheus_selector_internal(
     lex: &mut Lexer<Token>,
     name: String,
-) -> ParseResult<Matchers> {
+) -> ParseResult<SeriesSelector> {
     let name = if name.is_empty() { None } else { Some(name) };
     // LeftBrace already consumed
     parse_label_filters(lex, name)
@@ -95,22 +95,22 @@ fn parse_redis_ts_predicate(
     label: String,
     operator_token: Token,
     lex: &mut Lexer<Token>,
-) -> ParseResult<Matcher> {
+) -> ParseResult<LabelFilter> {
     let op: MatchOp = operator_token.try_into()?;
 
     if op.is_regex() {
         // we expect a string literal
         let value = parse_string_literal(lex)?;
-        Matcher::create(op, label, value)
+        LabelFilter::create(op, label, value)
     } else {
         // value can be a string or a list of strings, or empty
         let value = parse_matcher_value(lex)?;
         match op {
-            MatchOp::Equal => Ok(Matcher {
+            MatchOp::Equal => Ok(LabelFilter {
                 label,
                 matcher: PredicateMatch::Equal(value),
             }),
-            MatchOp::NotEqual => Ok(Matcher {
+            MatchOp::NotEqual => Ok(LabelFilter {
                 label,
                 matcher: PredicateMatch::NotEqual(value),
             }),
@@ -123,25 +123,34 @@ fn parse_redis_ts_predicate(
 ///
 /// `{` [ <label_name> <match_op> <match_string>, ... [or <label_name> <match_op> <match_string>, ...] `}`
 ///
-fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<Matchers> {
+fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
     // left brace already consumed
 
-    let mut or_matchers: Vec<Vec<Matcher>> = Vec::new();
-    let mut matchers: Vec<Matcher> = Vec::new();
+    let mut or_matchers: Vec<AndMatchers> = Vec::new();
+    let mut matchers: Vec<LabelFilter> = Vec::new();
     let mut has_or_matchers = false;
 
     // the underscore here is ugly but gets rid of the unused_assignment warning
     let mut _last_token = LeftBrace;
+    let mut _has_metric_name_filter = false;
 
     loop {
         if has_or_matchers && !matchers.is_empty() {
             let last_matchers = std::mem::take(&mut matchers);
-            or_matchers.push(last_matchers);
+            let matchers = AndMatchers(last_matchers);
+            or_matchers.push(matchers);
         }
 
-        (matchers, _last_token) = parse_label_filters_internal(p)?;
+        (matchers, _last_token, _has_metric_name_filter) = parse_label_filters_internal(p)?;
+        // if name has a value, it must be added to each or_matchers
+        if let Some(name) = &name
+            && !_has_metric_name_filter
+        {
+            let metric_name_matcher = LabelFilter::equals(METRIC_NAME_LABEL.into(), name);
+            matchers.push(metric_name_matcher);
+        }
 
         match _last_token {
             RightBrace => {
@@ -163,23 +172,26 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
 
     if has_or_matchers {
         if !matchers.is_empty() {
+            let matchers = AndMatchers(matchers);
             or_matchers.push(matchers);
         }
         // todo: validate name
-        return Ok(Matchers::with_or_matchers(name, or_matchers));
+        return Ok(SeriesSelector::Or(or_matchers));
     }
 
-    Ok(Matchers::with_matchers(name, matchers))
+    Ok(SeriesSelector::with_matchers(matchers))
 }
 
 /// parse_label_filters parses a set of label matchers.
 ///
 /// [ <label_name> <match_op> <match_string>, ... ]
 ///
-fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matcher>, Token)> {
+fn parse_label_filters_internal(
+    p: &mut Lexer<Token>,
+) -> ParseResult<(Vec<LabelFilter>, Token, bool)> {
     use Token::*;
 
-    let mut matchers: Vec<Matcher> = vec![];
+    let mut matchers: Vec<LabelFilter> = vec![];
     let mut metric_name_seen = false;
 
     loop {
@@ -212,7 +224,7 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
         };
 
         if tok == RightBrace || tok == OpOr {
-            return Ok((matchers, tok));
+            return Ok((matchers, tok, metric_name_seen));
         }
     }
 }
@@ -224,7 +236,7 @@ fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matche
 fn parse_label_filter(
     p: &mut Lexer<Token>,
     accept_single: bool,
-) -> ParseResult<(Matcher, Option<Token>)> {
+) -> ParseResult<(LabelFilter, Option<Token>)> {
     use Token::*;
 
     let label = expect_label_name(p)?;
@@ -258,7 +270,7 @@ fn parse_label_filter(
 
     match tok {
         Comma | RightBrace | OpOr => {
-            let matcher = Matcher {
+            let matcher = LabelFilter {
                 label: METRIC_NAME_LABEL.into(),
                 matcher: PredicateMatch::Equal(PredicateValue::String(label)),
             };
@@ -270,19 +282,19 @@ fn parse_label_filter(
 
     if op.is_regex() {
         let value = parse_string_literal(p)?;
-        Ok((Matcher::create(op, label, value)?, None))
+        Ok((LabelFilter::create(op, label, value)?, None))
     } else {
         let value = parse_matcher_value(p)?;
         match op {
             MatchOp::Equal => Ok((
-                Matcher {
+                LabelFilter {
                     label,
                     matcher: PredicateMatch::Equal(value),
                 },
                 None,
             )),
             MatchOp::NotEqual => Ok((
-                Matcher {
+                LabelFilter {
                     label,
                     matcher: PredicateMatch::NotEqual(value),
                 },

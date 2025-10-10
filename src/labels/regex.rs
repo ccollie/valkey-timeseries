@@ -1,5 +1,4 @@
 use crate::parser::ParseError;
-use enquote::unescape;
 use regex::{Regex, RegexBuilder};
 
 /// Sets the approximate size limit, in bytes, of the compiled regex.
@@ -88,9 +87,7 @@ pub fn try_escape_for_repeat_re(re: &str) -> String {
 ///
 /// Regexes used in PromQL are fully anchored.
 fn try_parse_re(original_re: &str) -> Result<Regex, ParseError> {
-    let re = format!(
-        "^(?:{original_re})$",
-    );
+    let re = format!("^(?:{original_re})$",);
 
     // flags to match Prometheus' behavior
     RegexBuilder::new(&re)

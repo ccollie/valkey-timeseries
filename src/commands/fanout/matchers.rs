@@ -3,12 +3,13 @@ use super::generated::{
     Matchers as FanoutMatchers, OrMatcherList, matcher, matchers,
 };
 use crate::labels::matchers::{
-    Matcher, MatcherSetEnum, Matchers, PredicateMatch, PredicateValue, RegexMatcher, ValueList,
+    AndMatchers, LabelFilter, PredicateMatch, PredicateValue, RegexMatcher, SeriesSelector,
+    ValueList,
 };
 use valkey_module::{ValkeyError, ValkeyResult};
 
-impl From<&Matcher> for FanoutMatcher {
-    fn from(source: &Matcher) -> Self {
+impl From<&LabelFilter> for FanoutMatcher {
+    fn from(source: &LabelFilter) -> Self {
         fn get_predicate_value(value: &PredicateValue) -> matcher::Value {
             match value {
                 PredicateValue::Empty => matcher::Value::Empty(true),
@@ -52,16 +53,16 @@ impl From<&Matcher> for FanoutMatcher {
     }
 }
 
-impl From<&Matchers> for FanoutMatchers {
-    fn from(value: &Matchers) -> Self {
-        fn decompose_and_matchers(dest: &mut Vec<FanoutMatcher>, matchers: &[Matcher]) {
+impl From<&SeriesSelector> for FanoutMatchers {
+    fn from(value: &SeriesSelector) -> Self {
+        fn decompose_and_matchers(dest: &mut Vec<FanoutMatcher>, matchers: &AndMatchers) {
             for matcher in matchers.iter() {
                 dest.push(matcher.into());
             }
         }
 
-        match &value.matchers {
-            MatcherSetEnum::Or(lists) => {
+        match &value {
+            SeriesSelector::Or(lists) => {
                 let mut or_matchers = Vec::with_capacity(lists.len());
                 for matcher_list in lists.iter() {
                     let mut converted = Vec::with_capacity(matcher_list.len());
@@ -75,18 +76,16 @@ impl From<&Matchers> for FanoutMatchers {
                     filters: or_matchers,
                 };
                 FanoutMatchers {
-                    name: value.name.clone(),
                     filters: Some(matchers::Filters::OrFilters(or_matchers)),
                 }
             }
-            MatcherSetEnum::And(items) => {
+            SeriesSelector::And(items) => {
                 let mut converted = Vec::with_capacity(items.len());
                 decompose_and_matchers(&mut converted, items);
                 let matcher_list = MatcherList {
                     matchers: converted,
                 };
                 FanoutMatchers {
-                    name: value.name.clone(),
                     filters: Some(matchers::Filters::AndFilters(matcher_list)),
                 }
             }
@@ -94,7 +93,9 @@ impl From<&Matchers> for FanoutMatchers {
     }
 }
 
-pub(crate) fn serialize_matchers_list(filters: &[Matchers]) -> ValkeyResult<Vec<FanoutMatchers>> {
+pub(crate) fn serialize_matchers_list(
+    filters: &[SeriesSelector],
+) -> ValkeyResult<Vec<FanoutMatchers>> {
     let mut result: Vec<FanoutMatchers> = Vec::with_capacity(filters.len());
     for filter in filters.iter() {
         let item: FanoutMatchers = filter.into();
@@ -103,30 +104,27 @@ pub(crate) fn serialize_matchers_list(filters: &[Matchers]) -> ValkeyResult<Vec<
     Ok(result)
 }
 
-impl TryFrom<&FanoutMatchers> for Matchers {
+impl TryFrom<&FanoutMatchers> for SeriesSelector {
     type Error = ValkeyError;
 
     fn try_from(value: &FanoutMatchers) -> Result<Self, Self::Error> {
-        let mut result = Matchers {
-            name: value.name.clone(),
-            ..Default::default()
-        };
+        let mut result = SeriesSelector::And(AndMatchers::default());
 
-        fn convert_list(matchers: &[FanoutMatcher]) -> ValkeyResult<Vec<Matcher>> {
+        fn convert_list(matchers: &[FanoutMatcher]) -> ValkeyResult<AndMatchers> {
             let mut result = Vec::with_capacity(matchers.len());
             for matcher in matchers.iter() {
-                let item: Matcher = matcher.try_into().map_err(|e| {
+                let item: LabelFilter = matcher.try_into().map_err(|e| {
                     ValkeyError::String(format!("TSDB: failed to convert matcher: {e:?}"))
                 })?;
                 result.push(item);
             }
-            Ok(result)
+            Ok(AndMatchers(result))
         }
 
         if let Some(filters) = &value.filters {
             match filters {
                 matchers::Filters::AndFilters(and_filters) => {
-                    result.matchers = MatcherSetEnum::And(convert_list(&and_filters.matchers)?);
+                    result = SeriesSelector::And(convert_list(&and_filters.matchers)?);
                 }
                 matchers::Filters::OrFilters(or_filters) => {
                     let mut or_matchers = Vec::new();
@@ -134,7 +132,7 @@ impl TryFrom<&FanoutMatchers> for Matchers {
                         let items = convert_list(&matcher_list.matchers)?;
                         or_matchers.push(items);
                     }
-                    result.matchers = MatcherSetEnum::Or(or_matchers);
+                    result = SeriesSelector::Or(or_matchers);
                 }
             }
         }
@@ -145,7 +143,7 @@ impl TryFrom<&FanoutMatchers> for Matchers {
 
 pub(crate) fn deserialize_matchers_list(
     filter_vec: Option<Vec<FanoutMatchers>>,
-) -> ValkeyResult<Vec<Matchers>> {
+) -> ValkeyResult<Vec<SeriesSelector>> {
     if let Some(filter_vec) = filter_vec {
         let mut filters = Vec::with_capacity(filter_vec.len());
         for filter in filter_vec.iter() {
@@ -157,7 +155,7 @@ pub(crate) fn deserialize_matchers_list(
     }
 }
 
-impl TryFrom<&FanoutMatcher> for Matcher {
+impl TryFrom<&FanoutMatcher> for LabelFilter {
     type Error = ValkeyError;
 
     fn try_from(value: &FanoutMatcher) -> Result<Self, Self::Error> {
@@ -218,7 +216,7 @@ impl TryFrom<&FanoutMatcher> for Matcher {
             return Err(ValkeyError::Str("TSDB: matcher label cannot be empty"));
         }
 
-        Ok(Matcher {
+        Ok(LabelFilter {
             label: value.label.clone(),
             matcher,
         })

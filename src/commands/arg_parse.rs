@@ -5,7 +5,7 @@ use crate::common::time::current_time_millis;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
-use crate::labels::matchers::Matchers;
+use crate::labels::matchers::SeriesSelector;
 use crate::labels::{Label, parse_series_selector};
 use crate::parser::number::parse_number;
 use crate::parser::{
@@ -696,7 +696,7 @@ pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResul
 pub fn parse_series_selector_list(
     args: &mut CommandArgIterator,
     stop_tokens: &[CommandArgToken],
-) -> ValkeyResult<Vec<Matchers>> {
+) -> ValkeyResult<Vec<SeriesSelector>> {
     let mut matchers = vec![];
 
     while let Some(next) = args.peek() {

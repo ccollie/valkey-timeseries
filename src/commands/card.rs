@@ -1,7 +1,7 @@
 use super::card_fanout_operation::exec_cardinality_fanout_request;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::fanout::is_clustered;
-use crate::labels::matchers::Matchers;
+use crate::labels::matchers::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::index::{
     get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
@@ -34,7 +34,7 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 pub fn calculate_cardinality(
     ctx: &Context,
     date_range: Option<TimestampRange>,
-    matchers: &[Matchers],
+    matchers: &[SeriesSelector],
 ) -> ValkeyResult<usize> {
     let count = match (date_range, matchers.is_empty()) {
         (None, true) => {
