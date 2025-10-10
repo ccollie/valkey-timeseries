@@ -89,9 +89,7 @@ pub fn try_escape_for_repeat_re(re: &str) -> String {
 /// Regexes used in PromQL are fully anchored.
 fn try_parse_re(original_re: &str) -> Result<Regex, ParseError> {
     let re = format!(
-        "^(?:{})$",
-        unescape(original_re, None)
-            .map_err(|_e| ParseError::InvalidRegex(original_re.to_string()))?
+        "^(?:{original_re})$",
     );
 
     // flags to match Prometheus' behavior
