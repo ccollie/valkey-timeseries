@@ -6,7 +6,7 @@ use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
-use crate::labels::{InternedLabel, InternedMetricName};
+use crate::labels::{InternedLabel, MetricName};
 use crate::series::DuplicatePolicy;
 use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk, validate_chunk_size};
 use crate::series::compaction::CompactionRule;
@@ -38,7 +38,7 @@ pub struct TimeSeries {
     /// fixed internal id used in indexing
     pub id: SeriesRef,
     /// The label/value pairs
-    pub labels: InternedMetricName,
+    pub labels: MetricName,
     /// Duration for which data is retained before automatic removal
     pub retention: Duration,
     /// Policy for handling duplicate samples
@@ -95,9 +95,9 @@ impl TimeSeries {
         // }
 
         res.labels = if let Some(labels) = options.labels {
-            InternedMetricName::new(&labels)
+            MetricName::new(&labels)
         } else {
-            InternedMetricName::default()
+            MetricName::default()
         };
         res.src_series = options.src_id;
         res.id = next_timeseries_id();

@@ -601,7 +601,7 @@ pub(super) fn handle_regex_not_equal_match<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labels::{InternedMetricName, Label};
+    use crate::labels::{Label, MetricName};
     use crate::series::time_series::TimeSeries;
 
     #[test]
@@ -1026,7 +1026,7 @@ mod tests {
         let mut postings = Postings::default();
         let mut series = TimeSeries::new();
         series.id = 1;
-        series.labels = InternedMetricName::new(&[
+        series.labels = MetricName::new(&[
             Label::new("label1", "value1"),
             Label::new("label2", "value2"),
         ]);

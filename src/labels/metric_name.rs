@@ -50,9 +50,9 @@ impl SeriesLabel for InternedLabel<'_> {
 ///
 /// The labels are stored in a sorted order to allow for efficient comparison and retrieval.
 #[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
-pub struct InternedMetricName(Vec<InternedString>);
+pub struct MetricName(Vec<InternedString>);
 
-impl GetSize for InternedMetricName {
+impl GetSize for MetricName {
     fn get_size(&self) -> usize {
         self.0
             .iter()
@@ -68,7 +68,7 @@ impl GetSize for InternedMetricName {
     }
 }
 
-impl InternedMetricName {
+impl MetricName {
     pub fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
     }
@@ -205,9 +205,9 @@ impl InternedMetricName {
     }
 }
 
-impl From<HashMap<String, String>> for InternedMetricName {
+impl From<HashMap<String, String>> for MetricName {
     fn from(map: HashMap<String, String>) -> Self {
-        let mut metric_name = InternedMetricName::with_capacity(map.len());
+        let mut metric_name = MetricName::with_capacity(map.len());
         for (key, value) in map {
             metric_name.add_label(&key, &value);
         }
@@ -215,27 +215,27 @@ impl From<HashMap<String, String>> for InternedMetricName {
     }
 }
 
-impl From<&[Label]> for InternedMetricName {
+impl From<&[Label]> for MetricName {
     fn from(labels: &[Label]) -> Self {
-        InternedMetricName::new(labels)
+        MetricName::new(labels)
     }
 }
 
-impl From<Vec<Label>> for InternedMetricName {
+impl From<Vec<Label>> for MetricName {
     fn from(labels: Vec<Label>) -> Self {
-        InternedMetricName::new(&labels)
+        MetricName::new(&labels)
     }
 }
 
-impl FromStr for InternedMetricName {
+impl FromStr for MetricName {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let labels = parse_metric_name(s)?;
-        Ok(InternedMetricName::new(&labels))
+        Ok(MetricName::new(&labels))
     }
 }
 
-impl Display for InternedMetricName {
+impl Display for MetricName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}{{", self.get_measurement())?;
         let len = self.0.len();
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_add_label() {
-        let mut metric_name = InternedMetricName::with_capacity(2);
+        let mut metric_name = MetricName::with_capacity(2);
         metric_name.add_label("key1", "value1");
         metric_name.add_label("key2", "value2");
 
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_get_measurement() {
-        let mut metric_name = InternedMetricName::default();
+        let mut metric_name = MetricName::default();
         metric_name.add_label("key1", "value1");
 
         assert_eq!(metric_name.get_measurement(), "");
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_add_labels() {
-        let mut metric_name = InternedMetricName::with_capacity(2);
+        let mut metric_name = MetricName::with_capacity(2);
 
         metric_name.add_label("key1", "value1");
         metric_name.add_label("key2", "value2");
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_sort() {
-        let mut metric_name = InternedMetricName::default();
+        let mut metric_name = MetricName::default();
         metric_name.add_label("key2", "value2");
         metric_name.add_label("key1", "value1");
         metric_name.sort();
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_len_and_is_empty() {
-        let mut metric_name = InternedMetricName::default();
+        let mut metric_name = MetricName::default();
         metric_name.add_label("key1", "value1");
         metric_name.add_label("key2", "value2");
 
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let mut metric_name = InternedMetricName::with_capacity(3);
+        let mut metric_name = MetricName::with_capacity(3);
         metric_name.add_label(METRIC_NAME_LABEL, "metric");
         metric_name.add_label("key1", "value1");
         metric_name.add_label("key2", "value2");

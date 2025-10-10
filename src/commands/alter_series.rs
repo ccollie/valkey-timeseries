@@ -1,6 +1,6 @@
 use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::parse_series_options;
-use crate::labels::InternedMetricName;
+use crate::labels::MetricName;
 use crate::series::index::with_timeseries_index;
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions, with_timeseries_mut};
 use valkey_module::{
@@ -87,9 +87,9 @@ fn update_series(
             ts_index.remove_timeseries(series);
             // update labels in series
             series.labels = if labels.is_empty() {
-                InternedMetricName::default()
+                MetricName::default()
             } else {
-                InternedMetricName::new(&labels)
+                MetricName::new(&labels)
             };
             ts_index.index_timeseries(series, key.as_slice());
         });

@@ -11,7 +11,7 @@
 #[cfg(test)]
 mod tests {
     use crate::labels::matchers::{LabelFilter, MatchOp, SeriesSelector};
-    use crate::labels::{InternedMetricName, Label};
+    use crate::labels::{Label, MetricName};
     use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_selectors};
     use crate::series::{SeriesRef, TimeSeries};
     use std::collections::{HashMap, HashSet};
@@ -603,7 +603,7 @@ mod tests {
         let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
         let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
 
-        fn parse_metric(metric_name: &str) -> InternedMetricName {
+        fn parse_metric(metric_name: &str) -> MetricName {
             metric_name.parse().unwrap()
         }
 
@@ -847,8 +847,8 @@ mod tests {
             let actual = postings_for_selectors(&ix, &filter).unwrap();
             let actual_ids: HashSet<SeriesRef> = actual.iter().collect();
 
-            let mut missing: Vec<InternedMetricName> = vec![];
-            let mut extra: Vec<InternedMetricName> = vec![];
+            let mut missing: Vec<MetricName> = vec![];
+            let mut extra: Vec<MetricName> = vec![];
 
             let mut exp_ids: HashSet<SeriesRef> = HashSet::new();
             for &metric_name in case.exp {

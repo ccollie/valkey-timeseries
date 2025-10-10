@@ -1,6 +1,6 @@
 use crate::aggregators::Aggregator;
 use crate::common::rounding::RoundingStrategy;
-use crate::labels::InternedMetricName;
+use crate::labels::MetricName;
 use crate::series::{CompactionRule, SampleDuplicatePolicy};
 use ahash::AHasher;
 use std::hash::{Hash, Hasher};
@@ -46,7 +46,7 @@ pub(super) fn calc_rounding_digest(rounding: &RoundingStrategy, digest: &mut Dig
     };
 }
 
-pub(super) fn calc_metric_name_digest(labels: &InternedMetricName, digest: &mut Digest) {
+pub(super) fn calc_metric_name_digest(labels: &MetricName, digest: &mut Digest) {
     digest.add_long_long(labels.len() as i64);
     for label in labels.iter() {
         digest.add_string_buffer(label.name.as_bytes());

@@ -1,8 +1,8 @@
-mod interned_metric_name;
 mod label;
 pub mod matchers;
+mod metric_name;
 mod regex;
 
 pub use crate::parser::series_selector::*;
-pub use interned_metric_name::*;
 pub use label::*;
+pub use metric_name::*;
