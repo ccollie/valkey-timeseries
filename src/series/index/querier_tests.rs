@@ -599,6 +599,323 @@ mod tests {
     }
 
     #[test]
+    fn test_postings_for_or_matchers() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        fn parse_metric(metric_name: &str) -> InternedMetricName {
+            let labels = parse_metric_name(metric_name).unwrap();
+            InternedMetricName::new(&labels)
+        }
+
+        let series_data = HashMap::from([
+            (1, parse_metric(r#"http_requests{status="200", method="GET"}"#)),
+            (2, parse_metric(r#"http_requests{status="200", method="POST"}"#)),
+            (3, parse_metric(r#"http_requests{status="404", method="GET"}"#)),
+            (4, parse_metric(r#"http_requests{status="500", method="POST"}"#)),
+            (5, parse_metric(r#"cpu_usage{host="server1", env="prod"}"#)),
+            (6, parse_metric(r#"cpu_usage{host="server2", env="prod"}"#)),
+            (7, parse_metric(r#"memory_usage{host="server1", env="staging"}"#)),
+            (8, parse_metric(r#"memory_usage{host="server2", env="staging"}"#)),
+        ]);
+
+        for (&series_ref, metric) in series_data.iter() {
+            let labels = metric.to_label_vec();
+            add_series(&mut ix, &mut labels_map, series_ref, &labels);
+        }
+
+        fn or_matchers_to_string(or_matchers: &Vec<Vec<Matcher>>) -> String {
+            let matcher = Matchers::with_or_matchers(None, or_matchers.clone());
+            matcher.to_string()
+        }
+
+        struct TestCase {
+            name: &'static str,
+            or_matchers: Vec<Vec<Matcher>>,
+            exp: &'static [&'static str]
+        }
+
+        let cases = vec![
+            // OR with not-equal matchers
+            TestCase {
+                name: "OR with not-equal matchers for status codes",
+                or_matchers: vec![
+                    vec![
+                        Matcher::create(Equal, "__name__", "http_requests").unwrap(),
+                        Matcher::create(NotEqual, "status", "200").unwrap(),
+                    ],
+                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="404",method="GET"}"#,
+                    r#"http_requests{status="500",method="POST"}"#,
+                    r#"cpu_usage{host="server1",env="prod"}"#,
+                    r#"cpu_usage{host="server2",env="prod"}"#,
+                ],
+            },
+            // ------------------------------------------------
+            // Simple OR with two branches - match different status codes
+            TestCase {
+                name: "OR matching status 200 or 404",
+                or_matchers: vec![
+                    vec![Matcher::create(Equal, "status", "200").unwrap()],
+                    vec![Matcher::create(Equal, "status", "404").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="200", method="GET"}"#,
+                    r#"http_requests{status="200", method="POST"}"#,
+                    r#"http_requests{status="404", method="GET"}"#,
+                ],
+            },
+            // OR with three branches - match different metric names
+            TestCase {
+                name: "OR matching multiple metric names",
+                or_matchers: vec![
+                    vec![Matcher::create(Equal, "__name__", "http_requests").unwrap()],
+                    vec![Matcher::create(Equal, "__name__", "cpu_usage").unwrap()],
+                    vec![Matcher::create(Equal, "__name__", "memory_usage").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="200", method="GET"}"#,
+                    r#"http_requests{status="200", method="POST"}"#,
+                    r#"http_requests{status="404", method="GET"}"#,
+                    r#"http_requests{status="500", method="POST"}"#,
+                    r#"cpu_usage{host="server1", env="prod"}"#,
+                    r#"cpu_usage{host="server2", env="prod"}"#,
+                    r#"memory_usage{host="server1", env="staging"}"#,
+                    r#"memory_usage{host="server2", env="staging"}"#,
+                ],
+            },
+            // OR with multiple matchers per branch (AND within OR)
+            TestCase {
+                name: "OR with AND conditions - specific host and environment combinations",
+                or_matchers: vec![
+                    vec![
+                        Matcher::create(Equal, "host", "server1").unwrap(),
+                        Matcher::create(Equal, "env", "prod").unwrap(),
+                    ],
+                    vec![
+                        Matcher::create(Equal, "host", "server2").unwrap(),
+                        Matcher::create(Equal, "env", "staging").unwrap(),
+                    ],
+                ],
+                exp: &[
+                    r#"cpu_usage{host="server1", env="prod"}"#,
+                    r#"memory_usage{host="server2", env="staging"}"#,
+                ],
+            },
+            // OR with regex matchers
+            TestCase {
+                name: "OR with regex matchers for HTTP methods",
+                or_matchers: vec![
+                    vec![Matcher::create(RegexEqual, "method", "^GET$").unwrap()],
+                    vec![Matcher::create(RegexEqual, "method", "^POST$").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="200", method="GET"}"#,
+                    r#"http_requests{status="200", method="POST"}"#,
+                    r#"http_requests{status="404", method="GET"}"#,
+                    r#"http_requests{status="500", method="POST"}"#,
+                ],
+            },
+            // OR with not-equal matchers
+            TestCase {
+                name: "OR with not-equal matchers for status codes",
+                or_matchers: vec![
+                    vec![
+                        Matcher::create(Equal, "__name__", "http_requests").unwrap(),
+                        Matcher::create(NotEqual, "status", "200").unwrap(),
+                    ],
+                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="404",method="GET"}"#,
+                    r#"http_requests{status="500",method="POST"}"#,
+                    r#"cpu_usage{host="server1",env="prod"}"#,
+                    r#"cpu_usage{host="server2",env="prod"}"#,
+                ],
+            },
+            // OR with an empty result from one branch
+            TestCase {
+                name: "OR with one empty branch and one valid branch",
+                or_matchers: vec![
+                    vec![Matcher::create(Equal, "status", "999").unwrap()],
+                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                ],
+                exp: &[
+                    r#"cpu_usage{host="server1",env="prod"}"#,
+                    r#"cpu_usage{host="server2",env="prod"}"#,
+                ],
+            },
+            // OR with all empty branches
+            TestCase {
+                name: "OR with all empty branches - no matches",
+                or_matchers: vec![
+                    vec![Matcher::create(Equal, "status", "999").unwrap()],
+                    vec![Matcher::create(Equal, "env", "development").unwrap()],
+                ],
+                exp: &[],
+            },
+            // OR with overlapping results
+            TestCase {
+                name: "OR with overlapping conditions",
+                or_matchers: vec![
+                    vec![Matcher::create(Equal, "__name__", "http_requests").unwrap()],
+                    vec![
+                        Matcher::create(Equal, "__name__", "http_requests").unwrap(),
+                        Matcher::create(Equal, "status", "200").unwrap(),
+                    ],
+                ],
+                exp: &[
+                    r#"http_requests{status="200",method="GET"}"#,
+                    r#"http_requests{status="200",method="POST"}"#,
+                    r#"http_requests{status="404",method="GET"}"#,
+                    r#"http_requests{status="500",method="POST"}"#,
+                ],
+            },
+            // OR with regex not-equal
+            TestCase {
+                name: "OR with regex not-equal for methods",
+                or_matchers: vec![
+                    vec![Matcher::create(RegexNotEqual, "method", "^GET$").unwrap()],
+                    vec![Matcher::create(Equal, "env", "staging").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="200",method="POST"}"#,
+                    r#"http_requests{status="500",method="POST"}"#,
+                    r#"cpu_usage{host="server1",env="prod"}"#,
+                    r#"cpu_usage{host="server2",env="prod"}"#,
+                    r#"memory_usage{host="server1",env="staging"}"#,
+                    r#"memory_usage{host="server2",env="staging"}"#,
+                ],
+            },
+            // OR with complex regex patterns
+            TestCase {
+                name: "OR with complex regex patterns",
+                or_matchers: vec![
+                    vec![Matcher::create(RegexEqual, "status", "^[24]\\d{2}$").unwrap()],
+                    vec![Matcher::create(RegexEqual, "host", "^server[12]$").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="200",method="GET"}"#,
+                    r#"http_requests{status="200",method="POST"}"#,
+                    r#"http_requests{status="404",method="GET"}"#,
+                    r#"cpu_usage{host="server1",env="prod"}"#,
+                    r#"cpu_usage{host="server2",env="prod"}"#,
+                    r#"memory_usage{host="server1",env="staging"}"#,
+                    r#"memory_usage{host="server2",env="staging"}"#,
+                ],
+            },
+            // OR with missing labels
+            TestCase {
+                name: "OR with missing label checks",
+                or_matchers: vec![
+                    vec![Matcher::create(Equal, "nonexistent_label", "").unwrap()],
+                    vec![Matcher::create(Equal, "env", "prod").unwrap()],
+                ],
+                exp: &[
+                    r#"http_requests{status="200",method="GET"}"#,
+                    r#"http_requests{status="200",method="POST"}"#,
+                    r#"http_requests{status="404",method="GET"}"#,
+                    r#"http_requests{status="500",method="POST"}"#,
+                    r#"cpu_usage{host="server1",env="prod"}"#,
+                    r#"cpu_usage{host="server2",env="prod"}"#,
+                    r#"memory_usage{host="server1",env="staging"}"#,
+                    r#"memory_usage{host="server2",env="staging"}"#,
+                ],
+            },
+            // OR with combination of positive and negative matchers
+            TestCase {
+                name: "OR mixing positive and negative matchers",
+                or_matchers: vec![
+                    vec![
+                        Matcher::create(Equal, "metric_name", "http_requests").unwrap(),
+                        Matcher::create(RegexEqual, "method", "^GET|POST$").unwrap(),
+                    ],
+                    vec![
+                        Matcher::create(Equal, "env", "staging").unwrap(),
+                        Matcher::create(NotEqual, "host", "server2").unwrap(),
+                    ],
+                ],
+                exp: &[
+                    r#"http_requests{status="200",method="GET"}"#,
+                    r#"http_requests{status="200",method="POST"}"#,
+                    r#"http_requests{status="404",method="GET"}"#,
+                    r#"http_requests{status="500",method="POST"}"#,
+                    r#"memory_usage{host="server1",env="staging"}"#,
+                ],
+            },
+        ];
+
+        for case in cases {
+            let name = case.name;
+            let filter = Matchers::with_or_matchers(None, case.or_matchers.clone());
+            let actual = postings_for_matchers(&ix, &filter).unwrap();
+            let actual_ids: HashSet<SeriesRef> = actual.iter().collect();
+
+            let mut missing: Vec<InternedMetricName> = vec![];
+            let mut extra: Vec<InternedMetricName> = vec![];
+
+            let mut exp_ids: HashSet<SeriesRef> = HashSet::new();
+            for &metric_name in case.exp {
+                let metric = parse_metric(metric_name);
+
+                if let Some(id) = series_data
+                    .iter()
+                    .find(|&(_, mn)| mn == &metric)
+                    .map(|(id, _)| *id)
+                {
+                    exp_ids.insert(id);
+                }
+            }
+
+            // find the difference between actual and expected
+            for &id in exp_ids.difference(&actual_ids) {
+                if let Some(metric) = series_data.get(&id) {
+                    missing.push(metric.clone());
+                }
+            }
+
+            // find items in actual but not in expected (extra items)
+            for &id in actual_ids.difference(&exp_ids) {
+                if let Some(metric) = series_data.get(&id) {
+                    extra.push(metric.clone());
+                }
+            }
+
+            if !missing.is_empty() {
+                let expected = case.exp.join(",\n");
+                let missing = missing
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+
+                let matcher = or_matchers_to_string(&case.or_matchers);
+
+                panic!(
+                    "Case '{name}': \nMatcher: {matcher}\nExpected: {expected}\nMissing: {missing}",
+                );
+            }
+
+            if !extra.is_empty() {
+                let extra = extra
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+
+                let matcher = or_matchers_to_string(&case.or_matchers);
+                panic!(
+                    "Test case '{name}': \nMatcher: {matcher}\nunexpected extra metrics found: {extra}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_querying_after_reindex() {
         let index = TimeSeriesIndex::new();
 
