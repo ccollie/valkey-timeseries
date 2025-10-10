@@ -1,6 +1,6 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::matchers::{
-    AndMatchers, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector, ValueList,
+    FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector, ValueList,
 };
 use crate::parser::lex::{Token, expect_one_of_tokens, expect_token};
 use crate::parser::parse_error::unexpected;
@@ -128,7 +128,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
 
     // left brace already consumed
 
-    let mut or_matchers: Vec<AndMatchers> = Vec::new();
+    let mut or_matchers: Vec<FilterList> = Vec::new();
     let mut matchers: Vec<LabelFilter> = Vec::new();
     let mut has_or_matchers = false;
 
@@ -139,7 +139,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
     loop {
         if has_or_matchers && !matchers.is_empty() {
             let last_matchers = std::mem::take(&mut matchers);
-            let matchers = AndMatchers(last_matchers);
+            let matchers = FilterList::new(last_matchers);
             or_matchers.push(matchers);
         }
 
@@ -172,7 +172,7 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
 
     if has_or_matchers {
         if !matchers.is_empty() {
-            let matchers = AndMatchers(matchers);
+            let matchers = FilterList::new(matchers);
             or_matchers.push(matchers);
         }
         // todo: validate name

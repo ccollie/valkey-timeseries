@@ -3,7 +3,7 @@ use super::generated::{
     Matchers as FanoutMatchers, OrMatcherList, matcher, matchers,
 };
 use crate::labels::matchers::{
-    AndMatchers, LabelFilter, PredicateMatch, PredicateValue, RegexMatcher, SeriesSelector,
+    FilterList, LabelFilter, PredicateMatch, PredicateValue, RegexMatcher, SeriesSelector,
     ValueList,
 };
 use valkey_module::{ValkeyError, ValkeyResult};
@@ -55,7 +55,7 @@ impl From<&LabelFilter> for FanoutMatcher {
 
 impl From<&SeriesSelector> for FanoutMatchers {
     fn from(value: &SeriesSelector) -> Self {
-        fn decompose_and_matchers(dest: &mut Vec<FanoutMatcher>, matchers: &AndMatchers) {
+        fn decompose_and_matchers(dest: &mut Vec<FanoutMatcher>, matchers: &FilterList) {
             for matcher in matchers.iter() {
                 dest.push(matcher.into());
             }
@@ -108,9 +108,9 @@ impl TryFrom<&FanoutMatchers> for SeriesSelector {
     type Error = ValkeyError;
 
     fn try_from(value: &FanoutMatchers) -> Result<Self, Self::Error> {
-        let mut result = SeriesSelector::And(AndMatchers::default());
+        let mut result = SeriesSelector::And(FilterList::default());
 
-        fn convert_list(matchers: &[FanoutMatcher]) -> ValkeyResult<AndMatchers> {
+        fn convert_list(matchers: &[FanoutMatcher]) -> ValkeyResult<FilterList> {
             let mut result = Vec::with_capacity(matchers.len());
             for matcher in matchers.iter() {
                 let item: LabelFilter = matcher.try_into().map_err(|e| {
@@ -118,7 +118,7 @@ impl TryFrom<&FanoutMatchers> for SeriesSelector {
                 })?;
                 result.push(item);
             }
-            Ok(AndMatchers(result))
+            Ok(FilterList::new(result))
         }
 
         if let Some(filters) = &value.filters {

@@ -3,7 +3,7 @@ use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_fil
 use super::utils::reply_with_btree_set;
 use crate::fanout::FanoutOperation;
 use crate::fanout::FanoutTarget;
-use crate::series::index::series_keys_by_matchers;
+use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
@@ -36,7 +36,7 @@ impl FanoutOperation for QueryIndexFanoutOperation {
         req: IndexQueryRequest,
     ) -> ValkeyResult<IndexQueryResponse> {
         let options = deserialize_match_filter_options(req.range, Some(req.filters))?;
-        let keys = series_keys_by_matchers(ctx, &options.matchers, None)?;
+        let keys = series_keys_by_selectors(ctx, &options.matchers, None)?;
         let keys = keys.into_iter().map(|k| k.to_string()).collect::<Vec<_>>();
         Ok(IndexQueryResponse { keys })
     }

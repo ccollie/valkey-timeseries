@@ -460,9 +460,9 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
 }
 
 #[derive(Debug, Default, Clone, Hash, PartialEq)]
-pub struct AndMatchers(pub Vec<LabelFilter>);
+pub struct FilterList(Vec<LabelFilter>);
 
-impl AndMatchers {
+impl FilterList {
     pub fn new(matchers: Vec<LabelFilter>) -> Self {
         Self(matchers)
     }
@@ -503,13 +503,13 @@ impl AndMatchers {
     }
 }
 
-impl Display for AndMatchers {
+impl Display for FilterList {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         join_matchers(f, &self.0)
     }
 }
 
-impl Deref for AndMatchers {
+impl Deref for FilterList {
     type Target = Vec<LabelFilter>;
 
     fn deref(&self) -> &Self::Target {
@@ -517,13 +517,13 @@ impl Deref for AndMatchers {
     }
 }
 
-impl DerefMut for AndMatchers {
+impl DerefMut for FilterList {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl From<Vec<LabelFilter>> for AndMatchers {
+impl From<Vec<LabelFilter>> for FilterList {
     fn from(value: Vec<LabelFilter>) -> Self {
         Self::new(value)
     }
@@ -531,17 +531,16 @@ impl From<Vec<LabelFilter>> for AndMatchers {
 
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub enum SeriesSelector {
-    Or(Vec<AndMatchers>),
-    And(AndMatchers),
+    Or(Vec<FilterList>),
+    And(FilterList),
 }
 
 impl SeriesSelector {
     pub fn with_matchers(matchers: Vec<LabelFilter>) -> Self {
-        let matchers = AndMatchers::new(matchers);
-        SeriesSelector::And(matchers)
+        SeriesSelector::And(matchers.into())
     }
 
-    pub fn with_or_matchers(or_matchers: Vec<AndMatchers>) -> Self {
+    pub fn with_or_matchers(or_matchers: Vec<FilterList>) -> Self {
         if or_matchers.len() == 1 {
             let mut or_matchers = or_matchers;
             let first = or_matchers.pop().expect("or_matchers is not empty");
@@ -631,22 +630,22 @@ impl Display for SeriesSelector {
 
 impl Default for SeriesSelector {
     fn default() -> Self {
-        SeriesSelector::And(AndMatchers::default())
+        SeriesSelector::And(FilterList::default())
     }
 }
 
 impl From<Vec<LabelFilter>> for SeriesSelector {
     fn from(value: Vec<LabelFilter>) -> Self {
-        SeriesSelector::And(AndMatchers::new(value))
+        SeriesSelector::And(FilterList::new(value))
     }
 }
 impl From<Vec<Vec<LabelFilter>>> for SeriesSelector {
     fn from(value: Vec<Vec<LabelFilter>>) -> Self {
         if value.len() == 1 {
             let first = value.into_iter().next().expect("value is not empty");
-            return SeriesSelector::And(AndMatchers::new(first));
+            return SeriesSelector::And(FilterList::new(first));
         }
-        let and_matchers: Vec<AndMatchers> = value.into_iter().map(AndMatchers::new).collect();
+        let and_matchers: Vec<FilterList> = value.into_iter().map(FilterList::new).collect();
         SeriesSelector::Or(and_matchers)
     }
 }

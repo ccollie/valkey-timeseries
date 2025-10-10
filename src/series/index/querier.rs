@@ -18,7 +18,7 @@ use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::matchers::{
-    AndMatchers, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
+    FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
 };
 use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
@@ -32,7 +32,7 @@ use std::cmp::Ordering;
 use std::str;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
-pub fn series_by_matchers(
+pub fn series_by_selectors(
     ctx: &Context,
     matchers: &[SeriesSelector],
     range: Option<TimestampRange>,
@@ -42,21 +42,21 @@ pub fn series_by_matchers(
     }
 
     with_timeseries_postings(ctx, |postings| {
-        let first = postings_for_matchers_internal(postings, &matchers[0])?;
+        let first = postings_for_selectors_internal(postings, &matchers[0])?;
         if matchers.len() == 1 {
             return collect_series(ctx, postings, first.iter(), range);
         }
 
         let mut result = first.into_owned();
         for matcher in &matchers[1..] {
-            let bitmap = postings_for_matchers_internal(postings, matcher)?;
+            let bitmap = postings_for_selectors_internal(postings, matcher)?;
             result.and_inplace(&bitmap);
         }
         collect_series(ctx, postings, result.iter(), range)
     })
 }
 
-pub fn series_keys_by_matchers(
+pub fn series_keys_by_selectors(
     ctx: &Context,
     matchers: &[SeriesSelector],
     range: Option<TimestampRange>,
@@ -66,21 +66,21 @@ pub fn series_keys_by_matchers(
     }
 
     with_timeseries_postings(ctx, |postings| {
-        let first = postings_for_matchers_internal(postings, &matchers[0])?;
+        let first = postings_for_selectors_internal(postings, &matchers[0])?;
         if matchers.len() == 1 {
             return collect_series_keys(ctx, postings, first.iter(), range);
         }
 
         let mut result = first.into_owned();
         for matcher in &matchers[1..] {
-            let bitmap = postings_for_matchers_internal(postings, matcher)?;
+            let bitmap = postings_for_selectors_internal(postings, matcher)?;
             result.and_inplace(&bitmap);
         }
         collect_series_keys(ctx, postings, result.iter(), range)
     })
 }
 
-pub fn get_cardinality_by_matchers_list(
+pub fn get_cardinality_by_selectors(
     ix: &TimeSeriesIndex,
     matchers: &[SeriesSelector],
 ) -> ValkeyResult<u64> {
@@ -91,14 +91,14 @@ pub fn get_cardinality_by_matchers_list(
     let mut state: u64 = 0;
 
     ix.with_postings(&mut state, move |inner, _state| {
-        let first = postings_for_matchers_internal(inner, &matchers[0])?;
+        let first = postings_for_selectors_internal(inner, &matchers[0])?;
         if matchers.len() == 1 {
             return Ok(first.cardinality());
         }
         // todo: use chili here ?
         let mut result = first.into_owned();
         for matcher in &matchers[1..] {
-            let postings = postings_for_matchers_internal(inner, matcher)?;
+            let postings = postings_for_selectors_internal(inner, matcher)?;
             result.and_inplace(&postings);
         }
 
@@ -251,40 +251,40 @@ fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<Serie
 /// `postings_for_matchers` assembles a single postings iterator against the series index
 /// based on the given matchers.
 #[allow(dead_code)]
-pub fn postings_for_matchers(
+pub fn postings_for_selectors(
     ix: &TimeSeriesIndex,
     matchers: &SeriesSelector,
 ) -> ValkeyResult<PostingsBitmap> {
     let mut state = ();
     ix.with_postings(&mut state, move |inner, _| {
-        let postings = postings_for_matchers_internal(inner, matchers)?;
+        let postings = postings_for_selectors_internal(inner, matchers)?;
         let res = postings.into_owned();
         Ok(res)
     })
 }
 
-pub(crate) fn postings_for_matchers_internal<'a>(
+pub(crate) fn postings_for_selectors_internal<'a>(
     ix: &'a Postings,
     matchers: &SeriesSelector,
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     match &matchers {
-        SeriesSelector::And(matchers) => process_and_matchers(ix, matchers),
+        SeriesSelector::And(matchers) => postings_for_label_filters(ix, matchers),
         SeriesSelector::Or(matchers) => process_or_matchers(ix, matchers),
     }
 }
 
 fn process_or_matchers<'a>(
     ix: &'a Postings,
-    matchers: &[AndMatchers],
+    matchers: &[FilterList],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     match matchers {
         [] => Ok(Cow::Borrowed(ix.all_postings())),
-        [m] => process_and_matchers(ix, m),
+        [m] => postings_for_label_filters(ix, m),
         _ => {
             let mut result = PostingsBitmap::new();
             // maybe chili here to run in parallel
             for matcher in matchers {
-                let postings = process_and_matchers(ix, matcher)?;
+                let postings = postings_for_label_filters(ix, matcher)?;
                 result.or_inplace(&postings);
             }
             Ok(Cow::Owned(result))
@@ -292,16 +292,9 @@ fn process_or_matchers<'a>(
     }
 }
 
-fn process_and_matchers<'a>(
-    ix: &'a Postings,
-    matchers: &[LabelFilter],
-) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    postings_for_matcher_slice(ix, matchers)
-}
-
-/// `postings_for_matchers` assembles a single postings iterator against the index
+/// `postings_for_label_filters` assembles a single postings iterator against the index
 /// based on the given matchers.
-pub(super) fn postings_for_matcher_slice<'a>(
+pub(super) fn postings_for_label_filters<'a>(
     ix: &'a Postings,
     ms: &[LabelFilter],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {

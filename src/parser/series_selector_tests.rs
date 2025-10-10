@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::labels::matchers::{
-        AndMatchers, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
+        FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
     };
     use crate::labels::parse_series_selector;
 
@@ -59,7 +59,7 @@ mod tests {
 
     fn with_or_matchers<F>(matchers: &SeriesSelector, f: F)
     where
-        F: Fn(&Vec<AndMatchers>),
+        F: Fn(&Vec<FilterList>),
     {
         match matchers {
             SeriesSelector::Or(m) => f(m),

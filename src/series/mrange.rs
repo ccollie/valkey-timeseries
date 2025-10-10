@@ -5,7 +5,7 @@ use crate::fanout::is_clustered;
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::labels::Label;
 use crate::series::acl::check_metadata_permissions;
-use crate::series::index::series_by_matchers;
+use crate::series::index::series_by_selectors;
 use crate::series::range_utils::{
     aggregate_samples, get_multi_series_range, get_series_labels, group_reduce,
 };
@@ -39,7 +39,7 @@ pub fn process_mrange_query(
     options.date_range.start = TimestampValue::Specific(start_ts);
     options.date_range.end = TimestampValue::Specific(end_ts);
 
-    let series_guards = series_by_matchers(ctx, &options.filters, None)?;
+    let series_guards = series_by_selectors(ctx, &options.filters, None)?;
 
     let series_metas: Vec<MRangeSeriesMeta> = series_guards
         .iter()

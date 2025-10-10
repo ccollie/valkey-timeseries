@@ -4,7 +4,7 @@ use crate::fanout::is_clustered;
 use crate::labels::matchers::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::index::{
-    get_cardinality_by_matchers_list, with_matched_series, with_timeseries_index,
+    get_cardinality_by_selectors, with_matched_series, with_timeseries_index,
 };
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -44,9 +44,8 @@ pub fn calculate_cardinality(
         }
         (None, false) => {
             // if we don't have a date range, we can simply count postings...
-            with_timeseries_index(ctx, |index| {
-                get_cardinality_by_matchers_list(index, matchers)
-            })? as usize
+            with_timeseries_index(ctx, |index| get_cardinality_by_selectors(index, matchers))?
+                as usize
         }
         (Some(_), false) => {
             let options = MatchFilterOptions {

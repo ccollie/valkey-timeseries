@@ -1,7 +1,7 @@
 use crate::commands::query_index_fanout_operation::exec_index_query_fanout_request;
 use crate::fanout::is_clustered;
 use crate::labels::parse_series_selector;
-use crate::series::index::series_keys_by_matchers;
+use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
@@ -26,7 +26,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         // in cluster mode, we need to send the request to all nodes
         return exec_index_query_fanout_request(ctx, options);
     }
-    let keys = series_keys_by_matchers(ctx, &matcher_list, None)?;
+    let keys = series_keys_by_selectors(ctx, &matcher_list, None)?;
 
     Ok(ValkeyValue::from(keys))
 }
