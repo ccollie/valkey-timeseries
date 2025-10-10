@@ -1,5 +1,5 @@
+pub mod filters;
 mod label;
-pub mod matchers;
 mod metric_name;
 mod regex;
 

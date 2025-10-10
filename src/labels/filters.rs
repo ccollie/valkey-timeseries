@@ -536,11 +536,11 @@ pub enum SeriesSelector {
 }
 
 impl SeriesSelector {
-    pub fn with_matchers(matchers: Vec<LabelFilter>) -> Self {
+    pub fn with_filters(matchers: Vec<LabelFilter>) -> Self {
         SeriesSelector::And(matchers.into())
     }
 
-    pub fn with_or_matchers(or_matchers: Vec<FilterList>) -> Self {
+    pub fn with_or_filters(or_matchers: Vec<FilterList>) -> Self {
         if or_matchers.len() == 1 {
             let mut or_matchers = or_matchers;
             let first = or_matchers.pop().expect("or_matchers is not empty");
@@ -699,7 +699,7 @@ fn join_matchers(f: &mut Formatter<'_>, v: &[LabelFilter]) -> fmt::Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::labels::matchers::RegexMatcher;
+    use crate::labels::filters::RegexMatcher;
 
     #[test]
     fn test_match_anchoring() {

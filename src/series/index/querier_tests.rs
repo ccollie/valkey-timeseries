@@ -10,7 +10,7 @@
 //! Licensed under the Apache License, Version 2.0 (the "License");
 #[cfg(test)]
 mod tests {
-    use crate::labels::matchers::{LabelFilter, MatchOp, SeriesSelector};
+    use crate::labels::filters::{LabelFilter, MatchOp, SeriesSelector};
     use crate::labels::{Label, MetricName};
     use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_selectors};
     use crate::series::{SeriesRef, TimeSeries};
@@ -60,13 +60,13 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    fn get_labels_by_matcher(
+    fn get_labels_by_filters(
         ix: &TimeSeriesIndex,
-        matchers: &[LabelFilter],
+        filters: &[LabelFilter],
         series_data: &HashMap<SeriesRef, Vec<Label>>,
     ) -> Vec<Vec<Label>> {
-        let copy = matchers.to_vec().clone();
-        let filter = SeriesSelector::with_matchers(copy);
+        let copy = filters.to_vec().clone();
+        let filter = SeriesSelector::with_filters(copy);
         let p = postings_for_selectors(ix, &filter).unwrap();
         let mut actual: Vec<_> = p
             .iter()
@@ -573,7 +573,7 @@ mod tests {
                 exp.insert(val);
             }
 
-            let actual = get_labels_by_matcher(&ix, &case.matchers, &series_data);
+            let actual = get_labels_by_filters(&ix, &case.matchers, &series_data);
 
             for labels in actual {
                 let current = label_vec_to_string(&labels);
@@ -1001,7 +1001,7 @@ mod tests {
             LabelFilter::create(MatchOp::Equal, "instance", "server1").unwrap(),
             LabelFilter::create(MatchOp::Equal, "region", "us-west-2").unwrap(),
         ];
-        let filter = SeriesSelector::with_matchers(matchers);
+        let filter = SeriesSelector::with_filters(matchers);
 
         let complex_query_result = postings_for_selectors(&index, &filter).unwrap();
         assert!(
@@ -1013,7 +1013,7 @@ mod tests {
             LabelFilter::create(MatchOp::RegexEqual, "instance", "server.*").unwrap(),
             LabelFilter::create(MatchOp::Equal, "env", "prod").unwrap(),
         ];
-        let regex_filter = SeriesSelector::with_matchers(regex_matchers);
+        let regex_filter = SeriesSelector::with_filters(regex_matchers);
 
         let regex_query_result = postings_for_selectors(&index, &regex_filter).unwrap();
         assert!(

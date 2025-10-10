@@ -5,7 +5,7 @@ use crate::common::time::current_time_millis;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
-use crate::labels::matchers::SeriesSelector;
+use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, parse_series_selector};
 use crate::parser::number::parse_number;
 use crate::parser::{

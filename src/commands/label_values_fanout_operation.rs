@@ -4,7 +4,7 @@ use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_mat
 use crate::commands::process_label_values_request;
 use crate::fanout::FanoutOperation;
 use crate::fanout::{FanoutTarget, exec_fanout_request_base};
-use crate::labels::matchers::SeriesSelector;
+use crate::labels::filters::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;

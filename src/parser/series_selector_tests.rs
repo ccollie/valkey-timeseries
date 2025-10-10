@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::labels::matchers::{
+    use crate::labels::filters::{
         FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
     };
     use crate::labels::parse_series_selector;

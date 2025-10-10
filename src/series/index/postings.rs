@@ -1,7 +1,7 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
 use crate::common::hash::IntMap;
-use crate::labels::matchers::{LabelFilter, PredicateMatch, PredicateValue};
+use crate::labels::filters::{LabelFilter, PredicateMatch, PredicateValue};
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
@@ -324,14 +324,14 @@ impl Postings {
         }
     }
 
-    pub fn postings_for_matcher(&'_ self, matcher: &LabelFilter) -> Cow<'_, PostingsBitmap> {
-        match matcher.matcher {
-            PredicateMatch::Equal(ref value) => handle_equal_match(self, &matcher.label, value),
+    pub fn postings_for_filter(&'_ self, filter: &LabelFilter) -> Cow<'_, PostingsBitmap> {
+        match filter.matcher {
+            PredicateMatch::Equal(ref value) => handle_equal_match(self, &filter.label, value),
             PredicateMatch::NotEqual(ref value) => {
-                handle_not_equal_match(self, &matcher.label, value)
+                handle_not_equal_match(self, &filter.label, value)
             }
-            PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, matcher),
-            PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, matcher),
+            PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter),
+            PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter),
         }
     }
 
@@ -569,14 +569,14 @@ pub(super) fn handle_not_equal_match<'a>(
 
 pub(super) fn handle_regex_equal_match<'a>(
     postings: &'a Postings,
-    matcher: &LabelFilter,
+    filter: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
-    if matcher.matches_empty() {
-        return postings.postings_without_label(&matcher.label);
+    if filter.matches_empty() {
+        return postings.postings_without_label(&filter.label);
     }
-    let mut state = matcher;
+    let mut state = filter;
     let postings =
-        postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
+        postings.postings_for_label_matching(&filter.label, &mut state, |value, matcher| {
             matcher.matches(value)
         });
     Cow::Owned(postings)
@@ -584,16 +584,16 @@ pub(super) fn handle_regex_equal_match<'a>(
 
 pub(super) fn handle_regex_not_equal_match<'a>(
     postings: &'a Postings,
-    matcher: &LabelFilter,
+    filter: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
-    let matches_empty = matcher.matches_empty();
+    let matches_empty = filter.matches_empty();
     if matches_empty {
-        return with_label(postings, &matcher.label);
+        return with_label(postings, &filter.label);
     }
-    let mut state = matcher;
+    let mut state = filter;
     let postings =
-        postings.postings_for_label_matching(&matcher.label, &mut state, |value, matcher| {
-            matcher.matches(value)
+        postings.postings_for_label_matching(&filter.label, &mut state, |value, filter| {
+            filter.matches(value)
         });
     Cow::Owned(postings)
 }

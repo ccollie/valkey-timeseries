@@ -2,7 +2,7 @@ use super::generated::{
     Matcher as FanoutMatcher, MatcherList, MatcherListValue, MatcherOpType,
     Matchers as FanoutMatchers, OrMatcherList, matcher, matchers,
 };
-use crate::labels::matchers::{
+use crate::labels::filters::{
     FilterList, LabelFilter, PredicateMatch, PredicateValue, RegexMatcher, SeriesSelector,
     ValueList,
 };

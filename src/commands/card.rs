@@ -1,7 +1,7 @@
 use super::card_fanout_operation::exec_cardinality_fanout_request;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::fanout::is_clustered;
-use crate::labels::matchers::SeriesSelector;
+use crate::labels::filters::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::index::{
     get_cardinality_by_selectors, with_matched_series, with_timeseries_index,

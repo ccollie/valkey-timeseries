@@ -17,7 +17,7 @@ use super::{TimeSeriesIndex, with_timeseries_postings};
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
-use crate::labels::matchers::{
+use crate::labels::filters::{
     FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
 };
 use crate::series::acl::check_key_read_permission;
@@ -34,21 +34,21 @@ use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeySt
 
 pub fn series_by_selectors(
     ctx: &Context,
-    matchers: &[SeriesSelector],
+    selectors: &[SeriesSelector],
     range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
-    if matchers.is_empty() {
+    if selectors.is_empty() {
         return Ok(Vec::new());
     }
 
     with_timeseries_postings(ctx, |postings| {
-        let first = postings_for_selectors_internal(postings, &matchers[0])?;
-        if matchers.len() == 1 {
+        let first = postings_for_selectors_internal(postings, &selectors[0])?;
+        if selectors.len() == 1 {
             return collect_series(ctx, postings, first.iter(), range);
         }
 
         let mut result = first.into_owned();
-        for matcher in &matchers[1..] {
+        for matcher in &selectors[1..] {
             let bitmap = postings_for_selectors_internal(postings, matcher)?;
             result.and_inplace(&bitmap);
         }
@@ -58,21 +58,21 @@ pub fn series_by_selectors(
 
 pub fn series_keys_by_selectors(
     ctx: &Context,
-    matchers: &[SeriesSelector],
+    selectors: &[SeriesSelector],
     range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<ValkeyString>> {
-    if matchers.is_empty() {
+    if selectors.is_empty() {
         return Ok(Vec::new());
     }
 
     with_timeseries_postings(ctx, |postings| {
-        let first = postings_for_selectors_internal(postings, &matchers[0])?;
-        if matchers.len() == 1 {
+        let first = postings_for_selectors_internal(postings, &selectors[0])?;
+        if selectors.len() == 1 {
             return collect_series_keys(ctx, postings, first.iter(), range);
         }
 
         let mut result = first.into_owned();
-        for matcher in &matchers[1..] {
+        for matcher in &selectors[1..] {
             let bitmap = postings_for_selectors_internal(postings, matcher)?;
             result.and_inplace(&bitmap);
         }
@@ -82,22 +82,22 @@ pub fn series_keys_by_selectors(
 
 pub fn get_cardinality_by_selectors(
     ix: &TimeSeriesIndex,
-    matchers: &[SeriesSelector],
+    selectors: &[SeriesSelector],
 ) -> ValkeyResult<u64> {
-    if matchers.is_empty() {
+    if selectors.is_empty() {
         return Ok(0);
     }
 
     let mut state: u64 = 0;
 
     ix.with_postings(&mut state, move |inner, _state| {
-        let first = postings_for_selectors_internal(inner, &matchers[0])?;
-        if matchers.len() == 1 {
+        let first = postings_for_selectors_internal(inner, &selectors[0])?;
+        if selectors.len() == 1 {
             return Ok(first.cardinality());
         }
         // todo: use chili here ?
         let mut result = first.into_owned();
-        for matcher in &matchers[1..] {
+        for matcher in &selectors[1..] {
             let postings = postings_for_selectors_internal(inner, matcher)?;
             result.and_inplace(&postings);
         }
@@ -248,16 +248,16 @@ fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<Serie
     }
 }
 
-/// `postings_for_matchers` assembles a single postings iterator against the series index
+/// `postings_for_filters` assembles a single postings iterator against the series index
 /// based on the given matchers.
 #[allow(dead_code)]
 pub fn postings_for_selectors(
     ix: &TimeSeriesIndex,
-    matchers: &SeriesSelector,
+    selectors: &SeriesSelector,
 ) -> ValkeyResult<PostingsBitmap> {
     let mut state = ();
     ix.with_postings(&mut state, move |inner, _| {
-        let postings = postings_for_selectors_internal(inner, matchers)?;
+        let postings = postings_for_selectors_internal(inner, selectors)?;
         let res = postings.into_owned();
         Ok(res)
     })
@@ -265,9 +265,9 @@ pub fn postings_for_selectors(
 
 pub(crate) fn postings_for_selectors_internal<'a>(
     ix: &'a Postings,
-    matchers: &SeriesSelector,
+    selectors: &SeriesSelector,
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    match &matchers {
+    match &selectors {
         SeriesSelector::And(matchers) => postings_for_label_filters(ix, matchers),
         SeriesSelector::Or(matchers) => process_or_matchers(ix, matchers),
     }
@@ -275,15 +275,15 @@ pub(crate) fn postings_for_selectors_internal<'a>(
 
 fn process_or_matchers<'a>(
     ix: &'a Postings,
-    matchers: &[FilterList],
+    filters: &[FilterList],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    match matchers {
+    match filters {
         [] => Ok(Cow::Borrowed(ix.all_postings())),
         [m] => postings_for_label_filters(ix, m),
         _ => {
             let mut result = PostingsBitmap::new();
             // maybe chili here to run in parallel
-            for matcher in matchers {
+            for matcher in filters {
                 let postings = postings_for_label_filters(ix, matcher)?;
                 result.or_inplace(&postings);
             }
@@ -296,19 +296,20 @@ fn process_or_matchers<'a>(
 /// based on the given matchers.
 pub(super) fn postings_for_label_filters<'a>(
     ix: &'a Postings,
-    ms: &[LabelFilter],
+    filters: &[LabelFilter],
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
-    if ms.is_empty() {
+    if filters.is_empty() {
         return Ok(Cow::Borrowed(ix.all_postings()));
     }
-    if ms.len() == 1 {
-        let m = &ms[0];
-        if m.label.is_empty() && m.matcher.is_empty() {
+    if filters.len() == 1 {
+        let filter = &filters[0];
+        // follow Prometheus here: if we have an empty matcher and label, return all postings.
+        if filter.label.is_empty() && filter.matcher.is_empty() {
             return Ok(Cow::Borrowed(ix.all_postings()));
         }
         // shortcut the handling of simple equality matchers
-        if !m.is_negative_matcher() && !m.matches_empty() {
-            let it = ix.postings_for_matcher(m);
+        if !filter.is_negative_matcher() && !filter.matches_empty() {
+            let it = ix.postings_for_filter(filter);
             if it.is_empty() {
                 return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
             }
@@ -322,11 +323,11 @@ pub(super) fn postings_for_label_filters<'a>(
     let mut sorted_matchers: SmallVec<(&LabelFilter, bool, bool), 4> = SmallVec::new();
     // See which label must be non-empty.
     // Optimization for a case like {l=~".", l!="1"}.
-    let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(ms.len());
+    let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(filters.len());
 
     let mut has_subtracting_matchers = false;
     let mut has_intersecting_matchers = false;
-    for m in ms {
+    for m in filters {
         let matches_empty = m.matches("");
         if !matches_empty {
             label_must_be_set.insert(&m.label);
@@ -407,15 +408,15 @@ pub(super) fn postings_for_label_filters<'a>(
                         // If the label can't be empty and is a Not and the inner matcher
                         // doesn't match empty, then subtract it out at the end.
                         let inverse = m.clone().inverse();
-                        let it = ix.postings_for_matcher(&inverse);
+                        let it = ix.postings_for_filter(&inverse);
                         not_its.push(it);
                     }
                     // l!=""
                     (true, false) => {
                         // If the label can't be empty and is a Not, but the inner matcher can
-                        // be empty, we need to use inverse_postings_for_matcher.
+                        // be empty, we need to use inverse_postings_for_filter.
                         let inverse = m.clone().inverse();
-                        let it = inverse_postings_for_matcher(ix, &inverse);
+                        let it = inverse_postings_for_filter(ix, &inverse);
                         if it.is_empty() {
                             return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
                         }
@@ -423,8 +424,8 @@ pub(super) fn postings_for_label_filters<'a>(
                     }
                     // l="a", l=~"a|b", etc.
                     _ => {
-                        // Non-Not matcher, use normal postings_for_matcher.
-                        let it = ix.postings_for_matcher(m);
+                        // Non-Not matcher, use normal postings_for_filter.
+                        let it = ix.postings_for_filter(m);
                         if it.is_empty() {
                             return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
                         }
@@ -438,7 +439,7 @@ pub(super) fn postings_for_label_filters<'a>(
                 // the series which don't have the label name set too. See:
                 // https://github.com/prometheus/prometheus/issues/3575 and
                 // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
-                let it = inverse_postings_for_matcher(ix, m);
+                let it = inverse_postings_for_filter(ix, m);
 
                 not_its.push(it)
             }
@@ -475,7 +476,7 @@ fn is_subtracting_matcher(m: &LabelFilter, label_must_be_set: &AHashSet<&str>) -
     matches!(m.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual) && m.matches("")
 }
 
-fn inverse_postings_for_matcher<'a>(ix: &'a Postings, m: &LabelFilter) -> Cow<'a, PostingsBitmap> {
+fn inverse_postings_for_filter<'a>(ix: &'a Postings, m: &LabelFilter) -> Cow<'a, PostingsBitmap> {
     match &m.matcher {
         PredicateMatch::NotEqual(pv) => handle_equal_match(ix, &m.label, pv),
         // If the matcher being inverted is ="", we just want all the values.

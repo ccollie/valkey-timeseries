@@ -6,7 +6,7 @@ use super::generated::{
 };
 use super::matchers::deserialize_matchers_list;
 use crate::labels::Label;
-use crate::labels::matchers::SeriesSelector;
+use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
     AggregationOptions, AggregationType, BucketAlignment, MRangeOptions, MatchFilterOptions,
