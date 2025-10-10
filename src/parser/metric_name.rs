@@ -18,10 +18,7 @@ pub fn parse_metric_name(s: &str) -> ParseResult<Vec<Label>> {
     let mut labels: Vec<Label> = Vec::new();
 
     let measurement = expect_token(&mut lex, Token::Identifier)?;
-    labels.push(Label::new(
-        METRIC_NAME_LABEL.to_string(),
-        measurement.to_string(),
-    ));
+    labels.push(Label::new(METRIC_NAME_LABEL, measurement));
     let res = get_next_token(&mut lex)?;
     if res.0 == Token::Eof {
         return Ok(labels);
@@ -79,51 +76,42 @@ mod tests {
     #[test]
     fn test_parse_metric_name() {
         let cases = vec![
-            (
-                "foo{}",
-                vec![Label::new("__name__".to_string(), "foo".to_string())],
-            ),
-            (
-                "foo",
-                vec![Label::new("__name__".to_string(), "foo".to_string())],
-            ),
+            ("foo{}", vec![Label::new("__name__", "foo")]),
+            ("foo", vec![Label::new("__name__", "foo")]),
             (
                 "foo{bar=\"baz\"}",
-                vec![
-                    Label::new("__name__".to_string(), "foo".to_string()),
-                    Label::new("bar".to_string(), "baz".to_string()),
-                ],
+                vec![Label::new("__name__", "foo"), Label::new("bar", "baz")],
             ),
             (
                 "foo{bar=\"baz\", qux=\"quux\"}",
                 vec![
-                    Label::new("__name__".to_string(), "foo".to_string()),
-                    Label::new("bar".to_string(), "baz".to_string()),
-                    Label::new("qux".to_string(), "quux".to_string()),
+                    Label::new("__name__", "foo"),
+                    Label::new("bar", "baz"),
+                    Label::new("qux", "quux"),
                 ],
             ),
             (
                 "metric_name{label1=\"value1\", label2=\"value2\"}",
                 vec![
-                    Label::new("__name__".to_string(), "metric_name".to_string()),
-                    Label::new("label1".to_string(), "value1".to_string()),
-                    Label::new("label2".to_string(), "value2".to_string()),
+                    Label::new("__name__", "metric_name"),
+                    Label::new("label1", "value1"),
+                    Label::new("label2", "value2"),
                 ],
             ),
             (
                 "http_requests_total{method=\"post\", code=\"200\"}",
                 vec![
-                    Label::new("__name__".to_string(), "http_requests_total".to_string()),
-                    Label::new("code".to_string(), "200".to_string()),
-                    Label::new("method".to_string(), "post".to_string()),
+                    Label::new("__name__", "http_requests_total"),
+                    Label::new("code", "200"),
+                    Label::new("method", "post"),
                 ],
             ),
             (
                 "up{instance=\"localhost:9090\", job=\"prometheus\"}",
                 vec![
-                    Label::new("__name__".to_string(), "up".to_string()),
-                    Label::new("instance".to_string(), "localhost:9090".to_string()),
-                    Label::new("job".to_string(), "prometheus".to_string()),
+                    Label::new("__name__", "up"),
+                    Label::new("instance", "localhost:9090"),
+                    Label::new("job", "prometheus"),
                 ],
             ),
         ];
