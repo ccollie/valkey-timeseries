@@ -2,10 +2,13 @@ use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
 use crate::common::string_interner::InternedString;
+use crate::parser::ParseError;
+use crate::parser::metric_name::parse_metric_name;
 use enquote::enquote;
 use get_size2::GetSize;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::str::FromStr;
 use valkey_module::{ValkeyResult, ValkeyValue, raw};
 
 const VALUE_SEPARATOR: &str = "=";
@@ -221,6 +224,14 @@ impl From<&[Label]> for InternedMetricName {
 impl From<Vec<Label>> for InternedMetricName {
     fn from(labels: Vec<Label>) -> Self {
         InternedMetricName::new(&labels)
+    }
+}
+
+impl FromStr for InternedMetricName {
+    type Err = ParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let labels = parse_metric_name(s)?;
+        Ok(InternedMetricName::new(&labels))
     }
 }
 

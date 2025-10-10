@@ -12,8 +12,7 @@
 mod tests {
     use crate::labels::matchers::{LabelFilter, MatchOp, SeriesSelector};
     use crate::labels::{InternedMetricName, Label};
-    use crate::parser::metric_name::parse_metric_name;
-    use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_matchers};
+    use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_selectors};
     use crate::series::{SeriesRef, TimeSeries};
     use std::collections::{HashMap, HashSet};
 
@@ -68,7 +67,7 @@ mod tests {
     ) -> Vec<Vec<Label>> {
         let copy = matchers.to_vec().clone();
         let filter = SeriesSelector::with_matchers(copy);
-        let p = postings_for_matchers(ix, &filter).unwrap();
+        let p = postings_for_selectors(ix, &filter).unwrap();
         let mut actual: Vec<_> = p
             .iter()
             .flat_map(|id| series_data.get(&id))
@@ -593,21 +592,19 @@ mod tests {
         let mut ts = TimeSeries::new();
         ts.id = next_timeseries_id();
 
-        let labels = parse_metric_name(prometheus_name).unwrap();
-        ts.labels = InternedMetricName::new(&labels);
+        ts.labels = prometheus_name.parse().unwrap();
         ts
     }
 
     #[test]
-    fn test_postings_for_or_matchers() {
+    fn test_postings_for_or_selectors() {
         use MatchOp::*;
 
         let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
         let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
 
         fn parse_metric(metric_name: &str) -> InternedMetricName {
-            let labels = parse_metric_name(metric_name).unwrap();
-            InternedMetricName::new(&labels)
+            metric_name.parse().unwrap()
         }
 
         let series_data = HashMap::from([
@@ -847,7 +844,7 @@ mod tests {
         for case in cases {
             let name = case.name;
             let filter: SeriesSelector = case.or_matchers.into();
-            let actual = postings_for_matchers(&ix, &filter).unwrap();
+            let actual = postings_for_selectors(&ix, &filter).unwrap();
             let actual_ids: HashSet<SeriesRef> = actual.iter().collect();
 
             let mut missing: Vec<InternedMetricName> = vec![];
@@ -1006,7 +1003,7 @@ mod tests {
         ];
         let filter = SeriesSelector::with_matchers(matchers);
 
-        let complex_query_result = postings_for_matchers(&index, &filter).unwrap();
+        let complex_query_result = postings_for_selectors(&index, &filter).unwrap();
         assert!(
             complex_query_result.contains(ts.id),
             "Query should still work after rename"
@@ -1018,7 +1015,7 @@ mod tests {
         ];
         let regex_filter = SeriesSelector::with_matchers(regex_matchers);
 
-        let regex_query_result = postings_for_matchers(&index, &regex_filter).unwrap();
+        let regex_query_result = postings_for_selectors(&index, &regex_filter).unwrap();
         assert!(
             regex_query_result.contains(ts.id),
             "Query should still work after rename"

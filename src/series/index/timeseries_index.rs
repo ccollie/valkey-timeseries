@@ -239,17 +239,13 @@ fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labels::InternedMetricName;
-    use crate::parser::metric_name::parse_metric_name;
     use crate::series::index::next_timeseries_id;
     use crate::series::time_series::TimeSeries;
 
     fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
         let mut ts = TimeSeries::new();
         ts.id = next_timeseries_id();
-
-        let labels = parse_metric_name(prometheus_name).unwrap();
-        ts.labels = InternedMetricName::new(&labels);
+        ts.labels = prometheus_name.parse().unwrap();
         ts
     }
 
