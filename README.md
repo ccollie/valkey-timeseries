@@ -1,10 +1,6 @@
 # valkey-timeseries
 
-ValkeyTimeSeries is a Rust based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
-
-### WARNING !!!!
-This is a work in progress and a moving target. It is not yet ready for production or even casual use. It probably doesn't work. 
-On any day of the week it may not even build :-)
+ValkeyTimeSeries is a Rust-based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
 
 ## Features
 - In-memory storage for time series data
@@ -12,7 +8,16 @@ On any day of the week it may not even build :-)
 - Configurable encoding
 - Single sample and range queries
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
-- Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
+- Compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
+
+## Progress
+`ValkeyTimeSeries` is currently in active development and is not yet ready for production use. We are feature complete
+for an initial release but are still working on more comprehensive testing.
+
+The current state of play is the [unstable branch](https://github.com/ccollie/valkey-timeseries/tree/unstable).
+Current progress toward the initial release can be tracked [here](https://github.com/users/ccollie/projects/2).
+
+We welcome contributions and feedback from the community.
 
 ## Commands
 
