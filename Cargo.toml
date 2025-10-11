@@ -38,7 +38,7 @@ topo_sort = "0.4.0"
 valkey-module = "0.1.10"
 valkey-module-macros = "0.1.10"
 rayon-core = "1.13.0"
-regex = "1.11.3"
+regex = "1.12.1"
 strum = { version = "0.27.2", features = ["derive"] }
 strum_macros = "0.27.2"
 logger-rust = "0.2.12"
