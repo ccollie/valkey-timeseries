@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::postings::{EMPTY_BITMAP, KeyType, Postings, PostingsBitmap, handle_equal_match};
+use super::postings::{EMPTY_BITMAP, KeyType, Postings, PostingsBitmap};
 use super::{TimeSeriesIndex, with_timeseries_postings};
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::filters::{
-    FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
+    FilterList, LabelFilter, MatchOp, SeriesSelector,
 };
 use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
@@ -263,7 +263,7 @@ pub fn postings_for_selectors(
     })
 }
 
-pub(crate) fn postings_for_selectors_internal<'a>(
+fn postings_for_selectors_internal<'a>(
     ix: &'a Postings,
     selectors: &SeriesSelector,
 ) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
@@ -365,9 +365,9 @@ pub(super) fn postings_for_label_filters<'a>(
         cost_i.cmp(&cost_j)
     });
 
-    for (m, matches_empty, _is_subtracting) in sorted_matchers {
+    for (filter, matches_empty, _is_subtracting) in sorted_matchers {
         //let value = &m.value;
-        let name = &m.label;
+        let name = &filter.label;
 
         if name.is_empty() && matches_empty {
             // We already handled the case at the top of the function,
@@ -375,8 +375,8 @@ pub(super) fn postings_for_label_filters<'a>(
             return Err(ValkeyError::Str(MISSING_FILTER));
         }
 
-        let typ = m.op();
-        let regex_value = m.regex_text().unwrap_or("");
+        let typ = filter.op();
+        let regex_value = filter.regex_text().unwrap_or("");
 
         match (typ, regex_value) {
             // .* regexp matches any string: do nothing
@@ -390,13 +390,13 @@ pub(super) fn postings_for_label_filters<'a>(
             // .+ regexp matches any non-empty string
             (MatchOp::RegexEqual, ".+") => {
                 // .+ regexp matches any non-empty string: get postings for all label values.
-                let it = ix.postings_for_all_label_values(&m.label);
+                let it = ix.postings_for_all_label_values(&filter.label);
                 its.push(Cow::Owned(it));
             }
 
             // .+ regexp does not match any non-empty string
             (MatchOp::RegexNotEqual, ".+") => {
-                let it = ix.postings_for_all_label_values(&m.label);
+                let it = ix.postings_for_all_label_values(&filter.label);
                 not_its.push(Cow::Owned(it));
             }
             _ if label_must_be_set.contains(name.as_str()) => {
@@ -407,7 +407,7 @@ pub(super) fn postings_for_label_filters<'a>(
                     (true, true) => {
                         // If the label can't be empty and is a Not and the inner matcher
                         // doesn't match empty, then subtract it out at the end.
-                        let inverse = m.clone().inverse();
+                        let inverse = filter.clone().inverse();
                         let it = ix.postings_for_filter(&inverse);
                         not_its.push(it);
                     }
@@ -415,8 +415,8 @@ pub(super) fn postings_for_label_filters<'a>(
                     (true, false) => {
                         // If the label can't be empty and is a Not, but the inner matcher can
                         // be empty, we need to use inverse_postings_for_filter.
-                        let inverse = m.clone().inverse();
-                        let it = inverse_postings_for_filter(ix, &inverse);
+                        let inverse = filter.clone().inverse();
+                        let it = ix.inverse_postings_for_filter(&inverse);
                         if it.is_empty() {
                             return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
                         }
@@ -425,7 +425,7 @@ pub(super) fn postings_for_label_filters<'a>(
                     // l="a", l=~"a|b", etc.
                     _ => {
                         // Non-Not matcher, use normal postings_for_filter.
-                        let it = ix.postings_for_filter(m);
+                        let it = ix.postings_for_filter(filter);
                         if it.is_empty() {
                             return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
                         }
@@ -439,7 +439,7 @@ pub(super) fn postings_for_label_filters<'a>(
                 // the series which don't have the label name set too. See:
                 // https://github.com/prometheus/prometheus/issues/3575 and
                 // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
-                let it = inverse_postings_for_filter(ix, m);
+                let it = ix.inverse_postings_for_filter(filter);
 
                 not_its.push(it)
             }
@@ -474,28 +474,6 @@ fn is_subtracting_matcher(m: &LabelFilter, label_must_be_set: &AHashSet<&str>) -
         return true;
     }
     matches!(m.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual) && m.matches("")
-}
-
-fn inverse_postings_for_filter<'a>(ix: &'a Postings, m: &LabelFilter) -> Cow<'a, PostingsBitmap> {
-    match &m.matcher {
-        PredicateMatch::NotEqual(pv) => handle_equal_match(ix, &m.label, pv),
-        // If the matcher being inverted is ="", we just want all the values.
-        PredicateMatch::Equal(PredicateValue::String(s)) if s.is_empty() => {
-            Cow::Owned(ix.postings_for_all_label_values(&m.label))
-        }
-        // If the matcher being inverted is =~"", we just want all the values.
-        PredicateMatch::RegexEqual(re) if matches!(re.regex.as_str(), "" | ".*") => {
-            Cow::Owned(ix.postings_for_all_label_values(&m.label))
-        }
-        _ => {
-            let mut state = m;
-            let postings = ix.postings_for_label_matching(&m.label, &mut state, |s, state| {
-                let valid = state.matches(s);
-                !valid
-            });
-            Cow::Owned(postings)
-        }
-    }
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap

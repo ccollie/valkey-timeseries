@@ -296,9 +296,7 @@ impl Postings {
 
         for label in labels.iter() {
             let key = KeyBuffer::for_label_value(label.name(), label.value());
-            let Some(bmp) = self.label_index.get(key.as_bytes()) else {
-                return None;
-            };
+            let bmp = self.label_index.get(key.as_bytes())?;
             acc &= bmp;
         }
 
@@ -356,6 +354,29 @@ impl Postings {
             }
             PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter),
             PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter),
+        }
+    }
+
+    pub fn inverse_postings_for_filter(&'_ self, filter: &LabelFilter) -> Cow<'_, PostingsBitmap> {
+        match &filter.matcher {
+            PredicateMatch::NotEqual(pv) => handle_equal_match(self, &filter.label, pv),
+            // If the matcher being inverted is ="", we just want all the values.
+            PredicateMatch::Equal(PredicateValue::String(s)) if s.is_empty() => {
+                Cow::Owned(self.postings_for_all_label_values(&filter.label))
+            }
+            // If the matcher being inverted is =~"", we just want all the values.
+            PredicateMatch::RegexEqual(re) if matches!(re.regex.as_str(), "" | ".*") => {
+                Cow::Owned(self.postings_for_all_label_values(&filter.label))
+            }
+            _ => {
+                let mut state = filter;
+                let postings =
+                    self.postings_for_label_matching(&filter.label, &mut state, |s, state| {
+                        let valid = state.matches(s);
+                        !valid
+                    });
+                Cow::Owned(postings)
+            }
         }
     }
 
@@ -523,7 +544,7 @@ fn optimize_bitmap(bitmap: &mut PostingsBitmap) {
     bitmap.shrink_to_fit();
 }
 
-pub(super) fn handle_equal_match<'a>(
+fn handle_equal_match<'a>(
     ix: &'a Postings,
     label: &str,
     value: &PredicateValue,
@@ -551,7 +572,7 @@ fn with_label<'a>(ix: &'a Postings, label: &str) -> Cow<'a, PostingsBitmap> {
     Cow::Owned(postings)
 }
 
-pub(super) fn handle_not_equal_match<'a>(
+fn handle_not_equal_match<'a>(
     ix: &'a Postings,
     label: &str,
     value: &PredicateValue,
@@ -591,7 +612,7 @@ pub(super) fn handle_not_equal_match<'a>(
     }
 }
 
-pub(super) fn handle_regex_equal_match<'a>(
+fn handle_regex_equal_match<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
@@ -606,7 +627,7 @@ pub(super) fn handle_regex_equal_match<'a>(
     Cow::Owned(postings)
 }
 
-pub(super) fn handle_regex_not_equal_match<'a>(
+fn handle_regex_not_equal_match<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
