@@ -288,6 +288,30 @@ impl Postings {
         acc
     }
 
+    /// Get the unique series id for the given set of labels if it exists.
+    ///
+    /// This exists primarily to ensure that we disallow duplicate metric names
+    pub fn posting_id_by_labels<T: SeriesLabel>(&self, labels: &[T]) -> Option<SeriesRef> {
+        let mut acc = PostingsBitmap::new();
+
+        for label in labels.iter() {
+            let key = KeyBuffer::for_label_value(label.name(), label.value());
+            let Some(bmp) = self.label_index.get(key.as_bytes()) else {
+                return None;
+            };
+            acc &= bmp;
+        }
+
+        if acc.cardinality() == 1 {
+            if !self.stale_ids.is_empty() {
+                acc.andnot_inplace(&self.stale_ids);
+            }
+            return acc.iter().next();
+        }
+
+        None
+    }
+
     pub fn postings_without_label(&'_ self, label: &str) -> Cow<'_, PostingsBitmap> {
         let all = self.all_postings();
         let to_remove = self.postings_for_all_label_values(label);
@@ -792,7 +816,7 @@ mod tests {
         // Create a label name of 30 characters
         let label_name = "very_long_label_name_here_1234";
 
-        // Create a value of 40 characters, so total length is:
+        // Create a value of 40 characters, so the total length is:
         // 30 (label) + 1 (=) + 40 (value) + 1 (\0) = 72 bytes > 64
         let value = "this_is_a_very_long_value_string_12345";
 
