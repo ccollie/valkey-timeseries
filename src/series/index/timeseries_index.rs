@@ -47,7 +47,6 @@ impl TimeSeriesIndex {
 
     // swap the inner value with some other value
     // this is specifically to handle the `swapdb` event callback
-    // todo: can this deadlock ?
     pub fn swap(&self, other: &Self) {
         let mut self_inner = self.inner.write().unwrap();
         let mut other_inner = other.inner.write().unwrap();

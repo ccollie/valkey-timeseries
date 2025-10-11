@@ -178,8 +178,8 @@ impl Iterator for PcoSampleIterator<'_> {
     }
 }
 
-fn convert_error(_err: PcoError) -> ValkeyError {
-    // todo: log error
+fn convert_error(err: PcoError) -> ValkeyError {
+    log::warn!("pco(iterator): {err}");
     ValkeyError::Str(error_consts::CHUNK_DECOMPRESSION)
 }
 

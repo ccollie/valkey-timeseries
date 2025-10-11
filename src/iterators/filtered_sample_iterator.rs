@@ -64,7 +64,6 @@ impl Iterator for FilteredSampleIterator<'_> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // todo: minimize branching
         while let Some(sample) = self.inner.next() {
             match (self.value_filter.as_ref(), self.ts_filter) {
                 (None, None) => return Some(sample),

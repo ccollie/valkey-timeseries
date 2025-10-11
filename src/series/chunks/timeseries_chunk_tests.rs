@@ -743,7 +743,7 @@ mod tests {
                 ])
                 .unwrap();
 
-            // First merge should add all samples
+            // The first merge should add all samples
             let result = chunk
                 .merge_samples(&samples, Some(DuplicatePolicy::Block))
                 .unwrap();
@@ -1094,7 +1094,7 @@ mod tests {
         let samples = generate_random_samples(ELEMENTS_PER_CHUNK);
         src_chunk.set_data(&samples).unwrap();
 
-        // Ensure destination chunk has enough capacity for a full merge
+        // Ensure the destination chunk has enough capacity for a full merge
         let remaining_capacity = dest_chunk.estimate_remaining_sample_capacity();
         assert!(remaining_capacity >= ELEMENTS_PER_CHUNK);
 

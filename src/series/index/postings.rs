@@ -31,7 +31,7 @@ pub struct Postings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
-    pub(super) id_to_key: IntMap<SeriesRef, KeyType>, // todo: use an interned string
+    pub(super) id_to_key: IntMap<SeriesRef, KeyType>,
     /// Set of timeseries ids of series that should be removed from the index. This really only
     /// happens when the index is inconsistent (value does not exist in the db but exists in the index)
     /// Keep track and cleanup from the index during a gc pass.
@@ -80,7 +80,7 @@ impl Postings {
         }
     }
 
-    pub(super) fn remove_posting_by_id_and_labels<T: SeriesLabel>(
+    fn remove_posting_by_id_and_labels<T: SeriesLabel>(
         &mut self,
         id: SeriesRef,
         labels: &[T],
@@ -97,7 +97,7 @@ impl Postings {
         }
     }
 
-    pub(crate) fn add_posting_for_label_value(
+    pub(super) fn add_posting_for_label_value(
         &mut self,
         ts_id: SeriesRef,
         label: &str,
@@ -135,7 +135,7 @@ impl Postings {
         }
     }
 
-    pub fn set_timeseries_key(&mut self, id: SeriesRef, new_key: &[u8]) {
+    fn set_timeseries_key(&mut self, id: SeriesRef, new_key: &[u8]) {
         if let Some(existing) = self.id_to_key.get(&id) {
             if existing.as_ref() == new_key {
                 return;
@@ -148,11 +148,7 @@ impl Postings {
     pub fn index_timeseries(&mut self, ts: &TimeSeries, key: &[u8]) {
         debug_assert!(ts.id != 0);
         let id = ts.id;
-        let measurement = ts.labels.get_measurement();
-        if !measurement.is_empty() {
-            // todo: error !
-        }
-
+        
         for InternedLabel { name, value } in ts.labels.iter() {
             self.add_posting_for_label_value(id, name, value);
         }

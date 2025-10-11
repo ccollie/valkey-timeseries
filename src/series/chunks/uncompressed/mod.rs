@@ -14,7 +14,6 @@ use std::hash::Hash;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult, raw};
 
-// todo: move to constants
 pub const MAX_UNCOMPRESSED_SAMPLES: usize = 256;
 const FLAG_SERIALIZE_UNCOMPRESSED: u8 = 0b00000001;
 const FLAG_SERIALIZE_GORILLA: u8 = 0b00000010;
@@ -449,7 +448,7 @@ impl Chunk for UncompressedChunk {
 
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
         // forward compat - read encoding flag
-        let _flag = rdb_load_u8(rdb)? as u8;
+        let _flag = rdb_load_u8(rdb)?;
         let max_size = rdb_load_usize(rdb)?;
         let max_elements = rdb_load_usize(rdb)?;
         let len = rdb_load_usize(rdb)?;

@@ -252,8 +252,8 @@ impl PcoChunk {
     pub fn iter(&self) -> impl Iterator<Item = Sample> + '_ {
         match PcoSampleIterator::new(&self.timestamps, &self.values) {
             Ok(iter) => iter.into(),
-            Err(_) => {
-                // todo: log error
+            Err(e) => {
+                log::warn!("pco chunk iter(): error constructing iter: {}", e);
                 SampleIter::Empty
             }
         }
@@ -263,8 +263,8 @@ impl PcoChunk {
         let iter = PcoSampleIterator::new_range(&self.timestamps, &self.values, start_ts, end_ts);
         match iter {
             Ok(iter) => iter.into(),
-            Err(_) => {
-                // todo: log error
+            Err(e) => {
+                log::warn!("pco chunk range_iter(): error constructing iter: {}", e);
                 SampleIter::Empty
             }
         }

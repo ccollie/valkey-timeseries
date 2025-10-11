@@ -163,5 +163,3 @@ valkey_module! {
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
     ]
 }
-
-// todo: handle @TRIMMED

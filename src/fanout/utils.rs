@@ -28,7 +28,6 @@ pub fn is_multi_or_lua(ctx: &Context) -> bool {
 /// Returns the time duration since UNIX_EPOCH in milliseconds.
 #[cfg(test)]
 fn system_time_millis() -> i64 {
-    // TODO: use a more efficient way to get current time
     let now = std::time::SystemTime::now();
     now.duration_since(std::time::UNIX_EPOCH)
         .expect("time went backwards")
@@ -60,7 +59,6 @@ pub fn get_current_node_ip(ctx: &Context) -> Option<Ipv6Addr> {
             return Some(Ipv6Addr::LOCALHOST);
         }
         let Some(info) = get_cluster_node_info(ctx, node_id) else {
-            // todo: log error
             ctx.log_warning("get_current_node_ip(): error getting cluster node info");
             return None;
         };

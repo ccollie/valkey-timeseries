@@ -207,7 +207,6 @@ impl PartialOrd for TimestampValue {
     }
 }
 
-// todo: better naming
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct TimestampRange {
     pub start: TimestampValue,

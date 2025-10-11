@@ -818,7 +818,7 @@ mod tests {
                     r#"memory_usage{host="server2",env="staging"}"#,
                 ],
             },
-            // OR with combination of positive and negative matchers
+            // OR with a combination of positive and negative matchers
             TestCase {
                 name: "OR mixing positive and negative matchers",
                 or_matchers: vec![

@@ -2,7 +2,6 @@ use valkey_module::{RedisModule_CachedMicroseconds, RedisModule_Milliseconds};
 
 /// Returns the time duration since UNIX_EPOCH in milliseconds.
 pub fn system_time_millis() -> i64 {
-    // TODO: use a more efficient way to get current time
     let now = std::time::SystemTime::now();
     now.duration_since(std::time::UNIX_EPOCH)
         .expect("time went backwards")

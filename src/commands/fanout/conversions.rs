@@ -327,11 +327,11 @@ impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
         let timestamp_output: BucketTimestampType = value
             .bucket_timestamp_type
             .try_into()
-            .map_err(|_| ValkeyError::Str("TSDB: invalid bucket timestamp type"))?; // todo: put in error_consts
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_BUCKET_TIMESTAMP_TYPE))?; 
         let fanout_alignment: BucketAlignmentType = value
             .bucket_alignment
             .try_into()
-            .map_err(|_| ValkeyError::Str("TSDB: invalid bucket alignment"))?; // todo: put in error_consts
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_BUCKET_ALIGNMENT))?;
 
         let mut alignment: BucketAlignment = fanout_alignment.into();
         if matches!(alignment, BucketAlignment::Timestamp(_)) {

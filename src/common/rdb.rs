@@ -109,7 +109,6 @@ pub fn rdb_save_u8(rdb: *mut RedisModuleIO, value: u8) {
 
 pub fn rdb_load_u8(rdb: *mut RedisModuleIO) -> ValkeyResult<u8> {
     let value = raw::load_unsigned(rdb)?;
-    // todo: validate that value is in range
     Ok(value as u8)
 }
 
@@ -121,7 +120,6 @@ pub fn rdb_save_i32(rdb: *mut RedisModuleIO, value: i32) {
 #[inline]
 pub fn rdb_load_i32(rdb: *mut RedisModuleIO) -> ValkeyResult<i32> {
     let value = raw::load_signed(rdb)?;
-    // todo: validate that value is in range
     Ok(value as i32)
 }
 
@@ -175,7 +173,6 @@ pub fn rdb_save_string_hashmap(rdb: *mut RedisModuleIO, map: &HashMap<String, St
 
 pub fn rdb_load_string_hashmap(rdb: *mut RedisModuleIO) -> ValkeyResult<HashMap<String, String>> {
     let len = rdb_load_usize(rdb)?;
-    // todo: check available mem first
     let mut map = HashMap::with_capacity(len);
     for _ in 0..len {
         let key = rdb_load_string(rdb)?;
