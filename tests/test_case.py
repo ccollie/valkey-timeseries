@@ -1,7 +1,7 @@
 import os
-import shutil
 import pytest
-from valkeytestframework.util.waiters import wait_for_equal, TEST_MAX_WAIT_TIME_SECONDS
+
+from common import LOGS_DIR
 from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkeytestframework.valkey_test_case import ReplicationTestCase
 from valkeytestframework.valkey_test_case import ValkeyServerHandle
@@ -11,10 +11,10 @@ from valkey.cluster import ValkeyCluster, ClusterNode
 from valkey.client import Valkey
 from valkey.connection import Connection
 from typing import List, Tuple
-from common import VALKEY_SERVER_PATH, LOGS_DIR, ValkeyInfo, CompactionRule, parse_info_response
 import random
 import string
 import logging
+import shutil
 
 
 class Node:
@@ -101,7 +101,7 @@ class ReplicationGroup:
         if len(d) != count:
             return False
         for record in d.values():
-            if not record["connected"]:
+            if record["connected"] == False:
                 return False
         return True
 
@@ -110,40 +110,6 @@ class ReplicationGroup:
 
     def get_primary_connection(self) -> Valkey:
         return self.primary.client
-
-    def get_num_keys(self, db=0):
-        client = self.get_primary_connection()
-        return client.num_keys(db)
-
-    def verify_server_key_count(self, expected_num_keys):
-        actual_num_keys = self.get_num_keys()
-        assert_num_key_error_msg = f"Actual key number {actual_num_keys} is different from expected key number {expected_num_keys}"
-        assert actual_num_keys == expected_num_keys, assert_num_key_error_msg
-
-    def get_primary_repl_offset(self):
-        primary = self.get_primary_connection()
-        return primary.info()["master_repl_offset"]
-
-    def get_replica_repl_offset(self, index):
-        replica_client = self.get_replica_connection(index)
-        return replica_client.info()["slave_repl_offset"]
-
-    def get_primary_ts_info(self, key, debug = False):
-        """ Get the info of the given key.
-        """
-        debug_str = 'DEBUG' if debug else ''
-        client = self.get_primary_connection()
-        info = client.execute_command(f'TS.INFO {key} {debug_str}')
-        info_dict = parse_info_response(info)
-
-        return info_dict
-
-    def wait_for_replica_offset_to_sync_up(self, index):
-        wait_for_equal(
-            lambda: self.get_primary_repl_offset(),
-            self.get_replica_repl_offset(index),
-            timeout=TEST_MAX_WAIT_TIME_SECONDS,
-        )
 
     @staticmethod
     def cleanup(rg):
@@ -161,7 +127,8 @@ class ReplicationGroup:
             if replica.server:
                 os.kill(replica.server.pid(), 9)
 
-class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
+
+class ValkeyTimeseriesTestCaseCommon(ValkeyTestCase):
     """Common base class for the various Search test cases"""
 
     def normalize_dir_name(self, name: str) -> str:
@@ -172,10 +139,48 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
         return name
 
     def get_config_file_lines(self, testdir, port) -> List[str]:
-        """A template method, must be implemented by subclasses
+        """A template method must be implemented by subclasses
         See ValkeySearchTestCaseBase.get_config_file_lines & ValkeySearchClusterTestCase.get_config_file_lines
         for example usage."""
         raise NotImplementedError
+
+    def start_server(
+            self,
+            port: int,
+            test_name: str,
+            cluster_enabled=True,
+            is_primary=True,
+    ) -> (ValkeyServerHandle, Valkey, str):
+        """Launch server node and return a tuple of the server handle, a client to the server
+        and the log file path"""
+        server_path = os.getenv("VALKEY_SERVER_PATH")
+        testdir = f"{LOGS_DIR}/{test_name}"
+
+        os.makedirs(testdir, exist_ok=True)
+        curdir = os.getcwd()
+        os.chdir(testdir)
+        lines = self.get_config_file_lines(testdir, port)
+
+        conf_file = f"{testdir}/valkey_{port}.conf"
+        with open(conf_file, "w+") as f:
+            for line in lines:
+                f.write(f"{line}\n")
+            f.write("\n")
+            f.close()
+
+        role = "primary" if is_primary else "replica"
+        logfile = f"{testdir}/logfile-{role}-{port}.log"
+        server, client = self.create_server(
+            testdir=testdir,
+            server_path=server_path,
+            args={"logfile": logfile},
+            port=port,
+            conf_file=conf_file,
+        )
+        os.chdir(curdir)
+        self.wait_for_logfile(logfile, "Ready to accept connections")
+        client.ping()
+        return server, client, logfile
 
     def verify_replicaof_succeeded(self, replica_client) -> bool:
         info = replica_client.execute_command("INFO", "replication")
@@ -183,40 +188,44 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
         master_link_status = info.get("master_link_status", "")
         assert role == "slave" and master_link_status == "up"
 
-    def num_keys(self, db=0, client=None):
-        dbKey = f"db{db}"
-        if client is None:
-            client = self.client
-        allKeys = client.info("all").keys()
-        if dbKey in allKeys:
-            return client.info("all")["db{}".format(db)]["keys"]
-        return 0
 
-    def generate_random_string(self, length=7):
-        """ Creates a random string with a specified length.
-        """
-        characters = string.ascii_letters + string.digits
-        random_string = ''.join(random.choice(characters) for _ in range(length))
-        return random_string
+class ValkeyTimeSeriesTestCaseBase(ValkeyTimeseriesTestCaseCommon):
 
-    def ts_info(self, key, debug = False):
-        """ Get the info of the given key.
-        """
-        debug_str = 'DEBUG' if debug else ''
-        info = self.client.execute_command(f'TS.INFO {key} {debug_str}')
-        info_dict = parse_info_response(info)
+    @pytest.fixture(autouse=True)
+    def setup_test(self, request):
+        # Setup
+        test_name = self.normalize_dir_name(request.node.name)
+        self.test_name = test_name
 
-        return info_dict
-    
-    def validate_ts_info_values(self, key, expected_info_dict):
-        """ Validate the values of the timeseries info.
-        """
-        info_dict = self.ts_info(key)
-        for k, v in expected_info_dict.items():
-            if k == 'labels':
-                assert info_dict[k] == v
-            else:
-                assert info_dict[k] == v, f"Expected {k} to be {v}, but got {info_dict[k]}"
+        replica_count = 0
+        if hasattr(request, "param") and request.param["replica_count"]:
+            replica_count = request.param["replica_count"]
+
+        primary = self.start_new_server(is_primary=True)
+        replicas: List[Node] = []
+        for _ in range(0, replica_count):
+            replicas.append(self.start_new_server(is_primary=False))
+
+        self.rg = ReplicationGroup(primary=primary, replicas=replicas)
+        self.rg.setup_replications_cmd()
+        self.server = self.rg.primary.server
+        self.client = self.rg.primary.client
+
+        self.nodes: List[Node] = [self.rg.primary]
+        self.nodes += self.rg.replicas
+
+        yield
+
+        # Cleanup
+        ReplicationGroup.cleanup(self.rg)
+
+    def get_config_file_lines(self, testdir, port) -> List[str]:
+        return [
+            "enable-debug-command yes",
+            f"loadmodule {os.getenv('JSON_MODULE_PATH')}",
+            f"dir {testdir}",
+            f"loadmodule {os.getenv('MODULE_PATH')}",
+        ]
 
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
@@ -227,112 +236,58 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
             assert str(e) == expected_err_reply, assert_error_msg
             return str(e)
 
-    def verify_command_success_reply(self, client, cmd, expected_result):
-        cmd_actual_result = client.execute_command(cmd)
-        assert_error_msg = f"Actual command response '{cmd_actual_result}' is different from expected response '{expected_result}'"
-        assert cmd_actual_result == expected_result, assert_error_msg
-
-
-    def verify_key_exists(self, client, key, value, should_exist=True):
-        if should_exist:
-            assert client.execute_command(f'EXISTS {key}') == 1, f"Item {key} {value} doesn't exist"
-        else:
-            assert client.execute_command(f'EXISTS {key}') == 0, f"Item {key} {value} exists"
-
     def verify_server_key_count(self, client, expected_num_keys):
         actual_num_keys = self.server.num_keys()
         assert_num_key_error_msg = f"Actual key number {actual_num_keys} is different from expected key number {expected_num_keys}"
         assert actual_num_keys == expected_num_keys, assert_num_key_error_msg
 
-    """
-    This method will parse the return of an INFO command and return a python dict where each metric is a key value pair.
-    We can pass in specific sections in order to not have the dict store irrelevant fields related to what we want to check.
-    Example of parsing the returned dict:
-        stats = self.parse_valkey_info("STATS")
-        stats.get('active_defrag_misses')
-    """
-    def valkey_info(self, section="all"):
-        mem_info = self.client.execute_command('INFO ' + section)
-        lines = mem_info.decode('utf-8').split('\r\n')
+    def generate_random_string(self, length=7):
+        """Creates a random string with specified length."""
+        characters = string.ascii_letters + string.digits
+        random_string = "".join(
+            random.choice(characters) for _ in range(length)
+        )
+        return random_string
+
+    def parse_valkey_info(self, section):
+        mem_info = self.client.execute_command("INFO " + section)
+        lines = mem_info.decode("utf-8").split("\r\n")
         stats_dict = {}
         for line in lines:
-            if ':' in line:
-                key, value = line.split(':', 1)
+            if ":" in line:
+                key, value = line.split(":", 1)
                 stats_dict[key.strip()] = value.strip()
-        return ValkeyInfo(stats_dict)
+        return stats_dict
 
-    def validate_copied_series_correctness(self, client, original_name):
-        """ Validate correctness on a copy of the provided timeseries.
-        """
-        copy_filter_name = f"{original_name}_copy"
-        assert client.execute_command(f'COPY {original_name} {copy_filter_name}') == 1
-        assert client.execute_command('DBSIZE') == 2
-        original_info_dict = self.ts_info(original_name)
-        copy_info_dict = self.ts_info(copy_filter_name)
+    def start_new_server(self, is_primary=True) -> Node:
+        """Create a new Valkey server instance"""
+        server, client, logfile = self.start_server(
+            self.get_bind_port(),
+            self.test_name,
+            False,
+            is_primary,
+        )
+        return Node(client=client, server=server, logfile=logfile)
 
-        assert copy_info_dict == original_info_dict, f"Expected {copy_info_dict} to be equal to {original_info_dict}"
+    def get_replica_connection(self, index) -> Valkey:
+        return self.rg.get_replica_connection(index)
 
+    def get_primary_connection(self) -> Valkey:
+        return self.rg.get_primary_connection()
 
+def EnableDebugMode(config: List[str]):
+    # turn "loadmodule xx.so" into "loadmodule xx.so --debug-mode yes"
+    load_module = f"loadmodule {os.getenv('MODULE_PATH')}"
+    return [x.replace(load_module, load_module + " --debug-mode yes") for x in config]
 
-class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
+class ValkeyTimeSeriesTestCaseDebugMode(ValkeyTimeSeriesTestCaseBase):
+    '''
+    Same as ValkeySearchTestCaseBase, except that "debug-mode" is enabled.
+    '''
+    def get_config_file_lines(self, testdir, port) -> List[str]:
+        return EnableDebugMode(super(ValkeyTimeSeriesTestCaseDebugMode, self).get_config_file_lines(testdir, port))
 
-    @pytest.fixture(autouse=True)
-    def setup_test(self):
-        args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
-        server_path = VALKEY_SERVER_PATH
-
-        self.server, self.client = self.create_server(testdir = self.testdir, server_path=server_path, args=args)
-        logging.info("startup args are: %s", args)
-
-    def validate_rules(self, key, expected_rules: List[CompactionRule], check_dest: bool = True):
-        """ Validate the compaction rules of the timeseries.
-        """
-        info_dict = self.ts_info(key)
-        if 'rules' not in info_dict:
-            assert len(expected_rules) == 0, f"Expected no rules, but got {len(expected_rules)} rules: {expected_rules}"
-            return
-
-        actual_rules = info_dict['rules']
-        assert len(actual_rules) == len(expected_rules), f"Expected {len(expected_rules)} rules, but got {len(actual_rules)}"
-
-        # Convert actual rules to a set for easy comparison
-        actual_rule_set = set()
-        for rule in actual_rules:
-            if isinstance(rule, CompactionRule):
-                actual_rule_set.add(rule)
-            else:
-                raise TypeError(f"Unexpected type for actual rule: {type(rule)}")
-
-        # Convert expected rules to a set
-        expected_rule_set = set()
-        for rule in expected_rules:
-            if isinstance(rule, CompactionRule):
-                expected_rule_set.add(rule)
-            else:
-                raise TypeError(f"Unexpected type for expected rule: {type(rule)}")
-
-        # Find rules in the series but not in the expected list
-        extra_rules = actual_rule_set - expected_rule_set
-        if extra_rules:
-            assert False, f"Found unexpected rules in series: {extra_rules}"
-
-        # Find rules in the expected list but not in the series
-        missing_rules = expected_rule_set - actual_rule_set
-        if missing_rules:
-            missing_rules_formatted = [rule in missing_rules]
-            assert False, f"Expected rules not found in series: {missing_rules_formatted}"
-
-        # If we get here, all rules match exactly
-        if check_dest:
-            for rule in expected_rules:
-                if not isinstance(rule, CompactionRule):
-                    raise TypeError(f"Expected rule to be of type CompactionRule, but got {type(rule)}")
-                dest_key = rule.dest_key
-                exists = self.client.execute_command("EXISTS", dest_key)
-                assert exists == True, f"Expected destination key '{dest_key}' to exist, but it does not."
-
-
-class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
+class ValkeyTimeSeriesClusterTestCase(ValkeyTimeseriesTestCaseCommon):
     # Default cluster size
     CLUSTER_SIZE = 3
     # Default value for replication
@@ -375,52 +330,11 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
                     )
                 )
 
-    def start_server(
-        self,
-        port: int,
-        test_name: str,
-        cluster_enabled=True,
-        is_primary=True,
-    ) -> Tuple[ValkeyServerHandle, Valkey, str]:
-        """Launch the server node and return a tuple of the server handle, a client to the server
-        and the log file path"""
-        server_path = VALKEY_SERVER_PATH
-        testdir = f"{LOGS_DIR}/{test_name}"
-
-        os.makedirs(testdir, exist_ok=True)
-        curdir = os.getcwd()
-        os.chdir(testdir)
-        lines = self.get_config_file_lines(testdir, port)
-
-        conf_file = f"{testdir}/valkey_{port}.conf"
-        with open(conf_file, "w+") as f:
-            for line in lines:
-                f.write(f"{line}\n")
-            f.write("\n")
-            f.close()
-
-        role = "primary" if is_primary else "replica"
-        logfile = f"{testdir}/logfile-{role}-{port}.log"
-        server, client = self.create_server(
-            testdir=testdir,
-            server_path=server_path,
-            args={"logfile": logfile},
-            port=port,
-            conf_file=conf_file,
-        )
-        os.chdir(curdir)
-        self.wait_for_logfile(logfile, "Ready to accept connections")
-        client.ping()
-        return server, client, logfile
-
     @pytest.fixture(autouse=True)
     def setup_test(self, request):
         replica_count = self.REPLICAS_COUNT
-        # Extract parameters from pytest's parametrize decorator
-        if hasattr(request.node, 'callspec') and 'setup_test' in request.node.callspec.params:
-            param_value = request.node.callspec.params['setup_test']
-            if isinstance(param_value, dict) and 'replica_count' in param_value:
-                replica_count = param_value['replica_count']
+        if hasattr(request, "param") and request.param["replica_count"]:
+            replica_count = request.param["replica_count"]
 
         self.replication_groups: list[ReplicationGroup] = list()
         ports = []
@@ -513,18 +427,19 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
         for rg in self.replication_groups:
             ReplicationGroup.cleanup(rg)
 
-    def get_config_file_lines(self, test_dir, port) -> List[str]:
+    def get_config_file_lines(self, testdir, port) -> List[str]:
         return [
             "enable-debug-command yes",
-            f"dir {test_dir}",
+            f"loadmodule {os.getenv('JSON_MODULE_PATH')}",
+            f"dir {testdir}",
             "cluster-enabled yes",
             f"cluster-config-file nodes_{port}.conf",
-            f"loadmodule {os.getenv('MODULE_PATH')}",
+            f"loadmodule {os.getenv('MODULE_PATH')} --use-coordinator",
         ]
 
     def _wait_for_meet(self, count: int) -> bool:
         for primary in self.replication_groups:
-            if not primary._wait_for_meet(count):
+            if primary._wait_for_meet(count) == False:
                 return False
         return True
 
@@ -540,21 +455,11 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
     def client_for_primary(self, index) -> Valkey:
         return self.replication_groups[index].primary.client
 
+    def get_all_primary_clients(self) -> List[Valkey]:
+        return [rg.primary.client for rg in self.replication_groups]
+
     def get_replication_group(self, index) -> ReplicationGroup:
         return self.replication_groups[index]
-
-    def get_primary_connection(self) -> Valkey:
-        return self.client
-
-    def start_new_server(self, is_primary=True) -> Node:
-        """Create a new Valkey server instance"""
-        server, client, logfile = self.start_server(
-            self.get_bind_port(),
-            self.test_name,
-            False,
-            is_primary,
-        )
-        return Node(client=client, server=server, logfile=logfile)
 
     def new_cluster_client(self) -> ValkeyCluster:
         """Return a cluster client"""
@@ -579,14 +484,9 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
         return valkey_conn
 
 
-def EnableDebugMode(config: List[str]):
-    # turn "loadmodule xx.so" into "loadmodule xx.so --debug-mode yes"
-    load_module = f"loadmodule {os.getenv('MODULE_PATH')}"
-    return [x.replace(load_module, load_module + " --debug-mode yes") for x in config]
-
 class ValkeySearchClusterTestCaseDebugMode(ValkeyTimeSeriesClusterTestCase):
-    """
+    '''
     Same as ValkeySearchClusterTestCase, except that "debug-mode" is enabled.
-    """
-    def get_config_file_lines(self, test_dir, port) -> List[str]:
-        return EnableDebugMode(super(ValkeySearchClusterTestCaseDebugMode, self).get_config_file_lines(test_dir, port))
+    '''
+    def get_config_file_lines(self, testdir, port) -> List[str]:
+        return EnableDebugMode(super(ValkeySearchClusterTestCaseDebugMode, self).get_config_file_lines(testdir, port))
