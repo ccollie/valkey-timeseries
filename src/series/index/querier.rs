@@ -22,7 +22,7 @@ use crate::labels::filters::{
 };
 use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
-use ahash::{AHashSet, HashMapExt};
+use ahash::{HashMapExt};
 use blart::AsBytes;
 use orx_parallel::IterIntoParIter;
 use orx_parallel::ParIter;
@@ -321,19 +321,14 @@ pub(super) fn postings_for_label_filters<'a>(
     let mut not_its: SmallVec<Cow<PostingsBitmap>, 4> = SmallVec::new();
 
     let mut sorted_matchers: SmallVec<(&LabelFilter, bool, bool), 4> = SmallVec::new();
-    // See which label must be non-empty.
-    // Optimization for a case like {l=~".", l!="1"}.
-    let mut label_must_be_set: AHashSet<&str> = AHashSet::with_capacity(filters.len());
 
     let mut has_subtracting_matchers = false;
     let mut has_intersecting_matchers = false;
     for m in filters {
         let matches_empty = m.matches("");
-        if !matches_empty {
-            label_must_be_set.insert(&m.label);
-        }
 
-        let is_subtracting = is_subtracting_matcher(m, &label_must_be_set);
+        let is_subtracting = matches_empty || m.is_negative_matcher();
+
         if is_subtracting {
             has_subtracting_matchers = true;
         } else {
@@ -399,7 +394,9 @@ pub(super) fn postings_for_label_filters<'a>(
                 let it = ix.postings_for_all_label_values(&filter.label);
                 not_its.push(Cow::Owned(it));
             }
-            _ if label_must_be_set.contains(name.as_str()) => {
+            // See which label must be non-empty.
+            // Optimization for a case like {l=~".", l!="1"}.
+            _ if !matches_empty => {
                 // If this matcher must be non-empty, we can be smarter.
                 let is_not = matches!(typ, MatchOp::NotEqual | MatchOp::RegexNotEqual);
                 match (is_not, matches_empty) {
@@ -468,13 +465,6 @@ pub(super) fn postings_for_label_filters<'a>(
     Ok(Cow::Owned(result))
 }
 
-#[inline]
-fn is_subtracting_matcher(m: &LabelFilter, label_must_be_set: &AHashSet<&str>) -> bool {
-    if !label_must_be_set.contains(&m.label.as_str()) {
-        return true;
-    }
-    matches!(m.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual) && m.matches("")
-}
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
 where
