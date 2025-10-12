@@ -12,7 +12,7 @@
 mod tests {
     use crate::labels::filters::{LabelFilter, MatchOp, SeriesSelector};
     use crate::labels::{Label, MetricName};
-    use crate::series::index::{TimeSeriesIndex, next_timeseries_id, postings_for_selectors};
+    use crate::series::index::{TimeSeriesIndex, next_timeseries_id};
     use crate::series::{SeriesRef, TimeSeries};
     use std::collections::{HashMap, HashSet};
 
@@ -67,7 +67,7 @@ mod tests {
     ) -> Vec<Vec<Label>> {
         let copy = filters.to_vec().clone();
         let filter = SeriesSelector::with_filters(copy);
-        let p = postings_for_selectors(ix, &filter).unwrap();
+        let p = ix.postings_for_selector(&filter).unwrap();
         let mut actual: Vec<_> = p
             .iter()
             .flat_map(|id| series_data.get(&id))
@@ -844,7 +844,7 @@ mod tests {
         for case in cases {
             let name = case.name;
             let filter: SeriesSelector = case.or_matchers.into();
-            let actual = postings_for_selectors(&ix, &filter).unwrap();
+            let actual = ix.postings_for_selector(&filter).unwrap();
             let actual_ids: HashSet<SeriesRef> = actual.iter().collect();
 
             let mut missing: Vec<MetricName> = vec![];
@@ -1003,7 +1003,7 @@ mod tests {
         ];
         let filter = SeriesSelector::with_filters(matchers);
 
-        let complex_query_result = postings_for_selectors(&index, &filter).unwrap();
+        let complex_query_result = index.postings_for_selector(&filter).unwrap();
         assert!(
             complex_query_result.contains(ts.id),
             "Query should still work after rename"
@@ -1015,7 +1015,7 @@ mod tests {
         ];
         let regex_filter = SeriesSelector::with_filters(regex_matchers);
 
-        let regex_query_result = postings_for_selectors(&index, &regex_filter).unwrap();
+        let regex_query_result = index.postings_for_selector(&regex_filter).unwrap();
         assert!(
             regex_query_result.contains(ts.id),
             "Query should still work after rename"

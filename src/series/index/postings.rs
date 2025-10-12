@@ -1,7 +1,7 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
 use crate::common::hash::IntMap;
-use crate::labels::filters::{LabelFilter, PredicateMatch, PredicateValue};
+use crate::labels::filters::{FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector};
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
@@ -9,7 +9,11 @@ use blart::map::Entry as ARTEntry;
 use blart::{AsBytes, TreeMap};
 use croaring::Bitmap64;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::sync::LazyLock;
+use smallvec::SmallVec;
+use valkey_module::{ValkeyError, ValkeyResult};
+use crate::error_consts::MISSING_FILTER;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -215,9 +219,9 @@ impl Postings {
         result
     }
 
-    /// `postings` returns the postings list iterator for the label pairs.
+    /// `postings_for_label_values` returns the postings list iterator for the label pairs.
     /// The postings here contain the ids to the series inside the index.
-    pub fn postings(&self, name: &str, values: &[String]) -> PostingsBitmap {
+    pub fn postings_for_label_values(&self, name: &str, values: &[String]) -> PostingsBitmap {
         let mut result = PostingsBitmap::new();
 
         for value in values {
@@ -353,7 +357,7 @@ impl Postings {
         }
     }
 
-    pub fn inverse_postings_for_filter(&'_ self, filter: &LabelFilter) -> Cow<'_, PostingsBitmap> {
+    fn inverse_postings_for_filter(&'_ self, filter: &LabelFilter) -> Cow<'_, PostingsBitmap> {
         match &filter.matcher {
             PredicateMatch::NotEqual(pv) => handle_equal_match(self, &filter.label, pv),
             // If the matcher being inverted is ="", we just want all the values.
@@ -376,6 +380,208 @@ impl Postings {
         }
     }
 
+    /// `postings_for_label_filters` assembles a single postings iterator against the index
+    /// based on the given matchers.
+    pub fn postings_for_label_filters(
+        &'_ self,
+        filters: &[LabelFilter],
+    ) -> ValkeyResult<Cow<'_, PostingsBitmap>> {
+        if filters.is_empty() {
+            return Ok(Cow::Borrowed(self.all_postings()));
+        }
+        if filters.len() == 1 {
+            let filter = &filters[0];
+            // follow Prometheus here: if we have an empty matcher and label, return all postings.
+            if filter.label.is_empty() && filter.matcher.is_empty() {
+                return Ok(Cow::Borrowed(self.all_postings()));
+            }
+            // shortcut the handling of simple equality matchers
+            if !filter.is_negative_matcher() && !filter.matches_empty() {
+                let it = self.postings_for_filter(filter);
+                if it.is_empty() {
+                    return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+                }
+                return Ok(it);
+            }
+        }
+
+        let mut its: SmallVec<_, 4> = SmallVec::new();
+        let mut not_its: SmallVec<Cow<PostingsBitmap>, 4> = SmallVec::new();
+
+        let mut sorted_matchers: SmallVec<(&LabelFilter, bool, bool), 4> = SmallVec::new();
+
+        let mut has_subtracting_matchers = false;
+        let mut has_intersecting_matchers = false;
+        for m in filters {
+            let matches_empty = m.matches("");
+
+            let is_subtracting = matches_empty || m.is_negative_matcher();
+
+            if is_subtracting {
+                has_subtracting_matchers = true;
+            } else {
+                has_intersecting_matchers = true;
+            }
+
+            sorted_matchers.push((m, matches_empty, is_subtracting))
+        }
+
+        if has_subtracting_matchers && !has_intersecting_matchers {
+            // If there's nothing to subtract from, add in everything and remove the not_its later.
+            // We prefer to get all_postings so that the base of subtraction (i.e., all_postings)
+            // doesn't include series that may be added to the index reader during this function call.
+            its.push(Cow::Borrowed(self.all_postings()));
+        };
+
+        // Sort matchers to have the intersecting matchers first.
+        // This way the base for subtraction is smaller, and there is no chance that the set we subtract
+        // from contains postings of series that didn't exist when we constructed the set we subtract by.
+        sorted_matchers.sort_by(|i, j| -> Ordering {
+            let is_i_subtracting = i.2;
+            let is_j_subtracting = j.2;
+            if !is_i_subtracting && is_j_subtracting {
+                return Ordering::Less;
+            }
+            // sort by match cost
+            let cost_i = i.0.cost();
+            let cost_j = j.0.cost();
+            cost_i.cmp(&cost_j)
+        });
+
+        for (filter, matches_empty, _is_subtracting) in sorted_matchers {
+            //let value = &m.value;
+            let name = &filter.label;
+
+            if name.is_empty() && matches_empty {
+                // We already handled the case at the top of the function,
+                // and it is unexpected to get all postings again here.
+                return Err(ValkeyError::Str(MISSING_FILTER));
+            }
+
+            let typ = filter.op();
+            let regex_value = filter.regex_text().unwrap_or("");
+
+            match (typ, regex_value) {
+                // .* regexp matches any string: do nothing
+                (MatchOp::RegexEqual, ".*") => continue,
+
+                // .* regexp does not match any string: return empty
+                (MatchOp::RegexNotEqual, ".*") => {
+                    return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+                }
+
+                // .+ regexp matches any non-empty string
+                (MatchOp::RegexEqual, ".+") => {
+                    // .+ regexp matches any non-empty string: get postings for all label values.
+                    let it = self.postings_for_all_label_values(&filter.label);
+                    its.push(Cow::Owned(it));
+                }
+
+                // .+ regexp does not match any non-empty string
+                (MatchOp::RegexNotEqual, ".+") => {
+                    let it = self.postings_for_all_label_values(&filter.label);
+                    not_its.push(Cow::Owned(it));
+                }
+                // See which label must be non-empty.
+                // Optimization for a case like {l=~".", l!="1"}.
+                _ if !matches_empty => {
+                    // If this matcher must be non-empty, we can be smarter.
+                    let is_not = matches!(typ, MatchOp::NotEqual | MatchOp::RegexNotEqual);
+                    match (is_not, matches_empty) {
+                        // l!="foo"
+                        (true, true) => {
+                            // If the label can't be empty and is a Not and the inner matcher
+                            // doesn't match empty, then subtract it out at the end.
+                            let inverse = filter.clone().inverse();
+                            let it = self.postings_for_filter(&inverse);
+                            not_its.push(it);
+                        }
+                        // l!=""
+                        (true, false) => {
+                            // If the label can't be empty and is a Not, but the inner matcher can
+                            // be empty, we need to use inverse_postings_for_filter.
+                            let inverse = filter.clone().inverse();
+                            let it = self.inverse_postings_for_filter(&inverse);
+                            if it.is_empty() {
+                                return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+                            }
+                            its.push(it);
+                        }
+                        // l="a", l=~"a|b", etc.
+                        _ => {
+                            // Non-Not matcher, use normal postings_for_filter.
+                            let it = self.postings_for_filter(filter);
+                            if it.is_empty() {
+                                return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+                            }
+                            its.push(it);
+                        }
+                    }
+                }
+                _ => {
+                    // l=""
+                    // If the matchers for a label name selects an empty value, it selects all
+                    // the series which don't have the label name set too. See:
+                    // https://github.com/prometheus/prometheus/issues/3575 and
+                    // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
+                    let it = self.inverse_postings_for_filter(filter);
+
+                    not_its.push(it)
+                }
+            }
+        }
+
+        // optimization: if we have a single iterator and no not_its, return it directly, saving a clone.
+        if its.len() == 1 && not_its.is_empty() {
+            return Ok(its
+                .pop()
+                .expect("unexpected out of bounds error running matchers"));
+        }
+
+        let mut result = if its.is_empty() {
+            self.all_postings().clone()
+        } else {
+            // sort by cardinality first to reduce the amount of work
+            its.sort_by_key(|a| a.cardinality());
+            intersection(its)
+        };
+
+        for not in not_its {
+            result.andnot_inplace(&not)
+        }
+
+        Ok(Cow::Owned(result))
+    }
+
+    pub fn postings_for_selector(
+        &'_ self,
+        selector: &SeriesSelector,
+    ) -> ValkeyResult<Cow<'_, PostingsBitmap>> {
+        match &selector {
+            SeriesSelector::And(filters) => self.postings_for_label_filters(filters),
+            SeriesSelector::Or(filters) => self.process_or_matchers(filters),
+        }
+    }
+
+    fn process_or_matchers(
+        &'_ self,
+        filters: &[FilterList],
+    ) -> ValkeyResult<Cow<'_, PostingsBitmap>> {
+        match filters {
+            [] => Ok(Cow::Borrowed(self.all_postings())),
+            [filters] => self.postings_for_label_filters(filters),
+            _ => {
+                let mut result = PostingsBitmap::new();
+                // maybe chili here to run in parallel
+                for matchers in filters {
+                    let postings = self.postings_for_label_filters(matchers)?;
+                    result.or_inplace(&postings);
+                }
+                Ok(Cow::Owned(result))
+            }
+        }
+    }
+    
     pub(crate) fn get_key_by_id(&self, id: SeriesRef) -> Option<&KeyType> {
         self.id_to_key.get(&id)
     }
@@ -555,7 +761,7 @@ fn handle_equal_match<'a>(
         PredicateValue::List(val) => match val.len() {
             0 => ix.postings_without_label(label),
             1 => ix.postings_for_label_value(label, &val[0]),
-            _ => Cow::Owned(ix.postings(label, val)),
+            _ => Cow::Owned(ix.postings_for_label_values(label, val)),
         },
         PredicateValue::Empty => ix.postings_without_label(label),
     }
@@ -593,7 +799,7 @@ fn handle_not_equal_match<'a>(
                 0 => with_label(ix, label),
                 _ => {
                     // get postings for label m.label without values in values
-                    let to_remove = ix.postings(label, values);
+                    let to_remove = ix.postings_for_label_values(label, values);
                     let all_postings = ix.all_postings();
                     if to_remove.is_empty() {
                         Cow::Borrowed(all_postings)
@@ -638,6 +844,30 @@ fn handle_regex_not_equal_match<'a>(
         });
     Cow::Owned(postings)
 }
+
+fn intersection<'a, I>(its: I) -> PostingsBitmap
+where
+    I: IntoIterator<Item = Cow<'a, PostingsBitmap>>,
+{
+    let mut its = its.into_iter();
+    if let Some(it) = its.next() {
+        let mut result = it.into_owned();
+
+        for it in its {
+            if it.is_empty() {
+                result.clear();
+                return result;
+            }
+
+            result.and_inplace(&it);
+        }
+
+        result
+    } else {
+        PostingsBitmap::new()
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -707,7 +937,7 @@ mod tests {
 
         // Query for multiple values of the same label
         let values = vec!["value1".to_string(), "value3".to_string()];
-        let result = postings.postings("label1", &values);
+        let result = postings.postings_for_label_values("label1", &values);
 
         // Check that the result contains the correct series IDs
         assert_eq!(result.cardinality(), 3);
@@ -734,7 +964,7 @@ mod tests {
         ];
 
         // Call the postings method
-        let result = postings.postings("label", &values);
+        let result = postings.postings_for_label_values("label", &values);
 
         // Check the result
         assert_eq!(result.cardinality(), 3);
@@ -761,7 +991,7 @@ mod tests {
         ];
 
         // Get the postings
-        let result = postings.postings("label", &values);
+        let result = postings.postings_for_label_values("label", &values);
 
         // Check if the result contains all the expected series IDs
         assert_eq!(result.cardinality(), 4);
@@ -787,7 +1017,7 @@ mod tests {
 
         // Measure the time taken to execute the postings function
         let start_time = std::time::Instant::now();
-        let result = postings.postings(label_name, &values);
+        let result = postings.postings_for_label_values(label_name, &values);
         let duration = start_time.elapsed();
 
         // Assert that all series IDs are present in the result
@@ -814,7 +1044,7 @@ mod tests {
 
         // Test postings method with Unicode characters
         let values = vec!["值1".to_string(), "値2".to_string(), "🌟".to_string()];
-        let result = postings.postings("标签", &values);
+        let result = postings.postings_for_label_values("标签", &values);
 
         assert_eq!(result.cardinality(), 3);
         assert!(result.contains(1));

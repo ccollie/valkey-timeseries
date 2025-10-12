@@ -403,10 +403,12 @@ impl LabelFilter {
         self.matches("")
     }
 
+    #[inline]
     pub fn is_negative_matcher(&self) -> bool {
         matches!(self.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual)
     }
 
+    #[inline]
     pub fn is_metric_name_filter(&self) -> bool {
         self.label == METRIC_NAME_LABEL && self.op() == MatchOp::Equal
     }

@@ -12,6 +12,7 @@ use crate::series::{SeriesRef, TimeSeries};
 use get_size2::GetSize;
 use std::mem::size_of;
 use valkey_module::{ValkeyError, ValkeyResult};
+use crate::labels::filters::SeriesSelector;
 
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<Postings>,
@@ -89,6 +90,18 @@ impl TimeSeriesIndex {
             1 => Ok(Some(acc.iter().next().expect("cardinality should be 1"))),
             _ => Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES)),
         }
+    }
+
+    /// `postings_for_filters` assembles a single postings iterator against the series index
+    /// based on the given matchers.
+    #[allow(dead_code)]
+    pub fn postings_for_selector(&self, selectors: &SeriesSelector) -> ValkeyResult<PostingsBitmap> {
+        let mut state = ();
+        self.with_postings(&mut state, move |inner, _| {
+            let postings = inner.postings_for_selector(selectors)?;
+            let res = postings.into_owned();
+            Ok(res)
+        })
     }
 
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
