@@ -6,13 +6,13 @@ use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
+use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, SeriesLabel};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size2::GetSize;
 use std::mem::size_of;
 use valkey_module::{ValkeyError, ValkeyResult};
-use crate::labels::filters::SeriesSelector;
 
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<Postings>,
@@ -95,7 +95,10 @@ impl TimeSeriesIndex {
     /// `postings_for_filters` assembles a single postings iterator against the series index
     /// based on the given matchers.
     #[allow(dead_code)]
-    pub fn postings_for_selector(&self, selectors: &SeriesSelector) -> ValkeyResult<PostingsBitmap> {
+    pub fn postings_for_selector(
+        &self,
+        selectors: &SeriesSelector,
+    ) -> ValkeyResult<PostingsBitmap> {
         let mut state = ();
         self.with_postings(&mut state, move |inner, _| {
             let postings = inner.postings_for_selector(selectors)?;

@@ -1,6 +1,7 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::filters::{
-    FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector, ValueList,
+    FilterList, LabelFilter, MatchOp, OrFilterList, PredicateMatch, PredicateValue, SeriesSelector,
+    ValueList,
 };
 use crate::parser::lex::{Token, expect_one_of_tokens, expect_token};
 use crate::parser::parse_error::unexpected;
@@ -121,15 +122,17 @@ fn parse_redis_ts_predicate(
 
 /// `parse_label_filters` parses a set of label matchers.
 ///
-/// `{` [ <label_name> <match_op> <match_string>, ... [or <label_name> <match_op> <match_string>, ...] `}`
+/// `{` [ <label_name> <match_op> <match_string>, ... [or <label_name> <match_op> <match_string>, ...] ] `}`
 ///
 fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
     // left brace already consumed
 
-    let mut or_matchers: Vec<FilterList> = Vec::new();
-    let mut filters: Vec<LabelFilter> = Vec::new();
+    // These are initially stack allocated, so instantiating them here is fine
+    let mut or_matchers: OrFilterList = OrFilterList::default();
+    let mut filters: FilterList = FilterList::default();
+
     let mut has_or_matchers = false;
 
     // the underscore here is ugly but gets rid of the unused_assignment warning
@@ -138,9 +141,8 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
 
     loop {
         if has_or_matchers && !filters.is_empty() {
-            let last_matchers = std::mem::take(&mut filters);
-            let matchers = FilterList::new(last_matchers);
-            or_matchers.push(matchers);
+            let last_filters = std::mem::take(&mut filters);
+            or_matchers.push(last_filters);
         }
 
         (filters, _last_token, _has_metric_name_filter) = parse_label_filters_internal(p)?;
@@ -170,28 +172,29 @@ fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResul
         }
     }
 
+    if filters.is_empty() && or_matchers.is_empty() {
+        return Err(ParseError::EmptySeriesSelector);
+    }
+
     if has_or_matchers {
         if !filters.is_empty() {
-            let matchers = FilterList::new(filters);
-            or_matchers.push(matchers);
+            or_matchers.push(filters);
         }
         // todo: validate name
         return Ok(SeriesSelector::Or(or_matchers));
     }
 
-    Ok(SeriesSelector::with_filters(filters))
+    Ok(SeriesSelector::And(filters))
 }
 
 /// parse_label_filters parses a set of label matchers.
 ///
 /// [ <label_name> <match_op> <match_string>, ... ]
 ///
-fn parse_label_filters_internal(
-    p: &mut Lexer<Token>,
-) -> ParseResult<(Vec<LabelFilter>, Token, bool)> {
+fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(FilterList, Token, bool)> {
     use Token::*;
 
-    let mut matchers: Vec<LabelFilter> = vec![];
+    let mut matchers: FilterList = FilterList::default();
     let mut metric_name_seen = false;
 
     loop {

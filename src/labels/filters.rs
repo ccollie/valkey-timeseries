@@ -461,12 +461,16 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
     matches_empty || re.is_match("")
 }
 
+/// FilterList is a small vector of LabelFilter, used for AND combinations of label filters.
+/// We try to minimize allocations by reserving stack space for 3 LabelFilter, which seems reasonable for the common
+/// case. e.g. http_requests_total{job="api",method="GET"}
 #[derive(Debug, Default, Clone, Hash, PartialEq)]
-pub struct FilterList(Vec<LabelFilter>);
+pub struct FilterList(SmallVec<LabelFilter, 3>);
 
 impl FilterList {
     pub fn new(matchers: Vec<LabelFilter>) -> Self {
-        Self(matchers)
+        let inner = SmallVec::from_vec(matchers);
+        Self(inner)
     }
 
     pub fn len(&self) -> usize {
@@ -500,6 +504,10 @@ impl FilterList {
         self.0.push(matcher);
     }
 
+    pub fn insert(&mut self, index: usize, matcher: LabelFilter) {
+        self.0.insert(index, matcher);
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &LabelFilter> {
         self.0.iter()
     }
@@ -512,7 +520,7 @@ impl Display for FilterList {
 }
 
 impl Deref for FilterList {
-    type Target = Vec<LabelFilter>;
+    type Target = [LabelFilter];
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -531,24 +539,19 @@ impl From<Vec<LabelFilter>> for FilterList {
     }
 }
 
+/// OrFilterList is a small vector of FilterList, used for OR combinations of AND filters.
+/// Typically, it contains 2 or 3 FilterList, so we optimize for that case
+pub type OrFilterList = SmallVec<FilterList, 2>;
+
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub enum SeriesSelector {
-    Or(Vec<FilterList>),
+    Or(OrFilterList),
     And(FilterList),
 }
 
 impl SeriesSelector {
     pub fn with_filters(matchers: Vec<LabelFilter>) -> Self {
         SeriesSelector::And(matchers.into())
-    }
-
-    pub fn with_or_filters(or_matchers: Vec<FilterList>) -> Self {
-        if or_matchers.len() == 1 {
-            let mut or_matchers = or_matchers;
-            let first = or_matchers.pop().expect("or_matchers is not empty");
-            return Self::And(first);
-        }
-        SeriesSelector::Or(or_matchers)
     }
 
     pub fn len(&self) -> usize {
@@ -648,7 +651,7 @@ impl From<Vec<Vec<LabelFilter>>> for SeriesSelector {
             return SeriesSelector::And(FilterList::new(first));
         }
         let and_matchers: Vec<FilterList> = value.into_iter().map(FilterList::new).collect();
-        SeriesSelector::Or(and_matchers)
+        SeriesSelector::Or(and_matchers.into())
     }
 }
 

@@ -32,7 +32,7 @@ pub fn parse_metric_name(s: &str) -> ParseResult<Vec<Label>> {
 
 /// parse a set of label matchers.
 ///
-/// '{' [ <label_name> <match_op> <match_string>, ... '}'
+/// '{' [ <label_name> <match_op> <match_string>, ... ] '}'
 ///
 pub(crate) fn parse_label_filters(
     lex: &mut Lexer<Token>,

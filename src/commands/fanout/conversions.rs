@@ -327,7 +327,7 @@ impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
         let timestamp_output: BucketTimestampType = value
             .bucket_timestamp_type
             .try_into()
-            .map_err(|_| ValkeyError::Str(error_consts::INVALID_BUCKET_TIMESTAMP_TYPE))?; 
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_BUCKET_TIMESTAMP_TYPE))?;
         let fanout_alignment: BucketAlignmentType = value
             .bucket_alignment
             .try_into()

@@ -1,19 +1,21 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
 use crate::common::hash::IntMap;
-use crate::labels::filters::{FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector};
+use crate::error_consts::MISSING_FILTER;
+use crate::labels::filters::{
+    FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
+};
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use blart::map::Entry as ARTEntry;
 use blart::{AsBytes, TreeMap};
 use croaring::Bitmap64;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::LazyLock;
-use smallvec::SmallVec;
 use valkey_module::{ValkeyError, ValkeyResult};
-use crate::error_consts::MISSING_FILTER;
 
 pub(super) const ALL_POSTINGS_KEY_NAME: &str = "$_ALL_P0STINGS_";
 pub(super) static EMPTY_BITMAP: LazyLock<PostingsBitmap> = LazyLock::new(PostingsBitmap::new);
@@ -84,11 +86,7 @@ impl Postings {
         }
     }
 
-    fn remove_posting_by_id_and_labels<T: SeriesLabel>(
-        &mut self,
-        id: SeriesRef,
-        labels: &[T],
-    ) {
+    fn remove_posting_by_id_and_labels<T: SeriesLabel>(&mut self, id: SeriesRef, labels: &[T]) {
         self.remove_id_from_all_postings(id);
 
         // should never happen, but just in case
@@ -152,7 +150,7 @@ impl Postings {
     pub fn index_timeseries(&mut self, ts: &TimeSeries, key: &[u8]) {
         debug_assert!(ts.id != 0);
         let id = ts.id;
-        
+
         for InternedLabel { name, value } in ts.labels.iter() {
             self.add_posting_for_label_value(id, name, value);
         }
@@ -581,7 +579,7 @@ impl Postings {
             }
         }
     }
-    
+
     pub(crate) fn get_key_by_id(&self, id: SeriesRef) -> Option<&KeyType> {
         self.id_to_key.get(&id)
     }
@@ -867,7 +865,6 @@ where
         PostingsBitmap::new()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

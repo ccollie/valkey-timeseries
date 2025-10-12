@@ -14,7 +14,7 @@ mod tests {
         );
     }
 
-    fn assert_contains_matcher(matchers: &Vec<LabelFilter>, label: &str, op: MatchOp, value: &str) {
+    fn assert_contains_matcher(matchers: &[LabelFilter], label: &str, op: MatchOp, value: &str) {
         let expected = LabelFilter::create(op, label, value).unwrap();
         assert!(
             matchers.contains(&expected),
@@ -49,7 +49,7 @@ mod tests {
 
     fn with_and_matchers<F>(matchers: &SeriesSelector, f: F)
     where
-        F: Fn(&Vec<LabelFilter>),
+        F: Fn(&[LabelFilter]),
     {
         match matchers {
             SeriesSelector::And(m) => f(m),
@@ -59,7 +59,7 @@ mod tests {
 
     fn with_or_matchers<F>(matchers: &SeriesSelector, f: F)
     where
-        F: Fn(&Vec<FilterList>),
+        F: Fn(&[FilterList]),
     {
         match matchers {
             SeriesSelector::Or(m) => f(m),

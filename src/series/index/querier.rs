@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::postings::{KeyType, Postings};
-use super::{with_timeseries_postings, TimeSeriesIndex};
+use super::{TimeSeriesIndex, with_timeseries_postings};
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
