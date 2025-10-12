@@ -1,7 +1,7 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse, DateRange};
 use super::utils::reply_with_i64;
 use crate::commands::calculate_cardinality;
-use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::fanout::{FanoutOperation, FanoutTarget, exec_fanout_request_base};
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;

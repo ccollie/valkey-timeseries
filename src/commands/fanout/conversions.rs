@@ -1,10 +1,11 @@
+use super::filters::deserialize_matchers_list;
 use super::generated::{
     AggregationOptions as FanoutAggregationOptions, AggregationType as FanoutAggregationType,
     BucketAlignmentType, BucketTimestampType, CompressionType as FanoutChunkEncoding, DateRange,
-    GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel, Matchers as FanoutMatchers,
-    MultiRangeRequest, PostingStat as FanoutPostingStat, Sample as FanoutSample, StatsResponse,
+    GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel, MultiRangeRequest,
+    PostingStat as FanoutPostingStat, Sample as FanoutSample,
+    SeriesSelector as FanoutSeriesSelector, StatsResponse,
 };
-use super::matchers::deserialize_matchers_list;
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
@@ -253,7 +254,7 @@ impl From<RangeGroupingOptions> for FanoutGroupingOptions {
 
 pub fn deserialize_match_filter_options(
     range: Option<DateRange>,
-    filters: Option<Vec<FanoutMatchers>>,
+    filters: Option<Vec<FanoutSeriesSelector>>,
 ) -> ValkeyResult<MatchFilterOptions> {
     let date_range: Option<TimestampRange> = range.map(|r| r.into());
     let matchers: Vec<SeriesSelector> = deserialize_matchers_list(filters)?;

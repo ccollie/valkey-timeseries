@@ -540,8 +540,7 @@ impl From<Vec<LabelFilter>> for FilterList {
 }
 
 /// OrFilterList is a small vector of FilterList, used for OR combinations of AND filters.
-/// Typically, it contains 2 or 3 FilterList, so we optimize for that case
-pub type OrFilterList = SmallVec<FilterList, 2>;
+pub type OrFilterList = SmallVec<FilterList, 1>;
 
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub enum SeriesSelector {

@@ -1,6 +1,6 @@
 use super::generated::{
-    Matcher as FanoutMatcher, MatcherList, MatcherListValue, MatcherOpType,
-    Matchers as FanoutMatchers, OrMatcherList, matcher, matchers,
+    FilterList as FanoutFilterList, FilterListValue, LabelFilter as FanoutFilter, MatcherOpType,
+    OrMatcherList, SeriesSelector as FanoutSeriesSelector, label_filter::Value, series_selector,
 };
 use crate::labels::filters::{
     FilterList, LabelFilter, OrFilterList, PredicateMatch, PredicateValue, RegexMatcher,
@@ -8,20 +8,20 @@ use crate::labels::filters::{
 };
 use valkey_module::{ValkeyError, ValkeyResult};
 
-impl From<&LabelFilter> for FanoutMatcher {
+impl From<&LabelFilter> for FanoutFilter {
     fn from(source: &LabelFilter) -> Self {
-        fn get_predicate_value(value: &PredicateValue) -> matcher::Value {
+        fn get_predicate_value(value: &PredicateValue) -> Value {
             match value {
-                PredicateValue::Empty => matcher::Value::Empty(true),
-                PredicateValue::String(v) => matcher::Value::Single(v.into()),
+                PredicateValue::Empty => Value::Empty(true),
+                PredicateValue::String(v) => Value::Single(v.into()),
                 PredicateValue::List(list) => {
-                    let mut items: MatcherListValue = MatcherListValue {
+                    let mut items: FilterListValue = FilterListValue {
                         values: Vec::with_capacity(list.len()),
                     };
                     for item in list.iter() {
                         items.values.push(item.into());
                     }
-                    matcher::Value::List(items)
+                    Value::List(items)
                 }
             }
         }
@@ -36,16 +36,16 @@ impl From<&LabelFilter> for FanoutMatcher {
                 (items, MatcherOpType::NotEqual)
             }
             PredicateMatch::RegexEqual(regex) => {
-                let value = matcher::Value::Single(regex.value.clone());
+                let value = Value::Single(regex.value.clone());
                 (value, MatcherOpType::RegexEqual)
             }
             PredicateMatch::RegexNotEqual(regex) => {
-                let value = matcher::Value::Single(regex.value.clone());
+                let value = Value::Single(regex.value.clone());
                 (value, MatcherOpType::RegexNotEqual)
             }
         };
 
-        FanoutMatcher {
+        FanoutFilter {
             label: source.label.clone(),
             op: op.into(),
             value: Some(value),
@@ -53,9 +53,10 @@ impl From<&LabelFilter> for FanoutMatcher {
     }
 }
 
-impl From<&SeriesSelector> for FanoutMatchers {
+impl From<&SeriesSelector> for FanoutSeriesSelector {
     fn from(value: &SeriesSelector) -> Self {
-        fn decompose_and_matchers(dest: &mut Vec<FanoutMatcher>, matchers: &FilterList) {
+        use series_selector::*;
+        fn decompose_and_matchers(dest: &mut Vec<FanoutFilter>, matchers: &FilterList) {
             for matcher in matchers.iter() {
                 dest.push(matcher.into());
             }
@@ -65,28 +66,24 @@ impl From<&SeriesSelector> for FanoutMatchers {
             SeriesSelector::Or(lists) => {
                 let mut or_matchers = Vec::with_capacity(lists.len());
                 for matcher_list in lists.iter() {
-                    let mut converted = Vec::with_capacity(matcher_list.len());
-                    decompose_and_matchers(&mut converted, matcher_list);
-                    let matcher_list = MatcherList {
-                        matchers: converted,
-                    };
-                    or_matchers.push(matcher_list);
+                    let mut matchers = Vec::with_capacity(matcher_list.len());
+                    decompose_and_matchers(&mut matchers, matcher_list);
+                    let filters = FanoutFilterList { matchers };
+                    or_matchers.push(filters);
                 }
                 let or_matchers = OrMatcherList {
                     filters: or_matchers,
                 };
-                FanoutMatchers {
-                    filters: Some(matchers::Filters::OrFilters(or_matchers)),
+                FanoutSeriesSelector {
+                    filters: Some(Filters::OrFilters(or_matchers)),
                 }
             }
             SeriesSelector::And(items) => {
-                let mut converted = Vec::with_capacity(items.len());
-                decompose_and_matchers(&mut converted, items);
-                let matcher_list = MatcherList {
-                    matchers: converted,
-                };
-                FanoutMatchers {
-                    filters: Some(matchers::Filters::AndFilters(matcher_list)),
+                let mut matchers = Vec::with_capacity(items.len());
+                decompose_and_matchers(&mut matchers, items);
+                let filters = FanoutFilterList { matchers };
+                FanoutSeriesSelector {
+                    filters: Some(Filters::AndFilters(filters)),
                 }
             }
         }
@@ -95,22 +92,23 @@ impl From<&SeriesSelector> for FanoutMatchers {
 
 pub(crate) fn serialize_matchers_list(
     filters: &[SeriesSelector],
-) -> ValkeyResult<Vec<FanoutMatchers>> {
-    let mut result: Vec<FanoutMatchers> = Vec::with_capacity(filters.len());
+) -> ValkeyResult<Vec<FanoutSeriesSelector>> {
+    let mut result: Vec<FanoutSeriesSelector> = Vec::with_capacity(filters.len());
     for filter in filters.iter() {
-        let item: FanoutMatchers = filter.into();
+        let item: FanoutSeriesSelector = filter.into();
         result.push(item);
     }
     Ok(result)
 }
 
-impl TryFrom<&FanoutMatchers> for SeriesSelector {
+impl TryFrom<&FanoutSeriesSelector> for SeriesSelector {
     type Error = ValkeyError;
 
-    fn try_from(value: &FanoutMatchers) -> Result<Self, Self::Error> {
+    fn try_from(value: &FanoutSeriesSelector) -> Result<Self, Self::Error> {
+        use series_selector::*;
         let mut result = SeriesSelector::And(FilterList::default());
 
-        fn convert_list(matchers: &[FanoutMatcher]) -> ValkeyResult<FilterList> {
+        fn convert_list(matchers: &[FanoutFilter]) -> ValkeyResult<FilterList> {
             let mut result = Vec::with_capacity(matchers.len());
             for matcher in matchers.iter() {
                 let item: LabelFilter = matcher.try_into().map_err(|e| {
@@ -123,10 +121,10 @@ impl TryFrom<&FanoutMatchers> for SeriesSelector {
 
         if let Some(filters) = &value.filters {
             match filters {
-                matchers::Filters::AndFilters(and_filters) => {
+                Filters::AndFilters(and_filters) => {
                     result = SeriesSelector::And(convert_list(&and_filters.matchers)?);
                 }
-                matchers::Filters::OrFilters(or_filters) => {
+                Filters::OrFilters(or_filters) => {
                     let mut or_matchers: OrFilterList = Default::default();
                     for matcher_list in or_filters.filters.iter() {
                         let items = convert_list(&matcher_list.matchers)?;
@@ -142,7 +140,7 @@ impl TryFrom<&FanoutMatchers> for SeriesSelector {
 }
 
 pub(crate) fn deserialize_matchers_list(
-    filter_vec: Option<Vec<FanoutMatchers>>,
+    filter_vec: Option<Vec<FanoutSeriesSelector>>,
 ) -> ValkeyResult<Vec<SeriesSelector>> {
     if let Some(filter_vec) = filter_vec {
         let mut filters = Vec::with_capacity(filter_vec.len());
@@ -155,16 +153,16 @@ pub(crate) fn deserialize_matchers_list(
     }
 }
 
-impl TryFrom<&FanoutMatcher> for LabelFilter {
+impl TryFrom<&FanoutFilter> for LabelFilter {
     type Error = ValkeyError;
 
-    fn try_from(value: &FanoutMatcher) -> Result<Self, Self::Error> {
-        fn get_predicate_value(value: &FanoutMatcher) -> PredicateValue {
+    fn try_from(value: &FanoutFilter) -> Result<Self, Self::Error> {
+        fn get_predicate_value(value: &FanoutFilter) -> PredicateValue {
             match &value.value {
                 None => PredicateValue::Empty,
-                Some(matcher::Value::Empty(_)) => PredicateValue::Empty,
-                Some(matcher::Value::Single(v)) => PredicateValue::String(v.into()),
-                Some(matcher::Value::List(values)) => match values.values.len() {
+                Some(Value::Empty(_)) => PredicateValue::Empty,
+                Some(Value::Single(v)) => PredicateValue::String(v.into()),
+                Some(Value::List(values)) => match values.values.len() {
                     0 => PredicateValue::Empty,
                     1 => PredicateValue::String(values.values[0].clone()),
                     _ => {
@@ -178,16 +176,16 @@ impl TryFrom<&FanoutMatcher> for LabelFilter {
             }
         }
 
-        fn get_regex_value(value: &FanoutMatcher) -> ValkeyResult<RegexMatcher> {
+        fn get_regex_value(value: &FanoutFilter) -> ValkeyResult<RegexMatcher> {
             match &value.value {
-                Some(matcher::Value::List(items)) => {
+                Some(Value::List(items)) => {
                     if items.values.len() == 1 {
                         return RegexMatcher::create(items.values[0].as_str()).map_err(|e| {
                             ValkeyError::String(format!("TSDB: regex value error: {e:?}"))
                         });
                     }
                 }
-                Some(matcher::Value::Single(v)) => {
+                Some(Value::Single(v)) => {
                     return RegexMatcher::create(v.as_str()).map_err(|e| {
                         ValkeyError::String(format!("TSDB: regex value error: {e:?}"))
                     });

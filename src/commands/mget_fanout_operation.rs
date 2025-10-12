@@ -2,7 +2,7 @@ use super::fanout::generated::{
     Label as FanoutLabel, MGetValue, MultiGetRequest, MultiGetResponse, Sample as FanoutSample,
 };
 use super::utils::{reply_with_bulk_string, reply_with_fanout_labels, reply_with_fanout_sample};
-use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
 use crate::error_consts;
 use crate::fanout::FanoutOperation;

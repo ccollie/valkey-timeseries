@@ -1,4 +1,4 @@
-use super::fanout::matchers::serialize_matchers_list;
+use super::fanout::filters::serialize_matchers_list;
 use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
 use super::utils::reply_with_btree_set;
 use crate::fanout::FanoutOperation;

@@ -1,6 +1,6 @@
 use super::fanout::generated::{DateRange, LabelValuesRequest, LabelValuesResponse};
 use super::utils::reply_with_btree_set;
-use crate::commands::fanout::matchers::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
 use crate::fanout::FanoutOperation;
 use crate::fanout::{FanoutTarget, exec_fanout_request_base};

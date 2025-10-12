@@ -1,7 +1,7 @@
 use super::fanout::generated::{
     DateRange, MultiRangeRequest, MultiRangeResponse, SeriesResponse, ValueRange,
 };
-use crate::commands::fanout::matchers::serialize_matchers_list;
+use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::common::Sample;
 use crate::fanout::FanoutTarget;
 use crate::fanout::{FanoutOperation, exec_fanout_request_base};

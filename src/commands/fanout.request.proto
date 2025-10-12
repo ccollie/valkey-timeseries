@@ -46,38 +46,38 @@ enum MatchersConnector  {
   OR = 1;
 }
 
-message MatcherListValue {
+message FilterListValue {
   repeated string values = 1;
 }
 
-message MatcherPredicateValue {
+message FilterPredicateValue {
   oneof label_value {
     string value = 1;
-    MatcherListValue values = 2;
+    FilterListValue values = 2;
   }
 }
 
-message Matcher {
+message LabelFilter {
   string label = 1;
   MatcherOpType op = 2;
   oneof value {
     bool empty = 3;
     string single = 4;
-    MatcherListValue list = 5;
+    FilterListValue list = 5;
   }
 }
 
-message MatcherList {
-  repeated Matcher matchers = 1;
+message FilterList {
+  repeated LabelFilter matchers = 1;
 }
 
 message OrMatcherList {
-  repeated MatcherList filters = 1;
+  repeated FilterList filters = 1;
 }
 
-message Matchers {
+message SeriesSelector {
   oneof filters {
-    MatcherList and_filters = 2;
+    FilterList and_filters = 2;
     OrMatcherList or_filters = 3;
   }
 }
@@ -85,7 +85,7 @@ message Matchers {
 message MultiGetRequest {
   bool with_labels = 1;
   repeated string selected_labels = 2;
-  repeated Matchers filters = 3;
+  repeated SeriesSelector filters = 3;
   bool latest = 4;
 }
 
@@ -99,35 +99,35 @@ message RangeRequest {
 
 message IndexQueryRequest {
   DateRange range = 1;
-  repeated Matchers filters = 2;
+  repeated SeriesSelector filters = 2;
 }
 
 message LabelNamesRequest {
   DateRange range = 1;
-  repeated Matchers filters = 2;
+  repeated SeriesSelector filters = 2;
 }
 
 message LabelValuesRequest {
   string label = 1;
   DateRange range = 2;
-  repeated Matchers filters = 3;
+  repeated SeriesSelector filters = 3;
 }
 
 message CardinalityRequest {
   DateRange range = 1;
-  repeated Matchers filters = 2;
+  repeated SeriesSelector filters = 2;
 }
 
 message MetadataRequest {
   DateFilter filter = 1;
-  repeated Matchers filters = 2;
+  repeated SeriesSelector filters = 2;
   uint32 limit = 3;
 }
 
 message SearchQueryRequest {
   int64 start = 1;
   int64 end = 2;
-  Matchers filters = 3;
+  SeriesSelector filters = 3;
   uint32 limit = 4;
 }
 
@@ -189,7 +189,7 @@ message MultiRangeRequest {
   ValueRange value_filter = 4;
   optional AggregationOptions aggregation = 5;
   optional GroupingOptions grouping = 6;
-  repeated Matchers filters = 7;
+  repeated SeriesSelector filters = 7;
   bool with_labels = 8;
   repeated string selected_labels = 9;
 }

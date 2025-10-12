@@ -1,6 +1,6 @@
 use super::fanout::deserialize_match_filter_options;
 use super::fanout::generated::{LabelNamesRequest, LabelNamesResponse};
-use crate::commands::fanout::matchers::serialize_matchers_list;
+use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::commands::process_label_names_request;
 use crate::commands::utils::reply_with_btree_set;
 use crate::fanout::FanoutOperation;
