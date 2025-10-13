@@ -6,7 +6,6 @@ use crate::labels::filters::{
     FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
 };
 use crate::labels::{InternedLabel, SeriesLabel};
-use crate::series::index::init_croaring_allocator;
 use crate::series::{SeriesRef, TimeSeries};
 use blart::map::Entry as ARTEntry;
 use blart::{AsBytes, TreeMap};
@@ -46,7 +45,6 @@ pub struct Postings {
 
 impl Default for Postings {
     fn default() -> Self {
-        init_croaring_allocator();
         Postings {
             label_index: PostingsIndex::new(),
             id_to_key: IntMap::default(),
