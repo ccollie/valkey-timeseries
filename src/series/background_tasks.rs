@@ -22,6 +22,7 @@ const STALE_ID_CLEANUP_INTERVAL: Duration = Duration::from_secs(15); // minimum 
 const STALE_ID_BATCH_SIZE: usize = 25;
 const INDEX_OPTIMIZE_BATCH_SIZE: usize = 50;
 const INDEX_OPTIMIZE_INTERVAL: Duration = Duration::from_secs(60); // minimum interval between index optimizations
+const DB_CLEANUP_INTERVAL: Duration = Duration::from_secs(300); // minimum interval between db cleanups
 
 #[derive(Debug, Default)]
 struct IndexMeta {
@@ -74,6 +75,8 @@ pub(crate) fn init_background_tasks(ctx: &Context) {
         cron_interval,
         optimize_indices,
     );
+
+    register_task(ctx, DB_CLEANUP_INTERVAL, cron_interval, trim_unused_dbs);
 }
 
 fn register_task(
@@ -353,6 +356,18 @@ fn optimize_indices(_ctx: &ThreadSafeContext<BlockedClient>) {
             meta.optimize_cursor = new_cursor;
         }
     }
+}
+
+fn trim_unused_dbs(_ctx: &ThreadSafeContext<BlockedClient>) {
+    let mut index = TIMESERIES_INDEX.pin();
+    index.retain(|db, ts_index| {
+        if ts_index.is_empty() {
+            log::info!("Removing unused db {db} from index");
+            false
+        } else {
+            true
+        }
+    });
 }
 
 #[cron_event_handler]
