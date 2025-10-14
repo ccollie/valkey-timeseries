@@ -28,6 +28,8 @@ pub enum ParseError {
     InvalidMatchOperator(String),
     #[error("Empty series selector")]
     EmptySeriesSelector,
+    #[error("Invalid series selector")]
+    InvalidSeriesSelector,
     #[default]
     #[error("Parse error")]
     Other,
@@ -65,9 +67,8 @@ impl Display for ParseErr {
     }
 }
 
-/// unexpected creates a parser error complaining about an unexpected lexer item.
-/// The item presented as unexpected is always the last item produced
-/// by the lexer.
+/// `unexpected` creates a parser error complaining about an unexpected lexer item.
+/// The item presented as unexpected is always the last item produced by the lexer.
 pub(crate) fn unexpected(
     context: &str,
     actual: &str,
@@ -78,7 +79,8 @@ pub(crate) fn unexpected(
 
     err_msg.push_str("unexpected ");
 
-    err_msg.push_str(actual);
+    let actual = format!("\"{actual}\"");
+    err_msg.push_str(&actual);
 
     if !context.is_empty() {
         err_msg.push_str(" in ");

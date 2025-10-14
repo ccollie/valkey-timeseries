@@ -47,11 +47,11 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test querying with regex patterns"""
         self.setup_test_data(self.client)
 
-        # Query for all metrics with name matching 'c.*'
+        # Query for all metrics with a name matching 'c.*'
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=~"c.*"'))
         assert result == [b'ts1', b'ts2', b'ts5', b'ts6']
 
-        # Query for all metrics with node matching 'node[12]'
+        # Query for all metrics with a node matching 'node [12]'
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'node=~"node[12]"'))
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts5']
 
@@ -63,7 +63,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test querying with negation patterns"""
         self.setup_test_data(self.client)
 
-        # Query for all metrics with name not equal to cpu
+        # Query for all metrics with a name not equal to cpu
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'name!=cpu'))
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
@@ -168,3 +168,59 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         # First query
         result1 = sorted(self.client.execute_command('TS.QUERYINDEX', 'name=(cpu,disk)'))
         assert result1 == [b'ts1', b'ts2', b'ts5', b'ts6', b'ts7']
+
+    def setup_or_test_data(self, client):
+        client.execute_command('TS.CREATE', 'ts1', 'METRIC', 'http_status{status="200",method="GET"}')
+        client.execute_command('TS.CREATE', 'ts2', 'METRIC', 'http_status{status="200",method="POST"}')
+        client.execute_command('TS.CREATE', 'ts3', 'METRIC', 'http_status{status="404",method="GET"}')
+        client.execute_command('TS.CREATE', 'ts4', 'METRIC', 'http_status{status="500",method="POST"}')
+        client.execute_command('TS.CREATE', 'ts5', 'METRIC', 'api_host{name="server1",env="prod"}')
+        client.execute_command('TS.CREATE', 'ts6', 'METRIC', 'api_host{name="server2",env="prod"}')
+        client.execute_command('TS.CREATE', 'ts7', 'METRIC', 'api_host{name="server1",env="staging"}')
+        client.execute_command('TS.CREATE', 'ts8', 'METRIC', 'api_host{name="server2",env="staging"}')
+
+    def test_or_status_200_or_404(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'http_status{status="200" or status="404"}')
+        assert result == [b'ts1', b'ts2', b'ts3']
+
+    def test_or_multiple_metric_names(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'http_status{method="GET"} or api_host{env=~"prod|staging"}')
+        assert result == [b'ts1', b'ts3', b'ts5', b'ts6', b'ts7', b'ts8']
+
+    def test_or_and_conditions(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'api_host{name="server1",env="prod"} or api_host{name="server2",env="staging"}')
+        assert result == [b'ts5', b'ts8']
+
+    def test_or_regex_matchers(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'http_status{method=~"GET$"} or http_status{method=~"POST$"}')
+        assert result == [b'ts1', b'ts2', b'ts3', b'ts4']
+
+    def test_or_not_equal(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'http_status{status!="200",method="GET"} or api_host{env="prod"}')
+        assert result == [b'ts3', b'ts5', b'ts6']
+
+    def test_or_empty_branch(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'status=999 or env=prod')
+        assert result == [b'ts5', b'ts6']
+
+    def test_or_all_empty(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'status=999 or env=development')
+        assert result == []
+
+    def test_or_overlapping(self):
+        self.setup_or_test_data(self.client)
+        # OR: method=GET OR (method=GET AND status=200)
+        result = self.client.execute_command('TS.QUERYINDEX', 'http_status{method="GET"} or http_status{method="GET",status="200"}')
+        assert result == [b'ts1', b'ts3']
+
+    def test_or_regex_not_equal(self):
+        self.setup_or_test_data(self.client)
+        result = self.client.execute_command('TS.QUERYINDEX', 'http_status{method!~"GET"} or api_host{env="staging"}')
+        assert result == [b'ts2', b'ts4', b'ts7', b'ts8']

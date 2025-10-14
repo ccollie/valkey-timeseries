@@ -614,6 +614,40 @@ impl SeriesSelector {
             }
         }
     }
+
+    /// Merges two SeriesSelector instances into one.
+    ///
+    /// The merge logic follows these rules:
+    /// - And + And: Creates an Or selector with both filter lists
+    /// - And + Or: Adds the And filters to the Or list
+    /// - Or + And: Adds the And filters to the Or list
+    /// - Or + Or: Combines both Or lists
+    pub fn merge_with(self, other: SeriesSelector) -> Self {
+        match (self, other) {
+            // Both are And selectors - create Or with both
+            (SeriesSelector::And(left), SeriesSelector::And(right)) => {
+                let mut or_list = OrFilterList::new();
+                or_list.push(left);
+                or_list.push(right);
+                SeriesSelector::Or(or_list)
+            }
+            // Left is And, right is Or - add left to right's Or list
+            (SeriesSelector::And(left), SeriesSelector::Or(mut right)) => {
+                right.insert(0, left);
+                SeriesSelector::Or(right)
+            }
+            // Left is Or, right is And - add right to left's Or list
+            (SeriesSelector::Or(mut left), SeriesSelector::And(right)) => {
+                left.push(right);
+                SeriesSelector::Or(left)
+            }
+            // Both are Or - combine the Or lists
+            (SeriesSelector::Or(mut left), SeriesSelector::Or(mut right)) => {
+                left.append(&mut right);
+                SeriesSelector::Or(left)
+            }
+        }
+    }
 }
 
 impl Display for SeriesSelector {
@@ -722,5 +756,47 @@ mod tests {
         assert!(matcher.is_match("abc"));
         assert!(!matcher.is_match("xabc"));
         assert!(!matcher.is_match("abcx"));
+    }
+
+    #[test]
+    fn test_regex_matcher_empty() {
+        let matcher = RegexMatcher::create(".*").unwrap();
+        assert!(matcher.is_match(""));
+        assert!(matcher.is_match("anything"));
+
+        let matcher = RegexMatcher::create("^$").unwrap();
+        assert!(matcher.is_match(""));
+        assert!(!matcher.is_match("not empty"));
+
+        let matcher = RegexMatcher::create("^.*$").unwrap();
+        assert!(matcher.is_match(""));
+        assert!(matcher.is_match("anything"));
+
+        let matcher = RegexMatcher::create("a*").unwrap();
+        assert!(matcher.is_match(""));
+        assert!(matcher.is_match("aaa"));
+        assert!(!matcher.is_match("b"));
+    }
+
+    #[test]
+    fn test_regex_matcher_non_empty() {
+        let matcher = RegexMatcher::create("a+").unwrap();
+        assert!(!matcher.is_match(""));
+        assert!(matcher.is_match("a"));
+        assert!(matcher.is_match("aaa"));
+        assert!(!matcher.is_match("b"));
+
+        let matcher = RegexMatcher::create("a{2,}").unwrap();
+        assert!(!matcher.is_match(""));
+        assert!(!matcher.is_match("a"));
+        assert!(matcher.is_match("aa"));
+        assert!(matcher.is_match("aaa"));
+        assert!(!matcher.is_match("b"));
+
+        let matcher = RegexMatcher::create("staging|prod").unwrap();
+        assert!(!matcher.is_match(""));
+        assert!(matcher.is_match("staging"));
+        assert!(matcher.is_match("prod"));
+        assert!(!matcher.is_match("dev"));
     }
 }

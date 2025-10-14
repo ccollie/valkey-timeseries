@@ -432,4 +432,63 @@ mod tests {
             assert_contains_matcher(matchers, "bar", MatchOp::RegexNotEqual, "baz");
         });
     }
+
+    // OR tests
+    #[test]
+    fn test_parse_or_with_list_matchers() {
+        let input = r#"{a="b", foo!="bar" or size=(small,medium,large) or flavor!=(original,cajun,"extra spicy")}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        assert!(result.get_metric_name().is_none());
+        with_or_matchers(&result, |or_matchers| {
+            assert_eq!(or_matchers.len(), 3);
+
+            // First OR branch
+            assert_eq!(or_matchers[0].len(), 2);
+            assert_contains_matcher(&or_matchers[0], "a", MatchOp::Equal, "b");
+            assert_contains_matcher(&or_matchers[0], "foo", MatchOp::NotEqual, "bar");
+
+            // Second OR branch
+            assert_eq!(or_matchers[1].len(), 1);
+            assert_list_matcher(
+                &or_matchers[1][0],
+                "size",
+                MatchOp::Equal,
+                &["small", "medium", "large"],
+            );
+
+            // Third OR branch
+            assert_eq!(or_matchers[2].len(), 1);
+            assert_list_matcher(
+                &or_matchers[2][0],
+                "flavor",
+                MatchOp::NotEqual,
+                &["original", "cajun", "extra spicy"],
+            );
+        });
+    }
+
+    #[test]
+    fn test_or_with_prometheus_style_matchers() {
+        let selector =
+            r#"http_status{status="500"} or api_host{service="auth", env=~"prod|staging"}"#;
+        let matchers = parse_series_selector(selector).unwrap();
+        assert!(matchers.get_metric_name().is_none());
+        with_or_matchers(&matchers, |or_matchers| {
+            assert_eq!(or_matchers.len(), 2);
+
+            // First OR branch
+            let first = &or_matchers[0];
+            assert_eq!(first.len(), 2); // metric name + status matcher
+            assert_contains_matcher(first, "__name__", MatchOp::Equal, "http_status");
+            assert_contains_matcher(first, "status", MatchOp::Equal, "500");
+
+            // Second OR branch
+            let second = &or_matchers[1];
+            assert_eq!(second.len(), 3); // metric name + 2 matchers
+            assert_contains_matcher(second, "__name__", MatchOp::Equal, "api_host");
+            assert_contains_matcher(second, "service", MatchOp::Equal, "auth");
+            assert_contains_matcher(second, "env", MatchOp::RegexEqual, "prod|staging");
+        });
+    }
 }

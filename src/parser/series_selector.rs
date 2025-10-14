@@ -8,6 +8,7 @@ use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
 use crate::parser::{ParseError, ParseResult};
 use logos::{Lexer, Logos};
+use smallvec::SmallVec;
 
 const INITIAL_TOKENS: &[Token] = &[
     Token::Identifier,
@@ -36,6 +37,7 @@ const SECONDARY_TOKENS: &[Token] = &[
 ///   Or (Prometheus):
 ///
 ///   * `request_latency{service="billing", env=~"staging|production", region=~"us-east-.*"}`
+///   * `http_requests_total{method!="GET", code=~"5*"} or http_requests_total{method="POST"}`
 ///   * `{service="inference", metric="request-count", env="prod"}`
 ///   * `{"my.dotted.metric", region="east"}` # New style
 ///
@@ -50,35 +52,56 @@ pub fn parse_series_selector(s: &str) -> ParseResult<SeriesSelector> {
     Ok(result)
 }
 
-pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<SeriesSelector> {
+fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
-    let (tok, text) = expect_one_of_tokens(p, INITIAL_TOKENS)?;
+    let mut selectors: SmallVec<_, 4> = SmallVec::default();
 
-    if tok == LeftBrace {
-        return parse_prometheus_selector_internal(p, String::new());
+    loop {
+        let (tok, text) = expect_one_of_tokens(p, INITIAL_TOKENS)?;
+
+        let selector = if tok == LeftBrace {
+            parse_prometheus_selector_internal(p, String::new())?
+        } else {
+            let text = match tok {
+                Identifier => unescape_ident(text)?.to_string(),
+                StringLiteral => extract_string_value(text)?.to_string(),
+                _ => text.to_string(),
+            };
+
+            let (tok, _) = expect_one_of_tokens(p, SECONDARY_TOKENS)?;
+            match tok {
+                Eof => {
+                    let matcher = LabelFilter::equals(METRIC_NAME_LABEL.into(), &text);
+                    SeriesSelector::with_filters(vec![matcher])
+                }
+                LeftBrace => parse_prometheus_selector_internal(p, text)?,
+                _ => {
+                    let matcher = parse_redis_ts_predicate(text, tok, p)?;
+                    SeriesSelector::with_filters(vec![matcher])
+                }
+            }
+        };
+
+        selectors.push(selector);
+
+        // Check for OR
+        let (next_tok, _) = expect_one_of_tokens(p, &[OpOr, Eof])?;
+        if next_tok == Eof {
+            break;
+        }
+        // else, continue loop for the next selector
     }
 
-    let text = match tok {
-        Identifier => unescape_ident(text)?.to_string(),
-        StringLiteral => {
-            let value = extract_string_value(text)?;
-            value.to_string()
+    if selectors.len() == 1 {
+        Ok(selectors.pop().unwrap())
+    } else {
+        let mut iter = selectors.into_iter();
+        let mut accum = iter.next().unwrap();
+        for selector in iter {
+            accum = accum.merge_with(selector);
         }
-        _ => text.to_string(),
-    };
-
-    let (tok, _) = expect_one_of_tokens(p, SECONDARY_TOKENS)?;
-    match tok {
-        Eof => {
-            let matcher = LabelFilter::equals(METRIC_NAME_LABEL.into(), &text);
-            Ok(SeriesSelector::with_filters(vec![matcher]))
-        }
-        LeftBrace => parse_prometheus_selector_internal(p, text),
-        _ => {
-            let matcher = parse_redis_ts_predicate(text, tok, p)?;
-            Ok(SeriesSelector::with_filters(vec![matcher]))
-        }
+        Ok(accum)
     }
 }
 
@@ -328,7 +351,7 @@ fn parse_string_literal(lexer: &mut Lexer<Token>) -> ParseResult<String> {
     Ok(extracted.to_string())
 }
 
-pub(crate) fn parse_matcher_value(lexer: &mut Lexer<Token>) -> ParseResult<PredicateValue> {
+fn parse_matcher_value(lexer: &mut Lexer<Token>) -> ParseResult<PredicateValue> {
     use Token::*;
 
     let (tok, text) =
