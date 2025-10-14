@@ -271,7 +271,6 @@ fn fetch_series_batch(
                 }
             }
         }
-        logger_rust::log_debug!("fetch_series_batch: fetched {} series", result.len());
 
         if !stale_ids.is_empty() {
             // mark non-existing series for removal from the index
