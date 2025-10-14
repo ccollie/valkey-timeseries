@@ -112,8 +112,7 @@ pub fn create_series(
         if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
             let labels = ts.labels.to_label_vec();
             // will return an error if the series already exists
-            let existing_id = index.posting_by_labels(&labels)?;
-            if let Some(_id) = existing_id {
+            if index.series_id_by_labels(&labels).is_some() {
                 return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
             }
         }
