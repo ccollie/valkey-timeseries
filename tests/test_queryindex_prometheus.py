@@ -6,7 +6,10 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 
 class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
-    """Test cases for TS.QUERYINDEX command with Prometheus matching semantics."""
+    """
+    Test cases for TS.QUERYINDEX command with Prometheus matching semantics. Based on the tests
+    used by the Prometheus project for their label matching logic.
+    """
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
