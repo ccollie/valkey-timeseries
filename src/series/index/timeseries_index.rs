@@ -132,11 +132,11 @@ impl TimeSeriesIndex {
     #[allow(dead_code)]
     pub fn postings_for_selector(
         &self,
-        selectors: &SeriesSelector,
+        selector: &SeriesSelector,
     ) -> ValkeyResult<PostingsBitmap> {
         let mut state = ();
         self.with_postings(&mut state, move |inner, _| {
-            let postings = inner.postings_for_selector(selectors)?;
+            let postings = inner.postings_for_selector(selector)?;
             let res = postings.into_owned();
             Ok(res)
         })
