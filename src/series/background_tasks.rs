@@ -9,12 +9,12 @@ use ahash::HashMapExt;
 use blart::AsBytes;
 use orx_parallel::{IntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext};
 
-use valkey_module_macros::cron_event_handler;
+use valkey_module_macros::{cron_event_handler, shutdown_event_handler};
 
 const RETENTION_CLEANUP_INTERVAL: Duration = Duration::from_secs(10); // minimum interval between retention cleanups
 const SERIES_TRIM_BATCH_SIZE: usize = 50; // number of series to trim in one batch
@@ -52,6 +52,8 @@ static INDEX_CURSORS: LazyLock<Mutex<IndexCursorMap>> =
 static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 
 static DISPATCH_MAP: LazyLock<DispatchMap> = LazyLock::new(|| DispatchMap::default());
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
 
 pub(crate) fn init_background_tasks(ctx: &Context) {
     // transform hz to milliseconds
@@ -419,4 +421,15 @@ fn get_ticks_interval(ctx: &Context) -> u64 {
 fn get_ticks_interval_from_hz(hz: u64) -> u64 {
     let hz = if hz == 0 { 10 } else { hz };
     1000 / hz
+}
+
+#[inline]
+fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::Relaxed)
+}
+
+#[shutdown_event_handler]
+fn shutdown_event_handler(ctx: &Context, _event: u64) {
+    ctx.log_notice("Sever shutdown callback event ...");
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
