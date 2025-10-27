@@ -72,6 +72,11 @@ const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
 const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 const DEFAULT_COMPACTION_POLICY: &str = "";
 
+pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 250;     // default: 0.25 second
+const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0;   // min: 0 (no cache)
+const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 360000; // max: 1 hour
+const CLUSTER_MAP_EXPIRATION_DEFAULT_STRING: &str = "250";
+
 #[derive(Clone, Debug)]
 pub struct ConfigSettings {
     pub retention_period: Option<Duration>,
@@ -109,6 +114,7 @@ lazy_static! {
     pub static ref CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
     pub static ref MULTI_SHARD_COMMAND_TIMEOUT: AtomicU64 = AtomicU64::new(5000); // ??? Move to const
     pub static ref DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
+    pub static ref CLUSTER_MAP_EXPIRATION_MS: AtomicU64 = AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT); // ??? Move to const
 
     static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
@@ -133,6 +139,8 @@ lazy_static! {
         ValkeyGILGuard::new(ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING));
     static ref MULTI_SHARD_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT));
+    static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING));
 }
 
 #[config_changed_event_handler]
@@ -344,6 +352,17 @@ fn update_multi_shard_command_timeout(val: &str) -> ValkeyResult<()> {
     Ok(())
 }
 
+fn update_cluster_map_expiration(val: &str) -> ValkeyResult<()> {
+    let duration = parse_duration_in_range(
+        "ts-cluster-map-expiration-ms",
+        val,
+        CLUSTER_MAP_EXPIRATION_MIN_MS,
+        CLUSTER_MAP_EXPIRATION_MAX_MS,
+    )?;
+    CLUSTER_MAP_EXPIRATION_MS.store(duration as u64, Ordering::SeqCst);
+    Ok(())
+}
+
 fn on_config_set(
     config_ctx: &ConfigurationContext,
     name: &str,
@@ -352,6 +371,9 @@ fn on_config_set(
     let v = val.get(config_ctx).to_string_lossy();
 
     hashify::fnc_map_ignore_case!(name.as_bytes(),
+        "ts-cluster-map-expiration-ms" => {
+            return update_cluster_map_expiration(&v)
+        },
         "ts-chunk-size" => {
            return update_chunk_size(&v)
         },
@@ -626,6 +648,14 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         "ts-multi-shard-command-timeout",
         &MULTI_SHARD_COMMAND_TIMEOUT_STRING,
         MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT,
+    )?;
+
+    register_string_config(
+        ctx,
+        args,
+        "ts-cluster-map-expiration-ms",
+        &CLUSTER_MAP_EXPIRATION_STRING,
+        CLUSTER_MAP_EXPIRATION_DEFAULT_STRING,
     )?;
 
     // Initialize config settings

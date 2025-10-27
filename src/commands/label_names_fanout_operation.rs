@@ -3,8 +3,7 @@ use super::fanout::generated::{LabelNamesRequest, LabelNamesResponse};
 use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::commands::process_label_names_request;
 use crate::commands::utils::reply_with_btree_set;
-use crate::fanout::FanoutOperation;
-use crate::fanout::FanoutTarget;
+use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
@@ -47,7 +46,7 @@ impl FanoutOperation for LabelNamesFanoutOperation {
         LabelNamesRequest { range, filters }
     }
 
-    fn on_response(&mut self, resp: LabelNamesResponse, _target: FanoutTarget) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         for name in resp.names {
             self.names.insert(name);
         }
