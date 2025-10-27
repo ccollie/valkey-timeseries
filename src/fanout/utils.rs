@@ -1,12 +1,12 @@
-use super::fanout_targets::get_cluster_node_info;
+use super::cluster_api::get_cluster_node_info;
 use super::snowflake::SnowflakeIdGenerator;
 use std::hash::{BuildHasher, RandomState};
 use std::net::Ipv6Addr;
+use std::os::raw::c_char;
+use std::ptr;
 use std::sync::LazyLock;
-use valkey_module::{
-    Context, ContextFlags, DetachedContext, RedisModule_Milliseconds, ValkeyModule_GetMyClusterID,
-    ValkeyResult,
-};
+use valkey_module::{Context, ContextFlags, DetachedContext, RedisModule_Milliseconds, ValkeyModule_GetMyClusterID, ValkeyResult, VALKEYMODULE_NODE_ID_LEN};
+use crate::fanout::cluster_map::NodeIdBuf;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
 
@@ -48,6 +48,23 @@ pub(super) fn current_time_millis() -> i64 {
     }
 }
 
+pub fn get_current_node_id() -> Option<String> {
+    unsafe {
+        let id = ValkeyModule_GetMyClusterID
+            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
+     
+        if id.is_null() {
+            return None;
+        }
+    
+        let str_slice = std::slice::from_raw_parts(
+            id as *const u8,
+            VALKEYMODULE_NODE_ID_LEN as usize,
+        );
+        Some(String::from_utf8_lossy(str_slice).to_string())
+    }
+}
+
 pub fn get_current_node_ip(ctx: &Context) -> Option<Ipv6Addr> {
     unsafe {
         // C API: Get current node's cluster ID
@@ -64,6 +81,29 @@ pub fn get_current_node_ip(ctx: &Context) -> Option<Ipv6Addr> {
         };
         Some(info.addr())
     }
+}
+
+pub(super) fn copy_node_id(node_id: *const c_char) -> Option<NodeIdBuf> {
+    if node_id.is_null() {
+        return None;
+    }
+    let mut buf: NodeIdBuf = [0; VALKEYMODULE_NODE_ID_LEN as usize + 1];
+    unsafe {
+        ptr::copy_nonoverlapping(
+            node_id as *const u8,
+            buf.as_mut_ptr(),
+            VALKEYMODULE_NODE_ID_LEN as usize,
+        );
+    }
+    Some(buf)
+}
+
+pub(super) fn copy_node_id_from_str(node_id: &str) -> NodeIdBuf {
+    let mut buf: NodeIdBuf = [0; VALKEYMODULE_NODE_ID_LEN as usize + 1];
+    let bytes = node_id.as_bytes();
+    let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+    buf[..len].copy_from_slice(&bytes[..len]);
+    buf
 }
 
 static ID_GENERATOR: LazyLock<SnowflakeIdGenerator> = LazyLock::new(|| {

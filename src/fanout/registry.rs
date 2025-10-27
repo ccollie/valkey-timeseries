@@ -1,6 +1,5 @@
 use super::fanout_operation::FanoutOperation;
 use super::serialization::{Deserialized, Serializable, Serialized};
-use crate::fanout::FanoutTarget;
 use ahash::AHashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
@@ -9,10 +8,10 @@ use valkey_module::{Context, ValkeyError, ValkeyResult};
 /// This allows us to store different fanout operations with different
 /// Request/Response types in the same registry.
 pub(super) type RequestHandlerCallback =
-    Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
+    Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>) -> ValkeyResult<()> + Send + Sync>;
 
-/// A registry for fanout operations that allows type-erased storage
-/// and retrieval of [`FanoutOperation`] implementations.
+/// A registry for fanout operations that allows type-erased storage and retrieval
+/// of [`FanoutOperation`] implementations.
 pub struct FanoutOperationRegistry {
     operations: Mutex<AHashMap<&'static str, RequestHandlerCallback>>,
 }
@@ -38,10 +37,7 @@ impl FanoutOperationRegistry {
         let name = OP::name();
 
         let request_handler = Arc::new(
-            |ctx: &Context,
-             req_buf: &[u8],
-             dest: &mut Vec<u8>,
-             _target: FanoutTarget|
+            |ctx: &Context, req_buf: &[u8], dest: &mut Vec<u8>|
              -> ValkeyResult<()> {
                 match OP::Request::deserialize(req_buf) {
                     Ok(request) => {
@@ -49,7 +45,9 @@ impl FanoutOperationRegistry {
                         response.serialize(dest);
                     }
                     Err(_e) => {
-                        let msg = _e.to_string();
+                        let msg = format!("Failed to deserialize {} fanout request", OP::name());
+                        let log_msg = format!("{msg}: {}", _e.to_string());
+                        ctx.log_warning(log_msg.as_str());
                         return Err(ValkeyError::String(msg));
                     }
                 }
@@ -85,11 +83,9 @@ impl FanoutOperationRegistry {
         name: &str,
         payload: &[u8],
         dest: &mut Vec<u8>,
-        target: FanoutTarget,
     ) -> ValkeyResult<()> {
         let executor = self.get_operation_by_name(name, true).unwrap();
-
-        executor(ctx, payload, dest, target)
+        executor(ctx, payload, dest)
     }
 
     fn get_operation_by_name(
@@ -155,9 +151,8 @@ pub fn handle_fanout_request(
     name: &str,
     payload: &[u8],
     dest: &mut Vec<u8>,
-    target: FanoutTarget,
 ) -> ValkeyResult<()> {
-    FANOUT_REGISTRY.execute(ctx, name, payload, dest, target)
+    FANOUT_REGISTRY.execute(ctx, name, payload, dest)
 }
 
 pub(super) fn get_fanout_request_handler(name: &str, must_exist: bool) -> RequestHandlerCallback {

@@ -1,14 +1,13 @@
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
-use super::fanout_error::ErrorKind;
-use super::fanout_error::{FanoutError, FanoutResult};
-use super::fanout_targets::{
-    FanoutTarget, FanoutTargetMode, compute_query_fanout_mode, get_fanout_targets,
-};
+use super::fanout_error::{ErrorKind, FanoutError, FanoutResult};
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
 use std::marker::PhantomData;
+use std::os::raw::c_char;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue};
+use crate::fanout::{get_fanout_targets, FanoutTargetMode, NodeInfo};
+use crate::fanout::cluster_map::NodeLocation;
 
 /// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
@@ -34,16 +33,16 @@ pub trait FanoutOperation: Default + Send {
     /// Return the target mode for the fanout operation.
     /// Override this method to change the target mode as needed.
     fn get_target_mode(&self, ctx: &Context) -> FanoutTargetMode {
-        compute_query_fanout_mode(ctx)
+        FanoutTargetMode::Primary
     }
 
     /// Generate the request to be sent to each target node.
     fn generate_request(&mut self) -> Self::Request;
 
     /// Called once per successful response from a target node.
-    fn on_response(&mut self, resp: Self::Response, target: FanoutTarget);
+    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);
 
-    fn on_error(&mut self, error: FanoutError, target: FanoutTarget) {
+    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Log the error with context
         log::error!(
             "Fanout operation {}, failed for target {}: {}",
@@ -71,15 +70,14 @@ where
         &self,
         context: &Context,
         req: OP::Request,
-        targets: &[FanoutTarget],
-        callback: Box<dyn Fn(FanoutResult<OP::Response>, FanoutTarget) + Send + Sync>,
+        targets: Arc<Vec<NodeInfo>>,
+        callback: Box<dyn Fn(FanoutResult<OP::Response>, &NodeInfo) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()>;
 }
 
-/// Internal structure to manage the state of an ongoing fanout operation.
-/// It tracks outstanding RPCs, errors, and coordinates the final reply generation.
-struct FanoutState<OP>
+
+struct FanoutStateInner<OP>
 where
     OP: FanoutOperation,
 {
@@ -87,47 +85,24 @@ where
     outstanding: usize,
     timed_out: bool,
     already_responded: bool,
-    thread_ctx: ThreadSafeContext<BlockedClient>,
     errors: Vec<FanoutError>,
-    __phantom: PhantomData<OP>,
 }
 
-impl<OP> FanoutState<OP>
+impl<OP> FanoutStateInner<OP>
 where
     OP: FanoutOperation,
 {
-    pub fn new(context: &Context, handler: OP) -> Self {
-        let blocked_client = context.block_client();
-        Self {
-            handler,
-            outstanding: 0,
-            thread_ctx: ThreadSafeContext::with_blocked_client(blocked_client),
-            errors: Vec::new(),
-            timed_out: false,
-            already_responded: false,
-            __phantom: Default::default(),
-        }
-    }
-
     fn generate_request(&mut self) -> OP::Request {
         self.handler.generate_request()
     }
 
     fn rpc_done(&mut self) -> bool {
-        if self.outstanding > 0 {
-            self.outstanding = self.outstanding.saturating_sub(1);
-            if self.outstanding == 0 {
-                self.on_completion();
-                return true;
-            }
-        } else {
-            // Equivalent to C++ CHECK(outstanding_ > 0);
-            // panic!("Outstanding RPCs is already zero in rpc_done");
-        }
-        false
+        assert!(self.outstanding > 0, "Cluster Fanout: Outstanding RPCs is already zero in rpc_done");
+        self.outstanding = self.outstanding.saturating_sub(1);
+        self.outstanding == 0
     }
 
-    fn on_error(&mut self, error: FanoutError, _target: FanoutTarget) {
+    fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
         if error.kind == ErrorKind::Timeout {
             self.timed_out = true;
             // Only record the first timeout error
@@ -151,7 +126,7 @@ where
     fn handle_rpc_callback(
         &mut self,
         resp: FanoutResult<OP::Response>,
-        target: FanoutTarget,
+        target: &NodeInfo,
     ) -> bool {
         if !self.timed_out {
             match resp {
@@ -165,22 +140,6 @@ where
             }
         }
         self.rpc_done()
-    }
-
-    fn handle_local_request(&mut self, ctx: &Context, request: OP::Request) {
-        let target = FanoutTarget::Local;
-        let resp = match OP::get_local_response(ctx, request) {
-            Ok(response) => Ok(response),
-            Err(err) => Err(err.into()),
-        };
-        self.handle_rpc_callback(resp, target);
-    }
-
-    fn on_completion(&mut self) {
-        // No errors, generate a successful reply
-        let thread_ctx = &self.thread_ctx;
-        let ctx = thread_ctx.lock(); // ????? do we need to lock to reply?
-        self.generate_reply(&ctx);
     }
 
     fn generate_error_reply(&self, ctx: &Context) {
@@ -206,6 +165,95 @@ where
 
         // Reply to a client with an error
         ctx.reply_error_string(&error_message);
+    }
+}
+
+/// Internal structure to manage the state of an ongoing fanout operation.
+/// It tracks outstanding RPCs, errors, and coordinates the final reply generation.
+struct FanoutState<OP>
+where
+    OP: FanoutOperation,
+{
+    inner: Mutex<FanoutStateInner<OP>>,
+    thread_ctx: ThreadSafeContext<BlockedClient>,
+}
+
+static MUTEX_POISONED_MSG: &str = "FanoutState mutex poisoned";
+
+impl<OP> FanoutState<OP>
+where
+    OP: FanoutOperation,
+{
+    pub fn new(context: &Context, handler: OP) -> Self {
+        let blocked_client = context.block_client();
+        Self {
+            inner: Mutex::new(FanoutStateInner {
+                handler,
+                outstanding: 0,
+                errors: Vec::new(),
+                timed_out: false,
+                already_responded: false,
+            }),
+            thread_ctx: ThreadSafeContext::with_blocked_client(blocked_client),
+        }
+    }
+
+    fn set_outstanding(&mut self, count: usize) {
+        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        inner.outstanding = count;
+    }
+
+    fn generate_request(&mut self) -> OP::Request {
+        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        inner.generate_request()
+    }
+
+    fn rpc_done(&self) -> bool {
+        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        let done = inner.rpc_done();
+        if done {
+            self.on_completion();
+        }
+        done
+    }
+
+    fn on_error(&self, error: FanoutError, target: &NodeInfo) {
+        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        inner.on_error(error, target);
+    }
+
+    fn generate_reply(&self, ctx: &Context) {
+        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        inner.generate_reply(ctx);
+    }
+
+    fn handle_rpc_callback(
+        &self,
+        resp: FanoutResult<OP::Response>,
+        target: &NodeInfo,
+    ) -> bool {
+        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        let done = inner.handle_rpc_callback(resp, target);
+        if done {
+            drop(inner); // Release lock before on_completion
+            self.on_completion();
+        }
+        done
+    }
+
+    fn handle_local_request(&mut self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
+        let resp = match OP::get_local_response(ctx, request) {
+            Ok(response) => Ok(response),
+            Err(err) => Err(err.into()),
+        };
+        self.handle_rpc_callback(resp, target);
+    }
+
+    fn on_completion(&self) {
+        // No errors, generate a successful reply
+        let thread_ctx = &self.thread_ctx;
+        let ctx = thread_ctx.lock(); // ????? do we need to lock to reply?
+        self.generate_reply(&ctx);
     }
 }
 
@@ -237,30 +285,45 @@ where
         &self,
         ctx: &Context,
         req: OP::Request,
-        targets: &[FanoutTarget],
-        callback: Box<dyn Fn(FanoutResult<OP::Response>, FanoutTarget) + Send + Sync>,
+        targets: Arc<Vec<NodeInfo>>,
+        callback: Box<dyn Fn(FanoutResult<OP::Response>, &NodeInfo) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()> {
-        let response_handler = Arc::new(
-            move |res: Result<&[u8], FanoutError>, target: FanoutTarget| match res {
-                Ok(buf) => match OP::Response::deserialize(buf) {
-                    Ok(resp) => callback(Ok(resp), target),
-                    Err(_e) => {
-                        let err = FanoutError::serialization("");
-                        callback(Err(err), target);
+        
+        // handle response buffer from remote node. We need to lookup the target NodeInfo from the c_char
+        let targets_clone = targets.clone();
+
+        // handle the response from each target node
+        let response_handler = Box::new(
+            move |res: Result<&[u8], FanoutError>, target: *const c_char| {
+                // Binary search to find the NodeInfo associated with the target
+                let target_node = targets_clone
+                    .binary_search_by(|node| node.raw_id_ptr().cmp(&target))
+                    .ok()
+                    .and_then(|idx| targets_clone.get(idx));
+
+                if let Some(node_info) = target_node {
+                    match res {
+                        Ok(buf) => match OP::Response::deserialize(buf) {
+                            Ok(resp) => callback(Ok(resp), node_info),
+                            Err(_e) => {
+                                let err = FanoutError::serialization("");
+                                callback(Err(err), node_info);
+                            }
+                        },
+                        Err(err) => callback(Err(err), node_info),
                     }
-                },
-                Err(err) => callback(Err(err), target),
+                }
             },
         );
 
-        let mut buf = Vec::with_capacity(512);
+        let mut buf = Vec::with_capacity(512); // todo(cc): use pool ?
         req.serialize(&mut buf);
 
         send_cluster_request(
             ctx,
             &buf,
-            targets,
+            targets.clone(),
             OP::name(),
             response_handler,
             Some(timeout),
@@ -285,31 +348,29 @@ where
     let target_mode = op.get_target_mode(ctx);
     let mut state = FanoutState::new(ctx, op);
 
-    let mut targets = get_fanout_targets(ctx, target_mode);
-    let outstanding = targets.len();
+    let targets = get_fanout_targets(ctx, target_mode);
+    let mut outstanding = targets.len();
 
-    state.outstanding = outstanding;
-
-    let local_pos = targets.iter().position(|x| x.is_local());
+    let local_pos = targets.iter().position(|x| x.location == NodeLocation::Local);
     if let Some(idx) = local_pos {
-        targets.swap_remove(idx);
-        state.outstanding = state.outstanding.saturating_sub(1);
-        if state.outstanding > 1 {
+        let local = targets.get(idx).expect("Local node info not found");
+        outstanding = outstanding.saturating_sub(1);
+        if outstanding > 1 {
             let req_local = state.generate_request();
-            state.handle_local_request(ctx, req_local);
+            state.handle_local_request(ctx, req_local, &local);
         } else {
-            state.handle_local_request(ctx, req);
+            state.handle_local_request(ctx, req, &local);
             return Ok(ValkeyValue::NoReply);
         }
     }
 
-    let state_mutex = Mutex::new(state);
+    state.set_outstanding(outstanding);
+
     rpc_invoker.invoke_rpc(
         ctx,
         req,
-        targets.as_slice(),
+        targets,
         Box::new(move |res, target| {
-            let mut state = state_mutex.lock().expect("mutex poisoned");
             state.handle_rpc_callback(res, target);
         }),
         timeout,

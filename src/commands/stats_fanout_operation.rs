@@ -1,8 +1,7 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
-use crate::commands::{DEFAULT_STATS_RESULTS_LIMIT, exec_fanout_request_base};
-use crate::fanout::FanoutOperation;
-use crate::fanout::FanoutTarget;
-use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, with_timeseries_index};
+use crate::commands::{exec_fanout_request_base, DEFAULT_STATS_RESULTS_LIMIT};
+use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats, StatsMaxHeap};
 use ahash::AHashMap;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
@@ -64,7 +63,7 @@ impl FanoutOperation for StatsFanoutOperation {
         }
     }
 
-    fn on_response(&mut self, resp: StatsResponse, _target: FanoutTarget) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         // Handle the response from a remote target
         self.state.num_label_pairs += resp.num_label_pairs as usize;
         self.state.num_labels += resp.num_labels as usize;
