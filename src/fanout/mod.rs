@@ -36,7 +36,7 @@ fn update_cluster_map(map: ClusterMap) {
     CLUSTER_MAP.swap(Arc::new(map));
 }
 
-pub fn get_fanout_targets<'a>(ctx: &Context, mode: FanoutTargetMode) -> Arc<Vec<NodeInfo>> {
+pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> Arc<Vec<NodeInfo>> {
     let current_map = CLUSTER_MAP.load();
     // Check if we need to refresh
     let needs_refresh = !current_map.is_consistent || current_map.is_expired();

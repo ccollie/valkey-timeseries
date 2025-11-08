@@ -37,16 +37,15 @@ impl FanoutOperationRegistry {
         let name = OP::name();
 
         let request_handler = Arc::new(
-            |ctx: &Context, req_buf: &[u8], dest: &mut Vec<u8>|
-             -> ValkeyResult<()> {
+            |ctx: &Context, req_buf: &[u8], dest: &mut Vec<u8>| -> ValkeyResult<()> {
                 match OP::Request::deserialize(req_buf) {
                     Ok(request) => {
                         let response = OP::get_local_response(ctx, request)?;
                         response.serialize(dest);
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         let msg = format!("Failed to deserialize {} fanout request", OP::name());
-                        let log_msg = format!("{msg}: {}", _e.to_string());
+                        let log_msg = format!("{msg}: {e}");
                         ctx.log_warning(log_msg.as_str());
                         return Err(ValkeyError::String(msg));
                     }

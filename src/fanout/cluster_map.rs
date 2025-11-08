@@ -1,6 +1,10 @@
-use crate::fanout::cluster_api::{get_cluster_shards};
+use crate::config::CLUSTER_MAP_EXPIRATION_MS;
+use crate::fanout::cluster_api::get_cluster_shards;
+use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
 use hi_sparse_bitset::BitSet;
+use rand::prelude::IndexedRandom;
+use rand::rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_char;
 use std::fmt;
@@ -8,11 +12,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use rand::prelude::IndexedRandom;
-use rand::rng;
-use valkey_module::{Context, REDISMODULE_NODE_MASTER, ValkeyResult, VALKEYMODULE_NODE_ID_LEN};
-use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::utils::current_time_millis;
+use valkey_module::{Context, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_ID_LEN, ValkeyResult};
 
 pub const VALKEYMODULE_NODE_MASTER: u32 = REDISMODULE_NODE_MASTER;
 // Constants
@@ -94,7 +94,6 @@ impl Hash for SocketAddress {
     }
 }
 
-
 /// Information about a cluster node
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
@@ -114,7 +113,7 @@ impl NodeInfo {
             primary_endpoint: Ipv6Addr::LOCALHOST,
             port: 6379,
         };
-        
+
         Self {
             role,
             location: NodeLocation::Local,
@@ -133,9 +132,7 @@ impl NodeInfo {
 
     pub fn node_id(&self) -> &str {
         // SAFETY: id_buf is always valid UTF-8 as it is copied from valid node ID strings
-        unsafe {
-            std::str::from_utf8_unchecked(&self.id[..VALKEYMODULE_NODE_ID_LEN as usize])
-        }
+        unsafe { std::str::from_utf8_unchecked(&self.id[..VALKEYMODULE_NODE_ID_LEN as usize]) }
     }
 
     pub(super) fn raw_id_ptr(&self) -> *const c_char {
@@ -149,14 +146,16 @@ impl Display for NodeInfo {
         write!(
             f,
             "NodeInfo{{role: {:?}, location: {:?}, address: {}}}",
-            self.role, self.location, self.address()
+            self.role,
+            self.location,
+            self.address()
         )
     }
 }
 
 impl PartialOrd for NodeInfo {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.id.partial_cmp(&other.id)
+        Some(self.cmp(other))
     }
 }
 
@@ -274,7 +273,7 @@ pub struct ClusterMap {
     owned_slots: SparseBitSet,
     shards: AHashMap<String, ShardInfo>,
     // An ordered map, key is start slot, value is end slot and ShardInfo
-    slot_to_shard_map: BTreeMap<u16, (u16,  Arc<ShardInfo>)>,
+    slot_to_shard_map: BTreeMap<u16, (u16, Arc<ShardInfo>)>,
     /// Cluster-level fingerprint (hash of all shard fingerprints)
     cluster_slots_fingerprint: u64,
     /// Pre-computed target lists
@@ -360,15 +359,11 @@ impl ClusterMap {
                 for shard in shards.values() {
                     if shard.replicas.is_empty() {
                         // return primary if no replicas
-                        if let Some(primary) = &shard.primary {
-                            targets.push(primary.clone());
+                        if let Some(primary) = shard.primary {
+                            targets.push(primary);
                         }
-                    } else {
-                        if let Some(choice) = shard.replicas
-                            .as_slice()
-                            .choose(&mut rng_) {
-                            targets.push(choice.clone());
-                        }
+                    } else if let Some(choice) = shard.replicas.as_slice().choose(&mut rng_) {
+                        targets.push(*choice);
                     }
                 }
                 // sort targets for consistency
@@ -402,14 +397,14 @@ impl ClusterMap {
             slot_to_shard_map.insert(start_slot, (end_slot, Arc::clone(&shard_)));
 
             // Add to targets
-            if let Some(primary) = &shard.primary {
-                primary_targets.push(primary.clone());
-                all_targets.push(primary.clone());
+            if let Some(primary) = shard.primary {
+                primary_targets.push(primary);
+                all_targets.push(primary);
             }
 
-            for replica in &shard.replicas {
-                replica_targets.push(replica.clone());
-                all_targets.push(replica.clone());
+            for replica in shard.replicas.iter() {
+                replica_targets.push(*replica);
+                all_targets.push(*replica);
             }
 
             shards_map.insert(shard.shard_id.clone(), shard);
@@ -475,7 +470,7 @@ impl ClusterMap {
                 log::info!("  owned_slots count: {}", shard_info.owned_slots.len());
                 if !shard_info.owned_slots.is_empty() {
                     let slot_ranges = format_slot_set_ranges(&shard_info.owned_slots);
-                    log::info!("  slot ranges: {}", slot_ranges);
+                    log::info!("  slot ranges: {slot_ranges}");
                 }
             }
 
@@ -518,9 +513,9 @@ fn format_ranges(ranges: &[(u16, u16)]) -> String {
         .iter()
         .map(|&(start, end)| {
             if start == end {
-                format!("{}", start)
+                format!("{start}")
             } else {
-                format!("{}-{}", start, end)
+                format!("{start}-{end}")
             }
         })
         .collect::<Vec<_>>()
@@ -529,5 +524,4 @@ fn format_ranges(ranges: &[(u16, u16)]) -> String {
 
 // Unit tests
 #[cfg(test)]
-mod tests {
-}
+mod tests {}
