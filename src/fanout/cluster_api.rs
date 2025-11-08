@@ -4,7 +4,7 @@ use crate::fanout::cluster_map::{
     SocketAddress, VALKEYMODULE_NODE_MASTER,
 };
 use crate::fanout::get_current_node_id;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
@@ -204,9 +204,6 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
 
     let mut shard_infos: Vec<ShardInfo> = Vec::with_capacity(16);
 
-    // map of socket address to node_id used to detect socket collisions
-    let mut socket_addr_to_node_map: HashMap<SocketAddress, String>;
-
     assert!(
         matches!(res, CallReply::Null(_)),
         "CLUSTER_MAP_ERROR: CLUSTER SHARDS call returns null"
@@ -329,11 +326,10 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
 // Helper function to parse node info from CLUSTER SHARDS reply
 fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo> {
     // Extract node ID
-    let node_id = get_map_field_as_string(&node_reply, "id", true).unwrap();
-    let ip = get_map_field_as_string(&node_reply, "ip", true).unwrap();
+    let node_id = get_map_field_as_string(node_reply, "id", true).unwrap();
 
     // Extract role
-    let role_str = get_map_field_as_string(&node_reply, "role", true).unwrap();
+    let role_str = get_map_field_as_string(node_reply, "role", true).unwrap();
     let role = match role_str.as_str() {
         "master" | "primary" => NodeRole::Primary,
         "replica" | "slave" => NodeRole::Replica,
@@ -346,19 +342,19 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
     let is_local = node_id == my_node_id;
 
     // extract port info. Either port or tls-port will be present
-    let port = get_map_field_as_integer(&node_reply, "port", false).unwrap_or_else(|| {
-        get_map_field_as_integer(&node_reply, "tls-port", false)
+    let port = get_map_field_as_integer(node_reply, "port").unwrap_or_else(|| {
+        get_map_field_as_integer(node_reply, "tls-port")
             .expect("CLUSTER SHARDS: Node entry missing 'port' or 'tls-port' field")
     }) as u16;
 
     // Try to get an endpoint from the response
-    let endpoint = get_map_field_as_string(&node_reply, "endpoint", false);
+    let endpoint = get_map_field_as_string(node_reply, "endpoint", false);
     let Some(endpoint) = endpoint.as_ref().filter(|&s| !s.is_empty() && s != "?") else {
         log::debug!("Node {node_id} has an invalid node endpoint.");
         return None
     };
 
-    let health = get_map_field_as_string(&node_reply, "health", true).unwrap();
+    let health = get_map_field_as_string(node_reply, "health", true).unwrap();
     // valid values are "online", "failed", "loading"
     if health != "online" {
         log::debug!("Node {node_id} is not online (health={health}), skipping ...");
@@ -372,7 +368,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
     };
 
     let primary_endpoint = endpoint.parse::<Ipv6Addr>()
-        .expect(format!("Invalid IPv6 address for node {node_id}: {endpoint}").as_str());
+        .unwrap_or_else(|_| panic!("Invalid IPv6 address for node {node_id}: {endpoint}"));
 
     let node = NodeInfo {
         id: copy_node_id_from_str(&node_id),
@@ -426,8 +422,7 @@ fn get_map_field_as_string<'a>(
 
 fn get_map_field_as_integer<'a>(
     map: &CallReply<'a>,
-    field_name: &str,
-    required: bool,
+    field_name: &str
 ) -> Option<i64> {
     let entry = get_map_entry(map, field_name)?;
     match entry {
@@ -456,8 +451,7 @@ fn get_map_entry<'a>(map: &'a CallReply<'a>, field_name: &str) -> Option<CallRep
             Ok(v) => Some(v),
             Err(e) => {
                 let msg = format!(
-                    "CLUSTER SHARDS: Failed to parse call result for {field_name} : {}",
-                    e.to_string()
+                    "CLUSTER SHARDS: Failed to parse call result for {field_name} : {e}",
                 );
                 panic!("{}", msg);
             }
