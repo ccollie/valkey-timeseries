@@ -3,8 +3,8 @@ use super::fanout::generated::{
 };
 use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::common::Sample;
-use crate::fanout::{exec_fanout_request_base, FanoutOperation};
 use crate::fanout::NodeInfo;
+use crate::fanout::{FanoutOperation, exec_fanout_request_base};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::series::mrange::{build_mrange_grouped_labels, process_mrange_query};
 use crate::series::range_utils::group_reduce;

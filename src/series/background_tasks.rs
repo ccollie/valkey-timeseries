@@ -54,7 +54,6 @@ static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 static DISPATCH_MAP: LazyLock<DispatchMap> = LazyLock::new(|| DispatchMap::default());
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
-
 pub(crate) fn init_background_tasks(ctx: &Context) {
     // transform hz to milliseconds
     let interval_ms = get_ticks_interval(ctx);

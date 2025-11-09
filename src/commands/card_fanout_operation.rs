@@ -2,9 +2,9 @@ use super::fanout::generated::{CardinalityRequest, CardinalityResponse, DateRang
 use super::utils::reply_with_i64;
 use crate::commands::calculate_cardinality;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::fanout::{exec_fanout_request_base, FanoutOperation, NodeInfo};
-use crate::series::request_types::MatchFilterOptions;
+use crate::fanout::{FanoutOperation, NodeInfo, exec_fanout_request_base};
 use crate::series::TimestampRange;
+use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]

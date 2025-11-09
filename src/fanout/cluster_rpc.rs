@@ -3,9 +3,9 @@ use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::fanout::{FanoutResult, NodeInfo};
 use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::registry::get_fanout_request_handler;
+use crate::fanout::{FanoutResult, NodeInfo};
 use core::time::Duration;
 use papaya::HashMap;
 use std::os::raw::{c_char, c_int, c_uchar};
@@ -23,8 +23,7 @@ pub(super) const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
 
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) type ResponseCallback =
-    Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
+pub(super) type ResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
 
 struct InFlightRequest {
     id: u64,
@@ -54,7 +53,8 @@ impl InFlightRequest {
     fn handle_response(&self, ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
         let handler = &self.response_handler;
         // Binary search to find the NodeInfo associated with the target
-        let target_node = self.targets
+        let target_node = self
+            .targets
             .binary_search_by(|node| node.raw_id_ptr().cmp(&sender_id))
             .ok()
             .and_then(|idx| self.targets.get(idx));
@@ -69,7 +69,6 @@ impl InFlightRequest {
 
         handler(resp, node);
     }
-
 }
 
 type InFlightRequestMap = HashMap<u64, InFlightRequest, BuildNoHashHasher<u64>>;

@@ -1,7 +1,7 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
-use crate::commands::{exec_fanout_request_base, DEFAULT_STATS_RESULTS_LIMIT};
+use crate::commands::{DEFAULT_STATS_RESULTS_LIMIT, exec_fanout_request_base};
 use crate::fanout::{FanoutOperation, NodeInfo};
-use crate::series::index::{with_timeseries_index, PostingStat, PostingsStats, StatsMaxHeap};
+use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, with_timeseries_index};
 use ahash::AHashMap;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
 
