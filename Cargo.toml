@@ -21,7 +21,6 @@ enquote = "1.1.0"
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
 hashify = { version = "0.2.7" }
-hi_sparse_bitset = "0.7.3"
 linkme = "0.3.33"
 logos = "0.15.1"
 orx-parallel = "3.4.0"
@@ -39,6 +38,7 @@ thiserror = "2.0.17"
 topo_sort = "0.4.0"
 valkey-module = "0.1.10"
 valkey-module-macros = "0.1.10"
+range-set-blaze = "0.4.1"
 rayon-core = "1.13.0"
 regex = "1.12.2"
 strum = { version = "0.27.2", features = ["derive"] }

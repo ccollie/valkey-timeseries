@@ -2,16 +2,15 @@ use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use crate::fanout::cluster_api::get_cluster_shards;
 use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
-use hi_sparse_bitset::BitSet;
 use rand::prelude::IndexedRandom;
 use rand::rng;
-use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_char;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
+use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use valkey_module::{Context, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_ID_LEN, ValkeyResult};
 
 pub const VALKEYMODULE_NODE_MASTER: u32 = REDISMODULE_NODE_MASTER;
@@ -93,6 +92,68 @@ impl Hash for SocketAddress {
         self.port.hash(state);
     }
 }
+
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+pub struct SlotRangeSet {
+    ranges: RangeSetBlaze<u16>
+}
+
+impl SlotRangeSet {
+    pub fn new() -> Self {
+        Self {
+            ranges: RangeSetBlaze::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ranges.len() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    pub fn contains(&self, slot: u16) -> bool {
+        self.ranges.contains(slot)
+    }
+
+    pub fn insert(&mut self, slot: u16) {
+        self.ranges.insert(slot);
+    }
+
+    pub fn insert_range(&mut self, start: u16, end: u16) {
+        self.ranges.ranges_insert(start..=end);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
+        self.ranges.iter()
+    }
+
+    pub fn range_iter(&self) -> RangesIter<'_, u16> {
+        self.ranges.ranges()
+    }
+
+    pub fn append(&mut self, other: &SlotRangeSet) {
+        for range in other.range_iter() {
+            self.ranges.ranges_insert(range.clone());
+        }
+    }
+
+    pub fn first(&self) -> Option<u16> {
+        self.ranges.first()
+    }
+
+    pub fn last(&self) -> Option<u16> {
+        self.ranges.last()
+    }
+}
+
+impl Display for SlotRangeSet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.ranges.fmt(f)
+    }
+}
+
 
 /// Information about a cluster node
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -177,14 +238,14 @@ impl Hash for NodeInfo {
 }
 
 /// Information about a shard in the cluster
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShardInfo {
     /// shard_id is the primary node id
     pub shard_id: String,
     /// the primary node can be None
     pub primary: Option<NodeInfo>,
     pub replicas: Vec<NodeInfo>,
-    pub owned_slots: BTreeSet<u16>,
+    pub owned_slots: SlotRangeSet,
     /// Whether this shard is local
     pub is_local: bool,
     /// Hash of an owned_slots set
@@ -192,94 +253,15 @@ pub struct ShardInfo {
     pub is_consistent: bool,
 }
 
-pub type SparseBitSetIter<'a> =
-    hi_sparse_bitset::iter::IndexIter<&'a BitSet<hi_sparse_bitset::config::_64bit>>;
-
-/// A dynamic sparse bitset to track owned slots across the cluster
-#[derive(Debug, Clone)]
-pub struct SparseBitSet(BitSet<hi_sparse_bitset::config::_64bit>, usize);
-
-impl SparseBitSet {
-    pub fn new() -> Self {
-        Self(BitSet::new(), 0)
-    }
-
-    pub fn len(&self) -> usize {
-        self.1
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.1 == 0
-    }
-
-    pub fn insert(&mut self, index: usize) {
-        if !self.0.contains(index) {
-            self.0.insert(index);
-            self.1 += 1;
-        }
-    }
-
-    pub fn remove(&mut self, index: usize) -> bool {
-        if self.0.remove(index) {
-            self.1 -= 1;
-            return true;
-        }
-        false
-    }
-
-    pub fn contains(&self, index: usize) -> bool {
-        self.0.contains(index)
-    }
-
-    pub fn iter(&'_ self) -> SparseBitSetIter<'_> {
-        self.0.iter()
-    }
-}
-
-impl Default for SparseBitSet {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Display for SparseBitSet {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut ranges = Vec::new();
-        let mut range_start = 0;
-        let mut range_end = 0;
-
-        let mut first = false;
-        for i in self.iter() {
-            if !first {
-                first = true;
-                range_start = i;
-                range_end = i;
-            } else if i == range_end + 1 {
-                range_end = i;
-                continue;
-            } else {
-                ranges.push((range_start as u16, range_end as u16));
-                range_start = i;
-                range_end = i;
-            }
-        }
-
-        if first {
-            ranges.push((range_start as u16, (NUM_SLOTS - 1) as u16));
-        }
-
-        write!(f, "{}", format_ranges(&ranges))
-    }
-}
 
 /// Main cluster map structure
 #[derive(Debug, Default, Clone)]
 pub struct ClusterMap {
-    /// Bit vector where 1: slot is owned by this cluster, 0: slot is not owned by this cluster
-    owned_slots: SparseBitSet,
+    /// Slot set for slots owned by the cluster
+    owned_slots: SlotRangeSet,
     shards: AHashMap<String, ShardInfo>,
-    // An ordered map, key is start slot, value is end slot and ShardInfo
-    slot_to_shard_map: BTreeMap<u16, (u16, Arc<ShardInfo>)>,
+    // A range map, mapping(start slot, end slot) => ShardInfo
+    slot_to_shard_map: RangeMapBlaze<u16, Arc<ShardInfo>>,
     /// Cluster-level fingerprint (hash of all shard fingerprints)
     cluster_slots_fingerprint: u64,
     /// Pre-computed target lists
@@ -315,7 +297,7 @@ impl ClusterMap {
 
     /// Slot ownership checks
     pub fn i_own_slot(&self, slot: u16) -> bool {
-        self.owned_slots.contains(slot as usize)
+        self.owned_slots.contains(slot)
     }
 
     /// Get the count of owned slots
@@ -329,16 +311,8 @@ impl ClusterMap {
     }
 
     pub fn get_shard_by_slot(&self, slot: u16) -> Option<&ShardInfo> {
-        self.slot_to_shard_map
-            .range(..=slot)
-            .next_back()
-            .and_then(|(start, (end, shard))| {
-                if slot >= *start && slot <= *end {
-                    Some(shard.as_ref())
-                } else {
-                    None
-                }
-            })
+        self.slot_to_shard_map.get(slot)
+            .map(|shard| shard.as_ref())
     }
 
     /// Get all shards
@@ -381,9 +355,9 @@ impl ClusterMap {
 
     /// Builder method to create a ClusterMap (alternative to CreateNewClusterMap)
     pub fn build_from_shards(shards: Vec<ShardInfo>) -> Self {
-        let mut owned_slots = SparseBitSet::new();
+        let mut owned_slots = SlotRangeSet::new();
         let mut shards_map = AHashMap::new();
-        let mut slot_to_shard_map = BTreeMap::new();
+        let mut slot_to_shard_map: RangeMapBlaze<u16, Arc<ShardInfo>> = RangeMapBlaze::new();
         let mut primary_targets = Vec::new();
         let mut replica_targets = Vec::new();
         let mut all_targets = Vec::new();
@@ -394,14 +368,12 @@ impl ClusterMap {
             let shard_ = Arc::new(shard.clone());
             // Mark owned slots
             if shard.is_local {
-                for &slot in &shard.owned_slots {
-                    owned_slots.insert(slot as usize);
-                }
+                owned_slots.append(&shard.owned_slots);
             }
-            let start_slot = *shard.owned_slots.iter().next().unwrap_or(&0);
-            let end_slot = *shard.owned_slots.iter().last().unwrap_or(&0);
+            let start_slot = shard.owned_slots.first().unwrap_or(0);
+            let end_slot = shard.owned_slots.last().unwrap_or(0);
             // Update slot to shard map
-            slot_to_shard_map.insert(start_slot, (end_slot, Arc::clone(&shard_)));
+            slot_to_shard_map.ranges_insert(start_slot..= end_slot, Arc::clone(&shard_));
 
             // Add to targets
             if let Some(primary) = shard.primary {
@@ -432,7 +404,7 @@ impl ClusterMap {
         };
 
         // Check if the cluster has all slots assigned
-        let is_cluster_map_full = owned_slots.len() == NUM_SLOTS;
+        let is_cluster_map_full = slot_to_shard_map.len() == NUM_SLOTS as u32;
 
         // Sort targets for consistency
         primary_targets.sort();
@@ -478,8 +450,7 @@ impl ClusterMap {
                 log::info!("Shard ID: {shard_id}");
                 log::info!("  owned_slots count: {}", shard_info.owned_slots.len());
                 if !shard_info.owned_slots.is_empty() {
-                    let slot_ranges = format_slot_set_ranges(&shard_info.owned_slots);
-                    log::info!("  slot ranges: {slot_ranges}");
+                    log::info!("  slot ranges: {}", shard_info.owned_slots);
                 }
             }
 
@@ -495,42 +466,6 @@ impl ClusterMap {
     pub fn is_expired(&self) -> bool {
         current_time_millis() >= self.expiration_ts
     }
-}
-
-/// Helper to format slot set ranges for logging
-fn format_slot_set_ranges(slots: &BTreeSet<u16>) -> String {
-    let mut sorted_slots: Vec<u16> = slots.iter().copied().collect();
-    sorted_slots.sort_unstable();
-
-    let mut ranges: Vec<(u16, u16)> = Vec::new();
-    let range_start: Option<(u16, u16)> = None;
-
-    for &slot in &sorted_slots {
-        match range_start {
-            Some((_start, end)) if slot == end + 1 => {
-                ranges.last_mut().unwrap().1 = slot;
-            }
-            _ => {
-                ranges.push((slot, slot));
-            }
-        }
-    }
-
-    format_ranges(&ranges)
-}
-
-fn format_ranges(ranges: &[(u16, u16)]) -> String {
-    ranges
-        .iter()
-        .map(|&(start, end)| {
-            if start == end {
-                format!("{start}")
-            } else {
-                format!("{start}-{end}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 // Unit tests
