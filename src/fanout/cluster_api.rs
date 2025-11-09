@@ -1,6 +1,5 @@
-use super::utils::copy_node_id_from_str;
 use crate::fanout::cluster_map::{
-    NUM_SLOTS, NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo, SocketAddress,
+    NUM_SLOTS, NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo,
     VALKEYMODULE_NODE_MASTER,
 };
 use crate::fanout::get_current_node_id;
@@ -147,10 +146,9 @@ fn get_node(ctx: &Context, node_id: &str) -> Option<RawNodeInfo> {
 ///
 /// https://valkey.io/commands/cluster-shards/
 ///
-pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
+pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)> {
     // Call CLUSTER SHARDS from Valkey Module API
     let call_options = CallOptionsBuilder::new()
-        .script_mode()
         .resp(CallOptionResp::Resp3)
         .errors_as_replies()
         .build();
@@ -160,6 +158,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
         .map_err(|e| -> ValkeyError { e.into() })?;
 
     let mut shard_infos: Vec<ShardInfo> = Vec::with_capacity(16);
+    let mut map_consistent = true;
 
     assert!(
         matches!(res, CallReply::Null(_)),
@@ -170,7 +169,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
         CallReply::Array(arr) => arr,
         _ => {
             log::warn!("CLUSTER_MAP_ERROR: CLUSTER SHARDS call returns non-array reply");
-            return Ok(shard_infos);
+            return Ok((shard_infos,false));
         }
     };
 
@@ -185,6 +184,8 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
     //   - "id": shard ID
     for shard_reply in shards_array.iter() {
         let Ok(shard_reply) = shard_reply else {
+            log::warn!("CLUSTER_MAP_ERROR: error getting shard reply");
+            map_consistent = false;
             continue;
         };
 
@@ -241,11 +242,14 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
         let mut replicas: Vec<NodeInfo> = Vec::new();
 
         let mut is_local = shard_id == my_node_id;
+        let mut is_consistent = true;
 
         for node_reply in nodes_array.iter() {
             let node_reply = node_reply.expect("CLUSTER_MAP_ERROR: error getting node reply");
 
             let Some(node) = parse_node_info(&node_reply, &my_node_id) else {
+                is_consistent = false;
+                map_consistent = false;
                 continue;
             };
 
@@ -272,12 +276,13 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<Vec<ShardInfo>> {
             replicas,
             owned_slots,
             slots_fingerprint,
+            is_consistent
         };
 
         shard_infos.push(shard_info);
     }
 
-    Ok(shard_infos)
+    Ok((shard_infos, map_consistent))
 }
 
 // Helper function to parse node info from CLUSTER SHARDS reply
@@ -324,19 +329,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
         NodeLocation::Remote
     };
 
-    let primary_endpoint = endpoint
-        .parse::<Ipv6Addr>()
-        .unwrap_or_else(|_| panic!("Invalid IPv6 address for node {node_id}: {endpoint}"));
-
-    let node = NodeInfo {
-        id: copy_node_id_from_str(&node_id),
-        socket_address: SocketAddress {
-            primary_endpoint,
-            port,
-        },
-        role,
-        location,
-    };
+    let node = NodeInfo::create(&node_id, endpoint, port, role, location);
 
     Some(node)
 }

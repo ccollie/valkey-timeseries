@@ -1,10 +1,7 @@
 use super::cluster_api::get_cluster_node_info;
 use super::snowflake::SnowflakeIdGenerator;
-use crate::fanout::cluster_map::NodeIdBuf;
 use std::hash::{BuildHasher, RandomState};
 use std::net::Ipv6Addr;
-use std::os::raw::c_char;
-use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use valkey_module::{
@@ -120,30 +117,6 @@ pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
             }
         }
     }
-}
-
-
-pub(super) fn copy_node_id(node_id: *const c_char) -> Option<NodeIdBuf> {
-    if node_id.is_null() {
-        return None;
-    }
-    let mut buf: NodeIdBuf = [0; VALKEYMODULE_NODE_ID_LEN as usize + 1];
-    unsafe {
-        ptr::copy_nonoverlapping(
-            node_id as *const u8,
-            buf.as_mut_ptr(),
-            VALKEYMODULE_NODE_ID_LEN as usize,
-        );
-    }
-    Some(buf)
-}
-
-pub(super) fn copy_node_id_from_str(node_id: &str) -> NodeIdBuf {
-    let mut buf: NodeIdBuf = [0; VALKEYMODULE_NODE_ID_LEN as usize + 1];
-    let bytes = node_id.as_bytes();
-    let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
-    buf[..len].copy_from_slice(&bytes[..len]);
-    buf
 }
 
 static ID_GENERATOR: LazyLock<SnowflakeIdGenerator> = LazyLock::new(|| {

@@ -104,19 +104,24 @@ pub struct NodeInfo {
 }
 
 impl NodeInfo {
-    pub fn local(node_id: String, role: NodeRole) -> Self {
+    pub fn create(node_id: &str, endpoint: &str, port: u16, role: NodeRole, location: NodeLocation) -> Self {
         let mut id_buf = [0u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
         let bytes = node_id.as_bytes();
         let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
         id_buf[..len].copy_from_slice(&bytes[..len]);
+
+        let primary_endpoint = endpoint
+            .parse::<Ipv6Addr>()
+            .unwrap_or_else(|_| panic!("Invalid IPv6 address for node {node_id}: {endpoint}"));
+
         let addr = SocketAddress {
-            primary_endpoint: Ipv6Addr::LOCALHOST,
-            port: 6379,
+            primary_endpoint,
+            port,
         };
 
         Self {
             role,
-            location: NodeLocation::Local,
+            location,
             socket_address: addr,
             id: id_buf,
         }
@@ -184,6 +189,7 @@ pub struct ShardInfo {
     pub is_local: bool,
     /// Hash of an owned_slots set
     pub slots_fingerprint: u64,
+    pub is_consistent: bool,
 }
 
 pub type SparseBitSetIter<'a> =
@@ -381,6 +387,7 @@ impl ClusterMap {
         let mut primary_targets = Vec::new();
         let mut replica_targets = Vec::new();
         let mut all_targets = Vec::new();
+        let mut is_consistent = true;
 
         // Process each shard
         for shard in shards {
@@ -400,6 +407,8 @@ impl ClusterMap {
             if let Some(primary) = shard.primary {
                 primary_targets.push(primary);
                 all_targets.push(primary);
+            } else {
+                is_consistent = false;
             }
 
             for replica in shard.replicas.iter() {
@@ -442,16 +451,16 @@ impl ClusterMap {
             replica_targets: Arc::new(replica_targets),
             all_targets: Arc::new(all_targets),
             expiration_ts,
-            is_consistent: true,
+            is_consistent,
             is_cluster_map_full,
         }
     }
 
     /// Create a new cluster map using the CLUSTER SHARDS command
     pub fn create(ctx: &Context) -> ValkeyResult<Self> {
-        let shards = get_cluster_shards(ctx)?;
+        let (shards, consistent) = get_cluster_shards(ctx)?;
 
-        let new_map = Self::build_from_shards(shards);
+        let mut new_map = Self::build_from_shards(shards);
 
         #[cfg(debug_assertions)]
         {
@@ -476,6 +485,8 @@ impl ClusterMap {
 
             log::info!("=== End Cluster Map ===");
         }
+
+        new_map.is_consistent = consistent;
 
         Ok(new_map)
     }
