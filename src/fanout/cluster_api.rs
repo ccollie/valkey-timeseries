@@ -1,9 +1,5 @@
-use crate::fanout::cluster_map::{
-    NUM_SLOTS, NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo,
-    VALKEYMODULE_NODE_MASTER,
-};
+use crate::fanout::cluster_map::{NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo, VALKEYMODULE_NODE_MASTER, SlotRangeSet};
 use crate::fanout::get_current_node_id;
-use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
@@ -209,7 +205,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
             .expect("CLUSTER_MAP_ERROR: Shard entry missing 'slots' field");
 
         // Parse slot ranges
-        let mut owned_slots = BTreeSet::new();
+        let mut owned_slots = SlotRangeSet::new();
         let mut i = 0;
         while i < slots_array.len() {
             // Slots are pairs of [start, end]
@@ -217,11 +213,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
             let end = get_reply_as_integer(slots_array.get(i + 1), -1);
 
             if start >= 0 && end >= 0 && start <= end {
-                for slot in start..=end {
-                    if (slot as usize) < NUM_SLOTS {
-                        owned_slots.insert(slot as u16);
-                    }
-                }
+                owned_slots.insert_range(start as u16, end as u16);
             }
             i += 2;
         }
@@ -335,7 +327,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
 }
 
 /// Helper method to calculate slot fingerprint
-fn calculate_slots_fingerprint(slots: &BTreeSet<u16>) -> u64 {
+fn calculate_slots_fingerprint(slots: &SlotRangeSet) -> u64 {
     let mut hasher = DefaultHasher::new();
     slots.hash(&mut hasher);
     hasher.finish()

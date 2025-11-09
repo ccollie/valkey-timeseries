@@ -49,7 +49,7 @@ pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> Arc<Vec<Node
 
 // Refresh the cluster map by creating a new one from the current cluster state
 pub fn refresh_cluster_map(ctx: &Context) {
-    ctx.log_debug("RefreshClusterMap called");
+    log::debug!("RefreshClusterMap called");
     let new_map = ClusterMap::create(ctx).unwrap();
     log::debug!(
         "Updating cluster map with new map, is_full={}",
