@@ -1,9 +1,9 @@
+mod cluster_api;
 mod cluster_map;
 mod cluster_message;
 mod cluster_rpc;
 mod fanout_error;
 mod fanout_operation;
-mod cluster_api;
 mod registry;
 pub mod serialization;
 mod snowflake;
@@ -11,7 +11,7 @@ mod utils;
 
 use arc_swap::{ArcSwap, Guard};
 use std::sync::{Arc, LazyLock};
-use valkey_module::{Context};
+use valkey_module::Context;
 
 use super::fanout::cluster_rpc::register_cluster_message_handlers;
 pub use fanout_error::*;
