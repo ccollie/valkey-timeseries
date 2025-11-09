@@ -1,61 +1,24 @@
-use super::utils::{copy_node_id_from_str, is_client_read_only};
+use super::utils::copy_node_id_from_str;
 use crate::fanout::cluster_map::{
-    FanoutTargetMode, NUM_SLOTS, NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo,
-    SocketAddress, VALKEYMODULE_NODE_MASTER,
+    NUM_SLOTS, NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo, SocketAddress,
+    VALKEYMODULE_NODE_MASTER,
 };
 use crate::fanout::get_current_node_id;
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
-use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_FAIL,
     VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_MYSELF, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
     ValkeyError, ValkeyModule_GetClusterNodeInfo, ValkeyModuleCtx, ValkeyResult,
 };
 
-pub static FORCE_REPLICAS_READONLY: AtomicBool = AtomicBool::new(false);
-
 // master_id and ip are not null terminated, so we add 1 for null terminator for safety
 const MASTER_ID_LEN: usize = (VALKEYMODULE_NODE_ID_LEN + 1) as usize;
 
 /// Maximum length of an IPv6 address string
 pub const INET6_ADDR_STR_LEN: usize = 46;
-
-/// Helper function to check if the Valkey server version is considered "legacy" (e.g., < 9).
-/// In legacy versions, client read-only status might not be reliably determinable.
-fn is_valkey_version_legacy(context: &Context) -> bool {
-    context
-        .get_server_version()
-        .is_ok_and(|version| version.major < 9)
-}
-
-pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
-    if FORCE_REPLICAS_READONLY.load(Ordering::Relaxed) {
-        // Testing only
-        return FanoutTargetMode::ReplicasOnly;
-    }
-    // Determine fanout mode based on Valkey version and client read-only status.
-    // The following logic is based on the issue https://github.com/valkey-io/valkey-search/issues/139
-    if is_valkey_version_legacy(context) {
-        // Valkey 8 doesn't provide a way to determine if a client is READONLY,
-        // So we choose random distribution.
-        FanoutTargetMode::Random
-    } else {
-        match is_client_read_only(context) {
-            Ok(true) => FanoutTargetMode::Random,
-            Ok(false) => FanoutTargetMode::Primary,
-            Err(_) => {
-                // If we can't determine client read-only status, default to Random
-                log::warn!(
-                    "Could not determine client read-only status, defaulting to Random fanout mode."
-                );
-                FanoutTargetMode::Random
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(super) struct RawNodeInfo {
@@ -168,13 +131,7 @@ fn get_node(ctx: &Context, node_id: &str) -> Option<RawNodeInfo> {
     let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
     node_buf[..len].copy_from_slice(&bytes[..len]);
     let node_id_ptr = node_buf.as_ptr() as *const c_char;
-    let Some(node_info) = get_cluster_node_info(ctx, node_id_ptr) else {
-        #[cfg(debug_assertions)]
-        {
-            log::debug!("Failed to get node info for node {node_id}, skipping node...");
-        }
-        return None;
-    };
+    let node_info = get_cluster_node_info(ctx, node_id_ptr)?;
 
     if node_info.is_failed() {
         log::debug!(
@@ -351,7 +308,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
     let endpoint = get_map_field_as_string(node_reply, "endpoint", false);
     let Some(endpoint) = endpoint.as_ref().filter(|&s| !s.is_empty() && s != "?") else {
         log::debug!("Node {node_id} has an invalid node endpoint.");
-        return None
+        return None;
     };
 
     let health = get_map_field_as_string(node_reply, "health", true).unwrap();
@@ -367,14 +324,15 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
         NodeLocation::Remote
     };
 
-    let primary_endpoint = endpoint.parse::<Ipv6Addr>()
+    let primary_endpoint = endpoint
+        .parse::<Ipv6Addr>()
         .unwrap_or_else(|_| panic!("Invalid IPv6 address for node {node_id}: {endpoint}"));
 
     let node = NodeInfo {
         id: copy_node_id_from_str(&node_id),
         socket_address: SocketAddress {
             primary_endpoint,
-            port
+            port,
         },
         role,
         location,
@@ -420,10 +378,7 @@ fn get_map_field_as_string<'a>(
     None
 }
 
-fn get_map_field_as_integer<'a>(
-    map: &CallReply<'a>,
-    field_name: &str
-) -> Option<i64> {
+fn get_map_field_as_integer<'a>(map: &CallReply<'a>, field_name: &str) -> Option<i64> {
     let entry = get_map_entry(map, field_name)?;
     match entry {
         CallReply::I64(val) => Some(val.to_i64()),
@@ -450,9 +405,8 @@ fn get_map_entry<'a>(map: &'a CallReply<'a>, field_name: &str) -> Option<CallRep
         return match value {
             Ok(v) => Some(v),
             Err(e) => {
-                let msg = format!(
-                    "CLUSTER SHARDS: Failed to parse call result for {field_name} : {e}",
-                );
+                let msg =
+                    format!("CLUSTER SHARDS: Failed to parse call result for {field_name} : {e}",);
                 panic!("{}", msg);
             }
         };
@@ -461,21 +415,7 @@ fn get_map_entry<'a>(map: &'a CallReply<'a>, field_name: &str) -> Option<CallRep
 }
 
 pub(super) fn get_node_info(ctx: &Context, node_id: *const c_char) -> Option<RawNodeInfo> {
-    let Some(node_info) = get_cluster_node_info(ctx, node_id) else {
-        #[cfg(debug_assertions)]
-        {
-            let id = unsafe {
-                let str_slice = std::slice::from_raw_parts(
-                    node_id as *const u8,
-                    VALKEYMODULE_NODE_ID_LEN as usize,
-                );
-                String::from_utf8_lossy(str_slice).to_string()
-            };
-            log::debug!("Failed to get node info for node {id}, skipping node...");
-        }
-        return None;
-    };
-
+    let node_info = get_cluster_node_info(ctx, node_id)?;
     if node_info.is_failed() {
         log::debug!(
             "Node {} ({}) is failing, skipping for fanout...",
