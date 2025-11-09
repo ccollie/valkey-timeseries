@@ -190,6 +190,8 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
             "Expected map for CLUSTER SHARDS shard reply"
         );
 
+        let mut is_consistent = true;
+
         // Extract shard ID
         let shard_id = get_map_field_as_string(&shard_reply, "id", true).unwrap();
 
@@ -214,6 +216,11 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
 
             if start >= 0 && end >= 0 && start <= end {
                 owned_slots.insert_range(start as u16, end as u16);
+            } else {
+                log::warn!(
+                    "CLUSTER_MAP_ERROR: Invalid slot range [{start}, {end}] in shard {shard_id}");
+                map_consistent = false;
+                is_consistent = false;
             }
             i += 2;
         }
@@ -234,7 +241,6 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
         let mut replicas: Vec<NodeInfo> = Vec::new();
 
         let mut is_local = shard_id == my_node_id;
-        let mut is_consistent = true;
 
         for node_reply in nodes_array.iter() {
             let node_reply = node_reply.expect("CLUSTER_MAP_ERROR: error getting node reply");
