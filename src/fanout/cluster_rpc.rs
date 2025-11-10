@@ -1,4 +1,4 @@
-use super::cluster_message::{RequestMessage, serialize_request_message};
+use super::cluster_message::{serialize_request_message, RequestMessage};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
@@ -13,9 +13,9 @@ use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError, ValkeyModule_GetMyClusterID,
-    ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
-    ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
+    Context, RedisModuleCtx, Status, ValkeyError, ValkeyModuleClusterMessageReceiver,
+    ValkeyModuleCtx, ValkeyModule_RegisterClusterMessageReceiver,
+    ValkeyModule_SendClusterMessage, ValkeyResult, VALKEYMODULE_OK,
 };
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
@@ -93,14 +93,6 @@ fn on_request_timeout(ctx: &Context, id: u64) {
 
         request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
         // Reset the timer to give some extra time for late responses
-    }
-}
-
-fn get_current_node_id() -> *const c_char {
-    unsafe {
-        let node_id = ValkeyModule_GetMyClusterID
-            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
-        node_id as *const c_char
     }
 }
 
@@ -270,10 +262,9 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
     let buf = message.buf;
 
     // TODO: Consider running this handler in a thread pool to avoid blocking the main thread,
-    // especially if the handler performs expensive or long-running operations.
+    // especially if the handler performs expensive or long-running operations. See issue #11
     let res = handler(ctx, buf, &mut dest);
 
-    // I'm not sure if we need to restore the db here, but just in case
     set_current_db(ctx, save_db);
     if let Err(e) = res {
         let msg = e.to_string();

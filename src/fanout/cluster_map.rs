@@ -260,13 +260,11 @@ impl ShardInfo {
             has_primary = true;
             total_nodes += 1;
         }
-        assert!(total_nodes > 0, "Shard has no nodes to select from");
+        debug_assert!(total_nodes > 0, "Shard has no nodes to select from");
         let index = rng_.random_range(0..total_nodes);
         if index == 0 && has_primary {
             self.primary.unwrap()
         } else {
-            /*size_t replica_index = shard.primary.has_value() ? index - 1 : index;
-            return shard.replicas[replica_index];*/
             let replica_index = if has_primary { index - 1 } else { index };
             self.replicas[replica_index]
         }
