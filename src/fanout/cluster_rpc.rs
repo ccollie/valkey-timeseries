@@ -3,6 +3,7 @@ use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
+use crate::fanout::cluster_api::CURRENT_NODE_ID;
 use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResult, NodeInfo};
@@ -88,7 +89,7 @@ fn on_request_timeout(ctx: &Context, id: u64) {
         }
         request.timed_out.store(true, Ordering::Relaxed);
 
-        let local_node_id = get_current_node_id();
+        let local_node_id = CURRENT_NODE_ID.as_ptr() as *const c_char;
 
         request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
         // Reset the timer to give some extra time for late responses
@@ -268,7 +269,8 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
     let mut dest = Vec::with_capacity(1024);
     let buf = message.buf;
 
-    // todo: run in thread pool?
+    // TODO: Consider running this handler in a thread pool to avoid blocking the main thread,
+    // especially if the handler performs expensive or long-running operations.
     let res = handler(ctx, buf, &mut dest);
 
     // I'm not sure if we need to restore the db here, but just in case
