@@ -429,6 +429,6 @@ fn is_shutting_down() -> bool {
 
 #[shutdown_event_handler]
 fn shutdown_event_handler(ctx: &Context, _event: u64) {
-    ctx.log_notice("Sever shutdown callback event ...");
+    ctx.log_notice("Server shutdown callback event ...");
     SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
