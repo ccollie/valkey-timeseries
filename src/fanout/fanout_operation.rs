@@ -90,8 +90,11 @@ where
 
     fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
         if error.kind == ErrorKind::Timeout {
-            self.timed_out = true;
-            // Only record the first timeout error
+            // Record the first timeout error for logging/debugging purposes
+            if !self.timed_out {
+                self.errors.push(error);
+                self.timed_out = true;
+            }
         } else {
             self.errors.push(error);
         }
