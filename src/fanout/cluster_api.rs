@@ -207,18 +207,25 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
         let mut is_consistent = true;
 
         // Extract shard ID
-        let shard_id = get_map_field_as_string(&shard_reply, "id", true).unwrap();
+        let shard_id = get_map_field_as_string(&shard_reply, "id")
+            .expect("CLUSTER_MAP_ERROR: Shard entry missing required 'id' field");
 
         // Extract slots
-        let slots_array = get_map_entry(&shard_reply, "slots")
+        let slots_array = match get_map_entry(&shard_reply, "slots")
             .and_then(|reply| {
                 if let CallReply::Array(arr) = reply {
                     Some(arr)
                 } else {
                     None
                 }
-            })
-            .expect("CLUSTER_MAP_ERROR: Shard entry missing 'slots' field");
+            }) {
+            Some(arr) => arr,
+            None => {
+                log::warn!("CLUSTER_MAP_ERROR: Shard entry missing 'slots' field");
+                map_consistent = false;
+                continue;
+            }
+        };
 
         // Parse slot ranges
         let mut owned_slots = SlotRangeSet::new();
@@ -301,11 +308,13 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
 // Helper function to parse node info from CLUSTER SHARDS reply
 fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo> {
     // Extract node ID
-    let node_id = get_map_field_as_string(node_reply, "id", true)
+    let node_id = get_map_field_as_string(node_reply, "id")
         .expect("CLUSTER_MAP_ERROR: Node entry missing required 'id' field");
 
     // Extract role
-    let role_str = get_map_field_as_string(node_reply, "role", true).unwrap();
+    let role_str = get_map_field_as_string(node_reply, "role")
+        .expect("CLUSTER_MAP_ERROR: Node entry missing required 'role' field");
+
     let role = match role_str.as_str() {
         "master" | "primary" => NodeRole::Primary,
         "replica" | "slave" => NodeRole::Replica,
@@ -326,18 +335,19 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
     };
 
     // Try to get an endpoint from the response
-    let endpoint = get_map_field_as_string(node_reply, "endpoint", false);
+    let endpoint = get_map_field_as_string(node_reply, "endpoint");
     let Some(endpoint) = endpoint.as_ref().filter(|&s| !s.is_empty() && s != "?") else {
         log::warn!("Node {node_id} has an invalid node endpoint.");
         return None;
     };
-    
+
     let Ok(addr) = endpoint.parse::<Ipv6Addr>() else {
-        log::warn!("Node {node_id} has an invalid IPv6 address: {}", endpoint);
+        log::warn!("Node {node_id} has an invalid IPv6 address: {endpoint}");
         return None;
     };
 
-    let health = get_map_field_as_string(node_reply, "health", true).unwrap();
+    let health = get_map_field_as_string(node_reply, "health")
+        .expect("CLUSTER_MAP_ERROR: Node entry missing required 'health' field");
     // valid values are "online", "failed", "loading"
     if health != "online" {
         log::debug!("Node {node_id} is not online (health={health}), skipping ...");
@@ -375,16 +385,11 @@ fn get_reply_as_integer(elem: Option<CallResult>, default_value: i64) -> i64 {
 fn get_map_field_as_string<'a>(
     map: &CallReply<'a>,
     field_name: &str,
-    required: bool,
 ) -> Option<String> {
     let entry = get_map_entry(map, field_name)?;
     if let CallReply::String(key_str) = entry {
         return key_str.to_string();
     }
-    assert!(
-        required,
-        "Missing expected {field_name} in CLUSTER SHARDS response"
-    );
     None
 }
 
