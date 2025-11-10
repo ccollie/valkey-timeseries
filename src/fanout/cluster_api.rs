@@ -1,12 +1,16 @@
-use crate::fanout::cluster_map::{NodeIdBuf, NodeInfo, NodeLocation, NodeRole, ShardInfo, VALKEYMODULE_NODE_MASTER, SlotRangeSet};
+use crate::fanout::cluster_map::{
+    NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet, VALKEYMODULE_NODE_MASTER,
+};
 use crate::fanout::get_current_node_id;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
+use std::sync::LazyLock;
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_FAIL,
     VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_MYSELF, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
-    ValkeyError, ValkeyModule_GetClusterNodeInfo, ValkeyModuleCtx, ValkeyResult,
+    ValkeyError, ValkeyModule_GetClusterNodeInfo, ValkeyModule_GetMyClusterID, ValkeyModuleCtx,
+    ValkeyResult,
 };
 
 // master_id and ip are not null terminated, so we add 1 for null terminator for safety
@@ -14,6 +18,21 @@ const MASTER_ID_LEN: usize = (VALKEYMODULE_NODE_ID_LEN + 1) as usize;
 
 /// Maximum length of an IPv6 address string
 pub const INET6_ADDR_STR_LEN: usize = 46;
+
+pub type NodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for null terminator
+
+/// Static buffer holding the current node's ID
+pub static CURRENT_NODE_ID: LazyLock<NodeIdBuf> = LazyLock::new(||
+    // Safety: We ensure that the buffer is properly initialized with the current node ID
+    unsafe {
+        let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+        let node_id = ValkeyModule_GetMyClusterID
+            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
+        let bytes = std::ffi::CStr::from_ptr(node_id).to_bytes();
+        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        buf
+    });
 
 #[derive(Debug, Clone)]
 pub(super) struct RawNodeInfo {
@@ -157,7 +176,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
     let mut map_consistent = true;
 
     assert!(
-        matches!(res, CallReply::Null(_)),
+        !matches!(res, CallReply::Null(_)),
         "CLUSTER_MAP_ERROR: CLUSTER SHARDS call returns null"
     );
 
@@ -165,7 +184,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
         CallReply::Array(arr) => arr,
         _ => {
             log::warn!("CLUSTER_MAP_ERROR: CLUSTER SHARDS call returns non-array reply");
-            return Ok((shard_infos,false));
+            return Ok((shard_infos, false));
         }
     };
 
@@ -184,11 +203,6 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
             map_consistent = false;
             continue;
         };
-
-        assert!(
-            matches!(shard_reply, CallReply::Map(_)),
-            "Expected map for CLUSTER SHARDS shard reply"
-        );
 
         let mut is_consistent = true;
 
@@ -218,7 +232,8 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
                 owned_slots.insert_range(start as u16, end as u16);
             } else {
                 log::warn!(
-                    "CLUSTER_MAP_ERROR: Invalid slot range [{start}, {end}] in shard {shard_id}");
+                    "CLUSTER_MAP_ERROR: Invalid slot range [{start}, {end}] in shard {shard_id}"
+                );
                 map_consistent = false;
                 is_consistent = false;
             }
@@ -274,7 +289,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
             replicas,
             owned_slots,
             slots_fingerprint,
-            is_consistent
+            is_consistent,
         };
 
         shard_infos.push(shard_info);
@@ -286,7 +301,8 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
 // Helper function to parse node info from CLUSTER SHARDS reply
 fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo> {
     // Extract node ID
-    let node_id = get_map_field_as_string(node_reply, "id", true).unwrap();
+    let node_id = get_map_field_as_string(node_reply, "id", true)
+        .expect("CLUSTER_MAP_ERROR: Node entry missing required 'id' field");
 
     // Extract role
     let role_str = get_map_field_as_string(node_reply, "role", true).unwrap();
@@ -294,7 +310,8 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
         "master" | "primary" => NodeRole::Primary,
         "replica" | "slave" => NodeRole::Replica,
         _ => {
-            panic!("CLUSTER_MAP_ERROR: Unknown role '{role_str}' for node {node_id}");
+            log::warn!("CLUSTER_MAP_ERROR: Unknown role '{role_str}' for node {node_id}, skipping node");
+            return None;
         }
     };
 
@@ -302,15 +319,21 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
     let is_local = node_id == my_node_id;
 
     // extract port info. Either port or tls-port will be present
-    let port = get_map_field_as_integer(node_reply, "port").unwrap_or_else(|| {
-        get_map_field_as_integer(node_reply, "tls-port")
-            .expect("CLUSTER SHARDS: Node entry missing 'port' or 'tls-port' field")
-    }) as u16;
+    let Some(port) = get_map_field_as_integer(node_reply, "port")
+        .or_else(|| get_map_field_as_integer(node_reply, "tls-port")) else {
+        log::warn!("CLUSTER SHARDS: Node {node_id} entry missing 'port' or 'tls-port' field");
+        return None;
+    };
 
     // Try to get an endpoint from the response
     let endpoint = get_map_field_as_string(node_reply, "endpoint", false);
     let Some(endpoint) = endpoint.as_ref().filter(|&s| !s.is_empty() && s != "?") else {
-        log::debug!("Node {node_id} has an invalid node endpoint.");
+        log::warn!("Node {node_id} has an invalid node endpoint.");
+        return None;
+    };
+    
+    let Ok(addr) = endpoint.parse::<Ipv6Addr>() else {
+        log::warn!("Node {node_id} has an invalid IPv6 address: {}", endpoint);
         return None;
     };
 
@@ -327,7 +350,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
         NodeLocation::Remote
     };
 
-    let node = NodeInfo::create(&node_id, endpoint, port, role, location);
+    let node = NodeInfo::create(&node_id, addr, port as u16, role, location);
 
     Some(node)
 }
@@ -342,10 +365,6 @@ fn calculate_slots_fingerprint(slots: &SlotRangeSet) -> u64 {
 fn get_reply_as_integer(elem: Option<CallResult>, default_value: i64) -> i64 {
     match elem {
         Some(Ok(CallReply::I64(val))) => val.to_i64(),
-        Some(Ok(CallReply::String(s))) => {
-            let t = s.to_string().unwrap_or_default();
-            t.parse::<i64>().unwrap_or(default_value)
-        }
         _ => default_value,
     }
 }
@@ -373,10 +392,6 @@ fn get_map_field_as_integer<'a>(map: &CallReply<'a>, field_name: &str) -> Option
     let entry = get_map_entry(map, field_name)?;
     match entry {
         CallReply::I64(val) => Some(val.to_i64()),
-        CallReply::String(s) => {
-            let t = s.to_string().unwrap_or_default();
-            t.parse::<i64>().ok()
-        }
         _ => None,
     }
 }

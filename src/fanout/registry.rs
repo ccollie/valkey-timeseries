@@ -44,9 +44,9 @@ impl FanoutOperationRegistry {
                         response.serialize(dest);
                     }
                     Err(e) => {
-                        let msg = format!("Failed to deserialize {} fanout request", OP::name());
-                        let log_msg = format!("{msg}: {e}");
-                        ctx.log_warning(log_msg.as_str());
+                        let msg =
+                            format!("Failed to deserialize {} fanout request: {e}", OP::name());
+                        ctx.log_warning(msg.as_str());
                         return Err(ValkeyError::String(msg));
                     }
                 }

@@ -89,14 +89,14 @@ where
         self.outstanding == 0
     }
 
-    fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) -> bool {
+    fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
         if error.kind == ErrorKind::Timeout {
             self.timed_out = true;
             // Only record the first timeout error
-            return true;
+        } else {
+            self.errors.push(error);
         }
-        self.errors.push(error);
-        self.rpc_done()
+        self.rpc_done();
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) -> bool {
@@ -185,7 +185,7 @@ where
         inner.outstanding = count;
     }
 
-    fn generate_request(&mut self) -> OP::Request {
+    pub fn generate_request(&mut self) -> OP::Request {
         let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
         inner.generate_request()
     }
@@ -198,11 +198,6 @@ where
     pub fn on_response(&self, resp: OP::Response, target: &NodeInfo) {
         let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
         inner.on_response(resp, target);
-    }
-
-    fn generate_reply(&self, ctx: &Context) {
-        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
-        inner.generate_reply(ctx);
     }
 
     pub fn handle_local_request(&mut self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
@@ -318,6 +313,7 @@ where
     let local_pos = targets
         .iter()
         .position(|x| x.location == NodeLocation::Local);
+
     if let Some(idx) = local_pos {
         let local = targets.get(idx).expect("Local node info not found");
         if outstanding > 1 {

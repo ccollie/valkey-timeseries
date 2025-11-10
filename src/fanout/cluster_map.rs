@@ -1,24 +1,20 @@
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::cluster_api::get_cluster_shards;
+use crate::fanout::cluster_api::{NodeIdBuf, get_cluster_shards};
 use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
-use rand::prelude::IndexedRandom;
-use rand::rng;
+use rand::{rng, Rng};
+use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::ffi::c_char;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use valkey_module::{Context, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_ID_LEN, ValkeyResult};
 
 pub const VALKEYMODULE_NODE_MASTER: u32 = REDISMODULE_NODE_MASTER;
 // Constants
 pub const NUM_SLOTS: usize = 16384;
-pub const INET6_ADDR_STR_LEN: u32 = 46; // Max length for IPv6 string representation
-
-pub type NodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for null terminator
 
 /// Enumeration for fanout target modes
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +91,7 @@ impl Hash for SocketAddress {
 
 #[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
 pub struct SlotRangeSet {
-    ranges: RangeSetBlaze<u16>
+    ranges: RangeSetBlaze<u16>,
 }
 
 impl SlotRangeSet {
@@ -122,6 +118,7 @@ impl SlotRangeSet {
     }
 
     pub fn insert_range(&mut self, start: u16, end: u16) {
+        assert!(start <= end, "Invalid range: start ({start}) > end ({end})");
         self.ranges.ranges_insert(start..=end);
     }
 
@@ -154,7 +151,6 @@ impl Display for SlotRangeSet {
     }
 }
 
-
 /// Information about a cluster node
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
@@ -165,18 +161,20 @@ pub struct NodeInfo {
 }
 
 impl NodeInfo {
-    pub fn create(node_id: &str, endpoint: &str, port: u16, role: NodeRole, location: NodeLocation) -> Self {
+    pub fn create(
+        node_id: &str,
+        addr: Ipv6Addr,
+        port: u16,
+        role: NodeRole,
+        location: NodeLocation,
+    ) -> Self {
         let mut id_buf = [0u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
         let bytes = node_id.as_bytes();
         let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
         id_buf[..len].copy_from_slice(&bytes[..len]);
 
-        let primary_endpoint = endpoint
-            .parse::<Ipv6Addr>()
-            .unwrap_or_else(|_| panic!("Invalid IPv6 address for node {node_id}: {endpoint}"));
-
         let addr = SocketAddress {
-            primary_endpoint,
+            primary_endpoint: addr,
             port,
         };
 
@@ -253,6 +251,27 @@ pub struct ShardInfo {
     pub is_consistent: bool,
 }
 
+impl ShardInfo {
+    pub fn get_random_target(&self) -> NodeInfo {
+        let mut rng_ = rng();
+        let mut total_nodes = self.replicas.len();
+        let mut has_primary = false;
+        if self.primary.is_some() {
+            has_primary = true;
+            total_nodes += 1;
+        }
+        assert!(total_nodes > 0, "Shard has no nodes to select from");
+        let index = rng_.random_range(0..total_nodes);
+        if index == 0 && has_primary {
+            self.primary.unwrap()
+        } else {
+            /*size_t replica_index = shard.primary.has_value() ? index - 1 : index;
+            return shard.replicas[replica_index];*/
+            let replica_index = if has_primary { index - 1 } else { index };
+            self.replicas[replica_index]
+        }
+    }
+}
 
 /// Main cluster map structure
 #[derive(Debug, Default, Clone)]
@@ -311,8 +330,7 @@ impl ClusterMap {
     }
 
     pub fn get_shard_by_slot(&self, slot: u16) -> Option<&ShardInfo> {
-        self.slot_to_shard_map.get(slot)
-            .map(|shard| shard.as_ref())
+        self.slot_to_shard_map.get(slot).map(|shard| shard.as_ref())
     }
 
     /// Get all shards
@@ -333,19 +351,10 @@ impl ClusterMap {
             FanoutTargetMode::All => self.all_targets.clone(),
             FanoutTargetMode::Random => {
                 // generate a random targets vector with one node from each shard
-                let shards = self.all_shards();
-                let mut rng_ = rng();
-                let mut targets: Vec<NodeInfo> = Vec::with_capacity(shards.len());
-                for shard in shards.values() {
-                    if shard.replicas.is_empty() {
-                        // return primary if no replicas
-                        if let Some(primary) = shard.primary {
-                            targets.push(primary);
-                        }
-                    } else if let Some(choice) = shard.replicas.as_slice().choose(&mut rng_) {
-                        targets.push(*choice);
-                    }
-                }
+                let mut targets: Vec<NodeInfo> = self.all_shards()
+                    .values()
+                    .map(|shard| shard.get_random_target())
+                    .collect();
                 // sort targets for consistency
                 targets.sort();
                 Arc::new(targets)
@@ -370,10 +379,11 @@ impl ClusterMap {
             if shard.is_local {
                 owned_slots.append(&shard.owned_slots);
             }
-            let start_slot = shard.owned_slots.first().unwrap_or(0);
-            let end_slot = shard.owned_slots.last().unwrap_or(0);
-            // Update slot to shard map
-            slot_to_shard_map.ranges_insert(start_slot..= end_slot, Arc::clone(&shard_));
+
+            // Update slot to shard map.
+            for slot in shard.owned_slots.range_iter() {
+                slot_to_shard_map.ranges_insert(slot, Arc::clone(&shard_));
+            }
 
             // Add to targets
             if let Some(primary) = shard.primary {

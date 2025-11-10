@@ -1,14 +1,14 @@
 use super::cluster_api::get_cluster_node_info;
 use super::snowflake::SnowflakeIdGenerator;
+use crate::fanout::FanoutTargetMode;
 use std::hash::{BuildHasher, RandomState};
 use std::net::Ipv6Addr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use valkey_module::{
     Context, ContextFlags, DetachedContext, RedisModule_Milliseconds, VALKEYMODULE_NODE_ID_LEN,
     ValkeyModule_GetMyClusterID, ValkeyResult,
 };
-use crate::fanout::FanoutTargetMode;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
 
@@ -132,4 +132,3 @@ static ID_GENERATOR: LazyLock<SnowflakeIdGenerator> = LazyLock::new(|| {
 pub(super) fn generate_id() -> u64 {
     ID_GENERATOR.generate()
 }
-
