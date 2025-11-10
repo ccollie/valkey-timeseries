@@ -44,10 +44,9 @@ pub trait FanoutOperation: Default + Send {
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Log the error with context
         log::error!(
-            "Fanout operation {}, failed for target {}: {}",
+            "Fanout operation {}, failed for target {}: {error}",
             Self::name(),
-            target,
-            error,
+            target.socket_address,
         );
     }
 

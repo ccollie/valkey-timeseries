@@ -4,7 +4,6 @@ use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
 use rand::{rng, Rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
-use std::ffi::c_char;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -198,23 +197,6 @@ impl NodeInfo {
         // SAFETY: id_buf is always valid UTF-8 as it is copied from valid node ID strings
         unsafe { std::str::from_utf8_unchecked(&self.id[..VALKEYMODULE_NODE_ID_LEN as usize]) }
     }
-
-    pub(super) fn raw_id_ptr(&self) -> *const c_char {
-        // SAFETY: id is a null-terminated byte array
-        self.id.as_ptr() as *const c_char
-    }
-}
-
-impl Display for NodeInfo {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "NodeInfo{{role: {:?}, location: {:?}, address: {}}}",
-            self.role,
-            self.location,
-            self.address()
-        )
-    }
 }
 
 impl PartialOrd for NodeInfo {
@@ -225,7 +207,7 @@ impl PartialOrd for NodeInfo {
 
 impl Ord for NodeInfo {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.id.cmp(&other.id)
+        self.node_id().cmp(other.node_id())
     }
 }
 
