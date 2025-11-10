@@ -1,7 +1,6 @@
 use crate::fanout::cluster_map::{
     NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet, VALKEYMODULE_NODE_MASTER,
 };
-use crate::fanout::get_current_node_id;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
@@ -28,7 +27,12 @@ pub static CURRENT_NODE_ID: LazyLock<NodeIdBuf> = LazyLock::new(||
         let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
         let node_id = ValkeyModule_GetMyClusterID
             .expect("ValkeyModule_GetMyClusterID function is unavailable")();
-        let bytes = std::ffi::CStr::from_ptr(node_id).to_bytes();
+        // SAFETY: cluster_id is expected to be a valid pointer to a 40-byte node ID
+        let bytes = if node_id.is_null() {
+            &[]
+        } else {
+            std::slice::from_raw_parts(node_id as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
+        };
         let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
         buf[..len].copy_from_slice(&bytes[..len]);
         buf
@@ -416,9 +420,8 @@ fn get_map_entry<'a>(map: &'a CallReply<'a>, field_name: &str) -> Option<CallRep
         return match value {
             Ok(v) => Some(v),
             Err(e) => {
-                let msg =
-                    format!("CLUSTER SHARDS: Failed to parse call result for {field_name} : {e}",);
-                panic!("{}", msg);
+                log::warn!("CLUSTER SHARDS: Failed to parse call result for {field_name} : {e}");
+                None
             }
         };
     }
@@ -436,4 +439,13 @@ pub(super) fn get_node_info(ctx: &Context, node_id: *const c_char) -> Option<Raw
         return None;
     }
     Some(node_info)
+}
+
+pub fn get_current_node_id() -> Option<String> {
+    let buf = *CURRENT_NODE_ID;
+    if buf[0] == 0 {
+        return None;
+    }
+    let node_id = String::from_utf8_lossy(&buf);
+    Some(node_id.to_string())
 }

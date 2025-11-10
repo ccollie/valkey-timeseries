@@ -74,7 +74,7 @@ const DEFAULT_COMPACTION_POLICY: &str = "";
 
 pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 250; // default: 0.25 second
 const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
-const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 360000; // max: 1 hour
+const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
 const CLUSTER_MAP_EXPIRATION_DEFAULT_STRING: &str = "250";
 
 #[derive(Clone, Debug)]

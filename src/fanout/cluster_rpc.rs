@@ -1,4 +1,4 @@
-use super::cluster_message::{serialize_request_message, RequestMessage};
+use super::cluster_message::{RequestMessage, serialize_request_message};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
@@ -13,9 +13,9 @@ use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, ValkeyError, ValkeyModuleClusterMessageReceiver,
-    ValkeyModuleCtx, ValkeyModule_RegisterClusterMessageReceiver,
-    ValkeyModule_SendClusterMessage, ValkeyResult, VALKEYMODULE_OK,
+    Context, RedisModuleCtx, Status, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_OK, ValkeyError,
+    ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
+    ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
@@ -52,11 +52,16 @@ impl InFlightRequest {
     }
 
     fn handle_response(&self, ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
+        // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
+        let sender_buf = unsafe {
+            std::slice::from_raw_parts(sender_id as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
+        };
+
         let handler = &self.response_handler;
         // Binary search to find the NodeInfo associated with the target
         let target_node = self
             .targets
-            .binary_search_by(|node| node.raw_id_ptr().cmp(&sender_id))
+            .binary_search_by(|node| node.id.as_slice().cmp(sender_buf))
             .ok()
             .and_then(|idx| self.targets.get(idx));
 
