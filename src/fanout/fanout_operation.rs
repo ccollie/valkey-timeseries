@@ -91,7 +91,6 @@ where
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Invoke the handler's error callback for custom error handling
         self.handler.on_error(error.clone(), target);
-        
         if error.kind == ErrorKind::Timeout {
             // Record the first timeout error for logging/debugging purposes
             if !self.timed_out {
