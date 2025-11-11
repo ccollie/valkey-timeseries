@@ -43,6 +43,8 @@ pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> Arc<Vec<Node
     if !needs_refresh {
         return current_map.get_targets(mode);
     }
+    // Possibly race condition, but only if called concurrently, which is possible but very unlikely.
+    // In any case, the worst that can happen is that we refresh more than once.
     refresh_cluster_map(ctx);
     CLUSTER_MAP.load().get_targets(mode)
 }
