@@ -2,7 +2,7 @@ use super::fanout::generated::{CardinalityRequest, CardinalityResponse, DateRang
 use super::utils::reply_with_i64;
 use crate::commands::calculate_cardinality;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::fanout::{FanoutOperation, FanoutTarget, exec_fanout_request_base};
+use crate::fanout::{FanoutOperation, NodeInfo, exec_fanout_request_base};
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, ValkeyResult, ValkeyValue};
@@ -43,7 +43,7 @@ impl FanoutOperation for CardFanoutOperation {
         CardinalityRequest { range, filters }
     }
 
-    fn on_response(&mut self, resp: CardinalityResponse, _target: FanoutTarget) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         self.result += resp.cardinality as usize;
     }
 

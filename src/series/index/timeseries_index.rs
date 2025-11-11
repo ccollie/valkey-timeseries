@@ -130,10 +130,7 @@ impl TimeSeriesIndex {
     /// `postings_for_filters` assembles a single postings iterator against the series index
     /// based on the given matchers.
     #[allow(dead_code)]
-    pub fn postings_for_selector(
-        &self,
-        selector: &SeriesSelector,
-    ) -> ValkeyResult<PostingsBitmap> {
+    pub fn postings_for_selector(&self, selector: &SeriesSelector) -> ValkeyResult<PostingsBitmap> {
         let mut state = ();
         self.with_postings(&mut state, move |inner, _| {
             let postings = inner.postings_for_selector(selector)?;

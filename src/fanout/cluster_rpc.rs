@@ -1,19 +1,21 @@
-use super::cluster_message::{RequestMessage, serialize_request_message};
+use super::cluster_message::{serialize_request_message, RequestMessage};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
-use super::fanout_targets::FanoutTarget;
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
+use crate::fanout::cluster_api::{NodeId, CURRENT_NODE_ID};
+use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::registry::get_fanout_request_handler;
+use crate::fanout::{FanoutResult, NodeInfo};
 use core::time::Duration;
 use papaya::HashMap;
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
-    ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
-    ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
+    Context, RedisModuleCtx, Status, ValkeyError, ValkeyModuleClusterMessageReceiver,
+    ValkeyModuleCtx, ValkeyModule_RegisterClusterMessageReceiver,
+    ValkeyModule_SendClusterMessage, ValkeyResult, VALKEYMODULE_OK,
 };
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
@@ -22,11 +24,11 @@ pub(super) const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
 
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) type ResponseCallback =
-    Arc<dyn Fn(Result<&[u8], FanoutError>, FanoutTarget) + Send + Sync>;
+pub(super) type ResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
 
 struct InFlightRequest {
     id: u64,
+    targets: Arc<Vec<NodeInfo>>,
     response_handler: ResponseCallback,
     outstanding: AtomicU64,
     timer_id: u64,
@@ -48,6 +50,29 @@ impl InFlightRequest {
             let _ = ctx.stop_timer::<u64>(self.timer_id);
         }
     }
+
+    fn handle_response(&self, ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
+        // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
+        let sender = NodeId::from_raw(sender_id);
+
+        let handler = &self.response_handler;
+        // Binary search to find the NodeInfo associated with the target
+        let target_node = self
+            .targets
+            .binary_search_by(|node| node.id.cmp(&sender))
+            .ok()
+            .and_then(|idx| self.targets.get(idx));
+
+        let Some(node) = target_node else {
+            ctx.log_warning(&format!(
+                "Received response from unknown node {:?} for request {}",
+                sender_id, self.id
+            ));
+            return;
+        };
+
+        handler(resp, node);
+    }
 }
 
 type InFlightRequestMap = HashMap<u64, InFlightRequest, BuildNoHashHasher<u64>>;
@@ -66,10 +91,10 @@ fn on_request_timeout(ctx: &Context, id: u64) {
             return;
         }
         request.timed_out.store(true, Ordering::Relaxed);
-        let handler = request.response_handler.clone();
-        drop(map); // drop the lock before calling the handler
 
-        handler(Err(FanoutError::timeout()), FanoutTarget::Local);
+        let local_node_id = CURRENT_NODE_ID.raw_ptr();
+
+        request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
         // Reset the timer to give some extra time for late responses
     }
 }
@@ -88,14 +113,17 @@ pub fn get_cluster_command_timeout() -> Duration {
     DEFAULT_CLUSTER_REQUEST_TIMEOUT
 }
 
-pub(super) fn send_cluster_request(
+pub(super) fn send_cluster_request<F>(
     ctx: &Context,
     request_buf: &[u8],
-    targets: &[FanoutTarget],
+    targets: Arc<Vec<NodeInfo>>,
     handler: &str,
-    response_handler: ResponseCallback,
+    response_handler: F,
     timeout: Option<Duration>,
-) -> ValkeyResult<()> {
+) -> ValkeyResult<()>
+where
+    F: Fn(Result<&[u8], FanoutError>, &NodeInfo) + Send + Sync + 'static,
+{
     validate_cluster_exec(ctx)?;
 
     let id = generate_id();
@@ -106,8 +134,8 @@ pub(super) fn send_cluster_request(
 
     let mut node_count = 0;
     for node in targets.iter() {
-        if let FanoutTarget::Remote(node_id) = node {
-            let target_id = node_id.as_ptr().cast::<c_char>();
+        if node.location == NodeLocation::Remote {
+            let target_id = node.id.raw_ptr();
             let status =
                 send_cluster_message(ctx, target_id, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
             if status == Status::Err {
@@ -128,10 +156,11 @@ pub(super) fn send_cluster_request(
 
     let request = InFlightRequest {
         id,
-        response_handler,
+        response_handler: Box::new(response_handler),
         timer_id,
         outstanding: AtomicU64::new(node_count as u64),
         timed_out: AtomicBool::new(false),
+        targets: targets.clone(),
     };
 
     let map = INFLIGHT_REQUESTS.pin();
@@ -139,7 +168,7 @@ pub(super) fn send_cluster_request(
     Ok(())
 }
 
-// Send the response back to the original sender
+/// Send the response back to the original sender
 fn send_message_internal(
     ctx: &Context,
     msg_type: u8,
@@ -235,8 +264,9 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
     let mut dest = Vec::with_capacity(1024);
     let buf = message.buf;
 
-    let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
-    let res = handler(ctx, buf, &mut dest, target);
+    // TODO: Consider running this handler in a thread pool to avoid blocking the main thread,
+    // especially if the handler performs expensive or long-running operations. See issue #11
+    let res = handler(ctx, buf, &mut dest);
 
     set_current_db(ctx, save_db);
     if let Err(e) = res {
@@ -286,6 +316,7 @@ pub fn send_cluster_message(
     }
 }
 
+/// Handles incoming requests from requester nodes in the cluster.
 extern "C" fn on_request_received(
     ctx: *mut ValkeyModuleCtx,
     sender_id: *const c_char,
@@ -327,13 +358,9 @@ extern "C" fn on_response_received(
         return;
     };
 
-    let handler = request.response_handler.clone();
     request.rpc_done(&ctx);
-    drop(map); // drop the lock before calling the handler
 
-    let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
-
-    handler(Ok(message.buf), target);
+    request.handle_response(&ctx, Ok(message.buf), sender_id);
 }
 
 extern "C" fn on_error_received(
@@ -360,17 +387,14 @@ extern "C" fn on_error_received(
         return;
     };
 
-    let handler = request.response_handler.clone();
     request.rpc_done(&ctx);
-    drop(map); // drop the lock before calling the handler
 
-    let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
     match FanoutError::deserialize(message.buf) {
-        Ok((error, _)) => handler(Err(error), target),
+        Ok((error, _)) => request.handle_response(&ctx, Err(error), sender_id),
         Err(_) => {
             ctx.log_warning("Failed to deserialize error response");
             let err = FanoutError::invalid_message();
-            handler(Err(err), target);
+            request.handle_response(&ctx, Err(err), sender_id);
         }
     }
 }

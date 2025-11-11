@@ -54,7 +54,6 @@ static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
 static DISPATCH_MAP: LazyLock<DispatchMap> = LazyLock::new(|| DispatchMap::default());
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
-
 pub(crate) fn init_background_tasks(ctx: &Context) {
     // transform hz to milliseconds
     let interval_ms = get_ticks_interval(ctx);
@@ -181,6 +180,9 @@ fn process_trim(ctx: &ThreadSafeContext<BlockedClient>) {
     let save_db = db;
     let mut turns = 0;
     while processed < SERIES_TRIM_BATCH_SIZE && turns < 5 {
+        if is_shutting_down() {
+            break;
+        }
         processed += trim_series(ctx, db);
         if processed >= SERIES_TRIM_BATCH_SIZE {
             break;
@@ -287,6 +289,9 @@ fn fetch_series_batch(
 }
 
 fn remove_stale_series_internal(db: i32) {
+    if is_shutting_down() {
+        return;
+    }
     if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
         let mut state = 0;
         let cursor = get_stale_id_cursor(db);
@@ -307,6 +312,9 @@ fn remove_stale_series_internal(db: i32) {
 }
 
 fn process_remove_stale_series(_ctx: &ThreadSafeContext<BlockedClient>) {
+    if is_shutting_down() {
+        return;
+    }
     let db_ids = get_used_dbs();
     if db_ids.is_empty() {
         return;
@@ -318,6 +326,9 @@ fn process_remove_stale_series(_ctx: &ThreadSafeContext<BlockedClient>) {
 }
 
 fn optimize_indices(_ctx: &ThreadSafeContext<BlockedClient>) {
+    if is_shutting_down() {
+        return;
+    }
     let db_ids = get_used_dbs();
     if db_ids.is_empty() {
         return;
@@ -373,6 +384,9 @@ fn trim_unused_dbs(_ctx: &ThreadSafeContext<BlockedClient>) {
 
 #[cron_event_handler]
 fn cron_event_handler(ctx: &Context, _hz: u64) {
+    if is_shutting_down() {
+        return;
+    }
     // relaxed ordering is fine here since this code is not run threaded
     let ticks = CRON_TICKS.fetch_add(1, Ordering::Relaxed);
     let save_db = get_current_db(ctx);

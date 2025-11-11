@@ -1,14 +1,18 @@
-use super::fanout_targets::get_cluster_node_info;
+use super::cluster_api::get_cluster_node_info;
 use super::snowflake::SnowflakeIdGenerator;
+use crate::fanout::FanoutTargetMode;
 use std::hash::{BuildHasher, RandomState};
 use std::net::Ipv6Addr;
 use std::sync::LazyLock;
+use std::sync::atomic::AtomicBool;
 use valkey_module::{
     Context, ContextFlags, DetachedContext, RedisModule_Milliseconds, ValkeyModule_GetMyClusterID,
     ValkeyResult,
 };
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
+
+pub static FORCE_REPLICAS_READONLY: AtomicBool = AtomicBool::new(false);
 
 pub fn is_client_read_only(ctx: &Context) -> ValkeyResult<bool> {
     let info = ctx.get_client_info()?;
@@ -63,6 +67,42 @@ pub fn get_current_node_ip(ctx: &Context) -> Option<Ipv6Addr> {
             return None;
         };
         Some(info.addr())
+    }
+}
+
+/// Helper function to check if the Valkey server version is considered "legacy" (e.g., < 9).
+/// In legacy versions, client read-only status might not be reliably determinable.
+fn is_valkey_version_legacy(context: &Context) -> bool {
+    context
+        .get_server_version()
+        .is_ok_and(|version| version.major < 9)
+}
+
+pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
+    #[cfg(test)]
+    if FORCE_REPLICAS_READONLY.load(std::sync::atomic::Ordering::Relaxed) {
+        // Testing only
+        return FanoutTargetMode::ReplicasOnly;
+    }
+
+    // Determine fanout mode based on Valkey version and client read-only status.
+    // The following logic is based on the issue https://github.com/valkey-io/valkey-search/issues/139
+    if is_valkey_version_legacy(context) {
+        // Valkey 8 doesn't provide a way to determine if a client is READONLY,
+        // So we choose random distribution.
+        FanoutTargetMode::Random
+    } else {
+        match is_client_read_only(context) {
+            Ok(true) => FanoutTargetMode::Random,
+            Ok(false) => FanoutTargetMode::Primary,
+            Err(_) => {
+                // If we can't determine client read-only status, default to Random
+                log::warn!(
+                    "Could not determine client read-only status, defaulting to Random fanout mode."
+                );
+                FanoutTargetMode::Random
+            }
+        }
     }
 }
 

@@ -3,7 +3,7 @@ use super::fanout::generated::{
 };
 use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::common::Sample;
-use crate::fanout::FanoutTarget;
+use crate::fanout::NodeInfo;
 use crate::fanout::{FanoutOperation, exec_fanout_request_base};
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
 use crate::series::mrange::{build_mrange_grouped_labels, process_mrange_query};
@@ -66,7 +66,7 @@ impl FanoutOperation for MRangeFanoutOperation {
         serialize_request(&self.options)
     }
 
-    fn on_response(&mut self, resp: MultiRangeResponse, _target: FanoutTarget) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         self.series.push(resp);
     }
 

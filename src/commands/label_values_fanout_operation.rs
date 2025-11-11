@@ -2,8 +2,8 @@ use super::fanout::generated::{DateRange, LabelValuesRequest, LabelValuesRespons
 use super::utils::reply_with_btree_set;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
-use crate::fanout::FanoutOperation;
-use crate::fanout::{FanoutTarget, exec_fanout_request_base};
+use crate::fanout::exec_fanout_request_base;
+use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
@@ -61,7 +61,7 @@ impl FanoutOperation for LabelValuesFanoutOperation {
         }
     }
 
-    fn on_response(&mut self, resp: LabelValuesResponse, _target: FanoutTarget) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         for value in resp.values {
             self.results.insert(value);
         }
