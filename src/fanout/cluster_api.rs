@@ -1,3 +1,6 @@
+use std::borrow::Borrow;
+use std::fmt;
+use std::fmt::Display;
 use crate::fanout::cluster_map::{
     NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet, VALKEYMODULE_NODE_MASTER,
 };
@@ -12,37 +15,110 @@ use valkey_module::{
     ValkeyResult,
 };
 
-// master_id and ip are not null terminated, so we add 1 for null terminator for safety
-const MASTER_ID_LEN: usize = (VALKEYMODULE_NODE_ID_LEN + 1) as usize;
-
 /// Maximum length of an IPv6 address string
 pub const INET6_ADDR_STR_LEN: usize = 46;
 
 pub type NodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for null terminator
 
-/// Static buffer holding the current node's ID
-pub static CURRENT_NODE_ID: LazyLock<NodeIdBuf> = LazyLock::new(||
-    // Safety: We ensure that the buffer is properly initialized with the current node ID
-    unsafe {
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct NodeId(NodeIdBuf);
+
+impl NodeId {
+    pub fn from_raw(node_id_ptr: *const c_char) -> Self {
         let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
-        let node_id = ValkeyModule_GetMyClusterID
-            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
-        // SAFETY: cluster_id is expected to be a valid pointer to a 40-byte node ID
-        let bytes = if node_id.is_null() {
+        // SAFETY: node_id_ptr is expected to be a valid pointer to a 40-byte node ID
+        let bytes = if node_id_ptr.is_null() {
             &[]
         } else {
-            std::slice::from_raw_parts(node_id as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
+            unsafe {
+                std::slice::from_raw_parts(node_id_ptr as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
+            }
         };
         let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
         buf[..len].copy_from_slice(&bytes[..len]);
-        buf
+        NodeId(buf)
+    }
+
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        NodeId(buf)
+    }
+
+    pub fn raw_ptr(&self) -> *const c_char {
+        // SAFETY: self.0 is a null-terminated byte array
+        self.0.as_ptr() as *const c_char
+    }
+
+    pub fn as_str(&self) -> &str {
+        // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
+        unsafe { std::str::from_utf8_unchecked(&self.0[..VALKEYMODULE_NODE_ID_LEN as usize]) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0[0] == 0
+    } 
+}
+
+impl AsRef<str> for NodeId {
+    fn as_ref(&self) -> &str {
+        // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
+        unsafe { std::str::from_utf8_unchecked(&self.0[..VALKEYMODULE_NODE_ID_LEN as usize]) }
+    }
+}
+
+impl AsRef<[u8]> for NodeId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0[..VALKEYMODULE_NODE_ID_LEN as usize]
+    }
+}
+
+impl PartialOrd for NodeId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NodeId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Borrow<str> for NodeId {
+    fn borrow(&self) -> &str {
+        self.as_ref()
+    }
+}
+
+impl Default for NodeId {
+    fn default() -> Self {
+        NodeId([0; VALKEYMODULE_NODE_ID_LEN as usize + 1])
+    }
+}
+
+
+/// Static buffer holding the current node's ID
+pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(||
+    // Safety: We ensure that the buffer is properly initialized with the current node ID
+    unsafe {
+        let node_id = ValkeyModule_GetMyClusterID
+            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
+        NodeId::from_raw(node_id)
     });
 
 #[derive(Debug, Clone)]
 pub(super) struct RawNodeInfo {
-    node_buf: NodeIdBuf,
+    pub node_id: NodeId,
     ip_buf: [u8; INET6_ADDR_STR_LEN],
-    master_buf: NodeIdBuf,
+    pub master_id: NodeId,
     #[allow(unused_variables)]
     pub flags: u32,
     pub port: u32,
@@ -52,25 +128,13 @@ pub(super) struct RawNodeInfo {
 
 impl Hash for RawNodeInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.node_buf.hash(state);
+        self.node_id.hash(state);
     }
 }
 
 impl RawNodeInfo {
     pub fn is_failed(&self) -> bool {
         self.flags & (VALKEYMODULE_NODE_PFAIL | VALKEYMODULE_NODE_FAIL) != 0
-    }
-
-    pub fn node_id(&self) -> &str {
-        unsafe {
-            std::str::from_utf8_unchecked(&self.node_buf[..VALKEYMODULE_NODE_ID_LEN as usize])
-        }
-    }
-
-    pub fn master_id(&self) -> &str {
-        unsafe {
-            std::str::from_utf8_unchecked(&self.master_buf[..VALKEYMODULE_NODE_ID_LEN as usize])
-        }
     }
 
     pub fn addr(&self) -> Ipv6Addr {
@@ -94,8 +158,8 @@ impl RawNodeInfo {
 /// Fetches detailed information about a specific cluster node given its ID.
 /// Returns `None` if the node information cannot be retrieved.
 pub fn get_cluster_node_info(ctx: &Context, node_id: *const c_char) -> Option<RawNodeInfo> {
-    let mut master_buf: NodeIdBuf = [0; MASTER_ID_LEN];
-    let node_buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+    let mut master_buf: [u8; VALKEYMODULE_NODE_ID_LEN as usize + 1] =
+        [0; VALKEYMODULE_NODE_ID_LEN as usize + 1];
     let mut ip_buf: [u8; INET6_ADDR_STR_LEN] = [0; INET6_ADDR_STR_LEN];
     let mut port: c_int = 0;
     let mut flags_: c_int = 0;
@@ -132,33 +196,14 @@ pub fn get_cluster_node_info(ctx: &Context, node_id: *const c_char) -> Option<Ra
     };
 
     Some(RawNodeInfo {
-        node_buf,
+        node_id: NodeId::from_raw(node_id),
         ip_buf,
         port,
-        master_buf,
+        master_id: NodeId::from_raw(master_buf.as_ptr() as *const c_char),
         flags,
         role,
         location,
     })
-}
-
-fn get_node(ctx: &Context, node_id: &str) -> Option<RawNodeInfo> {
-    let mut node_buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
-    // copy node_id into node_buf
-    let bytes = node_id.as_bytes();
-    let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
-    node_buf[..len].copy_from_slice(&bytes[..len]);
-    let node_id_ptr = node_buf.as_ptr() as *const c_char;
-    let node_info = get_cluster_node_info(ctx, node_id_ptr)?;
-
-    if node_info.is_failed() {
-        log::debug!(
-            "Node {node_id} ({}) is failing, skipping for fanout...",
-            node_info.ip()
-        );
-        return None;
-    }
-    Some(node_info)
 }
 
 /// Fetches the cluster shard information by calling the `CLUSTER SHARDS` command.
@@ -266,7 +311,7 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
         let mut primary: Option<NodeInfo> = None;
         let mut replicas: Vec<NodeInfo> = Vec::new();
 
-        let mut is_local = shard_id == my_node_id;
+        let mut is_local = shard_id == my_node_id.as_str();
 
         for node_reply in nodes_array.iter() {
             let node_reply = node_reply.expect("CLUSTER_MAP_ERROR: error getting node reply");
@@ -310,10 +355,12 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
 }
 
 // Helper function to parse node info from CLUSTER SHARDS reply
-fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo> {
+fn parse_node_info(node_reply: &CallReply, my_node_id: &NodeId) -> Option<NodeInfo> {
     // Extract node ID
-    let node_id = get_map_field_as_string(node_reply, "id")
+    let node_id_str = get_map_field_as_string(node_reply, "id")
         .expect("CLUSTER_MAP_ERROR: Node entry missing required 'id' field");
+
+    let node_id = NodeId::from_bytes(node_id_str.as_bytes());
 
     // Extract role
     let role_str = get_map_field_as_string(node_reply, "role")
@@ -329,7 +376,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
     };
 
     // First pass: determine if this is a local shard by checking ALL nodes
-    let is_local = node_id == my_node_id;
+    let is_local = &node_id == my_node_id;
 
     // extract port info. Either port or tls-port will be present
     let Some(port) = get_map_field_as_integer(node_reply, "port")
@@ -364,7 +411,7 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &str) -> Option<NodeInfo>
         NodeLocation::Remote
     };
 
-    let node = NodeInfo::create(&node_id, addr, port as u16, role, location);
+    let node = NodeInfo::create(node_id, addr, port as u16, role, location);
 
     Some(node)
 }
@@ -433,7 +480,7 @@ pub(super) fn get_node_info(ctx: &Context, node_id: *const c_char) -> Option<Raw
     if node_info.is_failed() {
         log::debug!(
             "Node {} ({}) is failing, skipping for fanout...",
-            node_info.node_id(),
+            node_info.node_id,
             node_info.ip()
         );
         return None;
@@ -441,11 +488,11 @@ pub(super) fn get_node_info(ctx: &Context, node_id: *const c_char) -> Option<Raw
     Some(node_info)
 }
 
-pub fn get_current_node_id() -> Option<String> {
-    let buf = *CURRENT_NODE_ID;
-    if buf[0] == 0 {
-        return None;
+pub fn get_current_node_id() -> Option<NodeId> {
+    let node_id = *CURRENT_NODE_ID;
+    if node_id.is_empty() {
+        None
+    } else {
+        Some(node_id)
     }
-    let node_id = String::from_utf8_lossy(&buf);
-    Some(node_id.to_string())
 }
