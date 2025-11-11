@@ -1,5 +1,5 @@
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::cluster_api::{NodeIdBuf, get_cluster_shards};
+use crate::fanout::cluster_api::{get_cluster_shards, NodeId};
 use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
 use rand::{rng, Rng};
@@ -9,7 +9,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use valkey_module::{Context, REDISMODULE_NODE_MASTER, VALKEYMODULE_NODE_ID_LEN, ValkeyResult};
+use valkey_module::{Context, REDISMODULE_NODE_MASTER, ValkeyResult};
 
 pub const VALKEYMODULE_NODE_MASTER: u32 = REDISMODULE_NODE_MASTER;
 // Constants
@@ -153,7 +153,7 @@ impl Display for SlotRangeSet {
 /// Information about a cluster node
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
-    pub id: NodeIdBuf,
+    pub id: NodeId,
     pub socket_address: SocketAddress,
     pub role: NodeRole,
     pub location: NodeLocation,
@@ -161,27 +161,22 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     pub fn create(
-        node_id: &str,
+        id: NodeId,
         addr: Ipv6Addr,
         port: u16,
         role: NodeRole,
         location: NodeLocation,
     ) -> Self {
-        let mut id_buf = [0u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
-        let bytes = node_id.as_bytes();
-        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
-        id_buf[..len].copy_from_slice(&bytes[..len]);
-
-        let addr = SocketAddress {
+        let socket_address = SocketAddress {
             primary_endpoint: addr,
             port,
         };
 
         Self {
+            id,
             role,
             location,
-            socket_address: addr,
-            id: id_buf,
+            socket_address,
         }
     }
 
@@ -191,11 +186,6 @@ impl NodeInfo {
         } else {
             self.socket_address.to_string()
         }
-    }
-
-    pub fn node_id(&self) -> &str {
-        // SAFETY: id_buf is always valid UTF-8 as it is copied from valid node ID strings
-        unsafe { std::str::from_utf8_unchecked(&self.id[..VALKEYMODULE_NODE_ID_LEN as usize]) }
     }
 }
 
@@ -207,7 +197,7 @@ impl PartialOrd for NodeInfo {
 
 impl Ord for NodeInfo {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.node_id().cmp(other.node_id())
+        self.id.cmp(&other.id)
     }
 }
 
@@ -242,7 +232,7 @@ impl ShardInfo {
             has_primary = true;
             total_nodes += 1;
         }
-        debug_assert!(total_nodes > 0, "Shard has no nodes to select from");
+        assert!(total_nodes > 0, "Shard has no nodes to select from");
         let index = rng_.random_range(0..total_nodes);
         if index == 0 && has_primary {
             self.primary.unwrap()
@@ -258,8 +248,8 @@ impl ShardInfo {
 pub struct ClusterMap {
     /// Slot set for slots owned by the cluster
     owned_slots: SlotRangeSet,
-    shards: AHashMap<String, ShardInfo>,
-    // A range map, mapping(start slot, end slot) => ShardInfo
+    shards: AHashMap<String, Arc<ShardInfo>>,
+    /// A range map, mapping(start slot, end slot) => ShardInfo
     slot_to_shard_map: RangeMapBlaze<u16, Arc<ShardInfo>>,
     /// Cluster-level fingerprint (hash of all shard fingerprints)
     cluster_slots_fingerprint: u64,
@@ -306,7 +296,7 @@ impl ClusterMap {
 
     /// Look up a shard by id. Will return None if shard does not exist
     pub fn get_shard_by_id(&self, shard_id: &str) -> Option<&ShardInfo> {
-        self.shards.get(shard_id)
+        self.shards.get(shard_id).map(|shard_info| shard_info.as_ref())
     }
 
     pub fn get_shard_by_slot(&self, slot: u16) -> Option<&ShardInfo> {
@@ -314,7 +304,7 @@ impl ClusterMap {
     }
 
     /// Get all shards
-    pub fn all_shards(&self) -> &AHashMap<String, ShardInfo> {
+    pub fn all_shards(&self) -> &AHashMap<String, Arc<ShardInfo>> {
         &self.shards
     }
 
@@ -354,7 +344,7 @@ impl ClusterMap {
 
         // Process each shard
         for shard in shards {
-            let shard_ = Arc::new(shard.clone());
+            let shard = Arc::new(shard);
             // Mark owned slots
             if shard.is_local {
                 owned_slots.append(&shard.owned_slots);
@@ -362,7 +352,7 @@ impl ClusterMap {
 
             // Update slot to shard map.
             for slot in shard.owned_slots.range_iter() {
-                slot_to_shard_map.ranges_insert(slot, Arc::clone(&shard_));
+                slot_to_shard_map.ranges_insert(slot, Arc::clone(&shard));
             }
 
             // Add to targets
