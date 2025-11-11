@@ -9,7 +9,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use valkey_module::{Context, REDISMODULE_NODE_MASTER, ValkeyResult};
+use valkey_module::{Context, ValkeyResult};
 
 // Constants
 pub const NUM_SLOTS: usize = 16384;
