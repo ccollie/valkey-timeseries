@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::fmt;
 use std::fmt::Display;
 use crate::fanout::cluster_map::{
-    NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet, VALKEYMODULE_NODE_MASTER,
+    NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet,
 };
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
@@ -10,9 +10,9 @@ use std::os::raw::{c_char, c_int};
 use std::sync::LazyLock;
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_FAIL,
-    VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_MYSELF, VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_OK,
-    ValkeyError, ValkeyModule_GetClusterNodeInfo, ValkeyModule_GetMyClusterID, ValkeyModuleCtx,
-    ValkeyResult,
+    VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_MYSELF, VALKEYMODULE_NODE_PFAIL,
+    VALKEYMODULE_NODE_PRIMARY, VALKEYMODULE_OK, ValkeyError, ValkeyModule_GetClusterNodeInfo,
+    ValkeyModule_GetMyClusterID, ValkeyModuleCtx, ValkeyResult,
 };
 
 /// Maximum length of an IPv6 address string
@@ -183,7 +183,7 @@ pub fn get_cluster_node_info(ctx: &Context, node_id: *const c_char) -> Option<Ra
 
     let flags = flags_ as u32;
     let port = port as u32;
-    let role = if flags & VALKEYMODULE_NODE_MASTER != 0 {
+    let role = if flags & VALKEYMODULE_NODE_PRIMARY != 0 {
         NodeRole::Primary
     } else {
         NodeRole::Replica
