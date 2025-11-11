@@ -4,10 +4,10 @@ use crate::fanout::FanoutTargetMode;
 use std::hash::{BuildHasher, RandomState};
 use std::net::Ipv6Addr;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use valkey_module::{
-    Context, ContextFlags, DetachedContext, RedisModule_Milliseconds,
-    ValkeyModule_GetMyClusterID, ValkeyResult,
+    Context, ContextFlags, DetachedContext, RedisModule_Milliseconds, ValkeyModule_GetMyClusterID,
+    ValkeyResult,
 };
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
@@ -79,10 +79,12 @@ fn is_valkey_version_legacy(context: &Context) -> bool {
 }
 
 pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
-    if cfg!(test) && FORCE_REPLICAS_READONLY.load(Ordering::Relaxed) {
+    #[cfg(test)]
+    if FORCE_REPLICAS_READONLY.load(std::sync::atomic::Ordering::Relaxed) {
         // Testing only
         return FanoutTargetMode::ReplicasOnly;
     }
+
     // Determine fanout mode based on Valkey version and client read-only status.
     // The following logic is based on the issue https://github.com/valkey-io/valkey-search/issues/139
     if is_valkey_version_legacy(context) {
