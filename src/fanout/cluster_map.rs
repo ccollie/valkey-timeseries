@@ -11,7 +11,6 @@ use std::net::Ipv6Addr;
 use std::sync::Arc;
 use valkey_module::{Context, REDISMODULE_NODE_MASTER, ValkeyResult};
 
-pub const VALKEYMODULE_NODE_MASTER: u32 = REDISMODULE_NODE_MASTER;
 // Constants
 pub const NUM_SLOTS: usize = 16384;
 
