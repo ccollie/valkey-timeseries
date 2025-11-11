@@ -1,9 +1,9 @@
-use super::cluster_message::{RequestMessage, serialize_request_message};
+use super::cluster_message::{serialize_request_message, RequestMessage};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{generate_id, is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::fanout::cluster_api::CURRENT_NODE_ID;
+use crate::fanout::cluster_api::{NodeId, CURRENT_NODE_ID};
 use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResult, NodeInfo};
@@ -13,9 +13,9 @@ use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_OK, ValkeyError,
-    ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
-    ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
+    Context, RedisModuleCtx, Status, ValkeyError, ValkeyModuleClusterMessageReceiver,
+    ValkeyModuleCtx, ValkeyModule_RegisterClusterMessageReceiver,
+    ValkeyModule_SendClusterMessage, ValkeyResult, VALKEYMODULE_OK,
 };
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
@@ -53,15 +53,13 @@ impl InFlightRequest {
 
     fn handle_response(&self, ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
         // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
-        let sender_buf = unsafe {
-            std::slice::from_raw_parts(sender_id as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
-        };
+        let sender = NodeId::from_raw(sender_id);
 
         let handler = &self.response_handler;
         // Binary search to find the NodeInfo associated with the target
         let target_node = self
             .targets
-            .binary_search_by(|node| node.id.as_slice().cmp(sender_buf))
+            .binary_search_by(|node| node.id.cmp(&sender))
             .ok()
             .and_then(|idx| self.targets.get(idx));
 
@@ -94,7 +92,7 @@ fn on_request_timeout(ctx: &Context, id: u64) {
         }
         request.timed_out.store(true, Ordering::Relaxed);
 
-        let local_node_id = CURRENT_NODE_ID.as_ptr() as *const c_char;
+        let local_node_id = CURRENT_NODE_ID.raw_ptr();
 
         request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
         // Reset the timer to give some extra time for late responses
@@ -137,7 +135,7 @@ where
     let mut node_count = 0;
     for node in targets.iter() {
         if node.location == NodeLocation::Remote {
-            let target_id = node.id.as_ptr().cast::<c_char>();
+            let target_id = node.id.raw_ptr();
             let status =
                 send_cluster_message(ctx, target_id, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
             if status == Status::Err {
