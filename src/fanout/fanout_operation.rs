@@ -88,16 +88,17 @@ where
         self.outstanding == 0
     }
 
-    fn on_error(&mut self, error: FanoutError, _target: &NodeInfo) {
+    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         if error.kind == ErrorKind::Timeout {
             // Record the first timeout error for logging/debugging purposes
             if !self.timed_out {
-                self.errors.push(error);
+                self.errors.push(error.clone());
                 self.timed_out = true;
             }
         } else {
-            self.errors.push(error);
+            self.errors.push(error.clone());
         }
+        self.handler.on_error(error, target);
         self.rpc_done();
     }
 
