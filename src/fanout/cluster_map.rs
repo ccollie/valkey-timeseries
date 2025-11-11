@@ -234,10 +234,19 @@ impl ShardInfo {
         }
         assert!(total_nodes > 0, "Shard has no nodes to select from");
         let index = rng_.random_range(0..total_nodes);
+        if has_primary && self.replicas.is_empty() {
+            // Only primary exists, always return it
+            debug_assert!(index == 0, "Index should be 0 when only primary exists");
+            return self.primary.unwrap();
+        }
         if index == 0 && has_primary {
             self.primary.unwrap()
         } else {
             let replica_index = if has_primary { index - 1 } else { index };
+            // Defensive: check bounds before accessing
+            if replica_index >= self.replicas.len() {
+                panic!("Replica index {} out of bounds for replicas of length {}", replica_index, self.replicas.len());
+            }
             self.replicas[replica_index]
         }
     }
