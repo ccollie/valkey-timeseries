@@ -1,9 +1,7 @@
+use crate::fanout::cluster_map::{NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet};
 use std::borrow::Borrow;
 use std::fmt;
 use std::fmt::Display;
-use crate::fanout::cluster_map::{
-    NodeInfo, NodeLocation, NodeRole, ShardInfo, SlotRangeSet,
-};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
@@ -31,7 +29,10 @@ impl NodeId {
             &[]
         } else {
             unsafe {
-                std::slice::from_raw_parts(node_id_ptr as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
+                std::slice::from_raw_parts(
+                    node_id_ptr as *const u8,
+                    VALKEYMODULE_NODE_ID_LEN as usize,
+                )
             }
         };
         let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
@@ -58,7 +59,7 @@ impl NodeId {
 
     pub fn is_empty(&self) -> bool {
         self.0[0] == 0
-    } 
+    }
 }
 
 impl AsRef<str> for NodeId {
@@ -103,7 +104,6 @@ impl Default for NodeId {
         NodeId([0; VALKEYMODULE_NODE_ID_LEN as usize + 1])
     }
 }
-
 
 /// Static buffer holding the current node's ID
 pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(||
@@ -260,14 +260,13 @@ pub fn get_cluster_shards(ctx: &Context) -> ValkeyResult<(Vec<ShardInfo>, bool)>
             .expect("CLUSTER_MAP_ERROR: Shard entry missing required 'id' field");
 
         // Extract slots
-        let slots_array = match get_map_entry(&shard_reply, "slots")
-            .and_then(|reply| {
-                if let CallReply::Array(arr) = reply {
-                    Some(arr)
-                } else {
-                    None
-                }
-            }) {
+        let slots_array = match get_map_entry(&shard_reply, "slots").and_then(|reply| {
+            if let CallReply::Array(arr) = reply {
+                Some(arr)
+            } else {
+                None
+            }
+        }) {
             Some(arr) => arr,
             None => {
                 log::warn!("CLUSTER_MAP_ERROR: Shard entry missing 'slots' field");
@@ -370,7 +369,9 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &NodeId) -> Option<NodeIn
         "master" | "primary" => NodeRole::Primary,
         "replica" | "slave" => NodeRole::Replica,
         _ => {
-            log::warn!("CLUSTER_MAP_ERROR: Unknown role '{role_str}' for node {node_id}, skipping node");
+            log::warn!(
+                "CLUSTER_MAP_ERROR: Unknown role '{role_str}' for node {node_id}, skipping node"
+            );
             return None;
         }
     };
@@ -380,7 +381,8 @@ fn parse_node_info(node_reply: &CallReply, my_node_id: &NodeId) -> Option<NodeIn
 
     // extract port info. Either port or tls-port will be present
     let Some(port) = get_map_field_as_integer(node_reply, "port")
-        .or_else(|| get_map_field_as_integer(node_reply, "tls-port")) else {
+        .or_else(|| get_map_field_as_integer(node_reply, "tls-port"))
+    else {
         log::warn!("CLUSTER SHARDS: Node {node_id} entry missing 'port' or 'tls-port' field");
         return None;
     };
@@ -433,10 +435,7 @@ fn get_reply_as_integer(elem: Option<CallResult>, default_value: i64) -> i64 {
 // Helper functions for parsing CLUSTER SHARDS response
 
 /// Get a field from a map reply as a string
-fn get_map_field_as_string<'a>(
-    map: &CallReply<'a>,
-    field_name: &str,
-) -> Option<String> {
+fn get_map_field_as_string<'a>(map: &CallReply<'a>, field_name: &str) -> Option<String> {
     let entry = get_map_entry(map, field_name)?;
     if let CallReply::String(key_str) = entry {
         return key_str.to_string();

@@ -1,8 +1,8 @@
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::cluster_api::{get_cluster_shards, NodeId};
+use crate::fanout::cluster_api::{NodeId, get_cluster_shards};
 use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -244,7 +244,11 @@ impl ShardInfo {
             let replica_index = if has_primary { index - 1 } else { index };
             // Defensive: check bounds before accessing
             if replica_index >= self.replicas.len() {
-                panic!("Replica index {} out of bounds for replicas of length {}", replica_index, self.replicas.len());
+                panic!(
+                    "Replica index {} out of bounds for replicas of length {}",
+                    replica_index,
+                    self.replicas.len()
+                );
             }
             self.replicas[replica_index]
         }
@@ -304,7 +308,9 @@ impl ClusterMap {
 
     /// Look up a shard by id. Will return None if shard does not exist
     pub fn get_shard_by_id(&self, shard_id: &str) -> Option<&ShardInfo> {
-        self.shards.get(shard_id).map(|shard_info| shard_info.as_ref())
+        self.shards
+            .get(shard_id)
+            .map(|shard_info| shard_info.as_ref())
     }
 
     pub fn get_shard_by_slot(&self, slot: u16) -> Option<&ShardInfo> {
@@ -329,7 +335,8 @@ impl ClusterMap {
             FanoutTargetMode::All => self.all_targets.clone(),
             FanoutTargetMode::Random => {
                 // generate a random targets vector with one node from each shard
-                let mut targets: Vec<NodeInfo> = self.all_shards()
+                let mut targets: Vec<NodeInfo> = self
+                    .all_shards()
                     .values()
                     .map(|shard| shard.get_random_target())
                     .collect();
