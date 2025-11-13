@@ -70,7 +70,7 @@ impl ErrorKind {
     }
 }
 
-pub type FanoutResult<T> = Result<T, FanoutError>;
+pub type FanoutResult<T = ()> = Result<T, FanoutError>;
 
 impl FanoutError {
     pub fn timeout() -> FanoutError {
