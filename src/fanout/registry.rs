@@ -1,8 +1,8 @@
 use super::fanout_operation::FanoutOperation;
 use super::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::{FanoutError, FanoutResult};
-use ahash::AHashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use ahash::RandomState;
+use std::sync::{Arc, LazyLock};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 /// Type-erased function pointer for executing a fanout operation.
@@ -14,14 +14,14 @@ pub(super) type RequestHandlerCallback =
 /// A registry for fanout operations that allows type-erased storage and retrieval
 /// of [`FanoutOperation`] implementations.
 pub struct FanoutOperationRegistry {
-    operations: Mutex<AHashMap<&'static str, RequestHandlerCallback>>,
+    operations: papaya::HashMap<&'static str, RequestHandlerCallback, RandomState>,
 }
 
 impl FanoutOperationRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {
         Self {
-            operations: Mutex::new(AHashMap::new()),
+            operations: papaya::HashMap::with_hasher(RandomState::new()),
         }
     }
 
@@ -54,18 +54,15 @@ impl FanoutOperationRegistry {
             },
         );
 
-        let mut ops = self
-            .operations
-            .lock()
-            .expect("Fanout Registry lock poisoned");
-
-        if ops.contains_key(name) {
+        let map = self.operations.pin();
+        if map.contains_key(name) {
             return Err(ValkeyError::String(format!(
                 "Operation '{name}' is already registered"
             )));
         }
 
-        ops.insert(name, request_handler);
+        map.insert(name, request_handler);
+
         Ok(())
     }
 
@@ -92,33 +89,33 @@ impl FanoutOperationRegistry {
         name: &str,
         must_exist: bool,
     ) -> Option<RequestHandlerCallback> {
-        let ops = self
-            .operations
-            .lock()
-            .expect("Fanout Registry lock poisoned");
-
-        match ops.get(name) {
+        let map = self.operations.pin();
+        match map.get(name) {
             Some(op) => Some(op.clone()),
             None => {
                 if must_exist {
                     panic!("Fanout Operation '{name}' not found in registry");
+                } else {
+                    None
                 }
-                None
             }
         }
     }
 
     /// Check if an operation is registered.
     pub fn contains(&self, name: &str) -> bool {
-        self.operations.lock().unwrap().contains_key(name)
+        self.operations.pin().contains_key(name)
     }
 
     /// Get the list of all registered operation names.
     pub fn list_operations(&self) -> Vec<&'static str> {
-        self.operations
-            .lock()
-            .map(|ops| ops.keys().copied().collect())
-            .unwrap_or_default()
+        let mut ops = Vec::new();
+        let map = self.operations.pin();
+        for key in map.keys() {
+            ops.push(*key);
+        }
+        ops.sort();
+        ops
     }
 }
 
