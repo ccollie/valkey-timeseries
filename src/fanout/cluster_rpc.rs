@@ -284,7 +284,13 @@ fn parse_cluster_message(
 fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id: *const c_char) {
     let request_id = message.request_id;
 
-    let handler = get_fanout_request_handler(&message.handler, true);
+    let Some(handler) = get_fanout_request_handler(&message.handler) else {
+        let e = FanoutError::invalid_message();
+        send_error_response(ctx, request_id, sender_id, e);
+        let msg = format!("No handler registered for fanout operation '{}'", message.handler);
+        ctx.log_warning(&msg);
+        return;
+    };
 
     let save_db = get_current_db(ctx);
     set_current_db(ctx, message.db);

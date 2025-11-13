@@ -151,10 +151,9 @@ pub fn handle_fanout_request(
     FANOUT_REGISTRY.execute(ctx, name, payload, dest)
 }
 
-pub(super) fn get_fanout_request_handler(name: &str, must_exist: bool) -> RequestHandlerCallback {
+pub(super) fn get_fanout_request_handler(name: &str) -> Option<RequestHandlerCallback> {
     FANOUT_REGISTRY
-        .get_operation_by_name(name, must_exist)
-        .unwrap()
+        .get_operation_by_name(name, false)
 }
 
 pub(crate) fn get_registered_fanout_operations() -> Vec<&'static str> {
