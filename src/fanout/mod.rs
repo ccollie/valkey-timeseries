@@ -6,7 +6,6 @@ mod fanout_error;
 mod fanout_operation;
 mod registry;
 pub mod serialization;
-mod snowflake;
 mod utils;
 
 use arc_swap::{ArcSwap, Guard};

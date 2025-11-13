@@ -1,21 +1,22 @@
-use super::cluster_message::{RequestMessage, serialize_request_message};
+use super::cluster_message::{serialize_request_message, RequestMessage};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
-use super::utils::{generate_id, is_clustered, is_multi_or_lua};
+use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::fanout::cluster_api::{CURRENT_NODE_ID, NodeId};
+use crate::fanout::cluster_api::{NodeId, CURRENT_NODE_ID};
 use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResult, NodeInfo};
 use core::time::Duration;
 use papaya::HashMap;
+use std::hash::{BuildHasher, RandomState};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
-    ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
-    ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
+    Context, RedisModuleCtx, Status, ValkeyError, ValkeyModuleClusterMessageReceiver,
+    ValkeyModuleCtx, ValkeyModule_RegisterClusterMessageReceiver,
+    ValkeyModule_SendClusterMessage, ValkeyResult, VALKEYMODULE_OK,
 };
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
@@ -78,6 +79,33 @@ impl InFlightRequest {
 type InFlightRequestMap = HashMap<u64, InFlightRequest, BuildNoHashHasher<u64>>;
 
 static INFLIGHT_REQUESTS: LazyLock<InFlightRequestMap> = LazyLock::new(InFlightRequestMap::default);
+
+static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Generate a unique request ID
+///
+/// This id only needs to be unique per node, so a simple atomic counter is enough.
+///
+/// The node that initiates a request is always the one waiting for responses, so there's no ambiguity
+/// about which node "owns" a particular request ID.
+///
+/// There's no need for global uniqueness because:
+///
+///     - Each node only looks up requests in its own INFLIGHT_REQUESTS map
+///     - Request IDs never need to be coordinated across nodes
+///     - Two different nodes can safely use the same ID simultaneously for different requests
+///
+fn generate_id() -> u64 {
+    let mut id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        // could equally have been random
+        let curr_id = *CURRENT_NODE_ID;
+        let hasher = RandomState::new();
+        id = hasher.hash_one(curr_id.as_bytes());
+        REQUEST_ID.store(id, Ordering::SeqCst);
+    }
+    id
+}
 
 fn on_request_timeout(ctx: &Context, id: u64) {
     // We only mark the request as timed out the first time through. The actual removal from the map
@@ -271,7 +299,7 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
     set_current_db(ctx, save_db);
     if let Err(e) = res {
         let msg = e.to_string();
-        send_error_response(ctx, request_id, sender_id, e.into());
+        send_error_response(ctx, request_id, sender_id, e);
         ctx.log_warning(&msg);
         return;
     };

@@ -1,6 +1,5 @@
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use crate::fanout::cluster_api::{CURRENT_NODE_ID, NodeId};
-use crate::fanout::utils::current_time_millis;
 use ahash::AHashMap;
 use log::warn;
 use rand::{Rng, rng};
@@ -15,6 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use valkey_module::{CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context};
+use crate::common::time::current_time_millis;
 
 // Constants
 pub const NUM_SLOTS: usize = 16384;
