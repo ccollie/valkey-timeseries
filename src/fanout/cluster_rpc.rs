@@ -1,9 +1,9 @@
-use super::cluster_message::{serialize_request_message, RequestMessage};
+use super::cluster_message::{RequestMessage, serialize_request_message};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::fanout::cluster_api::{NodeId, CURRENT_NODE_ID};
+use crate::fanout::cluster_api::{CURRENT_NODE_ID, NodeId};
 use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResult, NodeInfo};
@@ -14,9 +14,9 @@ use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, ValkeyError, ValkeyModuleClusterMessageReceiver,
-    ValkeyModuleCtx, ValkeyModule_RegisterClusterMessageReceiver,
-    ValkeyModule_SendClusterMessage, ValkeyResult, VALKEYMODULE_OK,
+    Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
+    ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
+    ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
