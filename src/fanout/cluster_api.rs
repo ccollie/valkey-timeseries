@@ -73,7 +73,7 @@ impl NodeId {
     pub fn is_empty(&self) -> bool {
         self.0[0] == 0
     }
-    
+
     pub fn len(&self) -> usize {
         if self.is_empty() {
             0

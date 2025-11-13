@@ -1,3 +1,4 @@
+use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use crate::fanout::cluster_api::{CURRENT_NODE_ID, NodeId};
 use ahash::AHashMap;
@@ -14,7 +15,6 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use valkey_module::{CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context};
-use crate::common::time::current_time_millis;
 
 // Constants
 pub const NUM_SLOTS: usize = 16384;
@@ -359,7 +359,9 @@ impl ClusterMap {
             FanoutTargetMode::All => self.all_targets.clone(),
             FanoutTargetMode::Random => {
                 // generate a random targets vector with one node from each shard
-                let mut targets: Vec<NodeInfo> = self.shards.iter()
+                let mut targets: Vec<NodeInfo> = self
+                    .shards
+                    .iter()
                     .map(|shard| shard.get_random_target())
                     .collect();
                 // sort targets for consistency
@@ -397,8 +399,10 @@ impl ClusterMap {
 
         let my_node_id = &CURRENT_NODE_ID;
 
-        let mut socket_addr_to_node_map: AHashMap<SocketAddress, NodeId> = AHashMap::with_capacity(reply.len() / 2 + 1);
-        let mut shard_map: AHashMap<NodeId, ShardInfo> = AHashMap::with_capacity(reply.len() / 2 + 1);
+        let mut socket_addr_to_node_map: AHashMap<SocketAddress, NodeId> =
+            AHashMap::with_capacity(reply.len() / 2 + 1);
+        let mut shard_map: AHashMap<NodeId, ShardInfo> =
+            AHashMap::with_capacity(reply.len() / 2 + 1);
         let mut slot_ranges_parsed = Vec::new();
 
         for slot_range in reply.iter().flatten() {
@@ -569,11 +573,9 @@ impl ClusterMap {
         }
 
         let shard_id = primary_node.id;
-        let shard_entry = shard_map.entry(shard_id).or_insert_with(|| {
-            ShardInfo {
-                id: shard_id,
-                ..Default::default()
-            }
+        let shard_entry = shard_map.entry(shard_id).or_insert_with(|| ShardInfo {
+            id: shard_id,
+            ..Default::default()
         });
 
         shard_entry
