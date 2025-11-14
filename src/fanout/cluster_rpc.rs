@@ -253,6 +253,8 @@ fn parse_cluster_message(
     payload: *const c_uchar,
     len: u32,
 ) -> Option<RequestMessage<'_>> {
+    // SAFETY: payload is expected to be a valid pointer to a byte array of length `len` coming
+    // from Valkey
     let buffer = unsafe { std::slice::from_raw_parts(payload, len as usize) };
     match RequestMessage::new(buffer) {
         Ok(msg) => {
