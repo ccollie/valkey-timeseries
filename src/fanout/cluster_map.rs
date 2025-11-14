@@ -235,14 +235,6 @@ impl ShardInfo {
             self.primary.unwrap()
         } else {
             let replica_index = if has_primary { index - 1 } else { index };
-            // Defensive: check bounds before accessing
-            if replica_index >= self.replicas.len() {
-                panic!(
-                    "Replica index {} out of bounds for replicas of length {}",
-                    replica_index,
-                    self.replicas.len()
-                );
-            }
             self.replicas[replica_index]
         }
     }
