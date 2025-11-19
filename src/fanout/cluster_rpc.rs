@@ -20,9 +20,9 @@ use valkey_module::{
     ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
 
-pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
-pub(super) const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
-pub(super) const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
+const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
+const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
+const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
 
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
