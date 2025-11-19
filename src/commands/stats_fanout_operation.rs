@@ -1,5 +1,5 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
-use crate::commands::{DEFAULT_STATS_RESULTS_LIMIT, exec_fanout_request_base};
+use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, with_timeseries_index};
 use ahash::AHashMap;
@@ -123,9 +123,4 @@ fn collate_stats_values(map: &mut AHashMap<String, PostingStat>, values: &[MPost
             );
         }
     }
-}
-
-pub(super) fn exec_stats_fanout_request(ctx: &Context, limit: usize) -> ValkeyResult<ValkeyValue> {
-    let operation = StatsFanoutOperation::new(limit);
-    exec_fanout_request_base(ctx, operation)
 }

@@ -2,10 +2,10 @@ use super::fanout::generated::{CardinalityRequest, CardinalityResponse, DateRang
 use super::utils::reply_with_i64;
 use crate::commands::calculate_cardinality;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::fanout::{FanoutOperation, NodeInfo, exec_fanout_request_base};
-use crate::series::TimestampRange;
+use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MatchFilterOptions;
-use valkey_module::{Context, ValkeyResult, ValkeyValue};
+use crate::series::TimestampRange;
+use valkey_module::{Context, ValkeyResult};
 
 #[derive(Default)]
 pub struct CardFanoutOperation {
@@ -50,11 +50,4 @@ impl FanoutOperation for CardFanoutOperation {
     fn generate_reply(&mut self, ctx: &Context) {
         reply_with_i64(ctx, self.result as i64);
     }
-}
-
-pub(super) fn exec_cardinality_fanout_request(
-    ctx: &Context,
-    options: MatchFilterOptions,
-) -> ValkeyResult<ValkeyValue> {
-    exec_fanout_request_base(ctx, CardFanoutOperation::new(options))
 }

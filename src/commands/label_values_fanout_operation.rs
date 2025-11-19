@@ -2,13 +2,12 @@ use super::fanout::generated::{DateRange, LabelValuesRequest, LabelValuesRespons
 use super::utils::reply_with_btree_set;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
-use crate::fanout::exec_fanout_request_base;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::labels::filters::SeriesSelector;
-use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
+use crate::series::TimestampRange;
 use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, ValkeyResult};
 
 #[derive(Default)]
 pub struct LabelValuesFanoutOperation {
@@ -70,12 +69,4 @@ impl FanoutOperation for LabelValuesFanoutOperation {
     fn generate_reply(&mut self, ctx: &Context) {
         reply_with_btree_set(ctx, &self.results);
     }
-}
-
-pub(super) fn exec_label_values_fanout_request(
-    ctx: &Context,
-    label: String,
-    options: MatchFilterOptions,
-) -> ValkeyResult<ValkeyValue> {
-    exec_fanout_request_base(ctx, LabelValuesFanoutOperation::new(label, options))
 }

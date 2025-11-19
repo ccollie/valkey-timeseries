@@ -1,7 +1,7 @@
-use super::label_values_fanout_operation::exec_label_values_fanout_request;
+use super::label_values_fanout_operation::LabelValuesFanoutOperation;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
-use crate::fanout::is_clustered;
+use crate::fanout::{is_clustered, FanoutOperation};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
@@ -26,7 +26,8 @@ pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
 
         // in cluster mode, we need to send the request to all nodes
-        return exec_label_values_fanout_request(ctx, label_name, label_args);
+        let operation = LabelValuesFanoutOperation::new(label_name, label_args);
+        return operation.exec(ctx);
     }
 
     let names = process_label_values_request(ctx, &label_name, &label_args)?;

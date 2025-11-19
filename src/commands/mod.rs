@@ -29,8 +29,6 @@ mod stats;
 mod stats_fanout_operation;
 mod utils;
 
-pub(super) use crate::fanout::exec_fanout_request_base;
-
 pub use arg_parse::*;
 pub use create_rule::*;
 pub use delete_rule::*;

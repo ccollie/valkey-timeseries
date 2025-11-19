@@ -1,12 +1,12 @@
-use super::card_fanout_operation::exec_cardinality_fanout_request;
+use super::card_fanout_operation::CardFanoutOperation;
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::is_clustered;
+use crate::fanout::{is_clustered, FanoutOperation};
 use crate::labels::filters::SeriesSelector;
-use crate::series::TimestampRange;
 use crate::series::index::{
     get_cardinality_by_selectors, with_matched_series, with_timeseries_index,
 };
 use crate::series::request_types::MatchFilterOptions;
+use crate::series::TimestampRange;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 ///
@@ -23,8 +23,8 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.CARD in cluster mode requires at least one matcher",
             ));
         }
-
-        return exec_cardinality_fanout_request(ctx, options);
+        let operation = CardFanoutOperation::new(options);
+        return operation.exec(ctx);
     }
     let counter = calculate_cardinality(ctx, options.date_range, &options.matchers)?;
 
