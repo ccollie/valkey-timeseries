@@ -1,8 +1,9 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::cluster_api::{CURRENT_NODE_ID, NodeId};
+use crate::fanout::cluster_api::{CURRENT_NODE_ID};
 use ahash::AHashMap;
 use log::warn;
+use logger_rust::log_debug;
 use rand::{Rng, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::borrow::Borrow;
@@ -12,12 +13,12 @@ use std::ffi::c_char;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::Ipv6Addr;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-use valkey_module::{CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context};
+use valkey_module::{CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN};
 
 // Constants
-pub const NUM_SLOTS: usize = 16384;
+pub const NUM_SLOTS: u16 = 16384;
 
 /// Enumeration for fanout target modes
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +70,7 @@ impl Display for NodeLocation {
 /// Socket address for a node. Derived Eq/Hash so it can be used as a map key.
 #[derive(Copy, Clone, Debug, Eq)]
 pub struct SocketAddress {
-    pub primary_endpoint: Ipv6Addr,
+    pub primary_endpoint: Ipv4Addr,
     pub port: u16,
 }
 
@@ -161,8 +162,119 @@ impl Display for SlotRangeSet {
     }
 }
 
+pub type NodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for null terminator
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct NodeId(NodeIdBuf);
+
+impl NodeId {
+    pub fn from_raw(node_id_ptr: *const std::os::raw::c_char) -> Self {
+        let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+        // SAFETY: node_id_ptr is expected to be a valid pointer to a 40-byte node ID
+        let bytes = if node_id_ptr.is_null() {
+            &[]
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(
+                    node_id_ptr as *const u8,
+                    VALKEYMODULE_NODE_ID_LEN as usize,
+                )
+            }
+        };
+        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        NodeId(buf)
+    }
+
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        NodeId(buf)
+    }
+
+    pub fn raw_ptr(&self) -> *const std::os::raw::c_char {
+        if self.is_empty() {
+            return std::ptr::null();
+        }
+        // SAFETY: self.0 is a null-terminated byte array
+        self.0.as_ptr() as *const std::os::raw::c_char
+    }
+
+    pub fn as_str(&self) -> &str {
+        if self.is_empty() {
+            return "";
+        }
+        // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
+        unsafe { std::str::from_utf8_unchecked(&self.0[..VALKEYMODULE_NODE_ID_LEN as usize]) }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        if self.is_empty() {
+            return &[];
+        }
+        &self.0[..VALKEYMODULE_NODE_ID_LEN as usize]
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.0[0] == 0
+    }
+
+    pub fn len(&self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            VALKEYMODULE_NODE_ID_LEN as usize
+        }
+    }
+}
+
+impl AsRef<str> for NodeId {
+    fn as_ref(&self) -> &str {
+        // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
+        unsafe { std::str::from_utf8_unchecked(&self.0[..VALKEYMODULE_NODE_ID_LEN as usize]) }
+    }
+}
+
+impl AsRef<[u8]> for NodeId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0[..VALKEYMODULE_NODE_ID_LEN as usize]
+    }
+}
+
+impl PartialOrd for NodeId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NodeId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Display for NodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Borrow<str> for NodeId {
+    fn borrow(&self) -> &str {
+        self.as_ref()
+    }
+}
+
+impl Default for NodeId {
+    fn default() -> Self {
+        NodeId([0; VALKEYMODULE_NODE_ID_LEN as usize + 1])
+    }
+}
+
 /// Information about a cluster node
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: NodeId,
     pub shard_id: NodeId,
@@ -178,6 +290,14 @@ impl NodeInfo {
         } else {
             self.socket_address.to_string()
         }
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.location == NodeLocation::Local
+    }
+
+    pub fn is_primary(&self) -> bool {
+        self.role == NodeRole::Primary
     }
 }
 
@@ -199,6 +319,18 @@ impl Hash for NodeInfo {
     }
 }
 
+impl fmt::Debug for NodeInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeInfo")
+            .field("id", &format_args!("{}", self.id))
+            .field("shard_id", &format_args!("{}", self.shard_id))
+            .field("socket_address", &self.socket_address)
+            .field("role", &self.role)
+            .field("location", &self.location)
+            .finish()
+    }
+}
+
 /// Information about a shard in the cluster
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShardInfo {
@@ -216,9 +348,19 @@ pub struct ShardInfo {
 }
 
 impl ShardInfo {
-    pub fn get_random_target(&self) -> NodeInfo {
+    pub fn get_random_target(&self, replica_only: bool) -> NodeInfo {
         let mut rng_ = rng();
         let mut total_nodes = self.replicas.len();
+
+        if replica_only {
+            assert!(
+                total_nodes > 0,
+                "Shard has no replicas to select from in replica-only mode"
+            );
+            let index = rng_.random_range(0..total_nodes);
+            return self.replicas[index];
+        }
+
         let mut has_primary = false;
         if self.primary.is_some() {
             has_primary = true;
@@ -237,6 +379,10 @@ impl ShardInfo {
             let replica_index = if has_primary { index - 1 } else { index };
             self.replicas[replica_index]
         }
+    }
+
+    pub fn get_random_replica(&self) -> NodeInfo {
+        self.get_random_target(true)
     }
 }
 
@@ -295,24 +441,6 @@ pub struct ClusterMap {
 }
 
 impl ClusterMap {
-    /// Return pre-generated target vectors
-    pub fn primary_targets(&self) -> &[NodeInfo] {
-        &self.primary_targets
-    }
-
-    pub fn replica_targets(&self) -> &[NodeInfo] {
-        &self.replica_targets
-    }
-
-    pub fn all_targets(&self) -> &[NodeInfo] {
-        &self.all_targets
-    }
-
-    /// Generate random targets vector from the cluster bus
-    pub fn get_random_targets(&self) -> Arc<Vec<NodeInfo>> {
-        self.get_targets(FanoutTargetMode::Random)
-    }
-
     /// Slot ownership checks
     pub fn i_own_slot(&self, slot: u16) -> bool {
         self.owned_slots.contains(slot)
@@ -351,16 +479,21 @@ impl ClusterMap {
             FanoutTargetMode::All => self.all_targets.clone(),
             FanoutTargetMode::Random => {
                 // generate a random targets vector with one node from each shard
-                let mut targets: Vec<NodeInfo> = self
-                    .shards
-                    .iter()
-                    .map(|shard| shard.get_random_target())
-                    .collect();
-                // sort targets for consistency
-                targets.sort();
-                Arc::new(targets)
+                self.get_random_replica_per_shard()
             }
         }
+    }
+
+    fn get_random_replica_per_shard(&self) -> Arc<Vec<NodeInfo>> {
+        // generate a random replica targets vector with one replica node from each shard
+        let mut targets: Vec<NodeInfo> = self
+            .shards
+            .iter()
+            .map(|shard| shard.get_random_replica())
+            .collect();
+        // sort targets for consistency
+        targets.sort();
+        Arc::new(targets)
     }
 
     /// Build a new ClusterMap by calling CLUSTER SLOTS through the provided API
@@ -377,6 +510,8 @@ impl ClusterMap {
             .errors_as_replies()
             .build();
 
+        log::info!("Calling CLUSTER SLOTS...");
+
         let res: CallResult = ctx.call_ext::<_, CallResult>("CLUSTER", &call_options, &["SLOTS"]);
 
         let reply = match res {
@@ -389,7 +524,9 @@ impl ClusterMap {
             }
         };
 
-        let my_node_id = &CURRENT_NODE_ID;
+        let my_node_id = *CURRENT_NODE_ID;
+
+        assert!(!my_node_id.is_empty(), "Current node id is empty");
 
         let mut socket_addr_to_node_map: AHashMap<SocketAddress, NodeId> =
             AHashMap::with_capacity(reply.len() / 2 + 1);
@@ -400,12 +537,13 @@ impl ClusterMap {
         for slot_range in reply.iter().flatten() {
             if !new_map.process_slot_range(
                 slot_range,
-                my_node_id,
+                &my_node_id,
                 &mut slot_ranges_parsed,
                 &mut shard_map,
                 &mut socket_addr_to_node_map,
             ) {
                 // dropped range; continue
+                warn!("Dropping slot range:");
                 continue;
             }
         }
@@ -436,6 +574,7 @@ impl ClusterMap {
 
             shard_set.insert(shard);
         }
+        new_map.shards = shard_set;
 
         // Build slot-to-shard map
         new_map.build_slot_to_shard_map(&slot_ranges_parsed);
@@ -468,7 +607,7 @@ impl ClusterMap {
     }
 
     /// Process a single slot range reply. On success, appends a SlotRangeInfo
-    /// to `out_slot_ranges` and updates internal structures such as owned_slots
+    /// to `slot_ranges` and updates internal structures such as owned_slots
     /// and the shard map. Returns `true` on success and `false` if the slot range
     /// should be skipped.
     fn process_slot_range(
@@ -488,33 +627,23 @@ impl ClusterMap {
             }
         };
 
-        if slot_range_arr.len() < 3 {
-            warn!("Slot range reply too short");
-            self.is_consistent = false;
-            return false;
-        }
+        assert!(
+            slot_range_arr.len() >= 3,
+            "CLUSTER SLOTS: Slot range reply too short. Expected at least 3 elements, got {}",
+            slot_range_arr.len()
+        );
 
         // Parse start and end slots (elements 0 and 1)
-        let start_reply = slot_range_arr.get(0).unwrap();
-        let end_reply = slot_range_arr.get(1).unwrap();
+        let start = slot_range_arr
+            .get(0)
+            .and_then(reply_as_integer)
+            .expect("Invalid start slot reply while processing slot range")
+            as u16;
 
-        let start = match reply_as_integer(start_reply) {
-            Some(s) if s >= 0 && s <= u16::MAX as i64 => s,
-            _ => {
-                warn!("Invalid start slot");
-                self.is_consistent = false;
-                return false;
-            }
-        };
-
-        let end = match reply_as_integer(end_reply) {
-            Some(e) if e >= 0 && e <= u16::MAX as i64 => e,
-            _ => {
-                warn!("Invalid end slot");
-                self.is_consistent = false;
-                return false;
-            }
-        };
+        let end = slot_range_arr
+            .get(1)
+            .and_then(reply_as_integer)
+            .expect("Invalid end slot reply while processing slot range") as u16;
 
         let is_shard_local = is_local_shard(&slot_range_reply, my_node_id);
 
@@ -526,7 +655,7 @@ impl ClusterMap {
         };
 
         let Some(mut primary_node) =
-            self.parse_node_info(&primary_arr, is_shard_local, true, socket_addr_to_node_map)
+            self.parse_node_info(&primary_arr, my_node_id, true, socket_addr_to_node_map)
         else {
             warn!("Dropping slot range [{start}-{end}] due to invalid primary node");
             self.is_consistent = false;
@@ -534,13 +663,13 @@ impl ClusterMap {
         };
 
         // Parse replicas
-        let mut replicas = Vec::new();
         let slot_len = slot_range_arr.len();
+        let mut replicas = Vec::with_capacity(slot_len - 3);
         for j in 3..slot_len {
             if let Some(Ok(replica_arr)) = slot_range_arr.get(j) {
                 match self.parse_node_info(
                     &replica_arr,
-                    is_shard_local,
+                    my_node_id,
                     false,
                     socket_addr_to_node_map,
                 ) {
@@ -556,12 +685,8 @@ impl ClusterMap {
 
         // Mark owned slots if local
         if is_shard_local {
-            if end >= NUM_SLOTS as i64 {
-                warn!("Invalid end slot number {end}");
-                self.is_consistent = false;
-                return false;
-            }
-            self.owned_slots.insert_range(start as u16, end as u16);
+            assert!(end < NUM_SLOTS, "Invalid end slot number {end}");
+            self.owned_slots.insert_range(start, end);
         }
 
         let shard_id = primary_node.id;
@@ -570,9 +695,7 @@ impl ClusterMap {
             ..Default::default()
         });
 
-        shard_entry
-            .owned_slots
-            .insert_range(start as u16, end as u16);
+        shard_entry.owned_slots.insert_range(start, end);
 
         if shard_entry.primary.is_none() {
             // new shard initial fill
@@ -593,8 +716,8 @@ impl ClusterMap {
         }
 
         slot_ranges.push(SlotRangeInfo {
-            start_slot: start as u16,
-            end_slot: end as u16,
+            start_slot: start,
+            end_slot: end,
             shard_id,
         });
 
@@ -605,7 +728,7 @@ impl ClusterMap {
     fn parse_node_info(
         &mut self,
         node_reply: &CallReply,
-        is_local_shard: bool,
+        my_node_id: &NodeId,
         is_primary: bool,
         socket_addr_to_node_map: &mut AHashMap<SocketAddress, NodeId>,
     ) -> Option<NodeInfo> {
@@ -613,8 +736,7 @@ impl ClusterMap {
         let arr = match node_reply {
             CallReply::Array(arr) => arr,
             _ => {
-                warn!("Invalid node reply type while parsing node info");
-                return None;
+                panic!("parse_node_info: Invalid node_reply: {node_reply:?}");
             }
         };
         let len = arr.len();
@@ -629,29 +751,22 @@ impl ClusterMap {
         }
 
         // element 1: port (integer)
-        let port_reply = arr.get(1)?;
-        let port_i = reply_as_integer(port_reply)?;
-        if port_i <= 0 || port_i > u16::MAX as i64 {
-            warn!("Invalid port in node info");
-            return None;
-        }
-        let port = port_i as u16;
+        let port = arr
+            .get(1)
+            .and_then(reply_as_integer)
+            .expect("Invalid port reply while parsing node info") as u16;
 
         // element 2: node id (string)
-        let node_id_reply = arr.get(2)?;
-        let node_id = reply_as_node_id(node_id_reply)?;
-        if node_id.is_empty() {
-            warn!("Invalid node id");
-            return None;
-        }
+        let node_id = arr
+            .get(2)
+            .and_then(reply_as_node_id)
+            .expect("Invalid node reply while parsing node info");
 
-        let primary_endpoint = match endpoint.parse::<Ipv6Addr>() {
-            Ok(ip) => ip,
-            Err(_) => {
-                warn!("Invalid IP address format in node info");
-                return None;
-            }
-        };
+        let is_local_node = &node_id == my_node_id;
+
+        let primary_endpoint = endpoint
+            .parse::<Ipv4Addr>()
+            .expect("Invalid node primary endpoint value");
 
         let socket_address = SocketAddress {
             primary_endpoint,
@@ -670,7 +785,7 @@ impl ClusterMap {
             socket_addr_to_node_map.insert(socket_address, node_id);
         }
 
-        let location = if is_local_shard {
+        let location = if is_local_node {
             NodeLocation::Local
         } else {
             NodeLocation::Remote
@@ -698,12 +813,16 @@ impl ClusterMap {
         if self.slot_to_shard_map.is_empty() {
             return false;
         }
+        let keys = self.slot_to_shard_map.ranges();
+        log_debug!("{keys:?}");
+
         let mut expected_next: u16 = 0;
         for range in self.slot_to_shard_map.ranges() {
             let start_slot = *range.start();
             let end_slot = *range.end();
-            if start_slot < expected_next {
-                panic!(
+            if expected_next > 0 {
+                assert!(
+                    start_slot < expected_next,
                     "Slot {start_slot} overlaps with previous range ending at {}",
                     expected_next - 1
                 );
@@ -717,15 +836,16 @@ impl ClusterMap {
             }
             expected_next = end_slot.wrapping_add(1);
         }
-        expected_next as usize == NUM_SLOTS
+        expected_next == NUM_SLOTS
     }
 
     fn build_slot_to_shard_map(&mut self, slot_ranges: &[SlotRangeInfo]) {
         for r in slot_ranges {
             // sanity: shard must exist
-            if !self.shards.contains(&r.shard_id) {
-                panic!("Shard not found when building slot map: {}", r.shard_id);
-            }
+            assert!(
+                self.shards.contains(&r.shard_id),
+                "Shard not found when building slot map"
+            );
             self.slot_to_shard_map
                 .ranges_insert(r.start_slot..=r.end_slot, r.shard_id);
         }
@@ -792,7 +912,7 @@ fn reply_as_node_id(call_reply: CallResult) -> Option<NodeId> {
 fn reply_as_integer(call_reply: CallResult) -> Option<i64> {
     match call_reply {
         Ok(CallReply::I64(v)) => Some(v.to_i64()),
-        _ => None, // TODO: throw error?
+        _ => None,
     }
 }
 
