@@ -1,21 +1,24 @@
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
 use super::fanout_error::{ErrorKind, FanoutError};
-use crate::fanout::cluster_map::NodeLocation;
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
-use crate::fanout::{FanoutTargetMode, NodeInfo, get_fanout_targets};
-use std::marker::PhantomData;
+use crate::fanout::{FanoutTargetMode, NodeInfo, get_fanout_targets, FanoutResult};
+use logger_rust::log_debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue};
 
+pub type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
+
 /// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
-pub trait FanoutOperation: Default + Send {
-    /// The request type must be serializable and sendable across threads.
-    type Request: Send;
+pub trait FanoutOperation: Default + Send + 'static
+{
+    /// The request type must be serializable and sendable across threads. Additionally, it must have
+    /// a static lifetime (that is, it does not contain non-static references).
+    type Request: Send + Serializable + 'static;
     /// The response type must be sendable across threads.
-    type Response: Send;
+    type Response: Send + Serializable + 'static;
 
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
@@ -29,10 +32,78 @@ pub trait FanoutOperation: Default + Send {
         get_cluster_command_timeout()
     }
 
-    /// Return the target mode for the fanout operation.
-    /// Override this method to change the target mode as needed.
-    fn get_target_mode(&self, _ctx: &Context) -> FanoutTargetMode {
-        FanoutTargetMode::Primary
+    /// Get the list of target nodes for the fanout operation.
+    /// By default, it retrieves a random replica per shard.
+    fn get_targets(&self, ctx: &Context) -> Arc<Vec<NodeInfo>> {
+        get_fanout_targets(ctx, FanoutTargetMode::Random)
+    }
+
+    /// Execute the fanout operation across the cluster nodes.
+    fn exec(self, ctx: &Context) -> ValkeyResult<ValkeyValue> {
+        let timeout = self.get_timeout();
+        let mut op = self;
+
+        let req = op.generate_request();
+        let targets = op.get_targets(ctx);
+        let outstanding = targets.len();
+
+        let local_node = targets.iter().find(|x| x.is_local());
+
+        let mut state = FanoutState::new(ctx, op, outstanding);
+
+        if let Some(local) = local_node {
+            if outstanding > 1 {
+                let req_local = state.generate_request();
+                state.handle_local_request(ctx, req_local, local);
+            } else {
+                state.handle_local_request(ctx, req, local);
+                return Ok(ValkeyValue::NoReply);
+            }
+        }
+
+        let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| match res {
+            Ok(buf) => match Self::Response::deserialize(buf) {
+                Ok(resp) => {
+                    log_debug!("Received response");
+                    state.on_response(resp, target);
+                }
+                Err(e) => {
+                    let err =
+                        FanoutError::serialization(format!("Failed to deserialize response: {e}"));
+                    state.on_error(err, target);
+                }
+            },
+            Err(err) => {
+                state.on_error(err, target);
+            }
+        };
+
+        Self::invoke_rpc(ctx, req, targets, Box::new(response_handler), timeout)?;
+
+        // We will reply later, from the callbacks
+        Ok(ValkeyValue::NoReply)
+    }
+
+    fn invoke_rpc(
+        ctx: &Context,
+        req: Self::Request,
+        targets: Arc<Vec<NodeInfo>>,
+        response_handler: FanoutResponseCallback,
+        timeout: Duration,
+    ) -> ValkeyResult<()>
+    {
+        // Consider using a byte pool here if serialization size is predictable
+        let mut buf = Vec::with_capacity(512);
+        req.serialize(&mut buf);
+
+        send_cluster_request(
+            ctx,
+            &buf,
+            targets,
+            Self::name(),
+            response_handler,
+            Some(timeout),
+        )
     }
 
     /// Generate the request to be sent to each target node.
@@ -56,11 +127,12 @@ pub trait FanoutOperation: Default + Send {
     fn generate_reply(&mut self, ctx: &Context);
 }
 
+/// Internal structure to manage the state of an ongoing fanout operation.
 struct FanoutStateInner<OP>
 where
     OP: FanoutOperation,
 {
-    handler: OP,
+    operation: OP,
     outstanding: usize,
     timed_out: bool,
     already_responded: bool,
@@ -73,7 +145,7 @@ where
     OP: FanoutOperation,
 {
     fn generate_request(&mut self) -> OP::Request {
-        self.handler.generate_request()
+        self.operation.generate_request()
     }
 
     fn rpc_done(&mut self) -> bool {
@@ -90,7 +162,7 @@ where
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Invoke the handler's error callback for custom error handling
-        self.handler.on_error(error.clone(), target);
+        self.operation.on_error(error.clone(), target);
         if error.kind == ErrorKind::Timeout {
             // Record the first timeout error for logging/debugging purposes
             if !self.timed_out {
@@ -105,7 +177,7 @@ where
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) -> bool {
         if !self.timed_out {
-            self.handler.on_response(resp, target);
+            self.operation.on_response(resp, target);
         }
         self.rpc_done()
     }
@@ -123,7 +195,7 @@ where
         }
         self.already_responded = true;
         if !self.timed_out && self.errors.is_empty() {
-            self.handler.generate_reply(ctx);
+            self.operation.generate_reply(ctx);
         } else {
             self.generate_error_reply(ctx);
         }
@@ -170,23 +242,18 @@ impl<OP> FanoutState<OP>
 where
     OP: FanoutOperation,
 {
-    pub fn new(context: &Context, handler: OP) -> Self {
+    pub fn new(context: &Context, operation: OP, outstanding: usize) -> Self {
         let blocked_client = context.block_client();
         Self {
             inner: Mutex::new(FanoutStateInner {
-                handler,
-                outstanding: 0,
+                operation,
+                outstanding,
                 errors: Vec::new(),
                 timed_out: false,
                 already_responded: false,
                 thread_ctx: ThreadSafeContext::with_blocked_client(blocked_client),
             }),
         }
-    }
-
-    fn set_outstanding(&mut self, count: usize) {
-        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
-        inner.outstanding = count;
     }
 
     pub fn generate_request(&mut self) -> OP::Request {
@@ -204,144 +271,10 @@ where
         inner.on_response(resp, target);
     }
 
-    pub fn handle_local_request(&mut self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
+    pub fn handle_local_request(&self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
         match OP::get_local_response(ctx, request) {
             Ok(response) => self.on_response(response, target),
             Err(err) => self.on_error(err.into(), target),
         }
     }
-}
-
-/// A trait for invoking fanout operations across cluster nodes.
-/// It manages the sending of requests, handling responses, and coordinating the overall operation.
-/// # Type Parameters
-/// - `OP`: The type implementing the `FanoutOperation` trait.
-pub trait RpcInvoker<OP>: Send
-where
-    OP: FanoutOperation,
-{
-    fn invoke_rpc(
-        &self,
-        context: &Context,
-        req: OP::Request,
-        targets: Arc<Vec<NodeInfo>>,
-        state: FanoutState<OP>,
-        timeout: Duration,
-    ) -> ValkeyResult<()>;
-}
-
-pub struct BaseFanoutInvoker<OP>
-where
-    OP: FanoutOperation,
-{
-    __phantom: PhantomData<OP>,
-}
-
-impl<OP> Default for BaseFanoutInvoker<OP>
-where
-    OP: FanoutOperation,
-{
-    fn default() -> Self {
-        Self {
-            __phantom: PhantomData::<OP> {},
-        }
-    }
-}
-
-impl<OP> RpcInvoker<OP> for BaseFanoutInvoker<OP>
-where
-    OP: FanoutOperation + 'static,
-    OP::Request: Serializable + Send + 'static,
-    OP::Response: Serializable + Send + 'static,
-{
-    fn invoke_rpc(
-        &self,
-        ctx: &Context,
-        req: OP::Request,
-        targets: Arc<Vec<NodeInfo>>,
-        state: FanoutState<OP>,
-        timeout: Duration,
-    ) -> ValkeyResult<()> {
-        let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| match res {
-            Ok(buf) => match OP::Response::deserialize(buf) {
-                Ok(resp) => {
-                    state.on_response(resp, target);
-                }
-                Err(e) => {
-                    let err =
-                        FanoutError::serialization(format!("Failed to deserialize response: {e}"));
-                    state.on_error(err, target);
-                }
-            },
-            Err(err) => {
-                state.on_error(err, target);
-            }
-        };
-
-        // Consider using a byte pool here if serialization size is predictable
-        let mut buf = Vec::with_capacity(512);
-        req.serialize(&mut buf);
-
-        send_cluster_request(
-            ctx,
-            &buf,
-            targets,
-            OP::name(),
-            response_handler,
-            Some(timeout),
-        )
-    }
-}
-
-pub fn exec_fanout_request<OP>(
-    ctx: &Context,
-    rpc_invoker: impl RpcInvoker<OP>,
-    operation: OP,
-) -> ValkeyResult<ValkeyValue>
-where
-    OP: FanoutOperation + 'static,
-    OP::Request: Serializable + Send + 'static,
-    OP::Response: Serializable + Send + 'static,
-{
-    let mut op = operation;
-    let timeout = op.get_timeout();
-
-    let req = op.generate_request();
-    let target_mode = op.get_target_mode(ctx);
-    let mut state = FanoutState::new(ctx, op);
-
-    let targets = get_fanout_targets(ctx, target_mode);
-    let outstanding = targets.len();
-    state.set_outstanding(outstanding);
-
-    let local_pos = targets
-        .iter()
-        .position(|x| x.location == NodeLocation::Local);
-
-    if let Some(idx) = local_pos {
-        let local = targets.get(idx).expect("Local node info not found");
-        if outstanding > 1 {
-            let req_local = state.generate_request();
-            state.handle_local_request(ctx, req_local, local);
-        } else {
-            state.handle_local_request(ctx, req, local);
-            return Ok(ValkeyValue::NoReply);
-        }
-    }
-
-    rpc_invoker.invoke_rpc(ctx, req, targets, state, timeout)?;
-
-    // We will reply later, from the callbacks
-    Ok(ValkeyValue::NoReply)
-}
-
-#[inline]
-pub fn exec_fanout_request_base<OP>(ctx: &Context, op: OP) -> ValkeyResult<ValkeyValue>
-where
-    OP: FanoutOperation + 'static,
-    OP::Request: Serializable + Send + 'static,
-    OP::Response: Serializable + Send + 'static,
-{
-    let invoker = BaseFanoutInvoker::<OP>::default();
-    exec_fanout_request(ctx, invoker, op)
 }

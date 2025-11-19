@@ -5,10 +5,9 @@ use super::utils::{reply_with_bulk_string, reply_with_fanout_labels, reply_with_
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
 use crate::error_consts;
-use crate::fanout::exec_fanout_request_base;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyValue, raw};
+use valkey_module::{raw, Context, ValkeyError, ValkeyResult};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutOperation {
@@ -122,12 +121,4 @@ fn reply_with_mget_value(ctx: &Context, value: &MGetValue) -> raw::Status {
         return status;
     }
     reply_with_fanout_sample(ctx, &value.sample)
-}
-
-pub(super) fn exec_mget_fanout_request(
-    ctx: &Context,
-    options: MGetRequest,
-) -> ValkeyResult<ValkeyValue> {
-    let operation = MGetFanoutOperation::new(options);
-    exec_fanout_request_base(ctx, operation)
 }

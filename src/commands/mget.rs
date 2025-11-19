@@ -1,8 +1,8 @@
-use super::mget_fanout_operation::exec_mget_fanout_request;
+use super::mget_fanout_operation::MGetFanoutOperation;
 use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
-use crate::fanout::is_clustered;
+use crate::fanout::{is_clustered, FanoutOperation};
 use crate::labels::Label;
 use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;
@@ -22,7 +22,8 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_mget_options(args)?;
 
     if is_clustered(ctx) {
-        return exec_mget_fanout_request(ctx, options);
+        let operation = MGetFanoutOperation::new(options);
+        return operation.exec(ctx);
     }
 
     let mget_results = process_mget_request(ctx, options)?;

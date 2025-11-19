@@ -1,11 +1,11 @@
 use super::fanout::filters::serialize_matchers_list;
-use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
+use super::fanout::{deserialize_match_filter_options, IndexQueryRequest, IndexQueryResponse};
 use super::utils::reply_with_btree_set;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, ValkeyResult};
 
 #[derive(Clone, Debug, Default)]
 pub struct QueryIndexFanoutOperation {
@@ -56,12 +56,4 @@ impl FanoutOperation for QueryIndexFanoutOperation {
     fn generate_reply(&mut self, ctx: &Context) {
         reply_with_btree_set(ctx, &self.keys);
     }
-}
-
-pub(super) fn exec_index_query_fanout_request(
-    ctx: &Context,
-    options: MatchFilterOptions,
-) -> ValkeyResult<ValkeyValue> {
-    let operation = QueryIndexFanoutOperation::new(options);
-    super::exec_fanout_request_base(ctx, operation)
 }

@@ -3,11 +3,11 @@ use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::fanout::cluster_api::{CURRENT_NODE_ID, NodeId};
-use crate::fanout::cluster_map::NodeLocation;
+use crate::fanout::cluster_api::CURRENT_NODE_ID;
 use crate::fanout::registry::get_fanout_request_handler;
-use crate::fanout::{FanoutResult, NodeInfo};
+use crate::fanout::{FanoutResult, NodeInfo, FanoutResponseCallback};
 use core::time::Duration;
+use logger_rust::*;
 use papaya::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::os::raw::{c_char, c_int, c_uchar};
@@ -18,6 +18,7 @@ use valkey_module::{
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
     ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
+use crate::fanout::cluster_map::NodeId;
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 pub(super) const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
@@ -25,12 +26,10 @@ pub(super) const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
 
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) type ResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
-
 struct InFlightRequest {
     id: u64,
     targets: Arc<Vec<NodeInfo>>,
-    response_handler: ResponseCallback,
+    response_handler: FanoutResponseCallback,
     outstanding: AtomicU64,
     timer_id: u64,
     timed_out: AtomicBool,
@@ -71,6 +70,7 @@ impl InFlightRequest {
             ));
             return;
         };
+        log_debug!("Invoking response handler for node {}", node.address());
 
         handler(resp, node);
     }
@@ -141,16 +141,14 @@ pub fn get_cluster_command_timeout() -> Duration {
     DEFAULT_CLUSTER_REQUEST_TIMEOUT
 }
 
-pub(super) fn send_cluster_request<F>(
+pub(super) fn send_cluster_request(
     ctx: &Context,
     request_buf: &[u8],
     targets: Arc<Vec<NodeInfo>>,
     handler: &str,
-    response_handler: F,
+    response_handler: FanoutResponseCallback,
     timeout: Option<Duration>,
 ) -> ValkeyResult<()>
-where
-    F: Fn(Result<&[u8], FanoutError>, &NodeInfo) + Send + Sync + 'static,
 {
     validate_cluster_exec(ctx)?;
 
@@ -161,18 +159,16 @@ where
     serialize_request_message(&mut buf, id, db, handler, request_buf);
 
     let mut node_count = 0;
-    for node in targets.iter() {
-        if node.location == NodeLocation::Remote {
-            let target_id = node.id.raw_ptr();
-            let status =
-                send_cluster_message(ctx, target_id, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
-            if status == Status::Err {
-                let msg = format!("Failed to send message to node {}", node.address());
-                ctx.log_warning(&msg);
-                continue;
-            }
-            node_count += 1;
+
+    for node in targets.iter().filter(|&node| !node.is_local()) {
+        let target_id = node.id.raw_ptr();
+        let status = send_cluster_message(ctx, target_id, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
+        if status == Status::Err {
+            let msg = format!("Failed to send message to node {}", node.address());
+            ctx.log_warning(&msg);
+            continue;
         }
+        node_count += 1;
     }
 
     if node_count == 0 {
@@ -184,7 +180,7 @@ where
 
     let request = InFlightRequest {
         id,
-        response_handler: Box::new(response_handler),
+        response_handler,
         timer_id,
         outstanding: AtomicU64::new(node_count as u64),
         timed_out: AtomicBool::new(false),
@@ -211,7 +207,7 @@ fn send_message_internal(
     send_cluster_message(ctx, sender_id, msg_type, buf)
 }
 
-// Send the response back to the original sender
+/// Send the response back to the original sender
 fn send_response_message(
     ctx: &Context,
     request_id: u64,
@@ -289,8 +285,15 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
     let Some(handler) = get_fanout_request_handler(&message.handler) else {
         let e = FanoutError::invalid_message();
         send_error_response(ctx, request_id, sender_id, e);
-        let msg = format!("No handler registered for fanout operation '{}'", message.handler);
+        let msg = format!(
+            "No handler registered for fanout operation '{}'",
+            message.handler
+        );
         ctx.log_warning(&msg);
+        log_debug!(
+            "No handler registered for fanout operation '{}'",
+            message.handler
+        );
         return;
     };
 
@@ -361,6 +364,7 @@ extern "C" fn on_request_received(
     len: u32,
 ) {
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
+    assert_eq!(len, 0, "Request received");
     let Some(message) = parse_cluster_message(&ctx, Some(sender_id), payload, len) else {
         return;
     };
@@ -378,8 +382,8 @@ extern "C" fn on_response_received(
     len: u32,
 ) {
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
-
-    let Some(message) = parse_cluster_message(&ctx, None, payload, len) else {
+    assert_eq!(len, 0, "Received response");
+    let Some(message) = parse_cluster_message(&ctx, Some(sender_id), payload, len) else {
         return;
     };
 
@@ -394,6 +398,7 @@ extern "C" fn on_response_received(
         return;
     };
 
+    log_debug!("Received response for request id {request_id}");
     request.rpc_done(&ctx);
 
     request.handle_response(&ctx, Ok(message.buf), sender_id);

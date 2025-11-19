@@ -1,7 +1,7 @@
-use crate::commands::mrange_fanout_operation::execute_mrange_fanout_operation;
+use crate::commands::mrange_fanout_operation::MRangeFanoutOperation;
 use crate::commands::parse_mrange_options;
 use crate::error_consts;
-use crate::fanout::is_clustered;
+use crate::fanout::{is_clustered, FanoutOperation};
 use crate::series::mrange::process_mrange_query;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -33,7 +33,8 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     args.done()?;
 
     if is_clustered(ctx) {
-        return execute_mrange_fanout_operation(ctx, options);
+        let operation = MRangeFanoutOperation::new(options);
+        return operation.exec(ctx);
     }
 
     let result_rows = process_mrange_query(ctx, options, reverse)?;

@@ -1,6 +1,6 @@
 use crate::commands::arg_parse::parse_integer_arg;
-use crate::commands::stats_fanout_operation::exec_stats_fanout_request;
-use crate::fanout::is_clustered;
+use crate::commands::stats_fanout_operation::StatsFanoutOperation;
+use crate::fanout::{is_clustered, FanoutOperation};
 use crate::series::index::with_timeseries_index;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -25,7 +25,8 @@ pub fn stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     };
 
     if is_clustered(ctx) {
-        return exec_stats_fanout_request(ctx, limit);
+        let operation = StatsFanoutOperation::new(limit);
+        return operation.exec(ctx)
     }
 
     with_timeseries_index(ctx, |index| {

@@ -1,6 +1,6 @@
-use super::label_names_fanout_operation::exec_label_names_fanout_request;
+use super::label_names_fanout_operation::LabelNamesFanoutOperation;
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::is_clustered;
+use crate::fanout::{is_clustered, FanoutOperation};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
@@ -19,7 +19,8 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             ));
         }
 
-        return exec_label_names_fanout_request(ctx, options);
+        let operation = LabelNamesFanoutOperation::new(options);
+        return operation.exec(ctx);
     }
     let names = process_label_names_request(ctx, &options)?;
 
