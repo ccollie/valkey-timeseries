@@ -1,12 +1,12 @@
 use super::card_fanout_operation::CardFanoutOperation;
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::{is_clustered, FanoutOperation};
+use crate::fanout::{FanoutOperation, is_clustered};
 use crate::labels::filters::SeriesSelector;
+use crate::series::TimestampRange;
 use crate::series::index::{
     get_cardinality_by_selectors, with_matched_series, with_timeseries_index,
 };
 use crate::series::request_types::MatchFilterOptions;
-use crate::series::TimestampRange;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 ///

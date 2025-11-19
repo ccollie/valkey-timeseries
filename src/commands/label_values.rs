@@ -1,7 +1,7 @@
 use super::label_values_fanout_operation::LabelValuesFanoutOperation;
 use crate::commands::arg_parse::parse_metadata_command_args;
 use crate::error_consts;
-use crate::fanout::{is_clustered, FanoutOperation};
+use crate::fanout::{FanoutOperation, is_clustered};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;

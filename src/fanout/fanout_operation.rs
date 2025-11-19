@@ -1,7 +1,7 @@
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
-use crate::fanout::{FanoutTargetMode, NodeInfo, get_fanout_targets, FanoutResult};
+use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use logger_rust::log_debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,8 +12,7 @@ pub type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + S
 /// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
-pub trait FanoutOperation: Default + Send + 'static
-{
+pub trait FanoutOperation: Default + Send + 'static {
     /// The request type must be serializable and sendable across threads. Additionally, it must have
     /// a static lifetime (that is, it does not contain non-static references).
     type Request: Send + Serializable + 'static;
@@ -90,8 +89,7 @@ pub trait FanoutOperation: Default + Send + 'static
         targets: Arc<Vec<NodeInfo>>,
         response_handler: FanoutResponseCallback,
         timeout: Duration,
-    ) -> ValkeyResult<()>
-    {
+    ) -> ValkeyResult<()> {
         // Consider using a byte pool here if serialization size is predictable
         let mut buf = Vec::with_capacity(512);
         req.serialize(&mut buf);

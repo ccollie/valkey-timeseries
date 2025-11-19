@@ -4,8 +4,9 @@ use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::fanout::cluster_api::CURRENT_NODE_ID;
+use crate::fanout::cluster_map::NodeId;
 use crate::fanout::registry::get_fanout_request_handler;
-use crate::fanout::{FanoutResult, NodeInfo, FanoutResponseCallback};
+use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
 use core::time::Duration;
 use logger_rust::*;
 use papaya::HashMap;
@@ -18,7 +19,6 @@ use valkey_module::{
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
     ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
-use crate::fanout::cluster_map::NodeId;
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 pub(super) const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
@@ -148,8 +148,7 @@ pub(super) fn send_cluster_request(
     handler: &str,
     response_handler: FanoutResponseCallback,
     timeout: Option<Duration>,
-) -> ValkeyResult<()>
-{
+) -> ValkeyResult<()> {
     validate_cluster_exec(ctx)?;
 
     let id = generate_id();
