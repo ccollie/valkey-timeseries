@@ -1,5 +1,5 @@
 use super::fanout::filters::serialize_matchers_list;
-use super::fanout::{deserialize_match_filter_options, IndexQueryRequest, IndexQueryResponse};
+use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
 use super::utils::reply_with_btree_set;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::index::series_keys_by_selectors;

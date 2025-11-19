@@ -12,7 +12,6 @@ use valkey_module::{
 /// Maximum length of an IPv6 address string
 pub const INET6_ADDR_STR_LEN: usize = 46;
 
-
 /// Static buffer holding the current node's ID
 pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(||
     // Safety: We ensure that the buffer is properly initialized with the current node ID

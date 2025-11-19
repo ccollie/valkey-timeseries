@@ -7,7 +7,7 @@ use crate::commands::process_mget_request;
 use crate::error_consts;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{raw, Context, ValkeyError, ValkeyResult};
+use valkey_module::{Context, ValkeyError, ValkeyResult, raw};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutOperation {

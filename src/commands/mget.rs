@@ -2,7 +2,7 @@ use super::mget_fanout_operation::MGetFanoutOperation;
 use crate::commands::arg_parse::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
-use crate::fanout::{is_clustered, FanoutOperation};
+use crate::fanout::{FanoutOperation, is_clustered};
 use crate::labels::Label;
 use crate::series::get_latest_compaction_sample;
 use crate::series::index::with_matched_series;

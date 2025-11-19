@@ -152,8 +152,7 @@ pub fn handle_fanout_request(
 }
 
 pub(super) fn get_fanout_request_handler(name: &str) -> Option<RequestHandlerCallback> {
-    FANOUT_REGISTRY
-        .get_operation_by_name(name, false)
+    FANOUT_REGISTRY.get_operation_by_name(name, false)
 }
 
 pub(crate) fn get_registered_fanout_operations() -> Vec<&'static str> {

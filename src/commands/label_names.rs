@@ -1,6 +1,6 @@
 use super::label_names_fanout_operation::LabelNamesFanoutOperation;
 use crate::commands::arg_parse::parse_metadata_command_args;
-use crate::fanout::{is_clustered, FanoutOperation};
+use crate::fanout::{FanoutOperation, is_clustered};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;

@@ -1,5 +1,5 @@
 use crate::commands::query_index_fanout_operation::QueryIndexFanoutOperation;
-use crate::fanout::{is_clustered, FanoutOperation};
+use crate::fanout::{FanoutOperation, is_clustered};
 use crate::labels::parse_series_selector;
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;

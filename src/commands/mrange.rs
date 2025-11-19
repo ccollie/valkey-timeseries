@@ -1,7 +1,7 @@
 use crate::commands::mrange_fanout_operation::MRangeFanoutOperation;
 use crate::commands::parse_mrange_options;
 use crate::error_consts;
-use crate::fanout::{is_clustered, FanoutOperation};
+use crate::fanout::{FanoutOperation, is_clustered};
 use crate::series::mrange::process_mrange_query;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
