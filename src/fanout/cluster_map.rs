@@ -1,6 +1,6 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::cluster_api::{CURRENT_NODE_ID};
+use crate::fanout::cluster_api::CURRENT_NODE_ID;
 use ahash::AHashMap;
 use log::warn;
 use logger_rust::log_debug;
@@ -14,8 +14,10 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv4Addr;
-use std::sync::Arc;
-use valkey_module::{CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN};
+use std::sync::{Arc, Mutex};
+use valkey_module::{
+    CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
+};
 
 // Constants
 pub const NUM_SLOTS: u16 = 16384;
@@ -23,14 +25,16 @@ pub const NUM_SLOTS: u16 = 16384;
 /// Enumeration for fanout target modes
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FanoutTargetMode {
-    // Default: randomly select one node per shard
+    /// Default: randomly select one node per shard
     #[default]
     Random,
-    // Select only replicas, one per shard
+    /// Select only replicas, one per shard
     ReplicasOnly,
-    // Select all primary (master) nodes
+    /// Select one replica per shard (if available), otherwise primary
+    OneReplicaPerShard,
+    /// Select all primary (master) nodes
     Primary,
-    // Select all nodes (both primary and replica)
+    /// Select all nodes (both primary and replica)
     All,
 }
 
@@ -419,7 +423,7 @@ struct SlotRangeInfo {
 }
 
 /// Main cluster map structure
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct ClusterMap {
     /// Slot set for slots owned by the cluster
     owned_slots: SlotRangeSet,
@@ -428,10 +432,10 @@ pub struct ClusterMap {
     slot_to_shard_map: RangeMapBlaze<u16, NodeId>,
     /// Cluster-level fingerprint (hash of all shard fingerprints)
     cluster_slots_fingerprint: u64,
-    /// Pre-computed target lists
-    primary_targets: Arc<Vec<NodeInfo>>,
-    replica_targets: Arc<Vec<NodeInfo>>,
-    all_targets: Arc<Vec<NodeInfo>>,
+    /// (Lazily) pre-computed target lists
+    primary_targets: Mutex<Option<Arc<Vec<NodeInfo>>>>,
+    replica_targets: Mutex<Option<Arc<Vec<NodeInfo>>>>,
+    all_targets: Mutex<Option<Arc<Vec<NodeInfo>>>>,
     /// expiration timestamp in ms (since epoch)
     expiration_ts: i64,
     /// is the current map consistent (no collisions/inconsistencies found while building)
@@ -474,26 +478,96 @@ impl ClusterMap {
     /// Helper function to refresh targets in CreateNewClusterMap
     pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<Vec<NodeInfo>> {
         match target_mode {
-            FanoutTargetMode::Primary => self.primary_targets.clone(),
-            FanoutTargetMode::ReplicasOnly => self.replica_targets.clone(),
-            FanoutTargetMode::All => self.all_targets.clone(),
-            FanoutTargetMode::Random => {
-                // generate a random targets vector with one node from each shard
-                self.get_random_replica_per_shard()
-            }
+            FanoutTargetMode::Primary => self.get_primary_targets(),
+            FanoutTargetMode::ReplicasOnly => self.get_replica_targets(),
+            FanoutTargetMode::OneReplicaPerShard => self.get_random_replica_per_shard(),
+            FanoutTargetMode::All => self.get_all_targets(),
+            FanoutTargetMode::Random => self.get_random_targets(),
         }
     }
 
     fn get_random_replica_per_shard(&self) -> Arc<Vec<NodeInfo>> {
         // generate a random replica targets vector with one replica node from each shard
-        let mut targets: Vec<NodeInfo> = self
-            .shards
-            .iter()
-            .map(|shard| shard.get_random_replica())
-            .collect();
+        let mut targets: Vec<NodeInfo> = Vec::with_capacity(self.shards.len());
+        for shard in self.shards.iter() {
+            if shard.replicas.is_empty() {
+                // no replicas, fall back to primary
+                let node = shard.primary.expect("Shard has no primary node");
+                targets.push(node);
+                continue;
+            }
+            let node = shard.get_random_target(false);
+            targets.push(node);
+        }
         // sort targets for consistency
         targets.sort();
         Arc::new(targets)
+    }
+
+    fn get_random_targets(&self) -> Arc<Vec<NodeInfo>> {
+        // generate a random primary targets vector with one primary node from each shard
+        let mut targets: Vec<NodeInfo> = Vec::with_capacity(self.shards.len());
+        for shard in self.shards.iter() {
+            let node = shard.get_random_target(false);
+            targets.push(node);
+        }
+        // sort targets for consistency
+        targets.sort();
+        Arc::new(targets)
+    }
+
+    fn get_all_targets(&self) -> Arc<Vec<NodeInfo>> {
+        let mut guard = self.all_targets.lock().unwrap();
+        if let Some(ref targets) = *guard {
+            return targets.clone();
+        }
+        let mut targets: Vec<NodeInfo> = Vec::new();
+        for shard in self.shards.iter() {
+            if let Some(primary) = shard.primary {
+                targets.push(primary);
+            }
+            for replica in shard.replicas.iter() {
+                targets.push(*replica);
+            }
+        }
+        targets.sort();
+        let arc_targets = Arc::new(targets);
+        *guard = Some(arc_targets.clone());
+        arc_targets
+    }
+
+    fn get_primary_targets(&self) -> Arc<Vec<NodeInfo>> {
+        let mut guard = self.primary_targets.lock().unwrap();
+        if let Some(ref targets) = *guard {
+            return targets.clone();
+        }
+        let mut targets: Vec<NodeInfo> = Vec::new();
+        for shard in self.shards.iter() {
+            if let Some(primary) = shard.primary {
+                targets.push(primary);
+            }
+        }
+        targets.sort();
+        let arc_targets = Arc::new(targets);
+        *guard = Some(arc_targets.clone());
+        arc_targets
+    }
+
+    fn get_replica_targets(&self) -> Arc<Vec<NodeInfo>> {
+        let mut guard = self.replica_targets.lock().unwrap();
+        if let Some(ref targets) = *guard {
+            return targets.clone();
+        }
+        let mut targets: Vec<NodeInfo> = Vec::new();
+        for shard in self.shards.iter() {
+            for replica in shard.replicas.iter() {
+                targets.push(*replica);
+            }
+        }
+        targets.sort();
+        let arc_targets = Arc::new(targets);
+        *guard = Some(arc_targets.clone());
+        arc_targets
     }
 
     /// Build a new ClusterMap by calling CLUSTER SLOTS through the provided API
@@ -550,23 +624,14 @@ impl ClusterMap {
 
         let mut shard_set: BTreeSet<ShardInfo> = BTreeSet::new();
 
-        // Populate target lists
-        let mut primary_targets = Vec::new();
-        let mut replica_targets = Vec::new();
-        let mut all_targets = Vec::new();
-
         // Fix shard id references on nodes (back-pointers)
         for (_, shard) in shard_map.into_iter() {
             let mut shard = shard;
             if let Some(primary) = shard.primary.as_mut() {
                 primary.shard_id = shard.id;
-                primary_targets.push(*primary);
-                all_targets.push(*primary);
             }
             for replica in shard.replicas.iter_mut() {
                 replica.shard_id = shard.id;
-                replica_targets.push(*replica);
-                all_targets.push(*replica);
             }
 
             // compute fingerprint for each shard
@@ -578,15 +643,6 @@ impl ClusterMap {
 
         // Build slot-to-shard map
         new_map.build_slot_to_shard_map(&slot_ranges_parsed);
-
-        // Sort targets for consistency
-        primary_targets.sort();
-        replica_targets.sort();
-        all_targets.sort();
-
-        new_map.primary_targets = Arc::new(primary_targets);
-        new_map.replica_targets = Arc::new(replica_targets);
-        new_map.all_targets = Arc::new(all_targets);
 
         // Check if a cluster map is full
         new_map.is_consistent &= new_map.check_cluster_map_full();
@@ -667,12 +723,8 @@ impl ClusterMap {
         let mut replicas = Vec::with_capacity(slot_len - 3);
         for j in 3..slot_len {
             if let Some(Ok(replica_arr)) = slot_range_arr.get(j) {
-                match self.parse_node_info(
-                    &replica_arr,
-                    my_node_id,
-                    false,
-                    socket_addr_to_node_map,
-                ) {
+                match self.parse_node_info(&replica_arr, my_node_id, false, socket_addr_to_node_map)
+                {
                     Some(replica) => replicas.push(replica),
                     None => {
                         warn!("Skipping invalid replica in slot range [{start}-{end}]");
