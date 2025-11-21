@@ -1,14 +1,12 @@
-use super::cluster_message::{RequestMessage, serialize_request_message};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
+use super::fanout_message::{FanoutMessage, serialize_request_message};
 use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::db::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
-use crate::fanout::cluster_api::CURRENT_NODE_ID;
-use crate::fanout::cluster_map::NodeId;
+use crate::fanout::cluster_map::{NodeId, CURRENT_NODE_ID};
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
 use core::time::Duration;
-use logger_rust::*;
 use papaya::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::os::raw::{c_char, c_int, c_uchar};
@@ -20,9 +18,9 @@ use valkey_module::{
     ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
 
-const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
-const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
-const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
+const FANOUT_REQUEST_MESSAGE: u8 = 0x01;
+const FANOUT_RESPONSE_MESSAGE: u8 = 0x02;
+const FANOUT_ERROR_MESSAGE: u8 = 0x03;
 
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -51,28 +49,19 @@ impl InFlightRequest {
         }
     }
 
-    fn handle_response(&self, ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
+    fn handle_response(&self, _ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
         // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
         let sender = NodeId::from_raw(sender_id);
 
-        let handler = &self.response_handler;
         // Binary search to find the NodeInfo associated with the target
         let target_node = self
             .targets
             .binary_search_by(|node| node.id.cmp(&sender))
             .ok()
-            .and_then(|idx| self.targets.get(idx));
+            .and_then(|idx| self.targets.get(idx))
+            .expect("cluster rpc: target node lookup failed");
 
-        let Some(node) = target_node else {
-            ctx.log_warning(&format!(
-                "Received response from unknown node {:?} for request {}",
-                sender_id, self.id
-            ));
-            return;
-        };
-        log_debug!("Invoking response handler for node {}", node.address());
-
-        handler(resp, node);
+        (self.response_handler)(resp, target_node);
     }
 }
 
@@ -110,6 +99,7 @@ fn generate_id() -> u64 {
 fn on_request_timeout(ctx: &Context, id: u64) {
     // We only mark the request as timed out the first time through. The actual removal from the map
     // happens when the last response arrives or when we hit the timeout again.
+
     let map = INFLIGHT_REQUESTS.pin();
     if let Some(request) = map.get(&id) {
         if request.timed_out.load(Ordering::Relaxed) {
@@ -123,7 +113,6 @@ fn on_request_timeout(ctx: &Context, id: u64) {
         let local_node_id = CURRENT_NODE_ID.raw_ptr();
 
         request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
-        // Reset the timer to give some extra time for late responses
     }
 }
 
@@ -161,7 +150,7 @@ pub(super) fn send_cluster_request(
 
     for node in targets.iter().filter(|&node| !node.is_local()) {
         let target_id = node.id.raw_ptr();
-        let status = send_cluster_message(ctx, target_id, CLUSTER_REQUEST_MESSAGE, buf.as_slice());
+        let status = send_cluster_message(ctx, target_id, FANOUT_REQUEST_MESSAGE, buf.as_slice());
         if status == Status::Err {
             let msg = format!("Failed to send message to node {}", node.address());
             ctx.log_warning(&msg);
@@ -203,7 +192,7 @@ fn send_message_internal(
     let mut dest = Vec::with_capacity(1024);
     let db = get_current_db(ctx);
     serialize_request_message(&mut dest, request_id, db, handler, buf);
-    send_cluster_message(ctx, sender_id, msg_type, buf)
+    send_cluster_message(ctx, sender_id, msg_type, &dest)
 }
 
 /// Send the response back to the original sender
@@ -216,7 +205,7 @@ fn send_response_message(
 ) -> Status {
     send_message_internal(
         ctx,
-        CLUSTER_RESPONSE_MESSAGE,
+        FANOUT_RESPONSE_MESSAGE,
         request_id,
         sender_id,
         handler,
@@ -232,53 +221,31 @@ fn send_error_response(
 ) -> Status {
     let mut buf: Vec<u8> = Vec::with_capacity(512);
     error.serialize(&mut buf);
-    send_message_internal(
-        ctx,
-        CLUSTER_ERROR_MESSAGE,
-        request_id,
-        target_node,
-        "",
-        &buf,
-    )
+    send_message_internal(ctx, FANOUT_ERROR_MESSAGE, request_id, target_node, "", &buf)
 }
 
-fn parse_cluster_message(
+fn parse_fanout_message(
     ctx: &'_ Context,
-    sender_id: Option<*const c_char>,
+    sender_id: *const c_char,
     payload: *const c_uchar,
     len: u32,
-) -> Option<RequestMessage<'_>> {
+) -> Option<FanoutMessage<'_>> {
     // SAFETY: payload is expected to be a valid pointer to a byte array of length `len` coming
     // from Valkey
     let buffer = unsafe { std::slice::from_raw_parts(payload, len as usize) };
-    match RequestMessage::new(buffer) {
-        Ok(msg) => {
-            let buf = msg.buf;
-            if buf.is_empty() {
-                let request_id = msg.request_id;
-                let msg = format!("BUG: empty response payload for request ({request_id})");
-                ctx.log_warning(&msg);
-                if let Some(sender_id) = sender_id {
-                    let error = FanoutError::invalid_message();
-                    let _ = send_error_response(ctx, 0, sender_id, error);
-                }
-                return None;
-            }
-            Some(msg)
-        }
-        Err(e) => {
-            let msg = format!("Failed to parse cluster message: {e}");
+    match FanoutMessage::new(buffer) {
+        Ok(msg) => Some(msg),
+        Err(err) => {
+            let node = NodeId::from_raw(sender_id);
+            let msg = format!("Failed to parse fanout message from node {node}: {err}");
             ctx.log_warning(&msg);
-            if let Some(sender_id) = sender_id {
-                let _ = send_error_response(ctx, 0, sender_id, e.into());
-            }
             None
         }
     }
 }
 
 /// Processes a valid request by executing the command and sending back the response.
-fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id: *const c_char) {
+fn process_request<'a>(ctx: &'a Context, message: FanoutMessage<'a>, sender_id: *const c_char) {
     let request_id = message.request_id;
 
     let Some(handler) = get_fanout_request_handler(&message.handler) else {
@@ -289,10 +256,6 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
             message.handler
         );
         ctx.log_warning(&msg);
-        log_debug!(
-            "No handler registered for fanout operation '{}'",
-            message.handler
-        );
         return;
     };
 
@@ -363,11 +326,9 @@ extern "C" fn on_request_received(
     len: u32,
 ) {
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
-    assert_eq!(len, 0, "Request received");
-    let Some(message) = parse_cluster_message(&ctx, Some(sender_id), payload, len) else {
+    let Some(message) = parse_fanout_message(&ctx, sender_id, payload, len) else {
         return;
     };
-
     process_request(&ctx, message, sender_id);
 }
 
@@ -381,8 +342,8 @@ extern "C" fn on_response_received(
     len: u32,
 ) {
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
-    assert_eq!(len, 0, "Received response");
-    let Some(message) = parse_cluster_message(&ctx, Some(sender_id), payload, len) else {
+
+    let Some(message) = parse_fanout_message(&ctx, sender_id, payload, len) else {
         return;
     };
 
@@ -397,9 +358,7 @@ extern "C" fn on_response_received(
         return;
     };
 
-    log_debug!("Received response for request id {request_id}");
     request.rpc_done(&ctx);
-
     request.handle_response(&ctx, Ok(message.buf), sender_id);
 }
 
@@ -412,7 +371,8 @@ extern "C" fn on_error_received(
 ) {
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
 
-    let Some(message) = parse_cluster_message(&ctx, None, payload, len) else {
+    let local_node_id = CURRENT_NODE_ID.raw_ptr();
+    let Some(message) = parse_fanout_message(&ctx, local_node_id, payload, len) else {
         return;
     };
 
@@ -427,6 +387,7 @@ extern "C" fn on_error_received(
         return;
     };
 
+    set_current_db(&ctx, message.db);
     request.rpc_done(&ctx);
 
     match FanoutError::deserialize(message.buf) {
@@ -470,7 +431,7 @@ fn register_message_receiver(
 /// This function should be called during module initialization
 pub fn register_cluster_message_handlers(ctx: &Context) {
     // Register the cluster message handlers
-    register_message_receiver(ctx, CLUSTER_REQUEST_MESSAGE, Some(on_request_received));
-    register_message_receiver(ctx, CLUSTER_RESPONSE_MESSAGE, Some(on_response_received));
-    register_message_receiver(ctx, CLUSTER_ERROR_MESSAGE, Some(on_error_received));
+    register_message_receiver(ctx, FANOUT_REQUEST_MESSAGE, Some(on_request_received));
+    register_message_receiver(ctx, FANOUT_RESPONSE_MESSAGE, Some(on_response_received));
+    register_message_receiver(ctx, FANOUT_ERROR_MESSAGE, Some(on_error_received));
 }
