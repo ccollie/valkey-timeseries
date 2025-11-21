@@ -1,30 +1,20 @@
-use crate::fanout::cluster_map::{NodeId, NodeLocation, NodeRole};
+use crate::fanout::cluster_map::{NodeId, NodeLocation, NodeRole, CURRENT_NODE_ID};
 use std::hash::{Hash, Hasher};
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::os::raw::{c_char, c_int};
-use std::sync::LazyLock;
 use valkey_module::{
     Context, VALKEYMODULE_NODE_FAIL, VALKEYMODULE_NODE_ID_LEN, VALKEYMODULE_NODE_MYSELF,
     VALKEYMODULE_NODE_PFAIL, VALKEYMODULE_NODE_PRIMARY, VALKEYMODULE_OK,
-    ValkeyModule_GetClusterNodeInfo, ValkeyModule_GetMyClusterID, ValkeyModuleCtx,
+    ValkeyModule_GetClusterNodeInfo, ValkeyModuleCtx,
 };
 
 /// Maximum length of an IPv6 address string
-pub const INET6_ADDR_STR_LEN: usize = 46;
-
-/// Static buffer holding the current node's ID
-pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(||
-    // Safety: We ensure that the buffer is properly initialized with the current node ID
-    unsafe {
-        let node_id = ValkeyModule_GetMyClusterID
-            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
-        NodeId::from_raw(node_id)
-    });
+const INET6_ADDR_STR_LEN: usize = 46;
 
 #[derive(Debug, Clone)]
 pub(super) struct RawNodeInfo {
     pub id: NodeId,
-    ip_buf: [u8; INET6_ADDR_STR_LEN],
+    pub addr: IpAddr,
     pub master_id: NodeId,
     #[allow(unused_variables)]
     pub flags: u32,
@@ -42,23 +32,6 @@ impl Hash for RawNodeInfo {
 impl RawNodeInfo {
     pub fn is_failed(&self) -> bool {
         self.flags & (VALKEYMODULE_NODE_PFAIL | VALKEYMODULE_NODE_FAIL) != 0
-    }
-
-    pub fn addr(&self) -> Ipv6Addr {
-        let ip_str = self.ip();
-        // Parse the string as an IPv6 address
-        ip_str.parse::<Ipv6Addr>().unwrap_or(Ipv6Addr::LOCALHOST)
-    }
-
-    pub fn ip(&self) -> &str {
-        // Find the null terminator or use the full length
-        let end = self
-            .ip_buf
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(INET6_ADDR_STR_LEN);
-        // Convert bytes to string slice
-        std::str::from_utf8(&self.ip_buf[..end]).unwrap_or("::1")
     }
 }
 
@@ -101,10 +74,12 @@ pub fn get_cluster_node_info(ctx: &Context, node_id: *const c_char) -> Option<Ra
     } else {
         NodeLocation::Remote
     };
+    
+    let addr = parse_addr(&ip_buf);
 
     Some(RawNodeInfo {
         id: NodeId::from_raw(node_id),
-        ip_buf,
+        addr,
         port,
         master_id: NodeId::from_raw(master_buf.as_ptr() as *const c_char),
         flags,
@@ -113,13 +88,26 @@ pub fn get_cluster_node_info(ctx: &Context, node_id: *const c_char) -> Option<Ra
     })
 }
 
+fn parse_addr(buf: &[u8]) -> IpAddr {
+    // Find the null terminator or use the full length
+    let end = buf
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(INET6_ADDR_STR_LEN);
+    // Convert bytes to string slice
+    let str = std::str::from_utf8(&buf[..end]).unwrap_or("127.0.0.1");
+    // Parse the string as an IP address
+    str.parse::<IpAddr>().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+}
+
 pub(super) fn get_node_info(ctx: &Context, node_id: *const c_char) -> Option<RawNodeInfo> {
     let node_info = get_cluster_node_info(ctx, node_id)?;
     if node_info.is_failed() {
         log::debug!(
-            "Node {} ({}) is failing, skipping for fanout...",
+            "Node {} ({}:{}) is failing, skipping for fanout...",
             node_info.id,
-            node_info.ip()
+            node_info.addr,
+            node_info.port
         );
         return None;
     }
