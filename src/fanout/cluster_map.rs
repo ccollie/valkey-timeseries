@@ -12,7 +12,7 @@ use std::ffi::c_char;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::sync::{Arc, LazyLock, Mutex};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
@@ -74,7 +74,7 @@ impl Display for NodeLocation {
 /// Socket address for a node. Derived Eq/Hash so it can be used as a map key.
 #[derive(Copy, Clone, Debug, Eq)]
 pub struct SocketAddress {
-    pub primary_endpoint: Ipv4Addr,
+    pub primary_endpoint: IpAddr,
     pub port: u16,
 }
 
@@ -826,7 +826,7 @@ impl ClusterMap {
         let is_local_node = &node_id == my_node_id;
 
         let primary_endpoint = endpoint
-            .parse::<Ipv4Addr>()
+            .parse::<IpAddr>()
             .expect("Invalid node primary endpoint value");
 
         let socket_address = SocketAddress {
