@@ -1,6 +1,5 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::cluster_api::CURRENT_NODE_ID;
 use ahash::AHashMap;
 use log::warn;
 use logger_rust::log_debug;
@@ -14,9 +13,10 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
+    ValkeyModule_GetMyClusterID,
 };
 
 // Constants
@@ -276,6 +276,15 @@ impl Default for NodeId {
         NodeId([0; VALKEYMODULE_NODE_ID_LEN as usize + 1])
     }
 }
+
+/// Static buffer holding the current node's ID
+pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(||
+    // Safety: We ensure that the buffer is properly initialized with the current node ID
+    unsafe {
+        let node_id = ValkeyModule_GetMyClusterID
+            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
+        NodeId::from_raw(node_id)
+    });
 
 /// Information about a cluster node
 #[derive(Copy, Clone, PartialEq, Eq)]
