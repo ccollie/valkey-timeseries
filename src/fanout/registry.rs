@@ -31,9 +31,9 @@ impl FanoutOperationRegistry {
     /// - `OP`: The operation type implementing FanoutOperation
     pub fn register<OP>(&self) -> ValkeyResult<()>
     where
-        OP: FanoutOperation + 'static,
-        OP::Request: Serializable + Send + 'static,
-        OP::Response: Serializable + Send + 'static,
+        OP: FanoutOperation,
+        OP::Request: Serializable,
+        OP::Response: Serializable,
     {
         let name = OP::name();
 
@@ -128,9 +128,9 @@ static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> =
 /// - `OP`: The operation type implementing FanoutOperation
 pub fn register_fanout_operation<OP>() -> ValkeyResult<()>
 where
-    OP: FanoutOperation + 'static,
-    OP::Request: Serializable + Send + 'static,
-    OP::Response: Serializable + Send + 'static,
+    OP: FanoutOperation,
+    OP::Request: Serializable,
+    OP::Response: Serializable,
 {
     FANOUT_REGISTRY.register::<OP>()
 }
