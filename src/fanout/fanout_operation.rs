@@ -13,11 +13,10 @@ pub type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + S
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
 pub trait FanoutOperation: Default + Send + 'static {
-    /// The request type must be serializable and sendable across threads. Additionally, it must have
-    /// a static lifetime (that is, it does not contain non-static references).
-    type Request: Send + Serializable + 'static;
+    /// The request type must be serializable and sendable across threads.
+    type Request: Serializable;
     /// The response type must be sendable across threads.
-    type Response: Send + Serializable + 'static;
+    type Response: Serializable;
 
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
@@ -110,7 +109,7 @@ pub trait FanoutOperation: Default + Send + 'static {
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Log the error with context
-        log::error!(
+        log::warn!(
             "Fanout operation {}, failed for target {}: {error}",
             Self::name(),
             target.socket_address,
@@ -229,7 +228,7 @@ where
             };
 
             bc.set_reply_private_data(response_ctx);
-            bc.unblock_client();
+            bc.unblock();
         }
     }
 }
