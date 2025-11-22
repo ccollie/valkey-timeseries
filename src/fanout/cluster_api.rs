@@ -1,4 +1,4 @@
-use crate::fanout::cluster_map::{NodeId, NodeLocation, NodeRole, CURRENT_NODE_ID};
+use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeLocation, NodeRole};
 use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::raw::{c_char, c_int};
@@ -74,7 +74,7 @@ pub fn get_cluster_node_info(ctx: &Context, node_id: *const c_char) -> Option<Ra
     } else {
         NodeLocation::Remote
     };
-    
+
     let addr = parse_addr(&ip_buf);
 
     Some(RawNodeInfo {
@@ -97,7 +97,8 @@ fn parse_addr(buf: &[u8]) -> IpAddr {
     // Convert bytes to string slice
     let str = std::str::from_utf8(&buf[..end]).unwrap_or("127.0.0.1");
     // Parse the string as an IP address
-    str.parse::<IpAddr>().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    str.parse::<IpAddr>()
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
 
 pub(super) fn get_node_info(ctx: &Context, node_id: *const c_char) -> Option<RawNodeInfo> {
