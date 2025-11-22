@@ -1,8 +1,9 @@
+mod blocked_client;
 mod cluster_api;
 mod cluster_map;
-mod cluster_message;
 mod cluster_rpc;
 mod fanout_error;
+mod fanout_message;
 mod fanout_operation;
 mod registry;
 pub mod serialization;
