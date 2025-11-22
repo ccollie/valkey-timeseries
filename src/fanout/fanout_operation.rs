@@ -1,11 +1,11 @@
+use super::blocked_client::FanoutBlockedClient;
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
-use logger_rust::log_debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 pub type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
 
@@ -37,7 +37,7 @@ pub trait FanoutOperation: Default + Send + 'static {
         get_fanout_targets(ctx, FanoutTargetMode::Random)
     }
 
-    /// Execute the fanout operation across the cluster nodes.
+    /// Execute the fanout operation across cluster nodes.
     fn exec(self, ctx: &Context) -> ValkeyResult<ValkeyValue> {
         let timeout = self.get_timeout();
         let mut op = self;
@@ -60,20 +60,18 @@ pub trait FanoutOperation: Default + Send + 'static {
             }
         }
 
-        let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| match res {
-            Ok(buf) => match Self::Response::deserialize(buf) {
-                Ok(resp) => {
-                    log_debug!("Received response");
-                    state.on_response(resp, target);
-                }
+        let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| {
+            let Ok(buf) = res else {
+                state.on_error(res.err().unwrap(), target);
+                return;
+            };
+            match Self::Response::deserialize(buf) {
+                Ok(resp) => state.on_response(resp, target),
                 Err(e) => {
                     let err =
                         FanoutError::serialization(format!("Failed to deserialize response: {e}"));
                     state.on_error(err, target);
                 }
-            },
-            Err(err) => {
-                state.on_error(err, target);
             }
         };
 
@@ -90,7 +88,7 @@ pub trait FanoutOperation: Default + Send + 'static {
         response_handler: FanoutResponseCallback,
         timeout: Duration,
     ) -> ValkeyResult<()> {
-        // Consider using a byte pool here if serialization size is predictable
+        // Consider using a byte-pool buffer here if serialization size is predictable
         let mut buf = Vec::with_capacity(512);
         req.serialize(&mut buf);
 
@@ -123,6 +121,48 @@ pub trait FanoutOperation: Default + Send + 'static {
     /// This is where the final reply to the client should be generated.
     /// If there were any errors, the default implementation will generate an error reply.
     fn generate_reply(&mut self, ctx: &Context);
+
+    fn generate_timeout_reply(&self, ctx: &Context) -> Status {
+        ctx.reply_error_string("Unable to contact all cluster nodes")
+    }
+}
+
+pub(super) struct ResponseContext<OP>
+where
+    OP: FanoutOperation,
+{
+    operation: OP,
+    timed_out: bool,
+    errors: Vec<FanoutError>,
+}
+
+impl<OP> ResponseContext<OP>
+where
+    OP: FanoutOperation,
+{
+    pub(super) fn reply(&mut self, ctx: &Context) {
+        if self.timed_out {
+            self.operation.generate_timeout_reply(ctx);
+            return;
+        }
+        if self.errors.is_empty() {
+            self.operation.generate_reply(ctx);
+        } else {
+            let internal_error_log_prefix: String = format!(
+                "Failure(fanout) in operation {}: Internal error on node with address ",
+                OP::name()
+            );
+
+            let error_message = "Internal error found.".to_string();
+
+            for err in &self.errors {
+                ctx.log_warning(&format!("{internal_error_log_prefix} {err:?}"));
+            }
+
+            // Reply to a client with an error
+            ctx.reply_error_string(&error_message);
+        }
+    }
 }
 
 /// Internal structure to manage the state of an ongoing fanout operation.
@@ -133,9 +173,8 @@ where
     operation: OP,
     outstanding: usize,
     timed_out: bool,
-    already_responded: bool,
     errors: Vec<FanoutError>,
-    thread_ctx: ThreadSafeContext<BlockedClient>,
+    blocked_client: Option<FanoutBlockedClient<OP>>,
 }
 
 impl<OP> FanoutStateInner<OP>
@@ -152,13 +191,14 @@ where
             "Cluster Fanout: Outstanding RPCs is already zero in rpc_done"
         );
         self.outstanding = self.outstanding.saturating_sub(1);
-        if self.outstanding == 0 {
+        let done = self.outstanding == 0;
+        if done {
             self.on_completion();
         }
-        self.outstanding == 0
+        done
     }
 
-    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
+    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) -> bool {
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
         if error.kind == ErrorKind::Timeout {
@@ -170,7 +210,7 @@ where
         } else {
             self.errors.push(error);
         }
-        self.rpc_done();
+        self.rpc_done()
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) -> bool {
@@ -181,53 +221,22 @@ where
     }
 
     fn on_completion(&mut self) {
-        // No errors, generate a successful reply
-        let thread_ctx = &self.thread_ctx;
-        let ctx = thread_ctx.lock(); // ????? do we need to lock to reply?
-        self.generate_reply(&ctx);
-    }
+        if let Some(mut bc) = self.blocked_client.take() {
+            let response_ctx = ResponseContext {
+                operation: std::mem::take(&mut self.operation),
+                timed_out: self.timed_out,
+                errors: std::mem::take(&mut self.errors),
+            };
 
-    fn generate_reply(&mut self, ctx: &Context) {
-        if self.already_responded {
-            return;
+            bc.set_reply_private_data(response_ctx);
+            bc.unblock_client();
         }
-        self.already_responded = true;
-        if !self.timed_out && self.errors.is_empty() {
-            self.operation.generate_reply(ctx);
-        } else {
-            self.generate_error_reply(ctx);
-        }
-    }
-
-    fn generate_error_reply(&self, ctx: &Context) {
-        let internal_error_log_prefix: String = format!(
-            "Failure(fanout) in operation {}: Internal error on node with address ",
-            OP::name()
-        );
-
-        let mut error_message = String::new();
-
-        if self.timed_out {
-            error_message.push_str("Operation timed out.");
-        } else if !self.errors.is_empty() {
-            error_message = "Internal error found.".to_string();
-            for err in &self.errors {
-                ctx.log_warning(&format!("{internal_error_log_prefix}{err:?}"));
-            }
-        }
-
-        if error_message.is_empty() {
-            error_message = "Unknown error".to_string();
-        }
-
-        // Reply to a client with an error
-        ctx.reply_error_string(&error_message);
     }
 }
 
 /// Internal structure to manage the state of an ongoing fanout operation.
 /// It tracks outstanding RPCs, errors, and coordinates the final reply generation.
-pub(crate) struct FanoutState<OP>
+struct FanoutState<OP>
 where
     OP: FanoutOperation,
 {
@@ -240,36 +249,35 @@ impl<OP> FanoutState<OP>
 where
     OP: FanoutOperation,
 {
-    pub fn new(context: &Context, operation: OP, outstanding: usize) -> Self {
-        let blocked_client = context.block_client();
+    fn new(context: &Context, operation: OP, outstanding: usize) -> Self {
+        let blocked_client = FanoutBlockedClient::new(context);
         Self {
             inner: Mutex::new(FanoutStateInner {
                 operation,
                 outstanding,
                 errors: Vec::new(),
                 timed_out: false,
-                already_responded: false,
-                thread_ctx: ThreadSafeContext::with_blocked_client(blocked_client),
+                blocked_client: Some(blocked_client),
             }),
         }
     }
 
-    pub fn generate_request(&mut self) -> OP::Request {
+    fn generate_request(&mut self) -> OP::Request {
         let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
         inner.generate_request()
     }
 
-    pub fn on_error(&self, error: FanoutError, target: &NodeInfo) {
+    fn on_error(&self, error: FanoutError, target: &NodeInfo) {
         let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
         inner.on_error(error, target);
     }
 
-    pub fn on_response(&self, resp: OP::Response, target: &NodeInfo) {
+    fn on_response(&self, resp: OP::Response, target: &NodeInfo) {
         let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
         inner.on_response(resp, target);
     }
 
-    pub fn handle_local_request(&self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
+    fn handle_local_request(&self, ctx: &Context, request: OP::Request, target: &NodeInfo) {
         match OP::get_local_response(ctx, request) {
             Ok(response) => self.on_response(response, target),
             Err(err) => self.on_error(err.into(), target),
