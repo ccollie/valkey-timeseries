@@ -3,13 +3,14 @@ use crate::common::encoding::{
     try_read_signed_varint, try_read_string, try_read_uvarint, write_byte_slice,
     write_signed_varint, write_uvarint,
 };
-use valkey_module::{ValkeyError, ValkeyResult};
+use crate::fanout::{FanoutError, FanoutResult};
 
-pub const CLUSTER_MESSAGE_VERSION: u16 = 1;
-pub const CLUSTER_MESSAGE_MARKER: u32 = 0xBADCAB;
+pub const FANOUT_MESSAGE_VERSION: u16 = 1;
+pub const FANOUT_MESSAGE_MARKER: u32 = 0xBADCAB;
 
 /// Header for messages exchanged between cluster nodes.
-pub(super) struct ClusterMessageHeader {
+#[derive(Debug, Clone)]
+pub(super) struct FanoutMessageHeader {
     pub version: u16,
     /// Unique ID for this request, used to match responses.
     pub request_id: u64,
@@ -21,12 +22,12 @@ pub(super) struct ClusterMessageHeader {
     pub reserved: u16,
 }
 
-impl ClusterMessageHeader {
+impl FanoutMessageHeader {
     pub fn serialize(&self, buf: &mut Vec<u8>) {
         // Start with the marker
         write_marker(buf);
 
-        // Encode version as 2 bytes (u16)
+        // Encode the version as 2 bytes (u16)
         write_uvarint(buf, self.version as u64);
 
         // Encode request_id as uvarint
@@ -42,87 +43,99 @@ impl ClusterMessageHeader {
     }
 
     /// Deserializes a MessageHeader from the beginning of the buffer.
-    /// Returns the deserialized header and the number of bytes consumed.
-    /// Returns None if the buffer is too small.
-    pub fn deserialize(buf: &[u8]) -> ValkeyResult<(Self, &[u8])> {
+    /// Returns the deserialized header and the payload buffer.
+    pub fn deserialize(buf: &[u8]) -> FanoutResult<(Self, &[u8])> {
         // Read and validate the marker
         let mut buf = skip_marker(buf)?;
 
-        let version = read_uvarint(&mut buf)?;
+        let version = read_uvarint(&mut buf)
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?
+            as u16;
 
         // Decode request_id as uvarint
         let request_id = read_uvarint(&mut buf)?;
 
         let db = try_read_signed_varint(&mut buf)
-            .map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))? as i32;
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?
+            as i32;
 
         // Read handler as a string
-        let handler =
-            try_read_string(&mut buf).map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))?;
+        let handler = try_read_string(&mut buf)
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
 
         // Read msg_type and reserved as direct bytes
-        let reserved = read_uvarint(&mut buf)?;
+        let reserved = read_uvarint(&mut buf)? as u16;
 
         Ok((
-            ClusterMessageHeader {
-                version: version as u16,
+            FanoutMessageHeader {
+                version,
                 request_id,
                 handler,
                 db,
-                reserved: reserved as u16,
+                reserved,
             },
             buf,
         ))
     }
 }
 
-fn read_uvarint(input: &mut &[u8]) -> ValkeyResult<u64> {
-    try_read_uvarint(input).map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))
+fn read_uvarint(input: &mut &[u8]) -> FanoutResult<u64> {
+    try_read_uvarint(input).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))
 }
 
 fn write_marker(slice: &mut Vec<u8>) {
-    let bytes = CLUSTER_MESSAGE_MARKER.to_le_bytes();
+    let bytes = FANOUT_MESSAGE_MARKER.to_le_bytes();
     slice.extend_from_slice(bytes.as_ref());
 }
 
-fn skip_marker(input: &[u8]) -> ValkeyResult<&[u8]> {
-    let size = size_of_val(&CLUSTER_MESSAGE_MARKER);
+fn skip_marker(input: &[u8]) -> FanoutResult<&[u8]> {
+    let size = size_of_val(&FANOUT_MESSAGE_MARKER);
     if input.len() < size {
-        return Err(ValkeyError::Str(INVALID_MESSAGE_ERROR));
+        return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
     }
     let (int_bytes, rest) = input.split_at(size);
     let marker = u32::from_le_bytes(
         int_bytes
             .try_into()
-            .expect("slice with incorrect length reading cluster message marker"),
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?,
     );
-    if marker != CLUSTER_MESSAGE_MARKER {
-        return Err(ValkeyError::Str(INVALID_MESSAGE_ERROR));
+    if marker != FANOUT_MESSAGE_MARKER {
+        return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
     }
 
     Ok(rest)
 }
 
-pub(super) struct RequestMessage<'a> {
+pub(super) struct FanoutMessage<'a> {
     pub buf: &'a [u8],
     pub request_id: u64,
     pub handler: String,
     pub db: i32,
 }
 
-impl<'a> RequestMessage<'a> {
-    pub fn new(buf: &'a [u8]) -> ValkeyResult<Self> {
-        let (header, buf) = ClusterMessageHeader::deserialize(buf)?;
-        let ClusterMessageHeader {
+impl<'a> FanoutMessage<'a> {
+    /// Creates a new FanoutMessage by parsing the provided buffer.
+    /// Returns an error if the buffer is invalid or cannot be parsed.
+    ///
+    /// # Arguments
+    /// - `buf`: The byte slice containing the serialized request message.
+    ///
+    /// # Returns
+    /// A Result containing the FanoutMessage or a FanoutError.
+    ///
+    /// ## Note
+    /// An empty payload is possible because of protobuf encoding of default values.
+    /// A prost struct with all fields at their default values (e.g., all numeric fields are 0,
+    /// booleans are false, strings are "", etc.) serializes into an empty byte buffer.
+    /// There is no data to write because everything is implicit.
+    pub fn new(buf: &'a [u8]) -> FanoutResult<Self> {
+        let (header, buf) = FanoutMessageHeader::deserialize(buf)?;
+        let FanoutMessageHeader {
             request_id,
             db,
             handler,
             ..
         } = header;
-
-        if buf.is_empty() {
-            return Err(ValkeyError::Str("TSDB: empty cluster message buffer"));
-        }
 
         Ok(Self {
             buf,
@@ -140,8 +153,8 @@ pub(super) fn serialize_request_message(
     handler: &str,
     serialized_request: &[u8],
 ) {
-    let header = ClusterMessageHeader {
-        version: CLUSTER_MESSAGE_VERSION,
+    let header = FanoutMessageHeader {
+        version: FANOUT_MESSAGE_VERSION,
         request_id,
         db,
         handler: handler.to_string(),
@@ -154,11 +167,12 @@ pub(super) fn serialize_request_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fanout::ErrorKind;
 
     #[test]
     fn test_cluster_message_header_serialize_deserialize_basic() {
-        let header = ClusterMessageHeader {
-            version: CLUSTER_MESSAGE_VERSION,
+        let header = FanoutMessageHeader {
+            version: FANOUT_MESSAGE_VERSION,
             request_id: 12345,
             db: 0,
             handler: "test_handler".to_string(),
@@ -168,9 +182,9 @@ mod tests {
         let mut buf = Vec::new();
         header.serialize(&mut buf);
 
-        let (deserialized_header, remaining_buf) = ClusterMessageHeader::deserialize(&buf).unwrap();
+        let (deserialized_header, remaining_buf) = FanoutMessageHeader::deserialize(&buf).unwrap();
 
-        assert_eq!(deserialized_header.version, CLUSTER_MESSAGE_VERSION);
+        assert_eq!(deserialized_header.version, FANOUT_MESSAGE_VERSION);
         assert_eq!(deserialized_header.request_id, 12345);
         assert_eq!(deserialized_header.db, 0);
         assert_eq!(deserialized_header.reserved, 0);
@@ -180,8 +194,8 @@ mod tests {
 
     #[test]
     fn test_cluster_message_header_serialize_deserialize_with_negative_db() {
-        let header = ClusterMessageHeader {
-            version: CLUSTER_MESSAGE_VERSION,
+        let header = FanoutMessageHeader {
+            version: FANOUT_MESSAGE_VERSION,
             request_id: u64::MAX,
             db: -15,
             handler: "negative_db_handler".to_string(),
@@ -191,9 +205,9 @@ mod tests {
         let mut buf = Vec::new();
         header.serialize(&mut buf);
 
-        let (deserialized_header, remaining_buf) = ClusterMessageHeader::deserialize(&buf).unwrap();
+        let (deserialized_header, remaining_buf) = FanoutMessageHeader::deserialize(&buf).unwrap();
 
-        assert_eq!(deserialized_header.version, CLUSTER_MESSAGE_VERSION);
+        assert_eq!(deserialized_header.version, FANOUT_MESSAGE_VERSION);
         assert_eq!(deserialized_header.request_id, u64::MAX);
         assert_eq!(deserialized_header.db, -15);
         assert_eq!(deserialized_header.reserved, 42);
@@ -203,8 +217,8 @@ mod tests {
 
     #[test]
     fn test_cluster_message_header_deserialize_with_remaining_data() {
-        let header = ClusterMessageHeader {
-            version: CLUSTER_MESSAGE_VERSION,
+        let header = FanoutMessageHeader {
+            version: FANOUT_MESSAGE_VERSION,
             request_id: 999,
             db: 5,
             handler: "handler_with_extra".to_string(),
@@ -215,9 +229,9 @@ mod tests {
         header.serialize(&mut buf);
         buf.extend_from_slice(b"extra_data");
 
-        let (deserialized_header, remaining_buf) = ClusterMessageHeader::deserialize(&buf).unwrap();
+        let (deserialized_header, remaining_buf) = FanoutMessageHeader::deserialize(&buf).unwrap();
 
-        assert_eq!(deserialized_header.version, CLUSTER_MESSAGE_VERSION);
+        assert_eq!(deserialized_header.version, FANOUT_MESSAGE_VERSION);
         assert_eq!(deserialized_header.request_id, 999);
         assert_eq!(deserialized_header.db, 5);
         assert_eq!(deserialized_header.reserved, 1);
@@ -228,14 +242,14 @@ mod tests {
     #[test]
     fn test_cluster_message_header_deserialize_empty_buffer() {
         let buf = &[];
-        let result = ClusterMessageHeader::deserialize(buf);
+        let result = FanoutMessageHeader::deserialize(buf);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_cluster_message_header_deserialize_buffer_too_small() {
         let buf = &[0x01, 0x02, 0x03]; // Too small for a complete header
-        let result = ClusterMessageHeader::deserialize(buf);
+        let result = FanoutMessageHeader::deserialize(buf);
         assert!(result.is_err());
     }
 
@@ -250,10 +264,10 @@ mod tests {
         // Add some dummy data for version, request_id, db, reserved
         buf.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
 
-        let result = ClusterMessageHeader::deserialize(&buf);
+        let result = FanoutMessageHeader::deserialize(&buf);
         assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
+        if let Err(res) = result {
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
         }
     }
 
@@ -262,13 +276,13 @@ mod tests {
         let mut buf = Vec::new();
 
         // Write correct marker but incomplete data
-        buf.extend_from_slice(&CLUSTER_MESSAGE_MARKER.to_le_bytes());
+        buf.extend_from_slice(&FANOUT_MESSAGE_MARKER.to_le_bytes());
         // No version data
 
-        let result = ClusterMessageHeader::deserialize(&buf);
+        let result = FanoutMessageHeader::deserialize(&buf);
         assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
+        if let Err(res) = result {
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
         }
     }
 
@@ -276,15 +290,23 @@ mod tests {
     fn test_cluster_message_header_deserialize_incomplete_request_id() {
         let mut buf = Vec::new();
 
-        // Write correct marker and version
-        buf.extend_from_slice(&CLUSTER_MESSAGE_MARKER.to_le_bytes());
+        // Write the correct marker and version
+        buf.extend_from_slice(&FANOUT_MESSAGE_MARKER.to_le_bytes());
         buf.push(1); // version as varint
         // Missing request_id and other fields
 
-        let result = ClusterMessageHeader::deserialize(&buf);
+        let result = FanoutMessageHeader::deserialize(&buf);
         assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
+        if let Err(res) = result {
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
+        }
+    }
+
+    fn assert_serialization_error(result: FanoutResult<(FanoutMessageHeader, &[u8])>) {
+        assert!(result.is_err());
+        if let Err(res) = result {
+            assert_eq!(res.kind, ErrorKind::Serialization);
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
         }
     }
 
@@ -293,34 +315,28 @@ mod tests {
         let mut buf = Vec::new();
 
         // Write the correct marker, version, and request_id
-        buf.extend_from_slice(&CLUSTER_MESSAGE_MARKER.to_le_bytes());
+        buf.extend_from_slice(&FANOUT_MESSAGE_MARKER.to_le_bytes());
         buf.push(1); // version as varint
         buf.push(42); // request_id as varint
         // Missing db and reserved fields
 
-        let result = ClusterMessageHeader::deserialize(&buf);
-        assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
-        }
+        let result = FanoutMessageHeader::deserialize(&buf);
+        assert_serialization_error(result);
     }
 
     #[test]
     fn test_cluster_message_header_deserialize_incomplete_reserved() {
         let mut buf = Vec::new();
 
-        // Write correct marker, version, request_id, and db
-        buf.extend_from_slice(&CLUSTER_MESSAGE_MARKER.to_le_bytes());
+        // Write the correct marker, version, request_id, and db
+        buf.extend_from_slice(&FANOUT_MESSAGE_MARKER.to_le_bytes());
         buf.push(1); // version as varint
         buf.push(42); // request_id as varint
         buf.push(0); // db as signed varint (0 encodes as 0)
         // Missing reserved field
 
-        let result = ClusterMessageHeader::deserialize(&buf);
-        assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
-        }
+        let result = FanoutMessageHeader::deserialize(&buf);
+        assert_serialization_error(result);
     }
 
     #[test]
@@ -330,13 +346,13 @@ mod tests {
 
         assert_eq!(buf.len(), 4);
         let marker = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        assert_eq!(marker, CLUSTER_MESSAGE_MARKER);
+        assert_eq!(marker, FANOUT_MESSAGE_MARKER);
     }
 
     #[test]
     fn test_skip_marker_valid() {
         let mut buf = Vec::new();
-        buf.extend_from_slice(&CLUSTER_MESSAGE_MARKER.to_le_bytes());
+        buf.extend_from_slice(&FANOUT_MESSAGE_MARKER.to_le_bytes());
         buf.extend_from_slice(b"remaining_data");
 
         let result = skip_marker(&buf);
@@ -353,8 +369,9 @@ mod tests {
 
         let result = skip_marker(&buf);
         assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
+        if let Err(res) = result {
+            assert_eq!(res.kind, ErrorKind::Serialization);
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
         }
     }
 
@@ -364,8 +381,9 @@ mod tests {
 
         let result = skip_marker(buf);
         assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
+        if let Err(res) = result {
+            assert_eq!(res.kind, ErrorKind::Serialization);
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
         }
     }
 
@@ -375,8 +393,9 @@ mod tests {
 
         let result = skip_marker(buf);
         assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, INVALID_MESSAGE_ERROR);
+        if let Err(res) = result {
+            assert_eq!(res.kind, ErrorKind::Serialization);
+            assert_eq!(res.message, INVALID_MESSAGE_ERROR);
         }
     }
 
@@ -388,9 +407,9 @@ mod tests {
         serialize_request_message(&mut buf, 123, 5, "handler", request_data);
 
         // Verify we can deserialize the header
-        let (header, remaining) = ClusterMessageHeader::deserialize(&buf).unwrap();
+        let (header, remaining) = FanoutMessageHeader::deserialize(&buf).unwrap();
 
-        assert_eq!(header.version, CLUSTER_MESSAGE_VERSION);
+        assert_eq!(header.version, FANOUT_MESSAGE_VERSION);
         assert_eq!(header.request_id, 123);
         assert_eq!(header.db, 5);
         assert_eq!(header.reserved, 0);
@@ -405,7 +424,7 @@ mod tests {
 
         serialize_request_message(&mut buf, 456, -3, "test_handler", request_data);
 
-        let request_message = RequestMessage::new(&buf).unwrap();
+        let request_message = FanoutMessage::new(&buf).unwrap();
 
         assert_eq!(request_message.request_id, 456);
         assert_eq!(request_message.db, -3);
@@ -414,24 +433,10 @@ mod tests {
     }
 
     #[test]
-    fn test_request_message_new_empty_buffer() {
-        let mut buf = Vec::new();
-        let empty_request_data = b"";
-
-        serialize_request_message(&mut buf, 789, 1, "empty_handler", empty_request_data);
-
-        let result = RequestMessage::new(&buf);
-        assert!(result.is_err());
-        if let Err(ValkeyError::Str(msg)) = result {
-            assert_eq!(msg, "TSDB: empty cluster message buffer");
-        }
-    }
-
-    #[test]
     fn test_request_message_new_invalid_header() {
         let buf = b"invalid_data";
 
-        let result = RequestMessage::new(buf);
+        let result = FanoutMessage::new(buf);
         assert!(result.is_err());
     }
 
@@ -449,7 +454,7 @@ mod tests {
         ];
 
         for (version, request_id, db, reserved, handler) in test_cases {
-            let original_header = ClusterMessageHeader {
+            let original_header = FanoutMessageHeader {
                 version,
                 request_id,
                 db,
@@ -461,7 +466,7 @@ mod tests {
             original_header.serialize(&mut buf);
 
             let (deserialized_header, remaining_buf) =
-                ClusterMessageHeader::deserialize(&buf).unwrap();
+                FanoutMessageHeader::deserialize(&buf).unwrap();
 
             assert_eq!(deserialized_header.version, original_header.version);
             assert_eq!(deserialized_header.request_id, original_header.request_id);
