@@ -106,10 +106,14 @@ fn skip_marker(input: &[u8]) -> FanoutResult<&[u8]> {
     Ok(rest)
 }
 
+/// Represents a decoded fanout message with its header and payload.
 pub(super) struct FanoutMessage<'a> {
     pub buf: &'a [u8],
+    /// Unique ID for this request, used to match responses.
     pub request_id: u64,
+    /// The name of the handler to process this message.
     pub handler: String,
+    /// The database to use for this request.
     pub db: i32,
 }
 
