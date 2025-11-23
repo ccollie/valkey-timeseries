@@ -208,7 +208,8 @@ where
     OP: FanoutOperation,
 {
     fn new(context: &Context, operation: OP, outstanding: usize) -> Self {
-        let blocked_client = FanoutBlockedClient::new(context);
+        let mut blocked_client = FanoutBlockedClient::new(context);
+        blocked_client.measure_time_start();
         Self {
             inner: Mutex::new(FanoutStateInner {
                 operation,
