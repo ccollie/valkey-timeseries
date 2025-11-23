@@ -1,20 +1,20 @@
-import os
-import pytest
-
-from common import LOGS_DIR
-from valkeytestframework.valkey_test_case import ValkeyTestCase
-from valkeytestframework.valkey_test_case import ReplicationTestCase
-from valkeytestframework.valkey_test_case import ValkeyServerHandle
-from valkeytestframework.util import waiters
-from valkey import ResponseError
-from valkey.cluster import ValkeyCluster, ClusterNode
-from valkey.client import Valkey
-from valkey.connection import Connection
-from typing import List, Tuple
-import random
-import string
 import logging
+import os
+import random
 import shutil
+import string
+from typing import List
+
+import pytest
+from valkey import ResponseError
+from valkey.client import Valkey
+from valkey.cluster import ValkeyCluster, ClusterNode
+from valkey.connection import Connection
+
+from common import LOGS_DIR, VALKEY_SERVER_PATH
+from valkeytestframework.util import waiters
+from valkeytestframework.valkey_test_case import ValkeyServerHandle
+from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 
 class Node:
@@ -153,8 +153,11 @@ class ValkeyTimeseriesTestCaseCommon(ValkeyTestCase):
     ) -> (ValkeyServerHandle, Valkey, str):
         """Launch server node and return a tuple of the server handle, a client to the server
         and the log file path"""
-        server_path = os.getenv("VALKEY_SERVER_PATH")
+        server_path = VALKEY_SERVER_PATH
+
         testdir = f"{LOGS_DIR}/{test_name}"
+        print(f"Starting Valkey server at port {port} in dir {testdir}")
+        print(f"Using server path: {server_path}")
 
         os.makedirs(testdir, exist_ok=True)
         curdir = os.getcwd()

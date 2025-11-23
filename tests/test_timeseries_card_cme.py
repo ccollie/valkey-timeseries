@@ -4,8 +4,7 @@ Simplified TS.CARD cluster mode integration tests.
 
 import pytest
 from valkey import ResponseError, ValkeyCluster, Valkey
-from valkeytestframework.conftest import resource_port_tracker
-from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
+
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 
 
@@ -16,27 +15,28 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
 
     def test_cluster_mode_filter_requirement(self):
         """Test that cluster mode enforces filter requirements"""
-        
+
+        cluster_client: ValkeyCluster = self.new_cluster_client()
+        client: Valkey = self.new_client_for_primary(0)
+
         # Set up basic data
-        self.client.execute_command('TS.CREATE', 'metric:cpu', 'LABELS', 'type', 'cpu', 'host', 'server1')
-        self.client.execute_command('TS.CREATE', 'metric:memory', 'LABELS', 'type', 'memory', 'host', 'server1')
-        self.client.execute_command('TS.ADD', 'metric:cpu', 1000, 50.0)
-        self.client.execute_command('TS.ADD', 'metric:memory', 1000, 80.0)
-        
-        # In single node mode, TS.CARD works without filters
-        result = self.client.execute_command('TS.CARD')
-        assert result == 2
+        cluster_client.execute_command('TS.CREATE', 'metric:cpu', 'LABELS', 'type', 'cpu', 'host', 'server1')
+        cluster_client.execute_command('TS.CREATE', 'metric:memory', 'LABELS', 'type', 'memory', 'host', 'server1')
+        cluster_client.execute_command('TS.ADD', 'metric:cpu', 1000, 50.0)
+        cluster_client.execute_command('TS.ADD', 'metric:memory', 1000, 80.0)
+
+        with pytest.raises(ResponseError, match="TS.CARD in cluster mode requires at least one matcher"):
+            client.execute_command('TS.CARD')
         
         # But in cluster mode, filters are required - simulate the behavior
         # All these patterns would work in cluster mode:
-        
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'type=cpu')
+        result = client.execute_command('TS.CARD', 'FILTER', 'type=cpu')
         assert result == 1
         
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'host=server1')
+        result = client.execute_command('TS.CARD', 'FILTER', 'host=server1')
         assert result == 2
         
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'type!=memory')
+        result = client.execute_command('TS.CARD', 'FILTER', 'type!=memory')
         assert result == 1
 
 
@@ -180,29 +180,32 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
 
     def test_cluster_edge_cases(self):
         """Test edge cases and error conditions in cluster mode"""
-        
+
+        cluster_client: ValkeyCluster = self.new_cluster_client()
+        client: Valkey = self.new_client_for_primary(0)
+
         # Create minimal data set
-        self.client.execute_command('TS.CREATE', 'test:{a}:1', 'LABELS', 'group', 'test', 'id', '1')
-        self.client.execute_command('TS.CREATE', 'test:{b}:2', 'LABELS', 'group', 'test', 'id', '2')
-        self.client.execute_command('TS.ADD', 'test:{a}:1', 1000, 1)
+        client.execute_command('TS.CREATE', 'test:{a}:1', 'LABELS', 'group', 'test', 'id', '1')
+        client.execute_command('TS.CREATE', 'test:{b}:2', 'LABELS', 'group', 'test', 'id', '2')
+        client.execute_command('TS.ADD', 'test:{a}:1', 1000, 1)
         
         # Test queries that return zero results
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'group=nonexistent')
+        result = client.execute_command('TS.CARD', 'FILTER', 'group=nonexistent')
         assert result == 0
         
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'id=999')
+        result = client.execute_command('TS.CARD', 'FILTER', 'id=999')
         assert result == 0
         
         # Test with series that have no data points
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'id=2')
+        result = client.execute_command('TS.CARD', 'FILTER', 'id=2')
         assert result == 1  # Series exists even without data
         
         # Test date range with no matching data
-        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 5000, 6000, 'FILTER', 'group=test')
+        result = client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 5000, 6000, 'FILTER', 'group=test')
         assert result == 0  # No data in this time range
         
         # Test date range that includes only one series
-        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 1000, 'FILTER', 'group=test')
+        result = client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 1000, 'FILTER', 'group=test')
         assert result == 1  # Only test:{a}:1 has data at timestamp 1000
 
     def test_cluster_scale_simulation(self):
