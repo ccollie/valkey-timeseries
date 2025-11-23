@@ -49,17 +49,20 @@ impl InFlightRequest {
         }
     }
 
-    fn handle_response(&self, _ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
+    fn get_target_node(&self, sender_id: *const c_char) -> &NodeInfo {
         // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
         let sender = NodeId::from_raw(sender_id);
 
         // Binary search to find the NodeInfo associated with the target
-        let target_node = self
-            .targets
+        self.targets
             .binary_search_by(|node| node.id.cmp(&sender))
             .ok()
             .and_then(|idx| self.targets.get(idx))
-            .expect("cluster rpc: target node lookup failed");
+            .expect("cluster rpc: target node lookup failed")
+    }
+
+    fn handle_response(&self, _ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
+        let target_node = self.get_target_node(sender_id);
 
         (self.response_handler)(resp, target_node);
     }
