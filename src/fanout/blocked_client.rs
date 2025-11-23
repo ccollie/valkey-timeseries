@@ -61,6 +61,9 @@ where
                 ctx.ctx as *mut ValkeyModuleCtx,
                 Some(reply_callback::<T>),
                 None,
+                // NOTE: We do not need a free callback because we handle freeing the data in the
+                // reply callback. if FanoutOperation is made to not require non 'static, we need to
+                // provide a free callback here to avoid memory leaks.
                 None, // Some(free_callback::<T>),
                 NO_TIMEOUT,
             )
