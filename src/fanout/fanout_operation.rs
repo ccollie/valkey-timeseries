@@ -1,4 +1,4 @@
-use super::blocked_client::FanoutBlockedClient;
+use super::blocked_client::{BlockedClientPrivateData, FanoutBlockedClient};
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
@@ -124,43 +124,10 @@ pub trait FanoutOperation: Default + Send + 'static {
     fn generate_timeout_reply(&self, ctx: &Context) -> Status {
         ctx.reply_error_string("Unable to contact all cluster nodes")
     }
-}
 
-pub(super) struct ResponseContext<OP>
-where
-    OP: FanoutOperation,
-{
-    operation: OP,
-    timed_out: bool,
-    errors: Vec<FanoutError>,
-}
-
-impl<OP> ResponseContext<OP>
-where
-    OP: FanoutOperation,
-{
-    pub(super) fn reply(&mut self, ctx: &Context) {
-        if self.timed_out {
-            self.operation.generate_timeout_reply(ctx);
-            return;
-        }
-        if self.errors.is_empty() {
-            self.operation.generate_reply(ctx);
-        } else {
-            let internal_error_log_prefix: String = format!(
-                "Failure(fanout) in operation {}: Internal error on node with address ",
-                OP::name()
-            );
-
-            let error_message = "Internal error found.".to_string();
-
-            for err in &self.errors {
-                ctx.log_warning(&format!("{internal_error_log_prefix} {err:?}"));
-            }
-
-            // Reply to a client with an error
-            ctx.reply_error_string(&error_message);
-        }
+    fn generate_error_reply(&self, ctx: &Context) {
+        let message = "Internal error found.";
+        ctx.reply_error_string(message);
     }
 }
 
@@ -172,7 +139,7 @@ where
     operation: OP,
     outstanding: usize,
     timed_out: bool,
-    errors: Vec<FanoutError>,
+    error_count: usize,
     blocked_client: Option<FanoutBlockedClient<OP>>,
 }
 
@@ -184,35 +151,26 @@ where
         self.operation.generate_request()
     }
 
-    fn rpc_done(&mut self) -> bool {
+    fn rpc_done(&mut self) {
         assert!(
             self.outstanding > 0,
             "Cluster Fanout: Outstanding RPCs is already zero in rpc_done"
         );
         self.outstanding = self.outstanding.saturating_sub(1);
-        let done = self.outstanding == 0;
-        if done {
+        if self.outstanding == 0 {
             self.on_completion();
         }
-        done
     }
 
-    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) -> bool {
+    fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
-        if error.kind == ErrorKind::Timeout {
-            // Record the first timeout error for logging/debugging purposes
-            if !self.timed_out {
-                self.errors.push(error);
-                self.timed_out = true;
-            }
-        } else {
-            self.errors.push(error);
-        }
-        self.rpc_done()
+        self.error_count += 1;
+        self.timed_out |= error.kind == ErrorKind::Timeout;
+        self.rpc_done();
     }
 
-    fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) -> bool {
+    fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
         if !self.timed_out {
             self.operation.on_response(resp, target);
         }
@@ -221,14 +179,15 @@ where
 
     fn on_completion(&mut self) {
         if let Some(mut bc) = self.blocked_client.take() {
-            let response_ctx = ResponseContext {
-                operation: std::mem::take(&mut self.operation),
-                timed_out: self.timed_out,
-                errors: std::mem::take(&mut self.errors),
-            };
+            let response_ctx = BlockedClientPrivateData::new(
+                std::mem::take(&mut self.operation),
+                self.timed_out,
+                self.error_count,
+            );
 
             bc.set_reply_private_data(response_ctx);
-            bc.unblock();
+            // unblock will be called by bc::drop()
+            // bc.unblock();
         }
     }
 }
@@ -254,7 +213,7 @@ where
             inner: Mutex::new(FanoutStateInner {
                 operation,
                 outstanding,
-                errors: Vec::new(),
+                error_count: 0,
                 timed_out: false,
                 blocked_client: Some(blocked_client),
             }),
