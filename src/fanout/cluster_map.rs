@@ -2,7 +2,6 @@ use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use ahash::AHashMap;
 use log::warn;
-use logger_rust::log_debug;
 use rand::{Rng, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::borrow::Borrow;
@@ -874,8 +873,6 @@ impl ClusterMap {
         if self.slot_to_shard_map.is_empty() {
             return false;
         }
-        let keys = self.slot_to_shard_map.ranges();
-        log_debug!("{keys:?}");
 
         let mut expected_next: u16 = 0;
         for range in self.slot_to_shard_map.ranges() {
