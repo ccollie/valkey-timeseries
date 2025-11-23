@@ -1,3 +1,4 @@
+use crate::common::context::is_real_user_client;
 use crate::error_consts;
 use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
@@ -23,6 +24,9 @@ pub fn check_key_permissions(
     key: &ValkeyString,
     permissions: &AclPermissions,
 ) -> ValkeyResult<()> {
+    if !is_real_user_client(ctx) {
+        return Ok(());
+    }
     let user = ctx.get_current_user();
     if ctx
         .acl_check_key_permission(&user, key, permissions)

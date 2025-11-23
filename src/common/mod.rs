@@ -1,6 +1,7 @@
 pub mod binary_search;
 pub mod binop;
 pub mod constants;
+pub mod context;
 pub mod db;
 pub mod encoding;
 pub mod hash;
