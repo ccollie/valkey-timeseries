@@ -1,22 +1,51 @@
 use crate::fanout::FanoutOperation;
-use crate::fanout::fanout_operation::ResponseContext;
-use std::ffi::{CString, c_void};
+use std::ffi::c_void;
 use std::os::raw::c_int;
 use valkey_module::{
     Context, ValkeyModule_BlockClient, ValkeyModule_BlockedClientMeasureTimeEnd,
     ValkeyModule_BlockedClientMeasureTimeStart, ValkeyModule_GetBlockedClientPrivateData,
-    ValkeyModule_ReplyWithError, ValkeyModule_UnblockClient, ValkeyModuleCtx, ValkeyModuleString,
-    raw,
+    ValkeyModule_UnblockClient, ValkeyModuleCtx, ValkeyModuleString, raw,
 };
 
 const NO_TIMEOUT: i64 = 86400000;
 
+#[repr(C)]
+pub(super) struct BlockedClientPrivateData<OP>
+where
+    OP: FanoutOperation,
+{
+    operation: OP,
+    timed_out: bool,
+    error_count: usize,
+}
+
+impl<OP> BlockedClientPrivateData<OP>
+where
+    OP: FanoutOperation,
+{
+    pub(super) fn new(operation: OP, timed_out: bool, error_count: usize) -> Self {
+        Self {
+            operation,
+            timed_out,
+            error_count,
+        }
+    }
+    fn reply(&mut self, ctx: &Context) {
+        if self.timed_out {
+            self.operation.generate_timeout_reply(ctx);
+        } else if self.error_count > 0 {
+            self.operation.generate_error_reply(ctx);
+        } else {
+            self.operation.generate_reply(ctx);
+        }
+    }
+}
+
 /// High-level wrapper for a blocked client.
 pub(super) struct FanoutBlockedClient<T: FanoutOperation> {
     inner: *mut raw::ValkeyModuleBlockedClient,
-    data: Option<Box<ResponseContext<T>>>,
+    data: Option<Box<BlockedClientPrivateData<T>>>,
     time_measurement_ongoing: bool,
-    unblocked: bool,
 }
 
 // We need to be able to send the inner pointer to another thread
@@ -32,44 +61,30 @@ where
                 ctx.ctx as *mut ValkeyModuleCtx,
                 Some(reply_callback::<T>),
                 None,
-                Some(free_callback::<T>),
+                None, // Some(free_callback::<T>),
                 NO_TIMEOUT,
             )
         };
         Self {
             inner: bc_ptr,
             time_measurement_ongoing: false,
-            unblocked: false,
             data: None,
         }
     }
 
     /// Set the private data that will be passed back on unblock.
-    pub fn set_reply_private_data(&mut self, private_data: ResponseContext<T>) {
+    pub fn set_reply_private_data(&mut self, private_data: BlockedClientPrivateData<T>) {
         self.data = Some(Box::new(private_data));
     }
 
-    pub fn unblock_client(&mut self) {
-        // If nothing to do, return early.
-        if self.unblocked {
-            return;
-        }
-
-        self.unblocked = true;
-
+    pub fn unblock(&mut self) {
         // Ensure any ongoing measurement is ended.
         self.measure_time_end();
 
-        // Take private_data and tracked_client_id for local use.
+        // Take private_data for local use.
         let private_data_ptr = self.data.take().map_or(std::ptr::null_mut(), |boxed| {
             Box::into_raw(boxed) as *mut c_void
         });
-
-        if private_data_ptr.is_null() {
-            // No private data to pass back.
-            // todo: log warning ?
-            return;
-        }
 
         // Call out to the C API to actually unblock.
         unsafe {
@@ -101,38 +116,49 @@ impl<T: FanoutOperation> Drop for FanoutBlockedClient<T> {
         // Ensure we try to unblock when the wrapper is dropped, following RAII.
         // swallow any panics to avoid unwinding across FFI boundaries.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.unblock_client();
+            self.unblock();
         }))
         .ok();
     }
 }
 
-unsafe extern "C" fn reply_callback<T: FanoutOperation>(
+fn take_data<T>(data: *mut c_void) -> T {
+    // Cast the *mut c_void supplied by the Valkey API to a raw pointer of our custom type.
+    let data = data.cast::<T>();
+
+    // Take back ownership of the original boxed data, so we can unbox it safely.
+    // If we don't do this, the data's memory will be leaked.
+    let data = unsafe { Box::from_raw(data) };
+
+    *data
+}
+
+extern "C" fn reply_callback<T: FanoutOperation>(
     ctx: *mut ValkeyModuleCtx,
     _argv: *mut *mut ValkeyModuleString,
     _argc: c_int,
 ) -> c_int {
     let op_ptr = unsafe { ValkeyModule_GetBlockedClientPrivateData.unwrap()(ctx) };
-
+    let ctx = Context::new(ctx as *mut raw::RedisModuleCtx);
     if op_ptr.is_null() {
-        let err_msg = CString::new("No reply data").unwrap();
-        unsafe { ValkeyModule_ReplyWithError.unwrap()(ctx, err_msg.as_ptr()) };
+        ctx.reply_error_string("No reply data");
     } else {
         // Cast to the correct type and then dereference once to get &mut ResponseContext<T>
-        let op: &mut ResponseContext<T> = unsafe { &mut *(op_ptr as *mut ResponseContext<T>) };
-
-        let ctx = Context::new(ctx as *mut raw::RedisModuleCtx);
-        op.reply(&ctx);
+        let mut response_ctx: BlockedClientPrivateData<T> = take_data(op_ptr);
+        response_ctx.reply(&ctx);
     }
     0
 }
 
-unsafe extern "C" fn free_callback<T: FanoutOperation>(
+extern "C" fn free_callback<T: FanoutOperation>(
     _ctx: *mut ValkeyModuleCtx,
     private_data: *mut c_void,
 ) {
     if !private_data.is_null() {
-        let boxed: Box<ResponseContext<T>> = Box::from_raw(private_data as *mut ResponseContext<T>);
-        drop(boxed);
+        unsafe {
+            let boxed: Box<BlockedClientPrivateData<T>> =
+                Box::from_raw(private_data as *mut BlockedClientPrivateData<T>);
+            drop(boxed);
+        }
     }
 }
