@@ -1,5 +1,5 @@
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::db::get_current_db;
+use crate::common::context::get_current_db;
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::acl::check_key_permissions;

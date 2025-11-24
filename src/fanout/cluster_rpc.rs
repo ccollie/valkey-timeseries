@@ -1,7 +1,7 @@
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::fanout_message::{FanoutMessage, serialize_request_message};
 use super::utils::{is_clustered, is_multi_or_lua};
-use crate::common::db::{get_current_db, set_current_db};
+use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
 use crate::fanout::registry::get_fanout_request_handler;

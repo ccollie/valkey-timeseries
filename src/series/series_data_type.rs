@@ -9,7 +9,7 @@ use valkey_module::{
     native_types::ValkeyType,
 };
 
-use crate::common::db::get_current_db;
+use crate::common::context::get_current_db;
 use crate::series::TimeSeries;
 use crate::series::defrag_series;
 use crate::series::index::{

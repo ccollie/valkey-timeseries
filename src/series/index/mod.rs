@@ -5,7 +5,7 @@ mod postings;
 mod querier;
 mod timeseries_index;
 
-use crate::common::db::get_current_db;
+use crate::common::context::get_current_db;
 use papaya::{Guard, HashMap};
 use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};

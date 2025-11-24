@@ -1,4 +1,4 @@
-use crate::common::db::{get_current_db, set_current_db};
+use crate::common::context::{get_current_db, set_current_db};
 use crate::series::index::*;
 use crate::series::{TimeSeries, get_timeseries, get_timeseries_mut, with_timeseries_mut};
 use std::os::raw::c_void;
