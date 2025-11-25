@@ -5,6 +5,7 @@ from typing import List
 import pytest
 
 from common import SERVER_PATH, parse_info_response
+from valkeytestframework.conftest import resource_port_tracker
 from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 logger = logging.getLogger(__name__)
