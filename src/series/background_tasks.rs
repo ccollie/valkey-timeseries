@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
-use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext};
+use valkey_module::{Context, DetachedFromClient, Status, ThreadSafeContext};
 
 use valkey_module_macros::{cron_event_handler, shutdown_event_handler};
 
@@ -37,7 +37,7 @@ type SeriesCursorMap = IntMap<i32, SeriesRef>;
 type IndexCursorMap = HashMap<i32, IndexMeta, BuildNoHashHasher<i32>>;
 
 type DispatchMap =
-    papaya::HashMap<u64, Vec<fn(&ThreadSafeContext<BlockedClient>)>, BuildNoHashHasher<u64>>;
+    papaya::HashMap<u64, Vec<fn(&ThreadSafeContext<DetachedFromClient>)>, BuildNoHashHasher<u64>>;
 
 static CRON_TICKS: AtomicU64 = AtomicU64::new(0);
 static CRON_INTERVAL_MS: AtomicU64 = AtomicU64::new(100); // default to 100ms interval
@@ -84,7 +84,7 @@ fn register_task(
     ctx: &Context,
     task_interval: Duration,
     cron_interval: Duration,
-    f: fn(&ThreadSafeContext<BlockedClient>),
+    f: fn(&ThreadSafeContext<DetachedFromClient>),
 ) {
     let floored_interval = floor_duration(task_interval, cron_interval);
     if floored_interval.is_zero() {
@@ -173,7 +173,7 @@ fn set_stale_id_cursor(db: i32, cursor: Option<IndexKey>) {
     meta.stale_id_cursor = cursor;
 }
 
-fn process_trim(ctx: &ThreadSafeContext<BlockedClient>) {
+fn process_trim(ctx: &ThreadSafeContext<DetachedFromClient>) {
     let mut processed = 0;
 
     let mut db = next_db();
@@ -197,7 +197,7 @@ fn process_trim(ctx: &ThreadSafeContext<BlockedClient>) {
 }
 
 /// Perform active expiration of time series data for series which have a retention set.
-fn trim_series(ctx: &ThreadSafeContext<BlockedClient>, db: i32) -> usize {
+fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
     let cursor = get_trim_cursor(db);
 
     let ctx_ = ctx.lock();
@@ -311,7 +311,7 @@ fn remove_stale_series_internal(db: i32) {
     }
 }
 
-fn process_remove_stale_series(_ctx: &ThreadSafeContext<BlockedClient>) {
+fn process_remove_stale_series(_ctx: &ThreadSafeContext<DetachedFromClient>) {
     if is_shutting_down() {
         return;
     }
@@ -325,7 +325,7 @@ fn process_remove_stale_series(_ctx: &ThreadSafeContext<BlockedClient>) {
         .for_each(|&db| remove_stale_series_internal(db));
 }
 
-fn optimize_indices(_ctx: &ThreadSafeContext<BlockedClient>) {
+fn optimize_indices(_ctx: &ThreadSafeContext<DetachedFromClient>) {
     if is_shutting_down() {
         return;
     }
@@ -370,7 +370,7 @@ fn optimize_indices(_ctx: &ThreadSafeContext<BlockedClient>) {
     }
 }
 
-fn trim_unused_dbs(_ctx: &ThreadSafeContext<BlockedClient>) {
+fn trim_unused_dbs(_ctx: &ThreadSafeContext<DetachedFromClient>) {
     let mut index = TIMESERIES_INDEX.pin();
     index.retain(|db, ts_index| {
         if ts_index.is_empty() {
@@ -390,12 +390,12 @@ fn cron_event_handler(ctx: &Context, _hz: u64) {
     // relaxed ordering is fine here since this code is not run threaded
     let ticks = CRON_TICKS.fetch_add(1, Ordering::Relaxed);
     let save_db = get_current_db(ctx);
-    dispatch_tasks(ctx, ticks);
-    // i'm not sure if this is necessary
+    dispatch_tasks(ticks);
+    // I'm not sure if this is necessary
     set_current_db(ctx, save_db);
 }
 
-fn dispatch_tasks(ctx: &Context, ticks: u64) {
+fn dispatch_tasks(ticks: u64) {
     let map = DISPATCH_MAP.pin();
     let tasks = map
         .iter()
@@ -413,7 +413,7 @@ fn dispatch_tasks(ctx: &Context, ticks: u64) {
     log::debug!("cron_event_handler: tasks={tasks:?}");
     // Create a thread-safe context for use in spawned threads
     for task in tasks.into_iter() {
-        let thread_ctx = ThreadSafeContext::with_blocked_client(ctx.block_client());
+        let thread_ctx = ThreadSafeContext::new();
         spawn(move || task(&thread_ctx));
     }
 }
