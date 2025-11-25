@@ -277,6 +277,12 @@ mod tests {
         assert_eq!(matchers.get_metric_name(), Some("metric_name"));
         assert_eq!(matchers.len(), 1);
         assert!(matchers.is_only_metric_name());
+
+        let input = "metric_name{}";
+        let matchers = parse_series_selector(input).unwrap();
+        assert_eq!(matchers.get_metric_name(), Some("metric_name"));
+        assert_eq!(matchers.len(), 1);
+        assert!(matchers.is_only_metric_name());
     }
 
     #[test]

@@ -111,6 +111,26 @@ fn parse_prometheus_selector_internal(
 ) -> ParseResult<SeriesSelector> {
     let name = if name.is_empty() { None } else { Some(name) };
     // LeftBrace already consumed
+
+    // Temporary fix ahead: name{} is valid in prometheus (a metric name with
+    // braces but no tags). We could use a peek here, but that would complicate the lexer state management,
+    // logos does not support peeking natively, and this is the only place we need to peek.
+    // Instead, we do some old-school string slicing to check the next character.
+    let remainder = lex.remainder().as_bytes();
+    for &next_char in remainder {
+        if next_char == b'}' {
+            // consume the right brace
+            let _ = expect_token(lex, Token::RightBrace)?;
+            let mut filters: FilterList = FilterList::default();
+            if let Some(name) = &name {
+                let metric_name_matcher = LabelFilter::equals(METRIC_NAME_LABEL.into(), name);
+                filters.push(metric_name_matcher);
+            }
+            return Ok(SeriesSelector::And(filters));
+        } else if !next_char.is_ascii_whitespace() {
+            break;
+        }
+    }
     parse_label_filters(lex, name)
 }
 
