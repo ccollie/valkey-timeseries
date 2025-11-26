@@ -1,9 +1,9 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse, DateRange};
-use super::utils::reply_with_i64;
-use crate::commands::calculate_cardinality;
+use super::utils::reply_with_usize;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::TimestampRange;
+use crate::series::index::count_matched_series;
 use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, ValkeyResult};
 
@@ -33,7 +33,7 @@ impl FanoutOperation for CardFanoutOperation {
     ) -> ValkeyResult<CardinalityResponse> {
         let date_range: Option<TimestampRange> = req.range.map(|r| r.into());
         let matchers = deserialize_matchers_list(Some(req.filters))?;
-        let count = calculate_cardinality(ctx, date_range, &matchers)? as u64;
+        let count = count_matched_series(ctx, date_range, &matchers)? as u64;
         Ok(CardinalityResponse { cardinality: count })
     }
 
@@ -48,6 +48,6 @@ impl FanoutOperation for CardFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) {
-        reply_with_i64(ctx, self.result as i64);
+        reply_with_usize(ctx, self.result);
     }
 }

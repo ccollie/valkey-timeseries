@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::postings::{KeyType, Postings};
-use super::{TimeSeriesIndex, with_timeseries_postings};
+use super::{with_timeseries_index, with_timeseries_postings};
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
@@ -21,6 +21,7 @@ use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
 use ahash::HashMapExt;
 use blart::AsBytes;
+use logger_rust::log_debug;
 use orx_parallel::IterIntoParIter;
 use orx_parallel::ParIter;
 use std::str;
@@ -71,32 +72,6 @@ pub fn series_keys_by_selectors(
             result.and_inplace(&bitmap);
         }
         collect_series_keys(ctx, postings, result.iter(), range)
-    })
-}
-
-pub fn get_cardinality_by_selectors(
-    ix: &TimeSeriesIndex,
-    selectors: &[SeriesSelector],
-) -> ValkeyResult<u64> {
-    if selectors.is_empty() {
-        return Ok(0);
-    }
-
-    let mut state: u64 = 0;
-
-    ix.with_postings(&mut state, move |inner, _state| {
-        let first = inner.postings_for_selector(&selectors[0])?;
-        if selectors.len() == 1 {
-            return Ok(first.cardinality());
-        }
-        // todo: use chili here ?
-        let mut result = first.into_owned();
-        for selector in &selectors[1..] {
-            let postings = inner.postings_for_selector(selector)?;
-            result.and_inplace(&postings);
-        }
-
-        Ok(result.cardinality())
     })
 }
 
@@ -240,4 +215,34 @@ fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<Serie
             Err(err)
         }
     }
+}
+
+pub fn count_matched_series(
+    ctx: &Context,
+    date_range: Option<TimestampRange>,
+    matchers: &[SeriesSelector],
+) -> ValkeyResult<usize> {
+    let count = match (date_range, matchers.is_empty()) {
+        (None, true) => {
+            // todo: check to see if user can read all keys, otherwise error
+            // a bare TS.CARD is a request for the cardinality of the entire index
+            with_timeseries_index(ctx, |index| index.count())
+        }
+        (None, false) => {
+            // if we don't have a date range, we can simply count postings...
+            with_timeseries_index(ctx, |index| index.get_cardinality_by_selectors(matchers))?
+        }
+        (Some(_), false) => {
+            let matched_series = series_by_selectors(ctx, matchers, date_range)?;
+            matched_series.len()
+        }
+        _ => {
+            // if we don't have a date range, we need at least one matcher, otherwise we
+            // end up scanning the entire index
+            return Err(ValkeyError::Str(
+                "TSDB: TS.CARD requires at least one matcher or a date range",
+            ));
+        }
+    };
+    Ok(count)
 }

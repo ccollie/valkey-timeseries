@@ -139,6 +139,32 @@ impl TimeSeriesIndex {
         })
     }
 
+    pub fn get_cardinality_by_selectors(
+        &self,
+        selectors: &[SeriesSelector],
+    ) -> ValkeyResult<usize> {
+        if selectors.is_empty() {
+            return Ok(0);
+        }
+
+        let mut state = ();
+
+        self.with_postings(&mut state, move |inner, _state| {
+            let filter = &selectors[0];
+            let first = inner.postings_for_selector(filter)?;
+            if selectors.len() == 1 {
+                return Ok(first.cardinality() as usize);
+            }
+            let mut result = first.into_owned();
+            for selector in &selectors[1..] {
+                let postings = inner.postings_for_selector(selector)?;
+                result.and_inplace(&postings);
+            }
+
+            Ok(result.cardinality() as usize)
+        })
+    }
+
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
         #[derive(Clone, Copy)]
         struct SizeAccumulator {
