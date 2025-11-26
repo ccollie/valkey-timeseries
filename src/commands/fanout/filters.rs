@@ -29,7 +29,7 @@ impl From<&LabelFilter> for FanoutFilter {
         let (value, op) = match &source.matcher {
             PredicateMatch::Equal(value) => {
                 let value = get_predicate_value(value);
-                (value, MatcherOpType::NotEqual)
+                (value, MatcherOpType::Equal)
             }
             PredicateMatch::NotEqual(value) => {
                 let items = get_predicate_value(value);
