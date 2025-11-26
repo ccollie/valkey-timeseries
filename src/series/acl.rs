@@ -9,6 +9,9 @@ const ALL_KEYS: LazyLock<ValkeyString> =
 
 #[inline]
 fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
+    if !is_real_user_client(ctx) {
+        return true;
+    }
     let user = ctx.get_current_user();
     ctx.acl_check_key_permission(&user, key, &permissions)
         .is_ok()
