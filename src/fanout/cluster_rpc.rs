@@ -44,9 +44,7 @@ impl InFlightRequest {
     }
 
     fn cancel_timer(&self, ctx: &Context) {
-        if self.timer_id > 0 {
-            let _ = ctx.stop_timer::<u64>(self.timer_id);
-        }
+        let _ = ctx.stop_timer::<u64>(self.timer_id);
     }
 
     fn get_target_node(&self, sender_id: *const c_char) -> &NodeInfo {
