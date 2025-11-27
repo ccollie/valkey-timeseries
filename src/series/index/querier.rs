@@ -21,7 +21,6 @@ use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
 use ahash::HashMapExt;
 use blart::AsBytes;
-use logger_rust::log_debug;
 use orx_parallel::IterIntoParIter;
 use orx_parallel::ParIter;
 use std::str;
