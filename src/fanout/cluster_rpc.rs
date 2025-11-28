@@ -3,6 +3,7 @@ use super::fanout_message::{FanoutMessage, serialize_request_message};
 use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
+use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
@@ -21,8 +22,6 @@ use valkey_module::{
 const FANOUT_REQUEST_MESSAGE: u8 = 0x01;
 const FANOUT_RESPONSE_MESSAGE: u8 = 0x02;
 const FANOUT_ERROR_MESSAGE: u8 = 0x03;
-
-pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct InFlightRequest {
     id: u64,
@@ -128,7 +127,8 @@ fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
 }
 
 pub fn get_cluster_command_timeout() -> Duration {
-    DEFAULT_CLUSTER_REQUEST_TIMEOUT
+    let timeout = FANOUT_COMMAND_TIMEOUT.load(Ordering::Relaxed);
+    Duration::from_millis(timeout)
 }
 
 pub(super) fn send_cluster_request(

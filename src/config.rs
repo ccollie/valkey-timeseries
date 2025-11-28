@@ -27,9 +27,9 @@ use valkey_module_macros::config_changed_event_handler;
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
 pub const SPLIT_FACTOR: f64 = 1.2;
 
-const MULTI_SHARD_COMMAND_TIMEOUT_MIN: i64 = 500;
-const MULTI_SHARD_COMMAND_TIMEOUT_MAX: i64 = 10000;
-const MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT: &str = "5000";
+const FANOUT_COMMAND_TIMEOUT_MIN: i64 = 500;
+const FANOUT_COMMAND_TIMEOUT_MAX: i64 = 10000;
+const FANOUT_COMMAND_TIMEOUT_DEFAULT: &str = "5000";
 
 pub const CHUNK_SIZE_MIN: i64 = 64;
 pub const CHUNK_SIZE_MAX: i64 = 1024 * 1024;
@@ -85,6 +85,7 @@ pub struct ConfigSettings {
     pub rounding: Option<RoundingStrategy>,
     pub duplicate_policy: SampleDuplicatePolicy,
     pub compaction_policy: String,
+    pub fanout_command_timeout: Duration,
 }
 
 impl Default for ConfigSettings {
@@ -96,12 +97,14 @@ impl Default for ConfigSettings {
             rounding: None,
             duplicate_policy: SampleDuplicatePolicy::default(),
             compaction_policy: String::new(),
+            fanout_command_timeout: Duration::from_millis(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS),
         }
     }
 }
 
 pub static CHUNK_SIZE: AtomicI64 = AtomicI64::new(CHUNK_SIZE_DEFAULT);
 pub static NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
+pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
 lazy_static! {
     pub static ref CONFIG_SETTINGS: RwLock<ConfigSettings> = RwLock::new(ConfigSettings::default());
@@ -112,35 +115,38 @@ lazy_static! {
     pub static ref IGNORE_MAX_VALUE_DIFF: Mutex<f64> = Mutex::new(0.0);
     pub static ref RETENTION_PERIOD: Mutex<Duration> = Mutex::new(DEFAULT_RETENTION_PERIOD);
     pub static ref CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
-    pub static ref MULTI_SHARD_COMMAND_TIMEOUT: AtomicU64 = AtomicU64::new(5000); // ??? Move to const
+    pub static ref FANOUT_COMMAND_TIMEOUT: AtomicU64 =
+        AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS);
     pub static ref DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
-    pub static ref CLUSTER_MAP_EXPIRATION_MS: AtomicU64 = AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT); // ??? Move to const
-
+    pub static ref CLUSTER_MAP_EXPIRATION_MS: AtomicU64 =
+        AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT);
     static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
     static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()));
-    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(
-            None,
-            DEFAULT_DUPLICATE_POLICY.as_str()
-        ));
+    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, DEFAULT_DUPLICATE_POLICY.as_str())
+    );
     static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
     static ref COMPACTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING));
-    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING));
-    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING));
+    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING)
+    );
+    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING)
+    );
     static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
         ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING));
-    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING));
-    static ref MULTI_SHARD_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT));
-    static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING));
+    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
+    );
+    static ref FANOUT_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT));
+    static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING)
+    );
 }
 
 #[config_changed_event_handler]
@@ -192,8 +198,9 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
             },
             "ts-compaction-policy" => {
             },
-            "ts-multi-shard-command-timeout" => {
-                // nothing to do here
+            "ts-fanout-command-timeout" => {
+                cfg.fanout_command_timeout = Duration::from_millis(FANOUT_COMMAND_TIMEOUT.load(Ordering::Relaxed));
+                modified = true;
             },
             _ => {}
         );
@@ -341,14 +348,14 @@ fn update_ignore_max_value_diff(val: &str) -> ValkeyResult<()> {
     Ok(())
 }
 
-fn update_multi_shard_command_timeout(val: &str) -> ValkeyResult<()> {
+fn update_fanout_command_timeout(val: &str) -> ValkeyResult<()> {
     let duration = parse_duration_in_range(
-        "ts-multi-shard-command-timeout",
+        "ts-fanout-command-timeout",
         val,
-        MULTI_SHARD_COMMAND_TIMEOUT_MIN,
-        MULTI_SHARD_COMMAND_TIMEOUT_MAX,
+        FANOUT_COMMAND_TIMEOUT_MIN,
+        FANOUT_COMMAND_TIMEOUT_MAX,
     )?;
-    MULTI_SHARD_COMMAND_TIMEOUT.store(duration as u64, Ordering::SeqCst);
+    FANOUT_COMMAND_TIMEOUT.store(duration as u64, Ordering::SeqCst);
     Ok(())
 }
 
@@ -404,8 +411,8 @@ fn on_config_set(
         "ts-ignore-max-time-diff" => {
             return update_ignore_max_time_diff(&v)
         },
-        "ts-multi-shard-command-timeout" => {
-            return update_multi_shard_command_timeout(&v)
+        "ts-fanout-command-timeout" => {
+            return update_fanout_command_timeout(&v)
         },
         _ => {
         }
@@ -645,9 +652,9 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
     register_string_config(
         ctx,
         args,
-        "ts-multi-shard-command-timeout",
-        &MULTI_SHARD_COMMAND_TIMEOUT_STRING,
-        MULTI_SHARD_COMMAND_TIMEOUT_DEFAULT,
+        "ts-fanout-command-timeout",
+        &FANOUT_COMMAND_TIMEOUT_STRING,
+        FANOUT_COMMAND_TIMEOUT_DEFAULT,
     )?;
 
     register_string_config(
