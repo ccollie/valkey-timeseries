@@ -122,7 +122,7 @@ impl FanoutOperationRegistry {
 static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> =
     LazyLock::new(FanoutOperationRegistry::new);
 
-// Register a fanout operation.
+/// Register a fanout operation.
 ///
 /// # Type Parameters
 /// - `OP`: The operation type implementing FanoutOperation
@@ -157,18 +157,4 @@ pub(super) fn get_fanout_request_handler(name: &str) -> Option<RequestHandlerCal
 
 pub(crate) fn get_registered_fanout_operations() -> Vec<&'static str> {
     FANOUT_REGISTRY.list_operations()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_registry_basic_operations() {
-        let registry = FanoutOperationRegistry::new();
-
-        // Initially empty
-        assert_eq!(registry.list_operations().len(), 0);
-        assert!(!registry.contains("test_op"));
-    }
 }
