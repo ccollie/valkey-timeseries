@@ -54,7 +54,7 @@ impl FanoutOperation for MRangeFanoutOperation {
         })
     }
 
-    fn generate_request(&mut self) -> MultiRangeRequest {
+    fn generate_request(&self) -> MultiRangeRequest {
         serialize_request(&self.options)
     }
 

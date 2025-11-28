@@ -83,13 +83,13 @@ impl FanoutOperation for MGetFanoutOperation {
         Ok(MultiGetResponse { values })
     }
 
-    fn generate_request(&mut self) -> MultiGetRequest {
+    fn generate_request(&self) -> MultiGetRequest {
         let filters =
             serialize_matchers_list(&self.options.filters).expect("serialize matchers list");
         MultiGetRequest {
             with_labels: self.options.with_labels,
             filters,
-            selected_labels: std::mem::take(&mut self.options.selected_labels),
+            selected_labels: self.options.selected_labels.clone(),
             latest: self.options.latest,
         }
     }

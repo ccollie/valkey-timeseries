@@ -49,7 +49,7 @@ impl FanoutOperation for LabelValuesFanoutOperation {
             .map(|values| LabelValuesResponse { values })
     }
 
-    fn generate_request(&mut self) -> LabelValuesRequest {
+    fn generate_request(&self) -> LabelValuesRequest {
         let range: Option<DateRange> = self.options.date_range.map(|r| r.into());
         let filters = serialize_matchers_list(self.options.matchers.as_ref())
             .expect("serialize matchers list");

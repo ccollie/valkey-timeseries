@@ -13,9 +13,9 @@ pub type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + S
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
 pub trait FanoutOperation: Default + Send + 'static {
-    /// The request type must be serializable and sendable across threads.
+    /// The request type.
     type Request: Serializable;
-    /// The response type must be sendable across threads.
+    /// The response type.
     type Response: Serializable;
 
     /// Return the name of the fanout operation.
@@ -39,7 +39,7 @@ pub trait FanoutOperation: Default + Send + 'static {
     /// Execute the fanout operation across cluster nodes.
     fn exec(self, ctx: &Context) -> ValkeyResult<ValkeyValue> {
         let timeout = self.get_timeout();
-        let mut op = self;
+        let op = self;
 
         let req = op.generate_request();
         let targets = op.get_targets(ctx);
@@ -102,7 +102,7 @@ pub trait FanoutOperation: Default + Send + 'static {
     }
 
     /// Generate the request to be sent to each target node.
-    fn generate_request(&mut self) -> Self::Request;
+    fn generate_request(&self) -> Self::Request;
 
     /// Called once per successful response from a target node.
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);

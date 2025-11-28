@@ -39,7 +39,7 @@ impl FanoutOperation for LabelNamesFanoutOperation {
         process_label_names_request(ctx, &options).map(|names| LabelNamesResponse { names })
     }
 
-    fn generate_request(&mut self) -> LabelNamesRequest {
+    fn generate_request(&self) -> LabelNamesRequest {
         let filters =
             serialize_matchers_list(&self.options.matchers).expect("serialize matchers list");
         let range = self.options.date_range.map(|x| x.into());

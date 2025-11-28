@@ -37,7 +37,7 @@ impl FanoutOperation for CardFanoutOperation {
         Ok(CardinalityResponse { cardinality: count })
     }
 
-    fn generate_request(&mut self) -> CardinalityRequest {
+    fn generate_request(&self) -> CardinalityRequest {
         let filters = serialize_matchers_list(&self.options.matchers).expect("serialize matchers");
         let range: Option<DateRange> = self.options.date_range.map(|r| r.into());
         CardinalityRequest { range, filters }

@@ -57,7 +57,7 @@ impl FanoutOperation for StatsFanoutOperation {
         Ok(stats.into())
     }
 
-    fn generate_request(&mut self) -> StatsRequest {
+    fn generate_request(&self) -> StatsRequest {
         StatsRequest {
             limit: self.limit as u32,
         }

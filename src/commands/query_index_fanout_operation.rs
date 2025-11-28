@@ -40,7 +40,7 @@ impl FanoutOperation for QueryIndexFanoutOperation {
         Ok(IndexQueryResponse { keys })
     }
 
-    fn generate_request(&mut self) -> IndexQueryRequest {
+    fn generate_request(&self) -> IndexQueryRequest {
         let filters =
             serialize_matchers_list(&self.options.matchers).expect("serialize matchers list");
         let range = self.options.date_range.map(|r| r.into());
