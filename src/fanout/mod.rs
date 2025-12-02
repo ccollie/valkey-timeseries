@@ -1,5 +1,4 @@
 mod blocked_client;
-mod cluster_api;
 mod cluster_map;
 mod cluster_rpc;
 mod fanout_error;
