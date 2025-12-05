@@ -381,4 +381,71 @@ mod tests {
             .unwrap_or_default();
         assert_eq!(id, ts.id);
     }
+
+    #[test]
+    fn test_get_cardinality_by_selectors_empty() {
+        let index = TimeSeriesIndex::new();
+
+        // When no selectors are provided, cardinality should be zero.
+        let selectors: Vec<SeriesSelector> = Vec::new();
+        let cardinality = index
+            .get_cardinality_by_selectors(&selectors)
+            .expect("call should succeed");
+
+        assert_eq!(cardinality, 0);
+    }
+
+    #[test]
+    fn test_get_cardinality_by_single_selector() {
+        let index = TimeSeriesIndex::new();
+
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        index.index_timeseries(&ts, b"time-series-1");
+
+        // Build a selector that matches the inserted series.
+        let selector = SeriesSelector::parse("region='us-east-1'").unwrap();
+        let selectors = vec![selector];
+
+        let cardinality = index
+            .get_cardinality_by_selectors(&selectors)
+            .expect("call should succeed");
+
+        // We inserted exactly one matching series.
+        assert_eq!(cardinality, 1);
+    }
+
+    #[test]
+    fn test_get_cardinality_by_multiple_selectors_and_intersection() {
+        let index = TimeSeriesIndex::new();
+
+        // Two series that share some labels but differ on at least one.
+        let ts1 =
+            create_series_from_metric_name(r#"latency{region="us-east-1",env="qa",service="api"}"#);
+        let ts2 = create_series_from_metric_name(
+            r#"latency{region="us-east-1",env="prod",service="api"}"#,
+        );
+
+        index.index_timeseries(&ts1, b"time-series-1");
+        index.index_timeseries(&ts2, b"time-series-2");
+
+        // You should construct these selectors so that:
+        //   selector_env_qa matches only ts1
+        //   selector_region matches both ts1 and ts2
+        //
+        // After AND-ing them, only ts1 should remain, so the
+        // resulting cardinality must be 1.
+        let selector_env_qa = SeriesSelector::parse("env='qa'").unwrap();
+        let selector_region = SeriesSelector::parse(r#"region="us-east-1""#).unwrap();
+
+        let selectors = vec![selector_region, selector_env_qa];
+
+        let cardinality = index
+            .get_cardinality_by_selectors(&selectors)
+            .expect("call should succeed");
+
+        assert_eq!(
+            cardinality, 1,
+            "intersection of selectors should yield exactly one series"
+        );
+    }
 }

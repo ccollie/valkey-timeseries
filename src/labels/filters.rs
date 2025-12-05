@@ -1,4 +1,5 @@
 use crate::common::constants::METRIC_NAME_LABEL;
+use crate::labels::parse_series_selector;
 use crate::labels::regex::parse_regex_anchored;
 use crate::parser::ParseError;
 use crate::parser::lex::Token;
@@ -550,6 +551,10 @@ pub enum SeriesSelector {
 }
 
 impl SeriesSelector {
+    pub fn parse(selector: &str) -> Result<Self, ParseError> {
+        parse_series_selector(selector)
+    }
+
     pub fn with_filters(matchers: Vec<LabelFilter>) -> Self {
         SeriesSelector::And(matchers.into())
     }
