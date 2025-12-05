@@ -8,11 +8,12 @@ use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
 use crate::fanout::registry::get_fanout_request_handler;
 use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
 use core::time::Duration;
+use logger_rust::log_debug;
 use papaya::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use valkey_module::{
     Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
@@ -245,6 +246,19 @@ fn parse_fanout_message(
     }
 }
 
+static DB_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn select_db(ctx: &Context, db: i32) -> (i32, Status) {
+    let current_db = get_current_db(ctx);
+    let mut status = Status::Ok;
+    if current_db != db {
+        let _guard = DB_MUTEX.lock().unwrap();
+        status = set_current_db(ctx, db);
+        drop(_guard);
+    }
+    (current_db, status)
+}
+
 /// Processes a valid request by executing the command and sending back the response.
 fn process_request<'a>(ctx: &'a Context, message: FanoutMessage<'a>, sender_id: *const c_char) {
     let request_id = message.request_id;
@@ -260,17 +274,19 @@ fn process_request<'a>(ctx: &'a Context, message: FanoutMessage<'a>, sender_id: 
         return;
     };
 
-    let save_db = get_current_db(ctx);
-    set_current_db(ctx, message.db);
+    let (save_db, _) = select_db(ctx, message.db);
 
     let mut dest = Vec::with_capacity(1024);
     let buf = message.buf;
 
+    log_debug!("Before handler for {}", message.handler);
     // TODO: Consider running this handler in a thread pool to avoid blocking the main thread,
     // especially if the handler performs expensive or long-running operations. See issue #11
     let res = handler(ctx, buf, &mut dest);
 
-    set_current_db(ctx, save_db);
+    log_debug!("After handler. Res = {res:?}");
+
+    let _ = select_db(ctx, save_db);
     if let Err(e) = res {
         let msg = e.to_string();
         send_error_response(ctx, request_id, sender_id, e);
@@ -327,6 +343,7 @@ extern "C" fn on_request_received(
     len: u32,
 ) {
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
+    ctx.log_debug("Received fanout request");
     let Some(message) = parse_fanout_message(&ctx, sender_id, payload, len) else {
         return;
     };
@@ -345,6 +362,7 @@ extern "C" fn on_response_received(
     let ctx = Context::new(ctx as *mut RedisModuleCtx);
 
     let Some(message) = parse_fanout_message(&ctx, sender_id, payload, len) else {
+        ctx.log_warning("Failed to parse response message");
         return;
     };
 
@@ -361,6 +379,7 @@ extern "C" fn on_response_received(
 
     request.rpc_done(&ctx);
     request.handle_response(&ctx, Ok(message.buf), sender_id);
+    log_debug!("response handled");
 }
 
 extern "C" fn on_error_received(
@@ -388,7 +407,7 @@ extern "C" fn on_error_received(
         return;
     };
 
-    set_current_db(&ctx, message.db);
+    let _ = select_db(&ctx, message.db);
     request.rpc_done(&ctx);
 
     match FanoutError::deserialize(message.buf) {
