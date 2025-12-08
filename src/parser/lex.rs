@@ -19,7 +19,7 @@ fn unterminated_string_literal(_: &mut Lexer<Token>) -> ParseResult<()> {
 #[logos(skip r"[ \t\n\f\r]+")]
 #[logos(skip r"#[^\r\n]*(\r\n|\n)?")] // single line comment
 pub enum Token {
-    #[token("or", ignore(ascii_case))]
+    #[token(b"or", ignore(case))]
     OpOr,
 
     #[regex(r"[_a-zA-Z][_a-zA-Z0-9:\.\-]*")]

@@ -23,7 +23,7 @@ enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
 hashify = { version = "0.2" }
 linkme = "0.3"
-logos = "0.15.1"
+logos = "0.16"
 orx-parallel = "3.4"
 min-max-heap = "1.3.0"
 num-traits = "0.2.19"
