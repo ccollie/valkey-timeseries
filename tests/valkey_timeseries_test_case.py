@@ -11,7 +11,7 @@ from valkey.cluster import ValkeyCluster, ClusterNode
 from valkey.client import Valkey
 from valkey.connection import Connection
 from typing import List, Tuple
-from common import VALKEY_SERVER_PATH, LOGS_DIR, ValkeyInfo, CompactionRule, parse_info_response
+from common import VALKEY_SERVER_PATH, LOGS_DIR, ValkeyInfo, CompactionRule, parse_info_response, TEST_DIR
 import random
 import string
 import logging
@@ -177,7 +177,7 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
         for example usage."""
         raise NotImplementedError
 
-    def verify_replicaof_succeeded(self, replica_client) -> bool:
+    def verify_replicaof_succeeded(self, replica_client) -> None:
         info = replica_client.execute_command("INFO", "replication")
         role = info.get("role", "")
         master_link_status = info.get("master_link_status", "")
@@ -277,7 +277,7 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
 class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
 
     @pytest.fixture(autouse=True)
-    def setup_test(self):
+    def setup_test(self, request):
         args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
         server_path = VALKEY_SERVER_PATH
 
@@ -385,7 +385,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
         """Launch the server node and return a tuple of the server handle, a client to the server
         and the log file path"""
         server_path = VALKEY_SERVER_PATH
-        testdir = f"{LOGS_DIR}/{test_name}"
+        testdir = f"{TEST_DIR}/{test_name}"
 
         os.makedirs(testdir, exist_ok=True)
         curdir = os.getcwd()
@@ -430,7 +430,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
                 ports.append(self.get_bind_port())
 
         test_name = self.normalize_dir_name(request.node.name)
-        testdir_base = f"{LOGS_DIR}/{test_name}"
+        testdir_base = f"{TEST_DIR}/{test_name}"
 
         if os.path.exists(testdir_base):
             shutil.rmtree(testdir_base)
