@@ -101,12 +101,12 @@ impl FanoutOperation for MGetFanoutOperation {
     fn generate_reply(&mut self, ctx: &Context) -> Status {
         let count = self.series.len();
         let status = raw::reply_with_array(ctx.ctx, count as i64);
-        if status != raw::Status::Ok {
+        if status != Status::Ok {
             return status;
         }
         for response in self.series.iter() {
             let status = reply_with_mget_value(ctx, response);
-            if status != raw::Status::Ok {
+            if status != Status::Ok {
                 return status;
             }
         }
@@ -116,15 +116,15 @@ impl FanoutOperation for MGetFanoutOperation {
 
 fn reply_with_mget_value(ctx: &Context, value: &MGetValue) -> raw::Status {
     let mut status = raw::reply_with_array(ctx.ctx, 3);
-    if status != raw::Status::Ok {
+    if status != Status::Ok {
         return status;
     }
     status = reply_with_bulk_string(ctx, value.key.as_str());
-    if status != raw::Status::Ok {
+    if status != Status::Ok {
         return status;
     }
     status = reply_with_fanout_labels(ctx, &value.labels);
-    if status != raw::Status::Ok {
+    if status != Status::Ok {
         return status;
     }
     reply_with_fanout_sample(ctx, &value.sample)
