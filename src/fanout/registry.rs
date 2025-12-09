@@ -2,14 +2,13 @@ use super::fanout_operation::FanoutOperation;
 use super::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::{FanoutError, FanoutResult};
 use ahash::RandomState;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 /// Type-erased function pointer for executing a fanout operation.
 /// This allows us to store different fanout operations with different
 /// Request/Response types in the same registry.
-pub(super) type RequestHandlerCallback =
-    Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>) -> FanoutResult + Send + Sync>;
+pub(super) type RequestHandlerCallback = fn(&Context, &[u8], &mut Vec<u8>) -> FanoutResult;
 
 /// A registry for fanout operations that allows type-erased storage and retrieval
 /// of [`FanoutOperation`] implementations.
@@ -37,22 +36,24 @@ impl FanoutOperationRegistry {
     {
         let name = OP::name();
 
-        let request_handler = Arc::new(
-            |ctx: &Context, req_buf: &[u8], dest: &mut Vec<u8>| -> FanoutResult {
-                match OP::Request::deserialize(req_buf) {
-                    Ok(request) => {
-                        let response = OP::get_local_response(ctx, request)?;
-                        response.serialize(dest);
-                    }
-                    Err(e) => {
-                        let msg =
-                            format!("Failed to deserialize {} fanout request: {e}", OP::name());
-                        return Err(FanoutError::serialization(&msg));
-                    }
+        fn request_handler<OP>(ctx: &Context, req_buf: &[u8], dest: &mut Vec<u8>) -> FanoutResult
+        where
+            OP: FanoutOperation,
+            OP::Request: Serializable,
+            OP::Response: Serializable,
+        {
+            match OP::Request::deserialize(req_buf) {
+                Ok(request) => {
+                    let response = OP::get_local_response(ctx, request)?;
+                    response.serialize(dest);
                 }
-                Ok(())
-            },
-        );
+                Err(e) => {
+                    let msg = format!("Failed to deserialize {} fanout request: {e}", OP::name());
+                    return Err(FanoutError::serialization(&msg));
+                }
+            }
+            Ok(())
+        }
 
         let map = self.operations.pin();
         if map.contains_key(name) {
@@ -61,7 +62,7 @@ impl FanoutOperationRegistry {
             )));
         }
 
-        map.insert(name, request_handler);
+        map.insert(name, request_handler::<OP>);
 
         Ok(())
     }
@@ -91,7 +92,7 @@ impl FanoutOperationRegistry {
     ) -> Option<RequestHandlerCallback> {
         let map = self.operations.pin();
         match map.get(name) {
-            Some(op) => Some(op.clone()),
+            Some(op) => Some(*op),
             None => {
                 if must_exist {
                     panic!("Fanout Operation '{name}' not found in registry");
