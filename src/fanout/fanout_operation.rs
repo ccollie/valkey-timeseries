@@ -119,15 +119,15 @@ pub trait FanoutOperation: Default + Send + 'static {
     /// Called once all responses have been received, or an error has occurred.
     /// This is where the final reply to the client should be generated.
     /// If there were any errors, the default implementation will generate an error reply.
-    fn generate_reply(&mut self, ctx: &Context);
+    fn generate_reply(&mut self, ctx: &Context) -> Status;
 
     fn generate_timeout_reply(&self, ctx: &Context) -> Status {
         ctx.reply_error_string("Unable to contact all cluster nodes")
     }
 
-    fn generate_error_reply(&self, ctx: &Context) {
+    fn generate_error_reply(&self, ctx: &Context) -> Status {
         let message = "Internal error found.";
-        ctx.reply_error_string(message);
+        ctx.reply_error_string(message)
     }
 }
 
@@ -186,8 +186,18 @@ where
             );
 
             bc.set_reply_private_data(response_ctx);
-            // unblock will be called by bc::drop()
-            // bc.unblock();
+            // will unblock on drop()
+        }
+    }
+}
+
+impl<OP> Drop for FanoutStateInner<OP>
+where
+    OP: FanoutOperation,
+{
+    fn drop(&mut self) {
+        if self.blocked_client.is_some() {
+            self.on_completion();
         }
     }
 }

@@ -7,7 +7,7 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
 pub struct LabelValuesFanoutOperation {
@@ -66,7 +66,7 @@ impl FanoutOperation for LabelValuesFanoutOperation {
         }
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
-        reply_with_btree_set(ctx, &self.results);
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
+        reply_with_btree_set(ctx, &self.results)
     }
 }

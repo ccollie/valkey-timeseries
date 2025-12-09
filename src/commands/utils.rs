@@ -40,8 +40,7 @@ pub fn reply_with_string_iter(
         return status;
     }
     for s in v {
-        let cstr = CString::new(s).unwrap();
-        let status = raw::reply_with_string_buffer(ctx.ctx, cstr.as_ptr(), cstr.as_bytes().len());
+        let status = reply_with_bulk_string(ctx, &s);
         if status != Status::Ok {
             return status;
         }

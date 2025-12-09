@@ -7,7 +7,7 @@ use crate::commands::process_mget_request;
 use crate::error_consts;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{Context, ValkeyError, ValkeyResult, raw};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, raw};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutOperation {
@@ -98,12 +98,19 @@ impl FanoutOperation for MGetFanoutOperation {
         self.series.extend(resp.values);
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
         let count = self.series.len();
-        raw::reply_with_array(ctx.ctx, count as i64);
-        for response in self.series.iter() {
-            reply_with_mget_value(ctx, response);
+        let status = raw::reply_with_array(ctx.ctx, count as i64);
+        if status != raw::Status::Ok {
+            return status;
         }
+        for response in self.series.iter() {
+            let status = reply_with_mget_value(ctx, response);
+            if status != raw::Status::Ok {
+                return status;
+            }
+        }
+        Status::Ok
     }
 }
 

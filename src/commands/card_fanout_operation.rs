@@ -5,7 +5,7 @@ use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::TimestampRange;
 use crate::series::index::count_matched_series;
 use crate::series::request_types::MatchFilterOptions;
-use valkey_module::{Context, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
 pub struct CardFanoutOperation {
@@ -47,7 +47,7 @@ impl FanoutOperation for CardFanoutOperation {
         self.result += resp.cardinality as usize;
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
-        reply_with_usize(ctx, self.result);
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
+        reply_with_usize(ctx, self.result)
     }
 }

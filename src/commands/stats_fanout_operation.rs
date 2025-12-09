@@ -3,7 +3,7 @@ use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, with_timeseries_index};
 use ahash::AHashMap;
-use valkey_module::{Context, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 struct StatsResults {
@@ -81,7 +81,7 @@ impl FanoutOperation for StatsFanoutOperation {
         collate_stats_values(&mut self.state.pairs_map, &resp.label_value_pairs_stats);
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
         let limit = self.limit;
         let state = std::mem::take(&mut self.state);
 
@@ -96,7 +96,7 @@ impl FanoutOperation for StatsFanoutOperation {
         };
 
         let result: ValkeyValue = result.into();
-        ctx.reply(Ok(result));
+        ctx.reply(Ok(result))
     }
 }
 

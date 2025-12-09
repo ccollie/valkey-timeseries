@@ -6,7 +6,7 @@ use crate::commands::utils::reply_with_btree_set;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Debug, Default)]
 pub struct LabelNamesFanoutOperation {
@@ -52,7 +52,7 @@ impl FanoutOperation for LabelNamesFanoutOperation {
         }
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
-        reply_with_btree_set(ctx, &self.names);
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
+        reply_with_btree_set(ctx, &self.names)
     }
 }

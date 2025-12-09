@@ -2,12 +2,12 @@ use crate::fanout::FanoutOperation;
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use valkey_module::{
-    Context, ValkeyModule_BlockClient, ValkeyModule_BlockedClientMeasureTimeEnd,
+    Context, Status, ValkeyModule_BlockClient, ValkeyModule_BlockedClientMeasureTimeEnd,
     ValkeyModule_BlockedClientMeasureTimeStart, ValkeyModule_GetBlockedClientPrivateData,
     ValkeyModule_UnblockClient, ValkeyModuleCtx, ValkeyModuleString, raw,
 };
 
-const NO_TIMEOUT: i64 = 86400000;
+const NO_TIMEOUT: i64 = 60000; // 60 seconds
 
 #[repr(C)]
 pub(super) struct BlockedClientPrivateData<OP>
@@ -30,13 +30,13 @@ where
             error_count,
         }
     }
-    fn reply(&mut self, ctx: &Context) {
+    fn reply(&mut self, ctx: &Context) -> Status {
         if self.timed_out {
-            self.operation.generate_timeout_reply(ctx);
+            self.operation.generate_timeout_reply(ctx)
         } else if self.error_count > 0 {
-            self.operation.generate_error_reply(ctx);
+            self.operation.generate_error_reply(ctx)
         } else {
-            self.operation.generate_reply(ctx);
+            self.operation.generate_reply(ctx)
         }
     }
 }
@@ -80,7 +80,7 @@ where
         self.data = Some(Box::new(private_data));
     }
 
-    pub fn unblock(&mut self) {
+    fn unblock(&mut self) {
         // Ensure any ongoing measurement is ended.
         self.measure_time_end();
 
@@ -118,10 +118,13 @@ impl<T: FanoutOperation> Drop for FanoutBlockedClient<T> {
     fn drop(&mut self) {
         // Ensure we try to unblock when the wrapper is dropped, following RAII.
         // swallow any panics to avoid unwinding across FFI boundaries.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.unblock();
-        }))
-        .ok();
+        // std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        self.unblock();
+        // if self.data.is_some() {
+        //     eprintln!("Warning: FanoutBlockedClient being dropped with unconsumed private data");
+        // }
+        //}))
+        //.ok();
     }
 }
 
@@ -144,13 +147,12 @@ extern "C" fn reply_callback<T: FanoutOperation>(
     let op_ptr = unsafe { ValkeyModule_GetBlockedClientPrivateData.unwrap()(ctx) };
     let ctx = Context::new(ctx as *mut raw::RedisModuleCtx);
     if op_ptr.is_null() {
-        ctx.reply_error_string("No reply data");
+        ctx.reply_error_string("No reply data") as c_int
     } else {
         // Cast to the correct type and then dereference once to get &mut ResponseContext<T>
         let mut response_ctx: BlockedClientPrivateData<T> = take_data(op_ptr);
-        response_ctx.reply(&ctx);
+        response_ctx.reply(&ctx) as c_int
     }
-    0
 }
 
 extern "C" fn free_callback<T: FanoutOperation>(

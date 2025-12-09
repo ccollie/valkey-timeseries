@@ -13,7 +13,7 @@ use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
 use std::collections::BTreeMap;
-use valkey_module::{Context, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 pub struct MRangeFanoutOperation {
@@ -62,7 +62,7 @@ impl FanoutOperation for MRangeFanoutOperation {
         self.series.push(resp);
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
         let series = std::mem::take(&mut self.series);
         let all_series = series
             .into_par()
@@ -81,7 +81,7 @@ impl FanoutOperation for MRangeFanoutOperation {
 
         // todo: reply directly without intermediate conversion
         let result = ValkeyValue::Array(series.into_iter().map(|x| x.into()).collect());
-        ctx.reply(Ok(result));
+        ctx.reply(Ok(result))
     }
 }
 

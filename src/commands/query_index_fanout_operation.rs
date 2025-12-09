@@ -5,7 +5,7 @@ use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Clone, Debug, Default)]
 pub struct QueryIndexFanoutOperation {
@@ -53,7 +53,7 @@ impl FanoutOperation for QueryIndexFanoutOperation {
         }
     }
 
-    fn generate_reply(&mut self, ctx: &Context) {
-        reply_with_btree_set(ctx, &self.keys);
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
+        reply_with_btree_set(ctx, &self.keys)
     }
 }
