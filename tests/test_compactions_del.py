@@ -135,11 +135,11 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
             self.add_compaction_rule(source_key, dest_key, agg, 1000)
 
             # Add samples
-            self.add_samples_to_source(source_key, 1000, 10, 50, 5.0)
+            self.add_samples_to_source(source_key, 1000, 20, 100, 5.0)
 
             # Get the initially compacted value
             initial = self.get_compacted_samples(dest_key)
-            assert len(initial) == 1
+            assert len(initial) == 1, f"Initial compacted samples missing for aggregation {agg}. Expecting 1 sample, got {len(initial)}"
 
             # Delete some samples
             deleted = self.client.execute_command('TS.DEL', source_key, 1200, 1350)
@@ -147,7 +147,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
 
             # Verify compacted value is recalculated
             updated = self.get_compacted_samples(dest_key)
-            assert len(updated) == 1
+            assert len(updated) == 1, f"Updated compacted samples missing for aggregation {agg}. Expecting 1 sample, got {len(updated)}"
 
             # For most aggregations, the value should change after deletion
             if agg not in ['count']:  # count might have special behavior
@@ -357,7 +357,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
 
         initial = self.get_compacted_samples(dest_key)
         initial_count = len(initial)
-        assert initial_count == 9 # last bucket is not closed yet
+        assert initial_count == 9 # the last bucket is not closed yet
 
         # Delete large range spanning multiple buckets
         deleted = self.client.execute_command('TS.DEL', source_key, 3000, 8000)
