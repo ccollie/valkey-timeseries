@@ -1,5 +1,6 @@
 use super::{GorillaEncoder, GorillaIterator};
 use crate::common::encoding::{try_read_uvarint, write_uvarint};
+use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -239,7 +240,7 @@ impl Chunk for GorillaChunk {
                 }
                 err @ Err(TsdbError::CapacityFull(_)) => Err(err.unwrap_err()),
                 Err(e) => {
-                    log::warn!("error in gorilla chunk merge : {e:?}");
+                    log_warning(format!("error in gorilla chunk merge : {e:?}"));
                     res.push(SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE));
                     Ok(())
                 }

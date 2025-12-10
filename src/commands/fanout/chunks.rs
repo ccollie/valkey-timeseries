@@ -1,4 +1,5 @@
 use super::generated::{CompressionType, Label as FanoutLabel, SampleData, SeriesResponse};
+use crate::common::logging::log_warning;
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::chunks::samples_to_chunk;
@@ -40,7 +41,7 @@ pub fn deserialize_chunk(chunk: &SampleData) -> ValkeyResult<TimeSeriesChunk> {
 
     let encoding: ChunkEncoding = encoding.into();
     if encoding != deserialized.get_encoding() {
-        log::warn!("Invalid encoding type for deserialized time series chunk");
+        log_warning("Invalid encoding type for deserialized time series chunk");
         return Err(ValkeyError::Str(error_consts::CHUNK_DECOMPRESSION));
     }
     Ok(deserialized)

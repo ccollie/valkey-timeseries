@@ -48,8 +48,8 @@ pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
             Ok(false) => FanoutTargetMode::Primary,
             Err(_) => {
                 // If we can't determine client read-only status, default to Random
-                log::warn!(
-                    "Could not determine client read-only status, defaulting to Random fanout mode."
+                crate::common::logging::log_warning(
+                    "Could not determine client read-only status, defaulting to Random fanout mode.",
                 );
                 FanoutTargetMode::Random
             }

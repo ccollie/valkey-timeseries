@@ -6,7 +6,8 @@ pub const DEFAULT_NUM_CPUS: usize = 4;
 pub static NUM_CPUS: LazyLock<usize> =
     LazyLock::new(|| match std::thread::available_parallelism() {
         Err(e) => {
-            log::warn!("Failed to get available parallelism: {e:?}");
+            let msg = format!("Failed to get available parallelism {e:?}");
+            crate::common::logging::log_warning(msg);
             DEFAULT_NUM_CPUS
         }
         Ok(v) => v.get(),

@@ -5,6 +5,7 @@ use crate::common::encoding::{
     write_uvarint,
 };
 use crate::common::hash::hash_f64;
+use crate::common::logging::log_warning;
 use crate::common::pool::{PooledVecF64, PooledVecI64, get_pooled_vec_f64, get_pooled_vec_i64};
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::threads::join;
@@ -253,7 +254,7 @@ impl PcoChunk {
         match PcoSampleIterator::new(&self.timestamps, &self.values) {
             Ok(iter) => iter.into(),
             Err(e) => {
-                log::warn!("pco chunk iter(): error constructing iter: {e}");
+                log_warning(format!("pco chunk iter(): error constructing iter: {e}"));
                 SampleIter::Empty
             }
         }
@@ -264,7 +265,9 @@ impl PcoChunk {
         match iter {
             Ok(iter) => iter.into(),
             Err(e) => {
-                log::warn!("pco chunk range_iter(): error constructing iter: {e}");
+                log_warning(format!(
+                    "pco chunk range_iter(): error constructing iter: {e}"
+                ));
                 SampleIter::Empty
             }
         }

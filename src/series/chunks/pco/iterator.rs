@@ -1,3 +1,4 @@
+use crate::common::logging::log_warning;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use pco::FULL_BATCH_N;
@@ -179,7 +180,7 @@ impl Iterator for PcoSampleIterator<'_> {
 }
 
 fn convert_error(err: PcoError) -> ValkeyError {
-    log::warn!("pco(iterator): {err}");
+    log_warning(format!("pco(iterator): {err}"));
     ValkeyError::Str(error_consts::CHUNK_DECOMPRESSION)
 }
 

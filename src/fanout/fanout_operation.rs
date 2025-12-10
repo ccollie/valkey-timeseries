@@ -109,11 +109,12 @@ pub trait FanoutOperation: Default + Send + 'static {
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Log the error with context
-        log::warn!(
+        let msg = format!(
             "Fanout operation {}, failed for target {}: {error}",
             Self::name(),
             target.socket_address,
         );
+        crate::common::logging::log_warning(&msg)
     }
 
     /// Called once all responses have been received, or an error has occurred.

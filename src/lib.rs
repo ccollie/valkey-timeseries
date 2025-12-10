@@ -12,6 +12,7 @@ use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
 use logger_rust::{LogLevel, set_log_level};
+use std::sync::atomic::AtomicBool;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
 
 pub mod aggregators;
@@ -36,6 +37,12 @@ use crate::server_events::{generic_key_events_handler, register_server_events};
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
+
+static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_module_initialized() -> bool {
+    IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 pub fn valid_server_version(version: Version) -> bool {
     let server_version = &[
@@ -103,11 +110,13 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     init_background_tasks(ctx);
 
     ctx.log_notice("valkey-timeseries module initialized");
+    IS_MODULE_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
     Status::Ok
 }
 
 fn deinitialize(ctx: &Context) -> Status {
     ctx.log_notice("deinitialize");
+    IS_MODULE_INITIALIZED.store(false, std::sync::atomic::Ordering::Relaxed);
     Status::Ok
 }
 

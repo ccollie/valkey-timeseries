@@ -17,6 +17,7 @@ use valkey_module::configuration::{
     ConfigurationContext, ConfigurationFlags, get_i64_default_config_value,
     get_string_default_config_value, register_i64_configuration, register_string_configuration,
 };
+use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
     ConfigurationValue, Context, RedisModule_LoadConfigs, ValkeyError, ValkeyGILGuard,
     ValkeyResult, ValkeyString,
@@ -209,7 +210,7 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
         }
     }
     if modified {
-        log::info!("Configuration updated: {cfg:?}");
+        log_notice(format!("Configuration updated: {cfg:?}"));
         CONFIG_SETTINGS
             .write()
             .expect("Failed to acquire write lock on CONFIG_SETTINGS")
@@ -494,7 +495,7 @@ fn on_thread_config_set(
     atomic: &'static AtomicI64,
 ) -> Result<(), ValkeyError> {
     let threads = atomic.load(Ordering::SeqCst);
-    log::info!("Setting number of threads to {threads}");
+    log_notice(format!("Setting number of threads to {threads}"));
     // todo: reset thread pool size
     Ok(())
 }
@@ -506,7 +507,6 @@ fn on_chunk_size_config_set(
 ) -> Result<(), ValkeyError> {
     let chunk_size = atomic.load(Ordering::SeqCst) as usize;
     validate_chunk_size(chunk_size)?;
-    log::info!("Setting chunk size to {chunk_size}");
     Ok(())
 }
 
@@ -519,7 +519,7 @@ fn get_string_default<'a>(
         Ok(v) => Ok(v),
         Err(e) => {
             let msg = format!("Error getting default string config value for {name}: {e}");
-            log::error!("{msg}");
+            log_warning(&msg);
             Err(ValkeyError::String(msg))
         }
     }
@@ -530,7 +530,7 @@ fn get_i64_default(args: &[ValkeyString], name: &str, default: i64) -> ValkeyRes
         Ok(v) => Ok(v),
         Err(e) => {
             let msg = format!("Error getting default config value for {name}: {e}");
-            log::error!("{msg}");
+            log_warning(&msg);
             Err(ValkeyError::String(msg))
         }
     }
@@ -565,7 +565,7 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
             chunk_size_default,
             e.to_string().as_str(),
         );
-        log::error!("{msg}");
+        log_warning(&msg);
     }
     register_i64_configuration(
         ctx,

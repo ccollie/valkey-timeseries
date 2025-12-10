@@ -1,6 +1,7 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
 use crate::common::hash::IntMap;
+use crate::common::logging::log_warning;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::filters::{
     FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
@@ -160,7 +161,9 @@ impl Postings {
     pub fn remove_timeseries(&mut self, series: &TimeSeries) {
         let id = series.id;
         if self.id_to_key.remove(&id).is_none() {
-            log::warn!("Tried to remove non-existing series id {id} from index");
+            log_warning(format!(
+                "Tried to remove non-existing series id {id} from index"
+            ));
         };
         let labels = series.labels.iter().collect::<Vec<_>>();
         self.remove_posting_by_id_and_labels(id, &labels);
@@ -517,7 +520,7 @@ impl Postings {
                 _ => {
                     // l=""
                     // If the matchers for a label name selects an empty value, it selects all
-                    // the series which don't have the label name set too. See:
+                    // the series which also don't have the label name. See:
                     // https://github.com/prometheus/prometheus/issues/3575 and
                     // https://github.com/prometheus/prometheus/pull/3578#issuecomment-351653555
                     let it = self.inverse_postings_for_filter(filter);

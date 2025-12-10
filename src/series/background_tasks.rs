@@ -1,5 +1,6 @@
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::{BuildNoHashHasher, IntMap};
+use crate::common::logging::{log_debug, log_warning};
 use crate::common::threads::spawn;
 use crate::series::index::{
     IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
@@ -202,7 +203,7 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
 
     let ctx_ = ctx.lock();
     if set_current_db(&ctx_, db) == Status::Err {
-        log::warn!("Failed to select db {db}");
+        log_warning(format!("Failed to select db {db}"));
         return 0;
     }
 
@@ -211,11 +212,14 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
     });
 
     if batch.is_empty() {
-        log::debug!("No series to trim");
+        ctx_.log_notice("No series to trim");
         set_trim_cursor(db, 0);
         return 0;
     }
-    log::debug!("cron_event_handler: fetched {} series", batch.len());
+    log_debug(format!(
+        "cron_event_handler: fetched {} series",
+        batch.len()
+    ));
 
     let last_processed = batch.last().map(|s| s.id).unwrap_or(0);
     let processed = batch.len();
@@ -224,7 +228,10 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
         .par_mut()
         .map(|series| {
             let Ok(deletes) = series.trim() else {
-                log::warn!("Failed to trim series {}", series.prometheus_metric_name());
+                log_warning(format!(
+                    "Failed to trim series {}",
+                    series.prometheus_metric_name()
+                ));
                 return 0;
             };
             deletes
@@ -236,9 +243,11 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
     set_trim_cursor(db, last_processed);
 
     if processed == 0 {
-        log::debug!("No series to trim");
+        log_debug("No series to trim");
     } else {
-        log::info!("Processed: {processed} Deleted Samples: {total_deletes} samples");
+        log_debug(format!(
+            "Processed: {processed} Deleted Samples: {total_deletes} samples"
+        ));
     }
 
     processed
@@ -374,7 +383,7 @@ fn trim_unused_dbs(_ctx: &ThreadSafeContext<DetachedFromClient>) {
     let mut index = TIMESERIES_INDEX.pin();
     index.retain(|db, ts_index| {
         if ts_index.is_empty() {
-            log::info!("Removing unused db {db} from index");
+            log_debug(format!("Removing unused db {db} from index"));
             false
         } else {
             true
@@ -410,7 +419,7 @@ fn dispatch_tasks(ticks: u64) {
         return;
     }
 
-    log::debug!("cron_event_handler: tasks={tasks:?}");
+    log_debug(format!("cron_event_handler: tasks={tasks:?}"));
     // Create a thread-safe context for use in spawned threads
     for task in tasks.into_iter() {
         let thread_ctx = ThreadSafeContext::new();

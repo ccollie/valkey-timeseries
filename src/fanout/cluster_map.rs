@@ -1,7 +1,6 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use ahash::AHashMap;
-use log::warn;
 use rand::{Rng, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::borrow::Borrow;
@@ -13,6 +12,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::{Arc, LazyLock, Mutex};
+use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
     ValkeyModule_GetMyClusterID,
@@ -592,7 +592,7 @@ impl ClusterMap {
             .errors_as_replies()
             .build();
 
-        log::info!("Calling CLUSTER SLOTS...");
+        log_notice("Calling CLUSTER SLOTS...");
 
         let res: CallResult = ctx.call_ext::<_, CallResult>("CLUSTER", &call_options, &["SLOTS"]);
 
@@ -625,7 +625,7 @@ impl ClusterMap {
                 &mut socket_addr_to_node_map,
             ) {
                 // dropped range; continue
-                warn!("Dropping slot range:");
+                log_warning("cluster-map: dropping slot range..");
                 continue;
             }
         }
@@ -685,7 +685,7 @@ impl ClusterMap {
         let slot_range_arr = match &slot_range_reply {
             CallReply::Array(arr) => arr,
             _ => {
-                warn!("Invalid slot range reply type");
+                log_warning("Invalid slot range reply type");
                 self.is_consistent = false;
                 return false;
             }
@@ -713,7 +713,8 @@ impl ClusterMap {
 
         // Parse primary node at index 2
         let Some(Ok(primary_arr)) = slot_range_arr.get(2) else {
-            warn!("Missing primary node info in slot range [{start}-{end}]");
+            let msg = format!("Missing primary node info in slot range [{start}-{end}]");
+            log_warning(&msg);
             self.is_consistent = false;
             return false;
         };
@@ -721,7 +722,8 @@ impl ClusterMap {
         let Some(mut primary_node) =
             self.parse_node_info(&primary_arr, my_node_id, true, socket_addr_to_node_map)
         else {
-            warn!("Dropping slot range [{start}-{end}] due to invalid primary node");
+            let msg = format!("Dropping slot range [{start}-{end}] due to invalid primary node");
+            log_warning(&msg);
             self.is_consistent = false;
             return false;
         };
@@ -735,7 +737,8 @@ impl ClusterMap {
                 {
                     Some(replica) => replicas.push(replica),
                     None => {
-                        warn!("Skipping invalid replica in slot range [{start}-{end}]");
+                        let msg = format!("Skipping invalid replica in slot range [{start}-{end}]");
+                        log_warning(&msg);
                         self.is_consistent = false;
                         return false;
                     }
@@ -770,7 +773,7 @@ impl ClusterMap {
                 &replicas,
             );
             if !consistent {
-                warn!("Inconsistency shard info found on existing slot ranges!");
+                log_warning("Inconsistency shard info found on existing slot ranges!");
                 self.is_consistent = false;
             }
         }
@@ -806,7 +809,7 @@ impl ClusterMap {
         let endpoint_reply = arr.get(0)?;
         let endpoint = reply_as_string(endpoint_reply)?;
         if endpoint.is_empty() || endpoint == "?" {
-            warn!("Invalid node primary endpoint");
+            log_warning("Invalid node primary endpoint");
             return None;
         }
 
@@ -836,9 +839,10 @@ impl ClusterMap {
         // Check for duplicate socket addresses across different nodes
         if let Some(existing) = socket_addr_to_node_map.get(&socket_address) {
             if existing != &node_id {
-                warn!(
-                    "Socket address collision between nodes {node_id} and {existing} at {socket_address}"
+                let msg = format!(
+                    "Socket address collision between nodes {node_id} and {existing} at {socket_address}",
                 );
+                log_warning(&msg);
                 self.is_consistent = false;
             }
         } else {
@@ -886,10 +890,11 @@ impl ClusterMap {
                 );
             }
             if start_slot != expected_next {
-                warn!(
+                let msg = format!(
                     "Slot gap found: slots {expected_next} to {} are not covered",
                     start_slot - 1
                 );
+                log_warning(&msg);
                 return false;
             }
             expected_next = end_slot.wrapping_add(1);
