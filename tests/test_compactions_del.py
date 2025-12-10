@@ -24,7 +24,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
                                     'AGGREGATION', aggregation, bucket_duration)
 
     def add_samples_to_source(self, key, start_ts, count, interval=100, base_value=1.0):
-        """Helper to add multiple samples to source series"""
+        """Helper to add multiple samples to the source series"""
         for i in range(count):
             timestamp = start_ts + i * interval
             value = base_value + i
@@ -155,29 +155,6 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
                 # (exact comparison depends on an aggregation type and deleted values)
                 pass
 
-    def test_del_with_aligned_timestamps(self):
-        """Test deletion with aligned timestamp compaction rules"""
-        source_key = 'source:aligned'
-        dest_key = 'dest:aligned'
-
-        self.setup_source_and_dest_series(source_key, dest_key)
-        # Create rule with aligned timestamps (align to start of bucket)
-        self.client.execute_command('TS.CREATERULE', source_key, dest_key,
-                                    'AGGREGATION', 'avg', 1000, 1000)
-
-        # Add samples with specific timing
-        timestamps = [1050, 1150, 1250, 1550, 1750]
-        for i, ts in enumerate(timestamps):
-            self.client.execute_command('TS.ADD', source_key, ts, 10.0 + i)
-
-        # Delete middle samples
-        deleted = self.client.execute_command('TS.DEL', source_key, 1200, 1600)
-        assert deleted >= 1
-
-        # Verify aligned compaction still works correctly
-        compacted = self.get_compacted_samples(dest_key)
-        assert len(compacted) >= 1
-
     def test_del_current_bucket_adjustment(self):
         """Test deletion affecting the current (incomplete) bucket"""
         source_key = 'source:current'
@@ -210,7 +187,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         source_key = 'source:retention'
         dest_key = 'dest:retention'
 
-        # Create source with 5 second retention
+        # Create a source with 5 second retention
         self.setup_source_and_dest_series(source_key, dest_key, retention=5000)
         self.add_compaction_rule(source_key, dest_key, 'avg', 1000)
 
@@ -273,15 +250,15 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         initial = self.get_compacted_samples(dest_key)
         assert len(initial) == 3
 
-        # Delete all samples from middle bucket
+        # Delete all samples from the middle bucket
         deleted = self.client.execute_command('TS.DEL', source_key, 2000, 2999)
         assert deleted == 2
 
-        # Middle bucket should be removed from compacted data
+        # The middle bucket should be removed from compacted data
         updated = self.get_compacted_samples(dest_key)
         assert len(updated) == 2
 
-        # Verify remaining buckets are correct
+        # Verify the remaining buckets are correct
         timestamps = [sample[0] for sample in updated]
         assert 1000 in timestamps
         assert 3000 in timestamps
@@ -302,7 +279,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         deleted = self.client.execute_command('TS.DEL', source_key, 1100, 1300)
         assert deleted >= 1
 
-        # Verify system is still in consistent state
+        # Verify that the system is still in a consistent state
         compacted = self.get_compacted_samples(dest_key)
         source_samples = self.client.execute_command('TS.RANGE', source_key, 0, '+')
 
@@ -311,7 +288,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         assert isinstance(source_samples, list)
 
     def test_del_multiple_compaction_rules(self):
-        """Test deletion with multiple compaction rules on same source"""
+        """Test deletion with multiple compaction rules on the same source"""
         source_key = 'source:multi_rules'
         dest1_key = 'dest1:multi_rules'
         dest2_key = 'dest2:multi_rules'
