@@ -78,10 +78,6 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
 
     set_log_level(LogLevel::Console);
 
-    // let _ = logging::setup();
-    #[cfg(test)]
-    env_logger::init();
-
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");
         ctx.log_warning(&msg);
