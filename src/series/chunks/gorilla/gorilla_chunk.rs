@@ -102,11 +102,11 @@ impl GorillaChunk {
         size_of::<Self>() + self.get_heap_size()
     }
 
-    pub fn iter(&self) -> SampleIter {
+    pub fn iter(&'_ self) -> SampleIter<'_> {
         self.range_iter(i64::MIN, i64::MAX)
     }
 
-    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter {
+    pub fn range_iter(&'_ self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
         GorillaChunkIterator::new(self, start_ts, end_ts).into()
     }
 }

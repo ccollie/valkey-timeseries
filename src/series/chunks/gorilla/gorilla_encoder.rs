@@ -169,7 +169,7 @@ impl GorillaEncoder {
         Ok(())
     }
 
-    pub fn iter(&self) -> GorillaIterator {
+    pub fn iter(&'_ self) -> GorillaIterator<'_> {
         GorillaIterator::new(self)
     }
 
