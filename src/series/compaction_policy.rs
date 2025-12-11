@@ -808,6 +808,31 @@ mod tests {
     }
 
     #[test]
+    fn test_special_regex_characters_in_keys() {
+        let mut config = PolicyConfig::new();
+        let policy_str = r"avg:10s:1h|^app\.prod\..*"; // Escaped dots to match literal dots
+
+        config.add_policies_from_config(policy_str, false).unwrap();
+
+        let test_cases = vec![
+            ("app.prod.latency", true),   // Should match (literal dots)
+            ("app.prod.cpu.usage", true), // Should match
+            ("appXprodXlatency", false),  // Should not match (X instead of .)
+            ("app-prod-latency", false),  // Should not match (- instead of .)
+            ("app.dev.latency", false),   // Should not match (dev instead of prod)
+        ];
+
+        for (key, should_match) in test_cases {
+            let rules = config.create_compaction_rules(key);
+            if should_match {
+                assert!(rules.is_some(), "Expected match for key: {key}");
+            } else {
+                assert!(rules.is_none(), "Expected no match for key: {key}");
+            }
+        }
+    }
+
+    #[test]
     fn test_case_sensitive_regex_matching() {
         let mut config = PolicyConfig::new();
 
