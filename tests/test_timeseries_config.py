@@ -15,6 +15,10 @@ class TestTimeseriesConfig(ValkeyTimeSeriesTestCaseBase):
         # All module configs are namespaced with "ts."
         self.client.execute_command("CONFIG", "SET", f"ts.{name}", value)
 
+    def get_config(self, name: str):
+        # All module configs are namespaced with "ts."
+        return self.client.execute_command("CONFIG", "GET", f"ts.{name}")[1]
+
     def reset_defaults(self):
         # Reset the configs we touched back to sane defaults
         self.set_config("ts-chunk-size", DEFAULT_CHUNK_SIZE)
@@ -112,10 +116,10 @@ class TestTimeseriesConfig(ValkeyTimeSeriesTestCaseBase):
         """
         info = self.ts_info(key)
 
+        assert info is not None, f"TS.INFO returned None for key {key}"
+
         rules = info.get('rules', [])
         rule_count = len(rules)
-
-        print(f"Compaction rules for {key}: {rules}")
 
         if expected_rule_count is not None:
             assert rule_count == expected_rule_count, f"Expected {expected_rule_count} rules for {key}, got {rule_count}"
@@ -419,7 +423,7 @@ class TestTimeseriesConfig(ValkeyTimeSeriesTestCaseBase):
         """Test handling of keys containing special regex characters"""
 
         # Policy that should match keys containing dots and other special chars
-        policy = r"avg:10s:1h|^app\\.prod\\..*"  # Escaped dots to match literal dots
+        policy = r"avg:10s:1h|^app\.prod\..*"  # Escaped dots to match literal dots
         self.set_compaction_policy(policy)
 
         test_cases = [
@@ -431,7 +435,7 @@ class TestTimeseriesConfig(ValkeyTimeSeriesTestCaseBase):
         ]
 
         for key, should_have_rules in test_cases:
-            self.create_series_and_add_data(key)
+            self.client.execute_command("TS.ADD", key, int(time.time() * 1000), 120.0)
 
             if should_have_rules:
                 self.assert_compaction_rule(key, "avg", 10000)
