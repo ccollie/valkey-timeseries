@@ -11,7 +11,6 @@ use crate::labels::Label;
 use crate::series::SeriesRef;
 use crate::series::chunks::ChunkEncoding;
 use get_size2::GetSize;
-use num_traits::Zero;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::str::FromStr;
@@ -197,17 +196,10 @@ impl SampleDuplicatePolicy {
         let policy = self.resolve_policy(override_policy);
         let last_ts = last_sample.timestamp;
 
-        if current_sample.timestamp >= last_ts && policy == DuplicatePolicy::KeepLast {
-            if !self.max_time_delta.is_zero()
-                && (current_sample.timestamp - last_ts).abs() < self.max_time_delta as i64
-            {
-                return true;
-            }
-            if (last_sample.value - current_sample.value).abs() <= self.max_value_delta {
-                return true;
-            }
-        }
-        false
+        current_sample.timestamp >= last_ts
+            && policy == DuplicatePolicy::KeepLast
+            && (current_sample.timestamp - last_ts).abs() <= self.max_time_delta as i64
+            && (last_sample.value - current_sample.value).abs() <= self.max_value_delta
     }
 
     pub fn resolve_policy(&self, override_policy: Option<DuplicatePolicy>) -> DuplicatePolicy {
@@ -661,7 +653,7 @@ mod tests {
             value: 30.0,
         };
 
-        // With a zero time delta, should not detect as duplicate based on time
+        // With a zero-time delta, should not detect as duplicate based on time
         assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
 
         // But still should detect as duplicate based on value
