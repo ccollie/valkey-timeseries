@@ -287,6 +287,52 @@ mod tests {
         assert_eq!(result[1].value, 7.5);
     }
 
+    #[test]
+    fn test_get_range_with_aggregation_report_empty_false() {
+        let samples = vec![
+            Sample::new(100, 10.0),
+            Sample::new(110, 20.0),
+            Sample::new(150, 30.0),
+            Sample::new(160, 40.0),
+            Sample::new(200, 50.0),
+        ];
+
+        let mut series = TimeSeries::new();
+        for sample in samples {
+            series.add(sample.timestamp, sample.value, None);
+        }
+
+        let aggr_options = AggregationOptions {
+            aggregation: AggregationType::Sum,
+            bucket_duration: 25,
+            timestamp_output: BucketTimestamp::Start,
+            alignment: BucketAlignment::Timestamp(0),
+            report_empty: false,
+        };
+
+        let range_options = RangeOptions {
+            date_range: TimestampRange {
+                start: TimestampValue::Specific(100),
+                end: TimestampValue::Specific(200),
+            },
+            aggregation: Some(aggr_options),
+            ..Default::default()
+        };
+
+        let result = get_range(&series, &range_options, true);
+
+        assert_eq!(result.len(), 3);
+
+        assert_eq!(result[0].timestamp, 100);
+        assert_eq!(result[0].value, 30.);
+
+        assert_eq!(result[1].timestamp, 150);
+        assert_eq!(result[1].value, 70.0);
+
+        assert_eq!(result[2].timestamp, 200);
+        assert_eq!(result[2].value, 50.0);
+    }
+
     // #[test]
     // fn test_range_with_aggregation_1() {
     //     // let mut series = create_test_series();
