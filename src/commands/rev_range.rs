@@ -16,14 +16,18 @@ pub fn rev_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 
     let key = args.next_arg()?;
-    let options = parse_range_options(&mut args)?;
+    let mut options = parse_range_options(&mut args)?;
 
     args.done()?;
 
     with_timeseries(ctx, &key, true, |series| {
+        let count = options.count;
+        options.count = None; //
+        let count = count.unwrap_or(usize::MAX);
         let samples = get_range(series, &options, false)
             .into_iter()
             .rev()
+            .take(count)
             .map(|x| x.into())
             .collect::<Vec<ValkeyValue>>();
 
