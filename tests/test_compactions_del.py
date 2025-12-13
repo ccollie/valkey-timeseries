@@ -77,7 +77,6 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         self.add_samples_to_source(source_key, 2000, 3, 100, 20.0)  # Bucket 2: 2000-2999
 
         dest_info = self.ts_info(dest_key, True)
-        print(f"Destination info: {dest_info}")
 
         # Should have 1 compacted value, since the second bucket is not closed yet
         initial_compacted = self.get_compacted_samples(dest_key)
@@ -187,7 +186,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         source_key = 'source:retention'
         dest_key = 'dest:retention'
 
-        # Create a source with 5 second retention
+        # Create a source with 5-second retention
         self.setup_source_and_dest_series(source_key, dest_key, retention=5000)
         self.add_compaction_rule(source_key, dest_key, 'avg', 1000)
 
@@ -222,9 +221,6 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         for i, ts in enumerate(boundary_samples):
             self.client.execute_command('TS.ADD', source_key, ts, 10.0 + i)
 
-        initial = self.get_compacted_samples(dest_key)
-        initial_count = len(initial)
-
         # Delete samples exactly at boundaries
         deleted = self.client.execute_command('TS.DEL', source_key, 1000, 2000)
         assert deleted >= 2
@@ -243,7 +239,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         self.add_compaction_rule(source_key, dest_key, 'count', 1000)
 
         # Add samples in multiple buckets
-        for bucket in range(3):
+        for bucket in range(4):
             start_ts = 1000 + bucket * 1000
             self.add_samples_to_source(source_key, start_ts, 2, 200, 10.0)
 
@@ -301,11 +297,13 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         self.add_compaction_rule(source_key, dest2_key, 'avg', 500)  # Different bucket size
 
         # Add samples
-        self.add_samples_to_source(source_key, 1000, 10, 50, 5.0)
+        self.add_samples_to_source(source_key, 1000, 25, 50, 5.0)
 
         # Get initial compacted values
         initial1 = self.get_compacted_samples(dest1_key)
+        assert len(initial1) >= 1, "Initial compacted samples missing for dest1_key"
         initial2 = self.get_compacted_samples(dest2_key)
+        assert len(initial2) >= 1, "Initial compacted samples missing for dest2_key"
 
         # Delete samples
         deleted = self.client.execute_command('TS.DEL', source_key, 1200, 1400)
@@ -318,6 +316,15 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         # Verify both compaction rules handled the deletion
         assert len(updated1) >= 1
         assert len(updated2) >= 1
+
+        assert len(updated1) <= len(initial1)
+        assert len(updated2) <= len(initial2)
+
+        # make sure we don't have samples in the deleted range
+        for sample in updated1:
+            assert not (1200 <= sample[0] <= 1400)
+        for sample in updated2:
+            assert not (1200 <= sample[0] <= 1400)
 
     def test_del_large_range_compaction_efficiency(self):
         """Test deletion of large ranges and compaction efficiency"""
