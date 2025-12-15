@@ -123,7 +123,8 @@ pub trait FanoutOperation: Default + Send + 'static {
     fn generate_reply(&mut self, ctx: &Context) -> Status;
 
     fn generate_timeout_reply(&self, ctx: &Context) -> Status {
-        ctx.reply_error_string("Unable to contact all cluster nodes")
+        let msg = "A multi-shard command failed because at least one shard did not reply within the given timeframe.";
+        ctx.reply_error_string(msg)
     }
 
     fn generate_error_reply(&self, ctx: &Context) -> Status {
