@@ -6,7 +6,9 @@ use crate::common::Sample;
 use crate::fanout::FanoutOperation;
 use crate::fanout::NodeInfo;
 use crate::iterators::{MultiSeriesSampleIter, SampleIter};
-use crate::series::mrange::{build_mrange_grouped_labels, process_mrange_query};
+use crate::series::mrange::{
+    apply_result_ordering, build_mrange_grouped_labels, process_mrange_query,
+};
 use crate::series::range_utils::group_reduce;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
 use orx_parallel::ParIter;
@@ -42,16 +44,7 @@ impl FanoutOperation for MRangeFanoutOperation {
         ctx: &Context,
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
-        let options: MRangeOptions = req.try_into()?;
-        let series = process_mrange_query(ctx, options, true)?;
-
-        // Convert MRangeSeriesResult to SeriesResponse
-        let serialized: Result<Vec<SeriesResponse>, _> =
-            series.into_iter().map(|x| x.try_into()).collect();
-
-        Ok(MultiRangeResponse {
-            series: serialized?,
-        })
+        get_local_response(ctx, req, false)
     }
 
     fn generate_request(&self) -> MultiRangeRequest {
@@ -63,25 +56,50 @@ impl FanoutOperation for MRangeFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        let series = std::mem::take(&mut self.series);
-        let all_series = series
-            .into_par()
-            .flat_map(deserialize_multi_range_response)
-            .reduce(|mut acc, item| {
-                acc.extend(item);
-                acc
-            })
-            .unwrap_or_default();
+        generate_reply(ctx, &self.options, &mut self.series, false)
+    }
+}
 
-        let series = if let Some(grouping) = &self.options.grouping {
-            group_sharded_series(all_series, grouping)
-        } else {
-            all_series
-        };
+#[derive(Default)]
+pub struct MRevRangeFanoutOperation {
+    options: MRangeOptions,
+    series: Vec<MultiRangeResponse>,
+}
 
-        // todo: reply directly without intermediate conversion
-        let result = ValkeyValue::Array(series.into_iter().map(|x| x.into()).collect());
-        ctx.reply(Ok(result))
+impl MRevRangeFanoutOperation {
+    pub fn new(options: MRangeOptions) -> Self {
+        Self {
+            options,
+            series: Vec::new(),
+        }
+    }
+}
+
+impl FanoutOperation for MRevRangeFanoutOperation {
+    type Request = MultiRangeRequest;
+    type Response = MultiRangeResponse;
+
+    fn name() -> &'static str {
+        "mrevrange"
+    }
+
+    fn get_local_response(
+        ctx: &Context,
+        req: MultiRangeRequest,
+    ) -> ValkeyResult<MultiRangeResponse> {
+        get_local_response(ctx, req, true)
+    }
+
+    fn generate_request(&self) -> MultiRangeRequest {
+        serialize_request(&self.options)
+    }
+
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+        self.series.push(resp);
+    }
+
+    fn generate_reply(&mut self, ctx: &Context) -> Status {
+        generate_reply(ctx, &self.options, &mut self.series, true)
     }
 }
 
@@ -168,7 +186,7 @@ fn group_sharded_series(
         .into_iter()
         .iter_into_par()
         .map(|(group_key_str, series_results_in_group)| {
-            let group_defining_val_str = group_key_str
+            let group_label_value = group_key_str
                 .rsplit_once('=')
                 .map(|(_, val)| val)
                 .unwrap_or("");
@@ -180,17 +198,66 @@ fn group_sharded_series(
 
             let final_labels = build_mrange_grouped_labels(
                 group_by_label_name_str,
-                group_defining_val_str,
+                group_label_value,
                 reducer_name_str,
                 &source_keys,
             );
 
             MRangeSeriesResult {
-                group_label_value: None,
+                group_label_value: Some(group_label_value.to_string()),
                 key: group_key_str,
                 samples,
                 labels: final_labels,
             }
         })
         .collect::<Vec<_>>()
+}
+
+fn get_local_response(
+    ctx: &Context,
+    req: MultiRangeRequest,
+    reverse: bool,
+) -> ValkeyResult<MultiRangeResponse> {
+    let options: MRangeOptions = req.try_into()?;
+    let series = process_mrange_query(ctx, options, reverse)?;
+
+    // Convert MRangeSeriesResult to SeriesResponse
+    let serialized: Result<Vec<SeriesResponse>, _> =
+        series.into_iter().map(|x| x.try_into()).collect();
+
+    Ok(MultiRangeResponse {
+        series: serialized?,
+    })
+}
+
+fn generate_reply(
+    ctx: &Context,
+    options: &MRangeOptions,
+    series: &mut Vec<MultiRangeResponse>,
+    is_reverse: bool,
+) -> Status {
+    let series = std::mem::take(series);
+    let all_series = series
+        .into_par()
+        .flat_map(deserialize_multi_range_response)
+        .reduce(|mut acc, item| {
+            acc.extend(item);
+            acc
+        })
+        .unwrap_or_default();
+
+    let mut series = if let Some(grouping) = &options.grouping {
+        group_sharded_series(all_series, grouping)
+    } else {
+        all_series
+    };
+
+    let is_grouped = options.grouping.is_some();
+    apply_result_ordering(&mut series, is_grouped, false, is_reverse, options.count);
+
+    // todo: reply directly without intermediate conversion
+    let arr: Vec<ValkeyValue> = series.into_iter().map(|x| x.into()).collect::<Vec<_>>();
+    let result = ValkeyValue::Array(arr);
+
+    ctx.reply(Ok(result))
 }

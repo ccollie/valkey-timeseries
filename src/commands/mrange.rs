@@ -1,4 +1,4 @@
-use crate::commands::mrange_fanout_operation::MRangeFanoutOperation;
+use crate::commands::mrange_fanout_operation::{MRangeFanoutOperation, MRevRangeFanoutOperation};
 use crate::commands::parse_mrange_options;
 use crate::error_consts;
 use crate::fanout::{FanoutOperation, is_clustered};
@@ -33,6 +33,10 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     args.done()?;
 
     if is_clustered(ctx) {
+        if reverse {
+            let operation = MRevRangeFanoutOperation::new(options);
+            return operation.exec(ctx);
+        }
         let operation = MRangeFanoutOperation::new(options);
         return operation.exec(ctx);
     }

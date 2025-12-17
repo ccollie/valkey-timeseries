@@ -58,7 +58,7 @@ use card_fanout_operation::CardFanoutOperation;
 use label_names_fanout_operation::LabelNamesFanoutOperation;
 use label_values_fanout_operation::LabelValuesFanoutOperation;
 use mget_fanout_operation::MGetFanoutOperation;
-use mrange_fanout_operation::MRangeFanoutOperation;
+use mrange_fanout_operation::{MRangeFanoutOperation, MRevRangeFanoutOperation};
 use query_index_fanout_operation::QueryIndexFanoutOperation;
 use stats_fanout_operation::StatsFanoutOperation;
 
@@ -69,6 +69,7 @@ pub(crate) fn register_fanout_operations() -> ValkeyResult<()> {
     register_fanout_operation::<LabelValuesFanoutOperation>()?;
     register_fanout_operation::<MGetFanoutOperation>()?;
     register_fanout_operation::<MRangeFanoutOperation>()?;
+    register_fanout_operation::<MRevRangeFanoutOperation>()?;
     register_fanout_operation::<QueryIndexFanoutOperation>()?;
     Ok(())
 }
