@@ -12,7 +12,6 @@ pub mod rounding;
 pub mod string_interner;
 pub mod threads;
 pub mod time;
-pub mod timer;
 mod types;
 pub mod unit_vec;
 
