@@ -1,4 +1,5 @@
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
+use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
@@ -6,13 +7,12 @@ use crate::error_consts;
 use crate::series::index::{get_series_by_id, with_timeseries_postings};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size2::GetSize;
-use logger_rust::*;
 use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::sync::Mutex;
 use topo_sort::{SortResults, TopoSort};
-use valkey_module::{Context, DetachedContext, NotifyEvent, ValkeyError, ValkeyResult, raw};
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, raw};
 
 const PARALLEL_THRESHOLD: usize = 2;
 const TEMP_VEC_LEN: usize = 6;
@@ -83,13 +83,11 @@ struct CompactionContext<'a> {
     dest: &'a mut TimeSeries,
     rule: &'a mut CompactionRule,
     value: Sample,
-    log_ctx: &'a DetachedContext,
     added: bool,
 }
 
 impl<'a> CompactionContext<'a> {
     fn new(
-        log_ctx: &'a DetachedContext,
         parent: &'a TimeSeries,
         dest: &'a mut TimeSeries,
         rule: &'a mut CompactionRule,
@@ -100,7 +98,6 @@ impl<'a> CompactionContext<'a> {
             dest,
             rule,
             value,
-            log_ctx,
             added: false,
         }
     }
@@ -153,16 +150,6 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     let ts = sample.timestamp;
     let sample_bucket_start = ctx.rule.calc_bucket_start(ts);
 
-    log_info!(
-        "handle_sample_compaction({}): series_id:{}, sample: {} @ {}, sample_bucket_start: {}, bucket_start: {:?}",
-        ctx.rule.aggregator.aggregation_type(),
-        ctx.dest.id,
-        sample.value,
-        sample.timestamp,
-        sample_bucket_start,
-        ctx.rule.bucket_start
-    );
-
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // First sample for this rule - initialize the aggregation
         ctx.rule.bucket_start = Some(sample_bucket_start);
@@ -173,20 +160,13 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     match sample_bucket_start.cmp(&current_bucket_start) {
         Ordering::Equal => {
             // Sample belongs to the current aggregation bucket
-            log_info!("Sample belongs to the current aggregation bucket: {current_bucket_start}");
             ctx.rule.aggregator.update(sample.value);
         }
         Ordering::Greater => {
             // Sample starts a new bucket - finalize the current bucket first
-            log_info!(
-                "Sample starts a new bucket ({sample_bucket_start} > {current_bucket_start}). Finalize the current bucket first"
-            );
             finalize_current_bucket(ctx, sample, sample_bucket_start)?;
         }
         Ordering::Less => {
-            log_debug!(
-                "Sample is in an older bucket: {sample_bucket_start} < {current_bucket_start}"
-            );
             let bucket_end = sample_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
             // Sample is in an older bucket (shouldn't happen for new samples, but handle gracefully)
             recalculate_bucket(ctx, sample_bucket_start, bucket_end, null_ts_filter)?;
@@ -203,10 +183,6 @@ fn finalize_current_bucket(
     new_bucket_start: Timestamp,
 ) -> TsdbResult<()> {
     // Finalize the current bucket
-    log_debug!(
-        "finalize_current_bucket. Aggregator {:?}",
-        ctx.rule.aggregator
-    );
     let aggregated_value = ctx.rule.aggregator.finalize();
     let current_bucket_start = ctx.rule.bucket_start.expect(
         "finalize_current_bucket should be called when current bucket start is already set",
@@ -226,13 +202,6 @@ fn finalize_current_bucket(
 fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> TsdbResult<()> {
     let ts = sample.timestamp;
     let bucket_start = ctx.rule.calc_bucket_start(ts);
-
-    log_info!(
-        "handle_compaction_upsert({}, {} @ {})",
-        ctx.dest.id,
-        sample.value,
-        sample.timestamp
-    );
 
     // Check if this affects the current ongoing aggregation bucket
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
@@ -274,11 +243,6 @@ fn recalculate_current_bucket(
     // reset would have cleared the bucket_start, so we need to set it again
     ctx.rule.bucket_start = Some(bucket_start);
 
-    log_debug!(
-        "recalculate_current_bucket({}, {bucket_start}, {bucket_end})",
-        ctx.rule.aggregator.aggregation_type()
-    );
-
     Ok(())
 }
 
@@ -292,12 +256,6 @@ fn recalculate_bucket<F>(
 where
     F: Fn(Timestamp) -> bool,
 {
-    log_debug!(
-        "recalculate_bucket({}, {}, {bucket_start}, {bucket_end})",
-        ctx.rule.aggregator.aggregation_type(),
-        ctx.dest.id
-    );
-
     // Create a new aggregator for this bucket
     let mut bucket_aggregator = ctx.rule.aggregator.clone();
     bucket_aggregator.reset();
@@ -313,11 +271,9 @@ where
 
     if has_samples {
         let aggregated_value = bucket_aggregator.finalize();
-        log_debug!("Bucket aggregation finalized with value: {aggregated_value}");
         add_dest_bucket(ctx, bucket_start, aggregated_value)?;
     } else {
         // No samples in this bucket anymore, remove it from destination
-        log_debug!("No samples in this bucket anymore, remove it from destination");
         ctx.dest.remove_range(bucket_start, bucket_end - 1)?;
     }
 
@@ -616,7 +572,6 @@ where
     }
 
     let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
-    let log_ctx = DetachedContext::new();
 
     let errors = Mutex::new(Vec::new());
     let added: Vec<SeriesRef> = destinations
@@ -627,7 +582,6 @@ where
                 dest: dest_guard,
                 rule,
                 value,
-                log_ctx: &log_ctx,
                 added: false,
             };
             match f(&mut cctx, value) {
@@ -643,7 +597,7 @@ where
                         "Failed to handle compaction rule for series {}: {error}",
                         dest_guard.id,
                     );
-                    log_ctx.log_warning(&msg);
+                    log_warning(msg);
                     let mut guard = errors.lock().unwrap();
                     guard.push(error);
                     None
@@ -674,18 +628,16 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
     {
         SampleAddResult::Ok(_) => {
             ctx.added = true;
-            log_debug!("add_dest_bucket: Added value {value} @ {ts}.",);
             Ok(())
         }
         SampleAddResult::Ignored(_) => Ok(()), // duplicate sample, (ignored)
         SampleAddResult::TooOld => {
             // bucket start is too old, we cannot add it
-            ctx.log_ctx
-                .log_verbose("Sample is too old for compaction rule, ignoring");
             Ok(())
         }
         x => {
             let base_msg = format!("TSDB: failed to add sample @{ts} to destination bucket: {x}",);
+            log_warning(base_msg.as_str());
             Err(TsdbError::General(base_msg))
         }
     }
@@ -701,10 +653,6 @@ fn calculate_range<F>(
 where
     F: Fn(Timestamp) -> bool,
 {
-    log_debug!(
-        "Aggregating {} for range [{start}..{end}] for series",
-        aggregator.aggregation_type()
-    );
     let mut has_samples = false;
     aggregator.reset();
     for sample in series
@@ -712,14 +660,8 @@ where
         .filter(|sample| filter(sample.timestamp))
     {
         aggregator.update(sample.value);
-        log_debug!("Aggregated sample: {} @ {}", sample.value, sample.timestamp);
         has_samples = true;
     }
-    log_debug!(
-        "{} value for range [{start}..{end}] - {:?}",
-        aggregator.aggregation_type(),
-        aggregator.current()
-    );
     has_samples
 }
 
@@ -815,7 +757,7 @@ pub fn check_new_rule_circular_dependency(
     }
 
     // Check if the new rule would create a circular dependency
-    // log_info!("candidate rule {} -> {}", series.id, dest.id);
+    // log_info(format!("candidate rule {} -> {}", series.id, dest.id));
     graph.insert(series.id, vec![dest.id]);
     build_dependency_graph_internal(ctx, dest, &mut graph)?;
 
@@ -824,8 +766,6 @@ pub fn check_new_rule_circular_dependency(
             error_consts::COMPACTION_CIRCULAR_DEPENDENCY,
         ));
     };
-
-    // log_debug!("Sorted nodes: {:?}", nodes);
 
     Ok(())
 }
