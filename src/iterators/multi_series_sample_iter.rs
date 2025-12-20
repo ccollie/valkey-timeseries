@@ -50,7 +50,7 @@ impl<'a> MultiSeriesSampleIter<'a> {
 
             for sample in sample_iter.by_ref() {
                 sample_added = true;
-                let stop = sample.timestamp >= max_timestamp;
+                let stop = sample.timestamp > max_timestamp; // was >= but we want to include samples with the same timestamp
                 self.heap.push(sample);
                 if stop {
                     break;
