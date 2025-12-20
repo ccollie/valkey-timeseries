@@ -4,8 +4,7 @@ use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 #[allow(clippy::declare_interior_mutable_const)]
-const ALL_KEYS: LazyLock<ValkeyString> =
-    LazyLock::new(|| ValkeyString::create_and_retain("allkeys"));
+const ALL_KEYS: LazyLock<ValkeyString> = LazyLock::new(|| ValkeyString::create_and_retain("*"));
 
 #[inline]
 fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
