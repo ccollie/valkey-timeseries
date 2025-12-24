@@ -1,8 +1,8 @@
-use super::generated::{CompressionType, Label as FanoutLabel, SampleData, SeriesResponse};
+use super::generated::{CompressionType, Label as FanoutLabel, SampleData, SeriesRangeResponse};
 use crate::common::logging::log_warning;
 use crate::error_consts;
 use crate::labels::Label;
-use crate::series::chunks::samples_to_chunk;
+use crate::series::TimeSeries;
 use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
 use crate::series::request_types::MRangeSeriesResult;
 use valkey_module::{ValkeyError, ValkeyResult};
@@ -47,78 +47,96 @@ pub fn deserialize_chunk(chunk: &SampleData) -> ValkeyResult<TimeSeriesChunk> {
     Ok(deserialized)
 }
 
-impl TryFrom<MRangeSeriesResult> for SeriesResponse {
+impl TryFrom<SampleData> for TimeSeriesChunk {
+    type Error = ValkeyError;
+
+    fn try_from(value: SampleData) -> Result<Self, Self::Error> {
+        deserialize_chunk(&value)
+    }
+}
+
+impl TryFrom<&SampleData> for TimeSeriesChunk {
+    type Error = ValkeyError;
+
+    fn try_from(value: &SampleData) -> Result<Self, Self::Error> {
+        deserialize_chunk(value)
+    }
+}
+
+impl TryFrom<&SampleData> for TimeSeries {
+    type Error = ValkeyError;
+
+    fn try_from(value: &SampleData) -> Result<Self, Self::Error> {
+        let chunk = deserialize_chunk(value)?;
+        TimeSeries::from_chunk(chunk).map_err(|e| {
+            ValkeyError::String(format!("Failed to create time series from chunk: {e}"))
+        })
+    }
+}
+
+impl TryFrom<SampleData> for TimeSeries {
+    type Error = ValkeyError;
+
+    fn try_from(value: SampleData) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+impl TryFrom<MRangeSeriesResult> for SeriesRangeResponse {
     type Error = ValkeyError;
 
     fn try_from(value: MRangeSeriesResult) -> Result<Self, Self::Error> {
         let group_label_value = value.group_label_value.unwrap_or_default();
 
         let labels = convert_labels(value.labels);
-        let sample_chunk = samples_to_chunk(&value.samples)?;
-        let sample_data = serialize_chunk(sample_chunk)
+        let data = serialize_chunk(value.data)
             .map_err(|e| ValkeyError::String(format!("Failed to serialize sample data: {e}")))?;
 
-        Ok(SeriesResponse {
+        Ok(SeriesRangeResponse {
             key: value.key,
             group_label_value,
             labels,
-            samples: Some(sample_data),
+            samples: Some(data),
         })
     }
 }
 
-fn convert_labels(labels: Vec<Option<Label>>) -> Vec<FanoutLabel> {
+fn convert_labels(labels: Vec<Label>) -> Vec<FanoutLabel> {
     labels
         .into_iter()
-        .map(|label| {
-            label.map_or_else(
-                || FanoutLabel {
-                    name: String::new(),
-                    value: String::new(),
-                },
-                |label| FanoutLabel {
-                    name: label.name,
-                    value: label.value,
-                },
-            )
+        .map(|label| FanoutLabel {
+            name: label.name,
+            value: label.value,
         })
         .collect()
 }
 
-impl TryFrom<SeriesResponse> for MRangeSeriesResult {
+impl TryFrom<SeriesRangeResponse> for MRangeSeriesResult {
     type Error = ValkeyError;
 
-    fn try_from(value: SeriesResponse) -> Result<Self, Self::Error> {
+    fn try_from(value: SeriesRangeResponse) -> Result<Self, Self::Error> {
         let key = value.key;
         let group_label_value = Some(value.group_label_value);
-        let samples = match value.samples.as_ref() {
-            Some(sample_data) => {
-                let chunk = deserialize_chunk(sample_data)?;
-                chunk.iter().collect()
-            }
-            None => Vec::new(),
+        let data = if let Some(data) = &value.samples {
+            deserialize_chunk(data)?
+        } else {
+            TimeSeriesChunk::default()
         };
 
-        let labels = value
+        let labels: Vec<Label> = value
             .labels
             .into_iter()
-            .map(|label| {
-                if label.name.is_empty() {
-                    None
-                } else {
-                    Some(Label {
-                        name: label.name,
-                        value: label.value,
-                    })
-                }
+            .map(|label| Label {
+                name: label.name,
+                value: label.value,
             })
             .collect::<Vec<_>>();
 
         Ok(MRangeSeriesResult {
             key,
             group_label_value,
-            samples,
             labels,
+            data,
         })
     }
 }

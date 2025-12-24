@@ -53,6 +53,7 @@ impl FanoutOperation for LabelNamesFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        reply_with_btree_set(ctx, &self.names)
+        reply_with_btree_set(ctx, &self.names);
+        Status::Ok
     }
 }

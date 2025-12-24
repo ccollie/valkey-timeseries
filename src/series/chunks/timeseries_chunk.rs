@@ -187,7 +187,7 @@ impl TimeSeriesChunk {
         start_timestamp: Timestamp,
         end_timestamp: Timestamp,
         timestamp_filter: &Option<Vec<Timestamp>>,
-        value_filter: &Option<ValueFilter>,
+        value_filter: Option<ValueFilter>,
     ) -> Vec<Sample> {
         let mut samples = if let Some(ts_filter) = timestamp_filter {
             let filtered_ts = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
@@ -203,7 +203,7 @@ impl TimeSeriesChunk {
         };
 
         if let Some(value_filter) = value_filter {
-            filter_samples_by_value(&mut samples, value_filter);
+            filter_samples_by_value(&mut samples, &value_filter);
         }
         samples
     }
@@ -267,13 +267,13 @@ impl TimeSeriesChunk {
         }
     }
 
-    pub fn filtered_iter<'a>(
-        &'a self,
+    pub fn filtered_iter(
+        &self,
         start_timestamp: Timestamp,
         end_timestamp: Timestamp,
-        timestamp_filter: Option<&'a Vec<Timestamp>>,
+        timestamp_filter: Option<&[Timestamp]>,
         value_filter: Option<ValueFilter>,
-    ) -> FilteredSampleIterator<'a> {
+    ) -> FilteredSampleIterator<SampleIter> {
         // determine the range of timestamps to filter
         let (start_timestamp, end_timestamp) = if let Some(ts_filter) = timestamp_filter {
             if ts_filter.is_empty() {
@@ -292,6 +292,12 @@ impl TimeSeriesChunk {
             value_filter,
             timestamp_filter,
         )
+    }
+}
+
+impl Default for TimeSeriesChunk {
+    fn default() -> Self {
+        TimeSeriesChunk::Uncompressed(UncompressedChunk::default())
     }
 }
 

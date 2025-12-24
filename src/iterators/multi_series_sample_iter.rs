@@ -1,16 +1,15 @@
 use crate::common::Sample;
-use crate::iterators::sample_iter::SampleIter;
 use min_max_heap::MinMaxHeap;
 use smallvec::SmallVec;
 
 /// Iterate over multiple Sample iterators, returning the samples in timestamp order
-pub struct MultiSeriesSampleIter<'a> {
+pub struct MultiSeriesSampleIter<T: Iterator<Item = Sample>> {
     heap: MinMaxHeap<Sample>,
-    inner: Vec<SampleIter<'a>>,
+    inner: Vec<T>,
 }
 
-impl<'a> MultiSeriesSampleIter<'a> {
-    pub fn new(list: Vec<SampleIter<'a>>) -> Self {
+impl<T: Iterator<Item = Sample>> MultiSeriesSampleIter<T> {
+    pub fn new(list: Vec<T>) -> Self {
         let len = list.len();
         Self {
             inner: list,
@@ -72,7 +71,7 @@ impl<'a> MultiSeriesSampleIter<'a> {
     }
 }
 
-impl Iterator for MultiSeriesSampleIter<'_> {
+impl<T: Iterator<Item = Sample>> Iterator for MultiSeriesSampleIter<T> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {

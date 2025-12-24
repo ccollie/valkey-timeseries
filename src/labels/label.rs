@@ -59,10 +59,12 @@ impl From<InternedLabel<'_>> for Label {
 
 impl From<Label> for ValkeyValue {
     fn from(label: Label) -> Self {
-        let res = vec![
-            ValkeyValue::from(label.name),
-            ValkeyValue::from(label.value),
-        ];
+        let label_value = if label.value.is_empty() {
+            ValkeyValue::Null
+        } else {
+            ValkeyValue::from(label.value)
+        };
+        let res = vec![ValkeyValue::from(label.name), label_value];
         ValkeyValue::from(res)
     }
 }

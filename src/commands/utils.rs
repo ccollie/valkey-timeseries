@@ -1,9 +1,15 @@
 use super::fanout::generated::{Label as FanoutLabel, Sample as FanoutSample};
-use crate::common::Timestamp;
+use crate::common::{Sample, Timestamp};
 use crate::fanout::FanoutError;
-use std::os::raw::c_char;
+use crate::labels::Label;
+use crate::series::request_types::MRangeSeriesResult;
+use std::os::raw::{c_char, c_long};
 use std::{collections::BTreeSet, ffi::CString};
-use valkey_module::{Context, Status, raw};
+use valkey_module::{Context, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, ValkeyValue, raw};
+
+fn reply_with_array(ctx: &Context, len: usize) {
+    raw::reply_with_array(ctx.ctx, len as c_long);
+}
 
 pub(super) fn reply_with_error(ctx: &Context, err: FanoutError) {
     if err.message.is_empty() {
@@ -13,104 +19,126 @@ pub(super) fn reply_with_error(ctx: &Context, err: FanoutError) {
     }
 }
 
-pub(super) fn reply_with_str(ctx: &Context, s: &str) -> Status {
+pub(super) fn reply_with_str(ctx: &Context, s: &str) {
     let msg = CString::new(s).unwrap();
-    raw::reply_with_simple_string(ctx.ctx, msg.as_ptr())
+    raw::reply_with_simple_string(ctx.ctx, msg.as_ptr());
 }
 
-pub(super) fn reply_with_i64(ctx: &Context, v: i64) -> Status {
-    raw::reply_with_long_long(ctx.ctx, v)
+pub(super) fn reply_with_i64(ctx: &Context, v: i64) {
+    raw::reply_with_long_long(ctx.ctx, v);
 }
 
-pub(super) fn reply_with_usize(ctx: &Context, v: usize) -> Status {
-    raw::reply_with_long_long(ctx.ctx, v as i64)
+pub(super) fn reply_with_usize(ctx: &Context, v: usize) {
+    raw::reply_with_long_long(ctx.ctx, v as i64);
 }
 
-pub(super) fn reply_with_bulk_string(ctx: &Context, s: &str) -> Status {
-    raw::reply_with_string_buffer(ctx.ctx, s.as_ptr().cast::<c_char>(), s.len())
+pub(super) fn reply_with_bulk_string(ctx: &Context, s: &str) {
+    raw::reply_with_string_buffer(ctx.ctx, s.as_ptr().cast::<c_char>(), s.len());
 }
 
-pub fn reply_with_string_iter(
-    ctx: &Context,
-    v: impl Iterator<Item = String>,
-    count: usize,
-) -> Status {
-    let status = raw::reply_with_array(ctx.ctx, count as i64);
-    if status != Status::Ok {
-        return status;
-    }
+pub fn reply_with_string_iter(ctx: &Context, v: impl Iterator<Item = String>) {
+    raw::reply_with_array(ctx.ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long);
+    let mut len = 0;
     for s in v {
-        let status = reply_with_bulk_string(ctx, &s);
-        if status != Status::Ok {
-            return status;
-        }
+        reply_with_bulk_string(ctx, &s);
+        len += 1;
     }
-    Status::Ok
+    raw::reply_with_array(ctx.ctx, len as c_long);
 }
 
-pub fn reply_with_btree_set(ctx: &Context, v: &BTreeSet<String>) -> Status {
-    let mut status = raw::reply_with_array(ctx.ctx, v.len() as i64);
-    if status != Status::Ok {
-        return status;
-    }
+pub fn reply_with_btree_set(ctx: &Context, v: &BTreeSet<String>) {
+    reply_with_array(ctx, v.len());
     for s in v {
-        status = reply_with_bulk_string(ctx, s);
-        if status != Status::Ok {
-            return status;
-        }
+        reply_with_bulk_string(ctx, s);
     }
-    Status::Ok
 }
 
-pub fn reply_with_fanout_label(ctx: &Context, label: &FanoutLabel) -> Status {
-    if label.name.is_empty() {
-        return raw::reply_with_null(ctx.ctx);
-    }
-    let mut status = reply_with_str(ctx, &label.name);
-    if status != Status::Ok {
-        return status;
-    }
-    status = reply_with_bulk_string(ctx, &label.value);
-    if status != Status::Ok {
-        return status;
-    }
-    Status::Ok
-}
-
-pub fn reply_with_fanout_labels(ctx: &Context, v: &[FanoutLabel]) -> Status {
-    let status = raw::reply_with_array(ctx.ctx, v.len() as i64);
-    if status != Status::Ok {
-        return status;
-    }
-    for label in v {
-        let status = reply_with_fanout_label(ctx, label);
-        if status != Status::Ok {
-            return status;
-        }
-    }
-    Status::Ok
-}
-
-pub fn reply_with_sample_ex(ctx: &Context, timestamp: Timestamp, value: f64) -> Status {
-    let mut status = raw::reply_with_array(ctx.ctx, 2);
-    if status != Status::Ok {
-        return status;
-    }
-    status = reply_with_i64(ctx, timestamp);
-    if status != Status::Ok {
-        return status;
-    }
-    status = raw::reply_with_double(ctx.ctx, value);
-    if status != Status::Ok {
-        return status;
-    }
-    Status::Ok
-}
-
-pub fn reply_with_fanout_sample(ctx: &Context, sample: &Option<FanoutSample>) -> Status {
-    if let Some(s) = sample {
-        reply_with_sample_ex(ctx, s.timestamp, s.value)
+pub fn reply_label_ex(ctx: &Context, label: &str, value: Option<&str>) {
+    reply_with_array(ctx, 2);
+    reply_with_bulk_string(ctx, label);
+    if let Some(value) = value {
+        reply_with_bulk_string(ctx, value);
     } else {
-        raw::reply_with_null(ctx.ctx)
+        raw::reply_with_null(ctx.ctx);
     }
+}
+
+pub fn reply_label(ctx: &Context, label: &str, value: &str) {
+    let value = if value.is_empty() { None } else { Some(value) };
+    reply_label_ex(ctx, label, value);
+}
+
+pub fn reply_with_labels(ctx: &Context, labels: &[Label]) {
+    reply_with_array(ctx, labels.len());
+    for label in labels {
+        reply_label(ctx, &label.name, &label.value);
+    }
+}
+
+pub(super) fn reply_with_fanout_label(ctx: &Context, label: &FanoutLabel) {
+    if label.name.is_empty() {
+        raw::reply_with_null(ctx.ctx);
+        return;
+    }
+    reply_label_ex(ctx, &label.name, Some(&label.value));
+}
+
+pub(super) fn reply_with_fanout_labels(ctx: &Context, v: &[FanoutLabel]) {
+    reply_with_array(ctx, v.len());
+    for label in v {
+        reply_with_fanout_label(ctx, label);
+    }
+}
+
+pub fn reply_with_sample_ex(ctx: &Context, timestamp: Timestamp, value: f64) {
+    reply_with_array(ctx, 2);
+    reply_with_i64(ctx, timestamp);
+    raw::reply_with_double(ctx.ctx, value);
+}
+
+#[inline]
+pub fn reply_with_sample(ctx: &Context, sample: &Sample) {
+    reply_with_sample_ex(ctx, sample.timestamp, sample.value);
+}
+
+pub fn reply_with_fanout_sample(ctx: &Context, sample: &Option<FanoutSample>) {
+    if let Some(s) = sample {
+        reply_with_sample_ex(ctx, s.timestamp, s.value);
+    } else {
+        raw::reply_with_null(ctx.ctx);
+    }
+}
+
+pub fn reply_with_samples(ctx: &Context, samples: impl Iterator<Item = Sample>) {
+    raw::reply_with_array(ctx.ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long);
+
+    let mut len = 0;
+    for sample in samples {
+        reply_with_sample(ctx, &sample);
+        len += 1;
+    }
+
+    reply_with_array(ctx, len);
+}
+
+pub fn reply_with_mrange_series_result(ctx: &Context, series: &MRangeSeriesResult) {
+    reply_with_array(ctx, 3);
+
+    reply_with_bulk_string(ctx, &series.key);
+
+    // series.labels has the same count as selected_labels
+    reply_with_labels(ctx, &series.labels);
+
+    reply_with_samples(ctx, series.data.iter());
+}
+
+pub(super) fn reply_with_mrange_series_results(
+    ctx: &Context,
+    series_results: &[MRangeSeriesResult],
+) -> ValkeyResult {
+    reply_with_array(ctx, series_results.len());
+    for series in series_results {
+        reply_with_mrange_series_result(ctx, series);
+    }
+    Ok(ValkeyValue::NoReply)
 }

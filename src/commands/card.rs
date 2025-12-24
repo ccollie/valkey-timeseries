@@ -21,6 +21,7 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         let operation = CardFanoutOperation::new(options);
         return operation.exec(ctx);
     }
+
     let counter = count_matched_series(ctx, options.date_range, &options.matchers)?;
 
     Ok(ValkeyValue::from(counter))

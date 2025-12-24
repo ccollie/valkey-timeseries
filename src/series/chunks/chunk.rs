@@ -1,12 +1,9 @@
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::series::chunks::TimeSeriesChunk;
-use crate::series::types::ValueFilter;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use get_size2::GetSize;
 use std::fmt::Display;
-use std::vec;
 use valkey_module::digest::Digest;
 use valkey_module::{ValkeyError, ValkeyResult, raw};
 
@@ -126,60 +123,6 @@ pub trait Chunk: Sized {
     fn deserialize(buf: &[u8]) -> TsdbResult<Self>;
 
     fn debug_digest(&self, dig: &mut Digest);
-}
-
-pub struct ChunkSampleIterator<'a> {
-    inner: vec::IntoIter<Sample>,
-    chunk: &'a TimeSeriesChunk,
-    value_filter: &'a Option<ValueFilter>,
-    ts_filter: &'a Option<Vec<Timestamp>>,
-    start: Timestamp,
-    end: Timestamp,
-    is_overlap: bool,
-    is_init: bool,
-}
-
-impl<'a> ChunkSampleIterator<'a> {
-    pub fn new(
-        chunk: &'a TimeSeriesChunk,
-        start: Timestamp,
-        end: Timestamp,
-        value_filter: &'a Option<ValueFilter>,
-        ts_filter: &'a Option<Vec<Timestamp>>,
-    ) -> Self {
-        Self {
-            inner: Default::default(),
-            start,
-            end,
-            chunk,
-            value_filter,
-            ts_filter,
-            is_overlap: chunk.overlaps(start, end),
-            is_init: false,
-        }
-    }
-
-    fn handle_init(&mut self) {
-        self.is_init = true;
-        self.inner = if !self.is_overlap {
-            Default::default()
-        } else {
-            self.chunk
-                .get_range_filtered(self.start, self.end, self.ts_filter, self.value_filter)
-                .into_iter()
-        }
-    }
-}
-
-impl Iterator for ChunkSampleIterator<'_> {
-    type Item = Sample;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.is_init {
-            self.handle_init();
-        }
-        self.inner.next()
-    }
 }
 
 pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {

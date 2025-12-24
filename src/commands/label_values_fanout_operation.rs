@@ -67,6 +67,7 @@ impl FanoutOperation for LabelValuesFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        reply_with_btree_set(ctx, &self.results)
+        reply_with_btree_set(ctx, &self.results);
+        Status::Ok
     }
 }

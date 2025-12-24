@@ -2,6 +2,7 @@ pub(crate) use crate::aggregators::{AggregationType, BucketAlignment, BucketTime
 use crate::common::{Sample, Timestamp};
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
+use crate::series::chunks::TimeSeriesChunk;
 use crate::series::{TimestampRange, ValueFilter};
 use valkey_module::{ValkeyString, ValkeyValue};
 
@@ -41,38 +42,42 @@ impl From<SeriesSelector> for MatchFilterOptions {
 
 #[derive(Debug, Clone)]
 pub struct RangeGroupingOptions {
-    pub(crate) aggregation: AggregationType,
-    pub(crate) group_label: String,
+    pub aggregation: AggregationType,
+    pub group_label: String,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct RangeOptions {
     pub date_range: TimestampRange,
     pub count: Option<usize>,
+    pub latest: bool,
     pub aggregation: Option<AggregationOptions>,
     pub timestamp_filter: Option<Vec<Timestamp>>,
     pub value_filter: Option<ValueFilter>,
+}
+
+impl RangeOptions {
+    pub fn get_timestamp_range(&self) -> (Timestamp, Timestamp) {
+        self.date_range.get_timestamps(None)
+    }
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct MRangeOptions {
-    pub date_range: TimestampRange,
-    pub count: Option<usize>,
-    pub aggregation: Option<AggregationOptions>,
-    pub timestamp_filter: Option<Vec<Timestamp>>,
-    pub value_filter: Option<ValueFilter>,
+    pub range: RangeOptions,
     pub filters: Vec<SeriesSelector>,
     pub with_labels: bool,
     pub selected_labels: Vec<String>,
     pub grouping: Option<RangeGroupingOptions>,
+    pub is_reverse: bool,
 }
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MRangeSeriesResult {
-    pub(crate) key: String,
-    pub(crate) group_label_value: Option<String>,
-    pub(crate) labels: Vec<Option<Label>>,
-    pub(crate) samples: Vec<Sample>,
+    pub key: String,
+    pub group_label_value: Option<String>,
+    pub labels: Vec<Label>,
+    pub data: TimeSeriesChunk,
 }
 
 impl From<MRangeSeriesResult> for ValkeyValue {
@@ -80,13 +85,10 @@ impl From<MRangeSeriesResult> for ValkeyValue {
         let labels: Vec<_> = series
             .labels
             .into_iter()
-            .map(|label| match label {
-                Some(label) => label.into(),
-                None => ValkeyValue::Null,
-            })
+            .map(|label| label.into())
             .collect();
 
-        let samples: Vec<_> = series.samples.into_iter().map(|s| s.into()).collect();
+        let samples: Vec<_> = series.data.iter().map(|s| s.into()).collect();
         let series = vec![
             ValkeyValue::BulkString(series.key),
             ValkeyValue::Array(labels),

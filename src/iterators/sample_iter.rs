@@ -1,16 +1,15 @@
 use crate::common::Sample;
+use crate::iterators::TimeSeriesRangeIterator;
 use crate::iterators::vec_sample_iterator::VecSampleIterator;
-use crate::series::SeriesSampleIterator;
-use crate::series::chunks::{ChunkSampleIterator, GorillaChunkIterator, PcoSampleIterator};
+use crate::series::chunks::{GorillaChunkIterator, PcoSampleIterator};
 
 #[derive(Default)]
 pub enum SampleIter<'a> {
-    Series(SeriesSampleIterator<'a>),
-    Chunk(ChunkSampleIterator<'a>),
     Slice(std::slice::Iter<'a, Sample>),
     Vec(VecSampleIterator),
     Gorilla(GorillaChunkIterator<'a>),
     Pco(Box<PcoSampleIterator<'a>>),
+    Range(TimeSeriesRangeIterator<'a>),
     #[default]
     Empty,
 }
@@ -20,12 +19,7 @@ impl<'a> SampleIter<'a> {
         let iter = slice.iter();
         SampleIter::Slice(iter)
     }
-    pub fn series(iter: SeriesSampleIterator<'a>) -> Self {
-        SampleIter::Series(iter)
-    }
-    pub fn chunk(iter: ChunkSampleIterator<'a>) -> Self {
-        SampleIter::Chunk(iter)
-    }
+
     pub fn vec(samples: Vec<Sample>) -> Self {
         SampleIter::Vec(VecSampleIterator::new(samples))
     }
@@ -42,26 +36,13 @@ impl Iterator for SampleIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            SampleIter::Series(series) => series.next(),
-            SampleIter::Chunk(chunk) => chunk.next(),
             SampleIter::Slice(slice) => slice.next().copied(),
             SampleIter::Vec(iter) => iter.next(),
             SampleIter::Gorilla(iter) => iter.next(),
             SampleIter::Pco(iter) => iter.next(),
+            SampleIter::Range(range) => range.next(),
             SampleIter::Empty => None,
         }
-    }
-}
-
-impl<'a> From<SeriesSampleIterator<'a>> for SampleIter<'a> {
-    fn from(value: SeriesSampleIterator<'a>) -> Self {
-        Self::Series(value)
-    }
-}
-
-impl<'a> From<ChunkSampleIterator<'a>> for SampleIter<'a> {
-    fn from(value: ChunkSampleIterator<'a>) -> Self {
-        Self::Chunk(value)
     }
 }
 

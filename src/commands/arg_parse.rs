@@ -823,7 +823,10 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
     let date_range = parse_timestamp_range(args)?;
 
     let mut options = MRangeOptions {
-        date_range,
+        range: RangeOptions {
+            date_range,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -831,22 +834,23 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::Align => {
-                options.aggregation = Some(parse_align_for_aggregation(args)?);
+                options.range.aggregation = Some(parse_align_for_aggregation(args)?);
             }
             CommandArgToken::Aggregation => {
-                options.aggregation = Some(parse_aggregation_options(args)?);
+                options.range.aggregation = Some(parse_aggregation_options(args)?);
             }
             CommandArgToken::Count => {
-                options.count = Some(parse_count_arg(args)?);
+                options.range.count = Some(parse_count_arg(args)?);
             }
             CommandArgToken::Filter => {
                 options.filters = parse_series_selector_list(args, &RANGE_OPTION_ARGS)?;
             }
             CommandArgToken::FilterByValue => {
-                options.value_filter = Some(parse_value_filter(args)?);
+                options.range.value_filter = Some(parse_value_filter(args)?);
             }
             CommandArgToken::FilterByTs => {
-                options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
+                options.range.timestamp_filter =
+                    Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
             }
             CommandArgToken::GroupBy => {
                 options.grouping = Some(parse_grouping_params(args)?);

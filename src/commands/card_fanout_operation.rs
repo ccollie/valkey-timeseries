@@ -48,6 +48,7 @@ impl FanoutOperation for CardFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        reply_with_usize(ctx, self.result)
+        reply_with_usize(ctx, self.result);
+        Status::Ok
     }
 }

@@ -1,33 +1,33 @@
-use super::fanout::generated::{
-    DateRange, MultiRangeRequest, MultiRangeResponse, SeriesResponse, ValueRange,
-};
-use crate::commands::fanout::filters::serialize_matchers_list;
+use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
+use crate::commands::utils::reply_with_mrange_series_results;
 use crate::common::Sample;
 use crate::fanout::FanoutOperation;
 use crate::fanout::NodeInfo;
-use crate::iterators::{MultiSeriesSampleIter, SampleIter};
+use crate::iterators::MultiSeriesSampleIter;
+use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
-    apply_result_ordering, build_mrange_grouped_labels, process_mrange_query,
+    build_mrange_grouped_labels, collect_samples, create_mrange_iterator_adapter,
+    process_mrange_query, sort_mrange_results,
 };
-use crate::series::range_utils::group_reduce;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
 use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
+use smallvec::{SmallVec, smallvec};
 use std::collections::BTreeMap;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
 pub struct MRangeFanoutOperation {
     options: MRangeOptions,
-    series: Vec<MultiRangeResponse>,
+    series: Vec<SeriesRangeResponse>,
 }
 
 impl MRangeFanoutOperation {
     pub fn new(options: MRangeOptions) -> Self {
         Self {
             options,
-            series: Vec::new(),
+            series: Vec::with_capacity(8),
         }
     }
 }
@@ -44,7 +44,21 @@ impl FanoutOperation for MRangeFanoutOperation {
         ctx: &Context,
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
-        get_local_response(ctx, req, false)
+        let mut options: MRangeOptions = req.try_into()?;
+        // These (along with grouping) will be handled after gathering all results
+        options.range.count = None;
+        options.range.aggregation = None;
+
+        // Process the MRange query locally
+        let series = process_mrange_query(ctx, options, true)?;
+
+        // Convert MRangeSeriesResult to SeriesResponse
+        let serialized: Result<Vec<SeriesRangeResponse>, _> =
+            series.into_iter().map(|x| x.try_into()).collect();
+
+        Ok(MultiRangeResponse {
+            series: serialized?,
+        })
     }
 
     fn generate_request(&self) -> MultiRangeRequest {
@@ -52,212 +66,174 @@ impl FanoutOperation for MRangeFanoutOperation {
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
-        self.series.push(resp);
+        let mut resp = resp;
+        self.series.append(&mut resp.series);
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        generate_reply(ctx, &self.options, &mut self.series, false)
-    }
-}
+        self.options.range.latest = false;
+        let options = &self.options;
+        let is_grouped = options.grouping.is_some();
 
-#[derive(Default)]
-pub struct MRevRangeFanoutOperation {
-    options: MRangeOptions,
-    series: Vec<MultiRangeResponse>,
-}
+        let series = std::mem::take(&mut self.series);
+        let res = if is_grouped {
+            handle_grouping(series, options)
+        } else {
+            handle_basic(series, options)
+        };
 
-impl MRevRangeFanoutOperation {
-    pub fn new(options: MRangeOptions) -> Self {
-        Self {
-            options,
-            series: Vec::new(),
+        let mut series = match res {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!("MRangeFanoutOperation: error processing series responses: {e}");
+                ctx.log_warning(&msg);
+                // todo: better error
+                ctx.reply_error_string("Internal error processing grouped series");
+                return Status::Err;
+            }
+        };
+
+        sort_mrange_results(&mut series, is_grouped);
+
+        if reply_with_mrange_series_results(ctx, &series).is_ok() {
+            Status::Ok
+        } else {
+            Status::Err
         }
     }
 }
 
-impl FanoutOperation for MRevRangeFanoutOperation {
-    type Request = MultiRangeRequest;
-    type Response = MultiRangeResponse;
-
-    fn name() -> &'static str {
-        "mrevrange"
-    }
-
-    fn get_local_response(
-        ctx: &Context,
-        req: MultiRangeRequest,
-    ) -> ValkeyResult<MultiRangeResponse> {
-        get_local_response(ctx, req, true)
-    }
-
-    fn generate_request(&self) -> MultiRangeRequest {
-        serialize_request(&self.options)
-    }
-
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
-        self.series.push(resp);
-    }
-
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
-        generate_reply(ctx, &self.options, &mut self.series, true)
-    }
-}
-
-fn deserialize_multi_range_response(
-    response: MultiRangeResponse,
+fn handle_basic(
+    series: Vec<SeriesRangeResponse>,
+    options: &MRangeOptions,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
-    // series from other nodes are mostly encoded, so we parallelize the decoding
-    response
-        .series
+    let handler = |meta: MRangeSeriesResult, options: &MRangeOptions| {
+        let aggr_iter = create_mrange_iterator_adapter(meta.data.iter(), options);
+        let samples = collect_samples(options, aggr_iter);
+        let chunk = UncompressedChunk::from_vec(samples);
+        let mut meta = meta;
+        meta.data = TimeSeriesChunk::Uncompressed(chunk);
+        meta
+    };
+
+    series
         .into_par()
-        .map(|item| item.try_into())
+        .map(MRangeSeriesResult::try_from) // Explicit conversion
         .into_fallible_result()
+        .map(|res| handler(res, options))
         .collect()
 }
 
 fn serialize_request(request: &MRangeOptions) -> MultiRangeRequest {
-    let range: Option<DateRange> = Some(request.date_range.into());
-    let mut selected_labels = Vec::with_capacity(request.selected_labels.len());
-    for name in &request.selected_labels {
-        selected_labels.push(name.clone());
-    }
-    let timestamp_filter = match &request.timestamp_filter {
-        Some(filter) => filter.clone(),
-        None => vec![],
-    };
-
-    let aggregation = request.aggregation.map(|agg| agg.into());
-    let grouping = request.grouping.as_ref().map(|g| g.into());
-
-    let count = request.count.map(|c| c as u32);
-
-    // Checks for correct values should have been done before in the command parser
-    // so we can safely unwrap here
-    let filters =
-        serialize_matchers_list(&request.filters).expect("Failed to serialize matchers list");
-
-    MultiRangeRequest {
-        range,
-        with_labels: request.with_labels,
-        selected_labels,
-        filters,
-        value_filter: request.value_filter.map(|x| ValueRange {
-            min: x.min,
-            max: x.max,
-        }),
-        timestamp_filter,
-        count,
-        aggregation,
-        grouping,
-    }
+    // Note: request should have been validated on construction
+    request
+        .try_into()
+        .expect("Failed to serialize MultiRangeRequest")
 }
 
-/// Apply GROUPBY/REDUCE to the series coming from remote nodes
-fn group_sharded_series(
-    metas: Vec<MRangeSeriesResult>,
-    grouping: &RangeGroupingOptions,
-) -> Vec<MRangeSeriesResult> {
-    fn handle_reducer(
-        series_results: &[MRangeSeriesResult],
-        grouping_opts: &RangeGroupingOptions,
-    ) -> Vec<Sample> {
-        let iterators: Vec<SampleIter> = series_results
-            .iter()
-            .map(|meta| SampleIter::Slice(meta.samples.iter()))
-            .collect();
-        let multi_iter = MultiSeriesSampleIter::new(iterators);
-        let aggregation = grouping_opts.aggregation;
-        group_reduce(multi_iter, aggregation)
-    }
+struct GroupData {
+    keys: SmallVec<String, 8>,
+    series: Vec<MRangeSeriesResult>,
+}
 
-    let mut grouped_by_key: BTreeMap<String, Vec<MRangeSeriesResult>> = BTreeMap::new();
+type GroupMap = BTreeMap<String, GroupData>;
+
+/// Apply GROUPBY/REDUCE to the series coming from remote nodes
+fn handle_grouping(
+    responses: Vec<SeriesRangeResponse>,
+    options: &MRangeOptions,
+) -> ValkeyResult<Vec<MRangeSeriesResult>> {
+    let Some(group_options) = &options.grouping else {
+        panic!("Grouping options should be present");
+    };
+
+    let results = responses
+        .into_par() // parallel since chunks are compressed
+        .map(MRangeSeriesResult::try_from)
+        .into_fallible_result()
+        .collect()?;
+
+    let grouped_by_key = construct_group_map(results);
+
+    let result = grouped_by_key
+        .into_iter()
+        .iter_into_par()
+        .map(|(group_label_value, group_data)| {
+            process_group(group_label_value, group_data, options, group_options)
+        })
+        .collect::<Vec<_>>();
+
+    Ok(result)
+}
+
+fn construct_group_map(metas: Vec<MRangeSeriesResult>) -> GroupMap {
+    let mut grouped_by_key: GroupMap = GroupMap::new();
 
     for meta in metas.into_iter() {
-        if let Some(label_value_for_grouping) = &meta.group_label_value {
-            let key = format!("{}={}", grouping.group_label, label_value_for_grouping);
-            grouped_by_key.entry(key).or_default().push(meta);
+        let Some(label_value) = meta.group_label_value.clone() else {
+            continue;
+        };
+
+        let key = meta.key.clone();
+
+        match grouped_by_key.entry(label_value) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let stored = entry.get_mut();
+                stored.keys.push(key);
+                stored.series.push(meta);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(GroupData {
+                    keys: smallvec![key],
+                    series: vec![meta],
+                });
+            }
         }
     }
 
-    let reducer_name_str = grouping.aggregation.name();
-    let group_by_label_name_str = &grouping.group_label;
-
     grouped_by_key
-        .into_iter()
-        .iter_into_par()
-        .map(|(group_key_str, series_results_in_group)| {
-            let group_label_value = group_key_str
-                .rsplit_once('=')
-                .map(|(_, val)| val)
-                .unwrap_or("");
-
-            let samples = handle_reducer(&series_results_in_group, grouping);
-
-            let source_keys: Vec<String> =
-                series_results_in_group.into_iter().map(|m| m.key).collect();
-
-            let final_labels = build_mrange_grouped_labels(
-                group_by_label_name_str,
-                group_label_value,
-                reducer_name_str,
-                &source_keys,
-            );
-
-            MRangeSeriesResult {
-                group_label_value: Some(group_label_value.to_string()),
-                key: group_key_str,
-                samples,
-                labels: final_labels,
-            }
-        })
-        .collect::<Vec<_>>()
 }
 
-fn get_local_response(
-    ctx: &Context,
-    req: MultiRangeRequest,
-    reverse: bool,
-) -> ValkeyResult<MultiRangeResponse> {
-    let options: MRangeOptions = req.try_into()?;
-    let series = process_mrange_query(ctx, options, reverse)?;
-
-    // Convert MRangeSeriesResult to SeriesResponse
-    let serialized: Result<Vec<SeriesResponse>, _> =
-        series.into_iter().map(|x| x.try_into()).collect();
-
-    Ok(MultiRangeResponse {
-        series: serialized?,
-    })
-}
-
-fn generate_reply(
-    ctx: &Context,
+fn process_group(
+    group_label_value: String,
+    group_data: GroupData,
     options: &MRangeOptions,
-    series: &mut Vec<MultiRangeResponse>,
-    is_reverse: bool,
-) -> Status {
-    let series = std::mem::take(series);
-    let all_series = series
-        .into_par()
-        .flat_map(deserialize_multi_range_response)
-        .reduce(|mut acc, item| {
-            acc.extend(item);
-            acc
+    grouping_options: &RangeGroupingOptions,
+) -> MRangeSeriesResult {
+    let mut group_data = group_data;
+    let samples = process_group_list(&mut group_data.series, options);
+    let chunk = UncompressedChunk::from_vec(samples);
+    let data = TimeSeriesChunk::Uncompressed(chunk);
+
+    let group_label = &grouping_options.group_label;
+    let grouping_aggregation = grouping_options.aggregation;
+    let reducer_name = grouping_aggregation.name();
+
+    let labels = build_mrange_grouped_labels(
+        group_label,
+        &group_label_value,
+        reducer_name,
+        &group_data.keys,
+    );
+
+    MRangeSeriesResult {
+        key: group_data.keys.join(","),
+        group_label_value: Some(group_label_value),
+        labels,
+        data,
+    }
+}
+
+fn process_group_list(items: &mut [MRangeSeriesResult], options: &MRangeOptions) -> Vec<Sample> {
+    let iters = items
+        .iter_mut()
+        .map(|x| {
+            let chunk = &x.data;
+            chunk.iter()
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
 
-    let mut series = if let Some(grouping) = &options.grouping {
-        group_sharded_series(all_series, grouping)
-    } else {
-        all_series
-    };
-
-    let is_grouped = options.grouping.is_some();
-    apply_result_ordering(&mut series, is_grouped, false, is_reverse, options.count);
-
-    // todo: reply directly without intermediate conversion
-    let arr: Vec<ValkeyValue> = series.into_iter().map(|x| x.into()).collect::<Vec<_>>();
-    let result = ValkeyValue::Array(arr);
-
-    ctx.reply(Ok(result))
+    let multi_iter = MultiSeriesSampleIter::new(iters);
+    let adapter = create_mrange_iterator_adapter(multi_iter, options);
+    collect_samples(options, adapter)
 }

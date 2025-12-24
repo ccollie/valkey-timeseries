@@ -64,6 +64,16 @@ impl UncompressedChunk {
         }
     }
 
+    pub fn from_vec(samples: Vec<Sample>) -> Self {
+        let max_elements = samples.len();
+        let size = max_elements * SAMPLE_SIZE;
+        Self {
+            samples,
+            max_size: size,
+            max_elements,
+        }
+    }
+
     pub fn with_max_size(size: usize) -> Self {
         Self {
             max_size: size,
@@ -138,6 +148,11 @@ impl UncompressedChunk {
 
     fn get_sample_index(&self, ts: Timestamp) -> (usize, bool) {
         get_sample_index(&self.samples, ts)
+    }
+
+    pub(crate) fn get_sample(&self, ts: Timestamp) -> Option<Sample> {
+        let (idx, found) = self.get_sample_index(ts);
+        if found { Some(self.samples[idx]) } else { None }
     }
 
     fn get_range_slice(&self, start_ts: Timestamp, end_ts: Timestamp) -> Vec<Sample> {

@@ -37,7 +37,7 @@ message MGetValue {
   repeated Label labels = 3;
 }
 
-message SeriesResponse {
+message SeriesRangeResponse {
   string key = 1;
   string group_label_value = 2;
   repeated Label labels = 3;
@@ -48,21 +48,12 @@ message MultiGetResponse {
   repeated MGetValue values = 1;
 }
 
-message SeriesRangeResponse {
-  string key = 1;
-  repeated Sample samples = 2;
-}
-
 message MultiRangeResponse {
-  repeated SeriesResponse series = 1;
+  repeated SeriesRangeResponse series = 1;
 }
 
 message IndexQueryResponse {
   repeated string keys = 1;
-}
-
-message SearchQueryResponse {
-  repeated SeriesChunk series = 1;
 }
 
 enum ErrorKind {

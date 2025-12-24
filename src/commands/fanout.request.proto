@@ -95,6 +95,7 @@ message RangeRequest {
   repeated int64 timestamp_filter = 3;
   ValueRange value_filter = 4;
   optional AggregationOptions aggregation = 5;
+  bool latest = 6;
 }
 
 message IndexQueryRequest {
@@ -183,13 +184,10 @@ message AggregationOptions {
 }
 
 message MultiRangeRequest {
-  DateRange range = 1;
-  optional uint32 count = 2;
-  repeated int64 timestamp_filter = 3;
-  ValueRange value_filter = 4;
-  optional AggregationOptions aggregation = 5;
-  optional GroupingOptions grouping = 6;
-  repeated SeriesSelector filters = 7;
-  bool with_labels = 8;
-  repeated string selected_labels = 9;
+  RangeRequest range = 1;
+  repeated SeriesSelector filters = 2;
+  optional GroupingOptions grouping = 3;
+  bool with_labels = 4;
+  repeated string selected_labels = 5;
+  bool is_reverse = 6;
 }

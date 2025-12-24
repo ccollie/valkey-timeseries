@@ -1,14 +1,15 @@
-use crate::aggregators::{AggregateIterator, AggregationHandler, AggregationType, Aggregator};
-use crate::common::threads::join;
+use crate::aggregators::AggregateIterator;
 use crate::common::{Sample, Timestamp};
+use crate::iterators::{TimeSeriesRangeIterator, group_reduce};
 use crate::labels::InternedLabel;
-use crate::series::TimeSeries;
 use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
+use crate::series::{TimeSeries, get_latest_compaction_sample};
 use orx_parallel::{ParIter, Parallelizable};
 use std::cmp::Ordering;
+use valkey_module::Context;
 
 #[allow(dead_code)]
-pub(super) fn filter_sample_by_timestamps_internal(
+pub fn filter_sample_by_timestamps_internal(
     timestamp: Timestamp,
     timestamps: &[Timestamp],
     index: &mut usize,
@@ -48,70 +49,46 @@ pub(super) fn filter_samples_by_timestamps(samples: &mut Vec<Sample>, timestamps
 }
 
 pub(crate) fn get_range(
+    ctx: Option<&Context>,
     series: &TimeSeries,
     args: &RangeOptions,
     check_retention: bool,
 ) -> Vec<Sample> {
-    let (mut start_timestamp, mut end_timestamp) = args.date_range.get_timestamps(None);
-    if check_retention && !series.retention.is_zero() {
-        let min = series.get_min_timestamp();
-        start_timestamp = min.max(start_timestamp);
-        end_timestamp = start_timestamp.max(end_timestamp);
-    }
-
-    let mut range = series.get_range_filtered(
-        start_timestamp,
-        end_timestamp,
-        args.timestamp_filter.as_deref(),
-        args.value_filter,
-    );
-
-    if let Some(aggr_options) = &args.aggregation {
-        range = aggregate_samples(
-            range.into_iter(),
-            start_timestamp,
-            end_timestamp,
-            aggr_options,
-        )
-    }
-
-    if let Some(count) = args.count {
-        range.truncate(count);
-    }
-
-    range
+    let iter = TimeSeriesRangeIterator::new(ctx, series, args, check_retention);
+    iter.collect::<Vec<Sample>>()
 }
 
 pub fn get_multi_series_range(
+    ctx: Option<&Context>,
     series: &[&TimeSeries],
-    range_options: &MRangeOptions,
+    options: &MRangeOptions,
 ) -> Vec<Vec<Sample>> {
-    let range_options: RangeOptions = RangeOptions {
-        date_range: range_options.date_range,
-        count: range_options.count,
-        aggregation: range_options.aggregation,
-        timestamp_filter: range_options.timestamp_filter.clone(),
-        value_filter: range_options.value_filter,
-    };
+    fn _get_range(
+        ctx: Option<&Context>,
+        series: &TimeSeries,
+        options: &MRangeOptions,
+        use_retention: bool,
+    ) -> Vec<Sample> {
+        let samples = get_range(ctx, series, &options.range, use_retention);
+        if let Some(grouping) = &options.grouping {
+            // Apply grouping reduce if specified
+            group_reduce(samples.into_iter(), grouping.aggregation)
+        } else {
+            samples
+        }
+    }
 
-    match series {
-        [] => vec![],
-        [meta] => {
-            let samples = get_range(meta, &range_options, true);
-            vec![samples]
-        }
-        [first, second] => {
-            // use a lower overhead method for two series
-            let (a, b) = join(
-                || get_range(first, &range_options, true),
-                || get_range(second, &range_options, true),
-            );
-            vec![a, b]
-        }
-        _ => series
+    if options.range.latest {
+        // when LATEST is specified, we cannot use parallel processing since Context is not Send
+        series
+            .iter()
+            .map(|x| _get_range(ctx, x, options, true))
+            .collect()
+    } else {
+        series
             .par()
-            .map(|x| get_range(x, &range_options, true))
-            .collect(),
+            .map(|x| _get_range(None, x, options, true))
+            .collect()
     }
 }
 
@@ -147,46 +124,44 @@ pub fn get_series_labels<'a>(
     }
 }
 
-/// Perform the GROUP BY REDUCE operation on the samples. Specifically, it
-/// aggregates non-NAN samples based on the specified aggregation options.
-pub(crate) fn group_reduce(
-    samples: impl Iterator<Item = Sample>,
-    aggregation: AggregationType,
-) -> Vec<Sample> {
-    let mut samples = samples.into_iter().filter(|sample| !sample.value.is_nan());
-    let mut aggregator: Aggregator = aggregation.into();
-
-    let mut current = if let Some(current) = samples.next() {
-        aggregator.update(current.value);
-        current
+/// Internal utility to handle the LATEST option for MRange queries.
+pub fn get_mrange_latest(
+    ctx: &Context,
+    options: &RangeOptions,
+    series: &TimeSeries,
+    start_ts: Timestamp,
+    end_ts: Timestamp,
+) -> Option<Sample> {
+    // make sure we're a compaction, and that ends_ts > series.last_timestamp
+    // (the latest sample would be in range if it exists)
+    let value = if options.latest && series.is_compaction() && end_ts > series.last_timestamp() {
+        get_latest_compaction_sample(ctx, series)?
     } else {
-        return vec![];
+        return None;
     };
 
-    let mut result = vec![];
+    let ts = value.timestamp;
 
-    for next in samples {
-        if next.timestamp == current.timestamp {
-            aggregator.update(next.value);
-        } else {
-            let value = aggregator.finalize();
-            result.push(Sample {
-                timestamp: current.timestamp,
-                value,
-            });
-            aggregator.update(next.value);
-            current = next;
-        }
+    if ts < start_ts || ts > end_ts {
+        return None;
     }
 
-    // Finalize last
-    let value = aggregator.finalize();
-    result.push(Sample {
-        timestamp: current.timestamp,
-        value,
-    });
+    if !options
+        .value_filter
+        .is_none_or(|vf| vf.is_match(value.value))
+    {
+        return None;
+    }
 
-    result
+    if !options
+        .timestamp_filter
+        .as_ref()
+        .is_none_or(|ts_vec| ts_vec.contains(&ts))
+    {
+        return None;
+    }
+
+    Some(value)
 }
 
 #[cfg(test)]
@@ -225,7 +200,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         assert_eq!(result.len(), 5);
         assert_eq!(result[0], Sample::new(120, 3.0));
@@ -247,7 +222,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].timestamp, 100);
@@ -276,7 +251,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         assert_eq!(result.len(), 5);
         // First bucket [100-120): values 0.0 + 1.5 = 1.5
@@ -319,7 +294,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         assert_eq!(result.len(), 3);
 
@@ -361,7 +336,7 @@ mod tests {
     //         ..Default::default()
     //     };
     //
-    //     let result = get_range(&series, &range_options, true);
+    //     let result = get_range(None, &series, &range_options, true);
     //
     //     assert_eq!(result.len(), 5);
     //     // First bucket [100-120): values 0.0 + 1.5 = 1.5
@@ -382,7 +357,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, false);
+        let result = get_range(None, &series, &range_options, false);
 
         // Only samples with value > 4.0 should be included
         assert_eq!(result.len(), 8); // From timestamps 130 to 200
@@ -405,7 +380,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         assert_eq!(result.len(), 4);
         assert_eq!(result[0].timestamp, 110);
@@ -434,9 +409,9 @@ mod tests {
         };
 
         // With retention check (should filter out old sample)
-        let result_with_retention = get_range(&series, &range_options, true);
+        let result_with_retention = get_range(None, &series, &range_options, true);
         // Without retention check (should include old sample)
-        let result_without_retention = get_range(&series, &range_options, false);
+        let result_without_retention = get_range(None, &series, &range_options, false);
 
         assert!(result_with_retention.len() < result_without_retention.len());
         assert_eq!(result_without_retention[0].timestamp, 50);
@@ -455,7 +430,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         assert_eq!(result.len(), 0);
     }
@@ -478,13 +453,14 @@ mod tests {
                 start: TimestampValue::Specific(100),
                 end: TimestampValue::Specific(200),
             },
+            latest: false,
             timestamp_filter: Some(timestamps),
             value_filter: Some(ValueFilter::greater_than(3.0)),
             aggregation: Some(aggr_options),
             count: None, // count is ignored for aggregated results
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         // Should apply timestamp filter, then value filter, then aggregate, then limit count
         assert_eq!(result.len(), 3);
@@ -513,7 +489,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(&series, &range_options, true);
+        let result = get_range(None, &series, &range_options, true);
 
         // With 30ms buckets over 100ms range (100-200), we should get buckets:
         // [100-130): contains samples at 100, 110, 120 -> sum = 0.0 + 1.5 + 3.0 = 4.5

@@ -54,6 +54,7 @@ impl FanoutOperation for QueryIndexFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        reply_with_btree_set(ctx, &self.keys)
+        reply_with_btree_set(ctx, &self.keys);
+        Status::Ok
     }
 }

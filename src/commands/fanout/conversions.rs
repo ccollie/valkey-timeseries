@@ -1,17 +1,17 @@
-use super::filters::deserialize_matchers_list;
+use super::filters::{deserialize_matchers_list, serialize_matchers_list};
 use super::generated::{
     AggregationOptions as FanoutAggregationOptions, AggregationType as FanoutAggregationType,
     BucketAlignmentType, BucketTimestampType, CompressionType as FanoutChunkEncoding, DateRange,
     GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel, MultiRangeRequest,
-    PostingStat as FanoutPostingStat, Sample as FanoutSample,
-    SeriesSelector as FanoutSeriesSelector, StatsResponse,
+    PostingStat as FanoutPostingStat, RangeRequest, Sample as FanoutSample,
+    SeriesSelector as FanoutSeriesSelector, StatsResponse, ValueRange as FanoutValueFilter,
 };
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
     AggregationOptions, AggregationType, BucketAlignment, MRangeOptions, MatchFilterOptions,
-    RangeGroupingOptions,
+    RangeGroupingOptions, RangeOptions,
 };
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{
@@ -352,10 +352,18 @@ impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
     }
 }
 
-impl TryFrom<MultiRangeRequest> for MRangeOptions {
+impl TryFrom<RangeRequest> for RangeOptions {
     type Error = ValkeyError;
 
-    fn try_from(value: MultiRangeRequest) -> Result<Self, Self::Error> {
+    fn try_from(value: RangeRequest) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+impl TryFrom<&RangeRequest> for RangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: &RangeRequest) -> Result<Self, Self::Error> {
         let date_range: TimestampRange = match value.range {
             Some(r) => r.into(),
             None => {
@@ -363,7 +371,11 @@ impl TryFrom<MultiRangeRequest> for MRangeOptions {
             }
         };
 
-        let count = value.count.map(|c| c as usize);
+        let count = if value.count == 0 {
+            None
+        } else {
+            Some(value.count as usize)
+        };
 
         let aggregation = if let Some(aggregation) = value.aggregation {
             let options = aggregation.try_into()?;
@@ -372,13 +384,113 @@ impl TryFrom<MultiRangeRequest> for MRangeOptions {
             None
         };
 
-        let timestamp_filter = Some(value.timestamp_filter);
+        let timestamp_filter = if value.timestamp_filter.is_empty() {
+            None
+        } else {
+            Some(value.timestamp_filter.clone())
+        };
 
         let value_filter: Option<ValueFilter> = value.value_filter.map(|filter| ValueFilter {
             min: filter.min,
             max: filter.max,
         });
 
+        let latest = value.latest;
+
+        Ok(RangeOptions {
+            date_range,
+            count,
+            aggregation,
+            timestamp_filter,
+            value_filter,
+            latest,
+        })
+    }
+}
+
+impl From<&RangeOptions> for RangeRequest {
+    fn from(value: &RangeOptions) -> Self {
+        let range: DateRange = value.date_range.into();
+
+        let count = match value.count {
+            Some(c) => c as u32,
+            None => 0,
+        };
+
+        let aggregation = if let Some(aggregation) = value.aggregation {
+            let options: FanoutAggregationOptions = aggregation.into();
+            Some(options)
+        } else {
+            None
+        };
+
+        let timestamp_filter = match value.timestamp_filter {
+            Some(ref ts) => ts.clone(),
+            None => vec![],
+        };
+
+        let value_filter: Option<FanoutValueFilter> =
+            value.value_filter.map(|filter| FanoutValueFilter {
+                min: filter.min,
+                max: filter.max,
+            });
+
+        RangeRequest {
+            range: Some(range),
+            count,
+            aggregation,
+            timestamp_filter,
+            value_filter,
+            latest: value.latest,
+        }
+    }
+}
+
+impl TryFrom<&MultiRangeRequest> for MRangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: &MultiRangeRequest) -> Result<Self, Self::Error> {
+        let range: RangeOptions = if let Some(r) = &value.range {
+            r.try_into()?
+        } else {
+            return Err(ValkeyError::Str("TSDB: range is required"));
+        };
+
+        let mut filters: Vec<SeriesSelector> = Vec::with_capacity(value.filters.len());
+        for filter in value.filters.iter() {
+            filters.push(filter.try_into()?);
+        }
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels.clone();
+
+        let grouping: Option<RangeGroupingOptions> = match &value.grouping {
+            Some(group) => Some(group.try_into()?),
+            None => None,
+        };
+
+        let is_reverse = value.is_reverse;
+
+        Ok(MRangeOptions {
+            range,
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse,
+        })
+    }
+}
+
+impl TryFrom<MultiRangeRequest> for MRangeOptions {
+    type Error = ValkeyError;
+
+    fn try_from(value: MultiRangeRequest) -> Result<Self, Self::Error> {
+        let range: RangeOptions = if let Some(r) = value.range {
+            r.try_into()?
+        } else {
+            return Err(ValkeyError::Str("TSDB: range is required"));
+        };
         let filters = deserialize_matchers_list(Some(value.filters))?;
         let with_labels = value.with_labels;
 
@@ -389,16 +501,248 @@ impl TryFrom<MultiRangeRequest> for MRangeOptions {
             None => None,
         };
 
+        let is_reverse = value.is_reverse;
+
         Ok(MRangeOptions {
-            date_range,
-            count,
-            aggregation,
-            timestamp_filter,
-            value_filter,
+            range,
             filters,
             with_labels,
             selected_labels,
             grouping,
+            is_reverse,
         })
+    }
+}
+
+impl TryFrom<&MRangeOptions> for MultiRangeRequest {
+    type Error = ValkeyError;
+    fn try_from(value: &MRangeOptions) -> Result<Self, Self::Error> {
+        let range: RangeRequest = (&value.range).into();
+        let filters: Vec<FanoutSeriesSelector> = serialize_matchers_list(&value.filters)?;
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels.clone();
+
+        let grouping: Option<FanoutGroupingOptions> =
+            value.grouping.as_ref().map(|group| group.into());
+
+        Ok(MultiRangeRequest {
+            range: Some(range),
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse: value.is_reverse,
+        })
+    }
+}
+
+impl TryFrom<MRangeOptions> for MultiRangeRequest {
+    type Error = ValkeyError;
+    fn try_from(value: MRangeOptions) -> Result<Self, Self::Error> {
+        let range: RangeRequest = (&value.range).into();
+        let filters: Vec<FanoutSeriesSelector> = serialize_matchers_list(&value.filters)?;
+        let with_labels = value.with_labels;
+
+        let selected_labels = value.selected_labels;
+
+        let grouping: Option<FanoutGroupingOptions> = value.grouping.map(|group| group.into());
+
+        Ok(MultiRangeRequest {
+            range: Some(range),
+            filters,
+            with_labels,
+            selected_labels,
+            grouping,
+            is_reverse: value.is_reverse,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aggregators::BucketAlignment;
+    use crate::aggregators::BucketTimestamp;
+    use crate::series::request_types::AggregationType;
+
+    #[test]
+    fn test_aggregation_options_to_fanout_full() {
+        let options = AggregationOptions {
+            aggregation: AggregationType::Sum,
+            bucket_duration: 1000,
+            timestamp_output: BucketTimestamp::Start,
+            alignment: BucketAlignment::Timestamp(555),
+            report_empty: true,
+        };
+
+        let fanout: FanoutAggregationOptions = options.into();
+
+        assert_eq!(fanout.aggregator, FanoutAggregationType::Sum as i32);
+        assert_eq!(fanout.bucket_duration, 1000);
+        assert_eq!(
+            fanout.bucket_timestamp_type,
+            BucketTimestampType::Start as i32
+        );
+        assert_eq!(
+            fanout.bucket_alignment,
+            BucketAlignmentType::Timestamp as i32
+        );
+        assert_eq!(fanout.alignment_timestamp, 555);
+        assert!(fanout.report_empty);
+    }
+
+    #[test]
+    fn test_fanout_to_aggregation_options_alignments() {
+        let alignments = vec![
+            (BucketAlignmentType::Default, BucketAlignment::Default),
+            (BucketAlignmentType::AlignStart, BucketAlignment::Start),
+            (BucketAlignmentType::AlignEnd, BucketAlignment::End),
+        ];
+
+        for (fanout_type, expected) in alignments {
+            let fanout = FanoutAggregationOptions {
+                aggregator: FanoutAggregationType::Max as i32,
+                bucket_duration: 10,
+                bucket_timestamp_type: BucketTimestampType::End as i32,
+                bucket_alignment: fanout_type as i32,
+                alignment_timestamp: 0,
+                report_empty: false,
+            };
+
+            let options: AggregationOptions = fanout.try_into().unwrap();
+            assert_eq!(options.alignment, expected);
+        }
+    }
+
+    #[test]
+    fn test_fanout_to_aggregation_options_invalid_duration() {
+        let fanout = FanoutAggregationOptions {
+            aggregator: FanoutAggregationType::Count as i32,
+            bucket_duration: 0, // Invalid duration
+            bucket_timestamp_type: BucketTimestampType::Mid as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+
+        let result: Result<AggregationOptions, ValkeyError> = fanout.try_into();
+        assert!(result.is_err());
+        if let Err(ValkeyError::Str(s)) = result {
+            assert!(s.contains("bucket duration must be positive"));
+        }
+    }
+
+    #[test]
+    fn test_range_request_to_range_options_full() {
+        let request = RangeRequest {
+            range: Some(DateRange {
+                start: 1000,
+                end: 2000,
+            }),
+            count: 10,
+            aggregation: Some(FanoutAggregationOptions {
+                aggregator: FanoutAggregationType::Avg.into(),
+                bucket_duration: 60,
+                bucket_timestamp_type: BucketTimestampType::Mid.into(),
+                bucket_alignment: BucketAlignmentType::AlignStart.into(),
+                alignment_timestamp: 0,
+                report_empty: true,
+            }),
+            timestamp_filter: vec![1050, 1100],
+            value_filter: Some(FanoutValueFilter {
+                min: 10.5,
+                max: 20.5,
+            }),
+            latest: true,
+        };
+
+        let options: RangeOptions = (&request)
+            .try_into()
+            .expect("Should convert to RangeOptions");
+
+        assert_eq!(options.date_range.get_timestamps(None), (1000, 2000));
+        assert_eq!(options.count, Some(10));
+
+        let agg = options.aggregation.unwrap();
+        assert_eq!(agg.aggregation, AggregationType::Avg);
+        assert_eq!(agg.bucket_duration, 60);
+        assert_eq!(agg.timestamp_output, BucketTimestamp::Mid);
+        assert_eq!(agg.alignment, BucketAlignment::Start);
+        assert!(agg.report_empty);
+
+        assert_eq!(options.timestamp_filter, Some(vec![1050, 1100]));
+        let val_filter = options.value_filter.unwrap();
+        assert_eq!(val_filter.min, 10.5);
+        assert_eq!(val_filter.max, 20.5);
+        assert!(options.latest);
+    }
+
+    #[test]
+    fn test_range_options_to_range_request_minimal() {
+        let options = RangeOptions {
+            date_range: TimestampRange::from_timestamps(500, 1500).unwrap(),
+            count: None,
+            aggregation: None,
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let request: RangeRequest = (&options).into();
+
+        assert_eq!(request.range.unwrap().start, 500);
+        assert_eq!(request.range.unwrap().end, 1500);
+        assert_eq!(request.count, 0);
+        assert!(request.aggregation.is_none());
+        assert!(request.timestamp_filter.is_empty());
+        assert!(request.value_filter.is_none());
+        assert!(!request.latest);
+    }
+
+    #[test]
+    fn test_range_request_missing_range_fails() {
+        let request = RangeRequest {
+            range: None,
+            ..Default::default()
+        };
+
+        let result: Result<RangeOptions, ValkeyError> = (&request).try_into();
+        assert!(result.is_err());
+        if let Err(ValkeyError::Str(s)) = result {
+            assert!(s.contains("date range is required"));
+        }
+    }
+
+    #[test]
+    fn test_round_trip_conversion() {
+        let original_options = RangeOptions {
+            date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
+            count: Some(5),
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Max,
+                bucket_duration: 10,
+                timestamp_output: BucketTimestamp::End,
+                alignment: BucketAlignment::Timestamp(123),
+                report_empty: false,
+            }),
+            timestamp_filter: None,
+            value_filter: Some(ValueFilter { min: 1.0, max: 2.0 }),
+            latest: false,
+        };
+
+        let request: RangeRequest = (&original_options).into();
+        let back_to_options: RangeOptions = (&request).try_into().expect("Round trip failed");
+
+        assert_eq!(
+            back_to_options.date_range.get_timestamps(None),
+            original_options.date_range.get_timestamps(None)
+        );
+        assert_eq!(back_to_options.count, original_options.count);
+        assert_eq!(
+            back_to_options.aggregation.unwrap().alignment,
+            BucketAlignment::Timestamp(123)
+        );
+        assert_eq!(back_to_options.value_filter.unwrap().min, 1.0);
     }
 }
