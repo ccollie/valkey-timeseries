@@ -1,23 +1,22 @@
-use crate::aggregators::AggregateIterator;
 use crate::common::Sample;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::error_consts;
-use crate::iterators::ReduceIterator;
 use crate::iterators::{MultiSeriesSampleIter, TimeSeriesRangeIterator};
+use crate::iterators::{ReduceIterator, create_sample_iterator_adapter};
 use crate::labels::Label;
 use crate::series::TimeSeries;
 use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
-    AggregationOptions, MRangeOptions, MRangeSeriesResult, RangeGroupingOptions,
+    MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
 };
 use ahash::AHashMap;
 use logger_rust::log_debug;
 use orx_parallel::{IntoParIter, IterIntoParIter, ParIter};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
-pub(crate) struct MRangeSeriesMeta<'a> {
+struct MRangeSeriesMeta<'a> {
     series: &'a TimeSeries,
     source_key: String,
     group_label_value: Option<String>,
@@ -57,7 +56,6 @@ fn process_mrange(
     let mut options = options;
     let mut metas = metas;
 
-    log_debug!("process_mrange ");
     if let Some(grouping) = &options.grouping {
         collect_group_label_values(&mut metas, grouping);
         // Is_clustered here means that we are being called from a remote node. Since grouping
@@ -111,7 +109,7 @@ fn handle_basic(
         clustered: bool,
     ) -> MRangeSeriesResult {
         let range = &options.range;
-        let iter = TimeSeriesRangeIterator::new(ctx, meta.series, range, true);
+        let iter = TimeSeriesRangeIterator::new(ctx, meta.series, range);
         let data = if clustered {
             let mut chunk = GorillaChunk::with_max_size(16 * 1024); // 16KB - todo: make configurable?
             for sample in iter {
@@ -119,7 +117,7 @@ fn handle_basic(
             }
             TimeSeriesChunk::Gorilla(chunk)
         } else {
-            let samples = collect_samples(options, iter);
+            let samples = collect_samples(iter, options.is_reverse, None);
             let chunk = UncompressedChunk::from_vec(samples);
             TimeSeriesChunk::Uncompressed(chunk)
         };
@@ -211,33 +209,51 @@ fn get_grouped_samples(
     // This function gets the raw samples from all series in the group, then applies the grouping
     // reducer across the samples.
     // todo: choose approach based on data size and available memory?
+    let is_reverse = options.is_reverse;
+    let count = options.range.count;
+    let range = RangeOptions {
+        count: None,
+        ..options.range.clone()
+    };
+
+    log_debug!(
+        "get_grouped_samples: collecting samples from {} series with is_reverse={is_reverse} count={count:?}",
+        series_metas.len()
+    );
+
     let iterators = series_metas
         .iter()
-        .map(|meta| TimeSeriesRangeIterator::new(ctx, meta.series, &options.range, false))
+        .map(|meta| TimeSeriesRangeIterator::new(ctx, meta.series, &range))
         .collect::<Vec<_>>();
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);
     let reducer = ReduceIterator::new(multi_iter, grouping_options.aggregation);
 
-    collect_samples(options, reducer)
+    collect_samples(reducer, is_reverse, count)
 }
 
 pub(crate) fn collect_samples<I: Iterator<Item = Sample>>(
-    options: &MRangeOptions,
     iter: I,
+    is_reverse: bool,
+    count: Option<usize>,
 ) -> Vec<Sample> {
-    if options.is_reverse {
-        // we collect instead of .rev() because the reducer is not double-ended
-        let mut samples = iter.collect::<Vec<_>>();
-        samples.reverse();
-        if let Some(count) = options.range.count {
-            samples.truncate(count);
+    if let Some(count) = count {
+        log_debug!(
+            "collect_samples: collecting samples with is_reverse={is_reverse} count={count}"
+        );
+        let mut samples = iter.take(count).collect::<Vec<_>>();
+        if is_reverse {
+            samples.reverse();
         }
+        log_debug!("collect_samples: collected {samples:?}");
         samples
-    } else if let Some(count) = options.range.count {
-        iter.take(count).collect::<Vec<_>>()
     } else {
-        iter.collect::<Vec<_>>()
+        let mut samples = iter.collect::<Vec<_>>();
+        if is_reverse {
+            samples.reverse();
+        }
+        log_debug!("collect_samples: collected {samples:?}");
+        samples
     }
 }
 
@@ -328,11 +344,13 @@ fn group_series_by_label<'a>(
 
     if with_labels {
         for (label_value_str, group_data) in grouped.iter_mut() {
-            let source_keys: Vec<String> = group_data
+            let mut source_keys: Vec<String> = group_data
                 .series
                 .iter()
                 .map(|m| m.source_key.clone())
                 .collect();
+
+            source_keys.sort();
 
             group_data.labels = build_mrange_grouped_labels(
                 group_by_label_name,
@@ -346,59 +364,9 @@ fn group_series_by_label<'a>(
     grouped
 }
 
-pub fn create_aggregate_iterator<I>(
-    iter: I,
-    options: &MRangeOptions,
-    aggregation: &AggregationOptions,
-) -> AggregateIterator<I>
-where
-    I: Iterator<Item = Sample>,
-{
-    let (start_ts, end_ts) = options.range.get_timestamp_range();
-    let aligned_timestamp = aggregation
-        .alignment
-        .get_aligned_timestamp(start_ts, end_ts);
-    AggregateIterator::new(iter, aggregation, aligned_timestamp)
-}
-
-macro_rules! apply_iter_limit {
-    ($iter:expr, $limit:expr) => {
-        if let Some(limit) = $limit {
-            Box::new($iter.take(limit as usize)) as Box<dyn Iterator<Item = _> + '_>
-        } else {
-            Box::new($iter) as Box<dyn Iterator<Item = _> + '_>
-        }
-    };
-}
-
 pub fn create_mrange_iterator_adapter<'a>(
     base_iter: impl Iterator<Item = Sample> + 'a,
     options: &MRangeOptions,
 ) -> Box<dyn Iterator<Item = Sample> + 'a> {
-    // only use count if were not reversed. Reversed queries are fixed in post-processing
-    let count = if options.is_reverse {
-        None
-    } else {
-        options.range.count
-    };
-    match (&options.range.aggregation, &options.grouping) {
-        (Some(agg), Some(grouping)) => {
-            let grouping_aggregation = grouping.aggregation;
-            let aggr_iter = create_aggregate_iterator(base_iter, options, agg);
-            let reducer = ReduceIterator::new(aggr_iter, grouping_aggregation);
-            apply_iter_limit!(reducer, count)
-        }
-        (None, Some(grouping)) => {
-            let aggregation = grouping.aggregation;
-            let reducer = ReduceIterator::new(base_iter, aggregation);
-            apply_iter_limit!(reducer, count)
-        }
-        (Some(aggregation), None) => {
-            let aggr_iter = create_aggregate_iterator(base_iter, options, aggregation);
-            apply_iter_limit!(aggr_iter, count)
-        }
-        _ => {
-            apply_iter_limit!(base_iter, count)
-        }
-    }
+    create_sample_iterator_adapter(base_iter, &options.range, &options.grouping)
 }

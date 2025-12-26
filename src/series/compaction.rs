@@ -410,7 +410,7 @@ fn handle_current_bucket_adjustment(
 
         // Re-aggregate samples that are not in the removal range
         let bucket_samples = series
-            .range_iter(current_bucket_start, current_bucket_end, true)
+            .range_iter(current_bucket_start, current_bucket_end)
             .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
         for sample in bucket_samples {
@@ -656,7 +656,7 @@ where
     let mut has_samples = false;
     aggregator.reset();
     for sample in series
-        .range_iter(start, end, true)
+        .range_iter(start, end)
         .filter(|sample| filter(sample.timestamp))
     {
         aggregator.update(sample.value);

@@ -29,7 +29,7 @@ pub fn range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
     };
 
-    let samples = get_range(Some(ctx), &series, &options, true);
+    let samples = get_range(Some(ctx), &series, &options);
     let result = samples
         .into_iter()
         .map(|x| x.into())

@@ -156,11 +156,19 @@ impl UncompressedChunk {
     }
 
     fn get_range_slice(&self, start_ts: Timestamp, end_ts: Timestamp) -> Vec<Sample> {
-        if let Some((start_idx, end_index)) = self.get_index_bounds(start_ts, end_ts) {
-            self.samples[start_idx..=end_index].to_vec()
-        } else {
-            vec![]
-        }
+        let Some(res) = self.get_range_as_ref(start_ts, end_ts) else {
+            return Vec::new();
+        };
+        res.to_vec()
+    }
+
+    pub(crate) fn get_range_as_ref(
+        &self,
+        start_ts: Timestamp,
+        end_ts: Timestamp,
+    ) -> Option<&[Sample]> {
+        self.get_index_bounds(start_ts, end_ts)
+            .map(|(start_idx, end_idx)| &self.samples[start_idx..=end_idx])
     }
 
     /// Finds the start and end chunk indices (inclusive) for a date range.

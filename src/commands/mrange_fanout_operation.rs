@@ -109,7 +109,12 @@ fn handle_basic(
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
     let handler = |meta: MRangeSeriesResult, options: &MRangeOptions| {
         let aggr_iter = create_mrange_iterator_adapter(meta.data.iter(), options);
-        let samples = collect_samples(options, aggr_iter);
+        let count = if options.is_reverse {
+            options.range.count
+        } else {
+            None
+        };
+        let samples = collect_samples(aggr_iter, options.is_reverse, count);
         let chunk = UncompressedChunk::from_vec(samples);
         let mut meta = meta;
         meta.data = TimeSeriesChunk::Uncompressed(chunk);
@@ -235,5 +240,10 @@ fn process_group_list(items: &mut [MRangeSeriesResult], options: &MRangeOptions)
 
     let multi_iter = MultiSeriesSampleIter::new(iters);
     let adapter = create_mrange_iterator_adapter(multi_iter, options);
-    collect_samples(options, adapter)
+    let count = if options.is_reverse {
+        options.range.count
+    } else {
+        None
+    };
+    collect_samples(adapter, options.is_reverse, count)
 }

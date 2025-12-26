@@ -4,11 +4,11 @@ use crate::parser::timestamp::parse_timestamp;
 use std::fmt::Display;
 use valkey_module::{ValkeyError, ValkeyString};
 
+mod aggregate_iterator;
 mod handlers;
-mod iterator;
 
+pub use aggregate_iterator::*;
 pub use handlers::*;
-pub use iterator::*;
 
 #[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketTimestamp {

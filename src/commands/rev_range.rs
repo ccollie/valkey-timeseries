@@ -24,7 +24,7 @@ pub fn rev_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         let count = options.count;
         options.count = None; //
         let count = count.unwrap_or(usize::MAX);
-        let samples = get_range(Some(ctx), series, &options, false)
+        let samples = get_range(Some(ctx), series, &options)
             .into_iter()
             .rev()
             .take(count)

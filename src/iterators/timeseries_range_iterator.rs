@@ -1,6 +1,6 @@
-use crate::aggregators::AggregateIterator;
 use crate::common::{Sample, Timestamp};
-use crate::series::request_types::{AggregationOptions, RangeOptions};
+use crate::iterators::{TimestampFilterIterator, create_sample_iterator_adapter};
+use crate::series::request_types::RangeOptions;
 use crate::series::{SeriesSampleIterator, TimeSeries, get_latest_compaction_sample};
 use smallvec::SmallVec;
 use valkey_module::Context;
@@ -19,16 +19,10 @@ impl<'a> TimeSeriesRangeIterator<'a> {
     /// the desire to minimize boxing.
     /// ctx is made optional to allow for easier unit testing without a full Valkey context.
     /// Note that reversing is left to the caller to handle, as not all iterators are double-ended.
-    pub fn new(
-        ctx: Option<&'a Context>,
-        series: &'a TimeSeries,
-        options: &RangeOptions,
-        check_retention: bool,
-    ) -> Self {
+    pub fn new(ctx: Option<&'a Context>, series: &'a TimeSeries, options: &RangeOptions) -> Self {
         let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
 
-        // 1. Handle Retention
-        if check_retention && !series.retention.is_zero() {
+        if !series.retention.is_zero() {
             let min_ts = series.get_min_timestamp();
             start_ts = start_ts.max(min_ts);
             end_ts = start_ts.max(end_ts);
@@ -47,35 +41,23 @@ impl<'a> TimeSeriesRangeIterator<'a> {
             };
         }
 
-        let mut size_hint = (0usize, options.count);
+        let size_hint = (0usize, options.count);
 
-        let iter = SeriesSampleIterator::from_range_options(series, options, check_retention);
+        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
+            let base_iter = TimestampFilterIterator::new(series, ts_filter, false);
+            let options_without_ts_filter = RangeOptions {
+                timestamp_filter: None,
+                ..options.clone()
+            };
+            let inner =
+                create_sample_iterator_adapter(base_iter, &options_without_ts_filter, &None);
+            return Self { inner, size_hint };
+        }
 
-        let inner = if let Some(count) = options.count {
-            let iter = iter.take(count);
-            size_hint = (0, Some(count));
-            Self::maybe_create_aggregated_iterator(iter, &options.aggregation, start_ts, end_ts)
-        } else {
-            Self::maybe_create_aggregated_iterator(iter, &options.aggregation, start_ts, end_ts)
-        };
+        let base_iter = SeriesSampleIterator::from_range_options(series, options, true, false);
+        let inner = create_sample_iterator_adapter(base_iter, options, &None);
 
         Self { inner, size_hint }
-    }
-
-    fn maybe_create_aggregated_iterator<T: Iterator<Item = Sample> + 'a>(
-        base_iter: T,
-        aggr_options: &Option<AggregationOptions>,
-        start_ts: Timestamp,
-        end_ts: Timestamp,
-    ) -> Box<dyn Iterator<Item = Sample> + 'a> {
-        if let Some(aggr_options) = aggr_options {
-            let aligned_start = aggr_options
-                .alignment
-                .get_aligned_timestamp(start_ts, end_ts);
-            let iter = AggregateIterator::new(base_iter, aggr_options, aligned_start);
-            return Box::new(iter);
-        }
-        Box::new(base_iter)
     }
 
     fn create_latest_iterator(

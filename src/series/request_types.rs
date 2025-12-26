@@ -4,7 +4,7 @@ use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::TimeSeriesChunk;
 use crate::series::{TimestampRange, ValueFilter};
-use valkey_module::{ValkeyString, ValkeyValue};
+use valkey_module::{ValkeyResult, ValkeyString, ValkeyValue};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AggregationOptions {
@@ -59,6 +59,13 @@ pub struct RangeOptions {
 impl RangeOptions {
     pub fn get_timestamp_range(&self) -> (Timestamp, Timestamp) {
         self.date_range.get_timestamps(None)
+    }
+
+    pub fn with_range(start_ts: Timestamp, end_ts: Timestamp) -> ValkeyResult<Self> {
+        Ok(Self {
+            date_range: TimestampRange::from_timestamps(start_ts, end_ts)?,
+            ..Default::default()
+        })
     }
 }
 

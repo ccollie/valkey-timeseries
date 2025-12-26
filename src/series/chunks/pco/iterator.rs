@@ -14,7 +14,8 @@ struct StreamState<'a, T: Number> {
     values: [T; FULL_BATCH_N],
     cursor: &'a [u8],
     count: usize,
-    idx: usize,
+    /// index within the current chunk
+    chunk_idx: usize,
     is_finished: bool,
     finished_chunk: bool,
 }
@@ -29,7 +30,7 @@ impl<'a, T: Number + Default> StreamState<'a, T> {
             chunk_decompressor: MaybeChunkDecompressor::EndOfData(&EMPTY_SLICE),
             cursor,
             count: 0,
-            idx: 0,
+            chunk_idx: 0,
             is_finished: false,
             finished_chunk: false,
             values: [T::default(); FULL_BATCH_N],
@@ -87,18 +88,18 @@ impl<'a, T: Number + Default> StreamState<'a, T> {
     }
 
     fn next_value(&mut self) -> ValkeyResult<Option<T>> {
-        if self.idx >= self.count {
+        if self.chunk_idx >= self.count {
             if self.is_finished {
                 return Ok(None);
             }
             if !self.next_chunk()? {
                 return Ok(None);
             }
-            self.idx = 0;
+            self.chunk_idx = 0;
         }
 
-        let value = self.values[self.idx];
-        self.idx += 1;
+        let value = self.values[self.chunk_idx];
+        self.chunk_idx += 1;
         Ok(Some(value))
     }
 }
@@ -108,6 +109,8 @@ pub struct PcoSampleIterator<'a> {
     values_state: StreamState<'a, f64>,
     first_ts: Timestamp,
     last_ts: Timestamp,
+    idx: usize,
+    count: usize,
     filtered: bool,
 }
 
@@ -121,6 +124,8 @@ impl<'a> PcoSampleIterator<'a> {
             values_state,
             first_ts: 0,
             last_ts: 0,
+            idx: 0,
+            count: timestamps.len(),
             filtered: false,
         })
     }
@@ -160,6 +165,7 @@ impl Iterator for PcoSampleIterator<'_> {
                 Self::next_item(&mut self.values_state),
             ) {
                 (Some(ts), Some(val)) => {
+                    self.idx += 1;
                     if self.filtered {
                         if ts < self.first_ts {
                             continue;
@@ -176,6 +182,12 @@ impl Iterator for PcoSampleIterator<'_> {
                 _ => break None,
             }
         }
+    }
+}
+
+impl ExactSizeIterator for PcoSampleIterator<'_> {
+    fn len(&self) -> usize {
+        self.count - self.idx
     }
 }
 

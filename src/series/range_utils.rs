@@ -52,9 +52,8 @@ pub(crate) fn get_range(
     ctx: Option<&Context>,
     series: &TimeSeries,
     args: &RangeOptions,
-    check_retention: bool,
 ) -> Vec<Sample> {
-    let iter = TimeSeriesRangeIterator::new(ctx, series, args, check_retention);
+    let iter = TimeSeriesRangeIterator::new(ctx, series, args);
     iter.collect::<Vec<Sample>>()
 }
 
@@ -67,9 +66,8 @@ pub fn get_multi_series_range(
         ctx: Option<&Context>,
         series: &TimeSeries,
         options: &MRangeOptions,
-        use_retention: bool,
     ) -> Vec<Sample> {
-        let samples = get_range(ctx, series, &options.range, use_retention);
+        let samples = get_range(ctx, series, &options.range);
         if let Some(grouping) = &options.grouping {
             // Apply grouping reduce if specified
             group_reduce(samples.into_iter(), grouping.aggregation)
@@ -80,15 +78,9 @@ pub fn get_multi_series_range(
 
     if options.range.latest {
         // when LATEST is specified, we cannot use parallel processing since Context is not Send
-        series
-            .iter()
-            .map(|x| _get_range(ctx, x, options, true))
-            .collect()
+        series.iter().map(|x| _get_range(ctx, x, options)).collect()
     } else {
-        series
-            .par()
-            .map(|x| _get_range(None, x, options, true))
-            .collect()
+        series.par().map(|x| _get_range(None, x, options)).collect()
     }
 }
 
@@ -200,7 +192,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         assert_eq!(result.len(), 5);
         assert_eq!(result[0], Sample::new(120, 3.0));
@@ -222,7 +214,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].timestamp, 100);
@@ -251,7 +243,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         assert_eq!(result.len(), 5);
         // First bucket [100-120): values 0.0 + 1.5 = 1.5
@@ -294,7 +286,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         assert_eq!(result.len(), 3);
 
@@ -357,7 +349,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, false);
+        let result = get_range(None, &series, &range_options);
 
         // Only samples with value > 4.0 should be included
         assert_eq!(result.len(), 8); // From timestamps 130 to 200
@@ -380,42 +372,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         assert_eq!(result.len(), 4);
         assert_eq!(result[0].timestamp, 110);
         assert_eq!(result[1].timestamp, 130);
         assert_eq!(result[2].timestamp, 150);
         assert_eq!(result[3].timestamp, 170);
-    }
-
-    #[test]
-    fn test_get_range_without_retention_check() {
-        let mut series = create_test_series();
-        // series.add(1000, 15.0, None); // Add a sample outside the retention period
-
-        let range = series.last_timestamp() - series.first_timestamp;
-
-        // Add an old timestamp that would be filtered out by retention
-        series.add(50, 100.0, None);
-        series.retention = Duration::from_millis(range as u64);
-
-        let range_options = RangeOptions {
-            date_range: TimestampRange {
-                start: TimestampValue::Specific(0),
-                end: TimestampValue::Specific(200),
-            },
-            ..Default::default()
-        };
-
-        // With retention check (should filter out old sample)
-        let result_with_retention = get_range(None, &series, &range_options, true);
-        // Without retention check (should include old sample)
-        let result_without_retention = get_range(None, &series, &range_options, false);
-
-        assert!(result_with_retention.len() < result_without_retention.len());
-        assert_eq!(result_without_retention[0].timestamp, 50);
-        assert_eq!(result_without_retention[0].value, 100.0);
     }
 
     #[test]
@@ -430,7 +393,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         assert_eq!(result.len(), 0);
     }
@@ -460,7 +423,7 @@ mod tests {
             count: None, // count is ignored for aggregated results
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         // Should apply timestamp filter, then value filter, then aggregate, then limit count
         assert_eq!(result.len(), 3);
@@ -489,7 +452,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = get_range(None, &series, &range_options, true);
+        let result = get_range(None, &series, &range_options);
 
         // With 30ms buckets over 100ms range (100-200), we should get buckets:
         // [100-130): contains samples at 100, 110, 120 -> sum = 0.0 + 1.5 + 3.0 = 4.5

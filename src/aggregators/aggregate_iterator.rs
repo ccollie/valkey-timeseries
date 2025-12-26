@@ -1,6 +1,7 @@
 use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
+use logger_rust::log_debug;
 use std::collections::VecDeque;
 use std::iter::Peekable;
 
@@ -47,7 +48,12 @@ impl AggregationHelper {
         };
         let start = self.calc_bucket_start(first_bucket_ts);
         let end = self.calc_bucket_start(end_bucket_ts);
-        let count = self.buckets_in_range(start, end);
+
+        // if end < start {
+        //     return;
+        // }
+
+        let count = ((end - start) / self.bucket_duration as i64) as usize;
         samples.reserve(count);
 
         for timestamp in (start..end).step_by(self.bucket_duration as usize) {
@@ -85,6 +91,7 @@ impl AggregationHelper {
         empty_buckets: &mut VecDeque<Sample>,
     ) -> Sample {
         let bucket = self.finalize_internal();
+        self.aggregator.reset();
         if self.report_empty
             && let Some(last_ts) = last_ts
             && last_ts >= self.bucket_range_end
@@ -195,6 +202,11 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
 
         // Process subsequent samples
         while let Some(sample) = self.inner.next() {
+            log_debug!(
+                "AggregateIterator: processing sample at timestamp={} with value={}",
+                sample.timestamp,
+                sample.value
+            );
             if sample.timestamp < self.aggregator.bucket_range_end {
                 self.update(sample);
                 continue;

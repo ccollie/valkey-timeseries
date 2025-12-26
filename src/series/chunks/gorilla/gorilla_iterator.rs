@@ -147,5 +147,10 @@ impl Iterator for GorillaIterator<'_> {
     }
 }
 
+impl ExactSizeIterator for GorillaIterator<'_> {
+    fn len(&self) -> usize {
+        self.num_samples - self.idx
+    }
+}
 #[cfg(test)]
 mod tests {}

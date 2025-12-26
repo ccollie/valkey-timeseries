@@ -58,7 +58,7 @@ fn get_server_info_field_signed(
         let field_value = CString::new(field).expect("Failed to convert field to CString");
         let res = get_signed_field_fn(info, field_value.as_ptr(), &mut ignored);
         if ignored != 0 {
-            let msg = format!("Field '{}' not found in server info", field);
+            let msg = format!("Field '{field}' not found in server info");
             return Err(ValkeyError::String(msg));
         }
         Ok(res)

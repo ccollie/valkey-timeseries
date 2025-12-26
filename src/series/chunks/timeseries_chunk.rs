@@ -293,6 +293,10 @@ impl TimeSeriesChunk {
             timestamp_filter,
         )
     }
+
+    pub fn is_compressed(&self) -> bool {
+        !matches!(self, TimeSeriesChunk::Uncompressed(_))
+    }
 }
 
 impl Default for TimeSeriesChunk {

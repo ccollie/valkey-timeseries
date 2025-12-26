@@ -1,5 +1,6 @@
 use crate::aggregators::{AggregationHandler, AggregationType, Aggregator};
 use crate::common::Sample;
+use logger_rust::log_debug;
 
 /// Perform the GROUP BY REDUCE operation on the samples. Specifically, it
 /// aggregates non-NAN samples based on the specified aggregation options.
@@ -23,7 +24,7 @@ impl<I: Iterator<Item = Sample>> ReduceIterator<I> {
             iter,
             aggregator: aggregation.into(),
             current_sample: None,
-            is_init: true,
+            is_init: false,
         }
     }
 }
@@ -53,15 +54,23 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
                 self.aggregator.update(next.value);
             } else {
                 // Finalize the current group
+                // Finalize the current group
                 let value = if all_nans {
                     f64::NAN
                 } else {
                     self.aggregator.finalize()
                 };
+                self.aggregator.reset();
                 let result = Sample {
                     timestamp: current.timestamp,
                     value,
                 };
+
+                log_debug!(
+                    "ReduceIterator: finalized group at timestamp={} with value={}",
+                    current.timestamp,
+                    value
+                );
 
                 // Prepare for the next group
                 self.current_sample = Some(next);
