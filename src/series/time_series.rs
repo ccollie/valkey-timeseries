@@ -272,34 +272,37 @@ impl TimeSeries {
         let duplicate_policy = self
             .sample_duplicates
             .resolve_policy(duplicate_policy_override);
+
         let chunks_len = self.chunks.len();
-        let (chunk, is_last) = if sample.timestamp <= self.first_timestamp {
+        debug_assert!(chunks_len > 0, "upsert called on empty series");
+
+        // determine the target chunk index and whether it's the last chunk
+        let target_idx = if sample.timestamp <= self.first_timestamp {
             if self.is_older_than_retention(sample.timestamp) {
                 return SampleAddResult::TooOld;
             }
-            debug_assert!(!self.chunks.is_empty(), "chunks.is_empty() in upsert");
-            let chunk = match self.chunks.get_mut(0) {
-                Some(chunk) => chunk,
-                None => {
-                    return SampleAddResult::Error("Internal error: no chunks available in upsert");
-                }
-            };
-            (chunk, chunks_len == 1)
+            0
         } else {
             let (pos, _found) = get_chunk_index(&self.chunks, sample.timestamp);
-            let chunk = self
-                .chunks
-                .get_mut(pos)
-                .expect("index out of range in upsert");
-            (chunk, pos + 1 == chunks_len)
+            pos
         };
 
-        // Try to upsert in the existing chunk if it doesn't need splitting
+        let is_last = target_idx + 1 == chunks_len;
+
+        // obtain mutable reference to the chunk we will upsert into
+        let chunk = match self.chunks.get_mut(target_idx) {
+            Some(c) => c,
+            None => {
+                return SampleAddResult::Error("Internal error: no chunks available in upsert");
+            }
+        };
+
+        // if chunk can accept the sample without splitting, do it directly
         if !chunk.should_split() {
             let old_size = chunk.len();
             let (size, res) = chunk.upsert(sample, duplicate_policy);
             if res.is_ok() {
-                self.total_samples += size - old_size;
+                self.total_samples += size.saturating_sub(old_size);
                 if is_last {
                     self.update_last_sample();
                 }
@@ -308,7 +311,7 @@ impl TimeSeries {
             return res;
         }
 
-        // Handle the case where we need to split the chunk
+        // otherwise split the chunk and upsert into the new chunk
         match chunk.split() {
             Ok(mut new_chunk) => {
                 let (size, res) = new_chunk.upsert(sample, duplicate_policy);
@@ -316,13 +319,12 @@ impl TimeSeries {
                     return res;
                 }
 
-                // Try to trim time series and log any errors
-                // TODO: do this in a separate thread to avoid blocking ingestion
+                // best-effort trim; don't block ingestion on failure
                 if let Err(e) = self.trim() {
                     logging::log_warning(format!("TSDB: Error trimming time series: {e:?}"));
                 }
 
-                // Insert the new chunk at the correct position
+                // insert the new chunk in order
                 let insert_at = self
                     .chunks
                     .partition_point(|c| c.first_timestamp() <= new_chunk.first_timestamp());
