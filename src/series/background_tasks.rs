@@ -212,7 +212,6 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
     });
 
     if batch.is_empty() {
-        ctx_.log_notice("No series to trim");
         set_trim_cursor(db, 0);
         return 0;
     }
@@ -242,9 +241,7 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
 
     set_trim_cursor(db, last_processed);
 
-    if processed == 0 {
-        log_debug("No series to trim");
-    } else {
+    if processed > 0 {
         log_debug(format!(
             "Processed: {processed} Deleted Samples: {total_deletes} samples"
         ));
