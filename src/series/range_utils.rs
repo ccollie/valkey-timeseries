@@ -53,7 +53,7 @@ pub(crate) fn get_range(
     series: &TimeSeries,
     args: &RangeOptions,
 ) -> Vec<Sample> {
-    let iter = TimeSeriesRangeIterator::new(ctx, series, args);
+    let iter = TimeSeriesRangeIterator::new(ctx, series, args, false);
     iter.collect::<Vec<Sample>>()
 }
 

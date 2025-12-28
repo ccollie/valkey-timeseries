@@ -24,7 +24,6 @@ mod mrange_fanout_operation;
 mod query_index;
 mod query_index_fanout_operation;
 mod range;
-mod rev_range;
 mod stats;
 mod stats_fanout_operation;
 mod utils;
@@ -49,7 +48,6 @@ pub use mget::*;
 pub use mrange::*;
 pub use query_index::*;
 pub use range::*;
-pub use rev_range::*;
 pub use stats::*;
 use valkey_module::ValkeyResult;
 
