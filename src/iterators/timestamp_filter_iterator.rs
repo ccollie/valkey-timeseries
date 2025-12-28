@@ -33,8 +33,6 @@ impl<'a> TimestampFilterIterator<'a> {
     /// - `is_reverse` controls whether iteration goes from the end of `timestamps` to the start.
     pub fn new(series: &'a TimeSeries, timestamps: &[Timestamp], is_reverse: bool) -> Self {
         let timestamps: SmallVec<Timestamp, 16> = SmallVec::from(timestamps);
-        // timestamps.reverse();
-
         let chunk_idx = if series.is_empty() {
             -1
         } else if is_reverse {
@@ -42,6 +40,7 @@ impl<'a> TimestampFilterIterator<'a> {
         } else {
             0
         };
+        let pos = if is_reverse { timestamps.len() } else { 0 };
 
         Self {
             series,
@@ -49,78 +48,112 @@ impl<'a> TimestampFilterIterator<'a> {
             sample_iter: Default::default(),
             timestamps,
             is_reverse,
-            pos: 0,
+            pos,
             chunk_idx,
             buffer: Cow::Owned(Vec::new()),
             random_access: false,
         }
     }
 
-    // fill the buffer with samples from the given chunk for reverse iteration
-    fn fill_buffer(&mut self, chunk: &'a TimeSeriesChunk) {
-        // determine the current range
-        let current_ts = self.timestamps[self.pos];
-
-        if let TimeSeriesChunk::Uncompressed(chunk_) = chunk {
-            // Borrow the underlying samples
-            self.buffer = Cow::Borrowed(&chunk_.samples);
-        } else {
-            // Create an iterator over the chunk's samples filtered by the calculated range
-            let it = chunk.range_iter(chunk.first_timestamp(), current_ts);
-
-            // compressed chunk: use owned buffer
-            if let Cow::Owned(ref mut buf) = self.buffer {
-                buf.clear();
-                buf.extend(it);
-            } else {
-                // Transition Cow from Borrowed (from a previous uncompressed chunk) to Owned
-                let mut buf = Vec::with_capacity(chunk.len());
-                buf.extend(it);
-                self.buffer = Cow::Owned(buf);
+    fn pop_timestamp(&mut self) -> Option<Timestamp> {
+        if self.is_reverse {
+            if self.pos == 0 {
+                return None;
             }
+            self.pos -= 1;
+            Some(self.timestamps[self.pos])
+        } else {
+            let ts = *self.timestamps.get(self.pos)?;
+            self.pos += 1;
+            Some(ts)
         }
     }
 
-    fn ensure_chunk_for_timestamp(&mut self, ts: Timestamp) -> Option<&'a TimeSeriesChunk> {
+    fn seek_chunk(&mut self, ts: Timestamp) -> Option<&'a TimeSeriesChunk> {
+        let chunks = &self.series.chunks;
+        loop {
+            let idx = self.chunk_idx;
+            if idx < 0 {
+                return None;
+            }
+            let idx = idx as usize;
+            let chunk = chunks.get(idx)?;
+            if ts < chunk.first_timestamp() {
+                if self.is_reverse {
+                    self.chunk_idx -= 1;
+                    continue;
+                }
+                return None;
+            }
+            if ts > chunk.last_timestamp() {
+                if self.is_reverse {
+                    return None;
+                }
+                self.chunk_idx += 1;
+                continue;
+            }
+            return Some(chunk);
+        }
+    }
+
+    // fill the buffer with samples from the given chunk for random-access lookups
+    fn fill_buffer(&mut self, chunk: &'a TimeSeriesChunk) {
+        if let TimeSeriesChunk::Uncompressed(chunk_) = chunk {
+            self.buffer = Cow::Borrowed(&chunk_.samples);
+            return;
+        }
+
+        // For reverse/random-access lookups we need all samples in the chunk.
+        // Otherwise, a decreasing timestamp sequence (e.g., 7, 5) can miss values
+        // if the buffer is capped at the first requested timestamp.
+        let it = chunk.range_iter(chunk.first_timestamp(), chunk.last_timestamp());
+
+        if let Cow::Owned(ref mut buf) = self.buffer {
+            buf.clear();
+            buf.extend(it);
+        } else {
+            let mut buf = Vec::with_capacity(chunk.len());
+            buf.extend(it);
+            self.buffer = Cow::Owned(buf);
+        }
+    }
+
+    fn ensure_chunk_for_timestamp(&mut self, ts: Timestamp) -> bool {
         if let Some(chunk) = self.chunk {
             if chunk.is_timestamp_in_range(ts) {
-                return Some(chunk);
+                // the current chunk covers the timestamp
+                return true;
             }
         }
 
-        let idx = self.find_chunk_idx_for_ts(ts)?;
-        let chunk = &self.series.chunks[idx];
+        if let Some(chunk) = self.seek_chunk(ts) {
+            if self.is_reverse || !chunk.is_compressed() {
+                self.random_access = true;
+                self.sample_iter = SampleIter::Empty;
+                self.fill_buffer(chunk);
+            } else {
+                self.random_access = false;
+                self.sample_iter = chunk.range_iter(ts, chunk.last_timestamp());
+            }
 
-        if self.is_reverse || !chunk.is_compressed() {
-            self.random_access = true;
-            self.sample_iter = SampleIter::Empty;
-            self.fill_buffer(chunk);
-        } else {
-            self.random_access = false;
-            // When switching chunks, we need to refresh the sample iterator for this specific chunk
-            self.sample_iter = chunk.range_iter(ts, chunk.last_timestamp());
+            self.chunk = Some(chunk);
+            return true;
         }
 
-        self.chunk = Some(chunk);
-        Some(chunk)
+        self.chunk = None;
+        false
     }
 
     fn find_ts_sample(&mut self, ts: Timestamp) -> Option<Sample> {
-        self.ensure_chunk_for_timestamp(ts)?;
+        if !self.ensure_chunk_for_timestamp(ts) {
+            return None;
+        }
+
         if self.random_access {
             if let Ok(idx) = self.buffer.binary_search_by_key(&ts, |s| s.timestamp) {
-                // Found at idx (relative to the slice which starts at 0).
-                let sample = unsafe {
-                    // SAFETY: safe because binary_search_by_key returned a valid index
-                    *self.buffer.get_unchecked(idx)
-                };
-                if idx == 0 && self.is_reverse {
-                    // no more elements to the left — drop chunk
-                    self.chunk = None;
-                }
+                let sample = unsafe { *self.buffer.get_unchecked(idx) };
                 return Some(sample);
             }
-
             return None;
         }
 
@@ -128,50 +161,10 @@ impl<'a> TimestampFilterIterator<'a> {
             if sample.timestamp == ts {
                 return Some(sample);
             } else if sample.timestamp > ts {
-                // The current sample is ahead of target; the current chunk might still contain future target ts.
                 break;
             }
         }
         self.chunk = None;
-        None
-    }
-
-    /// Try to locate a chunk index that might contain `ts` starting from `chunk_idx`.
-    /// Adjusts `chunk_idx` forward/backward depending on `is_reverse` and returns
-    /// the resolved chunk index or `None` if no chunk can contain `ts`.
-    fn find_chunk_idx_for_ts(&mut self, ts: Timestamp) -> Option<usize> {
-        let chunks = &self.series.chunks;
-        if chunks.is_empty() {
-            self.chunk_idx = -1;
-            return None;
-        }
-        if self.is_reverse {
-            let mut idx = self.chunk_idx;
-            while idx >= 0 {
-                let chunk = &chunks[idx as usize];
-                if chunk.is_timestamp_in_range(ts) {
-                    self.chunk_idx = idx;
-                    return Some(idx as usize);
-                } else if ts < chunk.first_timestamp() {
-                    idx -= 1;
-                } else {
-                    break; // ts > chunk.last_timestamp()
-                }
-            }
-        } else {
-            let mut idx = self.chunk_idx as usize;
-            while idx < chunks.len() {
-                let chunk = &chunks[idx];
-                if chunk.is_timestamp_in_range(ts) {
-                    self.chunk_idx = idx as isize;
-                    return Some(idx);
-                } else if ts > chunk.last_timestamp() {
-                    idx += 1;
-                } else {
-                    break; // ts < chunk.first_timestamp()
-                }
-            }
-        }
         None
     }
 }
@@ -180,14 +173,9 @@ impl<'a> Iterator for TimestampFilterIterator<'a> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // current timestamp to resolve
-        let len = self.timestamps.len();
-        while self.pos < len {
-            let ts = self.timestamps[self.pos];
-            let sample = self.find_ts_sample(ts);
-            self.pos += 1;
-            if sample.is_some() {
-                return sample;
+        while let Some(ts) = self.pop_timestamp() {
+            if let Some(sample) = self.find_ts_sample(ts) {
+                return Some(sample);
             }
         }
         None
@@ -242,8 +230,7 @@ mod tests {
     #[test]
     fn finds_exact_matches_reverse() {
         let series = build_series();
-        // iterate in reverse over timestamps: [7, 5, 2]
-        let timestamps = &[7, 5, 2];
+        let timestamps = &[2, 5, 7];
         let it = TimestampFilterIterator::new(&series, timestamps, true);
 
         let out: Vec<Sample> = it.collect();
@@ -278,9 +265,6 @@ mod tests {
         assert!(it.next().is_none());
     }
 
-    // Existing helpers...
-
-    // New helper to create a series with compressed chunks
     fn build_compressed_series() -> TimeSeries {
         let c1_samples = vec![s(1, 10.0), s(2, 20.0), s(3, 30.0)];
         let c2_samples = vec![s(5, 50.0), s(6, 60.0), s(7, 70.0)];
@@ -310,7 +294,7 @@ mod tests {
     #[test]
     fn finds_exact_matches_reverse_compressed() {
         let series = build_compressed_series();
-        let timestamps = &[7, 5, 2];
+        let timestamps = &[2, 5, 7];
         let it = TimestampFilterIterator::new(&series, timestamps, true);
 
         let out: Vec<Sample> = it.collect();
