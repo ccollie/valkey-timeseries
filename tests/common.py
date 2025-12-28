@@ -17,8 +17,8 @@ SERVER_PATH = f"{os.path.dirname(os.path.realpath(__file__))}/build/binaries/{SE
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 SERVER_VERSION = os.environ.get("SERVER_VERSION", "unstable")
 VALKEY_SERVER_PATH = f"{SCRIPT_DIR}/build/binaries/{SERVER_VERSION}/valkey-server"
-TEST_DIR = f"{CWD}/test-data"
-LOGS_DIR = f"{SCRIPT_DIR}/logs"
+TEST_DIR = f"{ROOT_PATH}/test-data"
+LOGS_DIR = f"{TEST_DIR}/logs"
 
 if "VALKEY_SERVER_PATH" in os.environ:
     VALKEY_SERVER_PATH = os.environ["VALKEY_SERVER_PATH"]
