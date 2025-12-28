@@ -1,7 +1,6 @@
 use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
-use logger_rust::log_debug;
 use std::collections::VecDeque;
 use std::iter::Peekable;
 
@@ -202,11 +201,6 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
 
         // Process subsequent samples
         while let Some(sample) = self.inner.next() {
-            log_debug!(
-                "AggregateIterator: processing sample at timestamp={} with value={}",
-                sample.timestamp,
-                sample.value
-            );
             if sample.timestamp < self.aggregator.bucket_range_end {
                 self.update(sample);
                 continue;
