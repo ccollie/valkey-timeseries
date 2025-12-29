@@ -1,6 +1,7 @@
 use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
+use core::f64;
 use std::collections::VecDeque;
 use std::iter::Peekable;
 
@@ -42,8 +43,9 @@ impl AggregationHelper {
         end_bucket_ts: Timestamp,
     ) {
         let value = match self.aggregator {
-            Aggregator::Last(_) => self.prev_sample.value,
-            _ => self.aggregator.empty_value(),
+            Aggregator::Sum(_) | Aggregator::Count(_) => 0.0,
+            Aggregator::Last(agg) => agg.current().unwrap_or(f64::NAN), // self.prev_sample.value,
+            _ => f64::NAN,
         };
         let start = self.calc_bucket_start(first_bucket_ts);
         let end = self.calc_bucket_start(end_bucket_ts);

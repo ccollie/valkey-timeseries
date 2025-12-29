@@ -1,13 +1,11 @@
 use crate::common::Sample;
 use crate::iterators::TimeSeriesRangeIterator;
-use crate::iterators::sample_slice_iterator::ReverseSampleSliceIterator;
 use crate::iterators::vec_sample_iterator::VecSampleIterator;
 use crate::series::chunks::{GorillaChunkIterator, PcoSampleIterator};
 
 #[derive(Default)]
 pub enum SampleIter<'a> {
     Slice(std::slice::Iter<'a, Sample>),
-    RevSlice(ReverseSampleSliceIterator<'a>),
     Vec(VecSampleIterator),
     Gorilla(GorillaChunkIterator<'a>),
     Pco(Box<PcoSampleIterator<'a>>),
@@ -20,11 +18,6 @@ impl<'a> SampleIter<'a> {
     pub fn slice(slice: &'a [Sample]) -> Self {
         let iter = slice.iter();
         SampleIter::Slice(iter)
-    }
-
-    pub fn rev_slice(slice: &'a [Sample]) -> Self {
-        let iter = ReverseSampleSliceIterator::new(slice);
-        SampleIter::RevSlice(iter)
     }
 
     pub fn vec(samples: Vec<Sample>) -> Self {
@@ -44,7 +37,6 @@ impl Iterator for SampleIter<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             SampleIter::Slice(slice) => slice.next().copied(),
-            SampleIter::RevSlice(rev_slice) => rev_slice.next().copied(),
             SampleIter::Vec(iter) => iter.next(),
             SampleIter::Gorilla(iter) => iter.next(),
             SampleIter::Pco(iter) => iter.next(),

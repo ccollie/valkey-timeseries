@@ -95,6 +95,20 @@ impl TryFrom<&str> for BucketAlignment {
     }
 }
 
+impl TryFrom<&ValkeyString> for BucketAlignment {
+    type Error = ValkeyError;
+    fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
+        let str = value.to_string_lossy();
+        BucketAlignment::try_from(str.as_str())
+    }
+}
+
+impl From<Timestamp> for BucketAlignment {
+    fn from(value: Timestamp) -> Self {
+        BucketAlignment::Timestamp(value)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum AggregationType {
     Avg,
@@ -126,6 +140,20 @@ impl AggregationType {
             AggregationType::VarS => "var.s",
             AggregationType::VarP => "var.p",
             AggregationType::Range => "range",
+        }
+    }
+
+    // In the aggregation logic where Last/First are handled:
+    // When is_reverse is true, swap the behavior of First and Last
+    pub fn apply_reverse_adjusted(&self, is_reverse: bool) -> AggregationType {
+        if is_reverse {
+            match self {
+                AggregationType::First => AggregationType::Last,
+                AggregationType::Last => AggregationType::First,
+                other => *other,
+            }
+        } else {
+            *self
         }
     }
 }
