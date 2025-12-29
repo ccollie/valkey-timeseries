@@ -5,12 +5,12 @@ use crate::series::chunks::{Chunk, TimeSeriesChunk};
 use smallvec::SmallVec;
 use std::borrow::Cow;
 
-/// Iterator over a provided list of timestamps. For each timestamp it
+/// Specialized iterator to handle timestamp filtering for a time series. For each timestamp it
 /// returns `Some(sample)` if an exact timestamp match exists in the series,
 /// otherwise `None`. Timestamps are iterated in the order determined by `is_reverse`.
 ///
 /// This iterator is optimized for sparse timestamp lookups over a time series.
-/// It reuses chunk lookup state to avoid redundant searches across chunks.
+/// It processes only relevant chunks and reuses chunk lookup state to avoid redundant searches across chunks.
 pub struct TimestampFilterIterator<'a> {
     series: &'a TimeSeries,
     chunk: Option<&'a TimeSeriesChunk>,
@@ -144,7 +144,7 @@ impl<'a> TimestampFilterIterator<'a> {
         false
     }
 
-    fn find_ts_sample(&mut self, ts: Timestamp) -> Option<Sample> {
+    fn get_sample(&mut self, ts: Timestamp) -> Option<Sample> {
         if !self.ensure_chunk_for_timestamp(ts) {
             return None;
         }
@@ -174,7 +174,7 @@ impl<'a> Iterator for TimestampFilterIterator<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(ts) = self.pop_timestamp() {
-            if let Some(sample) = self.find_ts_sample(ts) {
+            if let Some(sample) = self.get_sample(ts) {
                 return Some(sample);
             }
         }

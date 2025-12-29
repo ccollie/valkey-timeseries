@@ -3,6 +3,7 @@ use crate::common::{Sample, Timestamp};
 use crate::iterators::ReduceIterator;
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use smallvec::SmallVec;
+use std::collections::BTreeSet;
 
 pub fn create_aggregate_iterator<I>(
     iter: I,
@@ -35,11 +36,6 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
     grouping: &Option<RangeGroupingOptions>,
     is_reverse: bool,
 ) -> Box<dyn Iterator<Item = Sample> + 'a> {
-    #[inline]
-    fn copy_ts_filter(timestamps: &[Timestamp]) -> SmallVec<Timestamp, 8> {
-        SmallVec::from_slice_copy(timestamps)
-    }
-
     fn handle_reverse<'a>(
         base_iter: impl Iterator<Item = Sample> + 'a,
         is_reverse: bool,
@@ -83,16 +79,16 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
     // done as a match to minimize boxing and closures
     match (&options.timestamp_filter, &options.value_filter) {
         (Some(ts_filter), Some(val_filter)) => {
-            let timestamps = copy_ts_filter(ts_filter);
+            let timestamps = TimestampFilter::new(ts_filter);
             let filter = *val_filter;
             let filtered = base_iter.filter(move |sample| {
-                timestamps.contains(&sample.timestamp) && filter.is_match(sample.value)
+                timestamps.contains(sample.timestamp) && filter.is_match(sample.value)
             });
             convert_inner(filtered, options, grouping, is_reverse)
         }
         (Some(ts_filter), None) => {
-            let timestamps = copy_ts_filter(ts_filter);
-            let filtered = base_iter.filter(move |sample| timestamps.contains(&sample.timestamp));
+            let timestamps = TimestampFilter::new(ts_filter);
+            let filtered = base_iter.filter(move |sample| timestamps.contains(sample.timestamp));
             convert_inner(filtered, options, grouping, is_reverse)
         }
         (None, Some(val_filter)) => {
@@ -140,5 +136,35 @@ impl<I: Iterator<Item = Sample>> Iterator for ReverseSampleIter<I> {
             self.load_items();
         }
         self.buf.pop()
+    }
+}
+
+// this may be overkill but we'll try optimizing memory for a
+// very common case of a very small number of timestamps
+enum TimestampFilterStorage {
+    Set(BTreeSet<Timestamp>),
+    List(SmallVec<Timestamp, 16>),
+}
+
+struct TimestampFilter {
+    storage: TimestampFilterStorage,
+}
+
+impl TimestampFilter {
+    pub fn new(timestamps: &[Timestamp]) -> Self {
+        let storage = if timestamps.len() > 16 {
+            let set = BTreeSet::from_iter(timestamps.iter().cloned());
+            TimestampFilterStorage::Set(set)
+        } else {
+            TimestampFilterStorage::List(SmallVec::from_slice_copy(timestamps))
+        };
+        Self { storage }
+    }
+
+    pub fn contains(&self, ts: Timestamp) -> bool {
+        match &self.storage {
+            TimestampFilterStorage::Set(set) => set.contains(&ts),
+            TimestampFilterStorage::List(list) => list.contains(&ts),
+        }
     }
 }
