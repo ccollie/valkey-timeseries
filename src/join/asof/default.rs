@@ -1,4 +1,3 @@
-use crate::common::Sample;
 // Copyright (c) 2020 Ritchie Vink
 // Some portions Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 //
@@ -24,6 +23,7 @@ use super::{
     AsofJoinBackwardState, AsofJoinForwardState, AsofJoinNearestState, AsofJoinState,
     AsofJoinStrategy, IdxSize,
 };
+use crate::common::Sample;
 
 fn join_asof_impl<S, F>(
     left: &[Sample],
@@ -173,6 +173,42 @@ mod test {
         assert_eq!(result[2].1.timestamp, 25);
         assert_eq!(result[3].0.timestamp, 40);
         assert_eq!(result[3].1.timestamp, 35);
+    }
+
+    #[test]
+    fn test_join_asof_reverse_with_tolerance() {
+        let left = vec![
+            Sample::new(1000, 0.),
+            Sample::new(2000, 10.),
+            Sample::new(3000, 20.),
+            Sample::new(4000, 30.0),
+            Sample::new(5000, 40.0),
+            Sample::new(6000, 50.),
+            Sample::new(7000, 60.),
+            Sample::new(8000, 70.),
+            Sample::new(9000, 80.),
+            Sample::new(10000, 90.),
+        ];
+
+        let right = vec![
+            Sample::new(1800, 100.0),
+            Sample::new(2800, 200.0),
+            Sample::new(3800, 300.0),
+            Sample::new(4800, 400.0),
+        ];
+
+        let tolerance = Some(500);
+        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, tolerance, true);
+
+        assert!(result.len() == 4);
+        assert_eq!(result[0].0.timestamp, 2000);
+        assert_eq!(result[0].1.timestamp, 1800);
+        assert_eq!(result[1].0.timestamp, 3000);
+        assert_eq!(result[1].1.timestamp, 2800);
+        assert_eq!(result[2].0.timestamp, 4000);
+        assert_eq!(result[2].1.timestamp, 3800);
+        assert_eq!(result[3].0.timestamp, 5000);
+        assert_eq!(result[3].1.timestamp, 4800);
     }
 
     #[test]
