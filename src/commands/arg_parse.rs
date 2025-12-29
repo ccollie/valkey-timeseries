@@ -810,7 +810,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
 }
 
 pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 11] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 12] = [
         CommandArgToken::Align,
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
