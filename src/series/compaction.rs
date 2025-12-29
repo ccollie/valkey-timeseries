@@ -719,10 +719,7 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
         // No source series or it doesn't exist
         return None;
     };
-    if parent.is_empty() {
-        // No samples in the source series
-        return None;
-    }
+
     let rule = parent.get_rule_by_dest_id(series.id)?;
     let start = rule.bucket_start?;
 

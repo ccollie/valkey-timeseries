@@ -739,13 +739,14 @@ fn parse_align_for_aggregation(args: &mut CommandArgIterator) -> ValkeyResult<Ag
 }
 
 pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeOptions> {
-    const RANGE_OPTION_ARGS: [CommandArgToken; 6] = [
+    const RANGE_OPTION_ARGS: [CommandArgToken; 7] = [
         CommandArgToken::Align,
         CommandArgToken::Aggregation,
         CommandArgToken::Count,
         CommandArgToken::BucketTimestamp,
         CommandArgToken::FilterByTs,
         CommandArgToken::FilterByValue,
+        CommandArgToken::Latest,
     ];
 
     let date_range = parse_timestamp_range(args)?;
@@ -772,6 +773,9 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
             }
             CommandArgToken::FilterByTs => {
                 options.timestamp_filter = Some(parse_timestamp_filter(args, &RANGE_OPTION_ARGS)?);
+            }
+            CommandArgToken::Latest => {
+                options.latest = true;
             }
             _ => {
                 return if token == CommandArgToken::Invalid {
@@ -814,6 +818,7 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
         CommandArgToken::Filter,
         CommandArgToken::FilterByTs,
         CommandArgToken::FilterByValue,
+        CommandArgToken::Latest,
         CommandArgToken::GroupBy,
         CommandArgToken::Reduce,
         CommandArgToken::SelectedLabels,
@@ -854,6 +859,9 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
             }
             CommandArgToken::GroupBy => {
                 options.grouping = Some(parse_grouping_params(args)?);
+            }
+            CommandArgToken::Latest => {
+                options.range.latest = true;
             }
             CommandArgToken::SelectedLabels => {
                 options.selected_labels = parse_label_list(args, &RANGE_OPTION_ARGS)?;

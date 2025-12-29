@@ -31,6 +31,10 @@ impl<'a> TimeSeriesRangeIterator<'a> {
             end_ts = start_ts.max(end_ts);
         }
 
+        // remove mutability
+        let start_ts = start_ts;
+        let end_ts = end_ts;
+
         let size_hint = (0usize, options.count);
 
         // Determine whether we need to fetch the latest compaction sample.
@@ -51,7 +55,6 @@ impl<'a> TimeSeriesRangeIterator<'a> {
 
         if needs_latest {
             let context = ctx.expect("Context is required for LATEST option");
-            let latest_iter = CompactionLatestSampleIterator::new(context, series);
             let base_iter = SeriesSampleIterator::from_range_options(
                 series,
                 options,
@@ -59,18 +62,15 @@ impl<'a> TimeSeriesRangeIterator<'a> {
                 should_reverse_iter,
             );
 
-            let inner = if is_reverse {
-                let chained = latest_iter.chain(base_iter);
-                create_sample_iterator_adapter(chained, options, &None, is_reverse)
-            } else {
-                let chained = base_iter.chain(latest_iter);
-                create_sample_iterator_adapter(chained, options, &None, is_reverse)
-            };
+            let latest_iter = CompactionLatestSampleIterator::new(context, series)
+                .filter(move |sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts);
+            let chained = base_iter.chain(latest_iter);
+            let inner = create_sample_iterator_adapter(chained, options, &None, is_reverse);
 
             return Self { inner, size_hint };
         }
 
-        // If no LATEST handling is required, prefer the specialized timestamp filter iterator.
+        // If no LATEST handling is required and we have a timestamp filter, prefer the specialized timestamp filter iterator.
         if let Some(ts_filter) = options.timestamp_filter.as_ref() {
             let base_iter = TimestampFilterIterator::new(series, ts_filter, should_reverse_iter);
             let mut opts = options.clone();
@@ -80,6 +80,7 @@ impl<'a> TimeSeriesRangeIterator<'a> {
             return Self { inner, size_hint };
         }
 
+        // No special handling required, use the standard sample iterator.
         let base_iter =
             SeriesSampleIterator::from_range_options(series, options, true, should_reverse_iter);
 
@@ -315,6 +316,7 @@ mod tests {
         // With bucket duration of 2000ms, we should have fewer samples than the original
         assert!(samples.len() < 10);
     }
+
 
     #[test]
     fn test_empty_series() {

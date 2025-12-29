@@ -4,13 +4,13 @@ use crate::error_consts;
 use crate::iterators::{MultiSeriesSampleIter, TimeSeriesRangeIterator};
 use crate::iterators::{ReduceIterator, create_sample_iterator_adapter};
 use crate::labels::Label;
-use crate::series::TimeSeries;
 use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
     MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,
 };
+use crate::series::{TimeSeries, get_latest_compaction_sample};
 use ahash::AHashMap;
 use logger_rust::log_debug;
 use orx_parallel::{IntoParIter, IterIntoParIter, ParIter};
@@ -18,6 +18,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 struct MRangeSeriesMeta<'a> {
     series: &'a TimeSeries,
+    latest: Option<Sample>,
     source_key: String,
     group_label_value: Option<String>,
 }
@@ -41,10 +42,36 @@ pub fn process_mrange_query(
             series: guard,
             source_key: guard.get_key().to_string(),
             group_label_value: None,
+            latest: get_latest(&options.range, ctx, guard),
         })
         .collect();
 
     Ok(process_mrange(Some(ctx), series_metas, options, clustered))
+}
+
+fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Option<Sample> {
+    if !options.latest || !series.is_compaction() {
+        return None;
+    }
+    get_latest_compaction_sample(ctx, series)
+}
+
+fn chain_latest_sample<'a, I: Iterator<Item = Sample> + 'a>(
+    latest_sample: Option<Sample>,
+    base_iter: I,
+    is_reverse: bool,
+) -> Box<dyn Iterator<Item = Sample> + 'a> {
+    if let Some(latest_sample) = latest_sample {
+        if is_reverse {
+            let chained = std::iter::once(latest_sample).chain(base_iter);
+            Box::new(chained)
+        } else {
+            let chained = base_iter.chain(std::iter::once(latest_sample));
+            Box::new(chained)
+        }
+    } else {
+        Box::new(base_iter)
+    }
 }
 
 fn process_mrange(
@@ -109,11 +136,21 @@ fn handle_basic(
         clustered: bool,
     ) -> MRangeSeriesResult {
         let range = &options.range;
-        let iter = TimeSeriesRangeIterator::new(ctx, meta.series, range);
+        let iter = TimeSeriesRangeIterator::new(ctx, meta.series, range, options.is_reverse);
         let data = if clustered {
             let mut chunk = GorillaChunk::with_max_size(16 * 1024); // 16KB - todo: make configurable?
+            if let Some(latest_sample) = meta.latest
+                && options.is_reverse
+            {
+                let _ = chunk.add_sample(&latest_sample);
+            }
             for sample in iter {
                 let _ = chunk.add_sample(&sample);
+            }
+            if let Some(latest_sample) = meta.latest
+                && !options.is_reverse
+            {
+                let _ = chunk.add_sample(&latest_sample);
             }
             TimeSeriesChunk::Gorilla(chunk)
         } else {
