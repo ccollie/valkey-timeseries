@@ -258,9 +258,12 @@ fn get_grouped_samples(
         series_metas.len()
     );
 
+    // todo(perf): with sufficient memory, we could parallel load all samples into memory first,
+    // and construct the MultiSeriesSampleIter from those. In low memory, we could use the code
+    // below which iterates sequentially
     let iterators = series_metas
         .iter()
-        .map(|meta| TimeSeriesRangeIterator::new(ctx, meta.series, &range))
+        .map(|meta| TimeSeriesRangeIterator::new(ctx, meta.series, &range, false))
         .collect::<Vec<_>>();
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);
@@ -405,5 +408,10 @@ pub fn create_mrange_iterator_adapter<'a>(
     base_iter: impl Iterator<Item = Sample> + 'a,
     options: &MRangeOptions,
 ) -> Box<dyn Iterator<Item = Sample> + 'a> {
-    create_sample_iterator_adapter(base_iter, &options.range, &options.grouping)
+    create_sample_iterator_adapter(
+        base_iter,
+        &options.range,
+        &options.grouping,
+        options.is_reverse,
+    )
 }
