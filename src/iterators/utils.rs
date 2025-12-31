@@ -1,7 +1,8 @@
 use crate::aggregators::AggregateIterator;
 use crate::common::{Sample, Timestamp};
-use crate::iterators::ReduceIterator;
+use crate::iterators::{ReduceIterator, TimestampFilterIterator};
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
+use crate::series::{SeriesSampleIterator, TimeSeries};
 use smallvec::SmallVec;
 use std::collections::BTreeSet;
 
@@ -30,6 +31,75 @@ macro_rules! apply_iter_limit {
     };
 }
 
+/// Create an optimized range iterator for the given series and options
+pub fn create_range_iterator<'a>(
+    series: &'a TimeSeries,
+    options: &RangeOptions,
+    grouping: &Option<RangeGroupingOptions>,
+    latest_sample: Option<Sample>,
+    is_reverse: bool,
+) -> Box<dyn Iterator<Item = Sample> + 'a> {
+    let has_aggregation = options.aggregation.is_some();
+
+    // Aggregation requires ascending input order from base iterators
+    // Without aggregation, base iterators can directly provide the requested order
+    let should_reverse_iter = !has_aggregation && is_reverse;
+
+    // Apply reversal after aggregation if needed
+    let mut should_reverse_aggr = has_aggregation && is_reverse;
+
+    if should_reverse_aggr && should_reverse_iter && !has_aggregation {
+        should_reverse_aggr = false;
+    }
+
+    if let Some(ts_filter) = options.timestamp_filter.as_ref() {
+        let base_iter = TimestampFilterIterator::new(series, ts_filter, should_reverse_iter);
+        // Remove the timestamp filter from options to avoid double filtering
+        let opts = RangeOptions {
+            date_range: options.date_range,
+            count: options.count,
+            latest: false,
+            aggregation: options.aggregation,
+            value_filter: options.value_filter,
+            timestamp_filter: None,
+        };
+        if let Some(sample) = latest_sample {
+            let latest_iter = std::iter::once(sample);
+            return if is_reverse && options.aggregation.is_none() {
+                // Only chain latest first for non-aggregation reverse queries
+                let chained = latest_iter.chain(base_iter);
+                create_sample_iterator_adapter(chained, &opts, grouping, should_reverse_aggr)
+            } else {
+                let chained = base_iter.chain(latest_iter);
+                create_sample_iterator_adapter(chained, &opts, grouping, should_reverse_aggr)
+            };
+        }
+        return create_sample_iterator_adapter(base_iter, &opts, grouping, should_reverse_aggr);
+    }
+
+    // No special handling required, use the standard sample iterator.
+    let base_iter = SeriesSampleIterator::from_range_options(series, options, should_reverse_iter);
+
+    // duplication is necessary to avoid boxing
+    if let Some(sample) = latest_sample {
+        let latest_iter = std::iter::once(sample);
+        return if is_reverse && options.aggregation.is_none() {
+            // Only chain latest first for non-aggregation reverse queries
+            let chained = latest_iter.chain(base_iter);
+            create_sample_iterator_adapter(chained, options, grouping, should_reverse_aggr)
+        } else {
+            let chained = base_iter.chain(latest_iter);
+            create_sample_iterator_adapter(chained, options, grouping, should_reverse_aggr)
+        };
+    }
+
+    create_sample_iterator_adapter(base_iter, options, grouping, should_reverse_aggr)
+}
+
+/// Create a sample iterator adapter that applies filtering, aggregation, grouping, and limits
+/// based on the provided options. The resulting iterator yields samples according to the specified
+/// criteria.
+/// Boxing is delayed to the last possible moment to allow for compiler optimizations.
 pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
     base_iter: T,
     options: &RangeOptions,
@@ -49,7 +119,7 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
         }
     }
 
-    fn convert_inner<'a>(
+    fn create_inner<'a>(
         base_iter: impl Iterator<Item = Sample> + 'a,
         options: &RangeOptions,
         grouping: &Option<RangeGroupingOptions>,
@@ -84,19 +154,19 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
             let filtered = base_iter.filter(move |sample| {
                 timestamps.contains(sample.timestamp) && filter.is_match(sample.value)
             });
-            convert_inner(filtered, options, grouping, is_reverse)
+            create_inner(filtered, options, grouping, is_reverse)
         }
         (Some(ts_filter), None) => {
             let timestamps = TimestampFilter::new(ts_filter);
             let filtered = base_iter.filter(move |sample| timestamps.contains(sample.timestamp));
-            convert_inner(filtered, options, grouping, is_reverse)
+            create_inner(filtered, options, grouping, is_reverse)
         }
         (None, Some(val_filter)) => {
             let filter = *val_filter;
             let filtered = base_iter.filter(move |sample| filter.is_match(sample.value));
-            convert_inner(filtered, options, grouping, is_reverse)
+            create_inner(filtered, options, grouping, is_reverse)
         }
-        (None, None) => convert_inner(base_iter, options, grouping, is_reverse),
+        (None, None) => create_inner(base_iter, options, grouping, is_reverse),
     }
 }
 
@@ -139,7 +209,7 @@ impl<I: Iterator<Item = Sample>> Iterator for ReverseSampleIter<I> {
     }
 }
 
-// this may be overkill but we'll try optimizing memory for a
+// this may be overkill, but we'll try optimizing memory for a
 // very common case of a very small number of timestamps
 enum TimestampFilterStorage {
     Set(BTreeSet<Timestamp>),

@@ -1,7 +1,7 @@
 use crate::common::Sample;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::error_consts;
-use crate::iterators::{MultiSeriesSampleIter, TimeSeriesRangeIterator};
+use crate::iterators::{MultiSeriesSampleIter, create_range_iterator};
 use crate::iterators::{ReduceIterator, create_sample_iterator_adapter};
 use crate::labels::Label;
 use crate::series::acl::check_metadata_permissions;
@@ -18,8 +18,8 @@ use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 struct MRangeSeriesMeta<'a> {
     series: &'a TimeSeries,
-    latest: Option<Sample>,
     source_key: String,
+    latest: Option<Sample>,
     group_label_value: Option<String>,
 }
 
@@ -42,40 +42,20 @@ pub fn process_mrange_query(
             series: guard,
             source_key: guard.get_key().to_string(),
             group_label_value: None,
-            latest: get_latest(&options.range, ctx, guard),
+            latest: {
+                if options.range.latest {
+                    get_latest_compaction_sample(ctx, guard)
+                } else {
+                    None
+                }
+            },
         })
         .collect();
 
-    Ok(process_mrange(Some(ctx), series_metas, options, clustered))
-}
-
-fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Option<Sample> {
-    if !options.latest || !series.is_compaction() {
-        return None;
-    }
-    get_latest_compaction_sample(ctx, series)
-}
-
-fn chain_latest_sample<'a, I: Iterator<Item = Sample> + 'a>(
-    latest_sample: Option<Sample>,
-    base_iter: I,
-    is_reverse: bool,
-) -> Box<dyn Iterator<Item = Sample> + 'a> {
-    if let Some(latest_sample) = latest_sample {
-        if is_reverse {
-            let chained = std::iter::once(latest_sample).chain(base_iter);
-            Box::new(chained)
-        } else {
-            let chained = base_iter.chain(std::iter::once(latest_sample));
-            Box::new(chained)
-        }
-    } else {
-        Box::new(base_iter)
-    }
+    Ok(process_mrange(series_metas, options, clustered))
 }
 
 fn process_mrange(
-    ctx: Option<&Context>,
     metas: Vec<MRangeSeriesMeta>,
     options: MRangeOptions,
     is_clustered: bool,
@@ -96,23 +76,55 @@ fn process_mrange(
             options.grouping = None;
         }
     }
+    let is_grouped = options.grouping.is_some();
+
     // if we're clustered, don't group or aggregate here - do it in the caller node
     let mut items = if is_clustered {
         options.range.aggregation = None;
         // also disable count - it will be applied in the caller node
         options.range.count = None;
-        return handle_basic(ctx, metas, &options, is_clustered);
-    } else if options.grouping.is_some() {
-        handle_grouping(ctx, metas, &options)
+        return handle_non_grouped(metas, options, is_clustered);
+    } else if is_grouped {
+        handle_grouping(metas, options)
     } else {
-        handle_basic(ctx, metas, &options, is_clustered)
+        handle_non_grouped(metas, options, is_clustered)
     };
 
     if !is_clustered {
-        sort_mrange_results(&mut items, options.grouping.is_some());
+        sort_mrange_results(&mut items, is_grouped);
     }
 
     items
+}
+
+fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Option<Sample> {
+    if !options.latest || !series.is_compaction() {
+        return None;
+    }
+    get_latest_compaction_sample(ctx, series).filter(|s| {
+        let (start_ts, end_ts) = options.get_timestamp_range();
+        if s.timestamp >= start_ts && s.timestamp <= end_ts {
+            return options
+                .timestamp_filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(&s.timestamp));
+        }
+        false
+    })
+}
+
+fn create_iter<'a>(
+    series: &'a TimeSeries,
+    options: &MRangeOptions,
+    latest: Option<Sample>,
+) -> Box<dyn Iterator<Item = Sample> + 'a> {
+    create_range_iterator(
+        series,
+        &options.range,
+        &options.grouping,
+        latest,
+        options.is_reverse,
+    )
 }
 
 pub(crate) fn sort_mrange_results(results: &mut [MRangeSeriesResult], is_grouped: bool) {
@@ -123,38 +135,25 @@ pub(crate) fn sort_mrange_results(results: &mut [MRangeSeriesResult], is_grouped
     }
 }
 
-fn handle_basic(
-    ctx: Option<&Context>,
+fn handle_non_grouped(
     metas: Vec<MRangeSeriesMeta>,
-    options: &MRangeOptions,
+    options: MRangeOptions,
     clustered: bool,
 ) -> Vec<MRangeSeriesResult> {
-    fn process_series(
-        ctx: Option<&Context>,
+    fn process_series<I: Iterator<Item = Sample>>(
+        iter: I,
         meta: MRangeSeriesMeta,
         options: &MRangeOptions,
         clustered: bool,
     ) -> MRangeSeriesResult {
-        let range = &options.range;
-        let iter = TimeSeriesRangeIterator::new(ctx, meta.series, range, options.is_reverse);
         let data = if clustered {
             let mut chunk = GorillaChunk::with_max_size(16 * 1024); // 16KB - todo: make configurable?
-            if let Some(latest_sample) = meta.latest
-                && options.is_reverse
-            {
-                let _ = chunk.add_sample(&latest_sample);
-            }
             for sample in iter {
                 let _ = chunk.add_sample(&sample);
             }
-            if let Some(latest_sample) = meta.latest
-                && !options.is_reverse
-            {
-                let _ = chunk.add_sample(&latest_sample);
-            }
             TimeSeriesChunk::Gorilla(chunk)
         } else {
-            let samples = collect_samples(iter, options.is_reverse, None);
+            let samples = iter.collect::<Vec<_>>();
             let chunk = UncompressedChunk::from_vec(samples);
             TimeSeriesChunk::Uncompressed(chunk)
         };
@@ -169,33 +168,30 @@ fn handle_basic(
         }
     }
 
-    if options.range.latest {
-        // when LATEST is specified, we cannot use parallel processing since Context is not Send
-        metas
-            .into_iter()
-            .map(|meta| process_series(ctx, meta, options, clustered))
-            .collect()
-    } else {
-        metas
-            .into_par()
-            .map(|meta| process_series(None, meta, options, clustered))
-            .collect()
-    }
+    metas
+        .into_par()
+        .map(|meta| {
+            let iter = create_iter(meta.series, &options, meta.latest);
+            process_series(iter, meta, &options, clustered)
+        })
+        .collect()
 }
 
 fn handle_grouping(
-    ctx: Option<&Context>,
     metas: Vec<MRangeSeriesMeta>,
-    options: &MRangeOptions,
+    options: MRangeOptions,
 ) -> Vec<MRangeSeriesResult> {
-    fn process_group<'a>(
-        ctx: Option<&Context>,
-        grouping: &RangeGroupingOptions,
+    fn process_group(
         options: &MRangeOptions,
         label_value: String,
-        group_data: GroupedSeriesData<'a>,
+        group_data: GroupedSeriesData,
+        count: Option<usize>,
     ) -> MRangeSeriesResult {
-        let data = get_grouped_samples(ctx, &group_data.series, options, grouping);
+        let grouping = options
+            .grouping
+            .as_ref()
+            .expect("Grouping options should be present");
+        let data = get_grouped_samples(&group_data.series, options, grouping, count);
         let labels = group_data.labels;
         let key = format!("{}={}", grouping.group_label, label_value);
         let chunk = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(data));
@@ -217,41 +213,27 @@ fn handle_grouping(
         return vec![];
     }
 
-    // if LATEST is specified, we run sequentially since we have a live Context which is not Send + Sync
-    // Fortunately, LATEST queries are expected to be fast anyway
-    if options.range.latest {
-        return grouped_series_map
-            .into_iter()
-            .map(|(label_value, group_data)| {
-                process_group(ctx, grouping, options, label_value, group_data)
-            })
-            .collect::<Vec<_>>();
-    }
+    let mut options = options;
+    let count = options.range.count;
+    options.range.count = None;
 
     grouped_series_map
         .into_iter()
         .iter_into_par()
-        .map(|(label_value, group_data)| {
-            process_group(None, grouping, options, label_value, group_data)
-        })
+        .map(|(label_value, group_data)| process_group(&options, label_value, group_data, count))
         .collect::<Vec<_>>()
 }
 
 fn get_grouped_samples(
-    ctx: Option<&Context>,
     series_metas: &[MRangeSeriesMeta],
     options: &MRangeOptions,
     grouping_options: &RangeGroupingOptions,
+    count: Option<usize>,
 ) -> Vec<Sample> {
     // This function gets the raw samples from all series in the group, then applies the grouping
     // reducer across the samples.
     // todo: choose approach based on data size and available memory?
     let is_reverse = options.is_reverse;
-    let count = options.range.count;
-    let range = RangeOptions {
-        count: None,
-        ..options.range.clone()
-    };
 
     log_debug!(
         "get_grouped_samples: collecting samples from {} series with is_reverse={is_reverse} count={count:?}",
@@ -263,7 +245,7 @@ fn get_grouped_samples(
     // below which iterates sequentially
     let iterators = series_metas
         .iter()
-        .map(|meta| TimeSeriesRangeIterator::new(ctx, meta.series, &range, false))
+        .map(|meta| create_iter(meta.series, options, meta.latest))
         .collect::<Vec<_>>();
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);
@@ -278,21 +260,16 @@ pub(crate) fn collect_samples<I: Iterator<Item = Sample>>(
     count: Option<usize>,
 ) -> Vec<Sample> {
     if let Some(count) = count {
-        log_debug!(
-            "collect_samples: collecting samples with is_reverse={is_reverse} count={count}"
-        );
         let mut samples = iter.take(count).collect::<Vec<_>>();
         if is_reverse {
             samples.reverse();
         }
-        log_debug!("collect_samples: collected {samples:?}");
         samples
     } else {
         let mut samples = iter.collect::<Vec<_>>();
         if is_reverse {
             samples.reverse();
         }
-        log_debug!("collect_samples: collected {samples:?}");
         samples
     }
 }

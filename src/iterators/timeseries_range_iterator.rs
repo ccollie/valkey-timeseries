@@ -1,7 +1,7 @@
 use crate::common::Sample;
-use crate::iterators::{TimestampFilterIterator, create_sample_iterator_adapter};
+use crate::iterators::create_range_iterator;
 use crate::series::request_types::RangeOptions;
-use crate::series::{SeriesSampleIterator, TimeSeries, get_latest_compaction_sample};
+use crate::series::{TimeSeries, get_latest_compaction_sample};
 use valkey_module::Context;
 
 /// An iterator over a TimeSeries based on RangeOptions.
@@ -23,68 +23,48 @@ impl<'a> TimeSeriesRangeIterator<'a> {
         options: &RangeOptions,
         is_reverse: bool,
     ) -> Self {
-        let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
+        let mut size_hint = (0usize, options.count);
 
-        if !series.retention.is_zero() {
-            let min_ts = series.get_min_timestamp();
-            start_ts = start_ts.max(min_ts);
-            end_ts = start_ts.max(end_ts);
-        }
-
-        // remove mutability
-        let start_ts = start_ts;
-        let end_ts = end_ts;
-
-        let size_hint = (0usize, options.count);
+        let mut latest: Option<Sample> = None;
 
         // Determine whether we need to fetch the latest compaction sample.
-        let needs_latest =
-            options.latest && series.is_compaction() && end_ts > series.last_timestamp();
-
-        let should_reverse_iter = if options.aggregation.is_some() {
-            false
-        } else {
-            is_reverse
-        };
-
-        let should_reverse_aggr = if options.aggregation.is_some() {
-            is_reverse
-        } else {
-            false
-        };
-
+        let needs_latest = options.latest && series.is_compaction();
         if needs_latest {
-            let context = ctx.expect("Context is required for LATEST option");
-            let base_iter = SeriesSampleIterator::from_range_options(
-                series,
-                options,
-                true,
-                should_reverse_iter,
-            );
+            let context = ctx.expect("Context is required when LATEST option is used");
+            let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
 
-            let latest_iter = CompactionLatestSampleIterator::new(context, series)
-                .filter(move |sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts);
-            let chained = base_iter.chain(latest_iter);
-            let inner = create_sample_iterator_adapter(chained, options, &None, is_reverse);
-
-            return Self { inner, size_hint };
+            if !series.retention.is_zero() {
+                let min_ts = series.get_min_timestamp();
+                start_ts = start_ts.max(min_ts);
+                end_ts = start_ts.max(end_ts);
+            }
+            // a partial compaction sample, if it exists, is beyond the last stored sample
+            if end_ts > series.last_timestamp() {
+                latest = get_latest_compaction_sample(context, series)
+                    .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
+                    .filter(|sample| {
+                        // validate timestamp filter
+                        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
+                            if !ts_filter.contains(&sample.timestamp) {
+                                return false;
+                            }
+                        }
+                        true
+                    });
+            }
         }
 
-        // If no LATEST handling is required and we have a timestamp filter, prefer the specialized timestamp filter iterator.
         if let Some(ts_filter) = options.timestamp_filter.as_ref() {
-            let base_iter = TimestampFilterIterator::new(series, ts_filter, should_reverse_iter);
-            let mut opts = options.clone();
-            opts.timestamp_filter = None;
-            let inner =
-                create_sample_iterator_adapter(base_iter, &opts, &None, should_reverse_aggr);
-            return Self { inner, size_hint };
+            let max_elems = ts_filter.len() + { if latest.is_some() { 1 } else { 0 } };
+            if let Some(count) = options.count {
+                size_hint = (0, Some(count.min(max_elems)));
+            } else {
+                size_hint = (0, Some(max_elems));
+            }
         }
 
-        // No special handling required, use the standard sample iterator.
-        let base_iter =
-            SeriesSampleIterator::from_range_options(series, options, true, should_reverse_iter);
+        let inner = create_range_iterator(series, options, &None, latest, is_reverse);
 
-        let inner = create_sample_iterator_adapter(base_iter, options, &None, should_reverse_aggr);
         Self { inner, size_hint }
     }
 }
@@ -316,7 +296,6 @@ mod tests {
         // With bucket duration of 2000ms, we should have fewer samples than the original
         assert!(samples.len() < 10);
     }
-
 
     #[test]
     fn test_empty_series() {

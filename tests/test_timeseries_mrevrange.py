@@ -128,6 +128,11 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.MREVRANGE', self.start_ts, self.start_ts + 100,
                                              'COUNT', 5, 'FILTER', 'sensor=temp')
 
+        first = self.client.execute_command('TS.RANGE', "ts1", self.start_ts, self.start_ts + 100)
+        print("ts1 RANGE:", first)
+        second = self.client.execute_command('TS.RANGE', "ts2", self.start_ts, self.start_ts + 100)
+        print("ts2 RANGE:", second)
+        print("Result:", result)
         # Should return 2 time series with 5 samples each
         assert len(result) == 2
         for series in result:

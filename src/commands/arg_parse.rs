@@ -28,7 +28,7 @@ use std::vec::IntoIter;
 use strum_macros::EnumIter;
 use valkey_module::{NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
-const MAX_TS_VALUES_FILTER: usize = 128;
+pub const MAX_TS_VALUES_FILTER: usize = 128;
 const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
 const CMD_ARG_ALIGN: &str = "ALIGN";
 const CMD_ARG_ALLOW_EXACT_MATCH: &str = "ALLOW_EXACT_MATCH";
@@ -807,6 +807,12 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
         }
     }
 
+    // filter out timestamp filters that are outside the range
+    if let Some(ts_filter) = options.timestamp_filter.as_mut() {
+        let (start_ts, end_ts) = options.date_range.get_timestamps(None);
+        ts_filter.retain(|&ts| ts >= start_ts && ts <= end_ts);
+    }
+
     Ok(options)
 }
 
@@ -876,6 +882,12 @@ pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRang
 
     if options.filters.is_empty() {
         return Err(ValkeyError::Str("TSDB: no FILTER given"));
+    }
+
+    // filter out timestamp filters that are outside the range
+    if let Some(ts_filter) = options.range.timestamp_filter.as_mut() {
+        let (start_ts, end_ts) = options.range.date_range.get_timestamps(None);
+        ts_filter.retain(|&ts| ts >= start_ts && ts <= end_ts);
     }
 
     if !options.selected_labels.is_empty() && options.with_labels {

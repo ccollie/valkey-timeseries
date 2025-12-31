@@ -6,11 +6,27 @@ use smallvec::SmallVec;
 use std::borrow::Cow;
 
 /// Specialized iterator to handle timestamp filtering for a time series. For each timestamp it
-/// returns `Some(sample)` if an exact timestamp match exists in the series,
-/// otherwise `None`. Timestamps are iterated in the order determined by `is_reverse`.
+/// returns a `sample` if a sample with an exact timestamp match exists in the series,
+/// Timestamps are iterated in the order determined by `is_reverse`.
 ///
-/// This iterator is optimized for sparse timestamp lookups over a time series.
-/// It processes only relevant chunks and reuses chunk lookup state to avoid redundant searches across chunks.
+/// This iterator is optimized for sparse timestamp lookups over a time series. It processes only relevant
+/// chunks and reuses chunk lookup state to avoid redundant searches across chunks.
+///
+/// ### Example
+/// Imagine we have a time series with 12 chunks, each with 500 samples (600 in total).
+/// If we want to filter by the following timestamps:
+///
+/// `[150, 250, 750, 1250, 1750, 2250, 2750, 3500, 4500, 5500]`
+///
+/// The iterator will efficiently seek to the relevant chunks for each timestamp:
+/// - Timestamps 150 and 250 are found in chunk 1.
+/// - Timestamp 750 is found in chunk 2.
+/// - Timestamps 1250, 1750, 2250, and 2750 are found in chunks 3, 4, 5, and 6 respectively.
+/// - Timestamp 3500 is found in chunk 8.
+/// - Timestamps 4500 and 5500 are found in chunks 10 and 11 respectively.
+///
+/// This way, the iterator avoids unnecessary scans of chunks that do not contain any of the requested timestamps,
+/// making it efficient for sparse lookups.
 pub struct TimestampFilterIterator<'a> {
     series: &'a TimeSeries,
     chunk: Option<&'a TimeSeriesChunk>,
@@ -289,6 +305,14 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].timestamp, 1);
         assert_eq!(out[1].timestamp, 6);
+
+        // ensure that we can find consecutive timestamps
+        let timestamps = &[2, 3];
+        let it = TimestampFilterIterator::new(&series, timestamps, false);
+        let out: Vec<Sample> = it.collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].timestamp, 2);
+        assert_eq!(out[1].timestamp, 3);
     }
 
     #[test]

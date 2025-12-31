@@ -25,15 +25,10 @@ impl<'a> SeriesSampleIterator<'a> {
     pub fn from_range_options(
         series: &'a TimeSeries,
         options: &RangeOptions,
-        check_retention: bool,
         is_reverse: bool,
     ) -> Self {
         let (start, end) = options.get_timestamp_range();
-        let start = if check_retention {
-            start.max(series.get_min_timestamp())
-        } else {
-            start
-        };
+        let start = start.max(series.get_min_timestamp());
         Self::new(series, start, end, is_reverse)
     }
 
@@ -207,7 +202,7 @@ mod tests {
         let series = build_series(&data);
 
         let opts = create_range(20, 40);
-        let it = SeriesSampleIterator::from_range_options(&series, &opts, false, false);
+        let it = SeriesSampleIterator::from_range_options(&series, &opts, false);
 
         let got: Vec<Sample> = it.collect();
         let expected: Vec<Sample> = data
@@ -228,7 +223,7 @@ mod tests {
         let series = build_series(&data);
 
         let opts = create_range(0, 1000);
-        let it = SeriesSampleIterator::from_range_options(&series, &opts, false, true);
+        let it = SeriesSampleIterator::from_range_options(&series, &opts, true);
 
         let got: Vec<Sample> = it.collect();
         let mut expected: Vec<Sample> = data
@@ -247,10 +242,10 @@ mod tests {
     fn empty_series_returns_no_samples() {
         let series = TimeSeries::new();
         let opts = create_range(0, 100);
-        let mut it = SeriesSampleIterator::from_range_options(&series, &opts, false, false);
+        let mut it = SeriesSampleIterator::from_range_options(&series, &opts, false);
         assert_eq!(it.next(), None);
 
-        let mut it_rev = SeriesSampleIterator::from_range_options(&series, &opts, false, true);
+        let mut it_rev = SeriesSampleIterator::from_range_options(&series, &opts, true);
         assert_eq!(it_rev.next(), None);
     }
 
@@ -262,7 +257,7 @@ mod tests {
         // Range starts before the first sample
         let opts = create_range(5, 25);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         let expected: Vec<Sample> = vec![
             Sample {
                 timestamp: 10,
@@ -283,7 +278,7 @@ mod tests {
 
         let opts = create_range(15, 35);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, true).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, true).collect();
         let expected: Vec<Sample> = vec![
             Sample {
                 timestamp: 30,
@@ -305,12 +300,12 @@ mod tests {
         // Range completely outside data
         let opts = create_range(50, 100);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         assert!(got.is_empty());
 
         // Reverse iteration with no matches
         let got_rev: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, true).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, true).collect();
         assert!(got_rev.is_empty());
     }
 
@@ -321,7 +316,7 @@ mod tests {
 
         let opts = create_range(10, 50);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         assert!(got.is_empty());
     }
 
@@ -332,7 +327,7 @@ mod tests {
 
         let opts = create_range(100, 200);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         assert!(got.is_empty());
     }
 
@@ -343,7 +338,7 @@ mod tests {
 
         let opts = create_range(20, 20);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         let expected = vec![Sample {
             timestamp: 20,
             value: 2.0,
@@ -358,7 +353,7 @@ mod tests {
 
         let opts = create_range(20, 20);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, true).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, true).collect();
         let expected = vec![Sample {
             timestamp: 20,
             value: 2.0,
@@ -373,7 +368,7 @@ mod tests {
 
         let opts = create_range(10, 30);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         let expected: Vec<Sample> = data
             .iter()
             .map(|&(ts, v)| Sample {
@@ -391,7 +386,7 @@ mod tests {
 
         let opts = create_range(10, 30);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, true).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, true).collect();
         let mut expected: Vec<Sample> = data
             .iter()
             .map(|&(ts, v)| Sample {
@@ -410,7 +405,7 @@ mod tests {
 
         let opts = create_range(2500, 7500);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
 
         let expected: Vec<Sample> = data
             .into_iter()
@@ -432,7 +427,7 @@ mod tests {
 
         let opts = create_range(2500, 7500);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, true).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, true).collect();
 
         let mut expected: Vec<Sample> = data
             .into_iter()
@@ -456,7 +451,7 @@ mod tests {
         // Request range 0-500, but retention should clip to min_timestamp
         let opts = create_range(0, 500);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, true, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
 
         // All samples should be returned since min_timestamp is 100
         let expected: Vec<Sample> = data
@@ -477,7 +472,7 @@ mod tests {
 
         let opts = create_range(15, 15);
         let got: Vec<Sample> =
-            SeriesSampleIterator::from_range_options(&series, &opts, false, false).collect();
+            SeriesSampleIterator::from_range_options(&series, &opts, false).collect();
         assert!(got.is_empty());
     }
 
