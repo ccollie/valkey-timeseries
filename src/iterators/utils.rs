@@ -46,11 +46,7 @@ pub fn create_range_iterator<'a>(
     let should_reverse_iter = !has_aggregation && is_reverse;
 
     // Apply reversal after aggregation if needed
-    let mut should_reverse_aggr = has_aggregation && is_reverse;
-
-    if should_reverse_aggr && should_reverse_iter && !has_aggregation {
-        should_reverse_aggr = false;
-    }
+    let should_reverse_aggr = has_aggregation && is_reverse;
 
     if let Some(ts_filter) = options.timestamp_filter.as_ref() {
         let base_iter = TimestampFilterIterator::new(series, ts_filter, should_reverse_iter);
