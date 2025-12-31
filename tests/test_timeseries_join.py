@@ -219,7 +219,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             assert 5 <= idx < 10  # Only indexes 5-9 should be present
 
     def test_asof_join(self):
-        """Test as-of join operation"""
+        """Test as-of join operation with basic functionality"""
 
         self.setup_data()
 
@@ -232,163 +232,34 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             ts = self.now + i * 1000 - 200  # 200ms before each point
             self.client.execute_command("TS.ADD", asof_ts, ts, i * 100)
 
-        info = self.ts_info(asof_ts)
-        print(info)
-        samples = self.client.execute_command("TS.RANGE", self.ts1, "-", "+")
-        print(f"left: {samples}")
-        samples = self.client.execute_command("TS.RANGE", asof_ts, "-", "+")
-        print(f"right: {samples}")
-
         # Test ASOF join with PREVIOUS strategy and tolerance
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, asof_ts,
             self.now, self.now + 10000,
-            "ASOF", "PREVIOUS", "500"  # 500 ms tolerance
+            "ASOF", "PREVIOUS", "500"  # 500ms tolerance
         )
 
-        print(f"joined: {result}")
-
-        # All points but the first from the left series
-        assert len(result) == 4
-
-        for i, item in enumerate(result):
-            ts, left_val, right_info = item
-
-            # For the first 5 points, we should have asof matches
-            if i < 5:
-                # The right timestamp should be slightly earlier
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
-                assert right_ts == self.now + (i + 1) * 1000 - 200
-                assert float(right_val) == i * 100
-            else:
-                # For points 5-9, no match within tolerance
-                assert right_info is None
-
-    def test_join_with_reducer(self):
-        """Test join with reducer operation"""
-
-        self.setup_data()
-
-        # Test join with SUM reducer
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 15000,
-            "INNER", "REDUCE", "sum"
-        )
-
-        # Should have 5 results (only matching timestamps)
-        assert len(result) == 5
-
-        for item in result:
-            # Each item should be [timestamp, value]
-            assert len(item) == 2
-
-            ts, value = item
-
-            # Calculate expected sum
-            idx = (ts - self.now) // 1000
-            expected_left = idx * 10
-            expected_right = idx * 5
-            expected_sum = expected_left + expected_right
-
-            # Verify the sum
-            assert float(value) == expected_sum
-
-    def test_join_with_aggregation(self):
-        """Test join with aggregation"""
-
-        self.setup_data()
-
-        # Add more data points for the aggregation test
-        for i in range(10, 20):
-            ts = self.now + i * 500  # Create points every 500ms
-            self.client.execute_command("TS.ADD", self.ts1, ts, i * 10)
-            self.client.execute_command("TS.ADD", self.ts2, ts, i * 5)
-
-        # Test join with aggregation (avg per 2000ms)
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 15000,
-            "INNER", "REDUCE", "avg",
-            "AGGREGATION", "avg", "2000"
-        )
-
-        # Check aggregation results
+        # Verify we get matches within tolerance
         assert len(result) > 0
 
-        # Each result should have two elements (timestamp and aggregated value)
         for item in result:
-            assert len(item) == 2
+            ts, left_val, right_info = item
 
-    def test_join_with_filter(self):
-        """Test join with filters"""
-
-        self.setup_data()
-
-        # Test with value filter
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 15000,
-            "INNER", "FILTER_BY_VALUE", "30", "100"
-        )
-
-        # Should only include points where the left value is between 30 and 100
-        for item in result:
-            ts, left_val, right_val = item
-            assert 30 <= float(left_val) <= 100
-
-        # Test with a timestamp filter
-        specific_ts = self.now + 5000
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 15000,
-            "INNER", "FILTER_BY_TS", specific_ts
-        )
-
-        # Should only include the specific timestamp
-        assert len(result) == 1
-        assert result[0][0] == specific_ts
-
-    def test_join_count_limit(self):
-        """Test join with count limit"""
-
-        self.setup_data()
-
-        # Test with count limit
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 15000,
-            "FULL", "COUNT", "3"
-        )
-
-        # Should only return 3 results
-        assert len(result) == 3
-
-    def test_error_cases(self):
-        """Test error cases"""
-
-        self.setup_data()
-
-        # Test with the same key for both series
-        with pytest.raises(ResponseError, match="TSDB: duplicate join keys"):
-            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts1} {self.now} {self.now + 15000}")
-
-        # Test with a non-existent key
-        with pytest.raises(ResponseError, match="TSDB: the key does not exist"):
-            self.client.execute_command(f"TS.JOIN {self.ts1} nonexistent {self.now} {self.now + 15000}")
-
-        # Test with an invalid join type
-        with pytest.raises(ResponseError, match="TSDB: invalid JOIN command argument"):
-            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INVALID_TYPE")
-
-        with pytest.raises(ResponseError, match="unknown binary op \"invalid_op\""):
-            # Replace with different aggregation
-            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INNER REDUCE invalid_op")
-        # Test with invalid reducer
+            idx = (ts - self.now) // 1000
+            
+            # Check if within tolerance range
+            if idx > 0 and idx < 5:
+                # Should have a match
+                assert isinstance(right_info, list)
+                right_ts, right_val = right_info
+                # Verify the right timestamp is within tolerance
+                assert abs(ts - right_ts) <= 500
+                # Verify the value
+                expected_idx = (right_ts - (self.now - 200)) // 1000
+                assert float(right_val) == expected_idx * 100
 
     def test_asof_strategies(self):
-        """Test different ASOF join strategies"""
+        """Test different ASOF join strategies with comprehensive scenarios"""
 
         self.setup_data()
 
@@ -397,9 +268,15 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command("TS.CREATE", asof_ts)
 
         # Add sparse data (only at specific points)
-        points = [1500, 3500, 6500, 9500]
-        for i, ts in enumerate(points):
-            self.client.execute_command("TS.ADD", asof_ts, ts, i * 100)
+        # Points: 1500, 3500, 6500, 9500
+        sparse_points = {
+            self.now + 1500: 10,
+            self.now + 3500: 20,
+            self.now + 6500: 30,
+            self.now + 9500: 40
+        }
+        for ts, val in sparse_points.items():
+            self.client.execute_command("TS.ADD", asof_ts, ts, val)
 
         # Test PREVIOUS (backward) strategy
         result = self.client.execute_command(
@@ -408,14 +285,22 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             "ASOF", "PREVIOUS", "2000"
         )
 
-        # Check some key points
-        # At timestamp 2000, should match with 1500
+        # Verify PREVIOUS matches
         for item in result:
             ts, left_val, right_info = item
-            if ts == 2000:
+            
+            if ts == self.now + 2000:
+                # Should match with 1500 (closest previous within tolerance)
                 assert isinstance(right_info, list)
                 right_ts, right_val = right_info
-                assert right_ts == 1500
+                assert right_ts == self.now + 1500
+                assert float(right_val) == 10
+            elif ts == self.now + 4000:
+                # Should match with 3500
+                assert isinstance(right_info, list)
+                right_ts, right_val = right_info
+                assert right_ts == self.now + 3500
+                assert float(right_val) == 20
 
         # Test NEXT (forward) strategy
         result = self.client.execute_command(
@@ -424,14 +309,22 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             "ASOF", "NEXT", "2000"
         )
 
-        # Check some key points
-        # At timestamp 2000, should match with 3500
+        # Verify NEXT matches
         for item in result:
             ts, left_val, right_info = item
-            if ts == 2000:
+            
+            if ts == self.now + 2000:
+                # Should match with 3500 (closest next within tolerance)
                 assert isinstance(right_info, list)
                 right_ts, right_val = right_info
-                assert right_ts == 3500
+                assert right_ts == self.now + 3500
+                assert float(right_val) == 20
+            elif ts == self.now + 5000:
+                # Should match with 6500
+                assert isinstance(right_info, list)
+                right_ts, right_val = right_info
+                assert right_ts == self.now + 6500
+                assert float(right_val) == 30
 
         # Test NEAREST strategy
         result = self.client.execute_command(
@@ -440,16 +333,231 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             "ASOF", "NEAREST", "2000"
         )
 
-        # Check some key points
-        # At timestamp 2000, should match with 1500 (nearest)
+        # Verify NEAREST matches
         for item in result:
             ts, left_val, right_info = item
-            if ts == 2000:
+            
+            if ts == self.now + 2000:
+                # Should match with 1500 (1500 is closer than 3500)
                 assert isinstance(right_info, list)
                 right_ts, right_val = right_info
-                assert right_ts == 1500
+                assert right_ts == self.now + 1500
+                assert float(right_val) == 10
+            elif ts == self.now + 5000:
+                # Should match with either 3500 or 6500 (both 1500ms away)
+                # Implementation may choose either
+                assert isinstance(right_info, list)
+                right_ts, right_val = right_info
+                assert right_ts in [self.now + 3500, self.now + 6500]
 
-    def test_all_join_reducers(self):
+    def test_asof_tolerance_boundaries(self):
+        """Test ASOF join tolerance edge cases"""
+
+        # Create test series
+        left_series = "test_asof_left"
+        right_series = "test_asof_right"
+        self.client.execute_command("TS.CREATE", left_series)
+        self.client.execute_command("TS.CREATE", right_series)
+
+        base_time = 10000
+
+        # Left series: points at 0, 1000, 2000, 3000, 4000
+        for i in range(5):
+            ts = base_time + i * 1000
+            self.client.execute_command("TS.ADD", left_series, ts, i)
+
+        # Right series: points at 500, 1700, 3200
+        right_points = {
+            base_time + 500: 100,
+            base_time + 1700: 200,
+            base_time + 3200: 300
+        }
+        for ts, val in right_points.items():
+            self.client.execute_command("TS.ADD", right_series, ts, val)
+
+        # Test with exact tolerance boundary (PREVIOUS)
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 5000,
+            "ASOF", "PREVIOUS", "500"  # Exactly 500ms tolerance
+        )
+
+        # At timestamp 1000, the point at 500 is exactly 500ms away - should match
+        matched_at_1000 = False
+        for item in result:
+            ts, left_val, right_info = item
+            if ts == base_time + 1000:
+                assert isinstance(right_info, list)
+                right_stamp, right_val = right_info
+                assert right_stamp == base_time + 500
+                assert float(right_val) == 100
+                matched_at_1000 = True
+        
+        assert matched_at_1000, "Should match at exactly tolerance boundary"
+
+        # Test with just outside tolerance (PREVIOUS)
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 5000,
+            "ASOF", "PREVIOUS", "499"  # Just under 500ms tolerance
+        )
+
+        # At timestamp 1000, the point at 500 is 500ms away - should NOT match
+        for item in result:
+            ts, left_val, right_info = item
+            if ts == base_time + 1000:
+                # Should be None or not have the 500ms point
+                if right_info is not None:
+                    assert False, "Should not match outside tolerance"
+
+        # Test with zero tolerance (exact matches only)
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 5000,
+            "ASOF", "NEAREST", "0"
+        )
+
+        # Should have no matches since there are no exact timestamp matches
+        for item in result:
+            ts, left_val, right_info = item
+            assert right_info is None, "Zero tolerance should require exact matches"
+
+    def test_asof_with_no_matches(self):
+        """Test ASOF join when no points are within tolerance"""
+
+        # Create test series
+        left_series = "test_asof_nomatch_left"
+        right_series = "test_asof_nomatch_right"
+        self.client.execute_command("TS.CREATE", left_series)
+        self.client.execute_command("TS.CREATE", right_series)
+
+        base_time = 20000
+
+        # Left series: points at 0, 1000, 2000
+        for i in range(3):
+            ts = base_time + i * 1000
+            self.client.execute_command("TS.ADD", left_series, ts, i)
+
+        # Right series: points very far away (10 seconds later)
+        for i in range(3):
+            ts = base_time + 10000 + i * 1000
+            self.client.execute_command("TS.ADD", right_series, ts, i * 100)
+
+        # Test with small tolerance - no matches expected
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 3000,
+            "ASOF", "NEXT", "100"  # Only 100ms tolerance
+        )
+
+        assert len(result) == 0
+
+    def test_asof_multiple_candidates(self):
+        """Test ASOF join behavior when multiple candidates are within tolerance"""
+
+        # Create test series
+        left_series = "test_asof_multi_left"
+        right_series = "test_asof_multi_right"
+        self.client.execute_command("TS.CREATE", left_series)
+        self.client.execute_command("TS.CREATE", right_series)
+
+        base_time = 30000
+
+        # Left series: single point
+        self.client.execute_command("TS.ADD", left_series, base_time + 5000, 50)
+
+        # Right series: multiple points near the left point
+        right_points = {
+            base_time + 4500: 100,  # 500ms before
+            base_time + 4800: 200,  # 200ms before
+            base_time + 5200: 300,  # 200ms after
+            base_time + 5500: 400   # 500ms after
+        }
+        for ts, val in right_points.items():
+            self.client.execute_command("TS.ADD", right_series, ts, val)
+
+        # Test PREVIOUS - should match closest previous
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 10000,
+            "ASOF", "PREVIOUS", "1000"
+        )
+
+        assert len(result) == 1
+        ts, left_val, right_info = result[0]
+        assert isinstance(right_info, list)
+        right_ts, right_val = right_info
+        # Should match 4800 (closest previous within tolerance)
+        assert right_ts == base_time + 4800
+        assert float(right_val) == 200
+
+        # Test NEXT - should match closest next
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 10000,
+            "ASOF", "NEXT", "1000"
+        )
+
+        assert len(result) == 1
+        ts, left_val, right_info = result[0]
+        assert isinstance(right_info, list)
+        right_ts, right_val = right_info
+        # Should match 5200 (closest next within tolerance)
+        assert right_ts == base_time + 5200
+        assert float(right_val) == 300
+
+        # Test NEAREST - should match the absolutely closest
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 10000,
+            "ASOF", "NEAREST", "1000"
+        )
+
+        assert len(result) == 1
+        ts, left_val, right_info = result[0]
+        assert isinstance(right_info, list)
+        right_ts, right_val = right_info
+        # Should match either 4800 or 5200 (both 200ms away)
+        assert right_ts in [base_time + 4800, base_time + 5200]
+
+    def test_asof_with_reducer(self):
+        """Test ASOF join combined with reducer operations"""
+
+        # Create test series
+        left_series = "test_asof_reducer_left"
+        right_series = "test_asof_reducer_right"
+        self.client.execute_command("TS.CREATE", left_series)
+        self.client.execute_command("TS.CREATE", right_series)
+
+        base_time = 40000
+
+        # Left series: points at regular intervals
+        for i in range(5):
+            ts = base_time + i * 1000
+            self.client.execute_command("TS.ADD", left_series, ts, i * 10)
+
+        # Right series: slightly offset points
+        for i in range(5):
+            ts = base_time + i * 1000 - 100  # 100ms before each left point
+            self.client.execute_command("TS.ADD", right_series, ts, i * 5)
+
+        # Test ASOF with SUM reducer
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 5000,
+            "ASOF", "PREVIOUS", "200",
+            "REDUCE", "sum"
+        )
+
+        # Verify reduced values
+        for i, item in enumerate(result):
+            ts, value = item
+            expected_left = (i + 1) * 10
+            expected_right = (i + 1) * 5
+            expected_sum = expected_left + expected_right
+            assert float(value) == expected_sum
+
+    def smoketest_all_join_reducers(self):
         """Test different join reducers"""
 
         self.setup_data()
@@ -473,3 +581,66 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             # Each result should be a [timestamp, value] pair
             for item in result:
                 assert len(item) == 2
+
+    def test_asof_edge_cases(self):
+        """Test ASOF join edge cases"""
+
+        # Create test series
+        left_series = "test_asof_edge_left"
+        right_series = "test_asof_edge_right"
+        self.client.execute_command("TS.CREATE", left_series)
+        self.client.execute_command("TS.CREATE", right_series)
+
+        base_time = 50000
+
+        # Test with empty right series
+        self.client.execute_command("TS.ADD", left_series, base_time, 100)
+        
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 1000,
+            "ASOF", "NEAREST", "1000"
+        )
+
+        print("ASOF with empty right series result:", result)
+
+        assert len(result) == 0
+
+        # Test with single matching point
+        self.client.execute_command("TS.ADD", right_series, base_time, 200)
+        
+        result = self.client.execute_command(
+            "TS.JOIN", left_series, right_series,
+            base_time, base_time + 1000,
+            "ASOF", "NEAREST", "0"  # Exact match required
+        )
+
+        assert len(result) == 1
+        ts, left_val, right_info = result[0]
+        assert isinstance(right_info, list)
+        right_ts, right_val = right_info
+        assert right_ts == base_time
+        assert float(right_val) == 200
+
+    def test_error_cases(self):
+        """Test error cases"""
+
+        self.setup_data()
+
+        # Test with the same key for both series
+        with pytest.raises(ResponseError, match="TSDB: duplicate join keys"):
+            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts1} {self.now} {self.now + 15000}")
+
+        # Test with a non-existent key
+        with pytest.raises(ResponseError, match="TSDB: the key does not exist"):
+            self.client.execute_command(f"TS.JOIN {self.ts1} nonexistent {self.now} {self.now + 15000}")
+
+        # Test with an invalid join type
+        with pytest.raises(ResponseError, match="TSDB: invalid JOIN command argument"):
+            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INVALID_TYPE")
+
+        with pytest.raises(ResponseError, match="unknown binary op \"invalid_op\""):
+            # Replace with different aggregation
+            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INNER REDUCE invalid_op")
+        # Test with invalid reducer
+

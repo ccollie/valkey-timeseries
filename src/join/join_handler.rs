@@ -8,7 +8,7 @@ use joinkit::EitherOrBoth;
 use valkey_module::ValkeyValue;
 
 // naming is hard :-)
-/// Result of a join operation
+/// The result of a join operation, which can be either samples (if reduced) or raw join values
 pub enum JoinResultType {
     Samples(Vec<Sample>),
     Values(Vec<JoinValue>),
