@@ -343,6 +343,12 @@ impl fmt::Debug for NodeInfo {
     }
 }
 
+impl Borrow<NodeId> for NodeInfo {
+    fn borrow(&self) -> &NodeId {
+        &self.id
+    }
+}
+
 /// Information about a shard in the cluster
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShardInfo {
@@ -430,6 +436,8 @@ struct SlotRangeInfo {
     pub shard_id: NodeId,
 }
 
+type LazyTargets = Mutex<Option<Arc<BTreeSet<NodeInfo>>>>;
+
 /// Main cluster map structure
 #[derive(Debug, Default)]
 pub struct ClusterMap {
@@ -441,9 +449,9 @@ pub struct ClusterMap {
     /// Cluster-level fingerprint (hash of all shard fingerprints)
     cluster_slots_fingerprint: u64,
     /// (Lazily) pre-computed target lists
-    primary_targets: Mutex<Option<Arc<Vec<NodeInfo>>>>,
-    replica_targets: Mutex<Option<Arc<Vec<NodeInfo>>>>,
-    all_targets: Mutex<Option<Arc<Vec<NodeInfo>>>>,
+    primary_targets: LazyTargets,
+    replica_targets: LazyTargets,
+    all_targets: LazyTargets,
     /// expiration timestamp in ms (since epoch)
     expiration_ts: i64,
     /// is the current map consistent (no collisions/inconsistencies found while building)
@@ -484,7 +492,7 @@ impl ClusterMap {
     }
 
     /// Helper function to refresh targets in CreateNewClusterMap
-    pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<Vec<NodeInfo>> {
+    pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<BTreeSet<NodeInfo>> {
         match target_mode {
             FanoutTargetMode::Primary => self.get_primary_targets(),
             FanoutTargetMode::ReplicasOnly => self.get_replica_targets(),
@@ -494,85 +502,81 @@ impl ClusterMap {
         }
     }
 
-    fn get_random_replica_per_shard(&self) -> Arc<Vec<NodeInfo>> {
+    fn get_random_replica_per_shard(&self) -> Arc<BTreeSet<NodeInfo>> {
         // generate a random replica targets vector with one replica node from each shard
-        let mut targets: Vec<NodeInfo> = Vec::with_capacity(self.shards.len());
+        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
         for shard in self.shards.iter() {
             if shard.replicas.is_empty() {
                 // no replicas, fall back to primary
                 let node = shard.primary.expect("Shard has no primary node");
-                targets.push(node);
+                targets.insert(node);
                 continue;
             }
             let node = shard.get_random_target(false);
-            targets.push(node);
+            targets.insert(node);
         }
-        // sort targets for consistency
-        targets.sort();
         Arc::new(targets)
     }
 
-    fn get_random_targets(&self) -> Arc<Vec<NodeInfo>> {
+    fn get_random_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
         // generate a random primary targets vector with one primary node from each shard
-        let mut targets: Vec<NodeInfo> = Vec::with_capacity(self.shards.len());
+        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
         for shard in self.shards.iter() {
             let node = shard.get_random_target(false);
-            targets.push(node);
+            targets.insert(node);
         }
-        // sort targets for consistency
-        targets.sort();
+
         Arc::new(targets)
     }
 
-    fn get_all_targets(&self) -> Arc<Vec<NodeInfo>> {
+    fn get_all_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
         let mut guard = self.all_targets.lock().unwrap();
         if let Some(ref targets) = *guard {
             return targets.clone();
         }
-        let mut targets: Vec<NodeInfo> = Vec::new();
+        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
         for shard in self.shards.iter() {
             if let Some(primary) = shard.primary {
-                targets.push(primary);
+                targets.insert(primary);
             }
             for replica in shard.replicas.iter() {
-                targets.push(*replica);
+                targets.insert(*replica);
             }
         }
-        targets.sort();
+
         let arc_targets = Arc::new(targets);
         *guard = Some(arc_targets.clone());
         arc_targets
     }
 
-    fn get_primary_targets(&self) -> Arc<Vec<NodeInfo>> {
+    fn get_primary_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
         let mut guard = self.primary_targets.lock().unwrap();
         if let Some(ref targets) = *guard {
             return targets.clone();
         }
-        let mut targets: Vec<NodeInfo> = Vec::new();
+        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
         for shard in self.shards.iter() {
             if let Some(primary) = shard.primary {
-                targets.push(primary);
+                targets.insert(primary);
             }
         }
-        targets.sort();
+
         let arc_targets = Arc::new(targets);
         *guard = Some(arc_targets.clone());
         arc_targets
     }
 
-    fn get_replica_targets(&self) -> Arc<Vec<NodeInfo>> {
+    fn get_replica_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
         let mut guard = self.replica_targets.lock().unwrap();
         if let Some(ref targets) = *guard {
             return targets.clone();
         }
-        let mut targets: Vec<NodeInfo> = Vec::new();
+        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
         for shard in self.shards.iter() {
             for replica in shard.replicas.iter() {
-                targets.push(*replica);
+                targets.insert(*replica);
             }
         }
-        targets.sort();
         let arc_targets = Arc::new(targets);
         *guard = Some(arc_targets.clone());
         arc_targets

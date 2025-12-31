@@ -10,6 +10,7 @@ use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
 use core::time::Duration;
 use logger_rust::log_debug;
 use papaya::HashMap;
+use std::collections::BTreeSet;
 use std::hash::{BuildHasher, RandomState};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,7 +27,7 @@ const FANOUT_ERROR_MESSAGE: u8 = 0x03;
 
 struct InFlightRequest {
     id: u64,
-    targets: Arc<Vec<NodeInfo>>,
+    targets: Arc<BTreeSet<NodeInfo>>,
     response_handler: FanoutResponseCallback,
     outstanding: AtomicU64,
     timer_id: u64,
@@ -51,11 +52,9 @@ impl InFlightRequest {
         // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
         let sender = NodeId::from_raw(sender_id);
 
-        // Binary search to find the NodeInfo associated with the target
+        // find the NodeInfo associated with the target
         self.targets
-            .binary_search_by(|node| node.id.cmp(&sender))
-            .ok()
-            .and_then(|idx| self.targets.get(idx))
+            .get(&sender)
             .expect("cluster rpc: target node lookup failed")
     }
 
@@ -135,7 +134,7 @@ pub fn get_cluster_command_timeout() -> Duration {
 pub(super) fn send_cluster_request(
     ctx: &Context,
     request_buf: &[u8],
-    targets: Arc<Vec<NodeInfo>>,
+    targets: Arc<BTreeSet<NodeInfo>>,
     handler: &str,
     response_handler: FanoutResponseCallback,
     timeout: Option<Duration>,
@@ -277,14 +276,14 @@ fn process_request<'a>(ctx: &'a Context, message: FanoutMessage<'a>, sender_id: 
     let (save_db, _) = select_db(ctx, message.db);
 
     let mut dest = Vec::with_capacity(1024);
-    let buf = message.buf;
 
     log_debug!("Before handler for {}", message.handler);
+    ctx.log_notice("Before handler");
     // TODO: Consider running this handler in a thread pool to avoid blocking the main thread,
     // especially if the handler performs expensive or long-running operations. See issue #11
-    let res = handler(ctx, buf, &mut dest);
-
-    log_debug!("After handler. Res = {res:?}");
+    let res = handler(ctx, message.buf, &mut dest);
+    ctx.log_notice("After handler");
+    log_debug!("After handler for {}: {res:?}", message.handler);
 
     let _ = select_db(ctx, save_db);
     if let Err(e) = res {
