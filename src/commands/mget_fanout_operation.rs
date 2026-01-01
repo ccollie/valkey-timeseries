@@ -7,7 +7,7 @@ use crate::commands::process_mget_request;
 use crate::error_consts;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{Context, Status, ValkeyError, ValkeyResult, raw, reply_with_array};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, reply_with_array};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutOperation {
@@ -33,53 +33,40 @@ impl FanoutOperation for MGetFanoutOperation {
     }
 
     fn get_local_response(ctx: &Context, req: MultiGetRequest) -> ValkeyResult<MultiGetResponse> {
-        let MultiGetRequest {
-            with_labels,
-            filters,
-            selected_labels,
-            latest,
-        } = req;
-        let filters = deserialize_matchers_list(Some(filters))
+        let filters = deserialize_matchers_list(Some(req.filters))
             .map_err(|_e| ValkeyError::Str(error_consts::COMMAND_DESERIALIZATION_ERROR))?;
+
         let mreq = MGetRequest {
-            with_labels,
+            with_labels: req.with_labels,
             filters,
-            selected_labels,
-            latest,
+            selected_labels: req.selected_labels,
+            latest: req.latest,
         };
-        let res = process_mget_request(ctx, mreq)?;
-        let values = res
+
+        let results = process_mget_request(ctx, mreq)?;
+
+        let values = results
             .into_iter()
             .map(|resp| {
                 let labels = resp
                     .labels
                     .into_iter()
-                    .map(|l| {
-                        if let Some(l) = l {
-                            FanoutLabel {
-                                name: l.name,
-                                value: l.value,
-                            }
-                        } else {
-                            // Represent missing label with empty label name
-                            FanoutLabel {
-                                name: String::new(),
-                                value: String::new(),
-                            }
-                        }
-                    })
-                    .collect::<Vec<_>>();
+                    .map(|l| l.map_or_else(|| FanoutLabel::default(), |l| l.into()))
+                    .collect();
+
                 let sample = resp.sample.map(|s| FanoutSample {
                     timestamp: s.timestamp,
                     value: s.value,
                 });
+
                 MGetValue {
                     key: resp.series_key.to_string_lossy(),
                     labels,
                     sample,
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
+
         Ok(MultiGetResponse { values })
     }
 
@@ -100,7 +87,7 @@ impl FanoutOperation for MGetFanoutOperation {
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
         let count = self.series.len();
-        let status = raw::reply_with_array(ctx.ctx, count as i64);
+        let status = reply_with_array(ctx.ctx, count as i64);
         if status != Status::Ok {
             return status;
         }
@@ -114,7 +101,7 @@ impl FanoutOperation for MGetFanoutOperation {
     }
 }
 
-fn reply_with_mget_value(ctx: &Context, value: &MGetValue) -> raw::Status {
+fn reply_with_mget_value(ctx: &Context, value: &MGetValue) -> Status {
     reply_with_array(ctx.ctx, 3);
     reply_with_bulk_string(ctx, value.key.as_str());
     reply_with_fanout_labels(ctx, &value.labels);

@@ -282,6 +282,15 @@ impl From<&Label> for FanoutLabel {
     }
 }
 
+impl From<Label> for FanoutLabel {
+    fn from(value: Label) -> Self {
+        FanoutLabel {
+            name: value.name,
+            value: value.value,
+        }
+    }
+}
+
 impl From<FanoutSample> for ValkeyValue {
     fn from(value: FanoutSample) -> Self {
         let row = vec![
