@@ -51,7 +51,7 @@ impl FanoutOperation for MGetFanoutOperation {
                 let labels = resp
                     .labels
                     .into_iter()
-                    .map(|l| l.map_or_else(|| FanoutLabel::default(), |l| l.into()))
+                    .map(|l| l.map_or_else(FanoutLabel::default, |l| l.into()))
                     .collect();
 
                 let sample = resp.sample.map(|s| FanoutSample {
