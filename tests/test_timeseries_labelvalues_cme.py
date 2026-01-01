@@ -4,6 +4,15 @@ from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase, ValkeySearchClusterTestCaseDebugMode
 
+TS1 = 'ts1:{1}'
+TS2 = 'ts2:{2}'
+TS3 = 'ts3:{3}'
+TS4 = 'ts4:{1}'
+TS5 = 'ts5:{2}'
+TS6 = 'ts6:{3}'
+TS7 = 'ts7:{1}'
+TS8 = 'ts8:{2}'
+TS9 = 'ts9:{3}'
 
 class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
 
@@ -11,17 +20,18 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
     def setup_test_data(client):
         """Set up test data with various label values"""
         # Create time series with different label combinations
-        client.execute_command('TS.CREATE', 'ts1', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'server1', 'datacenter', 'dc1')
-        client.execute_command('TS.CREATE', 'ts2', 'LABELS', 'name', 'cpu', 'type', 'temperature', 'node', 'server1', 'datacenter', 'dc1')
-        client.execute_command('TS.CREATE', 'ts3', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'server2', 'datacenter', 'dc1')
-        client.execute_command('TS.CREATE', 'ts4', 'LABELS', 'name', 'disk', 'type', 'usage', 'node', 'server2', 'datacenter', 'dc2')
-        client.execute_command('TS.CREATE', 'ts5', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'server3', 'datacenter', 'dc2')
-        client.execute_command('TS.CREATE', 'ts6', 'LABELS', 'name', 'network', 'type', 'throughput', 'node', 'server3')
+        client.execute_command('TS.CREATE', TS1, 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'server1', 'datacenter', 'dc1', "key", "ts1")
+        client.execute_command('TS.CREATE', TS2, 'LABELS', 'name', 'cpu', 'type', 'temperature', 'node', 'server1', 'datacenter', 'dc1', "key", "ts2")
+        client.execute_command('TS.CREATE', TS3, 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'server2', 'datacenter', 'dc1', "key", "ts3")
+        client.execute_command('TS.CREATE', TS4, 'LABELS', 'name', 'disk', 'type', 'usage', 'node', 'server2', 'datacenter', 'dc2', "key", "ts4")
+        client.execute_command('TS.CREATE', TS5, 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'server3', 'datacenter', 'dc2', "key", "ts5")
+        client.execute_command('TS.CREATE', TS6, 'LABELS', 'name', 'network', 'type', 'throughput', 'node', 'server3', "key", "ts6")
 
         # Add some sample data
         now = 1000
-        for i in range(1, 6):
-            ts_key = f'ts{i}'
+        KEYS = [ TS1, TS2, TS3, TS4, TS5, TS6]
+        i = 1
+        for ts_key in KEYS:
             client.execute_command('TS.ADD', ts_key, now, i * 10)
             client.execute_command('TS.ADD', ts_key, now + 1000, i * 10 + 5)
 
@@ -32,7 +42,6 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
         client = self.new_client_for_primary(0)
 
         self.setup_test_data(cluster)
-        client.execute_command("CONFIG", "SET", "watchdog-period", "500")
 
         # Get values for the 'name' label filtered by type=usage
         # result = client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'type=usage')
@@ -48,7 +57,6 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
         client = self.new_client_for_primary(0)
 
         self.setup_test_data(cluster)
-        client.execute_command("CONFIG", "SET", "watchdog-period", "500")
 
         # Get values for the 'node' label with multiple filters
         result = client.execute_command('TS.LABELVALUES', 'node', 'FILTER', 'name=cpu', 'type=usage')
@@ -64,7 +72,6 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
         client = self.new_client_for_primary(0)
 
         self.setup_test_data(cluster)
-        client.execute_command("CONFIG", "SET", "watchdog-period", "500")
 
         # Get values for the 'node' label with regex filter
         result = client.execute_command('TS.LABELVALUES', 'node', 'FILTER', 'name=~"c.*"')
@@ -115,7 +122,7 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
         self.setup_test_data(cluster)
 
         # Get values for the 'name' label with limit
-        result = cluster.execute_command('TS.LABELVALUES', 'name', 'LIMIT', 2, 'FILTER', 'type=usage')
+        result = client.execute_command('TS.LABELVALUES', 'name', 'LIMIT', 2, 'FILTER', 'type=usage')
         assert len(result) == 2
         assert all(val in [b'cpu', b'disk', b'memory'] for val in result)
 
@@ -153,9 +160,6 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
         cluster: ValkeyCluster = self.new_cluster_client()
         client = self.new_client_for_primary(0)
 
-        self.setup_test_data(cluster)
-        client.execute_command("CONFIG", "SET", "watchdog-period", "500")
-
         # Filter that doesn't match any series
         result = client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'nonexistent=value')
         assert result == []
@@ -176,7 +180,7 @@ class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
         assert b'network' in result
 
         # Delete a time series
-        client.execute_command('DEL', 'ts6')  # ts6 has name=network
+        client.execute_command('DEL', TS6)  # ts6 has name=network
 
         # Verify the deleted label value is no longer returned
         result = client.execute_command('TS.LABELVALUES', 'name', 'FILTER', 'name=network')

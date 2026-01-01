@@ -1,5 +1,4 @@
 use super::fanout::generated::{DateRange, LabelValuesRequest, LabelValuesResponse};
-use super::utils::reply_with_btree_set;
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
 use crate::fanout::{FanoutOperation, NodeInfo};
@@ -7,7 +6,7 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::TimestampRange;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, Status, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 pub struct LabelValuesFanoutOperation {
@@ -43,7 +42,8 @@ impl FanoutOperation for LabelValuesFanoutOperation {
         let options = MatchFilterOptions {
             date_range,
             matchers,
-            ..Default::default()
+            // send all values to requester. Limit is applied in the sender node.
+            limit: None,
         };
         process_label_values_request(ctx, &req.label, &options)
             .map(|values| LabelValuesResponse { values })
@@ -67,7 +67,14 @@ impl FanoutOperation for LabelValuesFanoutOperation {
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
-        reply_with_btree_set(ctx, &self.results);
-        Status::Ok
+        let count = self.options.limit.unwrap_or(self.results.len());
+        let results = std::mem::take(&mut self.results);
+        let values = results
+            .into_iter()
+            .take(count)
+            .map(ValkeyValue::BulkString)
+            .collect::<Vec<ValkeyValue>>();
+        let res = ValkeyValue::Array(values);
+        ctx.reply(Ok(res))
     }
 }

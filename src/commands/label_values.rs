@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-// TS.LABELVALUES label [START fromTimestamp] [END fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
+// TS.LABELVALUES label [FILTER_BY_RANGE fromTimestamp  fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
 pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 3 {

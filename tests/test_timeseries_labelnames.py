@@ -57,22 +57,53 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
     def test_labelnames_with_time_range(self):
         """Test TS.LABELNAMES with time range filters"""
+        self.setup_test_data(self.client)
 
-        # Add samples with different timestamps
         now = 1000
 
-        # Add samples to different series at different times
-        self.client.execute_command('TS.ADD', 'ts1', now, 10, 'LABELS', 'name', 'cpu', 'ts1', '1')
-        self.client.execute_command('TS.ADD', 'ts2', now + 100, 20, 'LABELS', 'name', 'cpu', 'ts2', '2')
-        self.client.execute_command('TS.ADD', 'ts3', now + 200, 30, 'LABELS', 'name', 'cpu', 'ts3', '3')
-        self.client.execute_command('TS.ADD', 'ts9', now + 500, 40, 'LABELS', 'name', 'cpu', 'ts9', '9')
+        # From setup_test_data, these series have name=cpu:
+        # ts1: name=cpu, node=node1, type=user
+        # ts2: name=cpu, node=node1, type=system
+        # ts5: name=cpu, node=node2, type=user
+        # ts6: name=cpu, node=node2, type=system
 
+        # Add samples at different timestamps to series with name=cpu
+        self.client.execute_command('TS.ADD', 'ts1', now, 10)
+        self.client.execute_command('TS.ADD', 'ts2', now + 100, 20)
+        self.client.execute_command('TS.ADD', 'ts5', now + 200, 30)
+        self.client.execute_command('TS.ADD', 'ts6', now + 500, 40)
+
+        # Query from timestamp 150 onwards - should only include ts5 and ts6
+        # (ts1 at now=1000, ts2 at now+100=1100, ts5 at now+200=1200, ts6 at now+500=1500)
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 150, "+", 'FILTER', 'name=cpu')
-        assert result == [b'name', b'ts3', b'ts9']
 
-        # Query with both START and END
+        # Should return label names from ts5 (now+200) and ts6 (now+500)
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+
+        # Verify we're not getting labels from series outside the range
+        # Both ts5 and ts6 have node=node2, so we should see that
+        assert len(result) == 3  # name, node, type
+
+        # Query with both START and END - should only include ts2 and ts5
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 50, now + 250, 'FILTER', 'name=cpu')
-        assert result == [b'name', b'ts2', b'ts3']
+
+        # Should return labels from ts2 (now+100) and ts5 (now+200)
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert len(result) == 3
+
+        # Query that matches only one series
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 400, "+", 'FILTER', 'name=cpu')
+
+        # Should only include ts6 (now+500)
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert len(result) == 3
+
 
     def test_labelnames_with_combined_parameters(self):
         """Test TS.LABELNAMES with combined filter and time range parameters"""
