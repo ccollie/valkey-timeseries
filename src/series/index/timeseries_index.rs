@@ -205,7 +205,7 @@ impl TimeSeriesIndex {
 
                 if label == name {
                     metrics.push(PostingStat {
-                        name: name.to_string(),
+                        name: value.to_string(),
                         count,
                     });
                 }

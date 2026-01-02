@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use valkey_module::ValkeyValue;
 use valkey_module::redisvalue::ValkeyValueKey;
@@ -120,12 +119,6 @@ impl StatsMaxHeap {
     }
 
     pub fn into_vec(self) -> Vec<PostingStat> {
-        let mut items = self.items;
-        items.sort_by(|a, b| match b.count.cmp(&a.count) {
-            Ordering::Less => Ordering::Greater,
-            Ordering::Greater => Ordering::Less,
-            Ordering::Equal => Ordering::Equal,
-        });
-        items
+        self.items
     }
 }

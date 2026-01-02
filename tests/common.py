@@ -229,4 +229,56 @@ class ValkeyInfo:
         return self.info['maxmemory_policy']
 
     def uptime_in_secs(self):
-        return self.info['uptime_in_seconds']   
+        return self.info['uptime_in_seconds']
+
+
+def parse_stats_response(response):
+    """
+    Parse the response from TS.STATS command into a dictionary with proper types.
+
+    Args:
+        response: The response from TS.STATS command
+
+    Returns:
+        dict: Parsed statistics with proper field types
+    """
+    if not response:
+        return {}
+
+    stats = {}
+
+    int_fields = {
+        'numSeries',
+        'numLabels',
+        'numLabelPairs'
+    }
+
+    value_fields = {
+        'seriesCountByMetricName',
+        'labelValueCountByLabelName',
+        'memoryInBytesByLabelPair', 
+        'seriesCountByLabelPair'
+    }
+
+
+    # Convert response to dict if needed
+    if isinstance(response, list):
+        for i in range(len(response) // 2):
+            key = response[2 * i]
+            key_str = key.decode('utf-8')
+            value = response[2 * i + 1]
+            if key_str in int_fields:
+                stats[key_str] = int(value)
+            elif key_str in value_fields:
+                if isinstance(value, list):
+                    sub_obj = []
+                    for item in value:
+                        sub_key = item[0].decode('utf-8')
+                        sub_obj.append([sub_key, int(item[1])])
+                    stats[key_str] = sub_obj
+                else:
+                    stats[key_str] = value
+            else:   
+                stats[key_str] = value
+ 
+    return stats

@@ -492,10 +492,17 @@ pub(crate) fn parse_next_token(
     if valid_tokens.contains(&token) {
         return Ok(Some(token));
     }
-    let msg = format!(
-        "TSDB: expected one of {:?}, found \"{arg}\"",
-        valid_tokens.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
-    );
+    let msg = if valid_tokens.len() == 1 {
+        format!(
+            "TSDB: expected \"{}\", found \"{arg}\"",
+            valid_tokens[0].as_str()
+        )
+    } else {
+        format!(
+            "TSDB: expected one of {:?}, found \"{arg}\"",
+            valid_tokens.iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+        )
+    };
     Err(ValkeyError::String(msg))
 }
 
@@ -1068,13 +1075,8 @@ pub(crate) fn parse_metadata_command_args(
             CommandArgToken::Limit => {
                 let next = args
                     .next_str()
-                    .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?
-                    .parse::<i64>()
-                    .map_err(|_e| ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE))?;
-                if next < 0 {
-                    return Err(ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE));
-                }
-                limit = Some(next as usize);
+                    .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?;
+                limit = parse_limit_value(next)?;
             }
             _ => {
                 let msg = "TSDB: invalid argument";
@@ -1104,6 +1106,37 @@ pub(crate) fn parse_metadata_command_args(
     }
 
     Ok(options)
+}
+
+pub const DEFAULT_STATS_RESULTS_LIMIT: usize = 10;
+pub const MAX_STATS_RESULTS_LIMIT: usize = 1000;
+
+pub(super) fn parse_stats_command_args(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
+    let limit = if args.peek().is_none() {
+        DEFAULT_STATS_RESULTS_LIMIT // No args, use default limit
+    } else {
+        parse_next_token(args, Some(&[CommandArgToken::Limit]))?;
+        let next = args
+            .next_str()
+            .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?;
+        parse_limit_value(next)?.unwrap_or(DEFAULT_STATS_RESULTS_LIMIT)
+    };
+
+    Ok(limit)
+}
+
+fn parse_limit_value(val: &str) -> ValkeyResult<Option<usize>> {
+    let limit = val
+        .parse::<i64>()
+        .map_err(|_e| ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE))?;
+    if limit < 1 {
+        return Err(ValkeyError::Str("TSDB: LIMIT must be greater than 0"));
+    }
+    if limit > MAX_STATS_RESULTS_LIMIT as i64 {
+        let msg = format!("TSDB: limit cannot be greater than {MAX_STATS_RESULTS_LIMIT}");
+        return Err(ValkeyError::String(msg));
+    }
+    Ok(Some(limit as usize))
 }
 
 pub(super) fn find_last_token_instance(
