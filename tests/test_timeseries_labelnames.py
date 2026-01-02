@@ -9,15 +9,15 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
         # Create multi series with various labels
-        client.execute_command('TS.CREATE', 'ts1', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node1')
-        client.execute_command('TS.CREATE', 'ts2', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node2')
-        client.execute_command('TS.CREATE', 'ts3', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'node1')
-        client.execute_command('TS.CREATE', 'ts4', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'node2')
-        client.execute_command('TS.CREATE', 'ts5', 'LABELS', 'name', 'cpu', 'type', 'temperature', 'node', 'node1')
-        client.execute_command('TS.CREATE', 'ts6', 'LABELS', 'name', 'cpu', 'node', 'node3')
-        client.execute_command('TS.CREATE', 'ts7', 'LABELS', 'name', 'disk', 'type', 'usage', 'node', 'node3')
-        client.execute_command('TS.CREATE', 'ts8', 'LABELS', 'type', 'usage')  # No name label
-        client.execute_command('TS.CREATE', 'ts9', 'LABELS', 'location', 'datacenter', 'rack', 'rack1')  # Different labels
+        client.execute_command('TS.CREATE', 'ts1', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node1', "ts1", "1")
+        client.execute_command('TS.CREATE', 'ts2', 'LABELS', 'name', 'cpu', 'type', 'usage', 'node', 'node2', "ts2", "1")
+        client.execute_command('TS.CREATE', 'ts3', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'node1', "ts3", "1")
+        client.execute_command('TS.CREATE', 'ts4', 'LABELS', 'name', 'memory', 'type', 'usage', 'node', 'node2', "ts4", "1")
+        client.execute_command('TS.CREATE', 'ts5', 'LABELS', 'name', 'cpu', 'type', 'temperature', 'node', 'node1', "ts5", "1")
+        client.execute_command('TS.CREATE', 'ts6', 'LABELS', 'name', 'cpu', 'node', 'node3', "ts6", "1")  # No type label
+        client.execute_command('TS.CREATE', 'ts7', 'LABELS', 'name', 'disk', 'type', 'usage', 'node', 'node3', "ts7", "1")
+        client.execute_command('TS.CREATE', 'ts8', 'LABELS', 'type', 'usage', "ts8", "1")  # No name label
+        client.execute_command('TS.CREATE', 'ts9', 'LABELS', 'location', 'datacenter', 'rack', 'rack1', "ts9", "1")  # Different labels
 
     def test_labelnames_with_filter(self):
         """Test TS.LABELNAMES with FILTER parameter"""
@@ -25,11 +25,11 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
         # Get label names for CPU series
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu')
-        assert result == [b'name', b'node', b'type']
+        assert result == [b'name', b'node', b'ts1', b'ts2', b'ts5', b'ts6', b'type']
 
         # Get label names for node1 series
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'node=node1')
-        assert result == [b'name', b'node', b'type']
+        assert result == [b'name', b'node', b'ts1', b'ts3', b'ts5', b'type']
 
     def test_labelnames_with_multiple_filters(self):
         """Test TS.LABELNAMES with multiple filter conditions"""
@@ -37,11 +37,11 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
         # Get label names for CPU usage series
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu', 'type=usage')
-        assert result == [b'name', b'node', b'type']
+        assert result == [b'name', b'node', b'ts1', b'ts2', b'type']
 
         # Get label names for series with location label
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'location=datacenter')
-        assert result == [b'location', b'rack']
+        assert result == [b'location', b'rack', b'ts9']
 
     def test_labelnames_with_regex_filters(self):
         """Test TS.LABELNAMES with regex filter expressions"""
@@ -49,11 +49,11 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
 
         # Get label names for series where name matches regex
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'name=~"c.*"')
-        assert result == [b'name', b'node', b'type']
+        assert result == [b'name', b'node', b'ts1', b'ts2', b'ts5', b'ts6', b'type']
 
-        # Get label names for series where node matches pattern
+        # Get label names for series where node matches a pattern
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'node=~"node[12]"')
-        assert result == [b'name', b'node', b'type']
+        assert result == [b'name', b'node', b'ts1', b'ts2', b'ts3', b'ts4', b'ts5', b'type']
 
     def test_labelnames_with_time_range(self):
         """Test TS.LABELNAMES with time range filters"""
@@ -81,10 +81,12 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         assert b'name' in result
         assert b'node' in result
         assert b'type' in result
+        assert b'ts5' in result
+        assert b'ts6' in result
 
         # Verify we're not getting labels from series outside the range
         # Both ts5 and ts6 have node=node2, so we should see that
-        assert len(result) == 3  # name, node, type
+        assert len(result) == 5  # name, node, ts5, ts6, type
 
         # Query with both START and END - should only include ts2 and ts5
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 50, now + 250, 'FILTER', 'name=cpu')
@@ -93,15 +95,18 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         assert b'name' in result
         assert b'node' in result
         assert b'type' in result
-        assert len(result) == 3
+        assert b'ts2' in result
+        assert b'ts5' in result
+        assert len(result) == 5
 
         # Query that matches only one series
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 400, "+", 'FILTER', 'name=cpu')
 
+        print("RESULT = ", result)
         # Should only include ts6 (now+500)
         assert b'name' in result
         assert b'node' in result
-        assert b'type' in result
+        assert b'ts6' in result
         assert len(result) == 3
 
 
@@ -123,7 +128,8 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
                                                     'FILTER_BY_RANGE', now, now + 150,
                                                     'FILTER', 'name=~"c.*"',
                                                     )
-        assert result == [b'name', b'node', b'type']
+
+        assert result == [b'name', b'node', b'ts1', b'ts2', b'type']
 
     def test_labelnames_empty_result(self):
         """Test TS.LABELNAMES when no series match the criteria"""
@@ -148,11 +154,12 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 2
 
         # Verify sorted order (alphabetical)
-        all_labels = [b'name', b'node', b'type']
+        all_labels = [b'name', b'node', b'ts1', b'ts2', b'ts5', b'ts6', b'type']
         assert result == all_labels[:2]
 
+        expected = all_labels[:5]
         result = self.client.execute_command('TS.LABELNAMES', 'LIMIT', 5, 'FILTER', 'name=cpu')
-        assert result == all_labels
+        assert result == expected
 
     def test_labelnames_error_cases(self):
         """Test error conditions for TS.LABELNAMES"""
@@ -188,14 +195,13 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Complex filter: CPU metrics that are not a usage type
-        result = sorted(self.client.execute_command('TS.LABELNAMES',
-                                                    'FILTER', 'name=cpu', 'type!=usage'))
-        assert result == [b'name', b'node', b'type']
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu', 'type!=usage')
+
+        assert result == [b'name', b'node', b'ts5', b'ts6', b'type']
 
         # Complex filter with regex: nodes that don't match the pattern
-        result = sorted(self.client.execute_command('TS.LABELNAMES',
-                                                    'FILTER', 'node!~"node[12]"'))
-        assert result == [b'location', b'name', b'node', b'rack', b'type']
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER', 'node!~"node[12]"')
+        assert result == [b'location', b'name', b'node', b'rack', b'ts6', b'ts7', b'ts8', b'ts9', b'type']
 
     def test_labelnames_with_empty_database(self):
         """Test TS.LABELNAMES with an empty database"""
