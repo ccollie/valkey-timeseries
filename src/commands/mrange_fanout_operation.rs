@@ -1,5 +1,4 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
-use crate::commands::utils::reply_with_mrange_series_results;
 use crate::common::Sample;
 use crate::fanout::FanoutOperation;
 use crate::fanout::NodeInfo;
@@ -15,7 +14,7 @@ use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::{SmallVec, smallvec};
 use std::collections::BTreeMap;
-use valkey_module::{Context, Status, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 pub struct MRangeFanoutOperation {
@@ -95,11 +94,8 @@ impl FanoutOperation for MRangeFanoutOperation {
 
         sort_mrange_results(&mut series, is_grouped);
 
-        if reply_with_mrange_series_results(ctx, &series).is_ok() {
-            Status::Ok
-        } else {
-            Status::Err
-        }
+        let result: ValkeyValue = series.into();
+        ctx.reply(Ok(result))
     }
 }
 
