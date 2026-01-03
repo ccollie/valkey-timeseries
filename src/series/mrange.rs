@@ -43,11 +43,9 @@ pub fn process_mrange_query(
             source_key: guard.get_key().to_string(),
             group_label_value: None,
             latest: {
-                if options.range.latest {
-                    get_latest_compaction_sample(ctx, guard)
-                } else {
-                    None
-                }
+                // This is done upfront to enable parallel series processing below
+                // (Context cannot be shared across threads)
+                get_latest(&options.range, ctx, guard)
             },
         })
         .collect();

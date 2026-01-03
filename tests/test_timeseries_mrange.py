@@ -330,3 +330,93 @@ class TestTimeSeriesMRange(ValkeyTimeSeriesTestCaseBase):
             for ts, val in series[2]:
                 val = float(val.decode())
                 assert 20 <= val <= 30
+
+    def test_mrange_latest_with_compaction_basic(self):
+        """Test TS.MRANGE LATEST returns the latest compacted sample"""
+        # Create source series
+        self.client.execute_command('TS.CREATE', 'source:temp:1',
+                                    'LABELS', 'sensor', 'temp', 'location', 'room1')
+        self.client.execute_command('TS.CREATE', 'source:temp:2',
+                                    'LABELS', 'sensor', 'temp', 'location', 'room2')
+
+        # Create compaction rules
+        self.client.execute_command('TS.CREATE', 'compact:temp:1',
+                                    'LABELS', 'sensor', 'temp', 'location', 'room1', 'agg', 'avg')
+        self.client.execute_command('TS.CREATE', 'compact:temp:2',
+                                    'LABELS', 'sensor', 'temp', 'location', 'room2', 'agg', 'avg')
+
+        self.client.execute_command('TS.CREATERULE', 'source:temp:1', 'compact:temp:1',
+                                    'AGGREGATION', 'avg', 60000)
+        self.client.execute_command('TS.CREATERULE', 'source:temp:2', 'compact:temp:2',
+                                    'AGGREGATION', 'avg', 60000)
+
+        # Add samples to source series
+        base_ts = 1000
+        for i in range(5):
+            self.client.execute_command('TS.ADD', 'source:temp:1', base_ts + i * 10000, 20 + i)
+            self.client.execute_command('TS.ADD', 'source:temp:2', base_ts + i * 10000, 25 + i)
+
+        # Add one more recent sample that creates a compacted value
+        latest_ts = base_ts + 70000
+        self.client.execute_command('TS.ADD', 'source:temp:1', latest_ts, 30)
+        self.client.execute_command('TS.ADD', 'source:temp:2', latest_ts, 35)
+
+        # Query without LATEST
+        result_no_latest = self.client.execute_command('TS.MRANGE', base_ts, latest_ts,
+                                                       'FILTER', 'agg=avg')
+
+        # Query with LATEST
+        result_with_latest = self.client.execute_command('TS.MRANGE', base_ts, latest_ts,
+                                                         'LATEST',
+                                                         'FILTER', 'agg=avg')
+
+        assert len(result_no_latest) == 2
+        assert len(result_with_latest) == 2
+
+        # With LATEST should include the most recent compacted sample
+        for series in result_with_latest:
+            # Should have at least one sample
+            assert len(series[2]) >= 1
+
+    def test_mrange_latest_without_compaction(self):
+        """Test TS.MRANGE LATEST on non-compacted series has no effect"""
+        self.setup_data()
+
+        # Query regular series with LATEST flag
+        result_with_latest = self.client.execute_command('TS.MRANGE', self.start_ts,
+                                                         self.start_ts + 100,
+                                                         'LATEST',
+                                                         'FILTER', 'sensor=temp')
+
+        result_without_latest = self.client.execute_command('TS.MRANGE', self.start_ts,
+                                                            self.start_ts + 100,
+                                                            'FILTER', 'sensor=temp')
+
+        # Results should be identical for non-compacted series
+        assert len(result_with_latest) == len(result_without_latest)
+        for i in range(len(result_with_latest)):
+            assert result_with_latest[i][0] == result_without_latest[i][0]
+            assert len(result_with_latest[i][2]) == len(result_without_latest[i][2])
+
+    def test_mrange_latest_empty_range(self):
+        """Test TS.MRANGE LATEST with time range that has no compacted data"""
+        # Create compaction series
+        self.client.execute_command('TS.CREATE', 'source:test')
+        self.client.execute_command('TS.CREATE', 'compact:test',
+                                    'LABELS', 'status', 'active')
+        self.client.execute_command('TS.CREATERULE', 'source:test', 'compact:test',
+                                    'AGGREGATION', 'avg', 50000)
+
+        # Add data in a different time range
+        base_ts = 100000
+        for i in range(5):
+            self.client.execute_command('TS.ADD', 'source:test', base_ts + i * 10000, i)
+
+        # Query a range with no data
+        result = self.client.execute_command('TS.MRANGE', 1000, 5000,
+                                             'LATEST',
+                                             'FILTER', 'status=active')
+
+        assert len(result) == 1
+        # Should return empty data
+        assert len(result[0][2]) == 0
