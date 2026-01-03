@@ -1,7 +1,6 @@
 use super::{AsofJoinStrategy, join_asof_samples};
 use crate::common::Sample;
 use crate::join::JoinValue;
-use joinkit::EitherOrBoth;
 use std::time::Duration;
 
 pub struct JoinAsOfIter<L, R>
@@ -9,7 +8,7 @@ where
     L: Iterator<Item = Sample>,
     R: Iterator<Item = Sample>,
 {
-    init: bool,
+    is_init: bool,
     left: L,
     right: R,
     strategy: AsofJoinStrategy,
@@ -36,7 +35,7 @@ where
         IR: IntoIterator<IntoIter = R, Item = Sample>,
     {
         Self {
-            init: false,
+            is_init: false,
             left: left.into_iter(),
             right: right.into_iter(),
             strategy,
@@ -48,7 +47,7 @@ where
     }
 
     fn init(&mut self) {
-        self.init = true;
+        self.is_init = true;
         let tolerance = self.tolerance.as_millis() as i64;
         let left: Vec<Sample> = self.left.by_ref().collect();
         let right: Vec<Sample> = self.right.by_ref().collect();
@@ -65,17 +64,13 @@ where
     type Item = JoinValue;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.init {
+        if !self.is_init {
             self.init();
         }
         match self.items.get(self.idx) {
             Some((left, right)) => {
                 self.idx += 1;
-                Some(JoinValue {
-                    timestamp: left.timestamp,
-                    other_timestamp: Some(right.timestamp),
-                    value: EitherOrBoth::Both(left.value, right.value),
-                })
+                Some(JoinValue::both(*left, *right))
             }
             None => None,
         }

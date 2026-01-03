@@ -1,6 +1,6 @@
 use super::join_right_iter::JoinRightIter;
 use super::{JoinAsOfIter, JoinkitExt};
-use super::{JoinType, JoinValue, convert_join_item};
+use super::{JoinType, JoinValue};
 use crate::common::Sample;
 use joinkit::Joinkit;
 
@@ -29,13 +29,13 @@ where
         JoinType::Left => Box::new(
             left.into_iter()
                 .merge_join_left_outer_by(right, compare_by_timestamp)
-                .map(convert_join_item),
+                .map(JoinValue),
         ),
         JoinType::Anti => {
             let iter = left
                 .into_iter()
                 .merge_join_left_excl_by(right, compare_by_timestamp)
-                .map(|item| JoinValue::left(item.timestamp, item.value));
+                .map(JoinValue::left);
 
             Box::new(iter)
         }
@@ -47,7 +47,7 @@ where
             let iter = left
                 .into_iter()
                 .join_semi(right, |item| item.timestamp)
-                .map(|item| JoinValue::left(item.timestamp, item.value));
+                .map(JoinValue::left);
 
             Box::new(iter)
         }
@@ -55,7 +55,7 @@ where
             let iter = left
                 .into_iter()
                 .merge_join_inner_by(right, compare_by_timestamp)
-                .map(|(l, r)| JoinValue::both(l.timestamp, l.value, r.value));
+                .map(|(l, r)| JoinValue::both(l, r));
 
             Box::new(iter)
         }
@@ -63,7 +63,7 @@ where
             let iter = left
                 .into_iter()
                 .merge_join_full_outer_by(right, compare_by_timestamp)
-                .map(convert_join_item);
+                .map(JoinValue);
 
             Box::new(iter)
         }

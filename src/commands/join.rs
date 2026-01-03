@@ -41,7 +41,7 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
 fn join_internal(left: &TimeSeries, right: &TimeSeries, options: &JoinOptions) -> ValkeyValue {
     let result = process_join(left, right, options);
-    result.to_valkey_value()
+    result.into()
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
 use crate::series::types::ValueFilter;
 use joinkit::EitherOrBoth;
 use std::fmt::Display;
+use std::ops::Deref;
 use std::time::Duration;
+use valkey_module::ValkeyValue;
 
 mod asof;
 mod join_handler;
@@ -38,34 +40,73 @@ pub trait JoinkitExt: Iterator {
 
 impl<T: ?Sized> JoinkitExt for T where T: Iterator {}
 
-#[derive(Clone, PartialEq, Debug)]
-pub struct JoinValue {
-    pub timestamp: Timestamp,
-    pub other_timestamp: Option<Timestamp>,
-    pub value: EitherOrBoth<f64, f64>,
-}
+#[derive(Clone, Debug)]
+pub struct JoinValue(EitherOrBoth<Sample, Sample>);
 
 impl JoinValue {
-    pub fn left(timestamp: Timestamp, value: f64) -> Self {
-        JoinValue {
-            timestamp,
-            other_timestamp: None,
-            value: EitherOrBoth::Left(value),
-        }
-    }
-    pub fn right(timestamp: Timestamp, value: f64) -> Self {
-        JoinValue {
-            other_timestamp: None,
-            timestamp,
-            value: EitherOrBoth::Right(value),
-        }
+    pub fn left(sample: Sample) -> Self {
+        JoinValue(EitherOrBoth::Left(sample))
     }
 
-    pub fn both(timestamp: Timestamp, l: f64, r: f64) -> Self {
-        JoinValue {
-            timestamp,
-            other_timestamp: None,
-            value: EitherOrBoth::Both(l, r),
+    pub fn right(sample: Sample) -> Self {
+        JoinValue(EitherOrBoth::Right(sample))
+    }
+
+    pub fn both(left: Sample, right: Sample) -> Self {
+        JoinValue(EitherOrBoth::Both(left, right))
+    }
+
+    fn sortable_timestamp(&self) -> Timestamp {
+        match &self.0 {
+            EitherOrBoth::Both(left, right) => Timestamp::min(left.timestamp, right.timestamp),
+            EitherOrBoth::Left(left) => left.timestamp,
+            EitherOrBoth::Right(right) => right.timestamp,
+        }
+    }
+}
+
+impl PartialEq for JoinValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl PartialOrd for JoinValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for JoinValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let left_ts = self.sortable_timestamp();
+        let right_ts = other.sortable_timestamp();
+        left_ts.cmp(&right_ts)
+    }
+}
+
+impl Eq for JoinValue {}
+
+impl Deref for JoinValue {
+    type Target = EitherOrBoth<Sample, Sample>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<JoinValue> for ValkeyValue {
+    fn from(row: JoinValue) -> Self {
+        match row.0 {
+            EitherOrBoth::Both(left, right) => {
+                ValkeyValue::Array(vec![ValkeyValue::from(left), ValkeyValue::from(right)])
+            }
+            EitherOrBoth::Left(left) => {
+                ValkeyValue::Array(vec![ValkeyValue::from(left), ValkeyValue::Null])
+            }
+            EitherOrBoth::Right(right) => {
+                ValkeyValue::Array(vec![ValkeyValue::Null, ValkeyValue::from(right)])
+            }
         }
     }
 }
@@ -73,36 +114,18 @@ impl JoinValue {
 impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
     fn from(value: EitherOrBoth<&Sample, &Sample>) -> Self {
         match value {
-            EitherOrBoth::Both(l, r) => {
-                let mut value = Self::both(l.timestamp, l.value, r.value);
-                value.other_timestamp = Some(r.timestamp);
-                value
-            }
-            EitherOrBoth::Left(l) => Self::left(l.timestamp, l.value),
-            EitherOrBoth::Right(r) => Self::right(r.timestamp, r.value),
+            EitherOrBoth::Both(l, r) => JoinValue::both(*l, *r),
+            EitherOrBoth::Left(l) => Self::left(*l),
+            EitherOrBoth::Right(r) => Self::right(*r),
         }
     }
 }
 
 impl From<EitherOrBoth<Sample, Sample>> for JoinValue {
     fn from(value: EitherOrBoth<Sample, Sample>) -> Self {
-        convert_join_item(value)
+        Self(value)
     }
 }
-
-impl PartialOrd for JoinValue {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.timestamp.cmp(&other.timestamp))
-    }
-}
-
-impl Ord for JoinValue {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.timestamp.cmp(&other.timestamp)
-    }
-}
-
-impl Eq for JoinValue {}
 
 #[derive(Clone, Debug, Copy, PartialEq)]
 pub struct AsOfJoinOptions {
@@ -167,12 +190,4 @@ pub struct JoinOptions {
     pub value_filter: Option<ValueFilter>,
     pub reducer: Option<JoinReducer>,
     pub aggregation: Option<AggregationOptions>,
-}
-
-pub(crate) fn convert_join_item(item: EitherOrBoth<Sample, Sample>) -> JoinValue {
-    match item {
-        EitherOrBoth::Both(l, r) => JoinValue::both(l.timestamp, l.value, r.value),
-        EitherOrBoth::Left(l) => JoinValue::left(l.timestamp, l.value),
-        EitherOrBoth::Right(r) => JoinValue::right(r.timestamp, r.value),
-    }
 }

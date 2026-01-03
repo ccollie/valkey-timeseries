@@ -14,17 +14,12 @@ pub enum JoinResultType {
     Values(Vec<JoinValue>),
 }
 
-impl JoinResultType {
-    pub fn to_valkey_value(&self) -> ValkeyValue {
-        let arr = match self {
-            JoinResultType::Samples(samples) => {
-                samples.iter().map(|x| sample_to_value(*x)).collect()
-            }
-            JoinResultType::Values(values) => {
-                values.iter().map(join_value_to_valkey_value).collect()
-            }
+impl From<JoinResultType> for ValkeyValue {
+    fn from(value: JoinResultType) -> Self {
+        let arr = match value {
+            JoinResultType::Samples(samples) => samples.iter().map(|x| x.into()).collect(),
+            JoinResultType::Values(values) => values.into_iter().map(|x| x.into()).collect(),
         };
-
         ValkeyValue::Array(arr)
     }
 }
@@ -89,10 +84,10 @@ where
 }
 
 pub(super) fn transform_join_value_to_sample(item: &JoinValue, f: BinopFunc) -> Sample {
-    match item.value {
-        EitherOrBoth::Both(l, r) => Sample::new(item.timestamp, f(l, r)),
-        EitherOrBoth::Left(l) => Sample::new(item.timestamp, f(l, f64::NAN)),
-        EitherOrBoth::Right(r) => Sample::new(item.timestamp, f(f64::NAN, r)),
+    match item.0 {
+        EitherOrBoth::Both(l, r) => Sample::new(l.timestamp, f(l.value, r.value)),
+        EitherOrBoth::Left(l) => Sample::new(l.timestamp, f(l.value, f64::NAN)),
+        EitherOrBoth::Right(r) => Sample::new(r.timestamp, f(f64::NAN, r.value)),
     }
 }
 
@@ -108,31 +103,4 @@ fn fetch_samples(ts: &TimeSeries, options: &JoinOptions) -> Vec<Sample> {
         samples.truncate(*count);
     }
     samples
-}
-
-fn join_value_to_valkey_value(row: &JoinValue) -> ValkeyValue {
-    let timestamp = ValkeyValue::from(row.timestamp);
-
-    match row.value {
-        EitherOrBoth::Both(left, right) => ValkeyValue::Array(vec![
-            timestamp,
-            ValkeyValue::from(left),
-            row.other_timestamp.map_or(ValkeyValue::from(right), |t| {
-                ValkeyValue::Array(vec![ValkeyValue::from(t), ValkeyValue::from(right)])
-            }),
-        ]),
-        EitherOrBoth::Left(left) => {
-            ValkeyValue::Array(vec![timestamp, ValkeyValue::from(left), ValkeyValue::Null])
-        }
-        EitherOrBoth::Right(right) => {
-            ValkeyValue::Array(vec![timestamp, ValkeyValue::Null, ValkeyValue::from(right)])
-        }
-    }
-}
-
-fn sample_to_value(sample: Sample) -> ValkeyValue {
-    ValkeyValue::Array(vec![
-        ValkeyValue::from(sample.timestamp),
-        ValkeyValue::from(sample.value),
-    ])
 }

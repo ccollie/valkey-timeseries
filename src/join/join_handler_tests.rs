@@ -3,9 +3,10 @@ mod tests {
     use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
     use crate::common::Sample;
     use crate::join::join_handler::join_internal;
-    use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType};
+    use crate::join::{JoinOptions, JoinReducer, JoinResultType, JoinType, JoinValue};
     use crate::series::request_types::AggregationOptions;
     use joinkit::EitherOrBoth;
+    use std::ops::Deref;
 
     fn create_basic_samples() -> (Vec<Sample>, Vec<Sample>) {
         let left = vec![
@@ -33,6 +34,39 @@ mod tests {
         }
     }
 
+    fn get_left_sample(value: &JoinValue) -> Sample {
+        match value.deref() {
+            EitherOrBoth::Left(l) => *l,
+            _ => panic!("Expected Left value"),
+        }
+    }
+
+    fn get_right_sample(value: &JoinValue) -> Sample {
+        match value.deref() {
+            EitherOrBoth::Right(r) => *r,
+            _ => panic!("Expected Right value"),
+        }
+    }
+
+    fn get_left_value(value: &JoinValue) -> f64 {
+        get_left_sample(value).value
+    }
+
+    fn get_both_samples(value: &JoinValue) -> (Sample, Sample) {
+        match value.deref() {
+            EitherOrBoth::Both(l, r) => (*l, *r),
+            _ => panic!("Expected Both value"),
+        }
+    }
+
+    fn get_timestamp(value: &JoinValue) -> i64 {
+        match value.deref() {
+            EitherOrBoth::Left(l) => l.timestamp,
+            EitherOrBoth::Right(r) => r.timestamp,
+            EitherOrBoth::Both(l, _) => l.timestamp,
+        }
+    }
+
     #[test]
     fn test_join_inner_no_reducer() {
         let (left, right) = create_basic_samples();
@@ -42,14 +76,11 @@ mod tests {
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1); // Only timestamp 20 exists in both series
-            assert_eq!(values[0].timestamp, 20);
-            match values[0].value {
-                EitherOrBoth::Both(l, r) => {
-                    assert_eq!(l, 2.0);
-                    assert_eq!(r, 20.0);
-                }
-                _ => panic!("Expected Both values"),
-            }
+            let (left, right) = get_both_samples(&values[0]);
+            assert_eq!(left.timestamp, 20);
+            assert_eq!(right.timestamp, 20);
+            assert_eq!(left.value, 2.0);
+            assert_eq!(right.value, 20.0);
         } else {
             panic!("Expected Values result type");
         }
@@ -67,32 +98,20 @@ mod tests {
             assert_eq!(values.len(), 3); // All the left timestamps
 
             // Check the first value (left-only)
-            assert_eq!(values[0].timestamp, 10);
-            match values[0].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 1.0);
-                }
-                _ => panic!("Expected Left value for timestamp 10"),
-            }
+            let left = get_left_sample(&values[0]);
+            assert_eq!(left.timestamp, 10);
+            assert_eq!(left.value, 1.0);
 
             // Check the second value (both)
-            assert_eq!(values[1].timestamp, 20);
-            match values[1].value {
-                EitherOrBoth::Both(l, r) => {
-                    assert_eq!(l, 2.0);
-                    assert_eq!(r, 20.0);
-                }
-                _ => panic!("Expected Both values for timestamp 20"),
-            }
+            let (l, r) = get_both_samples(&values[1]);
+            assert_eq!(l.timestamp, 20);
+            assert_eq!(l.value, 2.0);
+            assert_eq!(r.value, 20.0);
 
             // Check the third value (left-only)
-            assert_eq!(values[2].timestamp, 30);
-            match values[2].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 3.0);
-                }
-                _ => panic!("Expected Left value for timestamp 30"),
-            }
+            let left = get_left_sample(&values[2]);
+            assert_eq!(left.timestamp, 30);
+            assert_eq!(left.value, 3.0);
         } else {
             panic!("Expected Values result type");
         }
@@ -109,34 +128,21 @@ mod tests {
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // All right timestamps
 
-            // Check timestamps and values
-            assert_eq!(values[0].timestamp, 15);
-            assert_eq!(values[1].timestamp, 20);
-            assert_eq!(values[2].timestamp, 25);
-
             // Check the middle value (has both left and right)
-            match values[1].value {
-                EitherOrBoth::Both(l, r) => {
-                    assert_eq!(l, 2.0);
-                    assert_eq!(r, 20.0);
-                }
-                _ => panic!("Expected Both values for timestamp 20"),
-            }
+            let (l, r) = get_both_samples(&values[1]);
+            assert_eq!(l.timestamp, 20);
+            assert_eq!(l.timestamp, 20);
+            assert_eq!(l.value, 2.0);
+            assert_eq!(r.value, 20.0);
 
             // Check the other values (right-only)
-            match values[0].value {
-                EitherOrBoth::Right(r) => {
-                    assert_eq!(r, 10.0);
-                }
-                _ => panic!("Expected Right value for timestamp 15"),
-            }
+            let right = get_right_sample(&values[0]);
+            assert_eq!(right.timestamp, 15);
+            assert_eq!(right.value, 10.0);
 
-            match values[2].value {
-                EitherOrBoth::Right(r) => {
-                    assert_eq!(r, 30.0);
-                }
-                _ => panic!("Expected Right value for timestamp 25"),
-            }
+            let r = get_right_sample(&values[2]);
+            assert_eq!(r.timestamp, 25);
+            assert_eq!(r.value, 30.0);
         } else {
             panic!("Expected Values result type");
         }
@@ -154,35 +160,41 @@ mod tests {
             assert_eq!(values.len(), 5); // All unique timestamps from both series
 
             // Verify timestamps are in order
-            assert_eq!(values[0].timestamp, 10);
-            assert_eq!(values[1].timestamp, 15);
-            assert_eq!(values[2].timestamp, 20);
-            assert_eq!(values[3].timestamp, 25);
-            assert_eq!(values[4].timestamp, 30);
 
             // Check value types at each timestamp
-            match values[0].value {
-                EitherOrBoth::Left(_) => (),
+            match values[0].deref() {
+                EitherOrBoth::Left(l) => {
+                    assert_eq!(l.timestamp, 10);
+                }
                 _ => panic!("Expected Left value for timestamp 10"),
             }
 
-            match values[1].value {
-                EitherOrBoth::Right(_) => (),
+            match values[1].deref() {
+                EitherOrBoth::Right(r) => {
+                    assert_eq!(r.timestamp, 15);
+                }
                 _ => panic!("Expected Right value for timestamp 15"),
             }
 
-            match values[2].value {
-                EitherOrBoth::Both(_, _) => (),
+            match values[2].deref() {
+                EitherOrBoth::Both(l, r) => {
+                    assert_eq!(l.timestamp, 20);
+                    assert_eq!(r.timestamp, 20);
+                }
                 _ => panic!("Expected Both values for timestamp 20"),
             }
 
-            match values[3].value {
-                EitherOrBoth::Right(_) => (),
+            match values[3].deref() {
+                EitherOrBoth::Right(r) => {
+                    assert_eq!(r.timestamp, 25);
+                }
                 _ => panic!("Expected Right value for timestamp 25"),
             }
 
-            match values[4].value {
-                EitherOrBoth::Left(_) => (),
+            match values[4].deref() {
+                EitherOrBoth::Left(l) => {
+                    assert_eq!(l.timestamp, 30);
+                }
                 _ => panic!("Expected Left value for timestamp 30"),
             }
         } else {
@@ -269,9 +281,9 @@ mod tests {
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 3); // Limited to 3 values
-            assert_eq!(values[0].timestamp, 10);
-            assert_eq!(values[1].timestamp, 15);
-            assert_eq!(values[2].timestamp, 20);
+            assert_eq!(get_timestamp(&values[0]), 10);
+            assert_eq!(get_timestamp(&values[1]), 15);
+            assert_eq!(get_timestamp(&values[2]), 20);
         } else {
             panic!("Expected Values result type");
         }
@@ -341,7 +353,7 @@ mod tests {
 
             // All should be right-only values
             for value in values {
-                match value.value {
+                match value.deref() {
                     EitherOrBoth::Right(_) => (),
                     _ => panic!("Expected only Right values"),
                 }
@@ -365,7 +377,7 @@ mod tests {
 
             // All should be left-only values
             for value in values {
-                match value.value {
+                match value.deref() {
                     EitherOrBoth::Left(_) => (),
                     _ => panic!("Expected only Left values"),
                 }
@@ -386,15 +398,11 @@ mod tests {
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1); // Only timestamp 20 exists in both series
-            assert_eq!(values[0].timestamp, 20);
 
             // In a semi-join, only left values are returned for matches
-            match values[0].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 2.0);
-                }
-                _ => panic!("Expected Left value for timestamp 20"),
-            }
+            let l = get_left_sample(&values[0]);
+            assert_eq!(l.timestamp, 20);
+            assert_eq!(l.value, 2.0);
         } else {
             panic!("Expected Values result type");
         }
@@ -498,22 +506,14 @@ mod tests {
             assert_eq!(values.len(), 2); // Two matching timestamps: 20 and 30
 
             // Check first match
-            assert_eq!(values[0].timestamp, 20);
-            match values[0].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 2.0);
-                }
-                _ => panic!("Expected Left value for timestamp 20"),
-            }
+            let l = get_left_sample(&values[0]);
+            assert_eq!(l.value, 2.0);
+            assert_eq!(l.timestamp, 20);
 
             // Check the second match
-            assert_eq!(values[1].timestamp, 30);
-            match values[1].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 3.0);
-                }
-                _ => panic!("Expected Left value for timestamp 30"),
-            }
+            let l = get_left_sample(&values[1]);
+            assert_eq!(l.value, 3.0);
+            assert_eq!(l.timestamp, 30);
         } else {
             panic!("Expected Values result type");
         }
@@ -573,8 +573,8 @@ mod tests {
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2); // Limited to 2 results
-            assert_eq!(values[0].timestamp, 20);
-            assert_eq!(values[1].timestamp, 30);
+            assert_eq!(get_timestamp(&values[0]), 20);
+            assert_eq!(get_timestamp(&values[1]), 30);
             // 40 is also a match but should be excluded due to the count limit
         } else {
             panic!("Expected Values result type");
@@ -595,12 +595,8 @@ mod tests {
         let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1);
-            match values[0].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 2.0);
-                }
-                _ => panic!("Expected Left value for semi join"),
-            }
+            let value = get_left_value(&values[0]);
+            assert_eq!(value, 2.0);
         }
 
         // Test inner join for comparison
@@ -610,13 +606,9 @@ mod tests {
         let result = join_internal(left, right, &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1);
-            match values[0].value {
-                EitherOrBoth::Both(l, r) => {
-                    assert_eq!(l, 2.0);
-                    assert_eq!(r, 20.0);
-                }
-                _ => panic!("Expected Both values for inner join"),
-            }
+            let (l, r) = get_both_samples(&values[0]);
+            assert_eq!(l.value, 2.0);
+            assert_eq!(r.value, 20.0);
         }
     }
 
@@ -637,7 +629,7 @@ mod tests {
         let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1);
-            assert_eq!(values[0].timestamp, 20); // Only timestamp 20 matches
+            assert_eq!(get_timestamp(&values[0]), 20); // Only timestamp 20 matches
         }
 
         // Test anti-join (should return rows where timestamps don't match)
@@ -647,8 +639,8 @@ mod tests {
         let result = join_internal(left, right, &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2);
-            assert_eq!(values[0].timestamp, 10); // Timestamps 10 and 30 don't match
-            assert_eq!(values[1].timestamp, 30);
+            assert_eq!(get_timestamp(&values[0]), 10); // Timestamps 10 and 30 don't match
+            assert_eq!(get_timestamp(&values[1]), 30);
         }
     }
 
@@ -665,22 +657,14 @@ mod tests {
             assert_eq!(values.len(), 2); // Timestamps 10 and 30 from the left don't exist in right
 
             // Check the first value
-            assert_eq!(values[0].timestamp, 10);
-            match values[0].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 1.0);
-                }
-                _ => panic!("Expected Left value for timestamp 10"),
-            }
+            let l = get_left_sample(&values[0]);
+            assert_eq!(l.timestamp, 10);
+            assert_eq!(l.value, 1.0);
 
             // Check the second value
-            assert_eq!(values[1].timestamp, 30);
-            match values[1].value {
-                EitherOrBoth::Left(l) => {
-                    assert_eq!(l, 3.0);
-                }
-                _ => panic!("Expected Left value for timestamp 30"),
-            }
+            let l = get_left_sample(&values[1]);
+            assert_eq!(l.timestamp, 30);
+            assert_eq!(l.value, 3.0);
 
             // Timestamp 20 should not be present since it exists in both left and right
         } else {
@@ -794,13 +778,13 @@ mod tests {
             assert_eq!(values.len(), 3); // All left rows should be returned
 
             // Check all timestamps and values
-            assert_eq!(values[0].timestamp, 10);
-            assert_eq!(values[1].timestamp, 20);
-            assert_eq!(values[2].timestamp, 30);
+            assert_eq!(get_timestamp(&values[0]), 10);
+            assert_eq!(get_timestamp(&values[1]), 20);
+            assert_eq!(get_timestamp(&values[2]), 30);
 
             // Verify all values are from the left side
             for value in values {
-                match value.value {
+                match value.deref() {
                     EitherOrBoth::Left(_) => (),
                     _ => panic!("Expected Left value"),
                 }
@@ -860,7 +844,7 @@ mod tests {
 
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1); // Limited to 1 result
-            assert_eq!(values[0].timestamp, 10); // Only the first non-matching timestamp
+            assert_eq!(get_timestamp(&values[0]), 10); // Only the first non-matching timestamp
         } else {
             panic!("Expected Values result type");
         }
@@ -883,8 +867,8 @@ mod tests {
         let result = join_internal(left.clone(), right.clone(), &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 2);
-            assert_eq!(values[0].timestamp, 10); // Timestamps 10 and 30 don't match
-            assert_eq!(values[1].timestamp, 30);
+            assert_eq!(get_timestamp(&values[0]), 10); // Timestamps 10 and 30 don't match
+            assert_eq!(get_timestamp(&values[1]), 30);
         }
 
         // Test semi-join (should return rows where timestamps match)
@@ -894,7 +878,7 @@ mod tests {
         let result = join_internal(left, right, &options);
         if let JoinResultType::Values(values) = result {
             assert_eq!(values.len(), 1);
-            assert_eq!(values[0].timestamp, 20); // Only timestamp 20 matches
+            assert_eq!(get_timestamp(&values[0]), 20); // Only timestamp 20 matches
         }
     }
 
@@ -957,11 +941,14 @@ mod tests {
 
             // Verify that all returned timestamps are not multiples of 4
             for value in values {
+                let EitherOrBoth::Left(left) = &value.0 else {
+                    panic!("Expected Left value")
+                };
                 assert_eq!(
-                    value.timestamp % 4,
+                    left.timestamp % 4,
                     2,
                     "Timestamp {} should not be a multiple of 4",
-                    value.timestamp
+                    left.timestamp
                 );
             }
         } else {

@@ -51,11 +51,15 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Check the structure of the result
         for item in result:
-            # Each row should have 3 elements: timestamp, left value, right value
-            assert len(item) == 3
+            # Each row should have 2 elements: left sample, right sample
+            assert len(item) == 2
 
             # Get the timestamp and values
-            ts, left_val, right_val = item
+            left, right = item
+
+            ts = left[0]
+            left_val = left[1]
+            right_val = right[1]
 
             # Calculate expected values
             idx = (ts - self.now) // 1000
@@ -81,7 +85,10 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 10
 
         for item in result:
-            ts, left_val, right_val = item
+            left, right = item
+
+            ts = left[0]
+            left_val = left[1]
 
             # Calculate the expected left value
             idx = (ts - self.now) // 1000
@@ -92,9 +99,10 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
             # For timestamps 0-4, the right value should be None
             if idx < 5:
-                assert right_val is None
+                assert right is None
             else:
                 # For timestamps 5-9, the right value should match
+                right_val = right[1]
                 expected_right = idx * 5
                 assert float(right_val) == expected_right
 
@@ -113,22 +121,26 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 10
 
         for item in result:
-            ts, left_val, right_val = item
+            left, right = item
+
+            ts = right[0]
+            right_val = float(right[1])
 
             # Calculate the expected right value
             idx = (ts - self.now) // 1000
             expected_right = idx * 5
 
             # Verify right value
-            assert float(right_val) == expected_right
+            assert right_val == expected_right
 
             # For timestamps 10-14, the left value should be None
             if idx >= 10:
-                assert left_val is None
+                assert left is None
             else:
                 # For timestamps 5-9, the left value should match
                 expected_left = idx * 10
-                assert float(left_val) == expected_left
+                left_val = float(left[1])
+                assert left_val == expected_left
 
     def test_full_join(self):
         """Test full join operation"""
@@ -145,7 +157,9 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 15
 
         for item in result:
-            ts, left_val, right_val = item
+            left, right = item
+
+            ts = left[0] if left is not None else right[0]
 
             # Calculate the index
             idx = (ts - self.now) // 1000
@@ -153,16 +167,18 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             # Check left value
             if idx < 10:
                 expected_left = idx * 10
-                assert float(left_val) == expected_left
+                left_val = float(left[1])
+                assert left_val == expected_left
             else:
-                assert left_val is None
+                assert left is None
 
             # Check the right value
             if 5 <= idx < 15:
                 expected_right = idx * 5
-                assert float(right_val) == expected_right
+                right_val = float(right[1])
+                assert right_val == expected_right
             else:
-                assert right_val is None
+                assert right is None
 
     def test_anti_join(self):
         """Test anti-join operation"""
@@ -177,18 +193,19 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Should return timestamps in the left that aren't in the right (0-4)
         assert len(result) == 5
-        print(result)
 
         for item in result:
-            ts, left_val, right_val = item
+            left, right = item
 
+            ts = left[0]
+            left_val = left[1]
             # Calculate expected value
             idx = (ts - self.now) // 1000
             expected_left = idx * 10
 
             # Verify values
             assert float(left_val) == expected_left
-            assert right_val is None
+            assert right is None
             assert idx < 5  # Only indexes 0-4 should be present
 
     def test_semi_join(self):
@@ -204,18 +221,19 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Should return timestamps in the left that are also in the right (5-9)
         assert len(result) == 5
-        print(result)
 
         for item in result:
-            ts, left_val, right_val = item
+            left, right = item
 
+            ts = left[0]
             # Calculate expected value
             idx = (ts - self.now) // 1000
             expected_left = idx * 10
 
             # Verify values
+            left_val = left[1]
             assert float(left_val) == expected_left
-            assert right_val is None # The right value should be None
+            assert right is None # The right value should be None
             assert 5 <= idx < 10  # Only indexes 5-9 should be present
 
     def test_asof_join(self):
@@ -243,15 +261,16 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         assert len(result) > 0
 
         for item in result:
-            ts, left_val, right_info = item
+            left, right = item
 
+            ts = left[0]
             idx = (ts - self.now) // 1000
             
             # Check if within tolerance range
-            if idx > 0 and idx < 5:
+            if 0 < idx < 5:
                 # Should have a match
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
+                right_ts = right[0]
+                right_val = float(right[1])
                 # Verify the right timestamp is within tolerance
                 assert abs(ts - right_ts) <= 500
                 # Verify the value
@@ -287,18 +306,18 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Verify PREVIOUS matches
         for item in result:
-            ts, left_val, right_info = item
+            left, right = item
+
+            ts = left[0]
+            right_ts = right[0]
+            right_val = float(right[1])
             
             if ts == self.now + 2000:
                 # Should match with 1500 (closest previous within tolerance)
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
                 assert right_ts == self.now + 1500
                 assert float(right_val) == 10
             elif ts == self.now + 4000:
                 # Should match with 3500
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
                 assert right_ts == self.now + 3500
                 assert float(right_val) == 20
 
@@ -311,18 +330,18 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Verify NEXT matches
         for item in result:
-            ts, left_val, right_info = item
-            
+            left, right = item
+
+            ts = left[0]
+            right_ts = right[0]
+            right_val = float(right[1])
+
             if ts == self.now + 2000:
                 # Should match with 3500 (closest next within tolerance)
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
                 assert right_ts == self.now + 3500
                 assert float(right_val) == 20
             elif ts == self.now + 5000:
                 # Should match with 6500
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
                 assert right_ts == self.now + 6500
                 assert float(right_val) == 30
 
@@ -335,19 +354,19 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Verify NEAREST matches
         for item in result:
-            ts, left_val, right_info = item
+            left, right = item
+
+            ts = left[0]
+            right_ts = right[0]
+            right_val = float(right[1])
             
             if ts == self.now + 2000:
                 # Should match with 1500 (1500 is closer than 3500)
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
                 assert right_ts == self.now + 1500
                 assert float(right_val) == 10
             elif ts == self.now + 5000:
                 # Should match with either 3500 or 6500 (both 1500ms away)
                 # Implementation may choose either
-                assert isinstance(right_info, list)
-                right_ts, right_val = right_info
                 assert right_ts in [self.now + 3500, self.now + 6500]
 
     def test_asof_tolerance_boundaries(self):
@@ -384,13 +403,18 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # At timestamp 1000, the point at 500 is exactly 500ms away - should match
         matched_at_1000 = False
+
+        # Validates series join at the exact tolerance boundary
         for item in result:
-            ts, left_val, right_info = item
+            left, right = item
+
+            ts = left[0]
+            right_stamp = right[0]
+            right_val = float(right[1])
+
             if ts == base_time + 1000:
-                assert isinstance(right_info, list)
-                right_stamp, right_val = right_info
                 assert right_stamp == base_time + 500
-                assert float(right_val) == 100
+                assert right_val == 100
                 matched_at_1000 = True
         
         assert matched_at_1000, "Should match at exactly tolerance boundary"
@@ -404,10 +428,13 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # At timestamp 1000, the point at 500 is 500ms away - should NOT match
         for item in result:
-            ts, left_val, right_info = item
+            left, right = item
+
+            ts = left[0]
+
             if ts == base_time + 1000:
                 # Should be None or not have the 500ms point
-                if right_info is not None:
+                if right is not None:
                     assert False, "Should not match outside tolerance"
 
         # Test with zero tolerance (exact matches only)
@@ -419,8 +446,8 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
 
         # Should have no matches since there are no exact timestamp matches
         for item in result:
-            ts, left_val, right_info = item
-            assert right_info is None, "Zero tolerance should require exact matches"
+            left, right = item
+            assert right is None, "Zero tolerance should require exact matches"
 
     def test_asof_with_no_matches(self):
         """Test ASOF join when no points are within tolerance"""
@@ -476,7 +503,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         for ts, val in right_points.items():
             self.client.execute_command("TS.ADD", right_series, ts, val)
 
-        # Test PREVIOUS - should match closest previous
+        # Test PREVIOUS - should match the closest previous
         result = self.client.execute_command(
             "TS.JOIN", left_series, right_series,
             base_time, base_time + 10000,
@@ -484,12 +511,14 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         )
 
         assert len(result) == 1
-        ts, left_val, right_info = result[0]
-        assert isinstance(right_info, list)
-        right_ts, right_val = right_info
+        left_val, right = result[0]
+        assert right is not None
+        right_ts = right[0]
+        right_val = float(right[1])
+
         # Should match 4800 (closest previous within tolerance)
         assert right_ts == base_time + 4800
-        assert float(right_val) == 200
+        assert right_val == 200
 
         # Test NEXT - should match closest next
         result = self.client.execute_command(
@@ -499,12 +528,15 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         )
 
         assert len(result) == 1
-        ts, left_val, right_info = result[0]
-        assert isinstance(right_info, list)
-        right_ts, right_val = right_info
+        left, right = result[0]
+        assert right is not None
+
+        right_ts = right[0]
+        right_val = float(right[1])
+
         # Should match 5200 (closest next within tolerance)
         assert right_ts == base_time + 5200
-        assert float(right_val) == 300
+        assert right_val == 300
 
         # Test NEAREST - should match the absolutely closest
         result = self.client.execute_command(
@@ -514,9 +546,11 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         )
 
         assert len(result) == 1
-        ts, left_val, right_info = result[0]
-        assert isinstance(right_info, list)
-        right_ts, right_val = right_info
+        left, right = result[0]
+        assert right is not None
+
+        right_ts = right[0]
+
         # Should match either 4800 or 5200 (both 200ms away)
         assert right_ts in [base_time + 4800, base_time + 5200]
 
@@ -616,11 +650,13 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         )
 
         assert len(result) == 1
-        ts, left_val, right_info = result[0]
-        assert isinstance(right_info, list)
-        right_ts, right_val = right_info
+        left, right = result[0]
+        assert right is not None
+
+        right_ts = right[0]
+        right_val = float(right[1])
         assert right_ts == base_time
-        assert float(right_val) == 200
+        assert right_val == 200
 
     def test_error_cases(self):
         """Test error cases"""

@@ -35,13 +35,14 @@ impl JoinRightIter {
             }
             EitherOrBoth::Right(r) => {
                 for row in r.iter() {
-                    self.heap.push(JoinValue::right(row.timestamp, row.value));
+                    self.heap.push(JoinValue::right(*row));
                 }
             }
             EitherOrBoth::Both(left, right) => {
                 let ts = left.timestamp;
                 for sample in right.iter() {
-                    let row = JoinValue::both(ts, left.value, sample.value);
+                    let row =
+                        JoinValue::both(Sample::new(ts, left.value), Sample::new(ts, sample.value));
                     self.heap.push(row);
                 }
             }
