@@ -63,15 +63,17 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
                                              'GROUPBY', 'region',
                                              'REDUCE', 'sum')
 
+        print("GroupBy result", result)
+
         assert len(result) == 2
 
         regions_found = set()
         for series in result:
-            labels_dict = {item[0].decode(): item[1].decode() for item in series[1]}
-            regions_found.add(labels_dict.get('region'))
+            labels_dict = {item[0]: item[1] for item in series[1]}
+            regions_found.add(labels_dict.get(b'region'))
             assert len(series[2]) == 10
 
-        assert regions_found == {'east', 'west'}
+        assert regions_found == {b'east', b'west'}
 
     def test_mrange_cme_groupby_with_aggregation(self):
         """Test TS.MRANGE GROUPBY with AGGREGATION across slots."""
@@ -88,11 +90,11 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         sensors_found = set()
         for series in result:
-            labels_dict = {item[0].decode(): item[1].decode() for item in series[1]}
-            sensors_found.add(labels_dict.get('sensor'))
-            assert labels_dict['__reducer__'] == 'max'
+            labels_dict = {item[0]: item[1] for item in series[1]}
+            sensors_found.add(labels_dict.get(b'sensor'))
+            assert labels_dict[b'__reducer__'] == b'max'
 
-        assert sensors_found == {'temp', 'humid'}
+        assert sensors_found == {b'temp', b'humid'}
 
     def test_mrange_cme_count(self):
         """Test TS.MRANGE COUNT across different slots."""
@@ -125,8 +127,8 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
             assert len(series[2]) == 4
 
 
-        def test_mrange_cme_withlabels(self):
-            """Test TS.MRANGE WITHLABELS across different slots."""
+    def test_mrange_cme_withlabels(self):
+        """Test TS.MRANGE WITHLABELS across different slots."""
         self.setup_clustered_data()
 
         client = self.new_client_for_primary(0)
@@ -136,9 +138,9 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         assert len(result) == 2
         for series in result:
-            labels_dict = {item[0].decode(): item[1].decode() for item in series[1]}
-            assert labels_dict['region'] == 'east'
-            assert 'sensor' in labels_dict
+            labels_dict = {item[0]: item[1] for item in series[1]}
+            assert labels_dict[b'region'] == b'east'
+            assert b'sensor' in labels_dict
 
     def test_mrange_cme_selected_labels(self):
         """Test TS.MRANGE SELECTED_LABELS across different slots."""
@@ -151,9 +153,9 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         assert len(result) == 4
         for series in result:
-            labels_dict = {item[0].decode(): item[1].decode() for item in series[1]}
+            labels_dict = {item[0]: item[1] for item in series[1]}
             assert len(labels_dict) == 1
-            assert 'region' in labels_dict
+            assert b'region' in labels_dict
 
     def test_mrange_cme_filter_by_value(self):
         """Test TS.MRANGE FILTER_BY_VALUE across different slots."""
@@ -191,8 +193,8 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
                                         'REDUCE', 'min')
 
         assert len(result) == 1
-        labels_dict = {item[0].decode(): item[1].decode() for item in result[0][1]}
-        assert labels_dict['__reducer__'] == 'min'
+        labels_dict = {item[0]: item[1] for item in result[0][1]}
+        assert labels_dict[b'__reducer__'] == b'min'
 
         for ts, val in result[0][2]:
             val = float(val.decode())
@@ -210,8 +212,8 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         assert len(result) == 2
         for series in result:
-            labels_dict = {item[0].decode(): item[1].decode() for item in series[1]}
-            assert labels_dict['__reducer__'] == 'max'
+            labels_dict = {item[0]: item[1] for item in series[1]}
+            assert labels_dict[b'__reducer__'] == b'max'
 
 
     def test_mrange_cme_latest(self):
@@ -326,8 +328,8 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         assert len(result) == 2
         for series in result:
-            labels_dict = {item[0].decode(): item[1].decode() for item in series[1]}
-            assert labels_dict['sensor'] == 'temp'
+            labels_dict = {item[0]: item[1] for item in series[1]}
+            assert labels_dict[b'sensor'] == b'temp'
             timestamps = [sample[0] for sample in series[2]]
             assert timestamps == sorted(timestamps, reverse=True)
 
