@@ -2,7 +2,7 @@ use crate::common::{Sample, Timestamp};
 use crate::iterators::TimeSeriesRangeIterator;
 use crate::labels::InternedLabel;
 use crate::series::TimeSeries;
-use crate::series::request_types::{AggregationOptions, RangeOptions};
+use crate::series::request_types::RangeOptions;
 use std::cmp::Ordering;
 use valkey_module::Context;
 
@@ -78,6 +78,7 @@ pub fn get_series_labels<'a>(
 mod tests {
     use super::*;
     use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
+    use crate::series::request_types::AggregationOptions;
     use crate::series::{TimeSeriesOptions, TimestampRange, TimestampValue, ValueFilter};
     use std::time::Duration;
 
