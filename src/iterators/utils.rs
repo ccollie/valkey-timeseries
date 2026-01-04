@@ -40,13 +40,33 @@ pub fn create_range_iterator<'a>(
     is_reverse: bool,
 ) -> Box<dyn Iterator<Item = Sample> + 'a> {
     let has_aggregation = options.aggregation.is_some();
-
-    // Aggregation requires ascending input order from base iterators
-    // Without aggregation, base iterators can directly provide the requested order
     let should_reverse_iter = !has_aggregation && is_reverse;
-
-    // Apply reversal after aggregation if needed
     let should_reverse_aggr = has_aggregation && is_reverse;
+
+    // Helper to handle the "latest sample" chaining logic which depends on direction
+    // and avoids boxing by using generics.
+    fn chain_latest<'a, I>(
+        base: I,
+        latest: Option<Sample>,
+        opts: &RangeOptions,
+        grp: &Option<RangeGroupingOptions>,
+        reverse_aggr: bool,
+        should_reverse_iter: bool,
+    ) -> Box<dyn Iterator<Item = Sample> + 'a>
+    where
+        I: Iterator<Item = Sample> + 'a,
+    {
+        if let Some(sample) = latest {
+            let latest_iter = std::iter::once(sample);
+            if should_reverse_iter && opts.aggregation.is_none() {
+                create_sample_iterator_adapter(latest_iter.chain(base), opts, grp, reverse_aggr)
+            } else {
+                create_sample_iterator_adapter(base.chain(latest_iter), opts, grp, reverse_aggr)
+            }
+        } else {
+            create_sample_iterator_adapter(base, opts, grp, reverse_aggr)
+        }
+    }
 
     if let Some(ts_filter) = options.timestamp_filter.as_ref() {
         let base_iter = TimestampFilterIterator::new(series, ts_filter, should_reverse_iter);
@@ -59,37 +79,26 @@ pub fn create_range_iterator<'a>(
             value_filter: options.value_filter,
             timestamp_filter: None,
         };
-        if let Some(sample) = latest_sample {
-            let latest_iter = std::iter::once(sample);
-            return if is_reverse && options.aggregation.is_none() {
-                // Only chain latest first for non-aggregation reverse queries
-                let chained = latest_iter.chain(base_iter);
-                create_sample_iterator_adapter(chained, &opts, grouping, should_reverse_aggr)
-            } else {
-                let chained = base_iter.chain(latest_iter);
-                create_sample_iterator_adapter(chained, &opts, grouping, should_reverse_aggr)
-            };
-        }
-        return create_sample_iterator_adapter(base_iter, &opts, grouping, should_reverse_aggr);
+        chain_latest(
+            base_iter,
+            latest_sample,
+            &opts,
+            grouping,
+            should_reverse_aggr,
+            is_reverse,
+        )
+    } else {
+        let base_iter =
+            SeriesSampleIterator::from_range_options(series, options, should_reverse_iter);
+        chain_latest(
+            base_iter,
+            latest_sample,
+            options,
+            grouping,
+            should_reverse_aggr,
+            is_reverse,
+        )
     }
-
-    // No special handling required, use the standard sample iterator.
-    let base_iter = SeriesSampleIterator::from_range_options(series, options, should_reverse_iter);
-
-    // duplication is necessary to avoid boxing
-    if let Some(sample) = latest_sample {
-        let latest_iter = std::iter::once(sample);
-        return if is_reverse && options.aggregation.is_none() {
-            // Only chain latest first for non-aggregation reverse queries
-            let chained = latest_iter.chain(base_iter);
-            create_sample_iterator_adapter(chained, options, grouping, should_reverse_aggr)
-        } else {
-            let chained = base_iter.chain(latest_iter);
-            create_sample_iterator_adapter(chained, options, grouping, should_reverse_aggr)
-        };
-    }
-
-    create_sample_iterator_adapter(base_iter, options, grouping, should_reverse_aggr)
 }
 
 /// Create a sample iterator adapter that applies filtering, aggregation, grouping, and limits
@@ -102,71 +111,63 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
     grouping: &Option<RangeGroupingOptions>,
     is_reverse: bool,
 ) -> Box<dyn Iterator<Item = Sample> + 'a> {
-    fn handle_reverse<'a>(
-        base_iter: impl Iterator<Item = Sample> + 'a,
+    // Apply Filters (Timestamp & Value)
+    let ts_filter = options
+        .timestamp_filter
+        .as_ref()
+        .map(|f| TimestampFilter::new(f));
+    let val_filter = options.value_filter;
+
+    let filtered = base_iter.filter(move |sample| {
+        if let Some(ts) = &ts_filter {
+            if !ts.contains(sample.timestamp) {
+                return false;
+            }
+        }
+        if let Some(val) = &val_filter {
+            if !val.is_match(sample.value) {
+                return false;
+            }
+        }
+        true
+    });
+
+    let count = options.count;
+
+    // Helper to apply reversal and limits, then box.
+    // This ensures we only box once at the very end of the chain.
+    fn finalize<'a, I: Iterator<Item = Sample> + 'a>(
+        iter: I,
         is_reverse: bool,
         count: Option<usize>,
     ) -> Box<dyn Iterator<Item = Sample> + 'a> {
         if is_reverse {
-            let iter = ReverseSampleIter::new(base_iter);
-            apply_iter_limit!(iter, count)
+            let rev = ReverseSampleIter::new(iter);
+            apply_iter_limit!(rev, count)
         } else {
-            apply_iter_limit!(base_iter, count)
+            apply_iter_limit!(iter, count)
         }
     }
 
-    fn create_inner<'a>(
-        base_iter: impl Iterator<Item = Sample> + 'a,
-        options: &RangeOptions,
-        grouping: &Option<RangeGroupingOptions>,
-        is_reverse: bool,
-    ) -> Box<dyn Iterator<Item = Sample> + 'a> {
-        let count = options.count;
-        match (&options.aggregation, &grouping) {
-            (Some(agg), Some(grouping)) => {
-                let grouping_aggregation = grouping.aggregation;
-                let aggr_iter = create_aggregate_iterator(base_iter, options, agg);
-                let reducer = ReduceIterator::new(aggr_iter, grouping_aggregation);
-                handle_reverse(reducer, is_reverse, count)
-            }
-            (None, Some(grouping)) => {
-                let aggregation = grouping.aggregation;
-                let reducer = ReduceIterator::new(base_iter, aggregation);
-                handle_reverse(reducer, is_reverse, count)
-            }
-            (Some(aggregation), None) => {
-                let aggr_iter = create_aggregate_iterator(base_iter, options, aggregation);
-                handle_reverse(aggr_iter, is_reverse, count)
-            }
-            _ => handle_reverse(base_iter, is_reverse, count),
+    match (&options.aggregation, grouping) {
+        (Some(agg), Some(grp)) => {
+            let aggr_iter = create_aggregate_iterator(filtered, options, agg);
+            let reducer = ReduceIterator::new(aggr_iter, grp.aggregation);
+            finalize(reducer, is_reverse, count)
         }
-    }
-
-    // done as a match to minimize boxing and closures
-    match (&options.timestamp_filter, &options.value_filter) {
-        (Some(ts_filter), Some(val_filter)) => {
-            let timestamps = TimestampFilter::new(ts_filter);
-            let filter = *val_filter;
-            let filtered = base_iter.filter(move |sample| {
-                timestamps.contains(sample.timestamp) && filter.is_match(sample.value)
-            });
-            create_inner(filtered, options, grouping, is_reverse)
+        (None, Some(grp)) => {
+            let reducer = ReduceIterator::new(filtered, grp.aggregation);
+            finalize(reducer, is_reverse, count)
         }
-        (Some(ts_filter), None) => {
-            let timestamps = TimestampFilter::new(ts_filter);
-            let filtered = base_iter.filter(move |sample| timestamps.contains(sample.timestamp));
-            create_inner(filtered, options, grouping, is_reverse)
+        (Some(agg), None) => {
+            let aggr_iter = create_aggregate_iterator(filtered, options, agg);
+            finalize(aggr_iter, is_reverse, count)
         }
-        (None, Some(val_filter)) => {
-            let filter = *val_filter;
-            let filtered = base_iter.filter(move |sample| filter.is_match(sample.value));
-            create_inner(filtered, options, grouping, is_reverse)
-        }
-        (None, None) => create_inner(base_iter, options, grouping, is_reverse),
+        (None, None) => finalize(filtered, is_reverse, count),
     }
 }
 
-struct ReverseSampleIter<I>
+pub(crate) struct ReverseSampleIter<I>
 where
     I: Iterator<Item = Sample>,
 {
