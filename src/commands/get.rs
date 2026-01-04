@@ -8,30 +8,23 @@ pub fn get(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(WrongArity);
     }
 
-    let latest = if args.len() == 3 {
-        let arg = args[2].as_slice();
-        if arg.len() != 6 || !arg.eq_ignore_ascii_case("latest".as_ref()) {
-            return Err(ValkeyError::Str("TSDB: wrong 3rd argument"));
-        }
-        true
-    } else {
-        false
-    };
+    let latest = args
+        .get(2)
+        .map(|arg| arg.eq_ignore_ascii_case("latest".as_ref()))
+        .unwrap_or(false);
+
+    if args.len() == 3 && !latest {
+        return Err(ValkeyError::Str("TSDB: wrong 3rd argument"));
+    }
 
     let key = &args[1];
-    let sample = with_timeseries(ctx, key, true, move |series| {
-        if latest {
-            if let Some(value) = get_latest_compaction_sample(ctx, series) {
-                return Ok(Some(value));
-            };
-            Ok(None)
+    let sample = with_timeseries(ctx, key, true, |series| {
+        if latest && let Some(value) = get_latest_compaction_sample(ctx, series) {
+            Ok(Some(value))
         } else {
             Ok(series.last_sample)
         }
     })?;
 
-    Ok(match sample {
-        Some(sample) => sample.into(),
-        None => ValkeyValue::Array(vec![]),
-    })
+    Ok(sample.map_or_else(|| ValkeyValue::Array(vec![]), Into::into))
 }
