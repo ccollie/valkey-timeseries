@@ -244,3 +244,189 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
         assert len(result[0][2]) == 1
         assert result[0][2][0][0] == 1000
         assert float(result[0][2][0][1]) == 42.0
+
+    def test_mrevrange_latest_with_partial_bucket(self):
+        """Test TS.MREVRANGE LATEST with partial (unclosed) compaction buckets"""
+        # Create source and compaction series with 60-second buckets
+        self.client.execute_command('TS.CREATE', 'source:partial')
+        self.client.execute_command('TS.CREATE', 'compact:partial',
+                                    'LABELS', 'type', 'partial')
+        self.client.execute_command('TS.CREATERULE', 'source:partial', 'compact:partial',
+                                    'AGGREGATION', 'avg', 60000)
+
+        base_ts = 1000
+        # Add samples that span multiple buckets
+        for i in range(8):
+            self.client.execute_command('TS.ADD', 'source:partial', base_ts + i * 10000, i * 5)
+
+        # Add a few more samples in a new bucket that isn't closed yet
+        # This creates a partial bucket at base_ts + 120000
+        partial_bucket_start = base_ts + 120000
+        self.client.execute_command('TS.ADD', 'source:partial', partial_bucket_start, 100)
+        self.client.execute_command('TS.ADD', 'source:partial', partial_bucket_start + 10000, 110)
+        self.client.execute_command('TS.ADD', 'source:partial', partial_bucket_start + 20000, 120)
+
+        # Query with LATEST - should include the partial bucket's latest sample
+        result = self.client.execute_command('TS.MREVRANGE', base_ts, partial_bucket_start + 30000,
+                                             'LATEST',
+                                             'FILTER', 'type=partial')
+
+        assert len(result) == 1
+        samples = result[0][2]
+        assert len(samples) >= 2  # At least one complete bucket + partial bucket
+
+        # Verify reverse order
+        timestamps = [sample[0] for sample in samples]
+        assert timestamps == sorted(timestamps, reverse=True)
+
+        # The most recent timestamp should be from the partial bucket
+        assert timestamps[0] >= partial_bucket_start
+
+    def test_mrevrange_latest_multiple_partial_buckets(self):
+        """Test TS.MREVRANGE LATEST with multiple series having partial buckets"""
+        # Create multiple compaction series
+        for i in range(3):
+            source = f'source:multi:{i}'
+            compact = f'compact:multi:{i}'
+            self.client.execute_command('TS.CREATE', source)
+            self.client.execute_command('TS.CREATE', compact,
+                                        'LABELS', 'group', 'multi', 'id', str(i))
+            self.client.execute_command('TS.CREATERULE', source, compact,
+                                        'AGGREGATION', 'sum', 50000)
+
+            base_ts = 5000
+            # Add complete buckets
+            for j in range(5):
+                self.client.execute_command('TS.ADD', source, base_ts + j * 15000, j * 10)
+
+            # Add partial bucket
+            partial_ts = base_ts + 100000
+            self.client.execute_command('TS.ADD', source, partial_ts, 200 + i)
+            self.client.execute_command('TS.ADD', source, partial_ts + 5000, 210 + i)
+
+        # Query with LATEST
+        result = self.client.execute_command('TS.MREVRANGE', 5000, 120000,
+                                             'LATEST',
+                                             'FILTER', 'group=multi')
+
+        assert len(result) == 3
+
+        for series in result:
+            samples = series[2]
+            assert len(samples) >= 1
+
+            # Verify reverse order
+            timestamps = [sample[0] for sample in samples]
+            assert timestamps == sorted(timestamps, reverse=True)
+
+            # Should include samples from partial bucket
+            assert any(ts >= 100000 for ts in timestamps)
+
+    def test_mrevrange_latest_without_compaction(self):
+        """Test TS.MREVRANGE LATEST on non-compacted series has no effect"""
+        self.setup_data()
+
+        # Query regular series with LATEST flag
+        result_with_latest = self.client.execute_command('TS.MREVRANGE', self.start_ts,
+                                                         self.start_ts + 100,
+                                                         'LATEST',
+                                                         'FILTER', 'sensor=temp')
+
+        result_without_latest = self.client.execute_command('TS.MREVRANGE', self.start_ts,
+                                                            self.start_ts + 100,
+                                                            'FILTER', 'sensor=temp')
+
+        # Results should be identical for non-compacted series
+        assert len(result_with_latest) == len(result_without_latest)
+        for i in range(len(result_with_latest)):
+            assert result_with_latest[i][0] == result_without_latest[i][0]
+            assert len(result_with_latest[i][2]) == len(result_without_latest[i][2])
+
+
+    def test_mrevrange_latest_only_partial_bucket(self):
+        """Test TS.MREVRANGE LATEST when only a partial bucket exists"""
+        # Create compaction series
+        self.client.execute_command('TS.CREATE', 'source:only_partial')
+        self.client.execute_command('TS.CREATE', 'compact:only_partial',
+                                    'LABELS', 'bucket', 'partial')
+        self.client.execute_command('TS.CREATERULE', 'source:only_partial', 'compact:only_partial',
+                                    'AGGREGATION', 'avg', 100000)
+
+        base_ts = 50000
+        # Add only partial bucket samples (not enough to close the bucket)
+        self.client.execute_command('TS.ADD', 'source:only_partial', base_ts, 10)
+        self.client.execute_command('TS.ADD', 'source:only_partial', base_ts + 20000, 20)
+        self.client.execute_command('TS.ADD', 'source:only_partial', base_ts + 40000, 30)
+
+        # Query with LATEST
+        result = self.client.execute_command('TS.MREVRANGE', base_ts, base_ts + 50000,
+                                             'LATEST',
+                                             'FILTER', 'bucket=partial')
+
+        assert len(result) == 1
+        samples = result[0][2]
+        # Should have at least one sample from the partial bucket
+        assert len(samples) >= 1
+
+        # Verify reverse order
+        timestamps = [sample[0] for sample in samples]
+        assert timestamps == sorted(timestamps, reverse=True)
+
+
+    def test_mrevrange_latest_partial_bucket_with_filter_by_ts(self):
+        """Test TS.MREVRANGE LATEST with partial buckets and FILTER_BY_TS"""
+        # Create compaction series
+        self.client.execute_command('TS.CREATE', 'source:filtered')
+        self.client.execute_command('TS.CREATE', 'compact:filtered',
+                                    'LABELS', 'filtered', 'yes')
+        self.client.execute_command('TS.CREATERULE', 'source:filtered', 'compact:filtered',
+                                    'AGGREGATION', 'sum', 45000)
+
+        base_ts = 15000
+        # Add complete buckets
+        for i in range(8):
+            self.client.execute_command('TS.ADD', 'source:filtered', base_ts + i * 12000, i * 6)
+
+        # Add partial bucket
+        partial_ts = base_ts + 110000
+        self.client.execute_command('TS.ADD', 'source:filtered', partial_ts, 300)
+        self.client.execute_command('TS.ADD', 'source:filtered', partial_ts + 10000, 310)
+
+        # Query with LATEST and FILTER_BY_TS including partial bucket timestamp
+        specific_timestamps = [base_ts, base_ts + 45000, partial_ts]
+        result = self.client.execute_command('TS.MREVRANGE', base_ts, partial_ts + 15000,
+                                             'LATEST',
+                                             'FILTER_BY_TS', *specific_timestamps,
+                                             'FILTER', 'filtered=yes')
+
+        assert len(result) == 1
+        samples = result[0][2]
+
+        # Should only return samples at specified timestamps in reverse order
+        timestamps = [sample[0] for sample in samples]
+        assert timestamps == sorted(timestamps, reverse=True)
+        for ts in timestamps:
+            assert ts in specific_timestamps
+
+    def test_mrevrange_latest_empty_range(self):
+        """Test TS.MREVRANGE LATEST with time range that has no compacted data"""
+        # Create compaction series
+        self.client.execute_command('TS.CREATE', 'source:test')
+        self.client.execute_command('TS.CREATE', 'compact:test',
+                                    'LABELS', 'status', 'active')
+        self.client.execute_command('TS.CREATERULE', 'source:test', 'compact:test',
+                                    'AGGREGATION', 'avg', 50000)
+
+        # Add data in a different time range
+        base_ts = 100000
+        for i in range(5):
+            self.client.execute_command('TS.ADD', 'source:test', base_ts + i * 10000, i)
+
+        # Query a range with no data
+        result = self.client.execute_command('TS.MREVRANGE', 1000, 5000,
+                                             'LATEST',
+                                             'FILTER', 'status=active')
+
+        assert len(result) == 1
+        # Should return empty data
+        assert len(result[0][2]) == 0
