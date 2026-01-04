@@ -2,19 +2,18 @@ use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRang
 use crate::common::Sample;
 use crate::fanout::FanoutOperation;
 use crate::fanout::NodeInfo;
-use crate::iterators::MultiSeriesSampleIter;
+use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
-    build_mrange_grouped_labels, collect_samples, create_mrange_iterator_adapter,
-    process_mrange_query, sort_mrange_results,
+    build_mrange_grouped_labels, process_mrange_query, sort_mrange_results,
 };
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
 use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
 pub struct MRangeFanoutOperation {
@@ -47,6 +46,7 @@ impl FanoutOperation for MRangeFanoutOperation {
         // These (along with grouping) will be handled after gathering all results
         options.range.count = None;
         options.range.aggregation = None;
+        options.is_reverse = false;
 
         // Process the MRange query locally
         let series = process_mrange_query(ctx, options, true)?;
@@ -71,31 +71,30 @@ impl FanoutOperation for MRangeFanoutOperation {
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
         self.options.range.latest = false;
+        self.options.range.timestamp_filter = None;
+        self.options.range.value_filter = None;
+
         let options = &self.options;
         let is_grouped = options.grouping.is_some();
-
         let series = std::mem::take(&mut self.series);
-        let res = if is_grouped {
+
+        let result = if is_grouped {
             handle_grouping(series, options)
         } else {
             handle_basic(series, options)
         };
 
-        let mut series = match res {
-            Ok(s) => s,
-            Err(e) => {
-                let msg = format!("MRangeFanoutOperation: error processing series responses: {e}");
-                ctx.log_warning(&msg);
-                // todo: better error
-                ctx.reply_error_string("Internal error processing grouped series");
-                return Status::Err;
+        match result {
+            Ok(mut series) => {
+                sort_mrange_results(&mut series, is_grouped);
+                ctx.reply(Ok(series.into()))
             }
-        };
-
-        sort_mrange_results(&mut series, is_grouped);
-
-        let result: ValkeyValue = series.into();
-        ctx.reply(Ok(result))
+            Err(e) => {
+                ctx.log_warning(&format!("Error processing series responses: {e}"));
+                ctx.reply_error_string("Internal error processing grouped series");
+                Status::Err
+            }
+        }
     }
 }
 
@@ -103,25 +102,11 @@ fn handle_basic(
     series: Vec<SeriesRangeResponse>,
     options: &MRangeOptions,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
-    let handler = |meta: MRangeSeriesResult, options: &MRangeOptions| {
-        let aggr_iter = create_mrange_iterator_adapter(meta.data.iter(), options);
-        let count = if options.is_reverse {
-            options.range.count
-        } else {
-            None
-        };
-        let samples = collect_samples(aggr_iter, options.is_reverse, count);
-        let chunk = UncompressedChunk::from_vec(samples);
-        let mut meta = meta;
-        meta.data = TimeSeriesChunk::Uncompressed(chunk);
-        meta
-    };
-
     series
         .into_par()
         .map(MRangeSeriesResult::try_from) // Explicit conversion
         .into_fallible_result()
-        .map(|res| handler(res, options))
+        .map(|series| process_series_samples(series, options))
         .collect()
 }
 
@@ -141,105 +126,118 @@ type GroupMap = BTreeMap<String, GroupData>;
 
 /// Apply GROUPBY/REDUCE to the series coming from remote nodes
 fn handle_grouping(
-    responses: Vec<SeriesRangeResponse>,
+    series: Vec<SeriesRangeResponse>,
     options: &MRangeOptions,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
-    let Some(group_options) = &options.grouping else {
-        panic!("Grouping options should be present");
-    };
-
-    let results = responses
-        .into_par() // parallel since chunks are compressed
+    let group_options = options
+        .grouping
+        .as_ref()
+        .expect("Grouping options should be present");
+    let results = series
+        .into_par()
         .map(MRangeSeriesResult::try_from)
         .into_fallible_result()
         .collect()?;
-
     let grouped_by_key = construct_group_map(results);
 
-    let result = grouped_by_key
+    Ok(grouped_by_key
         .into_iter()
         .iter_into_par()
-        .map(|(group_label_value, group_data)| {
-            process_group(group_label_value, group_data, options, group_options)
-        })
-        .collect::<Vec<_>>();
-
-    Ok(result)
+        .map(|(label, data)| process_group(label, data, options, group_options))
+        .collect())
 }
 
-fn construct_group_map(metas: Vec<MRangeSeriesResult>) -> GroupMap {
-    let mut grouped_by_key: GroupMap = GroupMap::new();
-
-    for meta in metas.into_iter() {
-        let Some(label_value) = meta.group_label_value.clone() else {
-            continue;
-        };
-
-        let key = meta.key.clone();
-
-        match grouped_by_key.entry(label_value) {
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                let stored = entry.get_mut();
-                stored.keys.push(key);
-                stored.series.push(meta);
-            }
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(GroupData {
-                    keys: smallvec![key],
-                    series: vec![meta],
-                });
-            }
+fn construct_group_map(series: Vec<MRangeSeriesResult>) -> BTreeMap<String, GroupData> {
+    let mut grouped = BTreeMap::new();
+    for meta in series {
+        if let Some(label) = meta.group_label_value.clone() {
+            grouped
+                .entry(label)
+                .or_insert_with(|| GroupData {
+                    keys: SmallVec::new(),
+                    series: Vec::new(),
+                })
+                .series
+                .push(meta);
         }
     }
-
-    grouped_by_key
+    grouped
 }
 
 fn process_group(
-    group_label_value: String,
-    group_data: GroupData,
+    label: String,
+    data: GroupData,
     options: &MRangeOptions,
-    grouping_options: &RangeGroupingOptions,
+    group_options: &RangeGroupingOptions,
 ) -> MRangeSeriesResult {
-    let mut group_data = group_data;
-    let samples = process_group_list(&mut group_data.series, options);
+    let samples = process_series_list(&data.series, options);
     let chunk = UncompressedChunk::from_vec(samples);
-    let data = TimeSeriesChunk::Uncompressed(chunk);
-
-    let group_label = &grouping_options.group_label;
-    let grouping_aggregation = grouping_options.aggregation;
-    let reducer_name = grouping_aggregation.name();
-
     let labels = build_mrange_grouped_labels(
-        group_label,
-        &group_label_value,
-        reducer_name,
-        &group_data.keys,
+        &group_options.group_label,
+        &label,
+        group_options.aggregation.name(),
+        &data.keys,
     );
 
     MRangeSeriesResult {
-        key: group_data.keys.join(","),
-        group_label_value: Some(group_label_value),
+        key: data.keys.join(","),
+        group_label_value: Some(label),
         labels,
-        data,
+        data: TimeSeriesChunk::Uncompressed(chunk),
     }
 }
 
-fn process_group_list(items: &mut [MRangeSeriesResult], options: &MRangeOptions) -> Vec<Sample> {
-    let iters = items
-        .iter_mut()
-        .map(|x| {
-            let chunk = &x.data;
-            chunk.iter()
-        })
-        .collect::<Vec<_>>();
+fn process_series_samples(
+    mut series: MRangeSeriesResult,
+    options: &MRangeOptions,
+) -> MRangeSeriesResult {
+    let samples = process_series_list(std::slice::from_ref(&series), options);
+    series.data = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(samples));
+    series
+}
 
-    let multi_iter = MultiSeriesSampleIter::new(iters);
-    let adapter = create_mrange_iterator_adapter(multi_iter, options);
-    let count = if options.is_reverse {
-        options.range.count
+fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -> Vec<Sample> {
+    let (reverse_iter, reverse_aggr) = validate_reverse(options);
+
+    if reverse_iter {
+        let mut samples: Vec<_> = series.iter().flat_map(|s| s.data.iter()).collect();
+        samples.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        create_sample_iterator_adapter(
+            samples.into_iter(),
+            &options.range,
+            &options.grouping,
+            reverse_aggr,
+        )
+        .collect()
+    } else if series.len() == 1 {
+        create_sample_iterator_adapter(
+            series[0].data.iter(),
+            &options.range,
+            &options.grouping,
+            reverse_aggr,
+        )
+        .collect()
     } else {
-        None
-    };
-    collect_samples(adapter, options.is_reverse, count)
+        let iters = series.iter().map(|s| s.data.iter()).collect::<Vec<_>>();
+        create_sample_iterator_adapter(
+            MultiSeriesSampleIter::new(iters),
+            &options.range,
+            &options.grouping,
+            reverse_aggr,
+        )
+        .collect()
+    }
+}
+
+pub fn validate_reverse(options: &MRangeOptions) -> (bool, bool) {
+    let has_aggregation = options.range.aggregation.is_some();
+
+    // Aggregation requires ascending input order from base iterators
+    // Without aggregation, base iterators can directly provide the requested order
+    let should_reverse_iter = !has_aggregation && options.is_reverse;
+
+    // Apply reversal after aggregation if needed
+    let should_reverse_aggr = has_aggregation && options.is_reverse;
+
+    (should_reverse_iter, should_reverse_aggr)
 }

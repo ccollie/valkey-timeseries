@@ -78,9 +78,6 @@ fn process_mrange(
 
     // if we're clustered, don't group or aggregate here - do it in the caller node
     let mut items = if is_clustered {
-        options.range.aggregation = None;
-        // also disable count - it will be applied in the caller node
-        options.range.count = None;
         return handle_non_grouped(metas, options, is_clustered);
     } else if is_grouped {
         handle_grouping(metas, options)
@@ -102,6 +99,9 @@ fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Opt
     get_latest_compaction_sample(ctx, series).filter(|s| {
         let (start_ts, end_ts) = options.get_timestamp_range();
         if s.timestamp >= start_ts && s.timestamp <= end_ts {
+            if !options.value_filter.is_none_or(|f| f.is_match(s.value)) {
+                return false;
+            }
             return options
                 .timestamp_filter
                 .as_ref()
