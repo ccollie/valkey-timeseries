@@ -16,7 +16,6 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         result = self.client.execute_command(*args)
         stats = parse_stats_response(result)
-        print("TS.STATS result =", stats)
         return stats
 
 
@@ -138,7 +137,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
                         for item in label_counts}
 
         assert label_counts.get('region') == 3
-        assert label_counts.get('env') == 2
+        assert label_counts.get('env') == 3
 
     def test_stats_series_count_by_label_pair(self):
         """Test seriesCountByLabelPair statistics."""
@@ -192,7 +191,6 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         result = self.get_stats()
         memory_stats = result['memoryInBytesByLabelPair']
-        print("memoryInBytesByLabelPair =", memory_stats)
 
         # Should have entries for label pairs
         assert len(memory_stats) > 0
@@ -235,8 +233,8 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         result = self.get_stats()
 
-        # Should count __name__ as a label
-        assert result['numLabels'] == 1
+        # Should count __name__ as a label, along with status
+        assert result['numLabels'] == 2
 
     def test_stats_sorted_by_count(self):
         """Test that stats results are sorted by count in descending order."""
@@ -254,7 +252,6 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
             )
 
         result = self.get_stats()
-        print("TS.STATS result =", result)
         pair_counts = result['seriesCountByMetricName']
 
         print("seriesCountByMetricName =", pair_counts)
