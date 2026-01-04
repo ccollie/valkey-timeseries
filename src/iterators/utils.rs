@@ -6,6 +6,16 @@ use crate::series::{SeriesSampleIterator, TimeSeries};
 use smallvec::SmallVec;
 use std::collections::BTreeSet;
 
+macro_rules! apply_iter_limit {
+    ($iter:expr, $limit:expr) => {
+        if let Some(limit) = $limit {
+            Box::new($iter.take(limit as usize)) as Box<dyn Iterator<Item = _> + '_>
+        } else {
+            Box::new($iter) as Box<dyn Iterator<Item = _> + '_>
+        }
+    };
+}
+
 pub fn create_aggregate_iterator<I>(
     iter: I,
     range: &RangeOptions,
@@ -21,14 +31,17 @@ where
     AggregateIterator::new(iter, aggregation, aligned_timestamp)
 }
 
-macro_rules! apply_iter_limit {
-    ($iter:expr, $limit:expr) => {
-        if let Some(limit) = $limit {
-            Box::new($iter.take(limit as usize)) as Box<dyn Iterator<Item = _> + '_>
-        } else {
-            Box::new($iter) as Box<dyn Iterator<Item = _> + '_>
-        }
-    };
+pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(
+    iter: T,
+    start_ts: Timestamp,
+    end_ts: Timestamp,
+    aggr_options: &AggregationOptions,
+) -> Vec<Sample> {
+    let aligned_timestamp = aggr_options
+        .alignment
+        .get_aligned_timestamp(start_ts, end_ts);
+    let iter = AggregateIterator::new(iter, aggr_options, aligned_timestamp);
+    iter.collect::<Vec<_>>()
 }
 
 /// Create an optimized range iterator for the given series and options
