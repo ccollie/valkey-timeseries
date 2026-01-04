@@ -128,11 +128,6 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.MREVRANGE', self.start_ts, self.start_ts + 100,
                                              'COUNT', 5, 'FILTER', 'sensor=temp')
 
-        first = self.client.execute_command('TS.RANGE', "ts1", self.start_ts, self.start_ts + 100)
-        print("ts1 RANGE:", first)
-        second = self.client.execute_command('TS.RANGE', "ts2", self.start_ts, self.start_ts + 100)
-        print("ts2 RANGE:", second)
-        print("Result:", result)
         # Should return 2 time series with 5 samples each
         assert len(result) == 2
         for series in result:
@@ -247,14 +242,15 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
 
     def test_mrevrange_latest_with_partial_bucket(self):
         """Test TS.MREVRANGE LATEST with partial (unclosed) compaction buckets"""
+        base_ts = 1000
+
         # Create source and compaction series with 60-second buckets
         self.client.execute_command('TS.CREATE', 'source:partial')
         self.client.execute_command('TS.CREATE', 'compact:partial',
                                     'LABELS', 'type', 'partial')
         self.client.execute_command('TS.CREATERULE', 'source:partial', 'compact:partial',
-                                    'AGGREGATION', 'avg', 60000)
+                                    'AGGREGATION', 'avg', 60000, base_ts)
 
-        base_ts = 1000
         # Add samples that span multiple buckets
         for i in range(8):
             self.client.execute_command('TS.ADD', 'source:partial', base_ts + i * 10000, i * 5)
@@ -270,9 +266,9 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.MREVRANGE', base_ts, partial_bucket_start + 30000,
                                              'LATEST',
                                              'FILTER', 'type=partial')
-
         assert len(result) == 1
         samples = result[0][2]
+        print("Samples from only partial bucket test:", samples)
         assert len(samples) >= 2  # At least one complete bucket + partial bucket
 
         # Verify reverse order
@@ -285,6 +281,7 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
     def test_mrevrange_latest_multiple_partial_buckets(self):
         """Test TS.MREVRANGE LATEST with multiple series having partial buckets"""
         # Create multiple compaction series
+        base_ts = 5000
         for i in range(3):
             source = f'source:multi:{i}'
             compact = f'compact:multi:{i}'
@@ -293,8 +290,6 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
                                         'LABELS', 'group', 'multi', 'id', str(i))
             self.client.execute_command('TS.CREATERULE', source, compact,
                                         'AGGREGATION', 'sum', 50000)
-
-            base_ts = 5000
             # Add complete buckets
             for j in range(5):
                 self.client.execute_command('TS.ADD', source, base_ts + j * 15000, j * 10)
@@ -353,24 +348,39 @@ class TestTimeSeriesMRevRange(ValkeyTimeSeriesTestCaseBase):
                                     'AGGREGATION', 'avg', 100000)
 
         base_ts = 50000
-        # Add only partial bucket samples (not enough to close the bucket)
+
+        # Add samples in the first bucket [0..100000).
+        # Then add a sample at the next bucket boundary (100000) to force the first bucket to close
+        # and emit at least one persisted compaction sample. After that, add samples in the new
+        # (still-open) bucket so LATEST has an "in-progress" bucket to include.
         self.client.execute_command('TS.ADD', 'source:only_partial', base_ts, 10)
         self.client.execute_command('TS.ADD', 'source:only_partial', base_ts + 20000, 20)
         self.client.execute_command('TS.ADD', 'source:only_partial', base_ts + 40000, 30)
 
+        partial_bucket_start = 100000  # bucket boundaries are aligned to epoch (0), not base_ts
+        self.client.execute_command('TS.ADD', 'source:only_partial', partial_bucket_start, 40)
+        self.client.execute_command('TS.ADD', 'source:only_partial', partial_bucket_start + 20000, 50)
+        self.client.execute_command('TS.ADD', 'source:only_partial', partial_bucket_start + 40000, 60)
+
         # Query with LATEST
-        result = self.client.execute_command('TS.MREVRANGE', base_ts, base_ts + 50000,
-                                             'LATEST',
-                                             'FILTER', 'bucket=partial')
+        result = self.client.execute_command(
+            'TS.MREVRANGE',
+            base_ts,
+            partial_bucket_start + 50000,
+            'LATEST',
+            'FILTER', 'bucket=partial'
+        )
 
         assert len(result) == 1
         samples = result[0][2]
-        # Should have at least one sample from the partial bucket
+
+        # Should have at least one sample from the (now-present) open bucket
         assert len(samples) >= 1
 
         # Verify reverse order
         timestamps = [sample[0] for sample in samples]
         assert timestamps == sorted(timestamps, reverse=True)
+
 
 
     def test_mrevrange_latest_partial_bucket_with_filter_by_ts(self):
