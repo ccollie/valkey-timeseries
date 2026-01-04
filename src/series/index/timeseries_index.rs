@@ -4,7 +4,6 @@ use std::sync::RwLock;
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
-use crate::common::constants::METRIC_NAME_LABEL;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, SeriesLabel};
@@ -166,7 +165,7 @@ impl TimeSeriesIndex {
     }
 
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
-        #[derive(Clone, Copy)]
+        #[derive(Copy, Clone)]
         struct SizeAccumulator {
             size: usize,
             count: u64,
@@ -177,9 +176,15 @@ impl TimeSeriesIndex {
         let mut labels = StatsMaxHeap::new(limit);
         let mut label_value_length = StatsMaxHeap::new(limit);
         let mut label_value_pairs = StatsMaxHeap::new(limit);
-        let mut num_label_pairs = 0;
 
         let inner = self.inner.read().unwrap();
+
+        let posting_count = inner.label_index.len();
+        let num_label_pairs = if inner.has_all_postings() {
+            posting_count.saturating_sub(1)
+        } else {
+            posting_count
+        };
 
         for (key, bitmap) in inner.label_index.iter() {
             let count = bitmap.cardinality();
@@ -201,7 +206,6 @@ impl TimeSeriesIndex {
                     name: format!("{name}={value}"),
                     count,
                 });
-                num_label_pairs += 1;
 
                 if label == name {
                     metrics.push(PostingStat {
@@ -223,7 +227,7 @@ impl TimeSeriesIndex {
                 name: name.to_string(),
                 count: v.size as u64,
             });
-            if name != METRIC_NAME_LABEL && name != ALL_POSTINGS_KEY_NAME {
+            if name != ALL_POSTINGS_KEY_NAME {
                 num_labels += 1;
             }
         }

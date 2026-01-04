@@ -1,20 +1,20 @@
-import pytest
+from valkey import ValkeyCluster
 from valkeytestframework.conftest import resource_port_tracker
-from valkey import ResponseError, ValkeyCluster
-from common import parse_stats_response
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
+from common import parse_stats_response
 
 class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
     """Test suite for TS.STATS command in cluster mode."""
 
     def get_stats(self, limit: int | None = None):
         client = self.new_client_for_primary(0)
-        args = ['TS.STATS']
-        if limit is not None:
-            args.extend(['LIMIT', limit])
+        result = None
 
-        # In cluster mode, the command is sent to one node and fanned out
-        result = client.execute_command(*args)
+        if limit is not None:
+            result = client.execute_command('TS.STATS', 'LIMIT', limit)
+        else:
+            result = client.execute_command('TS.STATS')
+
         stats = parse_stats_response(result)
         return stats
 
@@ -32,12 +32,10 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         # Verify total series count across cluster
         assert stats['numSeries'] == 3
 
-        # Verify total label pairs
-        # ts:{1}: metric=cpu, host=h1 (2 pairs)
-        # ts:{2}: metric=cpu, host=h2 (2 pairs)
-        # ts:{3}: metric=mem, host=h3 (2 pairs)
-        # Total: 6 pairs
-        assert stats['numLabelPairs'] == 6
+        # Verify total unique label pairs
+        # metric=cpu, metric=mem, host=h1, host=h2, host=h3
+        # Total: 5 pairs
+        assert stats['numLabelPairs'] == 5
 
     def test_stats_cluster_top_k_aggregation(self):
         """Test TS.STATS aggregates top-k lists across shards correctly."""

@@ -30,9 +30,9 @@ impl StatsFanoutOperation {
             limit
         };
 
-        StatsFanoutOperation {
+        Self {
             limit,
-            ..Default::default()
+            state: StatsResults::default(),
         }
     }
 }
@@ -86,9 +86,12 @@ impl FanoutOperation for StatsFanoutOperation {
         let limit = self.limit;
         let state = std::mem::take(&mut self.state);
 
+        // Calculate num_labels from the aggregated map to ensure uniqueness
+        let num_labels = state.cardinality_labels_map.len();
+
         let result = PostingsStats {
             series_count: state.series_count as u64,
-            num_labels: state.num_labels,
+            num_labels,
             num_label_pairs: state.num_label_pairs,
             cardinality_metrics_stats: collect_map_values(state.cardinality_metrics_map, limit),
             cardinality_label_stats: collect_map_values(state.cardinality_labels_map, limit),

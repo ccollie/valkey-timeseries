@@ -136,6 +136,10 @@ impl Postings {
         }
     }
 
+    pub(super) fn has_all_postings(&self) -> bool {
+        self.label_index.contains_key(&*ALL_POSTINGS_KEY)
+    }
+
     fn set_timeseries_key(&mut self, id: SeriesRef, new_key: &[u8]) {
         if let Some(existing) = self.id_to_key.get(&id) {
             if existing.as_ref() == new_key {
