@@ -28,10 +28,6 @@ pub(super) fn reply_with_i64(ctx: &Context, v: i64) {
     raw::reply_with_long_long(ctx.ctx, v);
 }
 
-pub(super) fn reply_with_usize(ctx: &Context, v: usize) {
-    raw::reply_with_long_long(ctx.ctx, v as i64);
-}
-
 pub(super) fn reply_with_bulk_string(ctx: &Context, s: &str) {
     raw::reply_with_string_buffer(ctx.ctx, s.as_ptr().cast::<c_char>(), s.len());
 }

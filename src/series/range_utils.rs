@@ -1,10 +1,8 @@
-use crate::aggregators::AggregateIterator;
 use crate::common::{Sample, Timestamp};
-use crate::iterators::{TimeSeriesRangeIterator, group_reduce};
+use crate::iterators::TimeSeriesRangeIterator;
 use crate::labels::InternedLabel;
-use crate::series::request_types::{AggregationOptions, MRangeOptions, RangeOptions};
-use crate::series::{TimeSeries, get_latest_compaction_sample};
-use orx_parallel::{ParIter, Parallelizable};
+use crate::series::TimeSeries;
+use crate::series::request_types::{AggregationOptions, RangeOptions};
 use std::cmp::Ordering;
 use valkey_module::Context;
 
@@ -57,46 +55,6 @@ pub(crate) fn get_range(
     iter.collect::<Vec<Sample>>()
 }
 
-pub fn get_multi_series_range(
-    ctx: Option<&Context>,
-    series: &[&TimeSeries],
-    options: &MRangeOptions,
-) -> Vec<Vec<Sample>> {
-    fn _get_range(
-        ctx: Option<&Context>,
-        series: &TimeSeries,
-        options: &MRangeOptions,
-    ) -> Vec<Sample> {
-        let samples = get_range(ctx, series, &options.range);
-        if let Some(grouping) = &options.grouping {
-            // Apply grouping reduce if specified
-            group_reduce(samples.into_iter(), grouping.aggregation)
-        } else {
-            samples
-        }
-    }
-
-    if options.range.latest {
-        // when LATEST is specified, we cannot use parallel processing since Context is not Send
-        series.iter().map(|x| _get_range(ctx, x, options)).collect()
-    } else {
-        series.par().map(|x| _get_range(None, x, options)).collect()
-    }
-}
-
-pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(
-    iter: T,
-    start_ts: Timestamp,
-    end_ts: Timestamp,
-    aggr_options: &AggregationOptions,
-) -> Vec<Sample> {
-    let aligned_timestamp = aggr_options
-        .alignment
-        .get_aligned_timestamp(start_ts, end_ts);
-    let iter = AggregateIterator::new(iter, aggr_options, aligned_timestamp);
-    iter.collect::<Vec<_>>()
-}
-
 pub fn get_series_labels<'a>(
     series: &'a TimeSeries,
     with_labels: bool,
@@ -114,46 +72,6 @@ pub fn get_series_labels<'a>(
             .map(|name| series.get_label(name))
             .collect::<Vec<_>>()
     }
-}
-
-/// Internal utility to handle the LATEST option for MRange queries.
-pub fn get_mrange_latest(
-    ctx: &Context,
-    options: &RangeOptions,
-    series: &TimeSeries,
-    start_ts: Timestamp,
-    end_ts: Timestamp,
-) -> Option<Sample> {
-    // make sure we're a compaction, and that ends_ts > series.last_timestamp
-    // (the latest sample would be in range if it exists)
-    let value = if options.latest && series.is_compaction() && end_ts > series.last_timestamp() {
-        get_latest_compaction_sample(ctx, series)?
-    } else {
-        return None;
-    };
-
-    let ts = value.timestamp;
-
-    if ts < start_ts || ts > end_ts {
-        return None;
-    }
-
-    if !options
-        .value_filter
-        .is_none_or(|vf| vf.is_match(value.value))
-    {
-        return None;
-    }
-
-    if !options
-        .timestamp_filter
-        .as_ref()
-        .is_none_or(|ts_vec| ts_vec.contains(&ts))
-    {
-        return None;
-    }
-
-    Some(value)
 }
 
 #[cfg(test)]
