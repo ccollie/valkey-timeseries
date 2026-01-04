@@ -76,18 +76,17 @@ fn process_mrange(
     }
     let is_grouped = options.grouping.is_some();
 
-    // if we're clustered, don't group or aggregate here - do it in the caller node
-    let mut items = if is_clustered {
-        return handle_non_grouped(metas, options, is_clustered);
-    } else if is_grouped {
+    if is_clustered {
+        return handle_non_grouped(metas, options, true);
+    }
+
+    let mut items = if is_grouped {
         handle_grouping(metas, options)
     } else {
-        handle_non_grouped(metas, options, is_clustered)
+        handle_non_grouped(metas, options, false)
     };
 
-    if !is_clustered {
-        sort_mrange_results(&mut items, is_grouped);
-    }
+    sort_mrange_results(&mut items, is_grouped);
 
     items
 }
@@ -98,16 +97,25 @@ fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Opt
     }
     get_latest_compaction_sample(ctx, series).filter(|s| {
         let (start_ts, end_ts) = options.get_timestamp_range();
-        if s.timestamp >= start_ts && s.timestamp <= end_ts {
-            if !options.value_filter.is_none_or(|f| f.is_match(s.value)) {
-                return false;
-            }
-            return options
-                .timestamp_filter
-                .as_ref()
-                .is_none_or(|filter| filter.contains(&s.timestamp));
+        let ts = s.timestamp;
+
+        if ts < start_ts || ts > end_ts {
+            return false;
         }
-        false
+
+        if !options.value_filter.is_none_or(|vf| vf.is_match(s.value)) {
+            return false;
+        }
+
+        if !options
+            .timestamp_filter
+            .as_ref()
+            .is_none_or(|ts_vec| ts_vec.contains(&ts))
+        {
+            return false;
+        }
+
+        true
     })
 }
 
@@ -138,39 +146,31 @@ fn handle_non_grouped(
     options: MRangeOptions,
     clustered: bool,
 ) -> Vec<MRangeSeriesResult> {
-    fn process_series<I: Iterator<Item = Sample>>(
-        iter: I,
-        meta: MRangeSeriesMeta,
-        options: &MRangeOptions,
-        clustered: bool,
-    ) -> MRangeSeriesResult {
-        let data = if clustered {
-            let mut chunk = GorillaChunk::with_max_size(16 * 1024); // 16KB - todo: make configurable?
-            for sample in iter {
-                let _ = chunk.add_sample(&sample);
-            }
-            TimeSeriesChunk::Gorilla(chunk)
-        } else {
-            let samples = iter.collect::<Vec<_>>();
-            let chunk = UncompressedChunk::from_vec(samples);
-            TimeSeriesChunk::Uncompressed(chunk)
-        };
-
-        let labels = convert_labels(meta.series, options.with_labels, &options.selected_labels);
-
-        MRangeSeriesResult {
-            group_label_value: meta.group_label_value,
-            key: meta.source_key,
-            labels,
-            data,
-        }
-    }
-
     metas
         .into_par()
         .map(|meta| {
             let iter = create_iter(meta.series, &options, meta.latest);
-            process_series(iter, meta, &options, clustered)
+            // if we're clustered, we use gorilla chunks to reduce network usage
+            let data = if clustered {
+                let mut chunk = GorillaChunk::with_max_size(16 * 1024); // 16KB - todo: make configurable?
+                for sample in iter {
+                    let _ = chunk.add_sample(&sample);
+                }
+                TimeSeriesChunk::Gorilla(chunk)
+            } else {
+                let samples = iter.collect::<Vec<_>>();
+                let chunk = UncompressedChunk::from_vec(samples);
+                TimeSeriesChunk::Uncompressed(chunk)
+            };
+
+            let labels = convert_labels(meta.series, options.with_labels, &options.selected_labels);
+
+            MRangeSeriesResult {
+                group_label_value: meta.group_label_value,
+                key: meta.source_key,
+                labels,
+                data,
+            }
         })
         .collect()
 }
@@ -179,28 +179,6 @@ fn handle_grouping(
     metas: Vec<MRangeSeriesMeta>,
     options: MRangeOptions,
 ) -> Vec<MRangeSeriesResult> {
-    fn process_group(
-        options: &MRangeOptions,
-        label_value: String,
-        group_data: GroupedSeriesData,
-        count: Option<usize>,
-    ) -> MRangeSeriesResult {
-        let grouping = options
-            .grouping
-            .as_ref()
-            .expect("Grouping options should be present");
-        let data = get_grouped_samples(&group_data.series, options, grouping, count);
-        let labels = group_data.labels;
-        let key = format!("{}={}", grouping.group_label, label_value);
-        let chunk = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(data));
-        MRangeSeriesResult {
-            key,
-            group_label_value: Some(label_value),
-            labels,
-            data: chunk,
-        }
-    }
-
     let Some(grouping) = &options.grouping else {
         panic!("Grouping options should be present");
     };
@@ -218,7 +196,22 @@ fn handle_grouping(
     grouped_series_map
         .into_iter()
         .iter_into_par()
-        .map(|(label_value, group_data)| process_group(&options, label_value, group_data, count))
+        .map(|(label_value, group_data)| {
+            let grouping = options
+                .grouping
+                .as_ref()
+                .expect("Grouping options should be present");
+            let data = get_grouped_samples(&group_data.series, &options, grouping, count);
+            let labels = group_data.labels;
+            let key = format!("{}={}", grouping.group_label, label_value);
+            let chunk = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(data));
+            MRangeSeriesResult {
+                key,
+                group_label_value: Some(label_value),
+                labels,
+                data: chunk,
+            }
+        })
         .collect::<Vec<_>>()
 }
 
@@ -257,19 +250,16 @@ pub(crate) fn collect_samples<I: Iterator<Item = Sample>>(
     is_reverse: bool,
     count: Option<usize>,
 ) -> Vec<Sample> {
-    if let Some(count) = count {
-        let mut samples = iter.take(count).collect::<Vec<_>>();
-        if is_reverse {
-            samples.reverse();
-        }
-        samples
+    let mut samples = if let Some(count) = count {
+        iter.take(count).collect::<Vec<_>>()
     } else {
-        let mut samples = iter.collect::<Vec<_>>();
-        if is_reverse {
-            samples.reverse();
-        }
-        samples
+        iter.collect::<Vec<_>>()
+    };
+
+    if is_reverse {
+        samples.reverse();
     }
+    samples
 }
 
 fn convert_labels(
