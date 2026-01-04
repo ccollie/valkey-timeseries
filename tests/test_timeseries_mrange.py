@@ -127,11 +127,8 @@ class TestTimeSeriesMRange(ValkeyTimeSeriesTestCaseBase):
         res_agg = self.client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
                                              'AGGREGATION', 'avg', 20,
                                              'FILTER', 'sensor=temp')
-        print("Aggregated Result:", res_agg)
-
         # Should return just 1 time series that groups both temperature sensors
         assert len(result) == 1
-        print("Grouped Result:", result)
 
         # Check values are aggregated (sum of both sensors)
         for ts, val in result[0][2]:
