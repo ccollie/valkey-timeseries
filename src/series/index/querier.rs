@@ -19,11 +19,9 @@ use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
-use ahash::HashMapExt;
 use blart::AsBytes;
-use orx_parallel::IterIntoParIter;
-use orx_parallel::ParIter;
-use std::str;
+use logger_rust::log_debug;
+use orx_parallel::{IterIntoParIter, ParIter};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub fn series_by_selectors(
@@ -37,6 +35,8 @@ pub fn series_by_selectors(
 
     with_timeseries_postings(ctx, |postings| {
         let first = postings.postings_for_selector(&selectors[0])?;
+        // done early if we have only one selector. Do not collapse with the loop below, since
+        // this condition possibly spares us an allocation (by forcing us to own the Cow).
         if selectors.len() == 1 {
             return collect_series(ctx, postings, first.iter(), range);
         }
@@ -108,87 +108,68 @@ fn collect_series(
     date_range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
     let capacity_estimate = ids.size_hint().1.unwrap_or(8);
-
     let iter = ids.filter_map(|id| postings.get_key_by_id(id));
 
     let mut result: Vec<SeriesGuard> = Vec::with_capacity(capacity_estimate);
     for key in iter {
-        let guard = match get_guard_from_key(ctx, key) {
-            Ok(Some(g)) => g,
-            Ok(None) => continue,
-            Err(err) => return Err(err),
-        };
-        result.push(guard);
+        if let Some(guard) = get_guard_from_key(ctx, key)? {
+            result.push(guard);
+        }
     }
 
     if result.is_empty() {
         return Ok(result);
     }
 
+    // If no date range filter or empty results, return early
     let Some(date_range) = date_range else {
         return Ok(result);
     };
 
+    // Filter series by date range
+    let (start, end) = date_range.get_timestamps(None);
+
     if result.len() == 1 {
         // SAFETY: we have already checked above that we have at least one element.
-        let series = unsafe { result.get_unchecked(0) };
-        let (start, end) = date_range.get_timestamps(None);
-        return if series.has_samples_in_range(start, end) {
+        return if unsafe { result.get_unchecked(0) }.has_samples_in_range(start, end) {
             Ok(result)
         } else {
             Ok(Vec::new())
         };
     }
 
-    let (start, end) = date_range.get_timestamps(None);
-    let ids = result
+    // Parallel filter for multiple series. Note that we don't collect the guards directly
+    // since they hold a reference to the Context, which is not `Send`/`Sync` - hence the
+    // need to collect IDs first and then reconstruct the guards from the original vector.
+    let matching_ids: Vec<u64> = result
         .iter()
-        .map(|guard| {
-            let series = guard.get_series();
-            (series, series.id)
-        })
+        .map(|guard| (guard.get_series(), guard.id))
         .iter_into_par()
-        .filter_map(|(series, id)| {
-            if series.has_samples_in_range(start, end) {
-                Some(id)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+        .filter_map(|(series, id)| series.has_samples_in_range(start, end).then_some(id))
+        .collect();
 
-    if ids.len() == result.len() {
-        // all series are in range, return early
-        return Ok(result);
-    }
+    log_debug!(
+        "Found {} series matching date range filter {date_range}",
+        matching_ids.len()
+    );
 
-    if ids.is_empty() {
-        // no series are in range, return early
-        return Ok(Vec::new());
-    }
-
-    // if we have only a few series in range, do a brute-force search in the result set
-    if ids.len() < 32 {
-        result.retain(|guard| {
-            let id = guard.id;
-            ids.contains(&id)
-        });
-    } else {
-        // many series are in range, do a hashmap lookup
-        let mut guard_map: IntMap<u64, SeriesGuard> = IntMap::with_capacity(capacity_estimate);
-        for guard in result {
-            let series = guard.get_series();
-            guard_map.insert(series.id, guard);
+    match matching_ids.len() {
+        0 => Ok(Vec::new()),                  // none match
+        n if n == result.len() => Ok(result), // all match
+        n if n < 32 => {
+            result.retain(|guard| matching_ids.contains(&guard.id));
+            Ok(result)
         }
-        result = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(guard) = guard_map.remove(&id) {
-                result.push(guard);
-            }
+        _ => {
+            let mut guard_map: IntMap<u64, SeriesGuard> =
+                result.into_iter().map(|guard| (guard.id, guard)).collect();
+
+            Ok(matching_ids
+                .into_iter()
+                .filter_map(|id| guard_map.remove(&id))
+                .collect())
         }
     }
-
-    Ok(result)
 }
 
 fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<SeriesGuard>> {
