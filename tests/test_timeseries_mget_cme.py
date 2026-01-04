@@ -146,20 +146,30 @@ class TestTimeSeriesMgetCluster(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Create compaction rules on different shards
-        self.client.execute_command('TS.CREATE', 'ts:{shard1}:cpu1:avg', 'LABELS', 'aggregation', 'avg')
+        self.client.execute_command('TS.CREATE', 'ts:{shard1}:cpu1:avg', 'LABELS', 'aggregation', 'avg', 'name', 'cpu')
         self.client.execute_command('TS.CREATERULE', 'ts:{shard1}:cpu1', 'ts:{shard1}:cpu1:avg', 'AGGREGATION', 'avg', 5000)
 
         # Add more samples to trigger compaction
-        current_time = 2000
+        current_time = 10000
         for i in range(10):
-            self.client.execute_command('TS.ADD', 'ts:{shard1}:cpu1', current_time + i * 1000, 100 + i)
+            value = 100 * (i + 1)
+            ts = current_time + i * 1000
+            self.client.execute_command('TS.ADD', 'ts:{shard1}:cpu1', ts, value)
 
         # Test LATEST option
         result = self.client.execute_command('TS.MGET', 'LATEST', 'FILTER', 'name=cpu')
+
+        assert len(result) == 5
         result.sort(key=lambda x: x[0])
 
         # Should include latest values including from compaction rules
-        assert len(result) == 4
+        # find the entry for ts:{shard1}:cpu1:avg
+        avg_entry = next((item for item in result if item[0] == b'ts:{shard1}:cpu1:avg'), None)
+        assert avg_entry is not None
+        # The latest value should correspond to the last bucket's average
+        latest_samples = avg_entry[2]
+        assert latest_samples[0] == 15000  # start of last bucket
+        assert float(latest_samples[1]) == 800.0  # average of last bucket
 
     def test_mget_cme_empty_result(self):
         """Test TS.MGET with no matching series across cluster"""

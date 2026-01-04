@@ -1,6 +1,4 @@
-use super::fanout::generated::{
-    Label as FanoutLabel, MGetValue, MultiGetRequest, MultiGetResponse, Sample as FanoutSample,
-};
+use super::fanout::generated::{MGetValue, MultiGetRequest, MultiGetResponse};
 use super::utils::{reply_with_bulk_string, reply_with_fanout_labels, reply_with_fanout_sample};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
@@ -45,27 +43,7 @@ impl FanoutOperation for MGetFanoutOperation {
 
         let results = process_mget_request(ctx, mreq)?;
 
-        let values = results
-            .into_iter()
-            .map(|resp| {
-                let labels = resp
-                    .labels
-                    .into_iter()
-                    .map(|l| l.map_or_else(FanoutLabel::default, |l| l.into()))
-                    .collect();
-
-                let sample = resp.sample.map(|s| FanoutSample {
-                    timestamp: s.timestamp,
-                    value: s.value,
-                });
-
-                MGetValue {
-                    key: resp.series_key.to_string_lossy(),
-                    labels,
-                    sample,
-                }
-            })
-            .collect();
+        let values: Vec<MGetValue> = results.into_iter().map(|resp| resp.into()).collect();
 
         Ok(MultiGetResponse { values })
     }

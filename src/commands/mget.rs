@@ -122,16 +122,12 @@ pub fn process_mget_request(
 ) -> ValkeyResult<Vec<MGetSeriesData>> {
     let with_labels = options.with_labels;
     let selected_labels = &options.selected_labels;
-    let mut series = vec![];
+    let mut series = Vec::with_capacity(8);
 
     let opts: MatchFilterOptions = options.filters.into();
     with_matched_series(ctx, &mut series, &opts, move |acc, series, key| {
         let sample = if options.latest {
-            if let Some(value) = get_latest_compaction_sample(ctx, series) {
-                Some(value)
-            } else {
-                series.last_sample
-            }
+            get_latest_compaction_sample(ctx, series).or(series.last_sample)
         } else {
             series.last_sample
         };

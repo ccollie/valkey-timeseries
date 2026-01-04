@@ -6,12 +6,13 @@ use super::generated::{
     PostingStat as FanoutPostingStat, RangeRequest, Sample as FanoutSample,
     SeriesSelector as FanoutSeriesSelector, StatsResponse, ValueRange as FanoutValueFilter,
 };
+use crate::commands::fanout::MGetValue;
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
-    AggregationOptions, AggregationType, BucketAlignment, MRangeOptions, MatchFilterOptions,
-    RangeGroupingOptions, RangeOptions,
+    AggregationOptions, AggregationType, BucketAlignment, MGetSeriesData, MRangeOptions,
+    MatchFilterOptions, RangeGroupingOptions, RangeOptions,
 };
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{
@@ -248,6 +249,27 @@ impl From<RangeGroupingOptions> for FanoutGroupingOptions {
         FanoutGroupingOptions {
             aggregation: aggregation.into(),
             group_label: value.group_label,
+        }
+    }
+}
+
+impl From<MGetSeriesData> for MGetValue {
+    fn from(value: MGetSeriesData) -> Self {
+        let labels = value
+            .labels
+            .into_iter()
+            .map(|l| l.map_or_else(FanoutLabel::default, |l| l.into()))
+            .collect();
+
+        let sample = value.sample.map(|s| FanoutSample {
+            timestamp: s.timestamp,
+            value: s.value,
+        });
+
+        MGetValue {
+            key: value.series_key.to_string_lossy(),
+            labels,
+            sample,
         }
     }
 }
