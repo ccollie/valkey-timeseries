@@ -52,6 +52,7 @@ pub trait FanoutOperation: Default + Send + 'static {
 
         if let Some(local) = local_node {
             if outstanding > 1 {
+                // TODO(perf): push this to the thread pool
                 let req_local = state.generate_request();
                 state.handle_local_request(ctx, req_local, local);
             } else {
