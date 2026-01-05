@@ -12,7 +12,6 @@ use crate::series::request_types::{
 };
 use crate::series::{TimeSeries, get_latest_compaction_sample};
 use ahash::AHashMap;
-use logger_rust::log_debug;
 use orx_parallel::{IntoParIter, IterIntoParIter, ParIter};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
@@ -225,11 +224,6 @@ fn get_grouped_samples(
     // reducer across the samples.
     // todo: choose approach based on data size and available memory?
     let is_reverse = options.is_reverse;
-
-    log_debug!(
-        "get_grouped_samples: collecting samples from {} series with is_reverse={is_reverse} count={count:?}",
-        series_metas.len()
-    );
 
     // todo(perf): with sufficient memory, we could parallel load all samples into memory first,
     // and construct the MultiSeriesSampleIter from those. In low memory, we could use the code

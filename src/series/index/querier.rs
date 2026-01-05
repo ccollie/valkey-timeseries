@@ -20,7 +20,6 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::acl::check_key_read_permission;
 use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
 use blart::AsBytes;
-use logger_rust::log_debug;
 use orx_parallel::{IterIntoParIter, ParIter};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -147,11 +146,6 @@ fn collect_series(
         .iter_into_par()
         .filter_map(|(series, id)| series.has_samples_in_range(start, end).then_some(id))
         .collect();
-
-    log_debug!(
-        "Found {} series matching date range filter {date_range}",
-        matching_ids.len()
-    );
 
     match matching_ids.len() {
         0 => Ok(Vec::new()),                  // none match
