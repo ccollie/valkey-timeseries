@@ -167,19 +167,37 @@ impl TimeSeries {
         self.rounding.as_ref().map_or(value, |r| r.round(value))
     }
 
+    #[inline]
+    fn make_sample(&self, ts: Timestamp, value: f64) -> Sample {
+        Sample {
+            value: self.adjust_value(value),
+            timestamp: ts,
+        }
+    }
+
+    #[inline]
+    fn record_appended_sample(&mut self, sample: Sample) {
+        if self.total_samples == 0 {
+            self.first_timestamp = sample.timestamp;
+        }
+        self.last_sample = Some(sample);
+        self.total_samples += 1;
+    }
+
     pub fn add(
         &mut self,
         ts: Timestamp,
         value: f64,
         dp_override: Option<DuplicatePolicy>,
     ) -> SampleAddResult {
-        let sample = Sample {
-            value: self.adjust_value(value),
-            timestamp: ts,
-        };
+        let sample = self.make_sample(ts, value);
 
         if let Some(last) = self.last_sample {
             let last_ts = last.timestamp;
+
+            // - ts < last_ts: upsert (no validation)
+            // - ts >= last_ts: validate duplicates; if ignored -> return Ignored(last_ts)
+            // - ts == last_ts: if not ignored, still go to upsert
             if ts >= last_ts && !self.validate_sample(&sample, &last, dp_override).is_ok() {
                 return SampleAddResult::Ignored(last_ts);
             }
@@ -211,7 +229,7 @@ impl TimeSeries {
         let chunk = self.get_last_chunk();
         match chunk.add_sample(&sample) {
             Ok(_) => {
-                self.update_after_sample_add(sample);
+                self.record_appended_sample(sample);
                 SampleAddResult::Ok(sample)
             }
             Err(TsdbError::CapacityFull(_)) => self.handle_full_chunk(sample),
@@ -226,7 +244,7 @@ impl TimeSeries {
         self.chunks.push(chunk);
         // trim chunks to keep memory usage in check
         self.chunks.shrink_to_fit();
-        self.update_after_sample_add(sample);
+        self.record_appended_sample(sample);
 
         Ok(())
     }
@@ -246,14 +264,6 @@ impl TimeSeries {
             Err(TsdbError::DuplicateSample(_)) => SampleAddResult::Duplicate,
             Err(_) => SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE),
         }
-    }
-
-    fn update_after_sample_add(&mut self, sample: Sample) {
-        if self.is_empty() {
-            self.first_timestamp = sample.timestamp;
-        }
-        self.last_sample = Some(sample);
-        self.total_samples += 1;
     }
 
     #[inline]
@@ -575,38 +585,41 @@ impl TimeSeries {
             }
         }
 
-        if let Some((start_index, end_index)) = self.get_chunk_index_bounds(start_ts, end_ts) {
-            let is_compressed = self.is_compressed();
+        let Some((start_index, end_index)) = self.get_chunk_index_bounds(start_ts, end_ts) else {
+            return Ok(0);
+        };
 
-            let mut chunks = self.chunks.as_mut_slice();
-            chunks = &mut chunks[start_index..=end_index];
+        let is_compressed = self.is_compressed();
 
-            let len = chunks.len();
-            if !is_compressed || len == 1 {
-                // eliminate the need for parallelization if chunks are not compressed
-                // If not compressed, we can iterate over the chunks directly
-                for chunk in chunks.iter_mut() {
+        let mut chunks = self.chunks.as_mut_slice();
+        chunks = &mut chunks[start_index..=end_index];
+
+        deleted_samples = match (is_compressed, chunks) {
+            (_, []) => 0,
+            (false, many) => {
+                for chunk in many.iter_mut() {
                     deleted_samples += remove_internal(chunk, start_ts, end_ts)?;
                 }
-            } else {
-                deleted_samples = chunks
-                    .into_par()
-                    .map(|chunk| remove_internal(chunk, start_ts, end_ts))
-                    .into_fallible_result()
-                    .sum()?;
+                deleted_samples
             }
+            (true, [one]) => remove_internal(one, start_ts, end_ts)?,
+            (true, many) => many
+                .into_par()
+                .map(|chunk| remove_internal(chunk, start_ts, end_ts))
+                .into_fallible_result()
+                .sum()?,
+        };
 
-            // Remove empty chunks
-            let saved_len = self.chunks.len();
-            self.chunks.retain(|chunk| !chunk.is_empty());
-            if self.chunks.len() < saved_len {
-                self.chunks.shrink_to_fit();
-            }
-
-            // Update metadata
-            self.total_samples = self.total_samples.saturating_sub(deleted_samples);
-            self.update_first_last_timestamps();
+        // Remove empty chunks
+        let saved_len = self.chunks.len();
+        self.chunks.retain(|chunk| !chunk.is_empty());
+        if self.chunks.len() < saved_len {
+            self.chunks.shrink_to_fit();
         }
+
+        // Update metadata
+        self.total_samples = self.total_samples.saturating_sub(deleted_samples);
+        self.update_first_last_timestamps();
 
         Ok(deleted_samples)
     }
@@ -631,28 +644,25 @@ impl TimeSeries {
         let min_timestamp = self.get_min_timestamp().max(start_time);
 
         // Get chunk index bounds for the range
-        if let Some((start_index, end_index)) = self.get_chunk_index_bounds(min_timestamp, end_time)
-        {
-            // Check if any chunk in the range has samples within the time range
-            let chunks = &self.chunks[start_index..=end_index];
-            if chunks.len() == 1 {
-                return chunks[0].has_samples_in_range(start_time, end_time);
-            }
-            // if we're uncompressed, do simple linear search, else use parallel search
-            return if !self.is_compressed() {
-                // Uncompressed chunks, iterate linearly
-                chunks
-                    .iter()
-                    .any(|c| c.has_samples_in_range(start_time, end_time))
-            } else {
-                // Compressed chunks, check each chunk in parallel
-                chunks
-                    .par()
-                    .any(|&chunk| chunk.has_samples_in_range(start_time, end_time))
-            };
-        }
+        let Some((start_index, end_index)) = self.get_chunk_index_bounds(min_timestamp, end_time)
+        else {
+            return false;
+        };
 
-        false
+        // Check if any chunk in the range has samples within the time range
+        let chunks = &self.chunks[start_index..=end_index];
+        match (self.is_compressed(), chunks) {
+            (_, []) => false,
+            (_, [chunk]) => chunk.has_samples_in_range(start_time, end_time),
+            // Uncompressed chunks, iterate linearly
+            (false, many) => many
+                .iter()
+                .any(|c| c.has_samples_in_range(start_time, end_time)),
+            // Compressed chunks, check each chunk in parallel
+            (true, many) => many
+                .par()
+                .any(|&chunk| chunk.has_samples_in_range(start_time, end_time)),
+        }
     }
 
     pub fn increment_sample_value(
@@ -887,31 +897,29 @@ fn binary_search_chunks_by_timestamp(chunks: &[TimeSeriesChunk], ts: Timestamp) 
     }
 }
 
+const LINEAR_SCAN_MAX: usize = 16;
+
 /// Find the index of the first chunk in which the timestamp belongs. Assumes !chunks.is_empty()
 pub(super) fn find_start_chunk_index(arr: &[TimeSeriesChunk], ts: Timestamp) -> usize {
-    if arr.is_empty() {
-        // If the vector is empty, return the first index.
-        return 0;
-    }
-    if ts <= arr[0].first_timestamp() {
-        // If the timestamp is less than the first chunk's start timestamp, return the first index.
-        return 0;
-    }
-    if arr.len() <= 32 {
-        // If the vectors are small, perform a linear search.
-        return arr
+    match arr {
+        [] => 0,
+        [first, ..] if ts <= first.first_timestamp() => 0,
+        _ if arr.len() <= LINEAR_SCAN_MAX => arr
             .iter()
             .position(|x| ts >= x.first_timestamp())
-            .unwrap_or(arr.len());
+            .unwrap_or(arr.len()),
+        _ => {
+            let (pos, _) = binary_search_chunks_by_timestamp(arr, ts);
+            pos
+        }
     }
-    let (pos, _) = binary_search_chunks_by_timestamp(arr, ts);
-    pos
 }
 
 /// Return the index of the chunk in which the timestamp belongs. Assumes !chunks.is_empty()
 fn get_chunk_index(chunks: &[TimeSeriesChunk], timestamp: Timestamp) -> (usize, bool) {
-    if chunks.len() <= 16 {
-        return chunks
+    match chunks {
+        [] => (0, false),
+        _ if chunks.len() <= LINEAR_SCAN_MAX => chunks
             .iter()
             .enumerate()
             .find_map(|(i, chunk)| {
@@ -921,15 +929,15 @@ fn get_chunk_index(chunks: &[TimeSeriesChunk], timestamp: Timestamp) -> (usize, 
                     None
                 }
             })
-            .unwrap_or((chunks.len(), false));
+            .unwrap_or((chunks.len(), false)),
+        _ => binary_search_chunks_by_timestamp(chunks, timestamp),
     }
-
-    binary_search_chunks_by_timestamp(chunks, timestamp)
 }
 
 pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (usize, bool) {
-    if chunks.len() <= 16 {
-        return chunks
+    match chunks {
+        [] => (0, false),
+        _ if chunks.len() <= LINEAR_SCAN_MAX => chunks
             .iter()
             .rposition(|x| ts >= x.first_timestamp())
             .map_or((0, false), |idx| {
@@ -939,9 +947,9 @@ pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (
                 } else {
                     (idx.saturating_sub(1), false)
                 }
-            });
+            }),
+        _ => binary_search_chunks_by_timestamp(chunks, ts),
     }
-    binary_search_chunks_by_timestamp(chunks, ts)
 }
 
 fn get_range_parallel(
@@ -949,17 +957,16 @@ fn get_range_parallel(
     start: Timestamp,
     end: Timestamp,
 ) -> TsdbResult<Vec<Sample>> {
-    if chunks.len() == 1 {
-        let chunk = &chunks[0];
-        let samples = chunk.get_range(start, end)?;
-        return Ok(samples);
+    match chunks {
+        [] => Ok(vec![]),
+        [chunk] => chunk.get_range(start, end),
+        _ => chunks
+            .into_par()
+            .map(|chunk| chunk.get_range(start, end))
+            .into_fallible_result()
+            .flat_map(|x| x)
+            .collect(),
     }
-    chunks
-        .into_par()
-        .map(|chunk| chunk.get_range(start, end))
-        .into_fallible_result()
-        .flat_map(|x| x)
-        .collect()
 }
 
 #[cfg(test)]
