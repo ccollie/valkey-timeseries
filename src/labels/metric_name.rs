@@ -238,15 +238,19 @@ impl FromStr for MetricName {
 impl Display for MetricName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}{{", self.get_measurement())?;
-        let len = self.0.len();
-        for (i, label) in self.iter().enumerate() {
-            if !label.name.is_empty() && label.name != METRIC_NAME_LABEL {
-                write!(f, "{}={}", label.name, enquote('"', label.value))?;
-                if i < len - 1 {
-                    write!(f, ",")?;
-                }
+
+        let mut first = true;
+        for label in self
+            .iter()
+            .filter(|l| !l.name.is_empty() && l.name != METRIC_NAME_LABEL)
+        {
+            if !first {
+                write!(f, ",")?;
             }
+            first = false;
+            write!(f, "{}={}", label.name, enquote('"', label.value))?;
         }
+
         write!(f, "}}")?;
         Ok(())
     }
