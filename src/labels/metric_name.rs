@@ -86,57 +86,43 @@ impl MetricName {
         self.0.clear();
     }
 
+    fn split_kv(tag: &InternedString) -> Option<(&str, &str)> {
+        tag.split_once(VALUE_SEPARATOR)
+    }
+
+    fn key_of(tag: &InternedString) -> &str {
+        Self::split_kv(tag).map(|(k, _)| k).unwrap_or(EMPTY_LABEL)
+    }
+
+    fn find_index(&self, key: &str) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&key, Self::key_of)
+    }
+
     /// adds a new label to mn with the given key and value.
     pub fn add_label(&mut self, key: &str, value: &str) {
         let full_label = format!("{key}{VALUE_SEPARATOR}{value}");
         let interned_value = InternedString::new(&full_label);
-        match self.0.binary_search_by_key(&key, |tag| {
-            if let Some((k, _)) = tag.split_once(VALUE_SEPARATOR) {
-                k
-            } else {
-                EMPTY_LABEL
-            }
-        }) {
-            Ok(idx) => {
-                self.0[idx] = interned_value;
-            }
-            Err(idx) => {
-                self.0.insert(idx, interned_value);
-            }
+
+        match self.find_index(key) {
+            Ok(idx) => self.0[idx] = interned_value,
+            Err(idx) => self.0.insert(idx, interned_value),
         }
     }
 
     pub fn get_tag(&'_ self, key: &str) -> Option<InternedLabel<'_>> {
-        if let Some(label) = self.0.iter().find(|x| {
-            if let Some((k, _)) = x.split_once(VALUE_SEPARATOR) {
-                k == key
-            } else {
-                false
-            }
-        }) {
-            if let Some((name, value)) = label.split_once(VALUE_SEPARATOR) {
-                return Some(InternedLabel { name, value });
-            }
-        }
-        None
+        let idx = self.find_index(key).ok()?;
+        let (name, value) = Self::split_kv(&self.0[idx])?;
+        Some(InternedLabel { name, value })
     }
 
     pub fn get_value(&self, key: &str) -> Option<&str> {
-        self.0
-            .iter()
-            .filter_map(|interned| interned.split_once(VALUE_SEPARATOR))
-            .find(|(k, _)| *k == key)
-            .map(|(_, v)| v)
+        let idx = self.find_index(key).ok()?;
+        let (_, value) = Self::split_kv(&self.0[idx])?;
+        Some(value)
     }
 
     pub fn remove_label(&mut self, key: &str) {
-        if let Some(idx) = self.0.iter().position(|x| {
-            if let Some((k, _)) = x.split_once(VALUE_SEPARATOR) {
-                k == key
-            } else {
-                false
-            }
-        }) {
+        if let Ok(idx) = self.find_index(key) {
             self.0.remove(idx);
         }
     }
@@ -146,21 +132,13 @@ impl MetricName {
     }
 
     pub fn get_measurement(&self) -> &str {
-        if let Some(measurement) = self.get_value(METRIC_NAME_LABEL) {
-            measurement
-        } else {
-            EMPTY_LABEL
-        }
+        self.get_value(METRIC_NAME_LABEL).unwrap_or(EMPTY_LABEL)
     }
 
     pub fn iter(&'_ self) -> impl Iterator<Item = InternedLabel<'_>> {
-        self.0.iter().filter_map(|x| {
-            if let Some((name, value)) = x.split_once(VALUE_SEPARATOR) {
-                Some(InternedLabel { name, value })
-            } else {
-                None
-            }
-        })
+        self.0
+            .iter()
+            .filter_map(|x| Self::split_kv(x).map(|(name, value)| InternedLabel { name, value }))
     }
 
     pub fn to_label_vec(&self) -> Vec<Label> {
