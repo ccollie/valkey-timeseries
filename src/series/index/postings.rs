@@ -121,12 +121,13 @@ impl Postings {
 
     pub(super) fn add_id_to_all_postings(&mut self, id: SeriesRef) {
         let key = &*ALL_POSTINGS_KEY;
-        if let Some(bitmap) = self.label_index.get_mut(key) {
-            bitmap.add(id);
-        } else {
-            let mut bmp = PostingsBitmap::new();
-            bmp.add(id);
-            self.label_index.insert(key.clone(), bmp);
+        match self.label_index.entry(key.clone()) {
+            ARTEntry::Occupied(mut e) => e.get_mut().add(id),
+            ARTEntry::Vacant(e) => {
+                let mut bmp = PostingsBitmap::new();
+                bmp.add(id);
+                e.insert(bmp);
+            }
         }
     }
 
@@ -187,22 +188,30 @@ impl Postings {
         self.id_to_key.contains_key(&id)
     }
 
+    /// Return postings for a key (borrowed if possible), applying stale removal.
+    /// If stale_ids is non-empty, this returns Owned.
+    fn postings_for_key(&'_ self, key: &[u8]) -> Cow<'_, PostingsBitmap> {
+        match self.label_index.get(key) {
+            Some(bmp) if self.stale_ids.is_empty() => Cow::Borrowed(bmp),
+            Some(bmp) => Cow::Owned(bmp.andnot(&self.stale_ids)),
+            None => Cow::Borrowed(&*EMPTY_BITMAP),
+        }
+    }
+
+    /// Clone postings for a key (or empty), then remove stale IDs in-place.
+    fn postings_for_key_owned(&self, key: &[u8]) -> PostingsBitmap {
+        let mut out = self.label_index.get(key).cloned().unwrap_or_default();
+        self.remove_stale_if_needed(&mut out);
+        out
+    }
+
     pub fn postings_for_label_value<'a>(
         &'a self,
         name: &str,
         value: &str,
     ) -> Cow<'a, PostingsBitmap> {
         let key = KeyBuffer::for_label_value(name, value);
-        if let Some(bmp) = self.label_index.get(key.as_bytes()) {
-            if self.stale_ids.is_empty() {
-                Cow::Borrowed(bmp)
-            } else {
-                let result = bmp.andnot(&self.stale_ids);
-                Cow::Owned(result)
-            }
-        } else {
-            Cow::Borrowed(&*EMPTY_BITMAP)
-        }
+        self.postings_for_key(key.as_bytes())
     }
 
     #[inline]
@@ -295,22 +304,26 @@ impl Postings {
     ///
     /// This exists primarily to ensure that we disallow duplicate metric names
     pub fn posting_id_by_labels<T: SeriesLabel>(&self, labels: &[T]) -> Option<SeriesRef> {
-        let mut acc = PostingsBitmap::new();
+        let mut it = labels.iter();
 
-        for label in labels.iter() {
+        let first = it.next()?;
+        let first_key = KeyBuffer::for_label_value(first.name(), first.value());
+        let mut acc = self.label_index.get(first_key.as_bytes())?.clone();
+
+        for label in it {
             let key = KeyBuffer::for_label_value(label.name(), label.value());
             let bmp = self.label_index.get(key.as_bytes())?;
-            acc &= bmp;
-        }
-
-        if acc.cardinality() == 1 {
-            if !self.stale_ids.is_empty() {
-                acc.andnot_inplace(&self.stale_ids);
+            acc.and_inplace(bmp);
+            if acc.is_empty() {
+                return None;
             }
-            return acc.iter().next();
         }
 
-        None
+        self.remove_stale_if_needed(&mut acc);
+
+        (acc.cardinality() == 1)
+            .then(|| acc.iter().next())
+            .flatten()
     }
 
     pub fn postings_without_label(&'_ self, label: &str) -> Cow<'_, PostingsBitmap> {
@@ -323,23 +336,26 @@ impl Postings {
         }
     }
 
+    fn postings_for_any_of_labels(&self, labels: &[&str]) -> PostingsBitmap {
+        let mut to_remove = PostingsBitmap::new();
+        for label in labels {
+            let prefix = KeyBuffer::for_prefix(label);
+            for (_, map) in self.label_index.prefix(prefix.as_bytes()) {
+                to_remove.or_inplace(map);
+            }
+        }
+        self.remove_stale_if_needed(&mut to_remove);
+        to_remove
+    }
+
     #[allow(dead_code)]
     pub fn postings_without_labels<'a>(&'a self, labels: &[&str]) -> Cow<'a, PostingsBitmap> {
-        match labels.len() {
-            0 => Cow::Borrowed(self.all_postings()),     // bad boy !!
-            1 => self.postings_without_label(labels[0]), // slightly more efficient (1 less allocation)
+        match labels {
+            [] => Cow::Borrowed(self.all_postings()),
+            [only] => self.postings_without_label(only),
             _ => {
                 let all = self.all_postings();
-                let mut to_remove = PostingsBitmap::new();
-                for label in labels {
-                    let prefix = KeyBuffer::for_prefix(label);
-                    for (_, map) in self.label_index.prefix(prefix.as_bytes()) {
-                        to_remove.or_inplace(map);
-                    }
-                }
-                if !self.stale_ids.is_empty() {
-                    to_remove.or_inplace(&self.stale_ids);
-                }
+                let to_remove = self.postings_for_any_of_labels(labels);
                 if to_remove.is_empty() {
                     Cow::Borrowed(all)
                 } else {
@@ -817,6 +833,12 @@ fn handle_not_equal_match<'a>(
     }
 }
 
+#[inline]
+fn postings_matching_filter(postings: &Postings, filter: &LabelFilter) -> PostingsBitmap {
+    let mut state = filter;
+    postings.postings_for_label_matching(&filter.label, &mut state, |value, f| f.matches(value))
+}
+
 fn handle_regex_equal_match<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
@@ -824,28 +846,17 @@ fn handle_regex_equal_match<'a>(
     if filter.matches_empty() {
         return postings.postings_without_label(&filter.label);
     }
-    let mut state = filter;
-    let postings =
-        postings.postings_for_label_matching(&filter.label, &mut state, |value, matcher| {
-            matcher.matches(value)
-        });
-    Cow::Owned(postings)
+    Cow::Owned(postings_matching_filter(postings, filter))
 }
 
 fn handle_regex_not_equal_match<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
-    let matches_empty = filter.matches_empty();
-    if matches_empty {
+    if filter.matches_empty() {
         return with_label(postings, &filter.label);
     }
-    let mut state = filter;
-    let postings =
-        postings.postings_for_label_matching(&filter.label, &mut state, |value, filter| {
-            filter.matches(value)
-        });
-    Cow::Owned(postings)
+    Cow::Owned(postings_matching_filter(postings, filter))
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
