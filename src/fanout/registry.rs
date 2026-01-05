@@ -81,26 +81,16 @@ impl FanoutOperationRegistry {
         payload: &[u8],
         dest: &mut Vec<u8>,
     ) -> FanoutResult<()> {
-        let executor = self.get_operation_by_name(name, true).unwrap();
+        let executor = self
+            .get_operation_by_name(name)
+            .ok_or_else(FanoutError::invalid_message)?;
+
         executor(ctx, payload, dest)
     }
 
-    fn get_operation_by_name(
-        &self,
-        name: &str,
-        must_exist: bool,
-    ) -> Option<RequestHandlerCallback> {
-        let map = self.operations.pin();
-        match map.get(name) {
-            Some(op) => Some(*op),
-            None => {
-                if must_exist {
-                    panic!("Fanout Operation '{name}' not found in registry");
-                } else {
-                    None
-                }
-            }
-        }
+    #[inline]
+    fn get_operation_by_name(&self, name: &str) -> Option<RequestHandlerCallback> {
+        self.operations.pin().get(name).copied()
     }
 
     /// Check if an operation is registered.
@@ -153,7 +143,7 @@ pub fn handle_fanout_request(
 }
 
 pub(super) fn get_fanout_request_handler(name: &str) -> Option<RequestHandlerCallback> {
-    FANOUT_REGISTRY.get_operation_by_name(name, false)
+    FANOUT_REGISTRY.get_operation_by_name(name)
 }
 
 pub(crate) fn get_registered_fanout_operations() -> Vec<&'static str> {
