@@ -11,9 +11,9 @@ use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
 use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
+use ahash::HashSet;
 use core::time::Duration;
 use papaya::HashMap;
-use std::collections::BTreeSet;
 use std::hash::{BuildHasher, RandomState};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,7 +30,7 @@ const FANOUT_ERROR_MESSAGE: u8 = 0x03;
 
 struct InFlightRequest {
     id: u64,
-    targets: Arc<BTreeSet<NodeInfo>>,
+    targets: Arc<HashSet<NodeInfo>>,
     response_handler: FanoutResponseCallback,
     outstanding: AtomicU64,
     timer_id: u64,
@@ -141,7 +141,7 @@ pub fn get_cluster_command_timeout() -> Duration {
 pub(super) fn send_cluster_request(
     ctx: &Context,
     request_buf: &[u8],
-    targets: Arc<BTreeSet<NodeInfo>>,
+    targets: Arc<HashSet<NodeInfo>>,
     handler: &str,
     response_handler: FanoutResponseCallback,
     timeout: Option<Duration>,

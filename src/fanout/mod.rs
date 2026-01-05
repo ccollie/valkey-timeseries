@@ -8,8 +8,8 @@ mod registry;
 pub mod serialization;
 mod utils;
 
+use ahash::HashSet;
 use arc_swap::{ArcSwap, Guard};
-use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 use valkey_module::Context;
 
@@ -36,7 +36,7 @@ fn update_cluster_map(map: ClusterMap) {
     CLUSTER_MAP.swap(Arc::new(map));
 }
 
-pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> Arc<BTreeSet<NodeInfo>> {
+pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> Arc<HashSet<NodeInfo>> {
     let current_map = CLUSTER_MAP.load();
     // Check if we need to refresh
     let needs_refresh = !current_map.is_consistent || current_map.is_expired();

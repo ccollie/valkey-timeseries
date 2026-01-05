@@ -1,6 +1,6 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use ahash::AHashMap;
+use ahash::{AHashMap, HashSet, HashSetExt};
 use rand::{Rng, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::borrow::Borrow;
@@ -448,7 +448,7 @@ struct SlotRangeInfo {
     pub shard_id: NodeId,
 }
 
-type LazyTargets = OnceLock<Arc<BTreeSet<NodeInfo>>>;
+type LazyTargets = OnceLock<Arc<HashSet<NodeInfo>>>;
 
 /// Main cluster map structure
 #[derive(Debug, Default)]
@@ -504,7 +504,7 @@ impl ClusterMap {
     }
 
     /// Helper function to refresh targets in CreateNewClusterMap
-    pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<BTreeSet<NodeInfo>> {
+    pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<HashSet<NodeInfo>> {
         match target_mode {
             FanoutTargetMode::Primary => self.primary_targets(),
             FanoutTargetMode::ReplicasOnly => self.replica_targets(),
@@ -514,18 +514,18 @@ impl ClusterMap {
         }
     }
 
-    fn random_one_per_shard(&self) -> Arc<BTreeSet<NodeInfo>> {
+    fn random_one_per_shard(&self) -> Arc<HashSet<NodeInfo>> {
         let mut rng_ = rng();
-        let mut targets = BTreeSet::new();
+        let mut targets = HashSet::new();
         for shard in self.shards.iter() {
             targets.insert(shard.pick_target(&mut rng_, false, false));
         }
         Arc::new(targets)
     }
 
-    fn random_one_replica_per_shard(&self) -> Arc<BTreeSet<NodeInfo>> {
+    fn random_one_replica_per_shard(&self) -> Arc<HashSet<NodeInfo>> {
         let mut rng_ = rng();
-        let mut targets = BTreeSet::new();
+        let mut targets = HashSet::new();
         for shard in self.shards.iter() {
             // prefer a replica, fall back to primary if no replicas exist
             targets.insert(shard.pick_target(&mut rng_, false, true));
@@ -534,10 +534,10 @@ impl ClusterMap {
     }
 
     #[inline]
-    fn all_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
+    fn all_targets(&self) -> Arc<HashSet<NodeInfo>> {
         self.all_targets
             .get_or_init(|| {
-                let mut targets = BTreeSet::new();
+                let mut targets = HashSet::new();
                 for shard in self.shards.iter() {
                     if let Some(primary) = shard.primary {
                         targets.insert(primary);
@@ -552,10 +552,10 @@ impl ClusterMap {
     }
 
     #[inline]
-    fn primary_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
+    fn primary_targets(&self) -> Arc<HashSet<NodeInfo>> {
         self.primary_targets
             .get_or_init(|| {
-                let mut targets = BTreeSet::new();
+                let mut targets = HashSet::new();
                 for shard in self.shards.iter() {
                     if let Some(primary) = shard.primary {
                         targets.insert(primary);
@@ -567,10 +567,10 @@ impl ClusterMap {
     }
 
     #[inline]
-    fn replica_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
+    fn replica_targets(&self) -> Arc<HashSet<NodeInfo>> {
         self.replica_targets
             .get_or_init(|| {
-                let mut targets = BTreeSet::new();
+                let mut targets = HashSet::new();
                 for shard in self.shards.iter() {
                     for replica in shard.replicas.iter() {
                         targets.insert(*replica);

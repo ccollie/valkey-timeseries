@@ -4,7 +4,7 @@ use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::threads::spawn_with_context;
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
-use std::collections::BTreeSet;
+use ahash::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
@@ -34,7 +34,7 @@ pub trait FanoutOperation: Default + Send + 'static {
 
     /// Get the list of target nodes for the fanout operation.
     /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> Arc<BTreeSet<NodeInfo>> {
+    fn get_targets(&self, ctx: &Context) -> Arc<HashSet<NodeInfo>> {
         get_fanout_targets(ctx, FanoutTargetMode::Random)
     }
 
@@ -91,7 +91,7 @@ pub trait FanoutOperation: Default + Send + 'static {
     fn invoke_rpc(
         ctx: &Context,
         req: Self::Request,
-        targets: Arc<BTreeSet<NodeInfo>>,
+        targets: Arc<HashSet<NodeInfo>>,
         response_handler: FanoutResponseCallback,
         timeout: Duration,
     ) -> ValkeyResult<()> {
