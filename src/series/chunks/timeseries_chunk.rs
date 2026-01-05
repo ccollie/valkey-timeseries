@@ -268,12 +268,12 @@ impl TimeSeriesChunk {
     }
 
     pub fn filtered_iter(
-        &self,
+        &'_ self,
         start_timestamp: Timestamp,
         end_timestamp: Timestamp,
         timestamp_filter: Option<&[Timestamp]>,
         value_filter: Option<ValueFilter>,
-    ) -> FilteredSampleIterator<SampleIter> {
+    ) -> FilteredSampleIterator<SampleIter<'_>> {
         // determine the range of timestamps to filter
         let (start_timestamp, end_timestamp) = if let Some(ts_filter) = timestamp_filter {
             if ts_filter.is_empty() {
