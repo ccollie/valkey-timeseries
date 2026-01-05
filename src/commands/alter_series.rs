@@ -1,4 +1,4 @@
-use crate::commands::arg_parse::CommandArgToken;
+use crate::commands::command_args::CommandArgToken;
 use crate::commands::parse_series_options;
 use crate::labels::MetricName;
 use crate::series::index::with_timeseries_index;

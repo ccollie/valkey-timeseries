@@ -1,4 +1,4 @@
-use crate::commands::arg_parse::{parse_join_args, parse_timestamp_range};
+use crate::commands::command_args::{parse_join_args, parse_timestamp_range};
 use crate::error_consts;
 use crate::join::{JoinOptions, process_join};
 use crate::series::{TimeSeries, get_timeseries};

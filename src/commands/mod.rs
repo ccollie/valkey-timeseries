@@ -1,8 +1,8 @@
 mod add;
 mod alter_series;
-pub mod arg_parse;
 mod card;
 mod card_fanout_operation;
+pub mod command_args;
 mod create_rule;
 mod create_series;
 mod del;
@@ -28,7 +28,7 @@ mod stats;
 mod stats_fanout_operation;
 mod utils;
 
-pub use arg_parse::*;
+pub use command_args::*;
 pub use create_rule::*;
 pub use delete_rule::*;
 

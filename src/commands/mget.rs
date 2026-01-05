@@ -1,5 +1,5 @@
 use super::mget_fanout_operation::MGetFanoutOperation;
-use crate::commands::arg_parse::CommandArgToken;
+use crate::commands::command_args::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
 use crate::fanout::{FanoutOperation, is_clustered};
