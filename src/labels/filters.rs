@@ -693,50 +693,59 @@ impl From<Vec<Vec<LabelFilter>>> for SeriesSelector {
 }
 
 fn join_matchers(f: &mut Formatter<'_>, v: &[LabelFilter]) -> fmt::Result {
-    let mut measurement: &str = "";
-    let mut idx = 0;
-    let mut has_name = false;
-    let mut name_count = 0;
+    // Find the metric name matcher (single __name__=value filter)
+    let metric_name_info = find_metric_name_matcher(v);
 
-    // first check if we have a __name__ matcher
-    for (i, matcher) in v.iter().enumerate() {
-        if matcher.label == METRIC_NAME_LABEL {
-            name_count += 1;
-            if name_count > 1 {
-                // multiple __name__ matchers - ignore all
-                has_name = false;
-                measurement = "";
-                break;
-            }
-            if matcher.matcher.op() == MatchOp::Equal {
-                idx = i;
-                measurement = matcher.text().unwrap_or(EMPTY_TEXT);
-                has_name = true;
-                continue;
-            }
+    // If there's only a metric name filter, output it directly
+    if let Some((_, name)) = metric_name_info {
+        if v.len() == 1 {
+            return write!(f, "{name}");
         }
     }
 
-    if has_name && v.len() == 1 {
-        // only __name__ matcher
-        write!(f, "{measurement}")?;
-        return Ok(());
-    }
+    // Write metric name (if any) followed by labels in braces
+    let name = metric_name_info.map(|(_, n)| n).unwrap_or("");
+    write!(f, "{name}{{")?;
 
-    write!(f, "{measurement}{{")?;
-    let len = v.len();
+    let mut first = true;
     for (i, matcher) in v.iter().enumerate() {
-        if has_name && i == idx {
+        // Skip the metric name matcher since we already wrote it
+        if metric_name_info.map(|(idx, _)| idx == i).unwrap_or(false) {
             continue;
         }
-        write!(f, "{matcher}")?;
-        if i < len - 1 {
+
+        if !first {
             write!(f, ",")?;
         }
+        write!(f, "{matcher}")?;
+        first = false;
     }
-    write!(f, "}}")?;
 
-    Ok(())
+    write!(f, "}}")
+}
+
+/// Finds the single __name__=value matcher in the filter list.
+/// Returns None if there are zero or multiple __name__ matchers.
+fn find_metric_name_matcher(filters: &[LabelFilter]) -> Option<(usize, &str)> {
+    let mut result: Option<(usize, &str)> = None;
+
+    for (i, matcher) in filters.iter().enumerate() {
+        if matcher.label == METRIC_NAME_LABEL {
+            // Multiple __name__ matchers found - invalid
+            if result.is_some() {
+                return None;
+            }
+
+            // Only Equal operations define a metric name
+            if matcher.matcher.op() == MatchOp::Equal {
+                if let Some(name) = matcher.text() {
+                    result = Some((i, name));
+                }
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
