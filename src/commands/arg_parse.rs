@@ -29,227 +29,101 @@ use strum_macros::EnumIter;
 use valkey_module::{NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
 pub const MAX_TS_VALUES_FILTER: usize = 128;
-const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
-const CMD_ARG_ALIGN: &str = "ALIGN";
-const CMD_ARG_ALLOW_EXACT_MATCH: &str = "ALLOW_EXACT_MATCH";
-const CMD_ARG_ANTI: &str = "ANTI";
-const CMD_ARG_ASOF: &str = "ASOF";
-const CMD_ARG_BUCKET_TIMESTAMP: &str = "BUCKETTIMESTAMP";
-const CMD_ARG_CHUNK_SIZE: &str = "CHUNK_SIZE";
-const CMD_ARG_COMPRESSION: &str = "COMPRESSION";
-const CMD_ARG_COMPRESSED: &str = "COMPRESSED";
-const CMD_ARG_COUNT: &str = "COUNT";
-const CMD_ARG_DECIMAL_DIGITS: &str = "DECIMAL_DIGITS";
-const CMD_ARG_DUPLICATE_POLICY: &str = "DUPLICATE_POLICY";
-const CMD_ARG_EMPTY: &str = "EMPTY";
-const CMD_ARG_ENCODING: &str = "ENCODING";
-const CMD_ARG_END: &str = "END";
-const CMD_ARG_FALSE: &str = "FALSE";
-const CMD_ARG_FILTER: &str = "FILTER";
-const CMD_ARG_FILTER_BY_TS: &str = "FILTER_BY_TS";
-const CMD_ARG_FILTER_BY_VALUE: &str = "FILTER_BY_VALUE";
-const CMD_ARG_FILTER_BY_RANGE: &str = "FILTER_BY_RANGE";
-const CMD_ARG_FULL: &str = "FULL";
-const CMD_ARG_GROUP_BY: &str = "GROUPBY";
-const CMD_ARG_IGNORE: &str = "IGNORE";
-const CMD_ARG_INNER: &str = "INNER";
-const CMD_ARG_LABELS: &str = "LABELS";
-const CMD_ARG_LATEST: &str = "LATEST";
-const CMD_ARG_LEFT: &str = "LEFT";
-const CMD_ARG_LIMIT: &str = "LIMIT";
-const CMD_ARG_MATCH: &str = "MATCH";
-const CMD_ARG_METRIC: &str = "METRIC";
-const CMD_ARG_NAME: &str = "NAME";
-const CMD_ARG_NEAREST: &str = "NEAREST";
-const CMD_ARG_NEXT: &str = "NEXT";
-const CMD_ARG_ON_DUPLICATE: &str = "ON_DUPLICATE";
-const CMD_ARG_PREVIOUS: &str = "PREVIOUS";
-const CMD_ARG_PRIOR: &str = "PRIOR";
-const CMD_ARG_REDUCE: &str = "REDUCE";
-const CMD_ARG_RETENTION: &str = "RETENTION";
-const CMD_ARG_RIGHT: &str = "RIGHT";
-const CMD_ARG_ROUNDING: &str = "ROUNDING";
-const CMD_ARG_SELECTED_LABELS: &str = "SELECTED_LABELS";
-const CMD_ARG_SEMI: &str = "SEMI";
-const CMD_ARG_STEP: &str = "STEP";
-const CMD_ARG_SIGNIFICANT_DIGITS: &str = "SIGNIFICANT_DIGITS";
-const CMD_ARG_START: &str = "START";
-const CMD_ARG_TIMESTAMP: &str = "TIMESTAMP";
-const CMD_ARG_TRUE: &str = "TRUE";
-const CMD_ARG_UNCOMPRESSED: &str = "UNCOMPRESSED";
-const CMD_ARG_WITH_LABELS: &str = "WITHLABELS";
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default, EnumIter)]
-pub enum CommandArgToken {
-    Aggregation,
-    Align,
-    AllowExactMatch,
-    Anti,
-    AsOf,
-    BucketTimestamp,
-    ChunkSize,
-    Compressed,
-    Compression,
-    Count,
-    DecimalDigits,
-    DuplicatePolicy,
-    Empty,
-    Encoding,
-    End,
-    False,
-    Filter,
-    FilterByTs,
-    FilterByRange,
-    FilterByValue,
-    Full,
-    GroupBy,
-    Ignore,
-    Inner,
-    Labels,
-    Latest,
-    Left,
-    Limit,
-    Match,
-    Metric,
-    Name,
-    Nearest,
-    Next,
-    OnDuplicate,
-    Previous,
-    Prior,
-    Reduce,
-    Retention,
-    Right,
-    Rounding,
-    SelectedLabels,
-    Semi,
-    SignificantDigits,
-    Start,
-    Step,
-    Timestamp,
-    True,
-    Uncompressed,
-    WithLabels,
-    #[default]
-    Invalid,
+// Kept because these are referenced directly in the parsing logic below.
+const CMD_ARG_AGGREGATION: &str = "AGGREGATION";
+const CMD_ARG_COUNT: &str = "COUNT";
+const CMD_ARG_REDUCE: &str = "REDUCE";
+
+macro_rules! command_arg_tokens {
+    ( $( $variant:ident => $lit:literal ),+ $(,)? ) => {
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default, EnumIter)]
+        pub enum CommandArgToken {
+            $(
+                $variant,
+            )+
+            #[default]
+            Invalid,
+        }
+
+        impl CommandArgToken {
+            #[allow(dead_code)]
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(
+                        CommandArgToken::$variant => $lit,
+                    )+
+                    CommandArgToken::Invalid => "INVALID",
+                }
+            }
+        }
+
+        pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
+            hashify::tiny_map_ignore_case! {
+                arg,
+                $(
+                    $lit => CommandArgToken::$variant,
+                )+
+            }
+        }
+    };
 }
 
-impl CommandArgToken {
-    #[allow(dead_code)]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CommandArgToken::Aggregation => CMD_ARG_AGGREGATION,
-            CommandArgToken::Align => CMD_ARG_ALIGN,
-            CommandArgToken::AllowExactMatch => CMD_ARG_ALLOW_EXACT_MATCH,
-            CommandArgToken::Anti => CMD_ARG_ANTI,
-            CommandArgToken::AsOf => CMD_ARG_ASOF,
-            CommandArgToken::ChunkSize => CMD_ARG_CHUNK_SIZE,
-            CommandArgToken::Compressed => CMD_ARG_COMPRESSED,
-            CommandArgToken::Compression => CMD_ARG_COMPRESSION,
-            CommandArgToken::Count => CMD_ARG_COUNT,
-            CommandArgToken::DecimalDigits => CMD_ARG_DECIMAL_DIGITS,
-            CommandArgToken::DuplicatePolicy => CMD_ARG_DUPLICATE_POLICY,
-            CommandArgToken::Empty => CMD_ARG_EMPTY,
-            CommandArgToken::Encoding => CMD_ARG_ENCODING,
-            CommandArgToken::End => CMD_ARG_END,
-            CommandArgToken::False => CMD_ARG_FALSE,
-            CommandArgToken::Filter => CMD_ARG_FILTER,
-            CommandArgToken::FilterByTs => CMD_ARG_FILTER_BY_TS,
-            CommandArgToken::FilterByRange => CMD_ARG_FILTER_BY_RANGE,
-            CommandArgToken::FilterByValue => CMD_ARG_FILTER_BY_VALUE,
-            CommandArgToken::Full => CMD_ARG_FULL,
-            CommandArgToken::GroupBy => CMD_ARG_GROUP_BY,
-            CommandArgToken::Ignore => CMD_ARG_IGNORE,
-            CommandArgToken::Inner => CMD_ARG_INNER,
-            CommandArgToken::Latest => CMD_ARG_LATEST,
-            CommandArgToken::Labels => CMD_ARG_LABELS,
-            CommandArgToken::Left => CMD_ARG_LEFT,
-            CommandArgToken::Limit => CMD_ARG_LIMIT,
-            CommandArgToken::Match => CMD_ARG_MATCH,
-            CommandArgToken::Metric => CMD_ARG_METRIC,
-            CommandArgToken::Name => CMD_ARG_NAME,
-            CommandArgToken::OnDuplicate => CMD_ARG_ON_DUPLICATE,
-            CommandArgToken::Retention => CMD_ARG_RETENTION,
-            CommandArgToken::Right => CMD_ARG_RIGHT,
-            CommandArgToken::Rounding => CMD_ARG_ROUNDING,
-            CommandArgToken::SignificantDigits => CMD_ARG_SIGNIFICANT_DIGITS,
-            CommandArgToken::Semi => CMD_ARG_SEMI,
-            CommandArgToken::Start => CMD_ARG_START,
-            CommandArgToken::Step => CMD_ARG_STEP,
-            CommandArgToken::WithLabels => CMD_ARG_WITH_LABELS,
-            CommandArgToken::BucketTimestamp => CMD_ARG_BUCKET_TIMESTAMP,
-            CommandArgToken::Nearest => CMD_ARG_NEAREST,
-            CommandArgToken::Next => CMD_ARG_NEXT,
-            CommandArgToken::Previous => CMD_ARG_PREVIOUS,
-            CommandArgToken::Prior => CMD_ARG_PRIOR,
-            CommandArgToken::Reduce => CMD_ARG_REDUCE,
-            CommandArgToken::Uncompressed => CMD_ARG_UNCOMPRESSED,
-            CommandArgToken::SelectedLabels => CMD_ARG_SELECTED_LABELS,
-            CommandArgToken::Timestamp => CMD_ARG_TIMESTAMP,
-            CommandArgToken::True => CMD_ARG_TRUE,
-            CommandArgToken::Invalid => "INVALID",
-        }
-    }
+command_arg_tokens! {
+    Aggregation => "AGGREGATION",
+    Align => "ALIGN",
+    AllowExactMatch => "ALLOW_EXACT_MATCH",
+    Anti => "ANTI",
+    AsOf => "ASOF",
+    BucketTimestamp => "BUCKETTIMESTAMP",
+    ChunkSize => "CHUNK_SIZE",
+    Compressed => "COMPRESSED",
+    Compression => "COMPRESSION",
+    Count => "COUNT",
+    DecimalDigits => "DECIMAL_DIGITS",
+    DuplicatePolicy => "DUPLICATE_POLICY",
+    Empty => "EMPTY",
+    Encoding => "ENCODING",
+    End => "END",
+    False => "FALSE",
+    Filter => "FILTER",
+    FilterByTs => "FILTER_BY_TS",
+    FilterByValue => "FILTER_BY_VALUE",
+    FilterByRange => "FILTER_BY_RANGE",
+    Full => "FULL",
+    GroupBy => "GROUPBY",
+    Ignore => "IGNORE",
+    Inner => "INNER",
+    Labels => "LABELS",
+    Latest => "LATEST",
+    Left => "LEFT",
+    Limit => "LIMIT",
+    Match => "MATCH",
+    Metric => "METRIC",
+    Name => "NAME",
+    Nearest => "NEAREST",
+    Next => "NEXT",
+    OnDuplicate => "ON_DUPLICATE",
+    Previous => "PREVIOUS",
+    Prior => "PRIOR",
+    Reduce => "REDUCE",
+    Retention => "RETENTION",
+    Right => "RIGHT",
+    Rounding => "ROUNDING",
+    SelectedLabels => "SELECTED_LABELS",
+    Semi => "SEMI",
+    SignificantDigits => "SIGNIFICANT_DIGITS",
+    Start => "START",
+    Step => "STEP",
+    Timestamp => "TIMESTAMP",
+    True => "TRUE",
+    Uncompressed => "UNCOMPRESSED",
+    WithLabels => "WITHLABELS",
 }
 
 impl Display for CommandArgToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
-    }
-}
-
-pub(crate) fn parse_command_arg_token(arg: &[u8]) -> Option<CommandArgToken> {
-    hashify::tiny_map_ignore_case! {
-        arg,
-        "AGGREGATION" => CommandArgToken::Aggregation,
-        "ALIGN" => CommandArgToken::Align,
-        "ALLOW_EXACT_MATCH" => CommandArgToken::AllowExactMatch,
-        "ANTI" => CommandArgToken::Anti,
-        "ASOF" => CommandArgToken::AsOf,
-        "BUCKETTIMESTAMP" => CommandArgToken::BucketTimestamp,
-        "CHUNK_SIZE" => CommandArgToken::ChunkSize,
-        "COMPRESSED" => CommandArgToken::Compressed,
-        "COMPRESSION" => CommandArgToken::Compression,
-        "COUNT" => CommandArgToken::Count,
-        "DECIMAL_DIGITS" => CommandArgToken::DecimalDigits,
-        "DUPLICATE_POLICY" => CommandArgToken::DuplicatePolicy,
-        "EMPTY" => CommandArgToken::Empty,
-        "ENCODING" => CommandArgToken::Encoding,
-        "END" => CommandArgToken::End,
-        "FALSE" => CommandArgToken::False,
-        "FILTER" => CommandArgToken::Filter,
-        "FILTER_BY_TS" => CommandArgToken::FilterByTs,
-        "FILTER_BY_VALUE" => CommandArgToken::FilterByValue,
-        "FILTER_BY_RANGE" => CommandArgToken::FilterByRange,
-        "FULL" => CommandArgToken::Full,
-        "GROUPBY" => CommandArgToken::GroupBy,
-        "IGNORE" => CommandArgToken::Ignore,
-        "INNER" => CommandArgToken::Inner,
-        "LABELS" => CommandArgToken::Labels,
-        "LATEST" => CommandArgToken::Latest,
-        "LEFT" => CommandArgToken::Left,
-        "LIMIT" => CommandArgToken::Limit,
-        "MATCH" => CommandArgToken::Match,
-        "METRIC" => CommandArgToken::Metric,
-        "NAME" => CommandArgToken::Name,
-        "NEAREST" => CommandArgToken::Nearest,
-        "NEXT" => CommandArgToken::Next,
-        "ON_DUPLICATE" => CommandArgToken::OnDuplicate,
-        "PREVIOUS" => CommandArgToken::Previous,
-        "PRIOR" => CommandArgToken::Prior,
-        "REDUCE" => CommandArgToken::Reduce,
-        "RETENTION" => CommandArgToken::Retention,
-        "RIGHT" => CommandArgToken::Right,
-        "ROUNDING" => CommandArgToken::Rounding,
-        "SELECTED_LABELS" => CommandArgToken::SelectedLabels,
-        "SEMI" => CommandArgToken::Semi,
-        "SIGNIFICANT_DIGITS" => CommandArgToken::SignificantDigits,
-        "START" => CommandArgToken::Start,
-        "STEP" => CommandArgToken::Step,
-        "TIMESTAMP" => CommandArgToken::Timestamp,
-        "TRUE" => CommandArgToken::True,
-        "UNCOMPRESSED" => CommandArgToken::Uncompressed,
-        "WITHLABELS" => CommandArgToken::WithLabels,
     }
 }
 
@@ -432,21 +306,24 @@ pub fn parse_timestamp_filter(
 ) -> ValkeyResult<Vec<Timestamp>> {
     // FILTER_BY_TS already seen
     let mut values: Vec<Timestamp> = Vec::new();
-    loop {
-        if is_stop_token_or_end(args, stop_tokens) {
-            break;
-        }
-        let Ok(arg) = args.next_str() else {
-            return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER));
-        };
-        let Ok(timestamp) = parse_timestamp(arg) else {
-            return Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP));
-        };
+
+    while !is_stop_token_or_end(args, stop_tokens) {
+        let arg = args
+            .next_str()
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP_FILTER))?;
+
+        let timestamp =
+            parse_timestamp(arg).map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
+
         values.push(timestamp);
+
         if values.len() > MAX_TS_VALUES_FILTER {
-            return Err(ValkeyError::Str("TSDB: too many timestamp filters"));
+            return Err(ValkeyError::Str(
+                error_consts::TOO_MANY_TIMESTAMP_FILTER_VALUES,
+            ));
         }
     }
+
     if values.is_empty() {
         return Err(ValkeyError::Str(
             error_consts::MISSING_TIMESTAMP_FILTER_VALUE,
@@ -476,6 +353,27 @@ pub fn parse_count_arg(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     let count = parse_integer_arg(&next, CMD_ARG_COUNT, false)
         .map_err(|_| ValkeyError::Str(error_consts::NEGATIVE_COUNT))?;
     Ok(count as usize)
+}
+
+fn expect_next_token(args: &mut CommandArgIterator, expected: CommandArgToken) -> ValkeyResult<()> {
+    let found = args.next_str()?;
+    let Some(found_token) = parse_command_arg_token(found.as_bytes()) else {
+        let msg = format!(
+            "TSDB: expected \"{}\", found \"{found}\"",
+            expected.as_str()
+        );
+        return Err(ValkeyError::String(msg));
+    };
+
+    if found_token != expected {
+        let msg = format!(
+            "TSDB: expected \"{}\", found \"{found}\"",
+            expected.as_str()
+        );
+        return Err(ValkeyError::String(msg));
+    }
+
+    Ok(())
 }
 
 pub(crate) fn parse_next_token(
@@ -521,15 +419,52 @@ pub(crate) fn advance_if_next_token_one_of(
     None
 }
 
-fn is_stop_token_or_end(args: &mut CommandArgIterator, stop_tokens: &[CommandArgToken]) -> bool {
-    let Some(next) = args.peek() else {
-        return true; // at end
+fn peek_token(args: &mut CommandArgIterator) -> Option<CommandArgToken> {
+    args.peek().and_then(|next| parse_command_arg_token(next))
+}
+
+fn next_token(args: &mut CommandArgIterator) -> ValkeyResult<Option<CommandArgToken>> {
+    let arg = match args.next_str() {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
     };
-    let Some(token) = parse_command_arg_token(next) else {
-        // should we error here?
-        return false; // not a token
+    Ok(parse_command_arg_token(arg.as_bytes()))
+}
+
+fn parse_optional_token_block(
+    args: &mut CommandArgIterator,
+    valid_tokens: &[CommandArgToken],
+    max_tokens: usize,
+    mut handle: impl FnMut(CommandArgToken, &mut CommandArgIterator) -> ValkeyResult<()>,
+) -> ValkeyResult<()> {
+    let mut consumed = 0usize;
+    while consumed < max_tokens {
+        let Some(token) = advance_if_next_token_one_of(args, valid_tokens) else {
+            break;
+        };
+        handle(token, args)?;
+        consumed += 1;
+    }
+    Ok(())
+}
+
+fn is_stop_token_or_end(args: &mut CommandArgIterator, stop_tokens: &[CommandArgToken]) -> bool {
+    let Some(token) = peek_token(args) else {
+        return args.peek().is_none(); // end => true, non-token => false
     };
     stop_tokens.contains(&token)
+}
+
+fn for_each_arg_until_stop(
+    args: &mut CommandArgIterator,
+    stop_tokens: &[CommandArgToken],
+    mut f: impl FnMut(&str) -> ValkeyResult<()>,
+) -> ValkeyResult<()> {
+    while !is_stop_token_or_end(args, stop_tokens) {
+        let arg = args.next_str()?;
+        f(arg)?;
+    }
+    Ok(())
 }
 
 pub fn parse_label_list(
@@ -538,20 +473,15 @@ pub fn parse_label_list(
 ) -> ValkeyResult<Vec<String>> {
     let mut labels: BTreeSet<String> = BTreeSet::new();
 
-    loop {
-        if is_stop_token_or_end(args, stop_tokens) {
-            break;
-        }
-
-        let label = args.next_str()?;
+    for_each_arg_until_stop(args, stop_tokens, |label| {
         if labels.contains(label) {
             return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
         }
         labels.insert(label.to_string());
-    }
+        Ok(())
+    })?;
 
-    let temp = labels.into_iter().collect();
-    Ok(temp)
+    Ok(labels.into_iter().collect())
 }
 
 pub fn parse_label_value_pairs(
@@ -560,26 +490,26 @@ pub fn parse_label_value_pairs(
 ) -> ValkeyResult<AHashMap<String, String>> {
     let mut labels: AHashMap<String, String> = AHashMap::new();
 
-    loop {
-        if args.peek().is_some() {
-            let name = args.next().unwrap().to_string_lossy();
-            if name.is_empty() {
-                return Err(ValkeyError::Str("TSDB invalid label key"));
-            }
+    while !is_stop_token_or_end(args, stop_tokens) {
+        let name = args
+            .next_str()
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_LABEL_NAME))?;
 
-            let value = args
-                .next_string()
-                .map_err(|_| ValkeyError::Str("TSDB invalid label value"))?;
-
-            if labels.insert(name, value).is_some() {
-                return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
-            }
-        } else {
-            break;
+        if name.is_empty() {
+            return Err(ValkeyError::Str(error_consts::INVALID_LABEL_NAME));
         }
 
-        if is_stop_token_or_end(args, stop_tokens) {
-            break;
+        // Must have a value next; if we hit stop/end here, it's an odd number of args.
+        if is_stop_token_or_end(args, stop_tokens) || args.peek().is_none() {
+            return Err(ValkeyError::Str(error_consts::INVALID_LABEL_VALUE));
+        }
+
+        let value = args
+            .next_str()
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_LABEL_VALUE))?;
+
+        if labels.insert(name.to_string(), value.to_string()).is_some() {
+            return Err(ValkeyError::Str(error_consts::DUPLICATE_LABEL));
         }
     }
 
@@ -605,35 +535,29 @@ pub fn parse_aggregation_options(
         report_empty: false,
     };
 
-    let mut arg_count: usize = 0;
-
     let valid_tokens = [
         CommandArgToken::Align,
         CommandArgToken::Empty,
         CommandArgToken::BucketTimestamp,
     ];
 
-    while let Some(token) = advance_if_next_token_one_of(args, &valid_tokens) {
-        match token {
-            CommandArgToken::Empty => {
-                aggr.report_empty = true;
-                arg_count += 1;
-            }
-            CommandArgToken::BucketTimestamp => {
-                let next = args.next_str()?;
-                arg_count += 1;
-                aggr.timestamp_output = BucketTimestamp::try_from(next)?;
-            }
-            CommandArgToken::Align => {
-                let next = args.next_str()?;
-                aggr.alignment = next.try_into()?;
-            }
-            _ => break,
+    parse_optional_token_block(args, &valid_tokens, 3, |token, args| match token {
+        CommandArgToken::Empty => {
+            aggr.report_empty = true;
+            Ok(())
         }
-        if arg_count == 3 {
-            break;
+        CommandArgToken::BucketTimestamp => {
+            let next = args.next_str()?;
+            aggr.timestamp_output = BucketTimestamp::try_from(next)?;
+            Ok(())
         }
-    }
+        CommandArgToken::Align => {
+            let next = args.next_str()?;
+            aggr.alignment = next.try_into()?;
+            Ok(())
+        }
+        _ => Ok(()),
+    })?;
 
     Ok(aggr)
 }
@@ -641,13 +565,10 @@ pub fn parse_aggregation_options(
 pub fn parse_grouping_params(args: &mut CommandArgIterator) -> ValkeyResult<RangeGroupingOptions> {
     // GROUPBY token already seen
     let label = args.next_str()?;
-    let token = args
-        .next_str()
+
+    expect_next_token(args, CommandArgToken::Reduce)
         .map_err(|_| ValkeyError::Str("TSDB: missing REDUCE"))?;
-    if !token.eq_ignore_ascii_case(CMD_ARG_REDUCE) {
-        let msg = format!("TSDB: expected \"{CMD_ARG_REDUCE}\", found \"{token}\"");
-        return Err(ValkeyError::String(msg));
-    }
+
     let agg_str = args
         .next_str()
         .map_err(|_e| ValkeyError::Str("TSDB: error parsing grouping reducer"))?;
@@ -707,8 +628,8 @@ pub fn parse_series_selector_list(
 ) -> ValkeyResult<Vec<SeriesSelector>> {
     let mut matchers = vec![];
 
-    while let Some(next) = args.peek() {
-        if let Some(token) = parse_command_arg_token(next) {
+    while args.peek().is_some() {
+        if let Some(token) = peek_token(args) {
             if stop_tokens.contains(&token) {
                 break;
             }
@@ -736,12 +657,11 @@ pub fn parse_series_selector_list(
 fn parse_align_for_aggregation(args: &mut CommandArgIterator) -> ValkeyResult<AggregationOptions> {
     // ALIGN token already seen
     let alignment_str = args.next_str()?;
-    let next = args.next_str()?;
-    if next != CMD_ARG_AGGREGATION {
-        return Err(ValkeyError::Str("TSDB: missing AGGREGATION"));
-    }
-    let mut aggregation = parse_aggregation_options(args)?;
 
+    expect_next_token(args, CommandArgToken::Aggregation)
+        .map_err(|_| ValkeyError::Str("TSDB: missing AGGREGATION"))?;
+
+    let mut aggregation = parse_aggregation_options(args)?;
     aggregation.alignment = BucketAlignment::try_from(alignment_str)?;
     Ok(aggregation)
 }
@@ -924,20 +844,29 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
     }
 
     let mut allow_exact_match = true;
-    if let Some(next_arg) = args.peek() {
-        if let Ok(arg_str) = next_arg.try_as_str() {
-            // see if we have a duration expression
-            // durations in all cases start with an ascii digit, e.g., 1000 or 40 ms
-            let ch = arg_str.chars().next().unwrap();
-            if ch.is_ascii_digit() {
-                let tolerance_ms = parse_duration_ms(arg_str)?;
-                if tolerance_ms < 0 {
-                    return Err(ValkeyError::Str(error_consts::INVALID_ASOF_TOLERANCE));
-                }
-                tolerance = Duration::from_millis(tolerance_ms as u64);
-                let _ = args.next_arg()?;
+    if args.peek().is_some() {
+        if let Some(next_token) = peek_token(args) {
+            // If the next thing is a known token, it's not a duration.
+            if next_token != AllowExactMatch {
+                // no-op; duration parsing below will handle only digit-starting strings
             }
         }
+
+        if let Some(next_arg) = args.peek() {
+            if let Ok(arg_str) = next_arg.try_as_str() {
+                // durations in all cases start with an ascii digit, e.g., 1000 or 40 ms
+                let ch = arg_str.chars().next().unwrap();
+                if ch.is_ascii_digit() {
+                    let tolerance_ms = parse_duration_ms(arg_str)?;
+                    if tolerance_ms < 0 {
+                        return Err(ValkeyError::Str(error_consts::INVALID_ASOF_TOLERANCE));
+                    }
+                    tolerance = Duration::from_millis(tolerance_ms as u64);
+                    let _ = args.next_arg()?;
+                }
+            }
+        }
+
         if advance_if_next_token_one_of(args, &[AllowExactMatch]).is_some() {
             match advance_if_next_token_one_of(args, &[True, False]) {
                 Some(True) => allow_exact_match = true,
