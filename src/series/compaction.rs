@@ -10,7 +10,6 @@ use get_size2::GetSize;
 use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
-use std::sync::Mutex;
 use topo_sort::{SortResults, TopoSort};
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, raw};
 
@@ -82,67 +81,54 @@ struct CompactionContext<'a> {
     parent: &'a TimeSeries,
     dest: &'a mut TimeSeries,
     rule: &'a mut CompactionRule,
-    value: Sample,
     added: bool,
 }
 
 impl<'a> CompactionContext<'a> {
-    fn new(
-        parent: &'a TimeSeries,
-        dest: &'a mut TimeSeries,
-        rule: &'a mut CompactionRule,
-        value: Sample,
-    ) -> Self {
+    fn new(parent: &'a TimeSeries, dest: &'a mut TimeSeries, rule: &'a mut CompactionRule) -> Self {
         Self {
             parent,
             dest,
             rule,
-            value,
             added: false,
         }
     }
 }
 
-pub fn run_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample) -> TsdbResult<()> {
-    if series.rules.is_empty() {
-        return Ok(());
-    }
-    process_series_with_compaction(ctx, series, sample, handle_sample_compaction)
+/// Single entry point for all compaction-related mutations.
+#[derive(Debug, Clone, Copy)]
+pub enum CompactionOp {
+    /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
+    AddNew(Sample),
+    /// Handle compaction for an upsert (timestamp <= last sample timestamp)
+    Upsert(Sample),
+    /// Remove a range from source and reflect it into destinations (and ongoing aggregation state)
+    RemoveRange { start: Timestamp, end: Timestamp },
 }
 
-pub fn upsert_compaction(ctx: &Context, series: &mut TimeSeries, sample: Sample) -> TsdbResult<()> {
-    if series.rules.is_empty() {
-        return Ok(());
-    }
-
-    process_series_with_compaction(ctx, series, sample, handle_compaction_upsert)
-}
-
-pub fn remove_compaction_range(
+pub fn apply_compaction(
     ctx: &Context,
     series: &mut TimeSeries,
-    start: Timestamp,
-    end: Timestamp,
+    op: CompactionOp,
 ) -> TsdbResult<()> {
     if series.rules.is_empty() {
         return Ok(());
     }
-    let unused = Sample::new(0, 0.0);
-    // Process all compactions in parallel
-    process_series_with_compaction(ctx, series, unused, |context, _sample| {
-        handle_compaction_range_removal(context, start, end)
-    })?;
-    // Update any ongoing aggregations that might be affected
-    let mut rules = std::mem::take(&mut series.rules);
-    for rule in &mut rules {
-        handle_current_bucket_adjustment(series, rule, start, end);
-    }
-    series.rules = rules;
-    Ok(())
+    process_series_with_compaction(ctx, series, op)
 }
 
 fn null_ts_filter(ts: Timestamp) -> bool {
     ts != 0
+}
+
+fn apply_op(ctx: &mut CompactionContext<'_>, op: CompactionOp) -> TsdbResult<()> {
+    match op {
+        CompactionOp::AddNew(sample) => handle_sample_compaction(ctx, sample),
+        CompactionOp::Upsert(sample) => handle_compaction_upsert(ctx, sample),
+        CompactionOp::RemoveRange { start, end } => {
+            handle_compaction_range_removal(ctx, start, end)
+        }
+    }
 }
 
 /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
@@ -299,117 +285,57 @@ fn handle_compaction_range_removal(
     start: Timestamp,
     end: Timestamp,
 ) -> TsdbResult<()> {
-    // Calculate the bucket boundaries that are affected by the removed range
+    // Update destination series buckets that overlap with [start, end]
     let first_bucket_start = ctx.rule.calc_bucket_start(start);
     let last_bucket_start = ctx.rule.calc_bucket_start(end);
 
-    // Handle different scenarios based on how the removal affects buckets
-    if first_bucket_start == last_bucket_start {
-        // Scenario 1: Removal is within a single bucket - need to recalculate that bucket
-        handle_single_bucket_removal(ctx, first_bucket_start, start, end)
-    } else {
-        // Scenario 2: Removal spans multiple buckets
-        handle_multiple_bucket_removal(ctx, first_bucket_start, last_bucket_start, start, end)
-    }
-}
-
-fn handle_single_bucket_removal(
-    ctx: &mut CompactionContext,
-    bucket_start: Timestamp,
-    removal_start: Timestamp,
-    removal_end: Timestamp,
-) -> TsdbResult<()> {
-    let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
-
-    // Check if the entire bucket is being removed
-    if removal_start <= bucket_start && removal_end >= bucket_end {
-        // Remove the entire bucket from destination
-        if !ctx.dest.is_empty() {
-            ctx.dest.remove_range(bucket_start, bucket_end - 1)?;
-        }
-        return Ok(());
-    }
-
-    // If no samples are written in this bucket yet, we're dealing with the current aggregation
-    if ctx.dest.is_empty() {
-        // Aggregate all samples in this bucket
-        calculate_range(
-            ctx.parent,
-            &mut ctx.rule.aggregator,
-            bucket_start,
-            bucket_end - 1,
-            |ts| ts < removal_start || ts > removal_end,
-        );
-        return Ok(());
-    }
-
-    recalculate_bucket(ctx, bucket_start, bucket_end, |ts| {
-        ts < removal_start || ts > removal_end
-    })
-}
-
-fn handle_multiple_bucket_removal(
-    ctx: &mut CompactionContext,
-    first_bucket_start: Timestamp,
-    last_bucket_start: Timestamp,
-    removal_start: Timestamp,
-    removal_end: Timestamp,
-) -> TsdbResult<()> {
     let mut current_bucket_start = first_bucket_start;
-
     while current_bucket_start <= last_bucket_start {
         let bucket_end = current_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
 
-        // Determine the overlap between this bucket and the removal range
-        let overlap_start = removal_start.max(current_bucket_start);
-        let overlap_end = removal_end.min(bucket_end);
-
-        if overlap_start <= overlap_end {
-            if current_bucket_start == first_bucket_start
-                || current_bucket_start == last_bucket_start
-            {
-                // The first or last bucket might be partial
-                handle_single_bucket_removal(
-                    ctx,
-                    current_bucket_start,
-                    removal_start,
-                    removal_end,
-                )?;
-            } else {
-                // Middle buckets are completely removed
+        let fully_covered = start <= current_bucket_start && end >= bucket_end;
+        if fully_covered {
+            if !ctx.dest.is_empty() {
                 ctx.dest
                     .remove_range(current_bucket_start, bucket_end - 1)?;
             }
+        } else {
+            // Recalculate this bucket excluding removed timestamps.
+            // If destination has no flushed buckets yet, this still correctly maintains the aggregator state.
+            recalculate_bucket(ctx, current_bucket_start, bucket_end, |ts| {
+                ts < start || ts > end
+            })?;
         }
 
         current_bucket_start = bucket_end;
     }
 
+    // Adjust current in-memory aggregation (ongoing bucket), if affected
+    adjust_current_bucket_after_removal(ctx, start, end);
+
     Ok(())
 }
 
-/// Handle the case where range removal affects the current aggregation bucket
-fn handle_current_bucket_adjustment(
-    series: &TimeSeries,
-    rule: &mut CompactionRule,
+fn adjust_current_bucket_after_removal(
+    ctx: &mut CompactionContext<'_>,
     removal_start: Timestamp,
     removal_end: Timestamp,
 ) {
-    let Some(current_bucket_start) = rule.bucket_start else {
+    let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // No active aggregation, nothing to adjust
         return;
     };
 
-    let current_bucket_end = current_bucket_start.saturating_add_unsigned(rule.bucket_duration);
+    let current_bucket_end = current_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
 
     // Check if the removal affects the current aggregation bucket
     if removal_start < current_bucket_end && removal_end > current_bucket_start {
-        // The current bucket is affected, we need to recalculate
-        let mut new_aggregator = rule.aggregator.clone();
+        let mut new_aggregator = ctx.rule.aggregator.clone();
         new_aggregator.reset();
 
         // Re-aggregate samples that are not in the removal range
-        let bucket_samples = series
+        let bucket_samples = ctx
+            .parent
             .range_iter(current_bucket_start, current_bucket_end)
             .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
@@ -417,7 +343,119 @@ fn handle_current_bucket_adjustment(
             new_aggregator.update(sample.value);
         }
 
-        rule.aggregator = new_aggregator;
+        ctx.rule.aggregator = new_aggregator;
+    }
+}
+
+/// Iterates through compaction rules (possibly in parallel) and applies the specified operation.
+fn process_series_with_compaction(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    op: CompactionOp,
+) -> TsdbResult<()> {
+    // Process current series compaction rules
+    apply_rules_on_series(ctx, series, op)?;
+
+    // Collect child series (one level, behavior preserved)
+    let child_series = series
+        .rules
+        .iter()
+        .filter_map(|rule| get_destination_series(ctx, rule.dest_id));
+
+    // Process child series
+    for mut child in child_series {
+        apply_rules_on_series(ctx, &mut child, op)?;
+    }
+
+    Ok(())
+}
+
+fn apply_rules_on_series(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    op: CompactionOp,
+) -> TsdbResult<()> {
+    let destinations = get_compaction_series(ctx, series);
+    if destinations.is_empty() || series.rules.is_empty() {
+        return Ok(());
+    }
+
+    let mut rules = std::mem::take(&mut series.rules);
+    let result = apply_rules_parallel_or_seq(ctx, series, &mut rules, destinations, op);
+    series.rules = rules;
+    result
+}
+
+/// Internal function that handles parallel/sequential execution of compaction rules.
+fn apply_rules_parallel_or_seq(
+    ctx: &Context,
+    series: &TimeSeries,
+    rules: &mut [CompactionRule],
+    child_series: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
+    op: CompactionOp,
+) -> TsdbResult<()> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+
+    let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
+
+    let results: Vec<Result<Option<SeriesRef>, TsdbError>> =
+        if destinations.len() >= PARALLEL_THRESHOLD {
+            destinations
+                .par_mut()
+                .map(|(rule, dest_guard)| {
+                    let mut cctx = CompactionContext::new(series, dest_guard, rule);
+                    apply_op(&mut cctx, op).map(|_| {
+                        if cctx.added {
+                            Some(dest_guard.id)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect()
+        } else {
+            destinations
+                .iter_mut()
+                .map(|(rule, dest_guard)| {
+                    let mut cctx = CompactionContext::new(series, dest_guard, rule);
+                    apply_op(&mut cctx, op).map(|_| {
+                        if cctx.added {
+                            Some(dest_guard.id)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect()
+        };
+
+    let mut added: Vec<SeriesRef> = Vec::new();
+    let mut first_error: Option<TsdbError> = None;
+
+    for r in results {
+        match r {
+            Ok(Some(id)) => added.push(id),
+            Ok(None) => {}
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error.clone());
+                }
+                let msg = format!("Failed to handle compaction rule for series: {error}");
+                log_warning(msg);
+            }
+        }
+    }
+
+    if !added.is_empty() {
+        notify_compaction(ctx, &added);
+    }
+
+    if let Some(err) = first_error {
+        Err(err)
+    } else {
+        Ok(())
     }
 }
 
@@ -469,153 +507,6 @@ fn notify_compaction(ctx: &Context, ids: &[SeriesRef]) {
             ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add:dest", &key);
         }
     });
-}
-
-/// Iterates through compaction rules (possibly in parallel) and applies the provided function `f` to process
-/// the specified `TimeSeries` and its associated child series. This function handles
-/// the traversal and execution of compaction logic on the series hierarchy, allowing
-/// recursive processing of any child `TimeSeries` derived from the rules.
-///
-/// ## Arguments
-///
-/// - `ctx`: the current context
-/// - `series`: A mutable reference to the `TimeSeries` being processed.
-/// - `value`: A `Sample` object containing the value or data being processed
-///   during the current iteration.
-/// - `f`: A closure or function pointer that implements the processing logic
-///   for each compaction rule. This function is called with:
-///   - A detached context for logging or thread-dependent operations.
-///   - The current `TimeSeries` being processed.
-///   - A mutable reference to a child `TimeSeries` derived from compaction rules.
-///   - A mutable reference to a `CompactionRule` for the current rule being processed.
-///   - The sample value (`value`) to be processed.
-///
-/// ## Returns
-///
-/// This function returns a `TsdbResult<()>`:
-/// - `Ok(())` if all compaction operations and recursive calls are successful.
-/// - `Err` if any part of the compaction operation fails at any level.
-///
-fn process_series_with_compaction<F>(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    value: Sample,
-    f: F,
-) -> TsdbResult<()>
-where
-    F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
-{
-    iterate_compactions(ctx, series, value, &f)
-}
-
-/// Processes a single series and its compaction rules, then recursively processes child series
-fn iterate_compactions<F>(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    value: Sample,
-    f: &F,
-) -> TsdbResult<()>
-where
-    F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
-{
-    // Process current series compaction rules
-    execute_compaction_rules(ctx, series, value, f)?;
-
-    // Collect child series
-    let child_series = series
-        .rules
-        .iter()
-        .filter_map(|rule| get_destination_series(ctx, rule.dest_id));
-
-    // Recursively process child series
-    for mut child in child_series {
-        execute_compaction_rules(ctx, &mut child, value, f)?;
-    }
-
-    Ok(())
-}
-
-fn execute_compaction_rules<F>(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    value: Sample,
-    f: &F,
-) -> TsdbResult<()>
-where
-    F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
-{
-    let destinations = get_compaction_series(ctx, series);
-    if destinations.is_empty() || series.rules.is_empty() {
-        return Ok(());
-    }
-
-    let mut rules = std::mem::take(&mut series.rules);
-    let result = run_compaction_internal(ctx, series, &mut rules, destinations, value, f);
-    series.rules = rules;
-    result
-}
-
-/// Internal function that handles the parallel execution of compaction rules
-fn run_compaction_internal<F>(
-    ctx: &Context,
-    series: &TimeSeries,
-    rules: &mut [CompactionRule],
-    child_series: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
-    value: Sample,
-    f: &F,
-) -> TsdbResult<()>
-where
-    F: Fn(&mut CompactionContext, Sample) -> TsdbResult<()> + Send + Sync,
-{
-    if rules.is_empty() {
-        return Ok(());
-    }
-
-    let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
-
-    let errors = Mutex::new(Vec::new());
-    let added: Vec<SeriesRef> = destinations
-        .par_mut()
-        .filter_map(|(rule, dest_guard)| {
-            let mut cctx = CompactionContext {
-                parent: series,
-                dest: dest_guard,
-                rule,
-                value,
-                added: false,
-            };
-            match f(&mut cctx, value) {
-                Ok(_) => {
-                    if cctx.added {
-                        Some(dest_guard.id)
-                    } else {
-                        None
-                    }
-                }
-                Err(error) => {
-                    let msg = format!(
-                        "Failed to handle compaction rule for series {}: {error}",
-                        dest_guard.id,
-                    );
-                    log_warning(msg);
-                    let mut guard = errors.lock().unwrap();
-                    guard.push(error);
-                    None
-                }
-            }
-        })
-        .collect();
-
-    // Notify about the compaction results
-    if !added.is_empty() {
-        notify_compaction(ctx, &added);
-    }
-
-    let errors = errors.into_inner().unwrap_or_default();
-    let Some(first_error) = errors.first().cloned() else {
-        return Ok(());
-    };
-    Err(first_error)
 }
 
 fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> TsdbResult<()> {
@@ -692,7 +583,14 @@ impl TimeSeries {
         let deleted_count = self.remove_range(start_ts, end_ts)?;
 
         if deleted_count > 0 && !self.rules.is_empty() {
-            remove_compaction_range(ctx, self, start_ts, end_ts)?;
+            apply_compaction(
+                ctx,
+                self,
+                CompactionOp::RemoveRange {
+                    start: start_ts,
+                    end: end_ts,
+                },
+            )?;
         }
 
         Ok(deleted_count)
@@ -702,14 +600,14 @@ impl TimeSeries {
         if self.rules.is_empty() {
             return Ok(());
         }
-        run_compaction(ctx, self, value)
+        apply_compaction(ctx, self, CompactionOp::AddNew(value))
     }
 
     pub fn upsert_compaction(&mut self, ctx: &Context, value: Sample) -> TsdbResult<()> {
         if self.rules.is_empty() {
             return Ok(());
         }
-        upsert_compaction(ctx, self, value)
+        apply_compaction(ctx, self, CompactionOp::Upsert(value))
     }
 }
 
