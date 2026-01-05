@@ -50,18 +50,22 @@ impl InFlightRequest {
         let _ = ctx.stop_timer::<u64>(self.timer_id);
     }
 
-    fn get_target_node(&self, sender_id: *const c_char) -> &NodeInfo {
+    fn get_target_node_opt(&self, sender_id: *const c_char) -> Option<&NodeInfo> {
         // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
         let sender = NodeId::from_raw(sender_id);
-
-        // find the NodeInfo associated with the target
-        self.targets
-            .get(&sender)
-            .expect("cluster rpc: target node lookup failed")
+        self.targets.get(&sender)
     }
 
-    fn handle_response(&self, _ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
-        let target_node = self.get_target_node(sender_id);
+    fn handle_response(&self, ctx: &Context, resp: FanoutResult<&[u8]>, sender_id: *const c_char) {
+        let Some(target_node) = self.get_target_node_opt(sender_id) else {
+            let sender = NodeId::from_raw(sender_id);
+            let msg = format!(
+                "cluster rpc: received response for request {} from unknown sender {}",
+                self.id, sender
+            );
+            ctx.log_warning(&msg);
+            return;
+        };
 
         (self.response_handler)(resp, target_node);
     }
