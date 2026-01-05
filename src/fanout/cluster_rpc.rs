@@ -6,6 +6,7 @@ use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::pool::get_pooled_buffer;
+use crate::common::threads::spawn_with_context;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
@@ -18,7 +19,7 @@ use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, MODULE_CONTEXT, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
+    Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
     ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
@@ -187,25 +188,24 @@ pub(super) fn send_cluster_request(
     Ok(())
 }
 
-/// Send the response back to the original sender
 fn send_message_internal(
     ctx: &Context,
     msg_type: u8,
     request_id: u64,
+    db: i32,
     sender_id: *const c_char,
     handler: &str,
     buf: &[u8],
 ) -> Status {
     let mut dest = Vec::with_capacity(1024);
-    let db = get_current_db(ctx);
     serialize_request_message(&mut dest, request_id, db, handler, buf);
     send_cluster_message(ctx, sender_id, msg_type, &dest)
 }
 
-/// Send the response back to the original sender
 fn send_response_message(
     ctx: &Context,
     request_id: u64,
+    db: i32,
     sender_id: *const c_char,
     handler: &str,
     buf: &[u8],
@@ -214,6 +214,7 @@ fn send_response_message(
         ctx,
         FANOUT_RESPONSE_MESSAGE,
         request_id,
+        db,
         sender_id,
         handler,
         buf,
@@ -223,12 +224,21 @@ fn send_response_message(
 fn send_error_response(
     ctx: &Context,
     request_id: u64,
+    db: i32,
     target_node: *const c_char,
     error: FanoutError,
 ) -> Status {
     let mut buf: Vec<u8> = Vec::with_capacity(512);
     error.serialize(&mut buf);
-    send_message_internal(ctx, FANOUT_ERROR_MESSAGE, request_id, target_node, "", &buf)
+    send_message_internal(
+        ctx,
+        FANOUT_ERROR_MESSAGE,
+        request_id,
+        db,
+        target_node,
+        "",
+        &buf,
+    )
 }
 
 fn parse_fanout_message(
@@ -276,13 +286,19 @@ fn process_request_message(
 
     if let Err(e) = res {
         let msg = e.to_string();
-        send_error_response(ctx, request_id, sender_id.raw_ptr(), e);
+        send_error_response(ctx, request_id, db, sender_id.raw_ptr(), e);
         ctx.log_warning(&msg);
         return;
     };
 
-    if send_response_message(ctx, request_id, sender_id.raw_ptr(), &header.handler, &dest)
-        == Status::Err
+    if send_response_message(
+        ctx,
+        request_id,
+        db,
+        sender_id.raw_ptr(),
+        &header.handler,
+        &dest,
+    ) == Status::Err
     {
         let msg = format!("Failed to send response message to node {sender_id:?}");
         ctx.log_warning(&msg);
@@ -338,7 +354,7 @@ extern "C" fn on_request_received(
 
     let Some(handler) = get_fanout_request_handler(&message.handler) else {
         let e = FanoutError::invalid_message();
-        send_error_response(&ctx, message.request_id, sender_id, e);
+        send_error_response(&ctx, message.request_id, message.db, sender_id, e);
         let msg = format!(
             "No handler registered for fanout operation '{}'",
             message.handler
@@ -347,29 +363,23 @@ extern "C" fn on_request_received(
         return;
     };
 
-    // we need to process the request in a separate thread to avoid blocking the Valkey main thread
-    // First, convert sender_id to NodeId (*const i8 is not Send)
     let sender = NodeId::from_raw(sender_id);
 
-    // Copy the message buffer to owned data to move into thread
     let mut buf = get_pooled_buffer(len as usize);
     buf.extend_from_slice(message.buf);
 
     let header = FanoutMessageHeader {
-        version: FANOUT_MESSAGE_VERSION, // not used
-        reserved: 0,                     // not used
+        version: FANOUT_MESSAGE_VERSION,
+        reserved: 0,
         request_id: message.request_id,
         db: message.db,
         handler: std::mem::take(&mut message.handler),
     };
 
-    // Selecting a db in valkey allocates it if it doesn't exist yet. Allocate it now to avoid doing it
-    // in the worker thread.
     alloc_db_if_needed(&ctx, message.db);
 
-    crate::common::threads::spawn(move || {
-        let m_context = MODULE_CONTEXT.lock();
-        process_request_message(&m_context, header, handler, &buf, sender);
+    spawn_with_context(move |ctx| {
+        process_request_message(ctx, header, handler, &buf, sender);
     });
 }
 
