@@ -1,10 +1,10 @@
 use crate::aggregators::AggregateIterator;
+use crate::common::hash::IntSet;
 use crate::common::{Sample, Timestamp};
 use crate::iterators::{ReduceIterator, TimestampFilterIterator};
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::series::{SeriesSampleIterator, TimeSeries};
 use smallvec::SmallVec;
-use std::collections::BTreeSet;
 
 macro_rules! apply_iter_limit {
     ($iter:expr, $limit:expr) => {
@@ -133,7 +133,7 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
 
     let filtered = base_iter.filter(move |sample| {
         if let Some(ts) = &ts_filter {
-            if !ts.contains(sample.timestamp) {
+            if !ts.matches(sample.timestamp) {
                 return false;
             }
         }
@@ -221,30 +221,24 @@ impl<I: Iterator<Item = Sample>> Iterator for ReverseSampleIter<I> {
 
 // this may be overkill, but we'll try optimizing memory for a
 // very common case of a very small number of timestamps
-enum TimestampFilterStorage {
-    Set(BTreeSet<Timestamp>),
+pub enum TimestampFilter {
+    Set(IntSet<Timestamp>),
     List(SmallVec<Timestamp, 16>),
-}
-
-struct TimestampFilter {
-    storage: TimestampFilterStorage,
 }
 
 impl TimestampFilter {
     pub fn new(timestamps: &[Timestamp]) -> Self {
-        let storage = if timestamps.len() > 16 {
-            let set = BTreeSet::from_iter(timestamps.iter().cloned());
-            TimestampFilterStorage::Set(set)
+        if timestamps.len() > 16 {
+            Self::Set(IntSet::from_iter(timestamps.iter().copied()))
         } else {
-            TimestampFilterStorage::List(SmallVec::from_slice_copy(timestamps))
-        };
-        Self { storage }
+            Self::List(SmallVec::from_slice_copy(timestamps))
+        }
     }
 
-    pub fn contains(&self, ts: Timestamp) -> bool {
-        match &self.storage {
-            TimestampFilterStorage::Set(set) => set.contains(&ts),
-            TimestampFilterStorage::List(list) => list.contains(&ts),
+    pub fn matches(&self, ts: Timestamp) -> bool {
+        match self {
+            TimestampFilter::Set(set) => set.contains(&ts),
+            TimestampFilter::List(list) => list.contains(&ts),
         }
     }
 }
