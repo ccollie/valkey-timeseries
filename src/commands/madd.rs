@@ -41,11 +41,7 @@ struct SeriesSamples<'a> {
 pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let arg_count = args.len() - 1;
 
-    if arg_count < 3 {
-        return Err(ValkeyError::WrongArity);
-    }
-
-    if arg_count % 3 != 0 {
+    if arg_count < 3 || arg_count % 3 != 0 {
         return Err(ValkeyError::WrongArity);
     }
 
@@ -54,53 +50,37 @@ pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let now = current_time_millis();
     let current_ts = ctx.create_string(now.to_string());
 
-    // parse the input arguments into a map of samples grouped by series
-    let mut input_map = parse_args(ctx, &args[1..], &current_ts)?;
+    // Parse once, keep inputs already in original order (no regroup+sort later)
+    let (mut input_map, all_inputs) = parse_args(ctx, &args[1..], &current_ts)?;
 
-    let results = handle_update(ctx, &mut input_map)?;
+    // Results aligned by original input order
+    let results = handle_update(ctx, &mut input_map, &all_inputs, sample_count)?;
 
-    // reassemble the input back into the original order
-    let mut all_inputs = Vec::with_capacity(sample_count);
-    for (_, ss) in input_map.into_iter() {
-        all_inputs.extend(ss.samples);
-    }
-
-    // sort the inputs back to the original order
-    all_inputs.sort_by(|x, y| x.index.cmp(&y.index));
-
-    // match results back to the original input
-    for (index, res) in results.iter() {
-        if let Some(input) = all_inputs.get_mut(*index) {
-            input.res = *res;
-        }
-    }
-
-    // handle replication
     handle_replication(ctx, &all_inputs);
 
-    let result = results
-        .into_iter()
-        .map(|x| ValkeyValue::from(x.1))
-        .collect::<Vec<_>>();
-
-    Ok(ValkeyValue::Array(result))
+    Ok(ValkeyValue::Array(
+        results.into_iter().map(ValkeyValue::from).collect(),
+    ))
 }
 
 fn handle_update(
     ctx: &Context,
     input_map: &mut AHashMap<&ValkeyString, SeriesSamples>,
-) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
-    let mut per_series_samples: Vec<PerSeriesSamples> = Vec::with_capacity(4); // usually we have just a few series
+    all_inputs: &[ParsedInput],
+    sample_count: usize,
+) -> ValkeyResult<Vec<SampleAddResult>> {
+    // Start with parse-time results; merge-time results will overwrite only successful parses.
+    let mut results: Vec<SampleAddResult> = all_inputs.iter().map(|i| i.res).collect();
+    results.resize(sample_count, SampleAddResult::InvalidValue);
 
-    let mut errors: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
+    let mut per_series_samples: Vec<PerSeriesSamples> = Vec::with_capacity(4);
 
     for (_key, samples) in input_map.iter_mut() {
         let res = samples.err;
-
         if !res.is_ok() {
-            // if we have an error, we need to return it for each sample
+            // Series-level error applies to every sample in that series
             for input in samples.samples.iter() {
-                errors.push((input.index, res));
+                results[input.index] = res;
             }
             continue;
         }
@@ -110,14 +90,11 @@ fn handle_update(
         };
 
         let mut s = PerSeriesSamples::new(series.deref_mut());
-
         for input in samples.samples.iter() {
             if input.res.is_ok() {
                 s.add_sample(Sample::new(input.timestamp, input.value), input.index);
-            } else {
-                // if we have an error, we need to return it for this sample
-                errors.push((input.index, input.res));
             }
+            // parse errors are already in `results` from initialization above
         }
 
         if !s.is_empty() {
@@ -125,10 +102,15 @@ fn handle_update(
         }
     }
 
-    let mut results = multi_series_merge_samples(per_series_samples, Some(ctx))?;
-    // add errors to the results
-    results.extend(errors);
-    results.sort_by_key(|(index, _)| *index);
+    // Merge results overwrite the OK entries with final add results
+    let merged: SmallVec<(usize, SampleAddResult), 8> =
+        multi_series_merge_samples(per_series_samples, Some(ctx))?;
+    for (index, res) in merged {
+        if let Some(slot) = results.get_mut(index) {
+            *slot = res;
+        }
+    }
+
     Ok(results)
 }
 
@@ -136,9 +118,14 @@ fn parse_args<'a>(
     ctx: &'a Context,
     args: &'a [ValkeyString],
     current_ts: &'a ValkeyString,
-) -> ValkeyResult<AHashMap<&'a ValkeyString, SeriesSamples<'a>>> {
+) -> ValkeyResult<(
+    AHashMap<&'a ValkeyString, SeriesSamples<'a>>,
+    Vec<ParsedInput<'a>>,
+)> {
     let mut input_map: AHashMap<&ValkeyString, SeriesSamples> =
         AHashMap::with_capacity(args.len() / 3);
+
+    let mut all_inputs: Vec<ParsedInput<'a>> = Vec::with_capacity(args.len() / 3);
 
     let mut index: usize = 0;
     let mut arg_index: usize = 0;
@@ -152,7 +139,6 @@ fn parse_args<'a>(
 
         let series_samples = input_map.entry(key).or_default();
 
-        // if series_samples is new, we need to look up the series by key
         let mut res = if series_samples.samples.is_empty() {
             match get_timeseries_mut(ctx, key, false, Some(AclPermissions::UPDATE)) {
                 Ok(Some(guard)) => {
@@ -172,7 +158,6 @@ fn parse_args<'a>(
             series_samples.err
         };
 
-        // parsing value only if we have no errors with the key
         let (timestamp, value) = if !res.is_ok() {
             (0, 0.0)
         } else {
@@ -197,7 +182,7 @@ fn parse_args<'a>(
             raw_timestamp = current_ts;
         }
 
-        series_samples.samples.push(ParsedInput {
+        let parsed = ParsedInput {
             key,
             raw_timestamp,
             raw_value,
@@ -205,13 +190,26 @@ fn parse_args<'a>(
             value,
             index: arg_index,
             res,
-        });
+        };
+
+        let second = ParsedInput {
+            key,
+            raw_timestamp,
+            raw_value,
+            timestamp,
+            value,
+            index: arg_index,
+            res,
+        };
+
+        series_samples.samples.push(parsed);
+        all_inputs.push(second);
 
         arg_index += 1;
         index += 3;
     }
 
-    Ok(input_map)
+    Ok((input_map, all_inputs))
 }
 
 fn handle_replication(ctx: &Context, inputs: &[ParsedInput]) {

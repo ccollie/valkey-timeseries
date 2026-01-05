@@ -42,7 +42,7 @@ impl GroupedSamples {
             .collect();
 
         // Sort the pairs by sample timestamp
-        pairs.sort_by_key(|(_idx, sample)| sample.timestamp);
+        pairs.sort_unstable_by_key(|(_, sample)| sample.timestamp);
 
         // Clear the existing SmallVecs
         self.indices.clear();
@@ -120,12 +120,12 @@ impl<'a> PerSeriesSamples<'a> {
 
     pub fn sort_by_timestamp(&mut self) {
         // Sort indexed samples by timestamp
-        self.samples.sort_by_key(|sample| sample.timestamp);
+        self.samples.sort_unstable_by_key(|s| s.timestamp);
     }
 
     pub fn sort_by_index(&mut self) {
         // Sort indexed samples by the original index
-        self.samples.sort_by_key(|sample| sample.index);
+        self.samples.sort_unstable_by_key(|s| s.index);
     }
 }
 
@@ -232,25 +232,24 @@ pub(super) fn merge_samples(
         group.handle_merge(chunk, policy)
     } else {
         let mut chunks = std::mem::take(&mut series.chunks);
-        // orx-parallel does not currently support enumerate(), so we have to find the index manually :-(
-        let timestamps: SmallVec<Timestamp, 8> =
-            chunks.iter().map(|c| c.first_timestamp()).collect();
+
+        // Build a stable lookup once (first_timestamp is guaranteed unique)
+        let idx_by_first_ts: std::collections::HashMap<Timestamp, usize> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.first_timestamp(), i))
+            .collect();
 
         let result = chunks
             .par_mut()
             .filter_map(|chunk| {
-                // orx-parallel does not currently support enumerate(), so we have to find the index manually :-(
-                // This is not ideal, but chunks are usually few, so it should be ok
-                let chunk_idx = timestamps
-                    .iter()
-                    .position(|&t| t == chunk.first_timestamp())
-                    .unwrap();
-                if let Some(group) = chunk_groups.get(&chunk_idx) {
-                    let res = group.handle_merge(chunk, policy);
-                    Some(res)
-                } else {
-                    None
-                }
+                let chunk_idx = *idx_by_first_ts
+                    .get(&chunk.first_timestamp())
+                    .expect("chunk index lookup failed");
+
+                chunk_groups
+                    .get(&chunk_idx)
+                    .map(|group| group.handle_merge(chunk, policy))
             })
             .reduce(|mut acc, items| {
                 acc.extend(items);
