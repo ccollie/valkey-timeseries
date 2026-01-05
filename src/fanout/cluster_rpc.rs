@@ -383,6 +383,22 @@ extern "C" fn on_request_received(
     });
 }
 
+fn with_inflight_request<F>(ctx: &Context, request_id: u64, f: F)
+where
+    F: FnOnce(&Context, &InFlightRequest),
+{
+    let map = INFLIGHT_REQUESTS.pin();
+    let Some(request) = map.get(&request_id) else {
+        ctx.log_warning(&format!(
+            "Failed to find inflight request for id {request_id}. Possible timeout.",
+        ));
+        return;
+    };
+
+    request.rpc_done(ctx);
+    f(ctx, request);
+}
+
 /// Handles responses from other nodes in the cluster. The receiver is the original sender of
 /// the request.
 extern "C" fn on_response_received(
@@ -399,19 +415,10 @@ extern "C" fn on_response_received(
         return;
     };
 
-    let request_id = message.request_id;
-
-    // fetch corresponding inflight request by request_id
-    let map = INFLIGHT_REQUESTS.pin();
-    let Some(request) = map.get(&request_id) else {
-        ctx.log_warning(&format!(
-            "Failed to find inflight request for id {request_id}. Possible timeout.",
-        ));
-        return;
-    };
-
-    request.rpc_done(&ctx);
-    request.handle_response(&ctx, Ok(message.buf), sender_id);
+    with_inflight_request(&ctx, message.request_id, |ctx, request| {
+        let _ = set_current_db(ctx, message.db);
+        request.handle_response(ctx, Ok(message.buf), sender_id);
+    });
 }
 
 extern "C" fn on_error_received(
@@ -428,28 +435,18 @@ extern "C" fn on_error_received(
         return;
     };
 
-    let request_id = message.request_id;
+    with_inflight_request(&ctx, message.request_id, |ctx, request| {
+        let _ = set_current_db(ctx, message.db);
 
-    // fetch corresponding inflight request by request_id
-    let map = INFLIGHT_REQUESTS.pin();
-    let Some(request) = map.get(&request_id) else {
-        ctx.log_warning(&format!(
-            "Failed to find inflight request for id {request_id}. Possible timeout.",
-        ));
-        return;
-    };
-
-    let _ = set_current_db(&ctx, message.db);
-    request.rpc_done(&ctx);
-
-    match FanoutError::deserialize(message.buf) {
-        Ok((error, _)) => request.handle_response(&ctx, Err(error), sender_id),
-        Err(_) => {
-            ctx.log_warning("Failed to deserialize error response");
-            let err = FanoutError::invalid_message();
-            request.handle_response(&ctx, Err(err), sender_id);
+        match FanoutError::deserialize(message.buf) {
+            Ok((error, _)) => request.handle_response(ctx, Err(error), sender_id),
+            Err(_) => {
+                ctx.log_warning("Failed to deserialize error response");
+                let err = FanoutError::invalid_message();
+                request.handle_response(ctx, Err(err), sender_id);
+            }
         }
-    }
+    });
 }
 
 /// Registers a callback function to handle incoming cluster messages.
