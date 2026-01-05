@@ -66,21 +66,17 @@ pub enum PredicateValue {
 impl Display for PredicateValue {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            PredicateValue::Empty => write!(f, ""),
+            PredicateValue::Empty => Ok(()),
             PredicateValue::String(s) => write!(f, "{}", enquote('"', s)),
             PredicateValue::List(values) => {
-                let mut first = true;
                 write!(f, "(")?;
-                for value in values {
-                    if first {
-                        first = false;
-                    } else {
+                for (i, value) in values.iter().enumerate() {
+                    if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}", enquote('"', value))?;
                 }
-                write!(f, ")")?;
-                Ok(())
+                write!(f, ")")
             }
         }
     }
@@ -293,6 +289,19 @@ impl PredicateMatch {
             PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => value.text(),
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(&re.value),
         }
+    }
+}
+
+impl Display for PredicateMatch {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let value = match self {
+            PredicateMatch::Equal(v) | PredicateMatch::NotEqual(v) => v as &dyn Display,
+            PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
+                re as &dyn Display
+            }
+        };
+
+        write!(f, "{value}")
     }
 }
 
@@ -594,7 +603,6 @@ impl SeriesSelector {
         match self {
             SeriesSelector::Or(or_matchers) => {
                 let mut name: Option<&str> = None;
-                let mut count = 0;
                 for and_matchers in or_matchers.iter() {
                     if let Some(current_name) = get_metric_name_from_filters(and_matchers) {
                         if name.is_some() && name != Some(current_name) {
@@ -602,7 +610,6 @@ impl SeriesSelector {
                             return None;
                         }
                         name = Some(current_name);
-                        count += 1;
                     }
                 }
                 name
