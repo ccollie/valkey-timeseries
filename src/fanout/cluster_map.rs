@@ -11,7 +11,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::IpAddr;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, OnceLock};
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
@@ -366,41 +366,53 @@ pub struct ShardInfo {
 }
 
 impl ShardInfo {
-    pub fn get_random_target(&self, replica_only: bool) -> NodeInfo {
-        let mut rng_ = rng();
-        let mut total_nodes = self.replicas.len();
-
+    /// Pick a node from the shard.
+    /// - replica_only: pick only from replicas (must exist)
+    /// - prefer_replica: pick a replica if available, else primary
+    fn pick_target<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        replica_only: bool,
+        prefer_replica: bool,
+    ) -> NodeInfo {
         if replica_only {
             assert!(
-                total_nodes > 0,
+                !self.replicas.is_empty(),
                 "Shard has no replicas to select from in replica-only mode"
             );
-            let index = rng_.random_range(0..total_nodes);
-            return self.replicas[index];
+            let idx = rng.random_range(0..self.replicas.len());
+            return self.replicas[idx];
         }
 
-        let mut has_primary = false;
-        if self.primary.is_some() {
-            has_primary = true;
-            total_nodes += 1;
+        if prefer_replica && !self.replicas.is_empty() {
+            let idx = rng.random_range(0..self.replicas.len());
+            return self.replicas[idx];
         }
-        assert!(total_nodes > 0, "Shard has no nodes to select from");
-        let index = rng_.random_range(0..total_nodes);
-        if has_primary && self.replicas.is_empty() {
-            // Only primary exists, always return it
-            debug_assert!(index == 0, "Index should be 0 when only primary exists");
-            return self.primary.unwrap();
-        }
-        if index == 0 && has_primary {
-            self.primary.unwrap()
+
+        if let Some(primary) = self.primary {
+            if self.replicas.is_empty() {
+                return primary;
+            }
+            // random between primary + replicas
+            let idx = rng.random_range(0..(self.replicas.len() + 1));
+            if idx == 0 {
+                primary
+            } else {
+                self.replicas[idx - 1]
+            }
         } else {
-            let replica_index = if has_primary { index - 1 } else { index };
-            self.replicas[replica_index]
+            assert!(
+                !self.replicas.is_empty(),
+                "Shard has no nodes to select from"
+            );
+            let idx = rng.random_range(0..self.replicas.len());
+            self.replicas[idx]
         }
     }
 
     pub fn get_random_replica(&self) -> NodeInfo {
-        self.get_random_target(true)
+        let mut rng_ = rng();
+        self.pick_target(&mut rng_, true, false)
     }
 }
 
@@ -436,7 +448,7 @@ struct SlotRangeInfo {
     pub shard_id: NodeId,
 }
 
-type LazyTargets = Mutex<Option<Arc<BTreeSet<NodeInfo>>>>;
+type LazyTargets = OnceLock<Arc<BTreeSet<NodeInfo>>>;
 
 /// Main cluster map structure
 #[derive(Debug, Default)]
@@ -494,92 +506,79 @@ impl ClusterMap {
     /// Helper function to refresh targets in CreateNewClusterMap
     pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<BTreeSet<NodeInfo>> {
         match target_mode {
-            FanoutTargetMode::Primary => self.get_primary_targets(),
-            FanoutTargetMode::ReplicasOnly => self.get_replica_targets(),
-            FanoutTargetMode::OneReplicaPerShard => self.get_random_replica_per_shard(),
-            FanoutTargetMode::All => self.get_all_targets(),
-            FanoutTargetMode::Random => self.get_random_targets(),
+            FanoutTargetMode::Primary => self.primary_targets(),
+            FanoutTargetMode::ReplicasOnly => self.replica_targets(),
+            FanoutTargetMode::All => self.all_targets(),
+            FanoutTargetMode::OneReplicaPerShard => self.random_one_replica_per_shard(),
+            FanoutTargetMode::Random => self.random_one_per_shard(),
         }
     }
 
-    fn get_random_replica_per_shard(&self) -> Arc<BTreeSet<NodeInfo>> {
-        // generate a random replica targets vector with one replica node from each shard
-        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
+    fn random_one_per_shard(&self) -> Arc<BTreeSet<NodeInfo>> {
+        let mut rng_ = rng();
+        let mut targets = BTreeSet::new();
         for shard in self.shards.iter() {
-            if shard.replicas.is_empty() {
-                // no replicas, fall back to primary
-                let node = shard.primary.expect("Shard has no primary node");
-                targets.insert(node);
-                continue;
-            }
-            let node = shard.get_random_target(false);
-            targets.insert(node);
+            targets.insert(shard.pick_target(&mut rng_, false, false));
         }
         Arc::new(targets)
     }
 
-    fn get_random_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
-        // generate a random primary targets vector with one primary node from each shard
-        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
+    fn random_one_replica_per_shard(&self) -> Arc<BTreeSet<NodeInfo>> {
+        let mut rng_ = rng();
+        let mut targets = BTreeSet::new();
         for shard in self.shards.iter() {
-            let node = shard.get_random_target(false);
-            targets.insert(node);
+            // prefer a replica, fall back to primary if no replicas exist
+            targets.insert(shard.pick_target(&mut rng_, false, true));
         }
-
         Arc::new(targets)
     }
 
-    fn get_all_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
-        let mut guard = self.all_targets.lock().unwrap();
-        if let Some(ref targets) = *guard {
-            return targets.clone();
-        }
-        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
-        for shard in self.shards.iter() {
-            if let Some(primary) = shard.primary {
-                targets.insert(primary);
-            }
-            for replica in shard.replicas.iter() {
-                targets.insert(*replica);
-            }
-        }
-
-        let arc_targets = Arc::new(targets);
-        *guard = Some(arc_targets.clone());
-        arc_targets
+    #[inline]
+    fn all_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
+        self.all_targets
+            .get_or_init(|| {
+                let mut targets = BTreeSet::new();
+                for shard in self.shards.iter() {
+                    if let Some(primary) = shard.primary {
+                        targets.insert(primary);
+                    }
+                    for replica in shard.replicas.iter() {
+                        targets.insert(*replica);
+                    }
+                }
+                Arc::new(targets)
+            })
+            .clone()
     }
 
-    fn get_primary_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
-        let mut guard = self.primary_targets.lock().unwrap();
-        if let Some(ref targets) = *guard {
-            return targets.clone();
-        }
-        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
-        for shard in self.shards.iter() {
-            if let Some(primary) = shard.primary {
-                targets.insert(primary);
-            }
-        }
-
-        let arc_targets = Arc::new(targets);
-        *guard = Some(arc_targets.clone());
-        arc_targets
+    #[inline]
+    fn primary_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
+        self.primary_targets
+            .get_or_init(|| {
+                let mut targets = BTreeSet::new();
+                for shard in self.shards.iter() {
+                    if let Some(primary) = shard.primary {
+                        targets.insert(primary);
+                    }
+                }
+                Arc::new(targets)
+            })
+            .clone()
     }
 
-    fn get_replica_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
-        let mut guard = self.replica_targets.lock().unwrap();
-        if let Some(ref targets) = *guard {
-            return targets.clone();
-        }
-        let mut targets: BTreeSet<NodeInfo> = BTreeSet::new();
-        for shard in self.shards.iter() {
-            for replica in shard.replicas.iter() {
-                targets.insert(*replica);
-            }
-        }
-        let arc_targets = Arc::new(targets);
-        *guard = Some(arc_targets.clone());
-        arc_targets
+    #[inline]
+    fn replica_targets(&self) -> Arc<BTreeSet<NodeInfo>> {
+        self.replica_targets
+            .get_or_init(|| {
+                let mut targets = BTreeSet::new();
+                for shard in self.shards.iter() {
+                    for replica in shard.replicas.iter() {
+                        targets.insert(*replica);
+                    }
+                }
+                Arc::new(targets)
+            })
+            .clone()
     }
 
     /// Build a new ClusterMap by calling CLUSTER SLOTS through the provided API
