@@ -462,6 +462,13 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
     matches_empty || re.is_match("")
 }
 
+fn get_metric_name_from_filters(filters: &[LabelFilter]) -> Option<&str> {
+    filters
+        .iter()
+        .find(|m| m.is_metric_name_filter())
+        .and_then(|m| m.text())
+}
+
 /// FilterList is a small vector of LabelFilter, used for AND combinations of label filters.
 /// We try to minimize allocations by reserving stack space for 3 LabelFilter, which seems reasonable for the common
 /// case. e.g. http_requests_total{job="api",method="GET"}
@@ -493,12 +500,7 @@ impl FilterList {
     }
 
     pub fn get_metric_name(&self) -> Option<&str> {
-        for matcher in self.0.iter() {
-            if matcher.is_metric_name_filter() {
-                return matcher.text();
-            }
-        }
-        None
+        get_metric_name_from_filters(&self.0)
     }
 
     pub fn push(&mut self, matcher: LabelFilter) {
@@ -594,29 +596,18 @@ impl SeriesSelector {
                 let mut name: Option<&str> = None;
                 let mut count = 0;
                 for and_matchers in or_matchers.iter() {
-                    for matcher in and_matchers.iter() {
-                        if matcher.is_metric_name_filter() {
-                            let value = matcher.text();
-                            if value != name && count > 0 {
-                                // multiple different names
-                                return None;
-                            }
-                            name = value;
-                            count += 1;
-                            break;
+                    if let Some(current_name) = get_metric_name_from_filters(and_matchers) {
+                        if name.is_some() && name != Some(current_name) {
+                            // Multiple different names found
+                            return None;
                         }
+                        name = Some(current_name);
+                        count += 1;
                     }
                 }
                 name
             }
-            SeriesSelector::And(and_matchers) => {
-                for matcher in and_matchers.iter() {
-                    if matcher.is_metric_name_filter() {
-                        return matcher.text();
-                    }
-                }
-                None
-            }
+            SeriesSelector::And(and_matchers) => get_metric_name_from_filters(and_matchers),
         }
     }
 
