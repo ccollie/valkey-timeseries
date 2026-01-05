@@ -1,6 +1,7 @@
 use super::blocked_client::{BlockedClientPrivateData, FanoutBlockedClient};
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
 use super::fanout_error::{ErrorKind, FanoutError};
+use crate::common::threads::spawn_with_context;
 use crate::fanout::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use std::collections::BTreeSet;
@@ -15,7 +16,7 @@ pub type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + S
 /// final reply to the client.
 pub trait FanoutOperation: Default + Send + 'static {
     /// The request type.
-    type Request: Serializable;
+    type Request: Serializable + Send + 'static;
     /// The response type.
     type Response: Serializable;
 
@@ -48,13 +49,18 @@ pub trait FanoutOperation: Default + Send + 'static {
 
         let local_node = targets.iter().find(|x| x.is_local());
 
-        let mut state = FanoutState::new(ctx, op, outstanding);
+        let state = Arc::new(FanoutState::new(ctx, op, outstanding));
 
         if let Some(local) = local_node {
             if outstanding > 1 {
-                // TODO(perf): push this to the thread pool
-                let req_local = state.generate_request();
-                state.handle_local_request(ctx, req_local, local);
+                // push to the thread pool
+                let req_local = state
+                    .inner
+                    .lock()
+                    .expect(MUTEX_POISONED_MSG)
+                    .generate_request();
+                let local_state = state.clone();
+                spawn_local_request(local_state, req_local, *local);
             } else {
                 state.handle_local_request(ctx, req, local);
                 return Ok(ValkeyValue::NoReply);
@@ -256,4 +262,14 @@ where
             Err(err) => self.on_error(err.into(), target),
         }
     }
+}
+
+fn spawn_local_request<OP>(state: Arc<FanoutState<OP>>, req: OP::Request, target: NodeInfo)
+where
+    OP: FanoutOperation,
+    OP::Request: Send + 'static,
+{
+    spawn_with_context(move |ctx| {
+        state.handle_local_request(ctx, req, &target);
+    });
 }

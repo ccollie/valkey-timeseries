@@ -1,6 +1,8 @@
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicUsize;
+use valkey_module::{Context, MODULE_CONTEXT};
+
 pub const DEFAULT_NUM_CPUS: usize = 4;
 
 pub static NUM_CPUS: LazyLock<usize> =
@@ -24,8 +26,18 @@ pub fn init_thread_pool() {
         .unwrap();
 }
 
+/// Spawn a job which runs asynchronously.
+/// The job must be `'static` and thus cannot borrow local variables.
 pub fn spawn<F: FnOnce() + Send + 'static>(job: F) {
     rayon_core::spawn(job)
+}
+
+/// Spawn a job in the context of a valkey GIL (Global Interpreter Lock).
+pub fn spawn_with_context<F: FnOnce(&Context) + Send + 'static>(job: F) {
+    spawn(move || {
+        let ctx = MODULE_CONTEXT.lock();
+        job(&ctx);
+    });
 }
 
 /// Spawn scoped jobs which guarantee to be finished before this method returns and thus allows
