@@ -176,9 +176,15 @@ impl AsofJoinState for AsofJoinNearestState {
                         // - `self.scan_offset` is monotonically increasing and the
                         //   outer loops ensure `self.scan_offset < n_right` whenever
                         //   `best_bound` is used, so `best_idx < n_right` holds.
-                        // - We assume `right` is consistent: for a given index that
+
+                        // - We rely on `right` being consistent: for a given index that
                         //   previously returned `Some`, it will continue to do so.
-                        let best_right_val = unsafe { right(best_idx).unwrap_unchecked() };
+                        //   If this invariant is violated, the `expect` below will
+                        //   panic rather than causing undefined behavior.
+                        let best_right_val = right(best_idx).expect(
+                            "inconsistent `right` callback: previously returned Some for this index",
+                        );
+
                         let left_ts = left_val.timestamp;
 
                         let best_diff = left_ts.abs_diff(best_right_val.timestamp);
