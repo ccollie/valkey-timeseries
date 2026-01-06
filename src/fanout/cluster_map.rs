@@ -890,7 +890,7 @@ impl ClusterMap {
             let end_slot = *range.end();
             if expected_next > 0 {
                 assert!(
-                    start_slot < expected_next,
+                    start_slot >= expected_next,
                     "Slot {start_slot} overlaps with previous range ending at {}",
                     expected_next - 1
                 );

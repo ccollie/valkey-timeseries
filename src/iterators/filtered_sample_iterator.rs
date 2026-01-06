@@ -1,11 +1,11 @@
 use crate::common::{Sample, Timestamp};
+use crate::iterators::TimestampFilter;
 use crate::series::ValueFilter;
-use smallvec::SmallVec;
 
 pub struct FilteredSampleIterator<TIterator: Iterator<Item = Sample>> {
     inner: TIterator,
     value_filter: Option<ValueFilter>,
-    ts_filter: Option<SmallVec<Timestamp, 8>>,
+    ts_filter: Option<TimestampFilter>,
     ts_index: usize,
     first_ts: Timestamp,
     last_ts: Timestamp,
@@ -24,10 +24,11 @@ impl<TIterator: Iterator<Item = Sample>> FilteredSampleIterator<TIterator> {
         } else {
             (0, 0)
         };
+        let ts_filter = ts_filter.map(TimestampFilter::new);
         Self {
             inner,
             value_filter,
-            ts_filter: ts_filter.map(SmallVec::from_slice_copy),
+            ts_filter,
             ts_index: 0,
             first_ts,
             last_ts,
@@ -48,12 +49,14 @@ impl<TIterator: Iterator<Item = Sample>> Iterator for FilteredSampleIterator<TIt
                 if ts > self.last_ts {
                     return None;
                 }
-                if ts_filter.contains(&ts) {
+                if !ts_filter.matches(ts) {
                     continue;
                 }
             }
-            if !self.value_filter.is_none_or(|vf| vf.is_match(sample.value)) {
-                continue;
+            if let Some(value_filter) = &self.value_filter {
+                if !value_filter.is_match(sample.value) {
+                    continue;
+                }
             }
             return Some(sample);
         }

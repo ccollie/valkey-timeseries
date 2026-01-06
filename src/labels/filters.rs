@@ -590,7 +590,7 @@ impl SeriesSelector {
             SeriesSelector::And(and_matchers) => {
                 if and_matchers.len() == 1 {
                     let first = &and_matchers.0[0];
-                    if first.is_metric_name_filter() && and_matchers.len() == 1 {
+                    if first.is_metric_name_filter() {
                         return true;
                     }
                 }
