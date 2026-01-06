@@ -167,6 +167,17 @@ impl AsofJoinState for AsofJoinNearestState {
                     // Now we must compute a difference to see if scan_right_val
                     // is closer than our current best bound.
                     let scan_is_better = if let Some(best_idx) = self.best_bound {
+                        debug_assert!(best_idx < n_right);
+                        // SAFETY:
+                        // - `best_bound` is only ever assigned from `self.scan_offset`
+                        //   when `right(self.scan_offset)` has just returned `Some`,
+                        //   so it only stores indices for which `right` previously
+                        //   yielded a value.
+                        // - `self.scan_offset` is monotonically increasing and the
+                        //   outer loops ensure `self.scan_offset < n_right` whenever
+                        //   `best_bound` is used, so `best_idx < n_right` holds.
+                        // - We assume `right` is consistent: for a given index that
+                        //   previously returned `Some`, it will continue to do so.
                         let best_right_val = unsafe { right(best_idx).unwrap_unchecked() };
                         let left_ts = left_val.timestamp;
 
