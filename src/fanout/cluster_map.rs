@@ -417,6 +417,10 @@ impl ShardInfo {
         let mut rng_ = rng();
         self.pick_target(&mut rng_, true, false)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.primary.is_none() && self.replicas.is_empty()
+    }
 }
 
 impl PartialOrd<ShardInfo> for ShardInfo {
@@ -520,7 +524,7 @@ impl ClusterMap {
     fn random_one_per_shard(&self) -> Arc<HashSet<NodeInfo>> {
         let mut rng_ = rng();
         let mut targets = HashSet::new();
-        for shard in self.shards.iter() {
+        for shard in self.shards.iter().filter(|shard| !shard.is_empty()) {
             targets.insert(shard.pick_target(&mut rng_, false, false));
         }
         Arc::new(targets)
@@ -529,7 +533,7 @@ impl ClusterMap {
     fn random_one_replica_per_shard(&self) -> Arc<HashSet<NodeInfo>> {
         let mut rng_ = rng();
         let mut targets = HashSet::new();
-        for shard in self.shards.iter() {
+        for shard in self.shards.iter().filter(|shard| !shard.is_empty()) {
             // prefer a replica, fall back to primary if no replicas exist
             targets.insert(shard.pick_target(&mut rng_, false, true));
         }
