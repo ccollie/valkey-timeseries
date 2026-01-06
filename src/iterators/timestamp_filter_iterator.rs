@@ -167,10 +167,9 @@ impl<'a> TimestampFilterIterator<'a> {
 
         if self.random_access {
             if let Ok(idx) = self.buffer.binary_search_by_key(&ts, |s| s.timestamp) {
-                // `binary_search_by_key` returning `Ok(idx)` guarantees that `idx` is
-                // a valid index into `self.buffer`, i.e., `idx < self.buffer.len()`.
-                let sample = self.buffer[idx];
-                return Some(sample);
+                if let Some(sample) = self.buffer.get(idx).copied() {
+                    return Some(sample);
+                }
             }
             return None;
         }
