@@ -7,6 +7,7 @@ use crate::fanout::{FanoutError, FanoutResult};
 
 pub const FANOUT_MESSAGE_VERSION: u16 = 1;
 pub const FANOUT_MESSAGE_MARKER: u32 = 0xBADCAB;
+const HEADER_SIZE: usize = size_of::<u32>();
 
 /// Header for messages exchanged between cluster nodes.
 #[derive(Debug, Clone)]
@@ -89,11 +90,10 @@ fn write_marker(slice: &mut Vec<u8>) {
 }
 
 fn skip_marker(input: &[u8]) -> FanoutResult<&[u8]> {
-    let size = size_of_val(&FANOUT_MESSAGE_MARKER);
-    if input.len() < size {
+    if input.len() < HEADER_SIZE {
         return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
     }
-    let (int_bytes, rest) = input.split_at(size);
+    let (int_bytes, rest) = input.split_at(HEADER_SIZE);
     let marker = u32::from_le_bytes(
         int_bytes
             .try_into()

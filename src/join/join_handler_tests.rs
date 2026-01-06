@@ -229,7 +229,7 @@ mod tests {
         let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
-            assert_eq!(samples.len(), 3); // All the left values
+            assert_eq!(samples.len(), 3); // All left values
 
             // Check values - NaN for missing right values
             assert_eq!(samples[0].timestamp, 10);
@@ -261,7 +261,7 @@ mod tests {
         let result = join_internal(left, right, &options);
 
         if let JoinResultType::Samples(samples) = result {
-            // With bucket size 15, we should get buckets [15-30), [30-45)
+            // With bucket size 15, buckets would be [15-30), [30-45), ...
             assert_eq!(samples.len(), 1);
             assert_eq!(samples[0].timestamp, 15);
             assert_eq!(samples[0].value, 22.0); // The only value is 22.0 from timestamp 20

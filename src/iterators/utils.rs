@@ -200,7 +200,12 @@ impl<I: Iterator<Item = Sample>> ReverseSampleIter<I> {
     }
 
     fn load_items(&mut self) {
-        // todo: determine the length of the iterator if possible to pre-allocate the buffer
+        // determine the length of the iterator if possible to pre-allocate the buffer
+        let (lower, _) = self.inner.size_hint();
+        if lower > 0 {
+            self.buf.reserve(lower);
+        }
+
         for item in self.inner.by_ref() {
             self.buf.push(item);
         }
