@@ -92,15 +92,36 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 ///     - Two different nodes can safely use the same ID simultaneously for different requests
 ///
 fn generate_id() -> u64 {
-    let mut id = REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-    if id == 0 {
-        // could equally have been random
+    loop {
+        // Fast path: counter already initialized, just increment and return the previous value.
+        let current = REQUEST_ID.load(Ordering::Relaxed);
+        if current != 0 {
+            return REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        }
+        // Slow path: initialize the counter exactly once based on the current node ID.
+
         let curr_id = *CURRENT_NODE_ID;
         let hasher = RandomState::new();
-        id = hasher.hash_one(curr_id.as_bytes());
-        REQUEST_ID.store(id, Ordering::SeqCst);
+        // Seed the first request ID from a hash of the node ID, while avoiding races between threads.
+        let initial_id = hasher.hash_one(curr_id.as_bytes());
+        // Set the counter to the next value after `initial_id` so future calls
+        // get unique IDs strictly greater than the first one we return here.
+        match REQUEST_ID.compare_exchange(
+            0,
+            initial_id.wrapping_add(1),
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                // We won the race to initialize; return the first ID.
+                return initial_id;
+            }
+            Err(_) => {
+                // Another thread initialized `REQUEST_ID` first; retry and take the fast path.
+                continue;
+            }
+        }
     }
-    id
 }
 
 fn on_request_timeout(ctx: &Context, id: u64) {
