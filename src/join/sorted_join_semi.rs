@@ -26,8 +26,7 @@ where
 
         // Initialize with first right key
         if let Some(right_item) = join.right.next() {
-            let mut key_fn = join.key_fn.clone();
-            let key = key_fn(&right_item);
+            let key = (join.key_fn)(&right_item);
             join.current_right_key = Some(key);
         }
 
