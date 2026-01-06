@@ -248,7 +248,7 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => value.is_empty(),
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
-                re.regex.as_str().is_empty() // should not happen, but be complete
+                re.regex.as_str().is_empty()
             }
         }
     }
