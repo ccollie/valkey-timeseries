@@ -38,7 +38,7 @@ pub fn round_to_decimal_digits(f: f64, digits: i32) -> f64 {
     if digits == 0 {
         return f.round();
     }
-    if digits > MAX_DECIMAL_DIGITS as i32 {
+    let digits = if digits > MAX_DECIMAL_DIGITS as i32 {
         MAX_DECIMAL_DIGITS as i32
     } else {
         digits
