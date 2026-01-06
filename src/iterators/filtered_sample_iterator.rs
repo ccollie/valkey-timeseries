@@ -62,4 +62,8 @@ impl<TIterator: Iterator<Item = Sample>> Iterator for FilteredSampleIterator<TIt
         }
         None
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }
