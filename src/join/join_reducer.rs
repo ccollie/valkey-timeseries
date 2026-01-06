@@ -155,7 +155,7 @@ impl TryFrom<&str> for JoinReducer {
         match join_reducer_get(op) {
             Some(operator) => Ok(operator),
             None => Err(ValkeyError::String(format!(
-                "TSDB: unknown binary op \"{op}\""
+                "TSDB: unknown binary op '{op}'"
             ))),
         }
     }

@@ -675,8 +675,20 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError, match="TSDB: invalid JOIN command argument"):
             self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INVALID_TYPE")
 
-        with pytest.raises(ResponseError, match="unknown binary op \"invalid_op\""):
-            # Replace with different aggregation
-            self.client.execute_command(f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INNER REDUCE invalid_op")
         # Test with invalid reducer
+        with pytest.raises(ResponseError, match="TSDB: unknown binary op 'invalid_op'"):
+            self.client.execute_command(
+                f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} INNER REDUCE invalid_op"
+            )
 
+        # REDUCE must be disallowed for SEMI joins
+        with pytest.raises(ResponseError, match="TSDB: cannot use REDUCE with SEMI or ANTI joins"):
+            self.client.execute_command(
+                f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} SEMI REDUCE sum"
+            )
+
+        # REDUCE must be disallowed for ANTI joins
+        with pytest.raises(ResponseError, match="TSDB: cannot use REDUCE with SEMI or ANTI joins"):
+            self.client.execute_command(
+                f"TS.JOIN {self.ts1} {self.ts2} {self.now} {self.now + 15000} ANTI REDUCE sum"
+            )
