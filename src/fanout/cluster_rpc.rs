@@ -94,9 +94,9 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 fn generate_id() -> u64 {
     loop {
         // Fast path: counter already initialized, just increment and return the previous value.
-        let current = REQUEST_ID.load(Ordering::Relaxed);
+        let current = REQUEST_ID.load(Ordering::Acquire);
         if current != 0 {
-            return REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+            return REQUEST_ID.fetch_add(1, Ordering::AcqRel);
         }
         // Slow path: initialize the counter exactly once based on the current node ID.
 
