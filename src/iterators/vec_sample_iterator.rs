@@ -24,7 +24,6 @@ impl Iterator for VecSampleIterator {
         self.inner.next()
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.len;
-        (len, Some(len))
+        self.inner.size_hint()
     }
 }
