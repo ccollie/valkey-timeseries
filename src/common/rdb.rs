@@ -5,6 +5,15 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, raw};
 
+// STALE_NAN is a sentinel NaN used to encode `None` for `Option<f64>` in the RDB format.
+// The bit pattern 0x7ff0000000000002 is:
+//   - An IEEE-754 double with exponent = 0x7ff (all 1s) and a non-zero mantissa,
+//     which makes it a NaN rather than ±∞ or a normal finite value.
+//   - Deliberately not the canonical quiet-NaN used by `f64::NAN` (often 0x7ff8000000000000),
+//     and instead a rarely used NaN payload that is unlikely to be produced by normal
+//     floating-point operations.
+// We construct and compare it via `from_bits` / `to_bits` so that we can reliably distinguish
+// this exact sentinel from any "real" NaN that may appear in user data.
 const STALE_NAN: f64 = f64::from_bits(0x7ff0000000000002);
 
 const OPTIONAL_MARKER_PRESENT: u64 = 0xfe;
