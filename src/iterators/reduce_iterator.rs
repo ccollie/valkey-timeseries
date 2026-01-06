@@ -53,7 +53,6 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
                 self.aggregator.update(next.value);
             } else {
                 // Finalize the current group
-                // Finalize the current group
                 let value = if all_nans {
                     f64::NAN
                 } else {

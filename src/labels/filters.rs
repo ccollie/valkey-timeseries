@@ -192,8 +192,8 @@ impl RegexMatcher {
     }
 
     pub fn create(value: &str) -> Result<Self, ParseError> {
-        let (regex, _unanchored) = parse_regex_anchored(value)?;
-        Ok(Self::new(regex, value.to_string()))
+        let (regex, unanchored) = parse_regex_anchored(value)?;
+        Ok(Self::new(regex, unanchored.to_string()))
     }
 
     pub fn is_match(&self, other: &str) -> bool {

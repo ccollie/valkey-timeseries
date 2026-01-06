@@ -125,7 +125,10 @@ impl SlotRangeSet {
     }
 
     pub fn insert_range(&mut self, start: u16, end: u16) {
-        assert!(start <= end, "Invalid range: start ({start}) > end ({end})");
+        assert!(
+            start <= end,
+            "Invalid range: start ({start:?}) > end ({end:?})"
+        );
         self.ranges.ranges_insert(start..=end);
     }
 

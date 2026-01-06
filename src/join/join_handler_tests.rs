@@ -131,7 +131,7 @@ mod tests {
             // Check the middle value (has both left and right)
             let (l, r) = get_both_samples(&values[1]);
             assert_eq!(l.timestamp, 20);
-            assert_eq!(l.timestamp, 20);
+            assert_eq!(r.timestamp, 20);
             assert_eq!(l.value, 2.0);
             assert_eq!(r.value, 20.0);
 
