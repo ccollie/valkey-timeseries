@@ -151,7 +151,7 @@ pub(super) fn send_cluster_request(
     let id = generate_id();
     let db = get_current_db(ctx);
 
-    let mut buf = Vec::with_capacity(512);
+    let mut buf = get_pooled_buffer(512);
     serialize_request_message(&mut buf, id, db, handler, request_buf);
 
     let mut node_count = 0;
@@ -228,7 +228,7 @@ fn send_error_response(
     target_node: *const c_char,
     error: FanoutError,
 ) -> Status {
-    let mut buf: Vec<u8> = Vec::with_capacity(512);
+    let mut buf = get_pooled_buffer(512);
     error.serialize(&mut buf);
     send_message_internal(
         ctx,
