@@ -32,7 +32,7 @@ impl JoinRightIter {
 
         Self {
             exhausted: false,
-            prev_ts: -1,
+            prev_ts: 0,
             inner: Box::new(iter),
             heap,
         }
