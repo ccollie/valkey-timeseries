@@ -1,7 +1,7 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::filters::{
-    FilterList, LabelFilter, MatchOp, OrFilterList, PredicateMatch, PredicateValue, SeriesSelector,
-    ValueList,
+    FilterList, LabelFilter, MatchOp, OrFiltersList, PredicateMatch, PredicateValue,
+    SeriesSelector, ValueList,
 };
 use crate::parser::lex::{Token, expect_one_of_tokens, expect_token};
 use crate::parser::parse_error::unexpected;
@@ -155,7 +155,7 @@ fn create_equality_filter(
 fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
-    let mut or_matchers: OrFilterList = OrFilterList::default();
+    let mut or_matchers: OrFiltersList = OrFiltersList::default();
     let mut current_filters = FilterList::default();
     let mut has_or = false;
 
@@ -199,7 +199,7 @@ fn add_metric_name_if_needed(
 
 fn build_selector_from_filters(
     filters: FilterList,
-    mut or_matchers: OrFilterList,
+    mut or_matchers: OrFiltersList,
     has_or: bool,
 ) -> ParseResult<SeriesSelector> {
     if filters.is_empty() && or_matchers.is_empty() {

@@ -3,7 +3,7 @@ use super::generated::{
     OrMatcherList, SeriesSelector as FanoutSeriesSelector, label_filter::Value, series_selector,
 };
 use crate::labels::filters::{
-    FilterList, LabelFilter, OrFilterList, PredicateMatch, PredicateValue, RegexMatcher,
+    FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
     SeriesSelector, ValueList,
 };
 use valkey_module::{ValkeyError, ValkeyResult};
@@ -125,7 +125,7 @@ impl TryFrom<&FanoutSeriesSelector> for SeriesSelector {
                     result = SeriesSelector::And(convert_list(&and_filters.matchers)?);
                 }
                 Filters::OrFilters(or_filters) => {
-                    let mut or_matchers: OrFilterList = Default::default();
+                    let mut or_matchers: OrFiltersList = Default::default();
                     for matcher_list in or_filters.filters.iter() {
                         let items = convert_list(&matcher_list.matchers)?;
                         or_matchers.push(items);

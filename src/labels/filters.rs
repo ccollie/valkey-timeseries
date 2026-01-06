@@ -551,13 +551,13 @@ impl From<Vec<LabelFilter>> for FilterList {
     }
 }
 
-/// OrFilterList is a small vector of FilterList, used for OR combinations of AND filters.
-pub type OrFilterList = SmallVec<FilterList, 2>;
+/// OrFiltersList is a small vector of FilterList, used for OR combinations of AND filters.
+pub type OrFiltersList = SmallVec<FilterList, 2>;
 
 #[derive(Debug, Clone, Hash, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum SeriesSelector {
-    Or(OrFilterList),
+    Or(OrFiltersList),
     And(FilterList),
 }
 
@@ -629,7 +629,7 @@ impl SeriesSelector {
         match (self, other) {
             // Both are And selectors - create Or with both
             (SeriesSelector::And(left), SeriesSelector::And(right)) => {
-                let mut or_list = OrFilterList::new();
+                let mut or_list = OrFiltersList::new();
                 or_list.push(left);
                 or_list.push(right);
                 SeriesSelector::Or(or_list)
