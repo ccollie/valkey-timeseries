@@ -19,12 +19,22 @@ impl JoinRightIter {
     {
         let left_iter = left.into_iter().map(|sample| (sample.timestamp, sample));
         let right_iter = right.into_iter().map(|sample| (sample.timestamp, sample));
+
+        // estimate capacity
+        let capacity = right_iter.size_hint().0;
+        let heap = if capacity > 0 {
+            // pre-allocate heap with estimated capacity
+            MinMaxHeap::with_capacity(capacity)
+        } else {
+            MinMaxHeap::new()
+        };
+
         let iter = left_iter.hash_join_right_outer(right_iter);
 
         Self {
             loaded: false,
             inner: Box::new(iter),
-            heap: MinMaxHeap::new(),
+            heap,
         }
     }
 
