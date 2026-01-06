@@ -974,6 +974,14 @@ pub(super) fn parse_join_args(
         return Err(ValkeyError::Str(error_consts::MISSING_JOIN_REDUCER));
     }
 
+    // Disallow REDUCE for joins that only return single values per timestamp
+    if options.reducer.is_some()
+        && (options.join_type == JoinType::Semi || options.join_type == JoinType::Anti)
+    {
+        return Err(ValkeyError::Str(
+            "TSDB: cannot use REDUCE with SEMI or ANTI joins",
+        ));
+    }
     Ok(())
 }
 

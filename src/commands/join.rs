@@ -1,10 +1,8 @@
 use crate::commands::command_args::{parse_join_args, parse_timestamp_range};
 use crate::error_consts;
 use crate::join::{JoinOptions, process_join};
-use crate::series::{TimeSeries, get_timeseries};
-use valkey_module::{
-    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
-};
+use crate::series::get_timeseries;
+use valkey_module::{AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
 ///   [INNER | FULL | LEFT | RIGHT | ANTI | SEMI | ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]
@@ -36,13 +34,6 @@ pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let left_series = get_timeseries(ctx, left_key, Some(AclPermissions::ACCESS), true)?.unwrap();
     let right_series = get_timeseries(ctx, right_key, Some(AclPermissions::ACCESS), true)?.unwrap();
 
-    Ok(join_internal(&left_series, &right_series, &options))
+    let result = process_join(&left_series, &right_series, &options)?;
+    Ok(result.into())
 }
-
-fn join_internal(left: &TimeSeries, right: &TimeSeries, options: &JoinOptions) -> ValkeyValue {
-    let result = process_join(left, right, options);
-    result.into()
-}
-
-#[cfg(test)]
-mod tests {}

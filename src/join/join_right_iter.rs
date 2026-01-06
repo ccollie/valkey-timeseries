@@ -80,7 +80,7 @@ impl Iterator for JoinRightIter {
                 self.push_item(value);
                 if let Some(peek) = self.heap.peek_min() {
                     let ts = peek.sortable_timestamp();
-                    if ts > self.prev_ts && self.prev_ts >= 0 {
+                    if ts > self.prev_ts && self.prev_ts > 0 {
                         self.prev_ts = ts;
                         break;
                     }
