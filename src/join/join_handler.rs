@@ -79,6 +79,9 @@ where
     } else if options.join_type == JoinType::Semi || options.join_type == JoinType::Anti {
         // note that ANTI and SEMI joins return single values per timestamp, so we can use aggregation
         if let Some(aggr_options) = &options.aggregation {
+            // For SEMI/ANTI joins, the presence of a right-hand value only affects whether the
+            // left-hand sample is included; the actual right-hand value is irrelevant, so we
+            // intentionally ignore it and propagate only the left value here.
             let sample_iter = join_iter.map(|x| transform_join_value_to_sample(&x, |l, _r| l));
             let (start, end) = options.date_range.get_timestamps(None);
             let aligned_timestamp = aggr_options.alignment.get_aligned_timestamp(start, end);
