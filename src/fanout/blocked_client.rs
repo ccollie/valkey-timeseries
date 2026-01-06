@@ -116,15 +116,7 @@ where
 
 impl<T: FanoutOperation> Drop for FanoutBlockedClient<T> {
     fn drop(&mut self) {
-        // Ensure we try to unblock when the wrapper is dropped, following RAII.
-        // swallow any panics to avoid unwinding across FFI boundaries.
-        // std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         self.unblock();
-        // if self.data.is_some() {
-        //     eprintln!("Warning: FanoutBlockedClient being dropped with unconsumed private data");
-        // }
-        //}))
-        //.ok();
     }
 }
 
