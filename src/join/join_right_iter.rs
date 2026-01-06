@@ -8,7 +8,7 @@ use min_max_heap::MinMaxHeap;
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 pub(super) struct JoinRightIter {
     exhausted: bool,
-    prev_ts: Timestamp,
+    prev_ts: Option<Timestamp>,
     heap: MinMaxHeap<JoinValue>,
     inner: Box<dyn Iterator<Item = EitherOrBoth<Sample, Vec<Sample>>>>,
 }
@@ -32,7 +32,7 @@ impl JoinRightIter {
 
         Self {
             exhausted: false,
-            prev_ts: 0,
+            prev_ts: None,
             inner: Box::new(iter),
             heap,
         }
@@ -65,23 +65,27 @@ impl Iterator for JoinRightIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // If we have items in the heap, return the smallest one.
             if let Some(value) = self.heap.pop_min() {
                 return Some(value);
             }
-            // If the heap is empty, and we've exhausted the inner iterator,
-            // there are no more items to produce.
             if self.exhausted {
                 return None;
             }
 
-            // iterate until we get a new timestamp greater than prev_ts
+            // Iterate until we see a timestamp strictly greater than the previous boundary\.
             while let Some(value) = self.inner.next() {
                 self.push_item(value);
+
                 if let Some(peek) = self.heap.peek_min() {
                     let ts = peek.sortable_timestamp();
-                    if ts > self.prev_ts && self.prev_ts > 0 {
-                        self.prev_ts = ts;
+                    let should_break = match self.prev_ts {
+                        None => false,
+                        Some(prev) => ts > prev,
+                    };
+
+                    self.prev_ts = Some(ts);
+
+                    if should_break {
                         break;
                     }
                 }
