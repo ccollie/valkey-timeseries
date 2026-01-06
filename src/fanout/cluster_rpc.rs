@@ -181,7 +181,14 @@ pub(super) fn send_cluster_request(
         let target_id = node.id.raw_ptr();
         let status = send_cluster_message(ctx, target_id, FANOUT_REQUEST_MESSAGE, buf.as_slice());
         if status == Status::Err {
-            let msg = format!("Failed to send message to node {}", node.address());
+            let msg = format!(
+                "Failed to send fanout request id {} (handler '{}', db {}) to node {} (target_id: {:p})",
+                id,
+                handler,
+                db,
+                node.address(),
+                target_id
+            );
             ctx.log_warning(&msg);
             continue;
         }
