@@ -471,7 +471,7 @@ fn is_empty_regex_matcher(re: &Regex) -> bool {
     matches_empty || re.is_match("")
 }
 
-fn get_metric_name_from_filters(filters: &[LabelFilter]) -> Option<&str> {
+fn get_metric_name(filters: &[LabelFilter]) -> Option<&str> {
     filters
         .iter()
         .find(|m| m.is_metric_name_filter())
@@ -509,7 +509,7 @@ impl FilterList {
     }
 
     pub fn get_metric_name(&self) -> Option<&str> {
-        get_metric_name_from_filters(&self.0)
+        get_metric_name(&self.0)
     }
 
     pub fn push(&mut self, matcher: LabelFilter) {
@@ -604,7 +604,7 @@ impl SeriesSelector {
             SeriesSelector::Or(or_matchers) => {
                 let mut name: Option<&str> = None;
                 for and_matchers in or_matchers.iter() {
-                    if let Some(current_name) = get_metric_name_from_filters(and_matchers) {
+                    if let Some(current_name) = get_metric_name(and_matchers) {
                         if name.is_some() && name != Some(current_name) {
                             // Multiple different names found
                             return None;
@@ -614,7 +614,7 @@ impl SeriesSelector {
                 }
                 name
             }
-            SeriesSelector::And(and_matchers) => get_metric_name_from_filters(and_matchers),
+            SeriesSelector::And(and_matchers) => get_metric_name(and_matchers),
         }
     }
 
