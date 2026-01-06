@@ -28,10 +28,3 @@ impl Iterator for VecSampleIterator {
         (len, Some(len))
     }
 }
-
-// implement size_hint for VecSampleIterator
-impl ExactSizeIterator for VecSampleIterator {
-    fn len(&self) -> usize {
-        self.len
-    }
-}
