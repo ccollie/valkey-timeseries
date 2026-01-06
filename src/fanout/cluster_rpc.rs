@@ -247,8 +247,9 @@ fn parse_fanout_message(
     payload: *const c_uchar,
     len: u32,
 ) -> Option<FanoutMessage<'_>> {
-    // SAFETY: payload is expected to be a valid pointer to a byte array of length `len` coming
-    // from Valkey
+    // SAFETY: `payload` is expected to be a non-null, valid pointer to `len` bytes of
+    // initialized memory provided by Valkey's C API for the duration of this callback,
+    // so creating a shared slice from it with `from_raw_parts` is sound.
     let buffer = unsafe { std::slice::from_raw_parts(payload, len as usize) };
     match FanoutMessage::new(buffer) {
         Ok(msg) => Some(msg),
