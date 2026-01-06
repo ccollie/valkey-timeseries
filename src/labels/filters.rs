@@ -66,7 +66,7 @@ pub enum PredicateValue {
 impl Display for PredicateValue {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            PredicateValue::Empty => Ok(()),
+            PredicateValue::Empty => write!(f, "\"\""),
             PredicateValue::String(s) => write!(f, "{}", enquote('"', s)),
             PredicateValue::List(values) => {
                 write!(f, "(")?;
