@@ -125,7 +125,7 @@ impl SlotRangeSet {
     }
 
     pub fn insert_range(&mut self, start: u16, end: u16) {
-        assert!(start <= end, "Invalid range: start ({start}) > end ({end})");
+        debug_assert!(start <= end, "Invalid range: start ({start}) > end ({end})");
         self.ranges.ranges_insert(start..=end);
     }
 
@@ -376,7 +376,7 @@ impl ShardInfo {
         prefer_replica: bool,
     ) -> NodeInfo {
         if replica_only {
-            assert!(
+            debug_assert!(
                 !self.replicas.is_empty(),
                 "Shard has no replicas to select from in replica-only mode"
             );
@@ -890,7 +890,7 @@ impl ClusterMap {
             let start_slot = *range.start();
             let end_slot = *range.end();
             if expected_next > 0 {
-                assert!(
+                debug_assert!(
                     start_slot >= expected_next,
                     "Slot {start_slot} overlaps with previous range ending at {}",
                     expected_next - 1
