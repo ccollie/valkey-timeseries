@@ -1,5 +1,4 @@
 use get_size2::GetSize;
-use num_traits::Pow;
 use std::f64;
 use std::fmt::Display;
 
@@ -39,9 +38,13 @@ pub fn round_to_decimal_digits(f: f64, digits: i32) -> f64 {
     if digits == 0 {
         return f.round();
     }
-    let multiplier = 10_f64.pow(digits as f64);
-    let mult = (f * multiplier).round();
-    mult / multiplier
+    if digits > MAX_DECIMAL_DIGITS as i32 {
+        MAX_DECIMAL_DIGITS as i32
+    } else {
+        digits
+    };
+    let factor = 10_f64.powi(digits);
+    (f * factor).round() / factor
 }
 
 /// Rounds a floating-point value to a specified number of significant figures.
