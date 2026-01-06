@@ -35,25 +35,27 @@ impl<T: Iterator<Item = Sample>> MultiSeriesSampleIter<T> {
             return false;
         }
 
-        let max_timestamp = match self.heap.peek_max() {
-            Some(max) => max.timestamp,
-            None => return false,
+        let Some(upper_bound_timestamp) = self.heap.peek_max().map(|s| s.timestamp) else {
+            return false;
         };
 
-        // Use `retain` to remove exhausted iterators in a single pass
+        // Remove exhausted iterators in a single pass.
         self.inner.retain_mut(|sample_iter| {
-            let mut produced_sample = false;
+            let mut produced_any = false;
 
             for sample in sample_iter.by_ref() {
-                produced_sample = true;
-                let exceeds_max = sample.timestamp > max_timestamp;
+                produced_any = true;
+
+                let is_beyond_upper_bound = sample.timestamp > upper_bound_timestamp;
                 self.heap.push(sample);
-                if exceeds_max {
+
+                // Stop once we have crossed the boundary; leave remaining items for later.
+                if is_beyond_upper_bound {
                     break;
                 }
             }
 
-            produced_sample // Keep iterator only if it produced at least one sample
+            produced_any
         });
 
         true
