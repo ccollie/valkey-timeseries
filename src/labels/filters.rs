@@ -111,8 +111,8 @@ impl PredicateValue {
 
     pub fn is_empty(&self) -> bool {
         match self {
-            PredicateValue::List(s) => s.is_empty(),
-            PredicateValue::String(s) => s.is_empty(),
+            PredicateValue::List(list) => list.is_empty(),
+            PredicateValue::String(value) => value.is_empty(),
             PredicateValue::Empty => true,
         }
     }
@@ -120,8 +120,8 @@ impl PredicateValue {
     fn cost(&self) -> usize {
         match self {
             PredicateValue::Empty => 0,
-            PredicateValue::String(_s) => 1,
-            PredicateValue::List(s) => s.len(),
+            PredicateValue::String(_) => 1,
+            PredicateValue::List(list) => list.len(),
         }
     }
 }

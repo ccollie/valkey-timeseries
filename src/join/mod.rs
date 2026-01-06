@@ -61,7 +61,7 @@ impl JoinValue {
             // We use the minimum timestamp for Both to ensure consistent ordering. Consider the case
             // of ASOF joins where left and right samples may have different timestamps. In such cases,
             // using the minimum timestamp helps maintain a predictable order.
-            EitherOrBoth::Both(left, right) => Timestamp::min(left.timestamp, right.timestamp),
+            EitherOrBoth::Both(left, right) => std::cmp::min(left.timestamp, right.timestamp),
             EitherOrBoth::Left(left) => left.timestamp,
             EitherOrBoth::Right(right) => right.timestamp,
         }
