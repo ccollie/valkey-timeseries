@@ -224,11 +224,13 @@ impl<I: Iterator<Item = Sample>> Iterator for ReverseSampleIter<I> {
     }
 }
 
+const TIMESTAMP_FILTER_INLINE_THRESHOLD: usize = 16;
+
 // this may be overkill, but we'll try optimizing memory for a
 // very common case of a very small number of timestamps
 pub enum TimestampFilter {
     Set(IntSet<Timestamp>),
-    List(SmallVec<Timestamp, 16>),
+    List(SmallVec<Timestamp, TIMESTAMP_FILTER_INLINE_THRESHOLD>),
 }
 
 impl TimestampFilter {
