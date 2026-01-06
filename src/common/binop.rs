@@ -196,7 +196,7 @@ pub(crate) const fn sgn_diff(x: f64, y: f64) -> f64 {
     (x - y).signum()
 }
 
-pub(crate) const fn pct_change(x: f64, y: f64) -> f64 {
+pub(crate) const fn percent_change(x: f64, y: f64) -> f64 {
     if x == 0.0 {
         return 0.0;
     }

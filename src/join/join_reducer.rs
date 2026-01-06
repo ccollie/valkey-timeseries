@@ -1,7 +1,7 @@
 use crate::common::binop::{
     BinopFunc, abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte,
     compare_neq, max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul,
-    op_or, op_plus, op_pow, op_unless, op_xor, pct_change, sgn_diff,
+    op_or, op_plus, op_pow, op_unless, op_xor, percent_change, sgn_diff,
 };
 use std::fmt;
 use std::str::FromStr;
@@ -79,7 +79,7 @@ impl JoinReducer {
         use JoinReducer::*;
         match self {
             AbsDiff => "abs_diff",
-            Sum => "+",
+            Sum => "sum",
             And => "and",
             Cmp => "cmp",
             Default => "default",
@@ -134,7 +134,7 @@ impl JoinReducer {
             Or => op_or,
             SgnDiff => sgn_diff,
             Unless => op_unless,
-            PctChange => pct_change,
+            PctChange => percent_change,
             Xor => op_xor,
         }
     }
