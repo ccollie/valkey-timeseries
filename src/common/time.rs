@@ -9,11 +9,25 @@ pub fn system_time_millis() -> i64 {
 }
 
 pub fn valkey_current_time_millis() -> i64 {
-    unsafe { RedisModule_Milliseconds.unwrap()() }
+    unsafe {
+        if let Some(func) = RedisModule_Milliseconds {
+            func()
+        } else {
+            // Fallback to system time if the Valkey function pointer is not available.
+            system_time_millis()
+        }
+    }
 }
 
 pub fn valkey_cached_time_micros() -> i64 {
-    unsafe { RedisModule_CachedMicroseconds.unwrap()() }
+    unsafe {
+        if let Some(func) = RedisModule_CachedMicroseconds {
+            func()
+        } else {
+            // Fallback: use system time in milliseconds and convert to microseconds.
+            system_time_millis() * 1000
+        }
+    }
 }
 
 pub fn valkey_cached_time_millis() -> i64 {
