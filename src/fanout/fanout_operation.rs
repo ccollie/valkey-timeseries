@@ -52,6 +52,7 @@ pub trait FanoutOperation: Default + Send + 'static {
         let state = Arc::new(FanoutState::new(ctx, op, outstanding));
 
         if let Some(local) = local_node {
+            // when there are multiple outstanding requests, push the local request to the thread pool to avoid blocking.
             if outstanding > 1 {
                 // push to the thread pool
                 let req_local = state
@@ -264,6 +265,7 @@ where
     }
 }
 
+/// Spawn a local request handler in a separate thread.
 fn spawn_local_request<OP>(state: Arc<FanoutState<OP>>, req: OP::Request, target: NodeInfo)
 where
     OP: FanoutOperation,
