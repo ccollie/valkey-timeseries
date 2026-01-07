@@ -1,3 +1,34 @@
+/// A streaming \*semi\-join\* between two sorted inputs.
+///
+/// Yields items from the left iterator whose join key exists in the right
+/// iterator. Unlike an inner join, it does not yield right items nor pairs \(`(L, R)`\);
+/// it only filters the left side by existence on the right side.
+///
+/// ## Requirements
+/// \- Both inputs must be sorted by the same key function \(non\-decreasing\).
+/// \- `key_fn` must be consistent across both sides and should be pure/deterministic.
+/// \- The key type `K` must implement [`Ord`] so the iterators can be merged.
+///
+/// ## Behavior
+/// \- The right iterator is advanced monotonically and never rewound.
+/// \- Duplicate keys on the right side are treated as "present"; any left item with a
+///   matching key will be yielded.
+/// \- If the right iterator is empty, no left items are yielded.
+///
+/// ## Complexity
+/// Runs in `O(left + right)` key comparisons in the merge\-like case, with `O(1)` extra
+/// state.
+///
+/// ## Examples
+/// ```rust
+/// use crate::join::sorted_join_semi::SortedJoinSemiBy;
+///
+/// let left = vec![1, 2, 3, 4];
+/// let right = vec![2, 4, 6];
+///
+/// let out: Vec<_> = SortedJoinSemiBy::new(left, right, |x: &i32| *x).collect();
+/// assert_eq!(out, vec![2, 4]);
+/// ```
 pub struct SortedJoinSemiBy<L, R, K, F> {
     left: L,
     right: R,
