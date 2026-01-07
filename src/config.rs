@@ -446,7 +446,7 @@ fn update_decimal_digits(val: &str) -> ValkeyResult<()> {
         .expect("rounding strategy lock poisoned");
     match *strategy {
         Some(RoundingStrategy::DecimalDigits(_)) | None => {
-            *strategy = Some(RoundingStrategy::DecimalDigits(digits as i32));
+            *strategy = Some(RoundingStrategy::DecimalDigits(digits as u8));
             Ok(())
         }
         Some(RoundingStrategy::SignificantDigits(_)) => Err(ValkeyError::String(
@@ -480,7 +480,7 @@ fn update_significant_digits(val: &str) -> ValkeyResult<()> {
         .expect("rounding strategy lock poisoned");
     match *strategy {
         Some(RoundingStrategy::SignificantDigits(_)) | None => {
-            *strategy = Some(RoundingStrategy::SignificantDigits(digits as i32));
+            *strategy = Some(RoundingStrategy::SignificantDigits(digits as u8));
             Ok(())
         }
         Some(RoundingStrategy::DecimalDigits(_)) => Err(ValkeyError::String(

@@ -593,7 +593,7 @@ pub fn parse_significant_digit_rounding(
             format!("TSDB: SIGNIFICANT_DIGITS must be between 0 and {MAX_SIGNIFICANT_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
-    Ok(RoundingStrategy::SignificantDigits(next as i32))
+    Ok(RoundingStrategy::SignificantDigits(next as u8))
 }
 
 pub fn parse_decimal_digit_rounding(
@@ -604,7 +604,7 @@ pub fn parse_decimal_digit_rounding(
         let msg = format!("TSDB: DECIMAL_DIGITS must be between 0 and {MAX_DECIMAL_DIGITS}");
         return Err(ValkeyError::String(msg));
     }
-    Ok(RoundingStrategy::DecimalDigits(next as i32))
+    Ok(RoundingStrategy::DecimalDigits(next as u8))
 }
 
 pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResult<(i64, f64)> {

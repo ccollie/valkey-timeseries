@@ -121,6 +121,15 @@ pub fn rdb_load_u8(rdb: *mut RedisModuleIO) -> ValkeyResult<u8> {
     Ok(value as u8)
 }
 
+pub fn rdb_save_i8(rdb: *mut RedisModuleIO, value: i8) {
+    raw::save_signed(rdb, value as i64)
+}
+
+pub fn rdb_load_i8(rdb: *mut RedisModuleIO) -> ValkeyResult<i8> {
+    let value = raw::load_signed(rdb)?;
+    Ok(value as i8)
+}
+
 #[inline]
 pub fn rdb_save_i32(rdb: *mut RedisModuleIO, value: i32) {
     raw::save_signed(rdb, value as i64)
@@ -204,11 +213,11 @@ pub(crate) fn rdb_save_rounding(rdb: *mut RedisModuleIO, rounding: &RoundingStra
     match rounding {
         RoundingStrategy::SignificantDigits(sig_figs) => {
             rdb_save_u8(rdb, 1);
-            rdb_save_i32(rdb, *sig_figs)
+            rdb_save_u8(rdb, *sig_figs)
         }
         RoundingStrategy::DecimalDigits(digits) => {
             rdb_save_u8(rdb, 2);
-            rdb_save_i32(rdb, *digits)
+            rdb_save_u8(rdb, *digits)
         }
     }
 }
@@ -217,11 +226,11 @@ pub(crate) fn rdb_load_rounding(rdb: *mut RedisModuleIO) -> ValkeyResult<Roundin
     let marker = rdb_load_u8(rdb)?;
     match marker {
         1 => {
-            let sig_figs = rdb_load_i32(rdb)?;
+            let sig_figs = rdb_load_u8(rdb)?;
             Ok(RoundingStrategy::SignificantDigits(sig_figs))
         }
         2 => {
-            let digits = rdb_load_i32(rdb)?;
+            let digits = rdb_load_u8(rdb)?;
             Ok(RoundingStrategy::DecimalDigits(digits))
         }
         _ => Err(ValkeyError::String(format!(
