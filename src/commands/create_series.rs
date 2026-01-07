@@ -151,7 +151,7 @@ fn parse_labels(args: &[ValkeyString]) -> ValkeyResult<Vec<Label>> {
     if args.is_empty() {
         return Ok(Vec::new());
     }
-    if args.len() % 2 != 0 {
+    if !args.len().is_multiple_of(2) {
         return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_LABELS));
     }
 

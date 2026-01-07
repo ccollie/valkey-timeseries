@@ -41,7 +41,7 @@ struct SeriesSamples<'a> {
 pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let arg_count = args.len() - 1;
 
-    if arg_count < 3 || arg_count % 3 != 0 {
+    if arg_count < 3 || !arg_count.is_multiple_of(3) {
         return Err(ValkeyError::WrongArity);
     }
 

@@ -432,7 +432,7 @@ fn dispatch_tasks(ticks: u64) {
     // Collect tasks to run without holding the pinned map longer than needed.
     let mut tasks: Vec<fn(&ThreadSafeContext<DetachedFromClient>)> = Vec::new();
     for (&interval, handlers) in map.iter() {
-        if ticks % interval == 0 {
+        if ticks.is_multiple_of(interval) {
             tasks.extend(handlers.iter().copied());
         }
     }

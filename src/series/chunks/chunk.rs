@@ -137,7 +137,7 @@ pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
         return get_error_result();
     }
 
-    if chunk_size_bytes % 8 != 0 {
+    if !chunk_size_bytes.is_multiple_of(8) {
         return get_error_result();
     }
 

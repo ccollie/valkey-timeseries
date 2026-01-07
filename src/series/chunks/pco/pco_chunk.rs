@@ -390,8 +390,8 @@ impl Chunk for PcoChunk {
 
     fn get_range(&self, start: Timestamp, end: Timestamp) -> TsdbResult<Vec<Sample>> {
         // todo: use iterator instead
-        if let Some((timestamps, values)) = self.decompress()? {
-            if let Some((start_index, end_index)) =
+        if let Some((timestamps, values)) = self.decompress()?
+            && let Some((start_index, end_index)) =
                 get_timestamp_index_bounds(&timestamps, start, end)
             {
                 let stamps = &timestamps[start_index..=end_index];
@@ -403,7 +403,6 @@ impl Chunk for PcoChunk {
                     .map(|(timestamp, value)| Sample { timestamp, value })
                     .collect());
             }
-        }
         Ok(vec![])
     }
 

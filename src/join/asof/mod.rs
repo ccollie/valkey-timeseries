@@ -83,11 +83,10 @@ impl AsOfJoinState for AsOfJoinForwardState {
         n_right: IdxSize,
     ) -> Option<IdxSize> {
         while self.scan_offset < n_right {
-            if let Some(right_val) = right(self.scan_offset) {
-                if ge_allow_eq(right_val.timestamp, left_val.timestamp, self.allow_eq) {
+            if let Some(right_val) = right(self.scan_offset)
+                && ge_allow_eq(right_val.timestamp, left_val.timestamp, self.allow_eq) {
                     return Some(self.scan_offset);
                 }
-            }
             self.scan_offset += 1;
         }
         None

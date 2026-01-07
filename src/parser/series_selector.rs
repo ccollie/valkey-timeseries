@@ -189,11 +189,10 @@ fn add_metric_name_if_needed(
     name: &Option<String>,
     has_metric_filter: bool,
 ) -> FilterList {
-    if let Some(name) = name {
-        if !has_metric_filter {
+    if let Some(name) = name
+        && !has_metric_filter {
             filters.push(LabelFilter::equals(METRIC_NAME_LABEL.into(), name));
         }
-    }
     filters
 }
 

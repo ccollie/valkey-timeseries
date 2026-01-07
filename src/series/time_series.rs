@@ -542,15 +542,14 @@ impl TimeSeries {
         let mut deleted_count = self.remove_expired_chunks(min_timestamp);
 
         // Handle partial chunk
-        if let Some(chunk) = self.chunks.first_mut() {
-            if chunk.first_timestamp() < min_timestamp {
+        if let Some(chunk) = self.chunks.first_mut()
+            && chunk.first_timestamp() < min_timestamp {
                 if let Ok(count) = chunk.remove_range(0, min_timestamp) {
                     deleted_count += count;
                 } else {
                     return Err(TsdbError::RemoveRangeError);
                 }
             }
-        }
 
         self.total_samples -= deleted_count;
 
