@@ -698,9 +698,10 @@ fn join_matchers(f: &mut Formatter<'_>, v: &[LabelFilter]) -> fmt::Result {
 
     // If there's only a metric name filter, output it directly
     if let Some((_, name)) = metric_name_info
-        && v.len() == 1 {
-            return write!(f, "{name}");
-        }
+        && v.len() == 1
+    {
+        return write!(f, "{name}");
+    }
 
     // Write metric name (if any) followed by labels in braces
     let name = metric_name_info.map(|(_, n)| n).unwrap_or("");
@@ -737,9 +738,10 @@ fn find_metric_name_matcher(filters: &[LabelFilter]) -> Option<(usize, &str)> {
 
             // Only Equal operations define a metric name
             if matcher.matcher.op() == MatchOp::Equal
-                && let Some(name) = matcher.text() {
-                    result = Some((i, name));
-                }
+                && let Some(name) = matcher.text()
+            {
+                result = Some((i, name));
+            }
         }
     }
 

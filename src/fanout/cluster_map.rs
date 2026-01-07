@@ -997,9 +997,10 @@ fn is_local_shard(slot_range_reply: &CallReply, my_node_id: &NodeId) -> bool {
     for i in 2..arr.len() {
         if let Some(Ok(CallReply::Array(node_arr))) = arr.get(i)
             && let Some(Ok(CallReply::String(node_id_reply))) = node_arr.get(2)
-                && node_id_reply.as_bytes() == id_bytes {
-                    return true;
-                }
+            && node_id_reply.as_bytes() == id_bytes
+        {
+            return true;
+        }
     }
     false
 }

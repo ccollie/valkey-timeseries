@@ -393,16 +393,16 @@ impl Chunk for PcoChunk {
         if let Some((timestamps, values)) = self.decompress()?
             && let Some((start_index, end_index)) =
                 get_timestamp_index_bounds(&timestamps, start, end)
-            {
-                let stamps = &timestamps[start_index..=end_index];
-                let values = &values[start_index..=end_index];
-                return Ok(stamps
-                    .iter()
-                    .cloned()
-                    .zip(values.iter().cloned())
-                    .map(|(timestamp, value)| Sample { timestamp, value })
-                    .collect());
-            }
+        {
+            let stamps = &timestamps[start_index..=end_index];
+            let values = &values[start_index..=end_index];
+            return Ok(stamps
+                .iter()
+                .cloned()
+                .zip(values.iter().cloned())
+                .map(|(timestamp, value)| Sample { timestamp, value })
+                .collect());
+        }
         Ok(vec![])
     }
 

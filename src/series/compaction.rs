@@ -461,9 +461,10 @@ fn apply_rules_parallel_or_seq(
 
 fn get_destination_series(ctx: &'_ Context, dest_id: SeriesRef) -> Option<SeriesGuardMut<'_>> {
     if let Ok(Some(res)) = get_series_by_id(ctx, dest_id, false, None)
-        && res.is_compaction() {
-            return Some(res);
-        };
+        && res.is_compaction()
+    {
+        return Some(res);
+    };
     ctx.log_verbose("Destination series for compaction not found or not a compaction series");
     None
 }

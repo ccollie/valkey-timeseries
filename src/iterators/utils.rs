@@ -133,13 +133,15 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
 
     let filtered = base_iter.filter(move |sample| {
         if let Some(ts) = &ts_filter
-            && !ts.matches(sample.timestamp) {
-                return false;
-            }
+            && !ts.matches(sample.timestamp)
+        {
+            return false;
+        }
         if let Some(val) = &val_filter
-            && !val.is_match(sample.value) {
-                return false;
-            }
+            && !val.is_match(sample.value)
+        {
+            return false;
+        }
         true
     });
 
