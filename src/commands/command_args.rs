@@ -5,7 +5,7 @@ use crate::common::time::current_time_millis;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
-use crate::join::{AsOfJoinOptions, AsofJoinStrategy, JoinOptions, JoinType};
+use crate::join::{AsOfJoinOptions, AsOfJoinStrategy, JoinOptions, JoinType};
 use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, parse_series_selector};
 use crate::parser::number::parse_number;
@@ -831,14 +831,14 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
 
     // ASOF already seen
     let mut tolerance = Duration::default();
-    let mut strategy = AsofJoinStrategy::Backward;
+    let mut strategy = AsOfJoinStrategy::Backward;
 
     // ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] [ALLOW_EXACT_MATCH [true|false]]
     if let Some(next) = advance_if_next_token_one_of(args, &[Previous, Next, Nearest]) {
         strategy = match next {
-            Previous => AsofJoinStrategy::Backward,
-            Next => AsofJoinStrategy::Forward,
-            Nearest => AsofJoinStrategy::Nearest,
+            Previous => AsOfJoinStrategy::Backward,
+            Next => AsOfJoinStrategy::Forward,
+            Nearest => AsOfJoinStrategy::Nearest,
             _ => unreachable!("BUG: invalid match arm for AsofJoinStrategy"),
         };
     }
