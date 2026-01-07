@@ -71,13 +71,12 @@ fn update_series(
 ) -> bool {
     let mut has_changed = false;
 
-    if let Some(chunk_size) = options.chunk_size {
-        if chunk_size != series.chunk_size_bytes {
+    if let Some(chunk_size) = options.chunk_size
+        && chunk_size != series.chunk_size_bytes {
             // todo: recompress the chunks
             series.chunk_size_bytes = chunk_size;
             has_changed = true;
         }
-    }
 
     if let Some(labels) = options.labels {
         has_changed = true;
@@ -95,19 +94,17 @@ fn update_series(
         });
     }
 
-    if let Some(retention) = options.retention {
-        if retention != series.retention {
+    if let Some(retention) = options.retention
+        && retention != series.retention {
             series.retention = retention;
             has_changed = true;
         }
-    }
 
-    if let Some(duplicate_policy) = options.sample_duplicate_policy {
-        if duplicate_policy != series.sample_duplicates {
+    if let Some(duplicate_policy) = options.sample_duplicate_policy
+        && duplicate_policy != series.sample_duplicates {
             series.sample_duplicates = duplicate_policy;
             has_changed = true;
         }
-    }
 
     has_changed
 }

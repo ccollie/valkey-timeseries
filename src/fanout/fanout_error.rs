@@ -190,7 +190,7 @@ impl core::error::Error for FanoutError {
         }
         &self.message
     }
-    fn cause(&self) -> Option<&dyn (core::error::Error)> {
+    fn cause(&self) -> Option<&dyn core::error::Error > {
         None
     }
 }

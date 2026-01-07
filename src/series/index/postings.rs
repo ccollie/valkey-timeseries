@@ -142,11 +142,10 @@ impl Postings {
     }
 
     fn set_timeseries_key(&mut self, id: SeriesRef, new_key: &[u8]) {
-        if let Some(existing) = self.id_to_key.get(&id) {
-            if existing.as_ref() == new_key {
+        if let Some(existing) = self.id_to_key.get(&id)
+            && existing.as_ref() == new_key {
                 return;
             }
-        }
         let key = new_key.to_vec().into_boxed_slice();
         self.id_to_key.insert(id, key);
     }

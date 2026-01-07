@@ -254,7 +254,7 @@ pub fn parse_chunk_size(arg: &str) -> ValkeyResult<usize> {
     }
     let chunk_size = chunk_size as usize;
 
-    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || chunk_size % 8 != 0 {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_multiple_of(8) {
         return get_error_result();
     }
 
@@ -408,14 +408,12 @@ pub(crate) fn advance_if_next_token_one_of(
     args: &mut CommandArgIterator,
     tokens: &[CommandArgToken],
 ) -> Option<CommandArgToken> {
-    if let Some(next) = args.peek() {
-        if let Some(token) = parse_command_arg_token(next) {
-            if tokens.contains(&token) {
+    if let Some(next) = args.peek()
+        && let Some(token) = parse_command_arg_token(next)
+            && tokens.contains(&token) {
                 args.next();
                 return Some(token);
             }
-        }
-    }
     None
 }
 
@@ -629,11 +627,10 @@ pub fn parse_series_selector_list(
     let mut matchers = vec![];
 
     while args.peek().is_some() {
-        if let Some(token) = peek_token(args) {
-            if stop_tokens.contains(&token) {
+        if let Some(token) = peek_token(args)
+            && stop_tokens.contains(&token) {
                 break;
             }
-        }
 
         let arg = args.next_str()?;
         if arg.is_empty() {
@@ -852,8 +849,8 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
             }
         }
 
-        if let Some(next_arg) = args.peek() {
-            if let Ok(arg_str) = next_arg.try_as_str() {
+        if let Some(next_arg) = args.peek()
+            && let Ok(arg_str) = next_arg.try_as_str() {
                 // durations in all cases start with an ascii digit, e.g., 1000 or 40 ms
                 let ch = arg_str.chars().next().unwrap();
                 if ch.is_ascii_digit() {
@@ -865,7 +862,6 @@ fn parse_asof_join_options(args: &mut CommandArgIterator) -> ValkeyResult<JoinTy
                     let _ = args.next_arg()?;
                 }
             }
-        }
 
         if advance_if_next_token_one_of(args, &[AllowExactMatch]).is_some() {
             match advance_if_next_token_one_of(args, &[True, False]) {
@@ -1082,11 +1078,10 @@ pub(super) fn find_last_token_instance(
 ) -> Option<(CommandArgToken, usize)> {
     let mut i = args.len() - 1;
     for arg in args.iter().rev() {
-        if let Some(token) = parse_command_arg_token(arg) {
-            if cmd_tokens.contains(&token) {
+        if let Some(token) = parse_command_arg_token(arg)
+            && cmd_tokens.contains(&token) {
                 return Some((token, i));
             }
-        }
         i -= 1;
     }
     None
