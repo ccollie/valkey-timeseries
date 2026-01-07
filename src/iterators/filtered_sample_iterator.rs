@@ -54,9 +54,10 @@ impl<TIterator: Iterator<Item = Sample>> Iterator for FilteredSampleIterator<TIt
                 }
             }
             if let Some(value_filter) = &self.value_filter
-                && !value_filter.is_match(sample.value) {
-                    continue;
-                }
+                && !value_filter.is_match(sample.value)
+            {
+                continue;
+            }
             return Some(sample);
         }
         None

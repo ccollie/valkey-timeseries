@@ -45,9 +45,10 @@ impl<'a> TimeSeriesRangeIterator<'a> {
                     .filter(|sample| {
                         // validate timestamp filter
                         if let Some(ts_filter) = options.timestamp_filter.as_ref()
-                            && !ts_filter.contains(&sample.timestamp) {
-                                return false;
-                            }
+                            && !ts_filter.contains(&sample.timestamp)
+                        {
+                            return false;
+                        }
                         true
                     });
             }

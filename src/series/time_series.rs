@@ -543,13 +543,14 @@ impl TimeSeries {
 
         // Handle partial chunk
         if let Some(chunk) = self.chunks.first_mut()
-            && chunk.first_timestamp() < min_timestamp {
-                if let Ok(count) = chunk.remove_range(0, min_timestamp) {
-                    deleted_count += count;
-                } else {
-                    return Err(TsdbError::RemoveRangeError);
-                }
+            && chunk.first_timestamp() < min_timestamp
+        {
+            if let Ok(count) = chunk.remove_range(0, min_timestamp) {
+                deleted_count += count;
+            } else {
+                return Err(TsdbError::RemoveRangeError);
             }
+        }
 
         self.total_samples -= deleted_count;
 

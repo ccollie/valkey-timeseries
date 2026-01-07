@@ -190,9 +190,10 @@ fn add_metric_name_if_needed(
     has_metric_filter: bool,
 ) -> FilterList {
     if let Some(name) = name
-        && !has_metric_filter {
-            filters.push(LabelFilter::equals(METRIC_NAME_LABEL.into(), name));
-        }
+        && !has_metric_filter
+    {
+        filters.push(LabelFilter::equals(METRIC_NAME_LABEL.into(), name));
+    }
     filters
 }
 

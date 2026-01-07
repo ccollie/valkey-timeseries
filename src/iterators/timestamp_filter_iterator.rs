@@ -137,10 +137,11 @@ impl<'a> TimestampFilterIterator<'a> {
 
     fn ensure_chunk_for_timestamp(&mut self, ts: Timestamp) -> bool {
         if let Some(chunk) = self.chunk
-            && chunk.is_timestamp_in_range(ts) {
-                // the current chunk covers the timestamp
-                return true;
-            }
+            && chunk.is_timestamp_in_range(ts)
+        {
+            // the current chunk covers the timestamp
+            return true;
+        }
 
         if let Some(chunk) = self.seek_chunk(ts) {
             if self.is_reverse || !chunk.is_compressed() {
@@ -167,9 +168,10 @@ impl<'a> TimestampFilterIterator<'a> {
 
         if self.random_access {
             if let Ok(idx) = self.buffer.binary_search_by_key(&ts, |s| s.timestamp)
-                && let Some(sample) = self.buffer.get(idx).copied() {
-                    return Some(sample);
-                }
+                && let Some(sample) = self.buffer.get(idx).copied()
+            {
+                return Some(sample);
+            }
             return None;
         }
 
