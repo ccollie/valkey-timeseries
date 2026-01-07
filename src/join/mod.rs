@@ -24,7 +24,7 @@ use join_reducer::JoinReducer;
 
 use crate::join::sorted_join_semi::SortedJoinSemiBy;
 use crate::series::request_types::AggregationOptions;
-pub(super) use asof::{AsofJoinStrategy, JoinAsOfIter};
+pub(super) use asof::{AsOfJoinStrategy, JoinAsOfIter};
 
 pub trait JoinkitExt: Iterator {
     fn join_semi<K, I, R, F>(self, right: R, key_fn: F) -> SortedJoinSemiBy<Self, R::IntoIter, K, F>
@@ -132,7 +132,7 @@ impl From<EitherOrBoth<Sample, Sample>> for JoinValue {
 
 #[derive(Clone, Debug, Copy, PartialEq)]
 pub struct AsOfJoinOptions {
-    pub strategy: AsofJoinStrategy,
+    pub strategy: AsOfJoinStrategy,
     pub tolerance: Duration,
     pub allow_exact_match: bool,
 }

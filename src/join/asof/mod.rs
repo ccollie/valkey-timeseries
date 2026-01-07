@@ -50,7 +50,7 @@ fn lt_allow_eq<T: PartialOrd + Copy>(l: T, r: T, allow_eq: bool) -> bool {
     }
 }
 
-trait AsofJoinState: Default {
+trait AsOfJoinState: Default {
     fn new(allow_eq: bool) -> Self;
 
     fn next<F: FnMut(IdxSize) -> Option<Sample>>(
@@ -62,14 +62,14 @@ trait AsofJoinState: Default {
 }
 
 #[derive(Default)]
-struct AsofJoinForwardState {
+struct AsOfJoinForwardState {
     scan_offset: IdxSize,
     allow_eq: bool,
 }
 
-impl AsofJoinState for AsofJoinForwardState {
+impl AsOfJoinState for AsOfJoinForwardState {
     fn new(allow_eq: bool) -> Self {
-        AsofJoinForwardState {
+        AsOfJoinForwardState {
             scan_offset: 0,
             allow_eq,
         }
@@ -95,16 +95,16 @@ impl AsofJoinState for AsofJoinForwardState {
 }
 
 #[derive(Default)]
-struct AsofJoinBackwardState {
+struct AsOfJoinBackwardState {
     // best_bound is the greatest right index <= left_val.
     best_bound: Option<IdxSize>,
     scan_offset: IdxSize,
     allow_eq: bool,
 }
 
-impl AsofJoinState for AsofJoinBackwardState {
+impl AsOfJoinState for AsOfJoinBackwardState {
     fn new(allow_eq: bool) -> Self {
-        AsofJoinBackwardState {
+        AsOfJoinBackwardState {
             best_bound: None,
             scan_offset: 0,
             allow_eq,
@@ -133,17 +133,17 @@ impl AsofJoinState for AsofJoinBackwardState {
 }
 
 #[derive(Default)]
-struct AsofJoinNearestState {
+struct AsOfJoinNearestState {
     // best_bound is the nearest value to left_val, with ties broken towards the last element.
     best_bound: Option<IdxSize>,
     scan_offset: IdxSize,
     allow_eq: bool,
 }
 
-impl AsofJoinState for AsofJoinNearestState {
+impl AsOfJoinState for AsOfJoinNearestState {
     #[inline]
     fn new(allow_eq: bool) -> Self {
-        AsofJoinNearestState {
+        AsOfJoinNearestState {
             best_bound: None,
             scan_offset: 0,
             allow_eq,
@@ -226,7 +226,7 @@ impl AsofJoinState for AsofJoinNearestState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
-pub enum AsofJoinStrategy {
+pub enum AsOfJoinStrategy {
     /// selects the last sample in the right series whose value is less than or equal to the left’s value
     #[default]
     Backward,
@@ -236,27 +236,27 @@ pub enum AsofJoinStrategy {
     Nearest,
 }
 
-impl Display for AsofJoinStrategy {
+impl Display for AsOfJoinStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AsofJoinStrategy::Backward => write!(f, "Backward"),
-            AsofJoinStrategy::Forward => write!(f, "Forward"),
-            AsofJoinStrategy::Nearest => write!(f, "Nearest"),
+            AsOfJoinStrategy::Backward => write!(f, "Backward"),
+            AsOfJoinStrategy::Forward => write!(f, "Forward"),
+            AsOfJoinStrategy::Nearest => write!(f, "Nearest"),
         }
     }
 }
 
-impl TryFrom<&str> for AsofJoinStrategy {
+impl TryFrom<&str> for AsOfJoinStrategy {
     type Error = ValkeyError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let strategy = hashify::tiny_map_ignore_case! {
             value.as_bytes(),
-            "forward" => AsofJoinStrategy::Forward,
-            "next" => AsofJoinStrategy::Forward,
-            "previous" => AsofJoinStrategy::Backward,
-            "backward" => AsofJoinStrategy::Backward,
-            "nearest" => AsofJoinStrategy::Nearest,
+            "forward" => AsOfJoinStrategy::Forward,
+            "next" => AsOfJoinStrategy::Forward,
+            "previous" => AsOfJoinStrategy::Backward,
+            "backward" => AsOfJoinStrategy::Backward,
+            "nearest" => AsOfJoinStrategy::Nearest,
         };
 
         match strategy {

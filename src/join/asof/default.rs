@@ -20,8 +20,8 @@
 // SOFTWARE.
 // https://github.com/pola-rs/polars/blob/main/crates/polars-ops/src/frame/join/asof/default.rs
 use super::{
-    AsofJoinBackwardState, AsofJoinForwardState, AsofJoinNearestState, AsofJoinState,
-    AsofJoinStrategy, IdxSize,
+    AsOfJoinBackwardState, AsOfJoinForwardState, AsOfJoinNearestState, AsOfJoinState,
+    AsOfJoinStrategy, IdxSize,
 };
 use crate::common::Sample;
 
@@ -32,7 +32,7 @@ fn join_asof_impl<S, F>(
     allow_eq: bool,
 ) -> Vec<(Sample, Sample)>
 where
-    S: AsofJoinState,
+    S: AsOfJoinState,
     F: FnMut(&Sample, &Sample) -> bool,
 {
     let mut out = Vec::with_capacity(left.len());
@@ -65,7 +65,7 @@ pub fn join_asof_forward<F>(
 where
     F: FnMut(&Sample, &Sample) -> bool,
 {
-    join_asof_impl::<AsofJoinForwardState, _>(left, right, filter, allow_eq)
+    join_asof_impl::<AsOfJoinForwardState, _>(left, right, filter, allow_eq)
 }
 
 pub fn join_asof_backward<F>(
@@ -77,7 +77,7 @@ pub fn join_asof_backward<F>(
 where
     F: FnMut(&Sample, &Sample) -> bool,
 {
-    join_asof_impl::<AsofJoinBackwardState, _>(left, right, filter, allow_eq)
+    join_asof_impl::<AsOfJoinBackwardState, _>(left, right, filter, allow_eq)
 }
 
 pub fn join_asof_nearest<F>(
@@ -89,13 +89,13 @@ pub fn join_asof_nearest<F>(
 where
     F: FnMut(&Sample, &Sample) -> bool,
 {
-    join_asof_impl::<AsofJoinNearestState, _>(left, right, filter, allow_eq)
+    join_asof_impl::<AsOfJoinNearestState, _>(left, right, filter, allow_eq)
 }
 
 pub(crate) fn join_asof_samples(
     left: &[Sample],
     right: &[Sample],
-    strategy: AsofJoinStrategy,
+    strategy: AsOfJoinStrategy,
     tolerance: Option<i64>,
     allow_eq: bool,
 ) -> Vec<(Sample, Sample)> {
@@ -103,16 +103,16 @@ pub(crate) fn join_asof_samples(
         let abs_tolerance = t.abs_diff(0);
         let filter = |l: &Sample, r: &Sample| l.timestamp.abs_diff(r.timestamp) <= abs_tolerance;
         match strategy {
-            AsofJoinStrategy::Forward => join_asof_forward(left, right, filter, allow_eq),
-            AsofJoinStrategy::Backward => join_asof_backward(left, right, filter, allow_eq),
-            AsofJoinStrategy::Nearest => join_asof_nearest(left, right, filter, allow_eq),
+            AsOfJoinStrategy::Forward => join_asof_forward(left, right, filter, allow_eq),
+            AsOfJoinStrategy::Backward => join_asof_backward(left, right, filter, allow_eq),
+            AsOfJoinStrategy::Nearest => join_asof_nearest(left, right, filter, allow_eq),
         }
     } else {
         let filter = |_: &Sample, _: &Sample| true;
         match strategy {
-            AsofJoinStrategy::Forward => join_asof_forward(left, right, filter, allow_eq),
-            AsofJoinStrategy::Backward => join_asof_backward(left, right, filter, allow_eq),
-            AsofJoinStrategy::Nearest => join_asof_nearest(left, right, filter, allow_eq),
+            AsOfJoinStrategy::Forward => join_asof_forward(left, right, filter, allow_eq),
+            AsOfJoinStrategy::Backward => join_asof_backward(left, right, filter, allow_eq),
+            AsOfJoinStrategy::Nearest => join_asof_nearest(left, right, filter, allow_eq),
         }
     }
 }
@@ -162,7 +162,7 @@ mod test {
             },
         ];
 
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, None, true);
 
         assert_eq!(result.len(), 4);
         assert_eq!(result[0].0.timestamp, 10);
@@ -198,7 +198,7 @@ mod test {
         ];
 
         let tolerance = Some(500);
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, tolerance, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, tolerance, true);
 
         assert!(result.len() == 4);
         assert_eq!(result[0].0.timestamp, 2000);
@@ -251,7 +251,7 @@ mod test {
             },
         ];
 
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Forward, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Forward, None, true);
 
         assert_eq!(result.len(), 4);
         assert_eq!(result[0].0.timestamp, 10);
@@ -304,7 +304,7 @@ mod test {
             },
         ];
 
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Nearest, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Nearest, None, true);
 
         assert_eq!(result.len(), 4);
         assert_eq!(result[0].0.timestamp, 12);
@@ -358,7 +358,7 @@ mod test {
         ];
 
         // With tolerance 3
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, Some(3), true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, Some(3), true);
 
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].0.timestamp, 10);
@@ -384,7 +384,7 @@ mod test {
             },
         ];
 
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, None, true);
         assert_eq!(result.len(), 0);
 
         let left = vec![
@@ -399,7 +399,7 @@ mod test {
         ];
         let right: Vec<Sample> = vec![];
 
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, None, true);
         assert_eq!(result.len(), 0);
     }
 
@@ -436,7 +436,7 @@ mod test {
         ];
 
         // With allow_eq = true
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, None, true);
 
         assert_eq!(result.len(), 3);
         for res in result.iter() {
@@ -446,7 +446,7 @@ mod test {
         // With allow_eq = false
         // Note that we specify a tolerance here otherwise the test would fail. This is because
         // otherwise the algorithm would simply scan backwards and therefore find a non-equal match.
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, Some(5), false);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, Some(5), false);
         assert_eq!(result.len(), 0); // No matches because exact equality is not allowed
     }
 
@@ -490,7 +490,7 @@ mod test {
             },
         ];
 
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Backward, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Backward, None, true);
 
         assert_eq!(result.len(), 4);
         assert_eq!(result[0].0.timestamp, 10);
@@ -532,7 +532,7 @@ mod test {
         ];
 
         // Nearest should prefer the later value when equidistant
-        let result = join_asof_samples(&left, &right, AsofJoinStrategy::Nearest, None, true);
+        let result = join_asof_samples(&left, &right, AsOfJoinStrategy::Nearest, None, true);
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].0.timestamp, 15);

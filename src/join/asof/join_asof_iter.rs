@@ -1,4 +1,4 @@
-use super::{AsofJoinStrategy, join_asof_samples};
+use super::{AsOfJoinStrategy, join_asof_samples};
 use crate::common::Sample;
 use crate::join::JoinValue;
 use std::time::Duration;
@@ -11,7 +11,7 @@ where
     is_init: bool,
     left: L,
     right: R,
-    strategy: AsofJoinStrategy,
+    strategy: AsOfJoinStrategy,
     tolerance: Duration,
     allow_eq: bool,
     items: Vec<(Sample, Sample)>,
@@ -26,7 +26,7 @@ where
     pub fn new<IL, IR>(
         left: IL,
         right: IR,
-        strategy: AsofJoinStrategy,
+        strategy: AsOfJoinStrategy,
         tolerance: Duration,
         allow_eq: bool,
     ) -> Self
