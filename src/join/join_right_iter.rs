@@ -3,21 +3,21 @@ use crate::join::JoinValue;
 use joinkit::{EitherOrBoth, Joinkit};
 use min_max_heap::MinMaxHeap;
 
-/// Iterator adaptor implementing a streaming \*right outer join\* over two time\-sorted
+/// Iterator adaptor implementing a streaming *right outer join* over two time\-sorted
 /// [`Sample`] streams.
 ///
 /// This iterator yields [`JoinValue`] rows for every timestamp present on the right side:
-/// \- If a right timestamp has no matching left sample, yields `JoinValue::Right(..)`
+/// - If a right timestamp has no matching left sample, yields `JoinValue::Right(..)`
 ///   for each right sample at that timestamp.
-/// \- If both sides have the timestamp, yields `JoinValue::Both(.., ..)` for each
+/// - If both sides have the timestamp, yields `JoinValue::Both(.., ..)` for each
 ///   combination of the single left sample and each right sample in the right group.
 ///
 /// ## Invariant
-/// Both input iterators must be sorted by [`Timestamp`] in non\-decreasing order.
+/// Both input iterators must be sorted by [`Timestamp`] in non-decreasing order.
 /// The implementation assumes this and may produce incorrect ordering if violated.
 ///
 /// ## Ordering
-/// Output is produced in non\-decreasing timestamp order. Internally, a small heap is
+/// Output is produced in non-decreasing timestamp order. Internally, a small heap is
 /// used to buffer expanded join rows (e.g., one left sample joined with multiple right
 /// samples) and to emit them in sorted order.
 ///
