@@ -9,7 +9,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
     def test_basic_timeseries_aofrewrite_and_restore(self):
         """Test basic timeseries AOF rewrite and restore functionality"""
         client = self.client
-
+        client.config_set('appendonly', 'yes')
+        # Wait for any initial AOF rewrite to complete
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
         # Create a basic timeseries with some properties
         client.execute_command('TS.CREATE', 'basic_ts',
                                'RETENTION', 10000,
@@ -34,6 +36,8 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         time.sleep(1)  # Allow time for completion
 
         # Restart server
+        # Add appendonly to server args so it loads AOF on restart
+        self.server.args['appendonly'] = 'yes'
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
 
@@ -66,7 +70,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
     def test_timeseries_with_compaction_rules_aofrewrite(self):
         """Test AOF rewrite for timeseries with compaction rules"""
         client = self.client
-
+        client.config_set('appendonly', 'yes')
+        # Wait for any initial AOF rewrite to complete
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
         # Create source timeseries
         client.execute_command('TS.CREATE', 'source_ts',
                                'RETENTION', 20000,
@@ -105,6 +111,8 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         time.sleep(1)
 
         # Restart server
+        # Add appendonly to server args so it loads AOF on restart
+        self.server.args['appendonly'] = 'yes'
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
 
@@ -140,6 +148,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
     def test_timeseries_complex_properties_aofrewrite(self):
         """Test AOF rewrite for timeseries with various complex properties"""
         client = self.client
+        client.config_set('appendonly', 'yes')
+        # Wait for any initial AOF rewrite to complete
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
 
         # Create timeseries with all possible properties
         client.execute_command('TS.CREATE', 'complex_ts',
@@ -166,6 +177,8 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         time.sleep(1)
 
         # Restart server
+        # Add appendonly to server args so it loads AOF on restart
+        self.server.args['appendonly'] = 'yes'
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
 
@@ -194,6 +207,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
     def test_multiple_timeseries_aofrewrite(self):
         """Test AOF rewrite with multiple timeseries having different properties"""
         client = self.client
+        client.config_set('appendonly', 'yes')
+        # Wait for any initial AOF rewrite to complete
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
 
         # Create multiple timeseries with different configurations
         timeseries_configs = [
@@ -241,6 +257,8 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         time.sleep(1)
 
         # Restart server
+        # Add appendonly to server args so it loads AOF on restart
+        self.server.args['appendonly'] = 'yes'
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
 
@@ -276,6 +294,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
     def test_timeseries_aofrewrite_with_expiration(self):
         """Test AOF rewrite with timeseries that have TTL"""
         client = self.client
+        client.config_set('appendonly', 'yes')
+        # Wait for any initial AOF rewrite to complete
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
 
         # Create timeseries and set TTL
         client.execute_command('TS.CREATE', 'expiring_ts',
@@ -299,6 +320,8 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         time.sleep(1)
 
         # Restart server
+        # Add appendonly to server args so it loads AOF on restart
+        self.server.args['appendonly'] = 'yes'
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
 
@@ -322,6 +345,9 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
     def test_empty_timeseries_aofrewrite(self):
         """Test AOF rewrite with empty timeseries (no data points)"""
         client = self.client
+        client.config_set('appendonly', 'yes')
+        # Wait for any initial AOF rewrite to complete
+        wait_for_equal(lambda: client.info('persistence')['aof_rewrite_in_progress'], 0, timeout=30)
 
         # Create empty timeseries with various properties
         client.execute_command('TS.CREATE', 'empty_ts',
@@ -339,6 +365,8 @@ class TestTimeseriesAofRewrite(ValkeyTimeSeriesTestCaseBase):
         time.sleep(1)
 
         # Restart server
+        # Add appendonly to server args so it loads AOF on restart
+        self.server.args['appendonly'] = 'yes'
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
 
