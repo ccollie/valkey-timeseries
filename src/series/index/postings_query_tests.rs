@@ -20,7 +20,7 @@ mod tests {
         if ss.is_empty() {
             return vec![];
         }
-        if ss.len() % 2 != 0 {
+        if !ss.len().is_multiple_of(2) {
             panic!("labels_from_strings: odd number of strings")
         }
         let mut labels = vec![];

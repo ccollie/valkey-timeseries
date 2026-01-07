@@ -71,13 +71,13 @@ impl DataGenerator {
         if self.samples == 0 {
             self.samples = 10;
         }
-        if let Some(end) = self.end {
-            if end < self.start {
-                // swap start and end
-                let tmp = self.start;
-                self.start = end;
-                self.end = Some(tmp);
-            }
+        if let Some(end) = self.end
+            && end < self.start
+        {
+            // swap start and end
+            let tmp = self.start;
+            self.start = end;
+            self.end = Some(tmp);
         }
         if self.values.is_empty() {
             self.values = 0.0..1.0;
