@@ -29,7 +29,6 @@ pub fn process_join(
     right_series: &TimeSeries,
     options: &JoinOptions,
 ) -> ValkeyResult<JoinResultType> {
-    // TODO: use iterators instead of collecting samples up front
     let (left_samples, right_samples) = join(
         || fetch_samples(left_series, options),
         || fetch_samples(right_series, options),
