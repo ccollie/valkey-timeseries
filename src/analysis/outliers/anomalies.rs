@@ -7,6 +7,7 @@
 use super::smoothed_zscores::SmoothedZScoreAnomalyDetector;
 use crate::analysis::common::Array2D;
 use crate::analysis::common::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
+use crate::analysis::outliers::rcf_outlier_detector::{RCFOptions, RcfOutlierDetector};
 use crate::analysis::outliers::{DoubleMadOutlierDetector, OutlierDetector};
 use crate::analysis::quantile_estimators::{
     HarrellDavisNormalizedEstimator, InvariantMADEstimator, Samples, SimpleNormalizedEstimator,
@@ -16,9 +17,7 @@ use rand::seq::SliceRandom;
 use std::cmp::PartialEq;
 use std::fmt::Debug;
 use std::str::FromStr;
-use krcf::rcf;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
-use crate::analysis::outliers::rcf_outlier_detector::{RCFOptions, RcfOutlierDetector};
 
 /// Method for analysis detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1164,17 +1163,13 @@ fn detect_anomalies_rcf(
     ts: &[f64],
     options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    // Placeholder for Random Cut Forest implementation
-    let kcf_options = options
-        .rcf_options
-        .unwrap_or(RCFOptions::default());
+    let kcf_options = options.rcf_options.unwrap_or(RCFOptions::default());
     let mut detector = RcfOutlierDetector::new(kcf_options)
         .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
     let mut scores: Vec<f64> = Vec::with_capacity(ts.len());
     let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(ts.len());
     for &value in ts {
-        let score = detector.score(&[value])
-            .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
+        let score = detector.score(&[value]);
         scores.push(score);
 
         let anomaly_direction = if score > kcf_options.threshold {

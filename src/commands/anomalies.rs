@@ -21,11 +21,11 @@ enum OutputFormat {
     Cleaned,
 }
 
-/// TS.ANOMALIES key fromTimestamp toTimestamp
+/// TS.OUTLIERS key fromTimestamp toTimestamp
 /// [FORMAT <full|simple|cleaned>]
 /// [DIRECTION <positive|negative|both>]
 /// METHOD <method> [method-specific-options]
-pub fn anomalies(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 5 {
         return Err(ValkeyError::WrongArity);
     }
@@ -98,6 +98,7 @@ fn parse_method_options(
         AnomalyMethod::IsolationForest => parse_isolation_forest_options(args),
         AnomalyMethod::DistanceBased => parse_distance_based_options(args),
         AnomalyMethod::PredictionBased => parse_prediction_based_options(args),
+        AnomalyMethod::RandomCutForest => todo!(),
     }
 }
 
