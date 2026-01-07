@@ -17,6 +17,7 @@ use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
 
 pub mod aggregators;
+mod analysis;
 pub(crate) mod commands;
 pub mod common;
 pub mod config;
@@ -30,7 +31,6 @@ mod parser;
 mod series;
 mod server_events;
 mod tests;
-mod analysis;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
@@ -181,7 +181,7 @@ valkey_module! {
         ["TS.LABELSTATS", commands::label_stats, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CREATERULE", commands::create_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.ANOMALIES", commands::anomalies, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
+        ["TS.OUTLIERS", commands::outliers, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["TS._DEBUG", commands::debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
     ]
     event_handlers: [
