@@ -1,28 +1,27 @@
-use rayon::iter::ParallelIterator;
 use std::sync::atomic::AtomicU64;
 mod index_key;
-mod memory_postings;
 mod posting_stats;
+mod postings;
 mod querier;
-#[cfg(test)]
-mod querier_tests;
 mod timeseries_index;
 
-use crate::common::db::get_current_db;
+use crate::common::context::get_current_db;
 use papaya::{Guard, HashMap};
-use rayon::iter::ParallelBridge;
 use std::sync::LazyLock;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
-use crate::arg_types::MatchFilterOptions;
 use crate::common::hash::BuildNoHashHasher;
-use crate::common::time::current_time_millis;
-use crate::error_consts;
-use crate::module::VK_TIME_SERIES_TYPE;
-use crate::series::TimeSeries;
+use crate::series::index::postings::Postings;
+use crate::series::request_types::MatchFilterOptions;
+use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
+pub use index_key::IndexKey;
 pub use posting_stats::*;
 pub use querier::*;
 pub use timeseries_index::*;
+
+mod key_buffer;
+#[cfg(test)]
+mod postings_query_tests;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
@@ -45,14 +44,34 @@ pub fn get_timeseries_index_for_db(db: i32, guard: &impl Guard) -> &TimeSeriesIn
     TIMESERIES_INDEX.get_or_insert_with(db, TimeSeriesIndex::new, guard)
 }
 
+pub fn with_db_index<F, R>(db: i32, f: F) -> R
+where
+    F: FnOnce(&TimeSeriesIndex) -> R,
+{
+    let guard = TIMESERIES_INDEX.guard();
+    let index = get_timeseries_index_for_db(db, &guard);
+    let res = f(index);
+    drop(guard);
+    res
+}
+
 pub fn with_timeseries_index<F, R>(ctx: &Context, f: F) -> R
 where
     F: FnOnce(&TimeSeriesIndex) -> R,
 {
     let db = get_current_db(ctx);
+    with_db_index(db, f)
+}
+
+pub fn with_timeseries_postings<F, R>(ctx: &Context, f: F) -> R
+where
+    F: FnOnce(&Postings) -> R,
+{
+    let db = get_current_db(ctx);
     let guard = TIMESERIES_INDEX.guard();
     let index = get_timeseries_index_for_db(db, &guard);
-    let res = f(index);
+    let mut state = ();
+    let res = index.with_postings(&mut state, |postings, _| f(postings));
     drop(guard);
     res
 }
@@ -66,40 +85,62 @@ pub fn with_matched_series<F, STATE>(
 where
     F: FnMut(&mut STATE, &TimeSeries, ValkeyString),
 {
-    let keys = series_keys_by_matchers(ctx, &filter.matchers, None)?;
-    if keys.is_empty() {
-        return Err(ValkeyError::Str(error_consts::NO_SERIES_FOUND));
-    }
-
-    let now = Some(current_time_millis());
-
-    for key in keys {
-        let redis_key = ctx.open_key(&key);
-        // get series from redis
-        match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
-            Ok(Some(series)) => {
-                if let Some(range) = filter.date_range {
-                    let (start, end) = range.get_series_range(series, now, true);
-                    if series.overlaps(start, end) {
-                        f(acc, series, key);
-                    }
-                } else {
-                    f(acc, series, key);
-                }
-            }
-            Err(e) => {
-                return Err(e);
-            }
-            _ => {}
-        }
+    let mut matched_series = series_by_selectors(ctx, &filter.matchers, filter.date_range)?;
+    for guard in matched_series.iter_mut() {
+        let series = guard.get_series();
+        let key = guard.key_inner.safe_clone(ctx);
+        f(acc, series, key);
     }
     Ok(())
 }
 
-pub fn clear_timeseries_index(ctx: &Context) {
-    with_timeseries_index(ctx, |index| {
-        index.clear();
+pub fn get_series_by_id(
+    ctx: &'_ Context,
+    id: SeriesRef,
+    must_exist: bool,
+    permissions: Option<AclPermissions>,
+) -> ValkeyResult<Option<SeriesGuardMut<'_>>> {
+    let map = TIMESERIES_INDEX.pin();
+    let db = get_current_db(ctx);
+    let Some(index) = map.get(&db) else {
+        return Ok(None);
+    };
+    let mut state = 0;
+    index.with_postings(&mut state, |posting, _| {
+        let Some(key) = posting.get_key_by_id(id) else {
+            return Ok(None);
+        };
+        let real_key = ctx.create_string(key.as_ref());
+        get_timeseries_mut(ctx, &real_key, must_exist, permissions)
     })
+}
+
+pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString> {
+    let map = TIMESERIES_INDEX.pin();
+    let db = get_current_db(ctx);
+    let index = map.get(&db)?;
+    let mut state = 0;
+    index.with_postings(&mut state, |posting, _| {
+        let key = posting.get_key_by_id(id)?;
+        Some(ctx.create_string(key.as_ref()))
+    })
+}
+
+pub fn remove_series_from_index(ts: &TimeSeries) {
+    let guard = TIMESERIES_INDEX.guard();
+    let index = get_timeseries_index_for_db(ts._db, &guard);
+    index.remove_timeseries(ts);
+    drop(guard);
+}
+
+pub fn clear_timeseries_index(ctx: &Context) {
+    let db = get_current_db(ctx);
+    let map = TIMESERIES_INDEX.pin();
+    if map.remove(&db).is_some() && map.is_empty() {
+        // if we removed indices for all dbs, we need to reset the id
+        // to 0 so that we can start from 1 again
+        reset_timeseries_id(0);
+    }
 }
 
 pub fn clear_all_timeseries_indexes() {
@@ -115,16 +156,11 @@ pub fn swap_timeseries_index_dbs(from_db: i32, to_db: i32) {
     first.swap(second)
 }
 
-pub fn optimize_all_timeseries_indexes() {
-    let guard = TIMESERIES_INDEX.guard();
-    let values: Vec<_> = TIMESERIES_INDEX
-        .values(&guard)
-        .filter(|x| x.is_empty())
-        .collect();
-    values.into_iter().par_bridge().for_each(|index| {
-        index.optimize();
+pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
+    // mark the id for removal, signal to src_series to remove it
+    with_timeseries_index(ctx, |index| {
+        index.mark_id_as_stale(id);
     });
-    guard.flush();
 }
 
 pub(crate) fn init_croaring_allocator() {

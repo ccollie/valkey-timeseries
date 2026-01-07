@@ -1,20 +1,18 @@
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::series::chunks::TimeSeriesChunk;
-use crate::series::types::ValueFilter;
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use get_size::GetSize;
-use serde::{Deserialize, Serialize};
+use get_size2::GetSize;
 use std::fmt::Display;
-use std::vec;
-use valkey_module::{raw, ValkeyError, ValkeyResult};
+use valkey_module::digest::Digest;
+use valkey_module::{ValkeyError, ValkeyResult, raw};
 
 pub const MIN_CHUNK_SIZE: usize = 48;
 pub const MAX_CHUNK_SIZE: usize = 1048576;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, GetSize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, GetSize, Hash)]
 #[non_exhaustive]
+#[repr(u8)]
 pub enum ChunkEncoding {
     Uncompressed = 1,
     #[default]
@@ -39,6 +37,18 @@ impl ChunkEncoding {
 impl Display for ChunkEncoding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
+    }
+}
+
+impl TryFrom<u8> for ChunkEncoding {
+    type Error = ValkeyError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(ChunkEncoding::Uncompressed),
+            2 => Ok(ChunkEncoding::Gorilla),
+            4 => Ok(ChunkEncoding::Pco),
+            _ => Err(ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING)),
+        }
     }
 }
 
@@ -107,78 +117,27 @@ pub trait Chunk: Sized {
 
     fn save_rdb(&self, rdb: *mut raw::RedisModuleIO);
     fn load_rdb(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self>;
-}
 
-pub struct ChunkSampleIterator<'a> {
-    inner: vec::IntoIter<Sample>,
-    chunk: &'a TimeSeriesChunk,
-    value_filter: &'a Option<ValueFilter>,
-    ts_filter: &'a Option<Vec<Timestamp>>,
-    start: Timestamp,
-    end: Timestamp,
-    is_overlap: bool,
-    is_init: bool,
-}
+    fn serialize(&self, dest: &mut Vec<u8>);
 
-impl<'a> ChunkSampleIterator<'a> {
-    pub fn new(
-        chunk: &'a TimeSeriesChunk,
-        start: Timestamp,
-        end: Timestamp,
-        value_filter: &'a Option<ValueFilter>,
-        ts_filter: &'a Option<Vec<Timestamp>>,
-    ) -> Self {
-        Self {
-            inner: Default::default(),
-            start,
-            end,
-            chunk,
-            value_filter,
-            ts_filter,
-            is_overlap: chunk.overlaps(start, end),
-            is_init: false,
-        }
-    }
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self>;
 
-    fn handle_init(&mut self) {
-        self.is_init = true;
-        self.inner = if !self.is_overlap {
-            Default::default()
-        } else {
-            self.chunk
-                .get_range_filtered(self.start, self.end, self.ts_filter, self.value_filter)
-                .into_iter()
-        }
-    }
-}
-
-// todo: implement next_chunk
-impl Iterator for ChunkSampleIterator<'_> {
-    type Item = Sample;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.is_init {
-            self.handle_init();
-        }
-        self.inner.next()
-    }
+    fn debug_digest(&self, dig: &mut Digest);
 }
 
 pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
     fn get_error_result() -> TsdbResult<()> {
-        let msg = format!("ERR: CHUNK_SIZE value must be a multiple of 2 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]");
+        let msg = format!(
+            "TSDB: CHUNK_SIZE value must be a multiple of 8 in the range [{MIN_CHUNK_SIZE} .. {MAX_CHUNK_SIZE}]"
+        );
         Err(TsdbError::InvalidConfiguration(msg))
     }
 
-    if chunk_size_bytes < MIN_CHUNK_SIZE {
+    if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size_bytes) {
         return get_error_result();
     }
 
-    if chunk_size_bytes > MAX_CHUNK_SIZE {
-        return get_error_result();
-    }
-
-    if chunk_size_bytes % 2 != 0 {
+    if chunk_size_bytes % 8 != 0 {
         return get_error_result();
     }
 

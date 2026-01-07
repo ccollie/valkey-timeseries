@@ -1,6 +1,6 @@
-### TS.LABEL-NAMES
+*** TS.LABEL-NAMES **
 ```
-TS.LABEL-NAMES FILTER selector... [START fromTimestamp] [END toTimestamp]
+TS.LABEL-NAMES [START fromTimestamp] [END toTimestamp] FILTER selector... 
 ```
 returns a list of label names for select series.
 
@@ -35,14 +35,4 @@ Return an error reply in the following cases:
 
 ```
 TS.LABELS FILTER up process_start_time_seconds{job="prometheus"}
-```
-```json
-{
-   "status" : "success",
-   "data" : [
-      "__name__",
-      "instance",
-      "job"
-   ]
-}
 ```

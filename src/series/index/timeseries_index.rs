@@ -2,19 +2,19 @@ use ahash::AHashMap;
 use std::collections::hash_map::Entry;
 use std::sync::RwLock;
 
-use super::memory_postings::{
-    MemoryPostings, PostingsBitmap, ALL_POSTINGS_KEY, ALL_POSTINGS_KEY_NAME,
-};
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
-use crate::common::constants::METRIC_NAME_LABEL;
+use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
 use crate::error_consts;
-use crate::labels::{InternedLabel, Label, SeriesLabel};
+use crate::labels::filters::SeriesSelector;
+use crate::labels::{Label, SeriesLabel};
+use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
-use get_size::GetSize;
+use get_size2::GetSize;
+use std::mem::size_of;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 pub struct TimeSeriesIndex {
-    pub(crate) inner: RwLock<MemoryPostings>,
+    pub(crate) inner: RwLock<Postings>,
 }
 
 impl Default for TimeSeriesIndex {
@@ -35,10 +35,11 @@ impl Clone for TimeSeriesIndex {
 impl TimeSeriesIndex {
     pub fn new() -> Self {
         TimeSeriesIndex {
-            inner: RwLock::new(MemoryPostings::default()),
+            inner: RwLock::new(Postings::default()),
         }
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut inner = self.inner.write().unwrap();
         inner.clear();
@@ -46,7 +47,6 @@ impl TimeSeriesIndex {
 
     // swap the inner value with some other value
     // this is specifically to handle the `swapdb` event callback
-    // todo: can this deadlock ?
     pub fn swap(&self, other: &Self) {
         let mut self_inner = self.inner.write().unwrap();
         let mut other_inner = other.inner.write().unwrap();
@@ -56,24 +56,13 @@ impl TimeSeriesIndex {
     pub fn index_timeseries(&self, ts: &TimeSeries, key: &[u8]) {
         debug_assert!(ts.id != 0);
         let mut inner = self.inner.write().unwrap();
-
-        let id = ts.id;
-        let measurement = ts.labels.get_measurement();
-        if !measurement.is_empty() {
-            // todo: error !
-        }
-
-        for InternedLabel { name, value } in ts.labels.iter() {
-            inner.add_posting_for_label_value(id, name, value);
-        }
-
-        inner.add_id_to_all_postings(id);
-        inner.set_timeseries_key(id, key);
+        inner.index_timeseries(ts, key);
     }
 
     pub fn reindex_timeseries(&self, series: &TimeSeries, key: &[u8]) {
-        self.remove_timeseries(series);
-        self.index_timeseries(series, key);
+        let mut inner = self.inner.write().unwrap();
+        inner.remove_timeseries(series);
+        inner.index_timeseries(series, key);
     }
 
     pub fn remove_timeseries(&self, series: &TimeSeries) {
@@ -102,8 +91,81 @@ impl TimeSeriesIndex {
         }
     }
 
+    /// Retrieves the series identifier (ID) corresponding to a specific set of labels.
+    ///
+    /// This method looks up the series ID in the underlying postings index based on the provided
+    /// labels. For instance, if we have a time series with the metric name
+    ///
+    /// `http_requests_total{status="200", method="GET", service="inference"}`,
+    ///
+    /// we can retrieve its series ID by passing the appropriate labels to this function.
+    ///
+    /// ```
+    /// let labels = vec![
+    ///     Label::new("__name__", "http_requests_total"),
+    ///     Label::new("status", "200"),
+    ///     Label::new("method", "GET"),
+    ///     Label::new("service", "inference")
+    /// ];
+    /// if let Some(series_id) = index.series_id_by_labels(&labels) {
+    ///     println!("Found series ID: {:?}", series_id);
+    /// } else {
+    ///    println!("No series found with the given labels.");
+    /// }
+    /// ```
+    /// # Arguments
+    ///
+    /// * `labels` - A slice of `Label` objects that describe the series to look up.
+    ///
+    /// # Returns
+    ///
+    /// * `Option<SeriesRef>` - Returns `Some(SeriesRef)` if a matching series ID is found,
+    ///
+    pub fn series_id_by_labels(&self, labels: &[Label]) -> Option<SeriesRef> {
+        let inner = self.inner.read().unwrap();
+        inner.posting_id_by_labels(labels)
+    }
+
+    /// `postings_for_filters` assembles a single postings iterator against the series index
+    /// based on the given matchers.
+    #[allow(dead_code)]
+    pub fn postings_for_selector(&self, selector: &SeriesSelector) -> ValkeyResult<PostingsBitmap> {
+        let mut state = ();
+        self.with_postings(&mut state, move |inner, _| {
+            let postings = inner.postings_for_selector(selector)?;
+            let res = postings.into_owned();
+            Ok(res)
+        })
+    }
+
+    pub fn get_cardinality_by_selectors(
+        &self,
+        selectors: &[SeriesSelector],
+    ) -> ValkeyResult<usize> {
+        if selectors.is_empty() {
+            return Ok(0);
+        }
+
+        let mut state = ();
+
+        self.with_postings(&mut state, move |inner, _state| {
+            let filter = &selectors[0];
+            let first = inner.postings_for_selector(filter)?;
+            if selectors.len() == 1 {
+                return Ok(first.cardinality() as usize);
+            }
+            let mut result = first.into_owned();
+            for selector in &selectors[1..] {
+                let postings = inner.postings_for_selector(selector)?;
+                result.and_inplace(&postings);
+            }
+
+            Ok(result.cardinality() as usize)
+        })
+    }
+
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
-        #[derive(Clone, Copy)]
+        #[derive(Copy, Clone)]
         struct SizeAccumulator {
             size: usize,
             count: u64,
@@ -114,9 +176,15 @@ impl TimeSeriesIndex {
         let mut labels = StatsMaxHeap::new(limit);
         let mut label_value_length = StatsMaxHeap::new(limit);
         let mut label_value_pairs = StatsMaxHeap::new(limit);
-        let mut num_label_pairs = 0;
 
         let inner = self.inner.read().unwrap();
+
+        let posting_count = inner.label_index.len();
+        let num_label_pairs = if inner.has_all_postings() {
+            posting_count.saturating_sub(1)
+        } else {
+            posting_count
+        };
 
         for (key, bitmap) in inner.label_index.iter() {
             let count = bitmap.cardinality();
@@ -135,14 +203,13 @@ impl TimeSeriesIndex {
                 }
 
                 label_value_pairs.push(PostingStat {
-                    name: format!("{}={}", name, value),
+                    name: format!("{name}={value}"),
                     count,
                 });
-                num_label_pairs += 1;
 
                 if label == name {
                     metrics.push(PostingStat {
-                        name: name.to_string(),
+                        name: value.to_string(),
                         count,
                     });
                 }
@@ -160,10 +227,12 @@ impl TimeSeriesIndex {
                 name: name.to_string(),
                 count: v.size as u64,
             });
-            if name != METRIC_NAME_LABEL && name != ALL_POSTINGS_KEY_NAME {
+            if name != ALL_POSTINGS_KEY_NAME {
                 num_labels += 1;
             }
         }
+
+        let series_count = self.count() as u64;
 
         PostingsStats {
             cardinality_metrics_stats: metrics.into_vec(),
@@ -172,6 +241,7 @@ impl TimeSeriesIndex {
             label_value_pairs_stats: label_value_pairs.into_vec(),
             num_label_pairs,
             num_labels,
+            series_count,
         }
     }
 
@@ -192,126 +262,50 @@ impl TimeSeriesIndex {
 
     pub fn with_postings<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
-        F: FnOnce(&MemoryPostings, &mut STATE) -> R,
+        F: FnOnce(&Postings, &mut STATE) -> R,
     {
         let inner = self.inner.read().unwrap();
         f(&inner, state)
     }
 
-    #[cfg(test)]
     pub fn with_postings_mut<F, R, STATE>(&self, state: &mut STATE, f: F) -> R
     where
-        F: FnOnce(&mut MemoryPostings, &mut STATE) -> R,
+        F: FnOnce(&mut Postings, &mut STATE) -> R,
     {
         let mut inner = self.inner.write().unwrap();
         f(&mut inner, state)
     }
 
-    pub fn slow_rename_series(&self, old_key: &[u8], new_key: &[u8]) -> bool {
-        // this is split in two parts because we need to do a linear scan on the id->key
-        // map to find the id for the old key. We hold a write lock only for the update
-        let id = {
-            let inner = self.inner.read().unwrap();
-            inner.get_id_for_key(old_key)
-        };
-        if let Some(id) = id {
-            let mut inner = self.inner.write().unwrap();
-            inner.set_timeseries_key(id, new_key);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn slow_remove_series_by_ids(&self, ids: &[SeriesRef]) -> usize {
-        const BATCH_SIZE: usize = 500;
-
+    pub fn mark_id_as_stale(&self, id: SeriesRef) {
         let mut inner = self.inner.write().unwrap();
-        let all_postings = inner
-            .label_index
-            .get_mut(&*ALL_POSTINGS_KEY)
-            .expect("ALL_POSTINGS_KEY should always exist");
-
-        let old_count = all_postings.cardinality();
-        all_postings.remove_all(ids.iter().cloned());
-        let removed_count = old_count - all_postings.cardinality();
-
-        inner.id_to_key.retain(|id, _| !ids.contains(id));
-
-        let range = inner.get_key_range();
-
-        // we process in batches to avoid holding the lock for too long
-        if let Some((start, end)) = range {
-            let end = end.clone();
-            let mut current_start = start.clone();
-            let mut keys_to_remove = Vec::new();
-
-            drop(inner);
-
-            loop {
-                let mut i: usize = 0;
-                let mut inner = self.inner.write().unwrap();
-
-                for (key, bmp) in inner
-                    .label_index
-                    .range_mut(current_start.clone()..=end.clone())
-                {
-                    let count = bmp.cardinality();
-                    bmp.remove_all(ids.iter().cloned());
-                    if bmp.cardinality() != count
-                        && bmp.is_empty()
-                        && key.as_str() != ALL_POSTINGS_KEY.as_str()
-                    {
-                        keys_to_remove.push(key.clone());
-                    }
-                    i += 1;
-                    if i == BATCH_SIZE {
-                        current_start = key.clone();
-                        continue;
-                    }
-                }
-
-                // If we processed less than BATCH_SIZE items, we're done
-                if i < BATCH_SIZE {
-                    break;
-                }
-
-                drop(inner);
-            }
-
-            if !keys_to_remove.is_empty() {
-                let mut inner = self.inner.write().unwrap();
-                for key in keys_to_remove {
-                    inner.label_index.remove(&key);
-                }
-            }
-        }
-        removed_count as usize
+        inner.mark_id_as_stale(id);
     }
 
-    pub fn slow_remove_series_by_key(&self, key: &[u8]) -> bool {
-        let id = {
-            let inner = self.inner.read().unwrap();
-            inner.get_id_for_key(key)
-        };
-        if let Some(id) = id {
-            let removed = self.slow_remove_series_by_ids(&[id]);
-            return removed > 0;
+    pub fn remove_stale_ids(&self) -> usize {
+        const BATCH_SIZE: usize = 100;
+
+        let mut inner = self.inner.write().expect("TimeSeries lock poisoned");
+        let old_count = inner.stale_ids.cardinality();
+        if old_count == 0 {
+            return 0; // No stale IDs to remove
         }
-        false
+
+        let mut cursor = None;
+        while let Some(new_cursor) = inner.remove_stale_ids(cursor, BATCH_SIZE) {
+            // Continue removing stale IDs in batches
+            cursor = Some(new_cursor);
+        }
+
+        (old_count - inner.stale_ids.cardinality()) as usize // Return number of removed IDs
     }
 
-    pub fn optimize(&self) {
+    pub fn optimize_incremental(
+        &self,
+        start_prefix: Option<IndexKey>,
+        count: usize,
+    ) -> Option<IndexKey> {
         let mut inner = self.inner.write().unwrap();
-        let mut keys_to_remove = Vec::new();
-        for (key, bmp) in inner.label_index.iter_mut() {
-            if bmp.is_empty() {
-                keys_to_remove.push(key.clone());
-            }
-        }
-        for key in keys_to_remove {
-            inner.label_index.remove(&key);
-        }
+        inner.optimize_postings(start_prefix, count)
     }
 }
 
@@ -322,17 +316,13 @@ fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labels::InternedMetricName;
-    use crate::parser::metric_name::parse_metric_name;
     use crate::series::index::next_timeseries_id;
     use crate::series::time_series::TimeSeries;
 
     fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
         let mut ts = TimeSeries::new();
         ts.id = next_timeseries_id();
-
-        let labels = parse_metric_name(prometheus_name).unwrap();
-        ts.labels = InternedMetricName::new(&labels);
+        ts.labels = prometheus_name.parse().unwrap();
         ts
     }
 
@@ -394,5 +384,72 @@ mod tests {
             .unwrap()
             .unwrap_or_default();
         assert_eq!(id, ts.id);
+    }
+
+    #[test]
+    fn test_get_cardinality_by_selectors_empty() {
+        let index = TimeSeriesIndex::new();
+
+        // When no selectors are provided, cardinality should be zero.
+        let selectors: Vec<SeriesSelector> = Vec::new();
+        let cardinality = index
+            .get_cardinality_by_selectors(&selectors)
+            .expect("call should succeed");
+
+        assert_eq!(cardinality, 0);
+    }
+
+    #[test]
+    fn test_get_cardinality_by_single_selector() {
+        let index = TimeSeriesIndex::new();
+
+        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
+        index.index_timeseries(&ts, b"time-series-1");
+
+        // Build a selector that matches the inserted series.
+        let selector = SeriesSelector::parse("region='us-east-1'").unwrap();
+        let selectors = vec![selector];
+
+        let cardinality = index
+            .get_cardinality_by_selectors(&selectors)
+            .expect("call should succeed");
+
+        // We inserted exactly one matching series.
+        assert_eq!(cardinality, 1);
+    }
+
+    #[test]
+    fn test_get_cardinality_by_multiple_selectors_and_intersection() {
+        let index = TimeSeriesIndex::new();
+
+        // Two series that share some labels but differ on at least one.
+        let ts1 =
+            create_series_from_metric_name(r#"latency{region="us-east-1",env="qa",service="api"}"#);
+        let ts2 = create_series_from_metric_name(
+            r#"latency{region="us-east-1",env="prod",service="api"}"#,
+        );
+
+        index.index_timeseries(&ts1, b"time-series-1");
+        index.index_timeseries(&ts2, b"time-series-2");
+
+        // You should construct these selectors so that:
+        //   selector_env_qa matches only ts1
+        //   selector_region matches both ts1 and ts2
+        //
+        // After AND-ing them, only ts1 should remain, so the
+        // resulting cardinality must be 1.
+        let selector_env_qa = SeriesSelector::parse("env='qa'").unwrap();
+        let selector_region = SeriesSelector::parse(r#"region="us-east-1""#).unwrap();
+
+        let selectors = vec![selector_region, selector_env_qa];
+
+        let cardinality = index
+            .get_cardinality_by_selectors(&selectors)
+            .expect("call should succeed");
+
+        assert_eq!(
+            cardinality, 1,
+            "intersection of selectors should yield exactly one series"
+        );
     }
 }

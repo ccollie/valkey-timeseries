@@ -92,7 +92,7 @@ pub fn parse_number(str: &str) -> ParseResult<f64> {
         };
     }
 
-    parse_positive_number(str).map(|value| if is_negative { -1.0 * value } else { value })
+    parse_positive_number(str).map(|value| if is_negative { -value } else { value })
 }
 
 type SuffixValue = (&'static str, usize);
@@ -139,10 +139,7 @@ mod tests {
         match parse_positive_number(s) {
             Err(..) => {}
             Ok(ns) => {
-                panic!(
-                    "expecting error in parse_positive_number({}); got result {}",
-                    s, ns
-                )
+                panic!("expecting error in parse_positive_number({s}); got result {ns}")
             }
         }
     }
@@ -154,16 +151,12 @@ mod tests {
             if v.is_nan() {
                 assert!(
                     expected.is_nan(),
-                    "unexpected value returned from parse_number_with_unit({}); got {}; want {}",
-                    s,
-                    v,
-                    expected
+                    "unexpected value returned from parse_number_with_unit({s}); got {v}; want {expected}"
                 )
             } else {
                 assert_eq!(
                     v, expected,
-                    "unexpected value returned from parse_number_with_unit({}); got {}; want {}",
-                    s, v, expected
+                    "unexpected value returned from parse_number_with_unit({s}); got {v}; want {expected}"
                 )
             }
         }
@@ -191,18 +184,19 @@ mod tests {
         fn f(s: &str, expected: f64) {
             match parse_positive_number(s) {
                 Err(err) => {
-                    panic!(
-                        "unexpected error in parse_positive_number({}): {:?}",
-                        s, err
-                    )
+                    panic!("unexpected error in parse_positive_number({s}): {err:?}")
                 }
                 Ok(v) => {
                     if v.is_nan() {
                         if !expected.is_nan() {
-                            panic!("unexpected value returned from parse_positive_number({}); got {}; want {}", s, v, expected)
+                            panic!(
+                                "unexpected value returned from parse_positive_number({s}); got {v}; want {expected}"
+                            )
                         }
                     } else if v != expected {
-                        panic!("unexpected value returned from parse_positive_number({}); got {}; want {}", s, v, expected)
+                        panic!(
+                            "unexpected value returned from parse_positive_number({s}); got {v}; want {expected}"
+                        )
                     }
                 }
             }

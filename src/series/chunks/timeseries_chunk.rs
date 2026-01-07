@@ -1,22 +1,22 @@
-use crate::common::serialization::rdb_load_string;
+use crate::common::rdb::{rdb_load_u8, rdb_save_u8};
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
-use crate::iterators::SampleIter;
-use crate::series::chunks::utils::filter_samples_by_value;
+use crate::iterators::{FilteredSampleIterator, SampleIter};
+use crate::series::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use crate::series::types::ValueFilter;
 use crate::series::{
-    chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
     DuplicatePolicy, SampleAddResult,
+    chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
 };
 use core::mem::size_of;
-use get_size::GetSize;
-use smallvec::SmallVec;
+use get_size2::GetSize;
 use std::cmp::Ordering;
-use valkey_module::{raw, RedisModuleIO, ValkeyError, ValkeyResult};
+use valkey_module::digest::Digest;
+use valkey_module::{RedisModuleIO, ValkeyResult};
 
-#[derive(Debug, Clone, PartialEq, GetSize)]
+#[derive(Debug, Clone, Hash, PartialEq, GetSize)]
 pub enum TimeSeriesChunk {
     Uncompressed(UncompressedChunk),
     Gorilla(GorillaChunk),
@@ -45,6 +45,14 @@ impl TimeSeriesChunk {
             Uncompressed(chunk) => chunk.is_full(),
             Gorilla(chunk) => chunk.is_full(),
             Pco(chunk) => chunk.is_full(),
+        }
+    }
+
+    pub fn get_encoding(&self) -> ChunkEncoding {
+        match self {
+            TimeSeriesChunk::Uncompressed(_) => ChunkEncoding::Uncompressed,
+            TimeSeriesChunk::Gorilla(_) => ChunkEncoding::Gorilla,
+            TimeSeriesChunk::Pco(_) => ChunkEncoding::Pco,
         }
     }
 
@@ -101,6 +109,18 @@ impl TimeSeriesChunk {
         first_time <= end_time && last_time >= start_time
     }
 
+    pub fn has_samples_in_range(&self, start_time: Timestamp, end_time: Timestamp) -> bool {
+        if self.is_empty() || !self.overlaps(start_time, end_time) {
+            return false;
+        }
+
+        if self.range_iter(start_time, end_time).next().is_some() {
+            return true;
+        }
+
+        false
+    }
+
     // todo: make this a trait method
     pub fn iter(&self) -> Box<dyn Iterator<Item = Sample> + '_> {
         use TimeSeriesChunk::*;
@@ -111,7 +131,7 @@ impl TimeSeriesChunk {
         }
     }
 
-    pub fn range_iter(&self, start: Timestamp, end: Timestamp) -> SampleIter {
+    pub fn range_iter(&'_ self, start: Timestamp, end: Timestamp) -> SampleIter<'_> {
         use TimeSeriesChunk::*;
         match self {
             Uncompressed(chunk) => chunk.range_iter(start, end),
@@ -167,28 +187,10 @@ impl TimeSeriesChunk {
         start_timestamp: Timestamp,
         end_timestamp: Timestamp,
         timestamp_filter: &Option<Vec<Timestamp>>,
-        value_filter: &Option<ValueFilter>,
+        value_filter: Option<ValueFilter>,
     ) -> Vec<Sample> {
-        fn filter_timestamps(
-            timestamps: &[Timestamp],
-            start: Timestamp,
-            end: Timestamp,
-        ) -> SmallVec<Timestamp, 32> {
-            timestamps
-                .iter()
-                .filter_map(|ts| {
-                    let ts = *ts;
-                    if ts >= start && ts <= end {
-                        Some(ts)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-
         let mut samples = if let Some(ts_filter) = timestamp_filter {
-            let filtered_ts = filter_timestamps(ts_filter, start_timestamp, end_timestamp);
+            let filtered_ts = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
             self.samples_by_timestamps(&filtered_ts)
                 .unwrap_or_default()
                 .into_iter()
@@ -201,7 +203,7 @@ impl TimeSeriesChunk {
         };
 
         if let Some(value_filter) = value_filter {
-            filter_samples_by_value(&mut samples, value_filter);
+            filter_samples_by_value(&mut samples, &value_filter);
         }
         samples
     }
@@ -216,7 +218,7 @@ impl TimeSeriesChunk {
     }
 
     /// Merge a range of samples into this chunk.
-    /// If the chunk is full or the other chunk is empty, returns 0.
+    /// If the chunk is full or the other chunk is empty, it returns 0.
     /// Duplicate values are handled according to `duplicate_policy`.
     /// Samples with timestamps before `retention_threshold` will be ignored, whether
     /// they fall with the given range [start_ts..end_ts].
@@ -230,7 +232,6 @@ impl TimeSeriesChunk {
             return Ok(0);
         }
         let samples = sample_iter.collect::<Vec<Sample>>();
-        // todo: handle error
         let res = self.merge_samples(&samples, duplicate_policy)?;
         Ok(res.iter().filter(|s| s.is_ok()).count())
     }
@@ -240,7 +241,7 @@ impl TimeSeriesChunk {
     }
 
     pub fn should_split(&self) -> bool {
-        self.utilization() > SPLIT_FACTOR
+        self.utilization() >= SPLIT_FACTOR
     }
 
     pub(crate) fn upsert(
@@ -249,7 +250,7 @@ impl TimeSeriesChunk {
         policy: DuplicatePolicy,
     ) -> (usize, SampleAddResult) {
         match self.upsert_sample(sample, policy) {
-            Ok(size) => (size, SampleAddResult::Ok(sample.timestamp)),
+            Ok(size) => (size, SampleAddResult::Ok(sample)),
             Err(TsdbError::DuplicateSample(_)) => (0, SampleAddResult::Duplicate),
             Err(_) => (0, SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE)),
         }
@@ -264,6 +265,43 @@ impl TimeSeriesChunk {
                 value: self.last_value(),
             })
         }
+    }
+
+    pub fn filtered_iter(
+        &'_ self,
+        start_timestamp: Timestamp,
+        end_timestamp: Timestamp,
+        timestamp_filter: Option<&[Timestamp]>,
+        value_filter: Option<ValueFilter>,
+    ) -> FilteredSampleIterator<SampleIter<'_>> {
+        // determine the range of timestamps to filter
+        let (start_timestamp, end_timestamp) = if let Some(ts_filter) = timestamp_filter {
+            if ts_filter.is_empty() {
+                (start_timestamp, end_timestamp)
+            } else {
+                let first_ts = ts_filter[0];
+                let last_ts = ts_filter[ts_filter.len() - 1];
+                (start_timestamp.max(first_ts), end_timestamp.min(last_ts))
+            }
+        } else {
+            (start_timestamp, end_timestamp)
+        };
+
+        FilteredSampleIterator::new(
+            self.range_iter(start_timestamp, end_timestamp),
+            value_filter,
+            timestamp_filter,
+        )
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        !matches!(self, TimeSeriesChunk::Uncompressed(_))
+    }
+}
+
+impl Default for TimeSeriesChunk {
+    fn default() -> Self {
+        TimeSeriesChunk::Uncompressed(UncompressedChunk::default())
     }
 }
 
@@ -408,24 +446,72 @@ impl Chunk for TimeSeriesChunk {
 
     fn load_rdb(rdb: *mut RedisModuleIO, enc_ver: i32) -> ValkeyResult<Self> {
         use TimeSeriesChunk::*;
-        let chunk_type = rdb_load_string(rdb)?;
-        let chunk = match chunk_type.as_str() {
-            "uncompressed" => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
-            "gorilla" => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
-            "pco" => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
-            _ => return Err(ValkeyError::Str("Invalid chunk type")),
+        let chunk_type_byte = rdb_load_u8(rdb)?;
+        let chunk_type: ChunkEncoding = chunk_type_byte.try_into()?;
+        let chunk = match chunk_type {
+            ChunkEncoding::Uncompressed => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::Gorilla => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::Pco => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
         };
         Ok(chunk)
     }
+
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        use TimeSeriesChunk::*;
+        match self {
+            Uncompressed(chunk) => {
+                dest.push(ChunkEncoding::Uncompressed as u8);
+                chunk.serialize(dest)
+            }
+            Gorilla(chunk) => {
+                dest.push(ChunkEncoding::Gorilla as u8);
+                chunk.serialize(dest)
+            }
+            Pco(chunk) => {
+                dest.push(ChunkEncoding::Pco as u8);
+                chunk.serialize(dest)
+            }
+        }
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        use TimeSeriesChunk::*;
+        if buf.is_empty() {
+            return Err(TsdbError::DecodingError(
+                "Empty buffer deserializing chunk".to_string(),
+            ));
+        }
+        // The first byte indicates the chunk type
+        let chunk_type = ChunkEncoding::try_from(buf[0])?;
+        match chunk_type {
+            ChunkEncoding::Uncompressed => {
+                let chunk = UncompressedChunk::deserialize(&buf[1..])?;
+                Ok(Uncompressed(chunk))
+            }
+            ChunkEncoding::Gorilla => {
+                let chunk = GorillaChunk::deserialize(&buf[1..])?;
+                Ok(Gorilla(chunk))
+            }
+            ChunkEncoding::Pco => {
+                let chunk = PcoChunk::deserialize(&buf[1..])?;
+                Ok(Pco(chunk))
+            }
+        }
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        use TimeSeriesChunk::*;
+        match self {
+            Uncompressed(chunk) => chunk.debug_digest(dig),
+            Gorilla(chunk) => chunk.debug_digest(dig),
+            Pco(chunk) => chunk.debug_digest(dig),
+        }
+    }
 }
 
-fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut raw::RedisModuleIO) {
-    let chunk_type = match chunk {
-        TimeSeriesChunk::Uncompressed(_) => "uncompressed",
-        TimeSeriesChunk::Gorilla(_) => "gorilla",
-        TimeSeriesChunk::Pco(_) => "pco",
-    };
-    raw::save_string(rdb, chunk_type);
+fn save_chunk_type(chunk: &TimeSeriesChunk, rdb: *mut RedisModuleIO) {
+    let chunk_type: u8 = chunk.get_encoding() as u8;
+    rdb_save_u8(rdb, chunk_type);
 }
 
 impl PartialOrd for TimeSeriesChunk {

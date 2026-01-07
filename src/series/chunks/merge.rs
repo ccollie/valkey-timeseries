@@ -1,8 +1,8 @@
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
 use crate::iterators::{SampleIter, SampleMergeIterator};
-use crate::series::chunks::{Chunk, TimeSeriesChunk};
 use crate::series::DuplicatePolicy;
+use crate::series::chunks::{Chunk, TimeSeriesChunk};
 
 pub fn merge_samples<'a, F, STATE>(
     left: SampleIter<'a>,
@@ -36,7 +36,7 @@ pub(crate) fn merge_by_capacity(
         return Ok(None);
     }
 
-    // check if previous block has capacity, and if so merge into it
+    // check if the previous block has capacity, and if so, merge into it
     let count = src.len();
     let remaining_capacity = dest.estimate_remaining_sample_capacity();
     let first_ts = src.first_timestamp().max(min_timestamp);

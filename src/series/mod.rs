@@ -1,18 +1,33 @@
+pub mod acl;
+pub mod background_tasks;
 pub mod chunks;
+mod compaction;
+mod compaction_policy;
 mod defrag;
+mod digest;
+mod guard;
 pub mod index;
-mod merge;
+pub mod mrange;
+pub mod range_utils;
+pub mod request_types;
+mod sample_merge;
 pub mod serialization;
-pub mod settings;
-mod tasks;
+pub mod series_data_type;
+mod series_sample_iterator;
 mod time_series;
 #[cfg(test)]
 mod time_series_tests;
 mod timestamp_range;
 pub(crate) mod types;
+mod utils;
 
-pub use crate::module::utils::*;
+pub use compaction::*;
+pub use compaction_policy::*;
 pub use defrag::defrag_series;
+pub use guard::*;
+pub use sample_merge::*;
+pub use series_sample_iterator::SeriesSampleIterator;
 pub use time_series::*;
 pub use timestamp_range::*;
 pub use types::*;
+pub use utils::*;

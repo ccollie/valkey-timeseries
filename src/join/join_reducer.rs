@@ -1,7 +1,7 @@
 use crate::common::binop::{
-    abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte, compare_neq,
-    max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul, op_or,
-    op_plus, op_pow, op_unless, pct_change, sgn_diff, BinopFunc,
+    BinopFunc, abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte,
+    compare_neq, max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul,
+    op_or, op_plus, op_pow, op_unless, op_xor, percent_change, sgn_diff,
 };
 use std::fmt;
 use std::str::FromStr;
@@ -10,7 +10,6 @@ use valkey_module::ValkeyError;
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum JoinReducer {
     AbsDiff,
-    Add,
     And,
     Avg,
     Cmp,
@@ -34,29 +33,15 @@ pub enum JoinReducer {
     Or,
     PctChange,
     SgnDiff,
+    Sum,
     Unless,
+    Xor,
 }
 
 fn join_reducer_get(key: &str) -> Option<JoinReducer> {
     hashify::tiny_map_ignore_case! {
         key.as_bytes(),
-        "+" => JoinReducer::Add,
-        "-" => JoinReducer::Sub,
-        "*" => JoinReducer::Mul,
-        "/" => JoinReducer::Div,
-        "%" => JoinReducer::Mod,
-        "^" => JoinReducer::Pow,
-
-        // cmp ops
-        "==" => JoinReducer::Eql,
-        "!=" => JoinReducer::NotEq,
-        "<" => JoinReducer::Lt,
-        ">" => JoinReducer::Gt,
-        "<=" => JoinReducer::Lte,
-        ">=" => JoinReducer::Gte,
-
         "abs_diff" => JoinReducer::AbsDiff,
-        "add" => JoinReducer::Add,
         "cmp" => JoinReducer::Cmp,
         "eq" => JoinReducer::Eql,
         "gt" => JoinReducer::Gt,
@@ -81,9 +66,11 @@ fn join_reducer_get(key: &str) -> Option<JoinReducer> {
         "ifnot" => JoinReducer::IfNot,
         "default" => JoinReducer::Default,
 
+        "sum" => JoinReducer::Sum,
         "avg" => JoinReducer::Avg,
         "max" => JoinReducer::Max,
-        "min" => JoinReducer::Min
+        "min" => JoinReducer::Min,
+        "xor" => JoinReducer::Xor,
     }
 }
 
@@ -92,7 +79,7 @@ impl JoinReducer {
         use JoinReducer::*;
         match self {
             AbsDiff => "abs_diff",
-            Add => "+",
+            Sum => "sum",
             And => "and",
             Cmp => "cmp",
             Default => "default",
@@ -116,6 +103,7 @@ impl JoinReducer {
             Avg => "avg",
             Max => "max",
             Min => "min",
+            Xor => "xor",
         }
     }
 
@@ -126,7 +114,7 @@ impl JoinReducer {
             Min => min,
             Avg => avg,
             AbsDiff => abs_diff,
-            Add => op_plus,
+            Sum => op_plus,
             And => op_and,
             Cmp => cmp,
             Default => op_default,
@@ -146,7 +134,8 @@ impl JoinReducer {
             Or => op_or,
             SgnDiff => sgn_diff,
             Unless => op_unless,
-            PctChange => pct_change,
+            PctChange => percent_change,
+            Xor => op_xor,
         }
     }
 }
@@ -165,15 +154,16 @@ impl TryFrom<&str> for JoinReducer {
     fn try_from(op: &str) -> Result<Self, Self::Error> {
         match join_reducer_get(op) {
             Some(operator) => Ok(operator),
-            None => Err(ValkeyError::String(format!("Unknown binary op {}", op))),
+            None => Err(ValkeyError::String(format!(
+                "TSDB: unknown binary op '{op}'"
+            ))),
         }
     }
 }
 
 impl fmt::Display for JoinReducer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.as_str())?;
-        Ok(())
+        write!(f, "{}", self.as_str())
     }
 }
 

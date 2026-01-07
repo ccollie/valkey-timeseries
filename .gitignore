@@ -32,3 +32,4 @@ test-data
 .attach_pid*
 tests/build
 .pytest_cache
+/tests/valkeytestframework/

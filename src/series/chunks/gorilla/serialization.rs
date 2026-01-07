@@ -1,5 +1,5 @@
 use super::buffered_writer::BufferedWriter;
-use valkey_module::{raw, ValkeyError};
+use valkey_module::{ValkeyError, raw};
 
 pub(crate) fn save_bitwriter_to_rdb(rdb: *mut raw::RedisModuleIO, writer: &BufferedWriter) {
     let bytes = writer.get_ref();

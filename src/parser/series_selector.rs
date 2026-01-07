@@ -1,13 +1,21 @@
-use crate::labels::matchers::{
-    MatchOp, Matcher, Matchers, PredicateMatch, PredicateValue, ValueList,
+use crate::common::constants::METRIC_NAME_LABEL;
+use crate::labels::filters::{
+    FilterList, LabelFilter, MatchOp, OrFiltersList, PredicateMatch, PredicateValue,
+    SeriesSelector, ValueList,
 };
-use crate::parser::lex::{expect_one_of_tokens, expect_token, Token};
+use crate::parser::lex::{Token, expect_one_of_tokens, expect_token};
 use crate::parser::parse_error::unexpected;
 use crate::parser::utils::{extract_string_value, unescape_ident};
 use crate::parser::{ParseError, ParseResult};
 use logos::{Lexer, Logos};
+use smallvec::SmallVec;
 
-const INITIAL_TOKENS: &[Token] = &[Token::Identifier, Token::OpOr, Token::LeftBrace];
+const INITIAL_TOKENS: &[Token] = &[
+    Token::Identifier,
+    Token::OpOr,
+    Token::LeftBrace,
+    Token::StringLiteral,
+];
 
 const SECONDARY_TOKENS: &[Token] = &[
     Token::Equal,
@@ -18,20 +26,8 @@ const SECONDARY_TOKENS: &[Token] = &[
     Token::Eof,
 ];
 
-/// parses a series selector, either using RedisTimeSeries or Prometheus syntax.
-///
-///    i.e, it handles queries of the form (RedisTimeSeries):
-///
-///   * `region=(us-east-1,us-west-1)`
-///   * `service="billing"`
-///
-///   or (Prometheus):
-///
-///   * `request_latency{service="billing", env=~"staging|production", region=~"us-east-.*"}`
-///   * `{service="inference", metric="request-count", env="prod"}`
-///
-///  Produces a list of matchers, where each matcher is a label filter.
-pub fn parse_series_selector(s: &str) -> ParseResult<Matchers> {
+/// Parses a series selector, either using RedisTimeSeries or Prometheus syntax.
+pub fn parse_series_selector(s: &str) -> ParseResult<SeriesSelector> {
     if s.is_empty() {
         return Err(ParseError::EmptySeriesSelector);
     }
@@ -41,244 +37,341 @@ pub fn parse_series_selector(s: &str) -> ParseResult<Matchers> {
     Ok(result)
 }
 
-pub(crate) fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<Matchers> {
+fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
-    let (tok, text) = expect_one_of_tokens(p, INITIAL_TOKENS)?;
+    let mut selectors: SmallVec<_, 4> = SmallVec::default();
 
-    if tok == LeftBrace {
-        return parse_prometheus_selector_internal(p, String::new());
+    loop {
+        let (tok, text) = expect_one_of_tokens(p, INITIAL_TOKENS)?;
+
+        let selector = if tok == LeftBrace {
+            parse_prometheus_selector_internal(p, String::new())?
+        } else {
+            let text = parse_identifier_or_string(tok, text)?;
+            let (tok, _) = expect_one_of_tokens(p, SECONDARY_TOKENS)?;
+
+            match tok {
+                Eof => {
+                    let matcher = LabelFilter::equals(METRIC_NAME_LABEL.into(), &text);
+                    SeriesSelector::with_filters(vec![matcher])
+                }
+                LeftBrace => parse_prometheus_selector_internal(p, text)?,
+                _ => {
+                    let matcher = parse_redis_ts_predicate(text, tok, p)?;
+                    SeriesSelector::with_filters(vec![matcher])
+                }
+            }
+        };
+
+        selectors.push(selector);
+
+        let (next_tok, _) = expect_one_of_tokens(p, &[OpOr, Eof])?;
+        if next_tok == Eof {
+            break;
+        }
     }
 
-    let text = match tok {
-        Identifier => unescape_ident(text)?.to_string(),
-        _ => text.to_string(),
-    };
+    if selectors.len() == 1 {
+        Ok(selectors.into_iter().next().unwrap())
+    } else {
+        Ok(selectors
+            .into_iter()
+            .reduce(|acc, sel| acc.merge_with(sel))
+            .unwrap())
+    }
+}
 
-    let (tok, _) = expect_one_of_tokens(p, SECONDARY_TOKENS)?;
+fn parse_identifier_or_string(tok: Token, text: &str) -> ParseResult<String> {
     match tok {
-        Eof => Ok(Matchers {
-            name: Some(text),
-            ..Default::default()
-        }),
-        LeftBrace => parse_prometheus_selector_internal(p, text),
-        _ => {
-            let matcher = parse_redis_ts_predicate(text, tok, p)?;
-            Ok(Matchers::with_matchers(None, vec![matcher]))
-        }
+        Token::Identifier => Ok(unescape_ident(text)?.to_string()),
+        Token::StringLiteral => Ok(extract_string_value(text)?.to_string()),
+        _ => Ok(text.to_string()),
     }
 }
 
 fn parse_prometheus_selector_internal(
     lex: &mut Lexer<Token>,
     name: String,
-) -> ParseResult<Matchers> {
+) -> ParseResult<SeriesSelector> {
     let name = if name.is_empty() { None } else { Some(name) };
-    // LeftBrace already consumed
+
+    // Check for empty braces pattern
+    if is_empty_braces(lex.remainder()) {
+        let _ = expect_token(lex, Token::RightBrace)?;
+        return Ok(create_selector_with_optional_name(
+            name,
+            FilterList::default(),
+        ));
+    }
+
     parse_label_filters(lex, name)
 }
 
-/// support RedisTimeseries style selectors
-/// See https://redis.io/docs/latest/commands/ts.mget/
+fn is_empty_braces(remainder: &str) -> bool {
+    remainder.bytes().find(|&b| !b.is_ascii_whitespace()) == Some(b'}')
+}
+
+fn create_selector_with_optional_name(
+    name: Option<String>,
+    mut filters: FilterList,
+) -> SeriesSelector {
+    if let Some(name) = name {
+        filters.push(LabelFilter::equals(METRIC_NAME_LABEL.into(), &name));
+    }
+    SeriesSelector::And(filters)
+}
+
+/// Support RedisTimeseries style selectors
 fn parse_redis_ts_predicate(
     label: String,
     operator_token: Token,
     lex: &mut Lexer<Token>,
-) -> ParseResult<Matcher> {
+) -> ParseResult<LabelFilter> {
     let op: MatchOp = operator_token.try_into()?;
 
     if op.is_regex() {
-        // we expect a string literal
         let value = parse_string_literal(lex)?;
-        Matcher::create(op, label, value)
+        LabelFilter::create(op, label, value)
     } else {
-        // value can be a string or a list of strings, or empty
         let value = parse_matcher_value(lex)?;
-        match op {
-            MatchOp::Equal => Ok(Matcher {
-                label,
-                matcher: PredicateMatch::Equal(value),
-            }),
-            MatchOp::NotEqual => Ok(Matcher {
-                label,
-                matcher: PredicateMatch::NotEqual(value),
-            }),
-            _ => unreachable!("parse_redis_ts_predicate: unexpected operator"),
-        }
+        create_equality_filter(label, op, value)
     }
 }
 
-/// `parse_label_filters` parses a set of label matchers.
-///
-/// `{` [ <label_name> <match_op> <match_string>, ... [or <label_name> <match_op> <match_string>, ...] `}`
-///
-fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<Matchers> {
+fn create_equality_filter(
+    label: String,
+    op: MatchOp,
+    value: PredicateValue,
+) -> ParseResult<LabelFilter> {
+    let matcher = match op {
+        MatchOp::Equal => PredicateMatch::Equal(value),
+        MatchOp::NotEqual => PredicateMatch::NotEqual(value),
+        _ => unreachable!("create_equality_filter: unexpected operator"),
+    };
+    Ok(LabelFilter { label, matcher })
+}
+
+fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
-    // left brace already consumed
-
-    let mut or_matchers: Vec<Vec<Matcher>> = Vec::new();
-    let mut matchers: Vec<Matcher> = Vec::new();
-    let mut has_or_matchers = false;
-
-    // underscore here is ugly, but gets rid of the unused_assignment warning
-    let mut _last_token = LeftBrace;
+    let mut or_matchers: OrFiltersList = OrFiltersList::default();
+    let mut current_filters = FilterList::default();
+    let mut has_or = false;
 
     loop {
-        if has_or_matchers && !matchers.is_empty() {
-            let last_matchers = std::mem::take(&mut matchers);
-            or_matchers.push(last_matchers);
+        if has_or && !current_filters.is_empty() {
+            or_matchers.push(std::mem::take(&mut current_filters));
         }
 
-        (matchers, _last_token) = parse_label_filters_internal(p)?;
+        let (filters, last_token, has_metric_filter) = parse_label_filters_internal(p)?;
+        current_filters = add_metric_name_if_needed(filters, &name, has_metric_filter);
 
-        match _last_token {
-            RightBrace => {
-                break;
-            }
-            OpOr => {
-                has_or_matchers = true;
-            }
+        match last_token {
+            RightBrace => break,
+            OpOr => has_or = true,
             _ => {
                 return Err(unexpected(
                     "label filter",
-                    _last_token.as_str(),
+                    last_token.as_str(),
                     "OR or }",
                     None,
-                ))
+                ));
             }
         }
     }
 
-    if has_or_matchers {
-        if !matchers.is_empty() {
-            or_matchers.push(matchers);
-        }
-        // todo: validate name
-        return Ok(Matchers::with_or_matchers(name, or_matchers));
-    }
-
-    Ok(Matchers::with_matchers(name, matchers))
+    build_selector_from_filters(current_filters, or_matchers, has_or)
 }
 
-/// parse_label_filters parses a set of label matchers.
-///
-/// [ <label_name> <match_op> <match_string>, ... ]
-///
-fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(Vec<Matcher>, Token)> {
+fn add_metric_name_if_needed(
+    mut filters: FilterList,
+    name: &Option<String>,
+    has_metric_filter: bool,
+) -> FilterList {
+    if let Some(name) = name {
+        if !has_metric_filter {
+            filters.push(LabelFilter::equals(METRIC_NAME_LABEL.into(), name));
+        }
+    }
+    filters
+}
+
+fn build_selector_from_filters(
+    filters: FilterList,
+    mut or_matchers: OrFiltersList,
+    has_or: bool,
+) -> ParseResult<SeriesSelector> {
+    if filters.is_empty() && or_matchers.is_empty() {
+        return Err(ParseError::EmptySeriesSelector);
+    }
+
+    if has_or {
+        if !filters.is_empty() {
+            or_matchers.push(filters);
+        }
+        Ok(SeriesSelector::Or(or_matchers))
+    } else {
+        Ok(SeriesSelector::And(filters))
+    }
+}
+
+fn parse_label_filters_internal(p: &mut Lexer<Token>) -> ParseResult<(FilterList, Token, bool)> {
     use Token::*;
 
-    let mut matchers: Vec<Matcher> = vec![];
+    let mut matchers = FilterList::default();
+    let mut metric_name_seen = false;
 
     loop {
-        let matcher = parse_label_filter(p)?;
+        let (matcher, tok) = parse_label_filter(p, !metric_name_seen)?;
+
         if matcher.is_metric_name_filter() {
-            if matchers.is_empty() {
-                matchers.push(matcher);
-            } else {
-                matchers.insert(0, matcher)
+            if metric_name_seen {
+                return Err(unexpected(
+                    "metric name",
+                    matcher.label.as_str(),
+                    "only one metric name allowed",
+                    None,
+                ));
             }
+            metric_name_seen = true;
+            matchers.insert(0, matcher);
         } else {
             matchers.push(matcher);
         }
 
-        let (tok, _) = expect_one_of_tokens(p, &[Comma, RightBrace, OpOr])?;
+        let tok = tok.unwrap_or_else(|| {
+            let (t, _) = expect_one_of_tokens(p, &[Comma, RightBrace, OpOr]).unwrap();
+            t
+        });
+
         if tok == RightBrace || tok == OpOr {
-            return Ok((matchers, tok));
+            return Ok((matchers, tok, metric_name_seen));
         }
     }
-    //Ok(matchers)
 }
 
-/// parse_label_filter parses a single label matcher.
-///
-///   <label_name> <match_op> <match_string>
-///
-fn parse_label_filter(p: &mut Lexer<Token>) -> ParseResult<Matcher> {
+fn parse_label_filter(
+    p: &mut Lexer<Token>,
+    accept_single: bool,
+) -> ParseResult<(LabelFilter, Option<Token>)> {
     use Token::*;
 
-    let label = expect_token(p, Identifier)?.to_string(); // todo: escape_ident
+    let label = expect_label_name(p)?;
 
-    let (tok, _) = expect_one_of_tokens(p, &[Equal, OpNotEqual, RegexEqual, RegexNotEqual])?;
+    let tokens = if accept_single {
+        &[
+            Equal,
+            OpNotEqual,
+            RegexEqual,
+            RegexNotEqual,
+            Comma,
+            RightBrace,
+            OpOr,
+        ][..]
+    } else {
+        &[
+            Equal,
+            OpNotEqual,
+            RegexEqual,
+            RegexNotEqual,
+            Comma,
+            RightBrace,
+        ][..]
+    };
+
+    let (tok, _) = expect_one_of_tokens(p, tokens)?;
+
+    // Handle metric name shorthand
+    if matches!(tok, Comma | RightBrace | OpOr) {
+        return Ok((
+            LabelFilter {
+                label: METRIC_NAME_LABEL.into(),
+                matcher: PredicateMatch::Equal(PredicateValue::String(label)),
+            },
+            Some(tok),
+        ));
+    }
+
     let op: MatchOp = tok.try_into()?;
 
     if op.is_regex() {
         let value = parse_string_literal(p)?;
-        Matcher::create(op, label, value)
+        Ok((LabelFilter::create(op, label, value)?, None))
     } else {
         let value = parse_matcher_value(p)?;
-        match op {
-            MatchOp::Equal => Ok(Matcher {
-                label,
-                matcher: PredicateMatch::Equal(value),
-            }),
-            MatchOp::NotEqual => Ok(Matcher {
-                label,
-                matcher: PredicateMatch::NotEqual(value),
-            }),
-            _ => unreachable!("parse_label_filter: unexpected operator"),
-        }
+        Ok((create_equality_filter(label, op, value)?, None))
+    }
+}
+
+fn expect_label_name(lex: &mut Lexer<Token>) -> ParseResult<String> {
+    let (tok, text) = expect_one_of_tokens(lex, &[Token::Identifier, Token::StringLiteral])?;
+    match tok {
+        Token::Identifier => Ok(unescape_ident(text)?.to_string()),
+        Token::StringLiteral => Ok(extract_string_value(text)?.to_string()),
+        _ => unreachable!("expect_label_name: unexpected token"),
     }
 }
 
 fn parse_string_literal(lexer: &mut Lexer<Token>) -> ParseResult<String> {
     let value = expect_token(lexer, Token::StringLiteral)?;
-    let extracted = extract_string_value(value)?;
-    Ok(extracted.to_string())
+    Ok(extract_string_value(value)?.to_string())
 }
 
-pub(crate) fn parse_matcher_value(lexer: &mut Lexer<Token>) -> ParseResult<PredicateValue> {
+fn parse_matcher_value(lexer: &mut Lexer<Token>) -> ParseResult<PredicateValue> {
     use Token::*;
 
-    let (tok, text) = expect_one_of_tokens(lexer, &[StringLiteral, Identifier, LeftParen, Eof])?;
+    let (tok, text) =
+        expect_one_of_tokens(lexer, &[StringLiteral, Identifier, Number, LeftParen, Eof])?;
+
     match tok {
-        Eof => return Ok(PredicateValue::Empty),
-        Identifier => {
-            return Ok(PredicateValue::String(text.to_string()));
-        }
+        Eof => Ok(PredicateValue::Empty),
+        Identifier | Number => Ok(PredicateValue::String(text.to_string())),
         StringLiteral => {
             let value = extract_string_value(text)?;
-            return Ok(PredicateValue::String(value.to_string()));
+            Ok(PredicateValue::String(value.to_string()))
         }
-        _ => {}
+        LeftParen => parse_value_list(lexer),
+        _ => unreachable!("parse_matcher_value: unexpected token"),
     }
-    let mut was_value = false;
+}
 
-    let mut values: ValueList = ValueList::new();
+fn parse_value_list(lexer: &mut Lexer<Token>) -> ParseResult<PredicateValue> {
+    use Token::*;
+
+    let mut values = ValueList::new();
+    let mut expect_value = true;
+
     loop {
-        let (tok, name) = if was_value {
-            expect_one_of_tokens(lexer, &[Comma, RightParen])?
+        let tokens = if expect_value {
+            &[StringLiteral, Identifier, Number, Comma, RightParen][..]
         } else {
-            expect_one_of_tokens(lexer, &[StringLiteral, Identifier, Comma, RightParen])?
+            &[Comma, RightParen][..]
         };
 
+        let (tok, name) = expect_one_of_tokens(lexer, tokens)?;
+
         match tok {
-            Identifier => {
+            Identifier | Number => {
                 values.push(name.to_string());
-                was_value = true;
+                expect_value = false;
             }
             StringLiteral => {
                 let value = extract_string_value(name)?;
                 values.push(value.to_string());
-                was_value = true;
+                expect_value = false;
             }
             Comma => {
-                was_value = false;
-                continue;
+                expect_value = true;
             }
-            RightParen => {
-                break;
-            }
-            _ => return Err(unexpected("metric name label", name, ", or }", None)),
+            RightParen => break,
+            _ => return Err(unexpected("value", name, ", or )", None)),
         }
     }
 
-    match values.len() {
-        0 => Ok(PredicateValue::Empty),
-        1 => {
-            let value = values.pop().expect("values is not empty");
-            Ok(PredicateValue::String(value))
-        }
-        _ => Ok(PredicateValue::List(values)),
-    }
+    Ok(match values.len() {
+        0 => PredicateValue::Empty,
+        1 => PredicateValue::String(values.into_iter().next().unwrap()),
+        _ => PredicateValue::List(values),
+    })
 }

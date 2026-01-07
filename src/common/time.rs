@@ -1,8 +1,7 @@
-use valkey_module::RedisModule_Milliseconds;
+use valkey_module::{RedisModule_CachedMicroseconds, RedisModule_Milliseconds};
 
 /// Returns the time duration since UNIX_EPOCH in milliseconds.
 pub fn system_time_millis() -> i64 {
-    // TODO: use a more efficient way to get current time
     let now = std::time::SystemTime::now();
     now.duration_since(std::time::UNIX_EPOCH)
         .expect("time went backwards")
@@ -10,7 +9,29 @@ pub fn system_time_millis() -> i64 {
 }
 
 pub fn valkey_current_time_millis() -> i64 {
-    unsafe { RedisModule_Milliseconds.unwrap()() }
+    unsafe {
+        if let Some(func) = RedisModule_Milliseconds {
+            func()
+        } else {
+            // Fallback to system time if the Valkey function pointer is not available.
+            system_time_millis()
+        }
+    }
+}
+
+pub fn valkey_cached_time_micros() -> i64 {
+    unsafe {
+        if let Some(func) = RedisModule_CachedMicroseconds {
+            func()
+        } else {
+            // Fallback: use system time in milliseconds and convert to microseconds.
+            system_time_millis() * 1000
+        }
+    }
+}
+
+pub fn valkey_cached_time_millis() -> i64 {
+    valkey_cached_time_micros() / 1000
 }
 
 pub fn current_time_millis() -> i64 {

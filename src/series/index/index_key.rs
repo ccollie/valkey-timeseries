@@ -1,8 +1,7 @@
 use blart::{AsBytes, NoPrefixesBytes};
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::borrow::Borrow;
 use std::fmt::Display;
-use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
@@ -29,7 +28,8 @@ impl IndexKey {
 
     pub(crate) fn sub_string(&self, start: usize) -> &str {
         let buf = &self.0[start..self.0.len() - 1];
-        std::str::from_utf8(buf).expect("invalid utf8")
+        // SAFETY: We always ensure that the inner bytes are valid UTF-8 when constructing an IndexKey.
+        unsafe { std::str::from_utf8_unchecked(buf) }
     }
 
     pub fn len(&self) -> usize {
@@ -106,25 +106,6 @@ impl Hash for IndexKey {
 
 unsafe impl NoPrefixesBytes for IndexKey {}
 
-pub(crate) fn format_key_for_label_prefix(dest: &mut String, label_name: &str) {
-    dest.clear();
-    // Safety: according to the source, write! does not panic
-    write!(dest, "{label_name}=").expect("write! macro failed");
-}
-
-pub(crate) fn format_key_for_label_value(dest: &mut String, label_name: &str, value: &str) {
-    dest.clear();
-    // according to https://github.com/rust-lang/rust/blob/1.47.0/library/alloc/src/string.rs#L2414-L2427
-    // write! will not return an Err, so the unwrap is safe
-    write!(dest, "{label_name}={value}\0").expect("write! macro failed");
-}
-
-pub(crate) fn get_key_for_label_prefix(label_name: &str) -> String {
-    let mut value = String::with_capacity(label_name.len() + 1);
-    format_key_for_label_prefix(&mut value, label_name);
-    value
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,7 +152,7 @@ mod tests {
     #[test]
     fn test_display() {
         let key = IndexKey::from("test_key");
-        assert_eq!(format!("{}", key), "test_key");
+        assert_eq!(format!("{key}"), "test_key");
     }
 
     #[test]

@@ -1,15 +1,16 @@
 use crate::common::Timestamp;
 use crate::error_consts;
 use crate::parser::timestamp::parse_timestamp;
+use std::fmt::Display;
 use valkey_module::{ValkeyError, ValkeyString};
 
+mod aggregate_iterator;
 mod handlers;
-mod iterator;
 
+pub use aggregate_iterator::*;
 pub use handlers::*;
-pub use iterator::*;
 
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketTimestamp {
     #[default]
     Start,
@@ -41,7 +42,7 @@ impl TryFrom<&str> for BucketTimestamp {
         };
         match ts {
             Some(ts) => Ok(ts),
-            None => Err(ValkeyError::Str("TSDB: invalid BUCKETTIMESTAMP value"))
+            None => Err(ValkeyError::Str("TSDB: invalid BUCKETTIMESTAMP value")),
         }
     }
 }
@@ -53,7 +54,7 @@ impl TryFrom<&ValkeyString> for BucketTimestamp {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
+#[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketAlignment {
     #[default]
     Default,
@@ -76,23 +77,441 @@ impl BucketAlignment {
 impl TryFrom<&str> for BucketAlignment {
     type Error = ValkeyError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let alignment = match value {
-            arg if arg.eq_ignore_ascii_case("start") => BucketAlignment::Start,
-            arg if arg.eq_ignore_ascii_case("end") => BucketAlignment::End,
-            arg if arg.len() == 1 => {
-                let c = arg.chars().next().unwrap();
-                match c {
-                    '-' => BucketAlignment::Start,
-                    '+' => BucketAlignment::End,
-                    _ => return Err(ValkeyError::Str(error_consts::INVALID_ALIGN)),
-                }
-            }
-            _ => {
-                let timestamp = parse_timestamp(value)
-                    .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGN))?;
-                BucketAlignment::Timestamp(timestamp)
-            }
+        let alignment = hashify::tiny_map_ignore_case! {
+            value.as_bytes(),
+            "start" => BucketAlignment::Start,
+            "end" => BucketAlignment::End,
+            "-" => BucketAlignment::Start,
+            "+" => BucketAlignment::End,
         };
-        Ok(alignment)
+        match alignment {
+            Some(alignment) => Ok(alignment),
+            None => {
+                let timestamp = parse_timestamp(value, false)
+                    .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGN))?;
+                Ok(BucketAlignment::Timestamp(timestamp))
+            }
+        }
+    }
+}
+
+impl TryFrom<&ValkeyString> for BucketAlignment {
+    type Error = ValkeyError;
+    fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
+        let str = value.to_string_lossy();
+        BucketAlignment::try_from(str.as_str())
+    }
+}
+
+impl From<Timestamp> for BucketAlignment {
+    fn from(value: Timestamp) -> Self {
+        BucketAlignment::Timestamp(value)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
+pub enum AggregationType {
+    Avg,
+    Count,
+    First,
+    Last,
+    Max,
+    Min,
+    Range,
+    StdP,
+    StdS,
+    Sum,
+    VarP,
+    VarS,
+}
+
+impl AggregationType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AggregationType::First => "first",
+            AggregationType::Last => "last",
+            AggregationType::Min => "min",
+            AggregationType::Max => "max",
+            AggregationType::Avg => "avg",
+            AggregationType::Sum => "sum",
+            AggregationType::Count => "count",
+            AggregationType::StdS => "std.s",
+            AggregationType::StdP => "std.p",
+            AggregationType::VarS => "var.s",
+            AggregationType::VarP => "var.p",
+            AggregationType::Range => "range",
+        }
+    }
+
+    // In the aggregation logic where Last/First are handled:
+    // When is_reverse is true, swap the behavior of First and Last
+    pub fn apply_reverse_adjusted(&self, is_reverse: bool) -> AggregationType {
+        if is_reverse {
+            match self {
+                AggregationType::First => AggregationType::Last,
+                AggregationType::Last => AggregationType::First,
+                other => *other,
+            }
+        } else {
+            *self
+        }
+    }
+}
+impl Display for AggregationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+impl TryFrom<&str> for AggregationType {
+    type Error = ValkeyError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let value = hashify::tiny_map_ignore_case! {
+            value.as_bytes(),
+            "avg" => AggregationType::Avg,
+            "count" => AggregationType::Count,
+            "first" => AggregationType::First,
+            "last" => AggregationType::Last,
+            "min" => AggregationType::Min,
+            "max" => AggregationType::Max,
+            "sum" => AggregationType::Sum,
+            "range" => AggregationType::Range,
+            "std.s" => AggregationType::StdS,
+            "std.p" => AggregationType::StdP,
+            "var.s" => AggregationType::VarS,
+            "var.p" => AggregationType::VarP,
+        };
+
+        match value {
+            Some(agg) => Ok(agg),
+            None => Err(ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE)),
+        }
+    }
+}
+
+impl TryFrom<&ValkeyString> for AggregationType {
+    type Error = ValkeyError;
+
+    fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
+        let str = value.to_string_lossy();
+        AggregationType::try_from(str.as_str())
+    }
+}
+
+impl TryFrom<u8> for AggregationType {
+    type Error = ValkeyError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(AggregationType::Avg),
+            1 => Ok(AggregationType::Count),
+            2 => Ok(AggregationType::First),
+            3 => Ok(AggregationType::Last),
+            4 => Ok(AggregationType::Min),
+            5 => Ok(AggregationType::Max),
+            6 => Ok(AggregationType::Sum),
+            7 => Ok(AggregationType::Range),
+            8 => Ok(AggregationType::StdS),
+            9 => Ok(AggregationType::StdP),
+            10 => Ok(AggregationType::VarS),
+            11 => Ok(AggregationType::VarP),
+            _ => Err(ValkeyError::Str("TSDB: invalid AGGREGATION value")),
+        }
+    }
+}
+
+impl From<AggregationType> for u8 {
+    fn from(value: AggregationType) -> Self {
+        match value {
+            AggregationType::Avg => 0,
+            AggregationType::Count => 1,
+            AggregationType::First => 2,
+            AggregationType::Last => 3,
+            AggregationType::Min => 4,
+            AggregationType::Max => 5,
+            AggregationType::Sum => 6,
+            AggregationType::Range => 7,
+            AggregationType::StdS => 8,
+            AggregationType::StdP => 9,
+            AggregationType::VarS => 10,
+            AggregationType::VarP => 11,
+        }
+    }
+}
+
+/// Calculates the start of the bucket for a given timestamp, aligning it to the specified
+/// `align_timestamp` and `bucket_duration`.
+pub fn calc_bucket_start(
+    ts: Timestamp,
+    align_timestamp: Timestamp,
+    bucket_duration: u64,
+) -> Timestamp {
+    let diff = ts - align_timestamp;
+    let delta = bucket_duration as i64;
+    0.max(ts - ((diff % delta + delta) % delta))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_timestamp_calculates_correctly_for_start() {
+        let ts = Timestamp::from(1000);
+        let delta = 500;
+        assert_eq!(BucketTimestamp::Start.calculate(ts, delta), ts);
+    }
+
+    #[test]
+    fn bucket_timestamp_calculates_correctly_for_mid() {
+        let ts = Timestamp::from(1000);
+        let delta = 500;
+        assert_eq!(
+            BucketTimestamp::Mid.calculate(ts, delta),
+            Timestamp::from(1250)
+        );
+    }
+
+    #[test]
+    fn bucket_timestamp_calculates_correctly_for_end() {
+        let ts = Timestamp::from(1000);
+        let delta = 500;
+        assert_eq!(
+            BucketTimestamp::End.calculate(ts, delta),
+            Timestamp::from(1500)
+        );
+    }
+
+    #[test]
+    fn bucket_timestamp_try_from_str_parses_valid_values() {
+        assert_eq!(
+            BucketTimestamp::try_from("start").unwrap(),
+            BucketTimestamp::Start
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("end").unwrap(),
+            BucketTimestamp::End
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("mid").unwrap(),
+            BucketTimestamp::Mid
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("-").unwrap(),
+            BucketTimestamp::Start
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("+").unwrap(),
+            BucketTimestamp::End
+        );
+        assert_eq!(
+            BucketTimestamp::try_from("~").unwrap(),
+            BucketTimestamp::Mid
+        );
+    }
+
+    #[test]
+    fn bucket_timestamp_try_from_str_returns_error_for_invalid_value() {
+        assert!(BucketTimestamp::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn bucket_alignment_gets_correct_aligned_timestamp() {
+        let start = Timestamp::from(1000);
+        let end = Timestamp::from(2000);
+        assert_eq!(
+            BucketAlignment::Default.get_aligned_timestamp(start, end),
+            0
+        );
+        assert_eq!(
+            BucketAlignment::Start.get_aligned_timestamp(start, end),
+            start
+        );
+        assert_eq!(BucketAlignment::End.get_aligned_timestamp(start, end), end);
+        assert_eq!(
+            BucketAlignment::Timestamp(Timestamp::from(1500)).get_aligned_timestamp(start, end),
+            Timestamp::from(1500)
+        );
+    }
+
+    #[test]
+    fn bucket_alignment_try_from_str_parses_valid_values() {
+        assert_eq!(
+            BucketAlignment::try_from("start").unwrap(),
+            BucketAlignment::Start
+        );
+        assert_eq!(
+            BucketAlignment::try_from("end").unwrap(),
+            BucketAlignment::End
+        );
+        assert_eq!(
+            BucketAlignment::try_from("-").unwrap(),
+            BucketAlignment::Start
+        );
+        assert_eq!(
+            BucketAlignment::try_from("+").unwrap(),
+            BucketAlignment::End
+        );
+        assert_eq!(
+            BucketAlignment::try_from("1500").unwrap(),
+            BucketAlignment::Timestamp(Timestamp::from(1500))
+        );
+    }
+
+    #[test]
+    fn bucket_alignment_try_from_str_returns_error_for_invalid_value() {
+        assert!(BucketAlignment::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn aggregation_name_returns_correct_value() {
+        assert_eq!(AggregationType::Avg.name(), "avg");
+        assert_eq!(AggregationType::Count.name(), "count");
+        assert_eq!(AggregationType::First.name(), "first");
+        assert_eq!(AggregationType::Last.name(), "last");
+        assert_eq!(AggregationType::Min.name(), "min");
+        assert_eq!(AggregationType::Max.name(), "max");
+        assert_eq!(AggregationType::Sum.name(), "sum");
+        assert_eq!(AggregationType::Range.name(), "range");
+        assert_eq!(AggregationType::StdS.name(), "std.s");
+        assert_eq!(AggregationType::StdP.name(), "std.p");
+        assert_eq!(AggregationType::VarS.name(), "var.s");
+        assert_eq!(AggregationType::VarP.name(), "var.p");
+    }
+
+    #[test]
+    fn aggregation_type_try_from_str_parses_valid_values() {
+        assert_eq!(
+            AggregationType::try_from("avg").unwrap(),
+            AggregationType::Avg
+        );
+        assert_eq!(
+            AggregationType::try_from("count").unwrap(),
+            AggregationType::Count
+        );
+        assert_eq!(
+            AggregationType::try_from("first").unwrap(),
+            AggregationType::First
+        );
+        assert_eq!(
+            AggregationType::try_from("last").unwrap(),
+            AggregationType::Last
+        );
+        assert_eq!(
+            AggregationType::try_from("min").unwrap(),
+            AggregationType::Min
+        );
+        assert_eq!(
+            AggregationType::try_from("max").unwrap(),
+            AggregationType::Max
+        );
+        assert_eq!(
+            AggregationType::try_from("sum").unwrap(),
+            AggregationType::Sum
+        );
+        assert_eq!(
+            AggregationType::try_from("range").unwrap(),
+            AggregationType::Range
+        );
+        assert_eq!(
+            AggregationType::try_from("std.s").unwrap(),
+            AggregationType::StdS
+        );
+        assert_eq!(
+            AggregationType::try_from("std.p").unwrap(),
+            AggregationType::StdP
+        );
+        assert_eq!(
+            AggregationType::try_from("var.s").unwrap(),
+            AggregationType::VarS
+        );
+        assert_eq!(
+            AggregationType::try_from("var.p").unwrap(),
+            AggregationType::VarP
+        );
+    }
+
+    #[test]
+    fn aggregation_try_from_str_returns_error_for_invalid_value() {
+        assert!(AggregationType::try_from("invalid").is_err());
+    }
+
+    #[test]
+    fn aggregation_type_to_u8_conversion() {
+        assert_eq!(u8::from(AggregationType::Avg), 0);
+        assert_eq!(u8::from(AggregationType::Count), 1);
+        assert_eq!(u8::from(AggregationType::First), 2);
+        assert_eq!(u8::from(AggregationType::Last), 3);
+        assert_eq!(u8::from(AggregationType::Min), 4);
+        assert_eq!(u8::from(AggregationType::Max), 5);
+        assert_eq!(u8::from(AggregationType::Sum), 6);
+        assert_eq!(u8::from(AggregationType::Range), 7);
+        assert_eq!(u8::from(AggregationType::StdS), 8);
+        assert_eq!(u8::from(AggregationType::StdP), 9);
+        assert_eq!(u8::from(AggregationType::VarS), 10);
+        assert_eq!(u8::from(AggregationType::VarP), 11);
+    }
+
+    #[test]
+    fn aggregation_type_from_u8_conversion() {
+        assert_eq!(
+            AggregationType::try_from(0u8).unwrap(),
+            AggregationType::Avg
+        );
+        assert_eq!(
+            AggregationType::try_from(1u8).unwrap(),
+            AggregationType::Count
+        );
+        assert_eq!(
+            AggregationType::try_from(2u8).unwrap(),
+            AggregationType::First
+        );
+        assert_eq!(
+            AggregationType::try_from(3u8).unwrap(),
+            AggregationType::Last
+        );
+        assert_eq!(
+            AggregationType::try_from(4u8).unwrap(),
+            AggregationType::Min
+        );
+        assert_eq!(
+            AggregationType::try_from(5u8).unwrap(),
+            AggregationType::Max
+        );
+        assert_eq!(
+            AggregationType::try_from(6u8).unwrap(),
+            AggregationType::Sum
+        );
+        assert_eq!(
+            AggregationType::try_from(7u8).unwrap(),
+            AggregationType::Range
+        );
+        assert_eq!(
+            AggregationType::try_from(8u8).unwrap(),
+            AggregationType::StdS
+        );
+        assert_eq!(
+            AggregationType::try_from(9u8).unwrap(),
+            AggregationType::StdP
+        );
+        assert_eq!(
+            AggregationType::try_from(10u8).unwrap(),
+            AggregationType::VarS
+        );
+        assert_eq!(
+            AggregationType::try_from(11u8).unwrap(),
+            AggregationType::VarP
+        );
+    }
+
+    #[test]
+    fn aggregation_type_from_u8_invalid_values() {
+        assert!(AggregationType::try_from(12u8).is_err());
+        assert!(AggregationType::try_from(255u8).is_err());
+
+        // Test that the error message is correct
+        match AggregationType::try_from(12u8) {
+            Err(err) => assert_eq!(err.to_string(), "TSDB: invalid AGGREGATION value"),
+            Ok(_) => panic!("Expected error for invalid u8 value"),
+        }
     }
 }

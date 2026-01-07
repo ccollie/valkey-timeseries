@@ -1,67 +1,123 @@
-extern crate get_size;
+#![allow(dead_code)]
+extern crate enum_dispatch;
+extern crate get_size2;
+#[cfg(test)]
+extern crate serial_test;
 extern crate strum;
 extern crate strum_macros;
 extern crate valkey_module_macros;
 
-use crate::config::{load_config, register_config_handlers};
-use crate::module::VK_TIME_SERIES_TYPE;
-use valkey_module::{logging, valkey_module, Context, Status, ValkeyString};
-use valkey_module_macros::config_changed_event_handler;
+use crate::commands::register_fanout_operations;
+use crate::common::threads::init_thread_pool;
+use crate::config::register_config;
+use crate::fanout::{init_fanout, is_clustered};
+use logger_rust::{LogLevel, set_log_level};
+use std::sync::atomic::AtomicBool;
+use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
 
 pub mod aggregators;
-mod arg_types;
+pub(crate) mod commands;
 pub mod common;
 pub mod config;
 mod error;
 pub mod error_consts;
+mod fanout;
 pub mod iterators;
 mod join;
 mod labels;
-mod module;
 mod parser;
 mod series;
+mod server_events;
 mod tests;
 
-use crate::module::server_events::{generic_key_event_handler, register_server_events};
+use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
-use crate::series::settings::{start_series_background_worker, stop_series_background_worker};
-use module::*;
+use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
+use crate::server_events::{generic_key_events_handler, register_server_events};
 
-pub const VKMETRICS_VERSION: i32 = 1;
+pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
-fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
-    logging::log_debug("initialize");
+static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-    init_croaring_allocator();
-
-    if load_config(ctx, args).is_err() {
-        logging::log_warning("Failed to load configuration");
-        return Status::Err;
-    }
-    register_config_handlers(ctx);
-
-    start_series_background_worker();
-
-    match register_server_events(ctx) {
-        Ok(_) => Status::Ok,
-        Err(e) => {
-            let msg = format!("Failed to register server events: {}", e);
-            logging::log_warning(msg);
-            Status::Err
-        }
-    }
+pub fn is_module_initialized() -> bool {
+    IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn deinitialize(_ctx: &Context) -> Status {
-    logging::log_notice("deinitialize");
-    stop_series_background_worker();
+pub fn valid_server_version(version: Version) -> bool {
+    let server_version = &[
+        version.major.into(),
+        version.minor.into(),
+        version.patch.into(),
+    ];
+    server_version >= config::TIMESERIES_MIN_SUPPORTED_VERSION
+}
+
+fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
+    // perform preload validations here, useful for MODULE LOAD
+    // unlike init which is called at the end of the valkey_module! macro this is called at the beginning
+    let version = ctx.get_server_version().unwrap();
+    ctx.log_notice(&format!(
+        "preload for server version {version:?} with args: {args:?}"
+    ));
+
+    let ver = ctx
+        .get_server_version()
+        .expect("Unable to get server version!");
+
+    if !valid_server_version(ver) {
+        ctx.log_warning(
+            format!(
+                "The minimum supported Valkey server version for the valkey-timeseries module is {:?}",
+                config::TIMESERIES_MIN_SUPPORTED_VERSION
+            )
+                .as_str(),
+        );
+        return Status::Err;
+    }
+
+    // respond with either Status::Ok or Status::Err (if you want to prevent module loading)
     Status::Ok
 }
 
-#[config_changed_event_handler]
-fn config_changed_event_handler(ctx: &Context, _changed_configs: &[&str]) {
-    ctx.log_notice("config changed")
+fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
+    init_croaring_allocator();
+
+    set_log_level(LogLevel::Console);
+
+    if let Err(e) = register_config(ctx, args) {
+        let msg = format!("Failed to register config: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
+    }
+
+    if is_clustered(ctx) {
+        init_fanout(ctx);
+        if let Err(e) = register_fanout_operations() {
+            let msg = format!("Failed to register fanout operations: {e}");
+            ctx.log_warning(&msg);
+            return Status::Err;
+        };
+    }
+
+    if let Err(e) = register_server_events(ctx) {
+        let msg = format!("Failed to register server events: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
+    }
+
+    init_thread_pool();
+    init_background_tasks(ctx);
+
+    ctx.log_notice("valkey-timeseries module initialized");
+    IS_MODULE_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
+    Status::Ok
+}
+
+fn deinitialize(ctx: &Context) -> Status {
+    ctx.log_notice("deinitialize");
+    IS_MODULE_INITIALIZED.store(false, std::sync::atomic::Ordering::Relaxed);
+    Status::Ok
 }
 
 #[cfg(not(test))]
@@ -78,42 +134,42 @@ macro_rules! get_allocator {
     };
 }
 
-// https://github.com/redis/redis/blob/a38c29b6c861ee59637acdb1618f8f84645061d5/src/module.c
 valkey_module! {
     name: MODULE_NAME,
-    version: VKMETRICS_VERSION,
+    version: VK_TIMESERIES_VERSION,
     allocator: (get_allocator!(), get_allocator!()),
     data_types: [VK_TIME_SERIES_TYPE],
+    preload: preload,
     init: initialize,
     deinit: deinitialize,
     acl_categories: [
-        "ts",
+        "timeseries",
     ]
     commands: [
-        ["TS.CREATE", commands::create, "write deny-oom", 1, 1, 1, "write ts"],
-        ["TS.ALTER", commands::alter_series, "write deny-oom", 1, 1, 1, "write ts"],
-        ["TS.ADD", commands::add, "write fast deny-oom", 1, 1, 1, "write ts"],
-        ["TS.GET", commands::get, "readonly fast", 1, 1, 1, "fast read ts"],
-        ["TS.MGET", commands::mget, "readonly fast", 0, 0, -1, "fast read ts"],
-        ["TS.MADD", commands::madd, "write deny-oom", 1, -1, 3, "fast write ts"],
-        ["TS.DEL", commands::del, "write deny-oom", 1, 1, 1, "write ts"],
-        ["TS.DECRBY", commands::decrby, "write deny-oom", 1, 1, 1, "write ts"],
-        ["TS.INCRBY", commands::incrby, "write deny-oom", 1, 1, 1, "write ts"],
-        ["TS.JOIN", commands::join, "readonly", 1, 2, 1, "read ts"],
-        ["TS.MREVRANGE", commands::mrevrange, "readonly deny-oom", 0, 0, -1, "fast read ts"],
-        ["TS.MRANGE", commands::mrange, "readonly deny-oom", 0, 0, -1, "fast read ts"],
-        ["TS.RANGE", commands::range, "readonly deny-oom", 1, 1, 1, "fast read ts"],
-        ["TS.REVRANGE", commands::rev_range, "readonly deny-oom", 1, 1, 1, "fast read ts"],
-        ["TS.INFO", commands::info, "readonly", 0, 0, 0, "fast read ts"],
-        ["TS.QUERYINDEX", commands::query_index, "readonly", 0, 0, 0, "fast read ts"],
-        ["TS.CARD", commands::cardinality, "readonly fast", 0, 0, 0, "fast read ts"],
-        ["TS.LABELNAMES", commands::label_names, "readonly fast", 0, 0, 0, "fast read ts"],
-        ["TS.LABELVALUES", commands::label_values, "readonly fast", 0, 0, 0, "fast read ts"],
-        ["TS.STATS", commands::stats, "readonly", 0, 0, 0, "read ts"],
+        ["TS.CREATE", commands::create, "write deny-oom", 1, 1, 1, "write fast timeseries"],
+        ["TS.ALTER", commands::alter_series, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.ADD", commands::add, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.GET", commands::get, "readonly fast", 1, 1, 1, "fast read timeseries"],
+        ["TS.MGET", commands::mget, "readonly fast", 0, 0, -1, "fast read timeseries"],
+        ["TS.MADD", commands::madd, "write deny-oom", 1, -1, 3, "fast write timeseries"],
+        ["TS.DEL", commands::del, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.DECRBY", commands::decrby, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.INCRBY", commands::incrby, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.JOIN", commands::join, "readonly", 1, 2, 1, "read timeseries"],
+        ["TS.MREVRANGE", commands::mrevrange, "readonly", 0, 0, -1, "read timeseries"],
+        ["TS.MRANGE", commands::mrange, "readonly", 0, 0, -1, "read timeseries"],
+        ["TS.RANGE", commands::range, "readonly", 1, 1, 1, "read timeseries"],
+        ["TS.REVRANGE", commands::rev_range, "readonly", 1, 1, 1, "read timeseries"],
+        ["TS.INFO", commands::info, "readonly", 0, 0, 0, "read fast timeseries"],
+        ["TS.QUERYINDEX", commands::query_index, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.CARD", commands::cardinality, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELNAMES", commands::label_names, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELVALUES", commands::label_values, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.STATS", commands::stats, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.CREATERULE", commands::create_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
     ]
     event_handlers: [
-        [@SET @STRING @GENERIC @EVICTED @EXPIRED : generic_key_event_handler]
+        [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
     ]
 }
-
-// todo: handle @TRIMMED

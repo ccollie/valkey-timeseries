@@ -1,6 +1,8 @@
 # valkey-timeseries
 
-ValkeyTimeSeries is a Rust-based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
+**valkey-timeseries** (Apache-2.0) is a Rust-based module providing a TimeSeries data type for [Valkey](https:://valkey.io).
+The goal of this module is to provide a simple, efficient, and easy-to-use time series data type for Valkey, as
+well as provide a superset of the _RedisTimeSeries_ API.
 
 ## Features
 - In-memory storage for time series data
@@ -8,17 +10,25 @@ ValkeyTimeSeries is a Rust-based module providing a TimeSeries data type for [Va
 - Configurable encoding
 - Single sample and range queries
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
-- Compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
+- Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
-## Progress
-`ValkeyTimeSeries` is currently in active development and is not yet ready for production use. We are feature complete
-for an initial release but are still working on more comprehensive testing.
+## Scaling
 
-The current state of play is the [unstable branch](https://github.com/ccollie/valkey-timeseries/tree/unstable).
-Current progress toward the initial release can be tracked [here](https://github.com/users/ccollie/projects/2).
+**valkey-timeseries** offers two deployment modes: 
+- **Standalone Mode**: Processing scales vertically with CPU cores
+- **Cluster Mode**: Enables horizontal scaling across nodes for larger datasets
 
-We welcome contributions and feedback from the community.
+**Query Scaling Options:**
+- For read-heavy workloads, you can direct queries to replicas if your application can tolerate some replication lag
 
+
+## Performance
+
+valkey-timeseries achieves high performance by storing series data in-memory and applying optimizations throughout the stack to efficiently use the host resources, such as:
+
+- **Parallelism:** Low-overhead threading model that enables concurrent lock-free reads across series and chunks.
+- **CPU Cache Efficiency:** Modern, cache-friendly algorithms for data and index storage.
+- **Memory Efficiency:** Uses string interning for label-value pairs.
 ## Commands
 
 Command names and option names are case-insensitive.
@@ -36,24 +46,24 @@ https://tech.loveholidays.com/redis-cluster-multi-key-command-optimisation-with-
 The following commands are supported
 
 ```aiignore
-TS.CREATE
-TS.ALTER
 TS.ADD
-TS.MADD
+TS.ALTER
+TS.CARD
+TS.CREATE
 TS.DECRBY
 TS.DEL
-TS.JOIN
 TS.GET
 TS.INCRBY
+TS.JOIN
+TS.LABELNAMES
+TS.LABELVALUES
+TS.MADD
 TS.MGET
 TS.MRANGE
 TS.MREVRANGE
+TS.QUERYINDEX
 TS.RANGE
 TS.REVRANGE
-TS.QUERYINDEX
-TS.CARD
-TS.LABELNAMES
-TS.LABELVALUES
 TS.STATS
 ```
 
@@ -70,6 +80,8 @@ cargo build --release
 cargo build --release --features valkey_8_0
 valkey-server --loadmodule ./target/release/libvalkey_timeseries.so
 ```
+**Note**: This library requires a minimum rust version of `1.86`.
+
 #### Running Unit tests
 
 To run all unit tests, follow these steps:
@@ -87,6 +99,8 @@ SERVER_VERSION=8.0.0
 # Build with asan, you may need to remove the old valkey binary if you have used ./build.sh before. You can do this by deleting the `.build` folder in the `tests` folder 
 ASAN_BUILD=true
 ./build.sh
+# Clean build artifacts
+./build.sh clean
 ```
 
 ## Load the Module
@@ -120,5 +134,6 @@ cargo build --release --features valkey_8_0
 
 This can also be done by specifying SERVER_VERSION=8.0.0 and then running `./build.sh`
 
+
 ## License
-ValkeyTimeSeries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+valkey-timeseries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

@@ -20,15 +20,16 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 use super::traits::BitWrite;
-use super::utils::{zigzag_encode, MSB};
-use get_size::GetSize;
+use super::utils::{MSB, zigzag_encode};
+use get_size2::GetSize;
 use num_traits::PrimInt;
 use std::io::Result;
+use valkey_module::digest::Digest;
 
 /// BufferedWriter
 ///
 /// BufferedWriter writes bytes to a buffer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, GetSize)]
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq, GetSize)]
 pub struct BufferedWriter {
     buf: Vec<u8>,
     pos: u32, // position in the last byte in the buffer
@@ -58,7 +59,7 @@ impl BufferedWriter {
     }
 
     pub fn write_bits(&mut self, bits: u32, value: u64) -> Result<()> {
-        // we should never write more than 64 bits for a u64
+        // we should never write more than 64 bits for an u64
         let mut num_bits = if bits > 64 { 64 } else { bits };
 
         let mut value = value.wrapping_shl(64 - num_bits);
@@ -125,6 +126,11 @@ impl BufferedWriter {
 
     pub fn shrink_to_fit(&mut self) {
         self.buf.shrink_to_fit();
+    }
+
+    pub fn debug_digest(&self, dig: &mut Digest) {
+        dig.add_string_buffer(&self.buf);
+        dig.add_long_long(self.pos as i64);
     }
 }
 

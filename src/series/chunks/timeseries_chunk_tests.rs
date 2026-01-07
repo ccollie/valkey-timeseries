@@ -6,8 +6,8 @@ mod tests {
     use crate::error::TsdbError;
     use crate::series::chunks::merge::merge_by_capacity;
     use crate::series::{
-        chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
         DuplicatePolicy, SampleAddResult,
+        chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
     };
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
@@ -151,9 +151,7 @@ mod tests {
             let empty_result = chunk.get_range(15, 15).unwrap();
             assert!(
                 empty_result.is_empty(),
-                "{}: Expected empty result, got {:?}",
-                chunk_type,
-                empty_result
+                "{chunk_type}: Expected empty result, got {empty_result:?}"
             );
         }
     }
@@ -297,8 +295,7 @@ mod tests {
 
             assert_eq!(
                 current, expected,
-                "{chunk_type}: Expected range {:?} after removing [20, 30], got {:?}",
-                expected, current
+                "{chunk_type}: Expected range {expected:?} after removing [20, 30], got {current:?}"
             );
         }
     }
@@ -355,11 +352,7 @@ mod tests {
 
             let removed = chunk.remove_range(10, 10).unwrap();
 
-            assert_eq!(
-                removed, 1,
-                "{}: Expected 1 result, got {removed}",
-                chunk_type
-            );
+            assert_eq!(removed, 1, "{chunk_type}: Expected 1 result, got {removed}");
             assert_eq!(
                 chunk.get_range(0, 100).unwrap(),
                 vec![
@@ -750,7 +743,7 @@ mod tests {
                 ])
                 .unwrap();
 
-            // First merge should add all samples
+            // The first merge should add all samples
             let result = chunk
                 .merge_samples(&samples, Some(DuplicatePolicy::Block))
                 .unwrap();
@@ -988,7 +981,7 @@ mod tests {
             match chunk.merge_samples(&samples, Some(DuplicatePolicy::KeepLast)) {
                 Ok(_) => {}
                 Err(TsdbError::CapacityFull(_)) => break,
-                Err(e) => panic!("unexpected error: {:?}", e),
+                Err(e) => panic!("unexpected error: {e:?}"),
             }
             let threshold = (chunk.max_size() as f64 * SPLIT_FACTOR) as usize;
             if chunk.size() > threshold {
@@ -1022,7 +1015,7 @@ mod tests {
 
         let capacity = dest_chunk.estimate_remaining_sample_capacity();
 
-        // Fill the destination chunk to have more than a quarter but less than full capacity of source
+        // Fill the destination chunk to have more than a quarter but less than full capacity of the source
         let dest_samples = generate_random_samples(capacity / 2);
         dest_chunk.set_data(&dest_samples).unwrap();
 
@@ -1101,7 +1094,7 @@ mod tests {
         let samples = generate_random_samples(ELEMENTS_PER_CHUNK);
         src_chunk.set_data(&samples).unwrap();
 
-        // Ensure destination chunk has enough capacity for a full merge
+        // Ensure the destination chunk has enough capacity for a full merge
         let remaining_capacity = dest_chunk.estimate_remaining_sample_capacity();
         assert!(remaining_capacity >= ELEMENTS_PER_CHUNK);
 
@@ -2372,6 +2365,289 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_has_samples_in_range_no_overlap() {
+        // Create a chunk with samples from 10 to 50
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let samples = vec![
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 20,
+                    value: 2.0,
+                },
+                Sample {
+                    timestamp: 30,
+                    value: 3.0,
+                },
+                Sample {
+                    timestamp: 40,
+                    value: 4.0,
+                },
+                Sample {
+                    timestamp: 50,
+                    value: 5.0,
+                },
+            ];
+            chunk.set_data(&samples).unwrap();
+
+            // Test range before chunk
+            assert!(!chunk.has_samples_in_range(0, 5));
+
+            // Test range after chunk
+            assert!(!chunk.has_samples_in_range(60, 100));
+        }
+    }
+
+    #[test]
+    fn test_has_samples_in_range_with_samples() {
+        let mut chunk = TimeSeriesChunk::new(ChunkEncoding::Gorilla, 1024);
+        let samples = vec![
+            Sample {
+                timestamp: 10,
+                value: 1.0,
+            },
+            Sample {
+                timestamp: 20,
+                value: 2.0,
+            },
+            Sample {
+                timestamp: 30,
+                value: 3.0,
+            },
+            Sample {
+                timestamp: 40,
+                value: 4.0,
+            },
+            Sample {
+                timestamp: 50,
+                value: 5.0,
+            },
+        ];
+        chunk.set_data(&samples).unwrap();
+
+        // Test range that includes samples
+        assert!(chunk.has_samples_in_range(15, 25));
+        assert!(chunk.has_samples_in_range(10, 30));
+        assert!(chunk.has_samples_in_range(10, 10)); // Exact match on first
+        assert!(chunk.has_samples_in_range(50, 50)); // Exact match on last
+        assert!(chunk.has_samples_in_range(5, 55)); // Wider range including all samples
+    }
+
+    #[test]
+    fn test_has_samples_in_range_empty_chunk() {
+        let chunk = TimeSeriesChunk::new(ChunkEncoding::Uncompressed, 100);
+
+        // Empty chunk should always return false
+        assert!(!chunk.has_samples_in_range(0, 100));
+    }
+
+    #[test]
+    fn test_has_samples_in_range_gaps_in_data() {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let samples = vec![
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 30,
+                    value: 3.0,
+                },
+                Sample {
+                    timestamp: 50,
+                    value: 5.0,
+                },
+            ];
+            chunk.set_data(&samples).unwrap();
+
+            // Test ranges in gaps
+            assert!(!chunk.has_samples_in_range(15, 25)); // Gap between 10 and 30
+            assert!(!chunk.has_samples_in_range(35, 45)); // Gap between 30 and 50
+
+            // Test ranges that include samples
+            assert!(chunk.has_samples_in_range(25, 35)); // Includes 30
+        }
+    }
+
+    #[test]
+    fn test_has_samples_in_range_different_encodings() {
+        // Test with different chunk encodings to ensure behavior is consistent
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let samples = vec![
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 20,
+                    value: 2.0,
+                },
+            ];
+            chunk.set_data(&samples).unwrap();
+
+            assert!(chunk.has_samples_in_range(10, 20));
+            assert!(!chunk.has_samples_in_range(30, 40));
+        }
+    }
+
+    #[test]
+    fn test_has_samples_in_range_edge_cases() {
+        for encoding in [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::Pco,
+        ] {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let samples = vec![
+                Sample {
+                    timestamp: 10,
+                    value: 1.0,
+                },
+                Sample {
+                    timestamp: 20,
+                    value: 2.0,
+                },
+            ];
+            chunk.set_data(&samples).unwrap();
+
+            // Edge case: start == end
+            assert!(chunk.has_samples_in_range(10, 10));
+            assert!(chunk.has_samples_in_range(20, 20));
+            assert!(!chunk.has_samples_in_range(15, 15));
+
+            // Edge case: overlaps but no sample in range
+            assert!(!chunk.has_samples_in_range(15, 15)); // Overlaps chunk but no sample at exactly 15
+        }
+    }
+
+    // ----- Serialization Tests -----
+    /// Serializes a TimeSeriesChunk for fanout.
+    fn serialize_chunk(chunk: TimeSeriesChunk) -> Vec<u8> {
+        // estimate of the size needed
+        let capacity = chunk.len() * chunk.bytes_per_sample();
+        let mut data: Vec<u8> = Vec::with_capacity(capacity);
+        chunk.serialize(&mut data);
+        data
+    }
+
+    /// Deserializes TimeSeriesChunk coming from a cluster node.
+    pub fn deserialize_chunk(data: &[u8]) -> TimeSeriesChunk {
+        TimeSeriesChunk::deserialize(data).unwrap()
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_empty_chunks() {
+        for &encoding in CHUNK_TYPES.iter() {
+            // Test serialization of empty chunk
+            let empty_chunk = TimeSeriesChunk::new(encoding, 1024);
+            assert!(empty_chunk.is_empty());
+
+            let serialized = serialize_chunk(empty_chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(empty_chunk, deserialized);
+            assert_eq!(empty_chunk.get_encoding(), deserialized.get_encoding());
+            assert!(deserialized.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_single_sample() {
+        for &encoding in CHUNK_TYPES.iter() {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let sample = Sample {
+                timestamp: 1000,
+                value: 42.5,
+            };
+            chunk.add_sample(&sample).unwrap();
+
+            let serialized = serialize_chunk(chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(chunk, deserialized);
+            assert_eq!(chunk.get_encoding(), deserialized.get_encoding());
+            assert_eq!(chunk.len(), deserialized.len());
+            assert_eq!(chunk.first_timestamp(), deserialized.first_timestamp());
+            assert_eq!(chunk.last_timestamp(), deserialized.last_timestamp());
+
+            let original_samples = chunk.get_range(0, i64::MAX).unwrap();
+            let deserialized_samples = deserialized.get_range(0, i64::MAX).unwrap();
+            assert_eq!(original_samples, deserialized_samples);
+        }
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_multiple_samples() {
+        for &encoding in CHUNK_TYPES.iter() {
+            let mut chunk = TimeSeriesChunk::new(encoding, 1024);
+            let samples = generate_random_samples(50);
+
+            for sample in &samples {
+                chunk.add_sample(sample).unwrap();
+            }
+
+            let serialized = serialize_chunk(chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(chunk, deserialized);
+            assert_eq!(chunk.get_encoding(), deserialized.get_encoding());
+            assert_eq!(chunk.len(), deserialized.len());
+            assert_eq!(chunk.first_timestamp(), deserialized.first_timestamp());
+            assert_eq!(chunk.last_timestamp(), deserialized.last_timestamp());
+
+            let original_samples = chunk.get_range(0, i64::MAX).unwrap();
+            let deserialized_samples = deserialized.get_range(0, i64::MAX).unwrap();
+            assert_eq!(original_samples, deserialized_samples);
+        }
+    }
+
+    #[test]
+    fn test_timeseries_chunk_serialization_large_dataset() {
+        for &encoding in CHUNK_TYPES.iter() {
+            let mut chunk = TimeSeriesChunk::new(encoding, 8192); // Larger chunk size
+            let samples = generate_random_samples(500); // Large dataset
+
+            for sample in &samples {
+                if let Err(TsdbError::CapacityFull(_)) = chunk.add_sample(sample) {
+                    break; // Stop when chunk is full
+                }
+            }
+
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let serialized = serialize_chunk(chunk.clone());
+            let deserialized = deserialize_chunk(&serialized);
+
+            assert_eq!(chunk, deserialized);
+            assert_eq!(chunk.get_encoding(), deserialized.get_encoding());
+            assert_eq!(chunk.len(), deserialized.len());
+
+            let original_samples = chunk.get_range(0, i64::MAX).unwrap();
+            let deserialized_samples = deserialized.get_range(0, i64::MAX).unwrap();
+            assert_eq!(original_samples, deserialized_samples);
         }
     }
 }

@@ -20,4 +20,7 @@ impl Iterator for VecSampleIterator {
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }

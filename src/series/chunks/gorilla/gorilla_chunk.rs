@@ -1,8 +1,7 @@
 use super::{GorillaEncoder, GorillaIterator};
-use crate::common::serialization::{
-    rdb_load_timestamp, rdb_load_usize, rdb_save_timestamp, rdb_save_usize,
-};
-use crate::common::time::current_time_millis;
+use crate::common::encoding::{try_read_uvarint, write_uvarint};
+use crate::common::logging::log_warning;
+use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
@@ -12,15 +11,15 @@ use crate::series::chunks::chunk::Chunk;
 use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
-use get_size::GetSize;
+use get_size2::GetSize;
 use std::mem::size_of;
+use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
 /// `GorillaChunk` is a chunk of timeseries data encoded using Gorilla XOR encoding.
-#[derive(Debug, Clone, PartialEq, GetSize)]
+#[derive(Debug, Clone, PartialEq, Hash, GetSize)]
 pub struct GorillaChunk {
     pub(crate) encoder: GorillaEncoder,
-    pub(crate) first_ts: Timestamp,
     pub max_size: usize,
 }
 
@@ -32,10 +31,8 @@ impl Default for GorillaChunk {
 
 impl GorillaChunk {
     pub fn with_max_size(max_size: usize) -> Self {
-        let now = current_time_millis();
         Self {
             encoder: GorillaEncoder::new(),
-            first_ts: now,
             max_size,
         }
     }
@@ -47,13 +44,11 @@ impl GorillaChunk {
 
     pub fn clear(&mut self) {
         self.encoder.clear();
-        self.first_ts = 0;
     }
 
     pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult {
         debug_assert!(!samples.is_empty());
         self.compress(samples)?;
-        self.first_ts = samples[0].timestamp;
         // todo: complain if size > max_size
         Ok(())
     }
@@ -107,27 +102,30 @@ impl GorillaChunk {
         size_of::<Self>() + self.get_heap_size()
     }
 
-    pub fn iter(&self) -> SampleIter {
+    pub fn iter(&'_ self) -> SampleIter<'_> {
         self.range_iter(i64::MIN, i64::MAX)
     }
 
-    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter {
+    pub fn range_iter(&'_ self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
         GorillaChunkIterator::new(self, start_ts, end_ts).into()
     }
 }
 
 impl Chunk for GorillaChunk {
     fn first_timestamp(&self) -> Timestamp {
-        self.first_ts
+        self.encoder.first_ts
     }
     fn last_timestamp(&self) -> Timestamp {
-        self.encoder.timestamp
+        self.encoder.last_ts
     }
     fn len(&self) -> usize {
         self.encoder.num_samples
     }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     fn last_value(&self) -> f64 {
-        self.encoder.value
+        self.encoder.last_value
     }
     fn size(&self) -> usize {
         self.data_size()
@@ -135,14 +133,13 @@ impl Chunk for GorillaChunk {
     fn max_size(&self) -> usize {
         self.max_size
     }
+
     fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
         if self.is_empty() || start_ts > self.last_timestamp() || end_ts < self.first_timestamp() {
             return Ok(0);
         }
 
         let mut new_encoder = GorillaEncoder::new();
-
-        let mut first_timestamp: Timestamp = 0;
         let saved_count = self.len();
 
         for value in self.encoder.iter() {
@@ -150,14 +147,10 @@ impl Chunk for GorillaChunk {
             if sample.timestamp >= start_ts && sample.timestamp <= end_ts {
                 continue;
             }
-            if first_timestamp == 0 {
-                first_timestamp = sample.timestamp;
-            }
             push_sample(&mut new_encoder, &sample)?;
         }
 
         self.encoder = new_encoder;
-        self.first_ts = first_timestamp;
         Ok(saved_count - self.len())
     }
 
@@ -167,10 +160,6 @@ impl Chunk for GorillaChunk {
         }
 
         push_sample(&mut self.encoder, sample)?;
-        if self.len() == 1 {
-            self.first_ts = sample.timestamp;
-        }
-
         Ok(())
     }
 
@@ -186,43 +175,49 @@ impl Chunk for GorillaChunk {
     fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<usize> {
         let ts = sample.timestamp;
         let mut duplicate_found = false;
-
-        if self.is_empty() {
+        let count = self.len();
+        if count == 0 {
             self.add_sample(&sample)?;
             return Ok(1);
         }
-
-        let count = self.len();
         let mut xor_encoder = GorillaEncoder::new();
-
         let mut iter = self.encoder.iter();
-
-        let mut current = Sample::default();
-
-        // skip previous samples
-        for item in iter.by_ref() {
-            current = item?;
-            if current.timestamp >= ts {
-                break;
-            }
-            push_sample(&mut xor_encoder, &current)?;
-        }
-
-        if current.timestamp == ts {
-            duplicate_found = true;
-            current.value = dp_policy.duplicate_value(ts, current.value, sample.value)?;
-            push_sample(&mut xor_encoder, &current)?;
-            iter.next();
-        } else {
+        if ts < self.first_timestamp() {
+            // add a sample to the beginning
             push_sample(&mut xor_encoder, &sample)?;
+            // Add all existing samples after the new one
+            for item in iter {
+                let current = item?;
+                push_sample(&mut xor_encoder, &current)?;
+            }
+        } else {
+            let mut current = Sample::default();
+            // add previous samples
+            for item in iter.by_ref() {
+                current = item?;
+                if current.timestamp >= ts {
+                    break;
+                }
+                push_sample(&mut xor_encoder, &current)?;
+            }
+            if current.timestamp == ts {
+                duplicate_found = true;
+                current.value = dp_policy.duplicate_value(ts, current.value, sample.value)?;
+                push_sample(&mut xor_encoder, &current)?;
+            } else {
+                push_sample(&mut xor_encoder, &sample)?;
+                // Add the current sample that caused the break (if it exists and is valid)
+                if current.timestamp > ts {
+                    push_sample(&mut xor_encoder, &current)?;
+                }
+            }
+
+            for item in iter {
+                let current = item?;
+                push_sample(&mut xor_encoder, &current)?;
+            }
         }
 
-        for item in iter {
-            current = item?;
-            push_sample(&mut xor_encoder, &current)?;
-        }
-
-        // todo: do a self.encoder.buf.take()
         self.encoder = xor_encoder;
         let size = if duplicate_found { count } else { count + 1 };
         Ok(size)
@@ -240,12 +235,12 @@ impl Chunk for GorillaChunk {
         ) -> TsdbResult<()> {
             match chunk.add_sample(sample) {
                 Ok(_) => {
-                    res.push(SampleAddResult::Ok(sample.timestamp));
+                    res.push(SampleAddResult::Ok(*sample));
                     Ok(())
                 }
                 err @ Err(TsdbError::CapacityFull(_)) => Err(err.unwrap_err()),
-                Err(_e) => {
-                    // todo: log error
+                Err(e) => {
+                    log_warning(format!("error in gorilla chunk merge : {e:?}"));
                     res.push(SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE));
                     Ok(())
                 }
@@ -254,7 +249,7 @@ impl Chunk for GorillaChunk {
 
         let mut result = Vec::with_capacity(samples.len());
 
-        // we assume that samples are sorted. Try to optimize by seeing if all samples are past the
+        // We assume that samples are sorted. Try to optimize by seeing if all samples are past the
         // current chunk's last timestamp.
         let first = samples[0];
         if self.is_empty() || first.timestamp > self.last_timestamp() {
@@ -294,21 +289,12 @@ impl Chunk for GorillaChunk {
                     if is_duplicate {
                         state.result.push(SampleAddResult::Duplicate);
                     } else {
-                        state.result.push(SampleAddResult::Ok(sample.timestamp));
+                        state.result.push(SampleAddResult::Ok(sample));
                     }
                 }
                 Ok(())
             },
         )?;
-
-        // find first timestamp
-        self.first_ts = 0;
-        for res in merge_state.result.iter() {
-            if let SampleAddResult::Ok(ts) = res {
-                self.first_ts = *ts;
-                break;
-            }
-        }
 
         self.encoder = merge_state.xor_encoder;
         Ok(merge_state.result)
@@ -325,29 +311,17 @@ impl Chunk for GorillaChunk {
             return Ok(self.clone());
         }
 
-        let mut first_ts: Timestamp = 0;
-        let mut other_first_ts: Timestamp = 0;
-
         let mid = self.len() / 2;
         for (i, value) in self.encoder.iter().enumerate() {
             let sample = value?;
             if i < mid {
-                if first_ts == 0 {
-                    first_ts = sample.timestamp;
-                }
                 // todo: handle min and max timestamps
                 push_sample(&mut left_chunk, &sample)?;
             } else {
-                if other_first_ts == 0 {
-                    other_first_ts = sample.timestamp;
-                }
                 push_sample(&mut right_chunk.encoder, &sample)?;
             }
         }
         self.encoder = left_chunk;
-        self.first_ts = first_ts;
-
-        right_chunk.first_ts = other_first_ts;
         Ok(right_chunk)
     }
 
@@ -358,27 +332,41 @@ impl Chunk for GorillaChunk {
 
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
         rdb_save_usize(rdb, self.max_size);
-        rdb_save_timestamp(rdb, self.first_ts);
         self.encoder.rdb_save(rdb);
     }
 
     fn load_rdb(rdb: *mut RedisModuleIO, _enc_ver: i32) -> ValkeyResult<Self> {
         let max_size = rdb_load_usize(rdb)?;
-        let first_ts = rdb_load_timestamp(rdb)?;
         let encoder = GorillaEncoder::rdb_load(rdb)?;
-        let chunk = GorillaChunk {
-            encoder,
-            first_ts,
-            max_size,
-        };
+        let chunk = GorillaChunk { encoder, max_size };
         Ok(chunk)
+    }
+
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        write_uvarint(dest, self.max_size as u64);
+        self.encoder.serialize(dest);
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        let mut buf = buf;
+        let max_size = try_read_uvarint(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+        let encoder = GorillaEncoder::deserialize(buf)?;
+        Ok(GorillaChunk {
+            encoder,
+            max_size: max_size as usize,
+        })
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        self.encoder.debug_digest(dig);
+        dig.add_long_long(self.max_size as i64);
     }
 }
 
 #[inline]
 fn push_sample(encoder: &mut GorillaEncoder, sample: &Sample) -> TsdbResult {
     encoder.add_sample(sample).map_err(|e| {
-        eprintln!("Error adding sample: {:?}", e);
+        eprintln!("Error adding sample: {e:?}");
         TsdbError::CannotAddSample(*sample)
     })
 }
@@ -411,7 +399,7 @@ impl<'a> GorillaChunkIterator<'a> {
             }
             #[cfg(debug_assertions)]
             Some(Err(err)) => {
-                eprintln!("Error decoding sample: {:?}", err);
+                eprintln!("Error decoding sample: {err:?}");
                 None
             }
             #[cfg(not(debug_assertions))]
@@ -446,9 +434,9 @@ impl Iterator for GorillaChunkIterator<'_> {
 #[cfg(test)]
 mod tests {
     use crate::common::Sample;
+    use crate::series::DuplicatePolicy;
     use crate::series::chunks::chunk::Chunk;
     use crate::series::chunks::gorilla::gorilla_chunk::GorillaChunk;
-    use crate::series::DuplicatePolicy;
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
 

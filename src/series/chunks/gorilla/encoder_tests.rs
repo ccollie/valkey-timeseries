@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::common::time::current_time_millis;
     use crate::common::Sample;
+    use crate::common::time::current_time_millis;
     use crate::series::chunks::gorilla::GorillaEncoder;
     use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;
@@ -38,7 +38,7 @@ mod tests {
             }
 
             let got = encoder.iter().collect::<Result<Vec<_>, _>>().unwrap();
-            assert_eq!(input, got, "{name}: Wanted {:?}, got {:?}", input, got);
+            assert_eq!(input, got, "{name}: Wanted {input:?}, got {got:?}");
         }
     }
 

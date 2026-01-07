@@ -1,66 +1,64 @@
 [package]
 name = "valkey-timeseries"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.88.0"
 readme = "README.md"
 repository = "https://github.com/ccollie/valkey-timeseries"
 homepage = "https://github.com/ccollie/valkey-timeseries"
 description = "A Timeseries data type for Valkey"
 
 [dependencies]
-ahash = { version = "0.8", features = ["std", "serde"] }
-blart = "0.3"
-bon = "3.6"
-byte-pool = "0.2"
-cfg-if = "1.0.0"
-chili = "0.2"
-chrono = { version = "0.4", features = ["serde"] }
-croaring = "2.3"
-enquote = "1.1"
-get-size = { version = "^0.1", features = ["derive"] }
-hashify = { version = "^0.2" }
-linkme = "0.3.32"
-logos = "0.15"
-min-max-heap = "1.3"
-num-traits = "0.2"
+ahash = { version = "0.8", features = ["std"] }
+arc-swap = "1.8"
+blart = "0.4"
+bon = "3.8"
+byte-pool = "0.2.4"
+cfg-if = "1.0.4"
+croaring = "2.5"
+dashmap = "6.1"
+enquote = "1.1.0"
+enum_dispatch = "0.3.13"
+get-size2 = { version = "0.7", features = ["derive"] }
+hashify = { version = "0.2" }
+linkme = "0.3"
+logos = "0.16"
+orx-parallel = "3.4"
+min-max-heap = "1.3.0"
+num-traits = "0.2.19"
 joinkit = "0.2.0"
 lazy_static = "1.5.0"
 papaya = "0.2"
 pco = "0.4"
-rand = "0.9"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-smallvec = { version = "2.0.0-alpha.11", features = ["std"] }
-thiserror = "2.0"
+prost = "0.14"
+rand = { version = "0.9", features = ["small_rng"] }
+smallvec = { version = "2.0.0-alpha.12", features = ["std"] }
+speedate = "0.17"
+thiserror = "2.0.17"
+topo_sort = "0.4.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"
-rayon = "1.10.0"
-regex = "1.11.1"
-strum = { version = "0.27", features = ["derive"] }
-strum_macros = "0.27"
-yasi = "0.1.5"
+range-set-blaze = "0.4"
+rayon-core = "1.13"
+regex = "1"
+strum = { version = "0.27.2", features = ["derive"] }
+strum_macros = "0.27.2"
+logger-rust = "0.2.12"
 
 [dev-dependencies]
-test-case = "3.3.1"
+test-case = "3.3"
+serial_test = { version = "3.3", default-features = false }
+
+[build-dependencies]
+prost-build = "0.14"
 
 [lib]
 name="valkey_timeseries"
 crate-type=["cdylib"]
 
-[profile.dev]
-opt-level = 0
-debug = 2
-debug-assertions = true
-
-[profile.release]
-lto = true            # Link-time optimization
-codegen-units = 1     # Better optimization (slower compile)
-opt-level = 3         # Maximum optimization
-panic = "abort"       # Smaller binary size
-
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
-valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1 and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
+valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1, and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
 use-redismodule-api = [] # We don't support this feature flag which is why it is empty.

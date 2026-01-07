@@ -4,7 +4,7 @@
 use super::traits::{BitRead, BitWrite};
 use super::utils::{read_bits, read_bool, sign_extend};
 
-/// writes an i64 using varbit encoding with a bit bucketing
+/// Writes an i64 using varbit encoding with a bit bucketing
 /// optimized for the dod's observed in histogram buckets, plus a few additional
 /// buckets for large numbers.
 ///
@@ -14,7 +14,7 @@ use super::utils::{read_bits, read_bool, sign_extend};
 /// and decoding (cutting out and later adding back that center-piece we
 /// skip). With the distributions of values we see in practice, we would reduce
 /// the size by around 1%. A more detailed study would be needed for precise
-/// values, but it's appears quite certain that we would end up far below 10%,
+/// values, but it appears quite certain that we would end up far below 10%,
 /// which would maybe convince us to invest the increased coding/decoding cost.
 pub(crate) fn write_varbit<W: BitWrite>(value: i64, writer: &mut W) -> std::io::Result<()> {
     match value {
@@ -55,7 +55,7 @@ pub(crate) fn write_varbit<W: BitWrite>(value: i64, writer: &mut W) -> std::io::
             writer.write_out::<56, u64>(value as u64 & 0xFFFFFFFFFFFFFF)?;
         }
         _ => {
-            writer.write_out::<8, u8>(0b11111111)?; // Worst case, needs 9 bytes.
+            writer.write_out::<8, u8>(0b11111111)?; // The worst case, needs 9 bytes.
             writer.write_out::<64, u64>(value as u64)?; // ??? test this !!!
         }
     }
@@ -64,7 +64,7 @@ pub(crate) fn write_varbit<W: BitWrite>(value: i64, writer: &mut W) -> std::io::
 
 /// Reads a varbit-encoded integer from the input.
 ///
-/// Prometheus' varbitint starts with a bucket category of variable length.
+/// Prometheus' varbit int starts with a bucket category of variable length.
 /// It consists of '1' bits and a final 0, up to 8 bits.
 /// When it's 8 bits long, the final 0 is skipped.
 ///

@@ -1,7 +1,7 @@
+use super::GorillaEncoder;
 use super::buffered_read::BufferedReader;
 use super::varbit::read_varbit_int;
 use super::varbit_xor::read_varbit_xor;
-use super::GorillaEncoder;
 use crate::common::Sample;
 use crate::error::{TsdbError, TsdbResult};
 
@@ -16,15 +16,17 @@ pub struct GorillaIterator<'a> {
     value: f64,
     last_timestamp: i64,
     last_value: f64,
+    last_idx: usize,
 }
 
 impl GorillaIterator<'_> {
-    pub fn new(encoder: &GorillaEncoder) -> GorillaIterator {
+    pub fn new(encoder: &'_ GorillaEncoder) -> GorillaIterator<'_> {
         let buf = encoder.buf();
         let num_samples = encoder.num_samples;
-        let last_timestamp = encoder.timestamp;
-        let last_value = encoder.value;
+        let last_timestamp = encoder.last_ts;
+        let last_value = encoder.last_value;
         let reader = BufferedReader::new(buf);
+        let last_idx = num_samples - 1;
 
         GorillaIterator {
             reader,
@@ -37,6 +39,7 @@ impl GorillaIterator<'_> {
             timestamp_delta: 0,
             last_timestamp,
             last_value,
+            last_idx,
         }
     }
 
@@ -133,16 +136,21 @@ impl Iterator for GorillaIterator<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx >= self.num_samples {
             return None;
-        } else if self.idx == self.num_samples - 1 {
-            return Some(self.read_last_sample());
         }
+
         Some(match self.idx {
             0 => self.read_first_sample(),
             1 => self.read_second_sample(),
+            n if n == self.last_idx => self.read_last_sample(),
             _ => self.read_nth_sample(),
         })
     }
 }
 
+impl ExactSizeIterator for GorillaIterator<'_> {
+    fn len(&self) -> usize {
+        self.num_samples - self.idx
+    }
+}
 #[cfg(test)]
 mod tests {}

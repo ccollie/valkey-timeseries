@@ -133,7 +133,6 @@ pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
         let end = if let Some(end) = options.end {
             end
         } else {
-            // todo: automatically choose based on number of samples
             options.start + (options.samples * 1000 * 60) as i64
         };
         (end - options.start) / options.samples as i64
@@ -150,12 +149,12 @@ pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
 
     if let Some(significant_digits) = options.significant_digits {
         for v in values.iter_mut() {
-            let rounded = round_to_sig_figs(*v, significant_digits as i32);
+            let rounded = round_to_sig_figs(*v, significant_digits as u8);
             *v = rounded;
         }
     } else if let Some(decimal_digits) = options.decimal_digits {
         for v in values.iter_mut() {
-            let rounded = round_to_decimal_digits(*v, decimal_digits as i32);
+            let rounded = round_to_decimal_digits(*v, decimal_digits as u8);
             *v = rounded;
         }
     }

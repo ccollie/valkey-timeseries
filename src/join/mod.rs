@@ -1,92 +1,152 @@
 use crate::series::types::ValueFilter;
 use joinkit::EitherOrBoth;
 use std::fmt::Display;
+use std::ops::Deref;
 use std::time::Duration;
+use valkey_module::ValkeyValue;
 
-pub mod asof;
-mod join_asof_iter;
-mod join_full_iter;
+mod asof;
 mod join_handler;
-mod join_inner_iter;
 mod join_iter;
-mod join_left_exclusive_iter;
-mod join_left_iter;
-pub(crate) mod join_reducer;
-mod join_right_exclusive_iter;
+pub mod join_reducer;
 mod join_right_iter;
-mod join_handler_tests;
 
-use crate::aggregators::AggregationOptions;
+#[cfg(test)]
+mod join_handler_tests;
+pub mod sorted_join_semi;
+
 use crate::common::humanize::humanize_duration;
 use crate::common::{Sample, Timestamp};
-use crate::join::asof::AsOfJoinStrategy;
 use crate::series::TimestampRange;
 pub use join_handler::*;
 pub use join_iter::*;
 use join_reducer::JoinReducer;
 
-#[derive(Clone, PartialEq, Debug)]
-pub struct JoinValue {
-    pub timestamp: Timestamp,
-    pub other_timestamp: Option<Timestamp>,
-    pub value: EitherOrBoth<f64, f64>,
+use crate::join::sorted_join_semi::SortedJoinSemiBy;
+use crate::series::request_types::AggregationOptions;
+pub(super) use asof::{AsOfJoinStrategy, JoinAsOfIter};
+
+pub trait JoinkitExt: Iterator {
+    fn join_semi<K, I, R, F>(self, right: R, key_fn: F) -> SortedJoinSemiBy<Self, R::IntoIter, K, F>
+    where
+        Self: Sized + Iterator<Item = I>,
+        R: IntoIterator<Item = I>,
+        K: Eq + Ord + Clone,
+        F: FnMut(&I) -> K + Clone,
+    {
+        SortedJoinSemiBy::new(self, right, key_fn)
+    }
 }
+
+impl<T: ?Sized> JoinkitExt for T where T: Iterator {}
+
+#[derive(Clone, Debug)]
+pub struct JoinValue(EitherOrBoth<Sample, Sample>);
 
 impl JoinValue {
-    pub fn left(timestamp: Timestamp, value: f64) -> Self {
-        JoinValue {
-            timestamp,
-            other_timestamp: None,
-            value: EitherOrBoth::Left(value),
-        }
-    }
-    pub fn right(timestamp: Timestamp, value: f64) -> Self {
-        JoinValue {
-            other_timestamp: None,
-            timestamp,
-            value: EitherOrBoth::Right(value),
-        }
+    pub fn left(sample: Sample) -> Self {
+        JoinValue(EitherOrBoth::Left(sample))
     }
 
-    pub fn both(timestamp: Timestamp, l: f64, r: f64) -> Self {
-        JoinValue {
-            timestamp,
-            other_timestamp: None,
-            value: EitherOrBoth::Both(l, r),
+    pub fn right(sample: Sample) -> Self {
+        JoinValue(EitherOrBoth::Right(sample))
+    }
+
+    pub fn both(left: Sample, right: Sample) -> Self {
+        JoinValue(EitherOrBoth::Both(left, right))
+    }
+
+    fn sortable_timestamp(&self) -> Timestamp {
+        match &self.0 {
+            // We use the minimum timestamp for Both to ensure consistent ordering. Consider the case
+            // of ASOF joins where left and right samples may have different timestamps. In such cases,
+            // using the minimum timestamp helps maintain a predictable order.
+            EitherOrBoth::Both(left, right) => std::cmp::min(left.timestamp, right.timestamp),
+            EitherOrBoth::Left(left) => left.timestamp,
+            EitherOrBoth::Right(right) => right.timestamp,
         }
     }
 }
 
-impl From<&EitherOrBoth<&Sample, &Sample>> for JoinValue {
-    fn from(value: &EitherOrBoth<&Sample, &Sample>) -> Self {
-        match value {
-            EitherOrBoth::Both(l, r) => {
-                let mut value = Self::both(l.timestamp, l.value, r.value);
-                value.other_timestamp = Some(r.timestamp);
-                value
+impl PartialEq for JoinValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl PartialOrd for JoinValue {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for JoinValue {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let left_ts = self.sortable_timestamp();
+        let right_ts = other.sortable_timestamp();
+        left_ts.cmp(&right_ts)
+    }
+}
+
+impl Eq for JoinValue {}
+
+impl Deref for JoinValue {
+    type Target = EitherOrBoth<Sample, Sample>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<JoinValue> for ValkeyValue {
+    fn from(row: JoinValue) -> Self {
+        match row.0 {
+            EitherOrBoth::Both(left, right) => {
+                ValkeyValue::Array(vec![ValkeyValue::from(left), ValkeyValue::from(right)])
             }
-            EitherOrBoth::Left(l) => Self::left(l.timestamp, l.value),
-            EitherOrBoth::Right(r) => Self::right(r.timestamp, r.value),
+            EitherOrBoth::Left(left) => {
+                ValkeyValue::Array(vec![ValkeyValue::from(left), ValkeyValue::Null])
+            }
+            EitherOrBoth::Right(right) => {
+                ValkeyValue::Array(vec![ValkeyValue::Null, ValkeyValue::from(right)])
+            }
         }
     }
 }
 
 impl From<EitherOrBoth<&Sample, &Sample>> for JoinValue {
     fn from(value: EitherOrBoth<&Sample, &Sample>) -> Self {
-        (&value).into()
+        match value {
+            EitherOrBoth::Both(l, r) => JoinValue::both(*l, *r),
+            EitherOrBoth::Left(l) => Self::left(*l),
+            EitherOrBoth::Right(r) => Self::right(*r),
+        }
     }
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+impl From<EitherOrBoth<Sample, Sample>> for JoinValue {
+    fn from(value: EitherOrBoth<Sample, Sample>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Debug, Copy, PartialEq)]
+pub struct AsOfJoinOptions {
+    pub strategy: AsOfJoinStrategy,
+    pub tolerance: Duration,
+    pub allow_exact_match: bool,
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum JoinType {
     Left,
-    LeftExclusive,
     Right,
-    RightExclusive,
     #[default]
     Inner,
     Full,
-    AsOf(AsOfJoinStrategy, Duration),
+    Semi,
+    Anti,
+    AsOf(AsOfJoinOptions),
 }
 
 impl Display for JoinType {
@@ -95,14 +155,8 @@ impl Display for JoinType {
             JoinType::Left => {
                 write!(f, "LEFT OUTER JOIN")?;
             }
-            JoinType::LeftExclusive => {
-                write!(f, "LEFT EXCLUSIVE JOIN")?;
-            }
             JoinType::Right => {
                 write!(f, "RIGHT OUTER JOIN")?;
-            }
-            JoinType::RightExclusive => {
-                write!(f, "RIGHT EXCLUSIVE JOIN")?;
             }
             JoinType::Inner => {
                 write!(f, "INNER JOIN")?;
@@ -110,14 +164,19 @@ impl Display for JoinType {
             JoinType::Full => {
                 write!(f, "FULL JOIN")?;
             }
-            JoinType::AsOf(dir, tolerance) => {
-                write!(f, "ASOF JOIN")?;
-                match dir {
-                    AsOfJoinStrategy::Next => write!(f, " NEXT")?,
-                    AsOfJoinStrategy::Prior => write!(f, " PRIOR")?,
+            JoinType::Semi => {
+                write!(f, "SEMI JOIN")?;
+            }
+            JoinType::Anti => {
+                write!(f, "ANTI JOIN")?;
+            }
+            JoinType::AsOf(options) => {
+                write!(f, "ASOF JOIN {}", options.strategy)?;
+                if !options.tolerance.is_zero() {
+                    write!(f, " TOLERANCE {}", humanize_duration(&options.tolerance))?;
                 }
-                if !tolerance.is_zero() {
-                    write!(f, " TOLERANCE {}", humanize_duration(tolerance))?;
+                if options.allow_exact_match {
+                    write!(f, " ALLOW EXACT MATCH")?;
                 }
             }
         }
@@ -134,12 +193,4 @@ pub struct JoinOptions {
     pub value_filter: Option<ValueFilter>,
     pub reducer: Option<JoinReducer>,
     pub aggregation: Option<AggregationOptions>,
-}
-
-pub(crate) fn convert_join_item(item: EitherOrBoth<&Sample, &Sample>) -> JoinValue {
-    match item {
-        EitherOrBoth::Both(l, r) => JoinValue::both(l.timestamp, l.value, r.value),
-        EitherOrBoth::Left(l) => JoinValue::left(l.timestamp, l.value),
-        EitherOrBoth::Right(r) => JoinValue::right(r.timestamp, r.value),
-    }
 }

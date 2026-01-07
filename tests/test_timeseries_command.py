@@ -5,11 +5,6 @@ from valkeytestframework.conftest import resource_port_tracker
 
 class TestTimeSeriesCommand(ValkeyTimeSeriesTestCaseBase):
 
-    @pytest.fixture(autouse=True)
-    def setup(self, resource_port_tracker):
-        self.port_tracker = resource_port_tracker
-        super().setup(resource_port_tracker)
-
     def verify_command_arity(self, command, expected_arity): 
         command_info = self.client.execute_command('COMMAND', 'INFO', command)
         actual_arity = command_info.get(command).get('arity')
@@ -21,6 +16,8 @@ class TestTimeSeriesCommand(ValkeyTimeSeriesTestCaseBase):
         self.verify_command_arity('TS.MADD', -1)
         self.verify_command_arity('TS.DEL', -1)
         self.verify_command_arity('TS.CARD', -1)
-        self.verify_command_arity('TS.RESERVE', -1)
         self.verify_command_arity('TS.INFO', -1)
-        self.verify_command_arity('TS.INSERT', -1)
+        self.verify_command_arity('TS.ALTER', -1)
+        self.verify_command_arity('TS.JOIN', -1)
+        self.verify_command_arity('TS.RANGE', -1)
+        self.verify_command_arity('TS.MRANGE', -1)

@@ -1,29 +1,36 @@
-use crate::common::binary_search::{find_last_ge_index, ExponentialSearch};
+use crate::common::binary_search::{ExponentialSearch, find_last_ge_index};
 use crate::common::constants::VEC_BASE_SIZE;
-use crate::common::parallel::join;
-use crate::common::pool::{get_pooled_vec_f64, get_pooled_vec_i64, PooledVecF64, PooledVecI64};
-use crate::common::serialization::{rdb_load_usize, rdb_save_usize};
+use crate::common::encoding::{
+    try_read_byte_slice, try_read_f64_le, try_read_uvarint, write_byte_slice, write_f64_le,
+    write_uvarint,
+};
+use crate::common::hash::hash_f64;
+use crate::common::logging::log_warning;
+use crate::common::pool::{PooledVecF64, PooledVecI64, get_pooled_vec_f64, get_pooled_vec_i64};
+use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
+use crate::common::threads::join;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
+use crate::series::chunks::Chunk;
 use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::pco::PcoSampleIterator;
 use crate::series::chunks::pco::pco_utils::{
     compress_timestamps, compress_values, decompress_timestamps, decompress_values,
 };
-use crate::series::chunks::pco::PcoSampleIterator;
 use crate::series::chunks::utils::get_timestamp_index_bounds;
-use crate::series::chunks::Chunk;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
-use get_size::GetSize;
-use serde::{Deserialize, Serialize};
+use get_size2::GetSize;
+use std::hash::Hash;
 use std::mem::size_of;
-use valkey_module::{raw, RedisModuleIO, ValkeyResult};
+use valkey_module::digest::Digest;
+use valkey_module::{RedisModuleIO, ValkeyResult, raw};
 
 /// `PcoChunk` holds sample data encoded using Pco compression.
 /// https://github.com/mwlon/pcodec
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, GetSize)]
+#[derive(Debug, Clone, PartialEq, GetSize)]
 pub struct PcoChunk {
     pub min_time: Timestamp,
     pub max_time: Timestamp,
@@ -46,6 +53,18 @@ impl Default for PcoChunk {
             timestamps: Vec::new(),
             values: Vec::new(),
         }
+    }
+}
+
+impl Hash for PcoChunk {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.min_time.hash(state);
+        self.max_time.hash(state);
+        self.max_size.hash(state);
+        self.count.hash(state);
+        self.timestamps.hash(state);
+        self.values.hash(state);
+        hash_f64(self.last_value, state);
     }
 }
 
@@ -101,7 +120,7 @@ impl PcoChunk {
         self.count = timestamps.len();
         self.last_value = values[values.len() - 1];
 
-        // use rayon to run compression in parallel
+        // use chili to run compression in parallel
         // first we steal the result buffers to avoid allocation and issues with the BC
         let mut t_data = std::mem::take(&mut self.timestamps);
         let mut v_data = std::mem::take(&mut self.values);
@@ -111,14 +130,17 @@ impl PcoChunk {
 
         // then we compress in parallel
         // TODO: handle errors
-        let _ = join(
-            || compress_timestamps(&mut t_data, timestamps).ok(),
-            || compress_values(&mut v_data, values).ok(),
+        let (ts_result, value_result) = join(
+            || compress_timestamps(&mut t_data, timestamps),
+            || compress_values(&mut v_data, values),
         );
 
         // then we put the buffers back
         self.timestamps = t_data;
         self.values = v_data;
+
+        ts_result?;
+        value_result?;
 
         self.count = timestamps.len();
         self.timestamps.shrink_to_fit();
@@ -144,18 +166,12 @@ impl PcoChunk {
     ) -> TsdbResult<()> {
         timestamps.reserve(self.count);
         values.reserve(self.count);
-        // todo: dynamically calculate cutoff or just use chili
-        if self.values.len() > 2048 {
-            // todo: return errors as appropriate
-            let _ = join(
-                || decompress_timestamps(&self.timestamps, timestamps).ok(),
-                || decompress_values(&self.values, values).ok(),
-            );
-        } else {
-            decompress_timestamps(&self.timestamps, timestamps)?;
-            decompress_values(&self.values, values)?;
-        }
-        Ok(())
+        let (timestamps, values) = join(
+            || decompress_timestamps(&self.timestamps, timestamps),
+            || decompress_values(&self.values, values),
+        );
+        timestamps?;
+        values
     }
 
     #[cfg(test)]
@@ -237,19 +253,21 @@ impl PcoChunk {
     pub fn iter(&self) -> impl Iterator<Item = Sample> + '_ {
         match PcoSampleIterator::new(&self.timestamps, &self.values) {
             Ok(iter) => iter.into(),
-            Err(_) => {
-                // todo: log error
+            Err(e) => {
+                log_warning(format!("pco chunk iter(): error constructing iter: {e}"));
                 SampleIter::Empty
             }
         }
     }
 
-    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter {
+    pub fn range_iter(&self, start_ts: Timestamp, end_ts: Timestamp) -> SampleIter<'_> {
         let iter = PcoSampleIterator::new_range(&self.timestamps, &self.values, start_ts, end_ts);
         match iter {
             Ok(iter) => iter.into(),
-            Err(_) => {
-                // todo: log error
+            Err(e) => {
+                log_warning(format!(
+                    "pco chunk range_iter(): error constructing iter: {e}"
+                ));
                 SampleIter::Empty
             }
         }
@@ -299,7 +317,7 @@ impl PcoChunk {
                     if is_duplicate {
                         state.result.push(SampleAddResult::Duplicate);
                     } else {
-                        state.result.push(SampleAddResult::Ok(sample.timestamp));
+                        state.result.push(SampleAddResult::Ok(sample));
                     }
                 }
                 Ok(())
@@ -440,7 +458,7 @@ impl Chunk for PcoChunk {
             for sample in samples {
                 timestamps.push(sample.timestamp);
                 values.push(sample.value);
-                result.push(SampleAddResult::Ok(sample.timestamp));
+                result.push(SampleAddResult::Ok(*sample));
             }
 
             self.compress(&timestamps, &values)?;
@@ -456,7 +474,7 @@ impl Chunk for PcoChunk {
                 for sample in samples {
                     timestamps.push(sample.timestamp);
                     values.push(sample.value);
-                    result.push(SampleAddResult::Ok(sample.timestamp));
+                    result.push(SampleAddResult::Ok(*sample));
                 }
                 self.compress(&timestamps, &values)?;
                 return Ok(result);
@@ -542,13 +560,89 @@ impl Chunk for PcoChunk {
             values,
         })
     }
+
+    fn serialize(&self, dest: &mut Vec<u8>) {
+        // Write min_time as signed varint (timestamp)
+        write_uvarint(dest, self.min_time as u64);
+
+        // Write max_time as signed varint (timestamp)
+        write_uvarint(dest, self.max_time as u64);
+
+        // Write max_size as unsigned varint
+        write_uvarint(dest, self.max_size as u64);
+
+        // Write last_value as f64
+        write_f64_le(dest, self.last_value);
+
+        // Write count as unsigned varint
+        write_uvarint(dest, self.count as u64);
+
+        // Write timestamps vector length and data
+        write_byte_slice(dest, &self.timestamps);
+
+        // Write values vector length and data
+        write_byte_slice(dest, &self.values);
+    }
+
+    fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
+        let mut buf = buf;
+
+        // Read min_time
+        let min_time = read_uvarint(&mut buf)? as i64;
+
+        // Read max_time
+        let max_time = read_uvarint(&mut buf)? as i64;
+
+        // Read max_size
+        let max_size = read_uvarint(&mut buf)? as usize;
+
+        // Read last_value
+        let last_value = try_read_f64_le(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
+
+        // Read count
+        let count = read_uvarint(&mut buf)? as usize;
+
+        // Read timestamps vector
+        let timestamps = try_read_byte_slice(&mut buf)
+            .map_err(|_| TsdbError::ChunkDecoding)?
+            .to_vec();
+
+        // Read values vector
+        let values = try_read_byte_slice(&mut buf)
+            .map_err(|_| TsdbError::ChunkDecoding)?
+            .to_vec();
+
+        Ok(PcoChunk {
+            min_time,
+            max_time,
+            max_size,
+            last_value,
+            count,
+            timestamps,
+            values,
+        })
+    }
+
+    fn debug_digest(&self, dig: &mut Digest) {
+        dig.add_long_long(self.min_time);
+        dig.add_long_long(self.max_time);
+        dig.add_long_long(self.max_size as i64);
+        dig.add_string_buffer(self.last_value.to_le_bytes().as_ref());
+        dig.add_long_long(self.count as i64);
+        dig.add_string_buffer(&self.timestamps);
+        dig.add_string_buffer(&self.values);
+    }
+}
+
+fn read_uvarint(buf: &mut &[u8]) -> TsdbResult<u64> {
+    try_read_uvarint(buf).map_err(|_| TsdbError::ChunkDecoding)
 }
 
 fn get_timestamp_index(timestamps: &[Timestamp], ts: Timestamp, start_ofs: usize) -> (usize, bool) {
     let stamps = &timestamps[start_ofs..];
-    // for regularly spaced timestamps, we can get extreme levels of compression. Also since pco is
-    // intended for "cold" storage we can have larger than normal numbers of samples.
-    // if we pass a threshold, see if we should use an exponential search
+    // For regularly spaced timestamps, we can get extreme levels of compression. Also, since pco is
+    // intended for "cold" storage, we can have larger than normal numbers of samples.
+    // If we pass a threshold, see if we should use an exponential search
     let idx = if should_use_exponential_search(stamps, ts) {
         stamps
             .exponential_search_by(|s| s.cmp(&ts))
@@ -569,9 +663,9 @@ fn should_use_exponential_search(timestamps: &[Timestamp], ts: Timestamp) -> boo
     if timestamps.len() < EXPONENTIAL_SEARCH_THRESHOLD {
         return false;
     }
-    // exponential search is only worth it if we're near the beginning, so we use the following heuristic:
+    // Exponential search is only worth it if we're near the beginning, so we use the following heuristic:
     // 1. Assume timestamps are equally spaced
-    // 2. Get delta of `ts` from the start
+    // 2. Get a delta of `ts` from the start
     // 3. Calculate delta as a percentage of the range
     // 4. If delta is less than 20% of the range, return true. Otherwise, return false.
     // This heuristic assumes that timestamps are evenly spaced. If they aren't, this heuristic may not be accurate.
@@ -602,9 +696,9 @@ fn remove_values_in_range(
 #[cfg(test)]
 mod tests {
     use crate::common::{Sample, Timestamp};
-    use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
     use crate::series::chunks::Chunk;
     use crate::series::chunks::PcoChunk;
+    use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
     use crate::series::{DuplicatePolicy, SampleAddResult};
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
@@ -926,8 +1020,7 @@ mod tests {
         assert_eq!(range_samples.len(), 500_001);
         assert!(
             duration.as_millis() < 1000,
-            "Range iteration took too long: {:?}",
-            duration
+            "Range iteration took too long: {duration:?}"
         );
     }
 
@@ -963,7 +1056,7 @@ mod tests {
 
         // Check that all new samples were added successfully
         for (i, sample) in new_samples.iter().enumerate() {
-            assert_eq!(result[i], SampleAddResult::Ok(sample.timestamp));
+            assert_eq!(result[i], SampleAddResult::Ok(*sample));
         }
 
         // Verify the chunk now contains the initial and new samples
@@ -986,7 +1079,7 @@ mod tests {
 
         // Check that all new samples were added successfully
         for (i, sample) in left_samples.iter().enumerate() {
-            assert_eq!(result[i], SampleAddResult::Ok(sample.timestamp));
+            assert_eq!(result[i], SampleAddResult::Ok(*sample));
         }
 
         // Verify that the chunk now contains both the new and existing samples
@@ -1033,12 +1126,12 @@ mod tests {
             .merge_samples(&new_samples, Some(DuplicatePolicy::KeepLast))
             .unwrap();
 
-        // Check that the merge result indicates successful addition
+        // Check that the merge result indicates a successful addition
         assert_eq!(
             result,
             vec![
-                SampleAddResult::Ok(2), // Duplicate, but should be overwritten
-                SampleAddResult::Ok(4), // New sample
+                SampleAddResult::Ok(new_samples[0]), // Duplicate, but should be overwritten
+                SampleAddResult::Ok(new_samples[1]), // New sample
             ]
         );
 
@@ -1109,7 +1202,7 @@ mod tests {
             vec![
                 SampleAddResult::Duplicate,
                 SampleAddResult::Duplicate,
-                SampleAddResult::Ok(4),
+                SampleAddResult::Ok(new_samples[2]),
             ]
         );
 
@@ -1147,7 +1240,7 @@ mod tests {
         // Ensure all samples are added successfully
         for (i, sample) in samples.iter().enumerate() {
             match result[i] {
-                SampleAddResult::Ok(ts) => assert_eq!(ts, sample.timestamp),
+                SampleAddResult::Ok(added) => assert_eq!(added.timestamp, sample.timestamp),
                 _ => panic!("Expected SampleAddResult::Ok, got {:?}", result[i]),
             }
         }
@@ -1184,8 +1277,8 @@ mod tests {
 
         // Check results
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], SampleAddResult::Ok(chunk.min_time));
-        assert_eq!(result[1], SampleAddResult::Ok(chunk.max_time));
+        assert_eq!(result[0], SampleAddResult::Ok(boundary_samples[0]));
+        assert_eq!(result[1], SampleAddResult::Ok(boundary_samples[1]));
 
         // Decompress and verify the samples
         let decompressed_samples = chunk.decompress_samples().unwrap();

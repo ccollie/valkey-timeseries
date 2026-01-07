@@ -3,6 +3,7 @@ use enquote::enquote;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
+use valkey_module::ValkeyValue;
 
 pub trait SeriesLabel: Sized {
     fn name(&self) -> &str;
@@ -53,6 +54,18 @@ impl From<InternedLabel<'_>> for Label {
             name: label.name.to_string(),
             value: label.value.to_string(),
         }
+    }
+}
+
+impl From<Label> for ValkeyValue {
+    fn from(label: Label) -> Self {
+        let label_value = if label.value.is_empty() {
+            ValkeyValue::Null
+        } else {
+            ValkeyValue::from(label.value)
+        };
+        let res = vec![ValkeyValue::from(label.name), label_value];
+        ValkeyValue::from(res)
     }
 }
 

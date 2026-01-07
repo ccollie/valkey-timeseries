@@ -8,6 +8,15 @@ set -e
 SCRIPT_DIR=$(pwd)
 echo "Script Directory: $SCRIPT_DIR"
 
+if [ "$1" = "clean" ]; then
+  echo "Cleaning build artifacts"
+  rm -rf target/
+  rm -rf tests/build/
+  rm -rf test-data/
+  echo "Clean completed."
+  exit 0
+fi
+
 echo "Running cargo and clippy format checks..."
 cargo fmt --check
 cargo clippy --profile release --all-targets -- -D clippy::all
@@ -15,8 +24,11 @@ cargo clippy --profile release --all-targets -- -D clippy::all
 echo "Running cargo build release..."
 RUSTFLAGS="-D warnings" cargo build --all --all-targets  --release
 
-echo "Running unit tests..."
-cargo test --features enable-system-alloc
+# Only run unit tests if no specific integration test is specified
+if [[ -z "$TEST_PATTERN" ]]; then
+  echo "Running unit tests..."
+  cargo test --features enable-system-alloc
+fi
 
 # Ensure SERVER_VERSION environment variable is set
 if [ -z "$SERVER_VERSION" ]; then
@@ -47,7 +59,7 @@ else
 fi
 
 TEST_FRAMEWORK_REPO="https://github.com/valkey-io/valkey-test-framework"
-TEST_FRAMEWORK_DIR="tests/build/valkeytestframework"
+TEST_FRAMEWORK_DIR="tests/valkeytestframework"
 
 if [ -d "$TEST_FRAMEWORK_DIR" ]; then
     echo "valkeytestframework found."

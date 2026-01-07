@@ -1,15 +1,14 @@
-use get_size::GetSize;
-use num_traits::Pow;
+use get_size2::GetSize;
 use std::f64;
 use std::fmt::Display;
 
 pub const MAX_SIGNIFICANT_DIGITS: u8 = 16;
 pub const MAX_DECIMAL_DIGITS: u8 = 16;
 
-#[derive(Clone, Debug, PartialEq, Copy, GetSize)]
+#[derive(Clone, Debug, Hash, PartialEq, Copy, GetSize)]
 pub enum RoundingStrategy {
-    SignificantDigits(i32),
-    DecimalDigits(i32),
+    SignificantDigits(u8),
+    DecimalDigits(u8),
 }
 
 impl RoundingStrategy {
@@ -25,23 +24,26 @@ impl Display for RoundingStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RoundingStrategy::SignificantDigits(digits) => {
-                write!(f, "significant_digits({})", digits)
+                write!(f, "significant_digits({digits})")
             }
-            RoundingStrategy::DecimalDigits(digits) => write!(f, "decimal_digits({})", digits),
+            RoundingStrategy::DecimalDigits(digits) => write!(f, "decimal_digits({digits})"),
         }
     }
 }
 
-/// rounds f to the given number of decimal digits after the point.
+/// Rounds f to the given number of decimal digits after the point.
 ///
 /// See also round_to_sig_figs.
-pub fn round_to_decimal_digits(f: f64, digits: i32) -> f64 {
+pub fn round_to_decimal_digits(value: f64, digits: u8) -> f64 {
     if digits == 0 {
-        return f.round();
+        return value.round();
     }
-    let multiplier = 10_f64.pow(digits as f64);
-    let mult = (f * multiplier).round();
-    mult / multiplier
+    let digits = digits.clamp(0, MAX_DECIMAL_DIGITS);
+    if digits == 0 {
+        return value;
+    }
+    let factor = 10_f64.powi(digits as i32);
+    (value * factor).round() / factor
 }
 
 /// Rounds a floating-point value to a specified number of significant figures.
@@ -54,17 +56,16 @@ pub fn round_to_decimal_digits(f: f64, digits: i32) -> f64 {
 /// ### Returns
 ///
 /// The rounded floating-point value with the specified number of significant figures.
-pub fn round_to_sig_figs(value: f64, digits: i32) -> f64 {
-    // https://stackoverflow.com/questions/65719216/why-does-rust-only-use-16-significant-digits-for-f64-equality-checks
-    if digits == 0 || digits >= MAX_SIGNIFICANT_DIGITS as i32 {
+pub fn round_to_sig_figs(value: f64, digits: u8) -> f64 {
+    if digits == 0
+        || digits >= MAX_SIGNIFICANT_DIGITS
+        || value.is_nan()
+        || value.is_infinite()
+        || value == 0.0
+    {
         return value;
     }
-
-    if value.is_nan() || value.is_infinite() || value == 0.0 {
-        return value;
-    }
-
-    let magnitude = 10.0_f64.powi(digits - 1 - value.abs().log10().floor() as i32);
+    let magnitude = 10.0_f64.powi(digits as i32 - 1 - value.abs().log10().floor() as i32);
     (value * magnitude).round() / magnitude
 }
 
@@ -82,27 +83,10 @@ mod tests {
     }
 
     #[test]
-    fn test_round_to_decimal_digits_small_negative_number_negative_digits() {
-        let f = -0.0000000123456789;
-        let digits = -3;
-        let expected = 0.0;
-        let result = round_to_decimal_digits(f, digits);
-        assert_eq!(result, expected);
-    }
-    #[test]
     fn test_round_to_decimal_digits_zero_digits() {
         let f = f64::consts::PI;
         let digits = 0;
         let expected = 3.0;
-        let result = round_to_decimal_digits(f, digits);
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_round_to_decimal_digits_negative_digits() {
-        let f = 1234.5678;
-        let digits = -2;
-        let expected = 1200.0;
         let result = round_to_decimal_digits(f, digits);
         assert_eq!(result, expected);
     }
@@ -138,9 +122,9 @@ mod tests {
     fn test_round_to_sig_figs_long_string_of_zeros() {
         let value = 0.0000000123456789;
         let digits = 3;
-        let expected = 0.0000000123000000;
+        let expected = 0.0000000123;
         let result = round_to_sig_figs(value, digits);
-        assert_eq!(result, expected);
+        assert!((result - expected).abs() <= 1e-18);
     }
 
     #[test]

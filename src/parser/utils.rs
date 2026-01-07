@@ -12,19 +12,18 @@ const fn is_ident_char(ch: char) -> bool {
     matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.')
 }
 
-/// interprets `token` as a single-quoted, double-quoted, or backquoted
+/// Interprets `token` as a single-quoted, double-quoted, or backquoted
 /// Prometheus query language string literal, returning the string value that `token`
 /// quotes.
 ///
-/// Special-casing for single quotes was removed and single quoted strings are now treated the
+/// Special-casing for single quotes was removed, and single quoted strings are now treated the
 /// same as double-quoted ones.
-pub fn extract_string_value(token: &str) -> ParseResult<Cow<str>> {
+pub fn extract_string_value(token: &'_ str) -> ParseResult<Cow<'_, str>> {
     let n = token.len();
 
     if n < 2 {
         return Err(ParseError::SyntaxError(format!(
-            "invalid quoted string literal. A minimum of 2 chars needed; got {}",
-            token
+            "invalid quoted string literal. A minimum of 2 chars needed; got {token}"
         )));
     }
 
@@ -57,12 +56,6 @@ pub fn extract_string_value(token: &str) -> ParseResult<Cow<str>> {
         return Ok(Cow::Borrowed(s));
     }
 
-    if s.contains('\n') {
-        return Err(ParseError::SyntaxError(
-            "Unexpected newline in string literal".to_string(),
-        ));
-    }
-
     if quote_ch == '\'' {
         let needs_unquote = s.contains(['\\', '\'', '"']);
         if !needs_unquote {
@@ -87,7 +80,7 @@ pub fn extract_string_value(token: &str) -> ParseResult<Cow<str>> {
 fn handle_unquote(token: &str, quote: char) -> ParseResult<String> {
     match unescape(token, Some(quote)) {
         Err(err) => {
-            let msg = format!("cannot parse string literal {token}: {:?}", err);
+            let msg = format!("cannot parse string literal {token}: {err:?}");
             Err(ParseError::SyntaxError(msg))
         }
         Ok(s) => Ok(s),
@@ -114,7 +107,7 @@ pub fn escape_ident(s: &str) -> String {
     dst.to_string()
 }
 
-pub fn unescape_ident(s: &str) -> ParseResult<Cow<str>> {
+pub fn unescape_ident(s: &'_ str) -> ParseResult<Cow<'_, str>> {
     let v = s.find('\\');
     if v.is_none() {
         return Ok(Cow::Borrowed(s));

@@ -3,7 +3,7 @@ mod mackey_glass;
 mod rand;
 
 use ::rand::prelude::StdRng;
-use ::rand::{rng, SeedableRng};
+use ::rand::{SeedableRng, rng};
 #[cfg(test)]
 pub use rand::*;
 

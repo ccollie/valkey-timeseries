@@ -1,13 +1,14 @@
 ```
 TS.JOIN leftKey rightKey fromTimestamp toTimestamp
-    [[INNER] | [FULL] | [LEFT [EXCLUSIVE]] | [RIGHT [EXCLUSIVE]] | [ASOF [PRIOR | NEXT | NEAREST] [tolerance]]]
+    [[INNER] | [FULL] | [LEFT] | [RIGHT] | [ANTI] | [SEMI] | [ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] ALLOW_EXACT_MATCH]]
     [FILTER_BY_TS ts...]
     [FILTER_BY_VALUE min max]
     [COUNT count]
     [REDUCE operator]
+    [AGGREGATION aggregator bucketDuration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
 ```
 
-Join 2 time series on sample timestamps. Performs an INNER join by default.
+Join two time series on sample timestamps. Performs an INNER join by default.
 
 [Examples](#examples)
 
@@ -15,12 +16,13 @@ Join 2 time series on sample timestamps. Performs an INNER join by default.
 
 <details open><summary><code>leftKey</code></summary>
 
-is key name for the time series being joined.
+is the key name for the time series being joined.
 </details>
 
 <details open><summary><code>rightKey</code></summary> 
 
-is key name for time series.
+is the key name for the right time series.
+
 </details>
 
 Both keys must have been created before `TS.JOIN` is called.
@@ -41,39 +43,46 @@ Both keys must have been created before `TS.JOIN` is called.
 
 ## Optional arguments
 
-<details open><summary><code>LEFT [EXCLUSIVE]</code></summary>
-
+<details open><summary><code>LEFT</code></summary>
 A `LEFT` join outputs the matching samples between both tables. In case no samples match from the left series, it returns 
 those items with null values.
 
-A `LEFT EXCLUSIVE` join returns samples for which no corresponding timestamp exists in the `right` series.
-
 </details>
 
-<details open><summary><code>RIGHT [EXCLUSIVE]</code></summary>
-
+<details open><summary><code>RIGHT</code></summary>
 A `RIGHT` join outputs all samples in the right series. In case no samples match from the left series, it returns
 those items with null values.
-
-`RIGHT EXCLUSIVE` join returns samples for which no corresponding timestamp exists in the `left` series.
 
 </details>
 
 <details open><summary><code>INNER</code></summary>
+Specifies an `INNER` join. A row is generated for samples with matching timestamps in the selected range.
 
-specifies an `INNER` join. A row is generated for samples with matching timestamps in the selected range.
+</details>
+
+<details open><summary><code>ANTI</code></summary>
+An `ANTI` join returns samples for which no matching timestamp exists in the `right` series.
+
+</details>
+
+<details open><summary><code>SEMI</code></summary>
+An `SEMI` join returns samples for which no corresponding timestamp exists in the `right` series. It does not return any 
+values from the right table.
+
+The main purpose is to filter the left series based on the existence of related records in the right table, not to 
+combine data from both tables.
 
 </details>
 
 <details open><summary><code>FULL</code></summary>
 
-specifies an FULL join. Returns samples from both left and right series. If no matching rows exist for the row in the left 
+Specifies an FULL join. Returns samples from both left and right series. If no matching rows exist for the row in the left 
 series, the value of the right series will have nulls. Correspondingly, the value of the left series will have nulls if 
 there are no matching rows for the sample in the right series.
 
 </details>
 
-<details open><summary><code>ASOF [PRIOR | NEXT] tolerance</code></summary>
+<details open><summary><code>ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]</code></summary>
 
 `ASOF` joins match each sample in the left series with the closest preceding or following sample in the right series based on 
 timestamps. They are particularly useful for analyzing time-series data where records from different sources may not have 
@@ -81,7 +90,7 @@ perfectly aligned timestamps. ASOF joins solve the problem of finding the value 
 
 #### How It Works
 For each sample in the left table, the join finds the closest matching value from the right table.
-- `PRIOR` selects the last row in the right series whose timeseries is less than or equal to the left’s timestamp.
+- `PREVIOUS` selects the last row in the right series whose timeseries is less than or equal to the left’s timestamp.
 - `NEXT` (default) selects the first row in the right series whose timestamp is greater than or equal to the left’s timestamp.
 - `NEAREST` selects the last row in the right series whose timestamp is nearest to the left’s timestamp.
 
@@ -90,11 +99,14 @@ The tolerance can be specified as:
  - An integer representing milliseconds
  - A duration specified as a string, e.g. 2m
 
+`ALLOW_EXACT_MATCH` is a boolean flag that determines whether to allow exact matches between the left and right series.
+
+
 If not specified, there is no tolerance limit (equivalent to an infinite tolerance). When set, JOIN ASOF will only match 
 keys within the specified tolerance range. Any potential matches outside this range will be treated as no match.
 
 The tolerance works in conjunction with the 'direction' parameter. 
- - For example, with direction= `PRIOR` (the default), it looks for the nearest timestamp within the tolerance range that is less 
+ - For example, with strategy = `PREVIOUS` (the default), it looks for the nearest timestamp within the tolerance range that is less 
  than or equal to the timestamp of the left sample.
 
 
@@ -102,11 +114,11 @@ The tolerance works in conjunction with the 'direction' parameter.
 Suppose we want to get the spreads between buy and sell trades in a trading application
 
 ```
-TS.JOIN trades:buy trades:sell -1hr * ASOF PRIOR 2ms TRANSFORM sub
+TS.JOIN trades:buy trades:sell -1hr * ASOF NEAREST 2ms REDUCE sub
 ```
 
 The result has all samples from the `buy` series joined with samples from the `sell` series. For each timestamp from the 
-`buy` series, the query looks for a timestamp that is equal or prior to it from the `sell` series, within a tolerance of
+`buy` series, the query looks for a timestamp that nearest to it from the `sell` series, within a tolerance of
 2 milliseconds. If no matching timestamp is found, NULL is inserted.
 
 The `sub` transform function is then supplied to subtract the `sell` value from the `buy` value for each sample returned.
@@ -131,29 +143,31 @@ performs an operation on the value in each returned row.
 
  `operator` takes one of the following types:
 
-  | `operator`    | Description                                                            |
-  |---------------|------------------------------------------------------------------------| 
-  | `absdiff`     | abs(`left` - `right`)                                                  |
-  | `add` or `+`  | `left` + `right`                                                       |
-  | `and`         | Returns `left` if either value is NAN/NULL, `right` otherwise          |
-  | `avg`         | Arithmetic mean of both mut values                                     |
-  | `default`     | If left is is NaN/NULL, return right, else left                        | 
-  | `div` or `/`  | `left` / `right`                                                       |
-  | `eq` or `=`   | Returns 1 if left == right, 0 otherwise                                |
-  | `gt` or `>`   | Returns 1 if left > right, otherwise returns 0                         |
-  | `gte` or `>=` | Returns 1 if left is greater than or equals right, otherwise returns 0 |
-  | `if`          | Returns left if right is not NaN/NULL. Otherwise, NaN is returned.     |
-  | `ifnot`       | returns left if right is NaN. Otherwise, NaN is returned.              |
-  | `lt` or `<`   | Returns 1 if left > right, otherwise returns 0                         |
-  | `lte` or `<=` | Returns 1 if left is less than or equals right, otherwise returns 0    |
-  | `min`         | Minimum value                                                          |
-  | `max`         | Maximum value                                                          | 
-  | `mul` or `*`  | `left` * `right`                                                       |
-  | `ne` or `!=`  | Returns 1 if `left` equals `right`, otherwise returns 0                |
-  | `pow`         | `left` ^ `right`                                                       |
-  | `sub` or `-`  | `left` - `right`                                                       |
-  | `or`          | return the first non-NaN item. If both are NaN, it returns NaN.        |
-  | `unless`      | Returns Null unless `left` equals `right`                              |
+  | `operator`   | Description                                                             |
+  |--------------|-------------------------------------------------------------------------| 
+  | `abs_diff`   | abs(`left` - `right`)                                                   |
+  | `and`        | Returns `left` if either value is NAN, `right` otherwise                |
+  | `avg`        | Arithmetic mean of both mut values                                      |
+  | `default`    | If `left` is is NaN, return `right`, else `left`                        | 
+  | `div`        | `left` / `right`                                                        |
+  | `eq`         | Returns 1 if `left` == `right`, 0 otherwise                             |
+  | `gt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
+  | `gte`        | Returns 1 if left is greater than or equals right, otherwise returns 0  |
+  | `if`         | Returns `left` if `right` is not NaN. Otherwise, NaN is returned.       |
+  | `ifnot`      | returns `left` if `right` is NaN. Otherwise, NaN is returned.           |
+  | `lt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
+  | `lte`        | Returns 1 if `left` is less than or equals `right`, otherwise returns 0 |
+  | `min`        | Minimum value                                                           |
+  | `max`        | Maximum value                                                           | 
+  | `mul`        | `left` * `right`                                                        |
+  | `ne`         | Returns 1 if `left` equals `right`, otherwise returns 0                 |
+  | `pct_change` | The percentage change of `right` over `left`                            |
+  | `pow`        | `left` ^ `right`                                                        |
+  | `sgn_diff`   | sgn(`left` - `right`)                                                   |
+  | `sub`        | `left` - `right`                                                        |
+  | `sum`        | `left` + `right`                                                        |
+  | `or`         | return the first non-NaN item. If both are NaN, it returns NaN.         |
+  | `unless`     | Returns Null unless `left` equals `right`                               |
 
 </details>
 
@@ -184,7 +198,7 @@ OK
 Next, run the join.
 
 ```
-127.0.0.1:6379> TS.JOIN temp:CDMX temp:TOR TRANSFORM min 
+127.0.0.1:6379> TS.JOIN temp:CDMX temp:TOR REDUCE min 
 ```
 
 </details>

@@ -1,5 +1,4 @@
-use super::chunks::Chunk;
-use super::merge::merge_by_capacity;
+use super::chunks::{Chunk, merge_by_capacity};
 use super::time_series::TimeSeries;
 use crate::error::TsdbResult;
 
@@ -30,9 +29,9 @@ pub fn defrag_series(series: &mut TimeSeries) -> TsdbResult {
             continue;
         }
 
-        // while previous block has capacity merge into it
+        // while the previous block has capacity merge into it
         while let Some(deleted) =
-            merge_by_capacity(prev_chunk, chunk, min_timestamp, Some(duplicate_policy))?
+            merge_by_capacity(prev_chunk, chunk, min_timestamp, duplicate_policy)?
         {
             deleted_count -= deleted;
             if chunk.is_empty() {

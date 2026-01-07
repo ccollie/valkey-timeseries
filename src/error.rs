@@ -1,5 +1,7 @@
 use crate::common::Sample;
+use crate::error_consts;
 use thiserror::Error;
+use valkey_module::ValkeyError;
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 /// Enum for various errors in Tsdb.
@@ -13,6 +15,9 @@ pub enum TsdbError {
     #[error("Decoding error. {0}")]
     DecodingError(String),
 
+    #[error("Encoding error. {0}")]
+    EncodingError(String),
+
     #[error("Serialization error. {0}")]
     CannotSerialize(String),
 
@@ -25,7 +30,7 @@ pub enum TsdbError {
     #[error("Decompression error. {0}")]
     CannotDecompress(String),
 
-    #[error("Duplicate sample. {0}")] // need better error
+    #[error("Duplicate sample. {0}")] // need a better error
     DuplicateSample(String),
 
     #[error("Invalid metric: {0}")]
@@ -52,6 +57,12 @@ pub enum TsdbError {
     #[error("{0}")]
     General(String),
 
+    #[error("TSDB: error encoding chunk")]
+    ChunkEncoding,
+
+    #[error("TSDB: error decoding chunk")]
+    ChunkDecoding,
+
     #[error("End of stream")]
     EndOfStream,
 }
@@ -70,9 +81,19 @@ impl From<String> for TsdbError {
     }
 }
 
-// impl Into<ValkeyError> for TsdbError {
-//   fn into(self) -> ValkeyError {
-//     let msg = format!("TSDB: {}", self.to_string());
-//     ValkeyError::String(msg)
-//   }
-// }
+impl From<ValkeyError> for TsdbError {
+    fn from(e: ValkeyError) -> Self {
+        let msg = e.to_string();
+        valkey_error_string_to_tsdb_error(&msg)
+    }
+}
+
+fn valkey_error_string_to_tsdb_error(s: &str) -> TsdbError {
+    match s {
+        error_consts::CHUNK_COMPRESSION => TsdbError::ChunkEncoding, // capacity unknown
+        error_consts::CHUNK_DECOMPRESSION => TsdbError::ChunkDecoding,
+        error_consts::SAMPLE_TOO_OLD => TsdbError::SampleTooOld,
+        error_consts::DUPLICATE_SAMPLE => TsdbError::DuplicateSample(s.to_string()),
+        _ => TsdbError::General(s.to_string()),
+    }
+}

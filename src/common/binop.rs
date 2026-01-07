@@ -43,6 +43,18 @@ pub(crate) const fn op_or(left: f64, right: f64) -> f64 {
     right
 }
 
+// implement xor
+#[inline]
+pub(crate) const fn op_xor(left: f64, right: f64) -> f64 {
+    if left.is_nan() && right.is_nan() {
+        return 0.;
+    }
+    if left == right {
+        return 0.;
+    }
+    1.
+}
+
 /// gt returns true if left > right
 #[inline]
 pub(crate) const fn op_gt(left: f64, right: f64) -> bool {
@@ -85,10 +97,12 @@ pub(crate) const fn op_mul(left: f64, right: f64) -> f64 {
     left * right
 }
 
-/// Div returns left / right
-/// Todo: protect against div by zero
+/// Div returns left / right. If right is 0, returns NaN.
 #[inline]
 pub(crate) const fn op_div(left: f64, right: f64) -> f64 {
+    if right == 0.0 {
+        return f64::NAN;
+    }
     left / right
 }
 
@@ -113,7 +127,7 @@ pub(crate) const fn op_default(left: f64, right: f64) -> f64 {
     left
 }
 
-/// returns left if right is not NaN. Otherwise, NaN is returned.
+/// Returns left if right is not NaN. Otherwise, NaN is returned.
 #[inline]
 pub(crate) const fn op_if(left: f64, right: f64) -> f64 {
     if right.is_nan() {
@@ -142,11 +156,7 @@ pub const fn op_unless(left: f64, right: f64) -> f64 {
 /// convert true to x, false to NaN.
 #[inline]
 pub const fn to_comparison_value(b: bool, x: f64) -> f64 {
-    if b {
-        x
-    } else {
-        f64::NAN
-    }
+    if b { x } else { f64::NAN }
 }
 
 pub(crate) fn cmp(x: f64, y: f64) -> f64 {
@@ -186,7 +196,7 @@ pub(crate) const fn sgn_diff(x: f64, y: f64) -> f64 {
     (x - y).signum()
 }
 
-pub(crate) const fn pct_change(x: f64, y: f64) -> f64 {
+pub(crate) const fn percent_change(x: f64, y: f64) -> f64 {
     if x == 0.0 {
         return 0.0;
     }
@@ -209,11 +219,7 @@ macro_rules! make_comparison_func_bool {
             if left.is_nan() {
                 return f64::NAN;
             }
-            if $func(left, right) {
-                1_f64
-            } else {
-                0_f64
-            }
+            if $func(left, right) { 1_f64 } else { 0_f64 }
         }
     };
 }
