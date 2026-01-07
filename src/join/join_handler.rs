@@ -37,7 +37,7 @@ pub fn process_join(
     join_internal(left_samples, right_samples, options)
 }
 
-pub(super) fn join_internal<L, R, IR, IL>(
+pub(super) fn join_internal<L, R, IL, IR>(
     left: IL,
     right: IR,
     options: &JoinOptions,
