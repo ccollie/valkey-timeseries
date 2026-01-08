@@ -100,15 +100,33 @@ impl InternedString {
     }
 
     fn from_arc(val: Arc<[u8]>) -> InternedString {
-        let b = STRING_POOL.entry(val).or_insert(());
-        let val = b.key();
-        let ref_count = Arc::strong_count(val);
-        if ref_count == 1 {
+        // First, try to get an existing entry without taking a write lock
+        if let Some(entry) = STRING_POOL.get(&val) {
+            return InternedString {
+                arc: entry.key().clone(),
+            };
+        }
+
+        // If not found, use entry API to insert
+        // This properly handles the race condition where two threads try to insert
+        // the same value simultaneously
+        let val = {
+            let entry = STRING_POOL.entry(val);
+            let entry_ref = entry.or_insert_with(|| ());
+            entry_ref.key().clone()
+            // entry_ref is dropped here, releasing its Arc reference
+        };
+
+        // Check if we're the first reference to this value.
+        // If strong_count is 2, only the map and val hold references, so we just created it.
+        let ref_count = Arc::strong_count(&val);
+        if ref_count == 2 {
             // we are the first reference, so account for the memory used
             let size = val.get_size();
-            STRING_MEMORY_USED.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+            STRING_MEMORY_USED.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
         }
-        InternedString { arc: val.clone() }
+
+        InternedString { arc: val }
     }
 
     pub fn len(&self) -> usize {
@@ -201,7 +219,7 @@ impl Drop for InternedString {
             // deallocate the value.
             if Arc::strong_count(k) == 2 {
                 let size = self.get_size();
-                STRING_MEMORY_USED.fetch_sub(size, std::sync::atomic::Ordering::Relaxed);
+                STRING_MEMORY_USED.fetch_sub(size, std::sync::atomic::Ordering::SeqCst);
 
                 return true;
             }
@@ -270,7 +288,7 @@ impl Ord for InternedString {
 
 #[cfg(test)]
 mod tests {
-    use super::{InternedString, STRING_MEMORY_USED};
+    use super::{InternedString, STRING_MEMORY_USED, STRING_POOL};
     use ahash::{HashSet, HashSetExt};
     use serial_test::serial;
     use std::collections::HashMap;
@@ -427,6 +445,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_memory_tracking_on_first_creation() {
+        STRING_POOL.clear();
         reset_memory_tracking();
 
         assert_eq!(InternedString::memory_used(), 0);
@@ -448,6 +467,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_memory_tracking_on_drop() {
+        STRING_POOL.clear();
         reset_memory_tracking();
 
         let s1 = InternedString::new("test_drop_memory");
@@ -574,6 +594,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_very_long_strings() {
         reset_memory_tracking();
 
