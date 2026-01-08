@@ -1,15 +1,13 @@
 use crate::aggregators::Aggregator;
+use crate::common::hash::DeterministicHasher;
 use crate::common::rounding::RoundingStrategy;
 use crate::labels::MetricName;
 use crate::series::{CompactionRule, SampleDuplicatePolicy};
-use ahash::AHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::BuildHasher;
 use valkey_module::digest::Digest;
 
-pub(super) fn calc_aggregator_digest(aggregator: &Aggregator, digest: &mut Digest) {
-    let mut hasher = AHasher::default();
-    aggregator.hash(&mut hasher);
-    let hash = hasher.finish();
+fn calc_aggregator_digest(aggregator: &Aggregator, digest: &mut Digest) {
+    let hash = DeterministicHasher::default().hash_one(aggregator);
     digest.add_string_buffer(hash.to_le_bytes().as_ref());
 }
 
@@ -50,6 +48,7 @@ pub(super) fn calc_metric_name_digest(labels: &MetricName, digest: &mut Digest) 
     digest.add_long_long(labels.len() as i64);
     for label in labels.iter() {
         digest.add_string_buffer(label.name.as_bytes());
+        digest.add_string_buffer(b"=");
         digest.add_string_buffer(label.value.as_bytes());
     }
 }
