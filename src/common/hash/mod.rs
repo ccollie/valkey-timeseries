@@ -1,5 +1,7 @@
+mod deterministic_hasher;
 mod no_hash;
 
+pub use deterministic_hasher::*;
 pub use no_hash::*;
 
 /// Hash a 64-bit float value using bitwise representation
