@@ -1,8 +1,12 @@
-// Ported from: https://github.com/AndreyAkinshin/perfolizer/blob/6749968fb683d0656c5ba8f733885b2793949c8d/src/Perfolizer/Perfolizer/Mathematics/Common/ConfidenceIntervalEstimator.cs
-// License: Apache-2.0
-
-use crate::analysis::common::ConfidenceInterval;
 use crate::analysis::math::StudentDistribution;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConfidenceInterval {
+    pub estimation: f64,
+    pub lower: f64,
+    pub upper: f64,
+    pub confidence_level: f64,
+}
 
 pub struct ConfidenceIntervalEstimator {
     pub sample_size: f64,

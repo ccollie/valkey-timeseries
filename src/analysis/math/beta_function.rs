@@ -1,5 +1,5 @@
 // Implementation of the Beta function and related methods in Rust
-// Ported from: https://github.com/AndreyAkinshin/perfolizer/blob/6749968fb683d0656c5ba8f733885b2793949c8d/src/Perfolizer/Perfolizer/Mathematics/Functions/BetaFunction.cs
+// Ported from: https://github.com/AndreyAkinshin/perfolizer
 // License: Apache-2.0
 
 use super::gamma_function::{gamma, log_gamma};
@@ -7,7 +7,8 @@ use super::gamma_function::{gamma, log_gamma};
 pub fn hyper_geometric_value(a: f64, b: f64, c: f64, z: f64, k: i32) -> f64 {
     let mut result = 1.0;
     for n in (0..=k).rev() {
-        result = 1.0 + result * (a + n as f64) * (b + n as f64) / (c + n as f64) * z / ((n as f64) + 1.0);
+        result = 1.0
+            + result * (a + n as f64) * (b + n as f64) / (c + n as f64) * z / ((n as f64) + 1.0);
     }
     result
 }
@@ -26,15 +27,7 @@ pub fn beta_incomplete_value(a: f64, b: f64, x: f64) -> f64 {
 
 /// Natural logarithm of incomplete beta function B(x; a, b)
 pub fn beta_incomplete_log_value(a: f64, b: f64, x: f64) -> f64 {
-    a * x.ln() - a.ln()
-        + hyper_geometric_value(
-        a,
-        1.0 - b,
-        a + 1.0,
-        x,
-        b.round() as i32,
-    )
-        .ln()
+    a * x.ln() - a.ln() + hyper_geometric_value(a, 1.0 - b, a + 1.0, x, b.round() as i32).ln()
 }
 
 /// Regularized incomplete beta function Ix(a, b)
@@ -68,11 +61,7 @@ pub fn beta_regularized_incomplete_value(a: f64, b: f64, x: f64) -> f64 {
 
     // Lentz's algorithm for continued fraction
     fn normalize(z: f64) -> f64 {
-        if z.abs() < 1e-30 {
-            1e-30
-        } else {
-            z
-        }
+        if z.abs() < 1e-30 { 1e-30 } else { z }
     }
 
     let max_iteration_count = 300;
@@ -170,4 +159,50 @@ pub fn beta_regularized_incomplete_inverse_value(a: f64, b: f64, p: f64) -> f64 
     }
 
     x
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EPSILON: f64 = 1e-6;
+
+    #[test]
+    fn test_beta_complete_value() {
+        let b = beta_complete_value(2.0, 3.0);
+        assert!((b - 0.08333333).abs() < EPSILON);
+    }
+
+    #[test]
+    pub fn test_beta_complete_value2() {
+        for a in 1..=20 {
+            for b in 1..=20 {
+                let actual = beta_complete_value(a as f64, b as f64);
+                let expected = factorial((a - 1) as f64) * factorial((b - 1) as f64)
+                    / factorial((a + b - 1) as f64);
+                assert!((expected - actual).abs() < EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    pub fn test_beta_complete_log_value() {
+        for a in 1..=20 {
+            for b in 1..=20 {
+                let actual = beta_complete_log_value(a as f64, b as f64);
+                let expected = (factorial((a - 1) as f64) * factorial((b - 1) as f64)
+                    / factorial((a + b - 1) as f64))
+                .ln();
+                assert!((expected - actual).abs() < EPSILON);
+            }
+        }
+    }
+
+    fn factorial(n: f64) -> f64 {
+        let mut result = 1.0;
+        for i in 2..=(n as u64) {
+            result *= i as f64;
+        }
+        result
+    }
 }

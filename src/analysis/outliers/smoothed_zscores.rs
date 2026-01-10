@@ -5,7 +5,7 @@
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
 use super::anomalies::AnomalySignal;
-use crate::analysis::common::TimeSeriesAnalysisError;
+use crate::analysis::TimeSeriesAnalysisError;
 
 struct MovingMeanStdDev {
     cache: Vec<f64>,
@@ -24,8 +24,8 @@ impl MovingMeanStdDev {
         }
     }
 
-    /// Initialize creates the necessary assets for the MovingMeanStdDev. It also computes the resulting mean and population
-    /// standard deviation using Welford's method.
+    /// Initialize creates the necessary assets for the MovingMeanStdDev. It also computes the
+    /// resulting mean and population standard deviation using Welford's method.
     ///
     /// https://www.johndcook.com/blog/standard_deviation/
     fn initialize(&mut self, initial_values: &[f64]) -> (f64, f64) {
@@ -63,7 +63,9 @@ impl MovingMeanStdDev {
 
         let cache_len = self.cache.len() as f64;
         let new_mean = self.prev_mean + (value - out_of_window) / cache_len;
-        self.prev_variance += (value - new_mean + out_of_window - self.prev_mean) * (value - out_of_window) / cache_len;
+        self.prev_variance += (value - new_mean + out_of_window - self.prev_mean)
+            * (value - out_of_window)
+            / cache_len;
         self.prev_mean = new_mean;
 
         (self.prev_mean, self.prev_variance.sqrt())
@@ -83,7 +85,8 @@ pub struct SmoothedZScoreAnomalyDetector {
     /// `influence` is the influence of signals on the algorithm's detection threshold. If put at 0, signals have
     /// no influence on the threshold, such that future signals are detected based on a threshold that is calculated with
     /// a mean and standard deviation that is not influenced by past signals. If put at 0.5, signals have half the
-    /// influence of normal data points. If you put the influence at 0, you implicitly assume stationarity (i.e., with a stable average over the long term).
+    /// influence of normal data points. If you put the influence at 0, you implicitly assume stationarity
+    /// (i.e., with a stable average over the long term).
     influence: f64,
     /// `threshold` is the number of standard deviations from the moving mean above which the algorithm will classify a new
     /// datapoint as being a signal. The threshold therefore directly influences how sensitive the algorithm is and thereby
@@ -104,8 +107,12 @@ pub struct SmoothedZScoreAnomalyDetector {
 }
 
 impl SmoothedZScoreAnomalyDetector {
-    /// Creates a new SmoothedZScoreAnomalyDetector. It must be initialized before use.
-    pub fn new(influence: f64, threshold: f64, initial_values: &[f64]) -> Result<Self, TimeSeriesAnalysisError> {
+    /// Creates a new SmoothedZScoreAnomalyDetector.
+    pub fn new(
+        influence: f64,
+        threshold: f64,
+        initial_values: &[f64],
+    ) -> Result<Self, TimeSeriesAnalysisError> {
         let lag = initial_values.len();
 
         let mut res = Self {
@@ -186,7 +193,6 @@ impl Default for SmoothedZScoreAnomalyDetector {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,7 +215,10 @@ mod tests {
 
     #[test]
     fn test_peak_detection() {
-        let initial_values = vec![1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.1, 1.0, 1.0, 0.9, 1.0, 1.0, 1.1, 1.0, 1.0];
+        let initial_values = vec![
+            1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.1, 1.0, 1.0, 0.9, 1.0, 1.0,
+            1.1, 1.0, 1.0,
+        ];
 
         let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
 

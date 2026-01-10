@@ -1,110 +1,125 @@
+use super::mad_outlier_detector::MadOutlierDetector;
+use super::outlier_test_data::{
+    EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, modified_beta_data_set, real_data_set,
+    yang_data_set,
+};
+use crate::analysis::outliers::OutlierDetector;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use crate::analysis::outliers::OutlierDetector;
-use super::outlier_test_data::{beta_data_set, modified_beta_data_set, real_data_set, yang_data_set, TestData, EMPTY_DATASET, SAME_DATASET};
-use super::mad_outlier_detector::MadOutlierDetector;
-
 
 /// Data cases for SimpleQuantileEstimator
 static SIMPLE_QE_TEST_DATA_MAP: LazyLock<HashMap<&'static str, TestData>> = LazyLock::new(|| {
     let mut map = HashMap::new();
 
-    map.insert("Empty", TestData::new(
-        &EMPTY_DATASET,
-        &EMPTY_DATASET
-    ));
-    map.insert("Same", TestData::new(
-        &SAME_DATASET,
-        &EMPTY_DATASET
-    ));
-    map.insert("Yang_X0", TestData::new(
-        &yang_data_set::X0,
-        &[]
-    ));
-    map.insert("Yang_X1", TestData::new(
-        &yang_data_set::X1,
-        &[1000.0]
-    ));
-    map.insert("Yang_X2", TestData::new(
-        &yang_data_set::X2,
-        &[500.0, 1000.0]
-    ));
-    map.insert("Yang_X3", TestData::new(
-        &yang_data_set::X3,
-        &[1000.0]
-    ));
-    map.insert("Yang_X4", TestData::new(
-        &yang_data_set::X4,
-        &[300.0, 500.0, 1000.0, 1500.0]
-    ));
-    map.insert("Real0", TestData::new(
-        &real_data_set::X0,
-        &[38594.0, 39075.0]
-    ));
-    map.insert("Real1", TestData::new(
-        &real_data_set::X1,
-        &[0.0, 0.0, 0.0, 0.0, 1821.0]
-    ));
-    map.insert("Real2", TestData::new(
-        &real_data_set::X2,
-        &[95.0, 4364.0]
-    ));
-    map.insert("Real3", TestData::new(
-        &real_data_set::X3,
-        &[1067.0, 1085.0, 1133.0, 1643.0, 4642.0]
-    ));
-    map.insert("Real4", TestData::new(
-        &real_data_set::X4,
-        &[14893.0, 15056.0, 15364.0, 15483.0, 16504.0, 17208.0, 17446.0]
-    ));
-    map.insert("Beta0", TestData::new(
-        &beta_data_set::X0,
-        &[2308.0, 2504.0, 2556.0, 2569.0, 2591.0, 2604.0, 2754.0, 2899.0, 3262.0, 3325.0, 3329.0]
-    ));
-    map.insert("Beta1", TestData::new(
-        &beta_data_set::X1,
-        &[3071.0]
-    ));
-    map.insert("Beta2", TestData::new(
-        &beta_data_set::X2,
-        &[3642.0]
-    ));
-    map.insert("MBeta_Lower1", TestData::new(
-        &modified_beta_data_set::LOWER1,
-        &[-2000.0, 2919.0, 3612.0]
-    ));
-    map.insert("MBeta_Lower2", TestData::new(
-        &modified_beta_data_set::LOWER2,
-        &[-2001.0, -2000.0, 2919.0, 3612.0]
-    ));
-    map.insert("MBeta_Lower3", TestData::new(
-        &modified_beta_data_set::LOWER3,
-        &[-2002.0, -2001.0, -2000.0, 2919.0, 3612.0]
-    ));
-    map.insert("MBeta_Upper1", TestData::new(
-        &modified_beta_data_set::UPPER1,
-        &[2919.0, 3612.0, 6000.0]
-    ));
-    map.insert("MBeta_Upper2", TestData::new(
-        &modified_beta_data_set::UPPER2,
-        &[2919.0, 3612.0, 6000.0, 6001.0]
-    ));
-    map.insert("MBeta_Upper3", TestData::new(
-        &modified_beta_data_set::UPPER3,
-        &[2919.0, 3612.0, 6000.0, 6001.0, 6002.0]
-    ));
-    map.insert("MBeta_Both0", TestData::new(
-        &modified_beta_data_set::BOTH0,
-        &[-2000.0, 2919.0, 3612.0, 6000.0]
-    ));
-    map.insert("MBeta_Both1", TestData::new(
-        &modified_beta_data_set::BOTH1,
-        &[-2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0]
-    ));
-    map.insert("MBeta_Both2", TestData::new(
-        &modified_beta_data_set::BOTH2,
-        &[-2002.0, -2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0, 6002.0]
-    ));
+    map.insert("Empty", TestData::new(&EMPTY_DATASET, &[]));
+    map.insert("Same", TestData::new(&SAME_DATASET, &[]));
+    map.insert("Yang_X0", TestData::new(&yang_data_set::X0, &[]));
+    map.insert("Yang_X1", TestData::new(&yang_data_set::X1, &[1000.0]));
+    map.insert(
+        "Yang_X2",
+        TestData::new(&yang_data_set::X2, &[500.0, 1000.0]),
+    );
+    map.insert("Yang_X3", TestData::new(&yang_data_set::X3, &[1000.0]));
+    map.insert(
+        "Yang_X4",
+        TestData::new(&yang_data_set::X4, &[300.0, 500.0, 1000.0, 1500.0]),
+    );
+    map.insert(
+        "Real0",
+        TestData::new(&real_data_set::X0, &[38594.0, 39075.0]),
+    );
+    map.insert(
+        "Real1",
+        TestData::new(&real_data_set::X1, &[0.0, 0.0, 0.0, 0.0, 1821.0]),
+    );
+    map.insert("Real2", TestData::new(&real_data_set::X2, &[95.0, 4364.0]));
+    map.insert(
+        "Real3",
+        TestData::new(
+            &real_data_set::X3,
+            &[1067.0, 1085.0, 1133.0, 1643.0, 4642.0],
+        ),
+    );
+    map.insert(
+        "Real4",
+        TestData::new(
+            &real_data_set::X4,
+            &[
+                14893.0, 15056.0, 15364.0, 15483.0, 16504.0, 17208.0, 17446.0,
+            ],
+        ),
+    );
+    map.insert(
+        "Beta0",
+        TestData::new(
+            &beta_data_set::X0,
+            &[
+                2308.0, 2504.0, 2556.0, 2569.0, 2591.0, 2604.0, 2754.0, 2899.0, 3262.0, 3325.0,
+                3329.0,
+            ],
+        ),
+    );
+    map.insert("Beta1", TestData::new(&beta_data_set::X1, &[3071.0]));
+    map.insert("Beta2", TestData::new(&beta_data_set::X2, &[3642.0]));
+    map.insert(
+        "MBeta_Lower1",
+        TestData::new(&modified_beta_data_set::LOWER1, &[-2000.0, 2919.0, 3612.0]),
+    );
+    map.insert(
+        "MBeta_Lower2",
+        TestData::new(
+            &modified_beta_data_set::LOWER2,
+            &[-2001.0, -2000.0, 2919.0, 3612.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Lower3",
+        TestData::new(
+            &modified_beta_data_set::LOWER3,
+            &[-2002.0, -2001.0, -2000.0, 2919.0, 3612.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Upper1",
+        TestData::new(&modified_beta_data_set::UPPER1, &[2919.0, 3612.0, 6000.0]),
+    );
+    map.insert(
+        "MBeta_Upper2",
+        TestData::new(
+            &modified_beta_data_set::UPPER2,
+            &[2919.0, 3612.0, 6000.0, 6001.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Upper3",
+        TestData::new(
+            &modified_beta_data_set::UPPER3,
+            &[2919.0, 3612.0, 6000.0, 6001.0, 6002.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Both0",
+        TestData::new(
+            &modified_beta_data_set::BOTH0,
+            &[-2000.0, 2919.0, 3612.0, 6000.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Both1",
+        TestData::new(
+            &modified_beta_data_set::BOTH1,
+            &[-2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Both2",
+        TestData::new(
+            &modified_beta_data_set::BOTH2,
+            &[
+                -2002.0, -2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0, 6002.0,
+            ],
+        ),
+    );
 
     map
 });
@@ -113,82 +128,103 @@ static SIMPLE_QE_TEST_DATA_MAP: LazyLock<HashMap<&'static str, TestData>> = Lazy
 static HD_QE_TEST_DATA_MAP: LazyLock<HashMap<&'static str, TestData>> = LazyLock::new(|| {
     let mut map = HashMap::new();
 
-    map.insert("Empty", TestData::new(
-        &EMPTY_DATASET,
-        &EMPTY_DATASET
-    ));
-    map.insert("Same", TestData::new(
-        &SAME_DATASET,
-        &EMPTY_DATASET
-    ));
-    map.insert("Real0", TestData::new(
-        &real_data_set::X0,
-        &[38594.0, 39075.0]
-    ));
-    map.insert("Real1", TestData::new(
-        &real_data_set::X1,
-        &[0.0, 0.0, 0.0, 0.0, 1821.0]
-    ));
-    map.insert("Real2", TestData::new(
-        &real_data_set::X2,
-        &[95.0, 4364.0]
-    ));
-    map.insert("Real3", TestData::new(
-        &real_data_set::X3,
-        &[1067.0, 1085.0, 1133.0, 1643.0, 4642.0]
-    ));
-    map.insert("Real4", TestData::new(
-        &real_data_set::X4,
-        &[14893.0, 15056.0, 15364.0, 15483.0, 16504.0, 17208.0, 17446.0]
-    ));
-    map.insert("Beta0", TestData::new(
-        &beta_data_set::X0,
-        &[2504.0, 2556.0, 2569.0, 2591.0, 2604.0, 2754.0, 2899.0, 3262.0, 3325.0, 3329.0]
-    ));
-    map.insert("Beta1", TestData::new(
-        &beta_data_set::X1,
-        &[3071.0]
-    ));
-    map.insert("Beta2", TestData::new(
-        &beta_data_set::X2,
-        &[3642.0]
-    ));
-    map.insert("MBeta_Lower1", TestData::new(
-        &modified_beta_data_set::LOWER1,
-        &[-2000.0, 2919.0, 3612.0]
-    ));
-    map.insert("MBeta_Lower2", TestData::new(
-        &modified_beta_data_set::LOWER2,
-        &[-2001.0, -2000.0, 2919.0, 3612.0]
-    ));
-    map.insert("MBeta_Lower3", TestData::new(
-        &modified_beta_data_set::LOWER3,
-        &[-2002.0, -2001.0, -2000.0, 2919.0, 3612.0]
-    ));
-    map.insert("MBeta_Upper1", TestData::new(
-        &modified_beta_data_set::UPPER1,
-        &[2919.0, 3612.0, 6000.0]
-    ));
-    map.insert("MBeta_Upper2", TestData::new(
-        &modified_beta_data_set::UPPER2,
-        &[2919.0, 3612.0, 6000.0, 6001.0]
-    ));
-    map.insert("MBeta_Upper3", TestData::new(
-        &modified_beta_data_set::UPPER3,
-        &[2919.0, 3612.0, 6000.0, 6001.0, 6002.0]
-    ));
-    map.insert("MBeta_Both0", TestData::new(
-        &modified_beta_data_set::BOTH0,
-        &[-2000.0, 2919.0, 3612.0, 6000.0]
-    ));
-    map.insert("MBeta_Both1", TestData::new(
-        &modified_beta_data_set::BOTH1,
-        &[-2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0]
-    ));
-    map.insert("MBeta_Both2", TestData::new(
-        &modified_beta_data_set::BOTH2,
-        &[-2002.0, -2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0, 6002.0]
-    ));
+    map.insert("Empty", TestData::new(&EMPTY_DATASET, &[]));
+    map.insert("Same", TestData::new(&SAME_DATASET, &[]));
+    map.insert(
+        "Real0",
+        TestData::new(&real_data_set::X0, &[38594.0, 39075.0]),
+    );
+    map.insert(
+        "Real1",
+        TestData::new(&real_data_set::X1, &[0.0, 0.0, 0.0, 0.0, 1821.0]),
+    );
+    map.insert("Real2", TestData::new(&real_data_set::X2, &[95.0, 4364.0]));
+    map.insert(
+        "Real3",
+        TestData::new(
+            &real_data_set::X3,
+            &[1067.0, 1085.0, 1133.0, 1643.0, 4642.0],
+        ),
+    );
+    map.insert(
+        "Real4",
+        TestData::new(
+            &real_data_set::X4,
+            &[
+                14893.0, 15056.0, 15364.0, 15483.0, 16504.0, 17208.0, 17446.0,
+            ],
+        ),
+    );
+    map.insert(
+        "Beta0",
+        TestData::new(
+            &beta_data_set::X0,
+            &[
+                2504.0, 2556.0, 2569.0, 2591.0, 2604.0, 2754.0, 2899.0, 3262.0, 3325.0, 3329.0,
+            ],
+        ),
+    );
+    map.insert("Beta1", TestData::new(&beta_data_set::X1, &[3071.0]));
+    map.insert("Beta2", TestData::new(&beta_data_set::X2, &[3642.0]));
+    map.insert(
+        "MBeta_Lower1",
+        TestData::new(&modified_beta_data_set::LOWER1, &[-2000.0, 2919.0, 3612.0]),
+    );
+    map.insert(
+        "MBeta_Lower2",
+        TestData::new(
+            &modified_beta_data_set::LOWER2,
+            &[-2001.0, -2000.0, 2919.0, 3612.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Lower3",
+        TestData::new(
+            &modified_beta_data_set::LOWER3,
+            &[-2002.0, -2001.0, -2000.0, 2919.0, 3612.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Upper1",
+        TestData::new(&modified_beta_data_set::UPPER1, &[2919.0, 3612.0, 6000.0]),
+    );
+    map.insert(
+        "MBeta_Upper2",
+        TestData::new(
+            &modified_beta_data_set::UPPER2,
+            &[2919.0, 3612.0, 6000.0, 6001.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Upper3",
+        TestData::new(
+            &modified_beta_data_set::UPPER3,
+            &[2919.0, 3612.0, 6000.0, 6001.0, 6002.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Both0",
+        TestData::new(
+            &modified_beta_data_set::BOTH0,
+            &[-2000.0, 2919.0, 3612.0, 6000.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Both1",
+        TestData::new(
+            &modified_beta_data_set::BOTH1,
+            &[-2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0],
+        ),
+    );
+    map.insert(
+        "MBeta_Both2",
+        TestData::new(
+            &modified_beta_data_set::BOTH2,
+            &[
+                -2002.0, -2001.0, -2000.0, 2919.0, 3612.0, 6000.0, 6001.0, 6002.0,
+            ],
+        ),
+    );
 
     map
 });
@@ -198,7 +234,9 @@ where
     F: FnOnce(&[f64]) -> Box<dyn OutlierDetector>,
 {
     let detector = create_detector(&test_data.values);
-    let actual_outliers = &test_data.values.iter()
+    let actual_outliers = &test_data
+        .values
+        .iter()
         .copied()
         .filter(|&v| detector.is_upper_outlier(v) || detector.is_lower_outlier(v))
         .collect::<Vec<f64>>();
@@ -209,7 +247,10 @@ where
         "Number of outliers doesn't match"
     );
 
-    for (&actual, &expected) in actual_outliers.iter().zip(test_data.expected_outliers.iter()) {
+    for (&actual, &expected) in actual_outliers
+        .iter()
+        .zip(test_data.expected_outliers.iter())
+    {
         assert!(
             (actual - expected).abs() < 1e-9,
             "Expected {expected}, got {actual}",
@@ -219,50 +260,65 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::analysis::outliers::outlier_test_data::check_outliers;
-    use crate::analysis::quantile_estimators::{HarrellDavisNormalizedEstimator, SimpleNormalizedEstimator};
     use super::*;
+    use crate::analysis::outliers::mad_estimator::{
+        HarrellDavisNormalizedEstimator, SimpleNormalizedEstimator,
+    };
+    use crate::analysis::outliers::outlier_test_data::check_outliers;
 
     #[test]
     fn mad_outlier_detector_simple_qe_tests() {
-        for (test_data_key, test_data) in SIMPLE_QE_TEST_DATA_MAP.iter() {
-            let action = || {
-                check_outliers(test_data, |values| {
-                    MadOutlierDetector::new_with_estimator(values,  &SimpleNormalizedEstimator::default())
-                })
-            };
+        let mut keys: Vec<&&str> = SIMPLE_QE_TEST_DATA_MAP.keys().collect();
+        keys.sort();
+
+        for &test_data_key in keys {
+            let test_data = &SIMPLE_QE_TEST_DATA_MAP[test_data_key];
 
             if test_data.values.is_empty() {
                 let result = std::panic::catch_unwind(|| {
-                    MadOutlierDetector::new_with_estimator(
+                    MadOutlierDetector::with_estimator(
                         &test_data.values,
-                        &SimpleNormalizedEstimator::default()
+                        &SimpleNormalizedEstimator::default(),
                     )
                 });
-                assert!(result.is_err(), "Expected panic for test case: {}", test_data_key);
+                assert!(
+                    result.is_err(),
+                    "Expected panic for test case: {}",
+                    test_data_key
+                );
             } else {
-                action()
+                check_outliers(test_data_key, test_data, |values| {
+                    MadOutlierDetector::with_estimator(
+                        values,
+                        &SimpleNormalizedEstimator::default(),
+                    )
+                });
             }
         }
     }
 
     #[test]
     fn mad_outlier_detector_hd_qe_tests() {
-        for (&test_data_key, test_data) in HD_QE_TEST_DATA_MAP.iter() {
+        let mut keys: Vec<&&str> = HD_QE_TEST_DATA_MAP.keys().collect();
+        keys.sort();
+
+        for &test_data_key in keys {
+            let test_data = &HD_QE_TEST_DATA_MAP[test_data_key];
             if test_data.values.is_empty() {
                 let result = std::panic::catch_unwind(|| {
-                    MadOutlierDetector::new_with_estimator(
+                    MadOutlierDetector::with_estimator(
                         &test_data.values,
-                        &HarrellDavisNormalizedEstimator
+                        &HarrellDavisNormalizedEstimator,
                     )
                 });
-                assert!(result.is_err(), "Expected panic for test case: {}", test_data_key);
+                assert!(
+                    result.is_err(),
+                    "Expected panic for test case: {}",
+                    test_data_key
+                );
             } else {
-                check_outliers(test_data, |values| {
-                    Box::new(MadOutlierDetector::new_with_estimator(
-                        values,
-                        &HarrellDavisNormalizedEstimator
-                    ))
+                check_outliers(test_data_key, test_data, |values| {
+                    MadOutlierDetector::with_estimator(values, &HarrellDavisNormalizedEstimator)
                 });
             }
         }

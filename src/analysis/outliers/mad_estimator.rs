@@ -31,29 +31,16 @@ fn get_mad_internal(
     }
     let scale_factor = estimator.scale_factor(sample);
     let median = estimator.quantile_estimator().median(sample);
-    let deviations = get_deviations(sample, median, pred);
-    mad_from_values(estimator, deviations, scale_factor)
-}
-
-#[inline]
-fn mad_from_values(
-    estimator: &impl MedianAbsoluteDeviationEstimator,
-    values: Vec<f64>,
-    scale_factor: f64,
-) -> f64 {
-    let sample = Samples::new(values);
-    let deviation_median = estimator.quantile_estimator().median(&sample);
-    scale_factor * deviation_median
-}
-
-#[inline]
-fn get_deviations(sample: &Samples, median: f64, pred: fn(f64, f64) -> bool) -> Vec<f64> {
-    sample
+    let deviations = sample
         .values
         .iter()
         .filter(|&&x| pred(x, median))
         .map(|&x| (x - median).abs())
-        .collect()
+        .collect();
+
+    let deviation_samples = Samples::new_unweighted(deviations);
+    let deviation_median = estimator.quantile_estimator().median(&deviation_samples);
+    scale_factor * deviation_median
 }
 
 #[derive(Clone, Copy)]
@@ -84,9 +71,8 @@ impl MedianAbsoluteDeviationEstimator for InvariantMADEstimator {
     }
 }
 
-
 /// Simple normalized estimator.
-/// Based on <see cref="SimpleQuantileEstimator"/>; consistent with the standard deviation under normality.
+/// Based on `SimpleQuantileEstimator`; consistent with the standard deviation under normality.
 ///
 /// Consistency factors are taken from the following paper:
 /// Park, Chanseok, Haewon Kim, and Min Wang.
