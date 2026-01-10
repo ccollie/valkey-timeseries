@@ -1,17 +1,23 @@
+use crate::analysis::outliers::OutlierDetector;
 use krcf::{RandomCutForest, RandomCutForestOptions};
 use valkey_module::{ValkeyError, ValkeyResult};
-use crate::analysis::outliers::OutlierDetector;
 
 const DEFAULT_THRESHOLD: f64 = 0.7;
 
-#[derive(Debug, Clone)]
+/// Configuration options for the RCF outlier detector.
+#[derive(Debug, Copy, Clone)]
 pub struct RCFOptions {
+    /// The number of trees in the Random Cut Forest.
     pub num_trees: Option<usize>,
+    /// The sample size for each tree in the Random Cut Forest.
     pub sample_size: Option<usize>,
+    /// The anomaly score threshold above which a point is considered an outlier.
     pub threshold: f64,
     /// A parameter that determines how much weight is given to older points. A non-zero value helps the
     /// model adapt to changing data patterns.
     pub time_decay: Option<f64>,
+    /// The size of the shingle (number of consecutive data points combined into a single point).
+    pub shingle_size: Option<usize>,
 }
 
 impl Default for RCFOptions {
@@ -21,6 +27,7 @@ impl Default for RCFOptions {
             sample_size: Some(256),
             threshold: 0.7,
             time_decay: None,
+            shingle_size: None,
         }
     }
 }
@@ -31,10 +38,10 @@ impl From<RCFOptions> for RandomCutForestOptions {
         rcf_options.num_trees = options.num_trees;
         rcf_options.sample_size = options.sample_size;
         rcf_options.lambda = options.time_decay;
+        rcf_options.shingle_size = options.shingle_size.unwrap_or(1);
         rcf_options
     }
 }
-
 
 /// Outlier detector backed by a Random Cut Forest (RCF).
 #[derive(Debug, Clone)]
@@ -53,14 +60,20 @@ impl RcfOutlierDetector {
         let rcf_options: RandomCutForestOptions = options.into();
         let forest = RandomCutForest::new(rcf_options)
             .map_err(|e| ValkeyError::String(format!("Failed to create RCF: {:?}", e)))?;
-        Ok(Self {
-            forest,
-            threshold,
-        })
+        Ok(Self { forest, threshold })
     }
+
     /// Wrap an existing trained `RandomCutForest` with a detection threshold.
     pub fn from_forest(forest: RandomCutForest, threshold: f64) -> Self {
         Self { forest, threshold }
+    }
+
+    pub fn set_data(&mut self, data: &[f64]) {
+        for &value in data {
+            if let Err(e) = self.forest.update(&[value as f32]) {
+                log::error!("Failed to update RCF with value {}: {:?}", value, e);
+            }
+        }
     }
 
     /// Return the RCF anomaly score for a single scalar value.
@@ -96,8 +109,17 @@ mod tests {
     fn rcf_detects_large_outlier() {
         // small example; tune num_trees/sample_size for your kcrf build
         let data = [1.0, 1.1, 0.9, 1.05, 1.0, 100.0];
-        let detector = RcfOutlierDetector::from_univariate_data(&data[..5], 50, 256, 0.8);
-        // 100.0 should score highly and be considered an anomaly (adjust threshold as needed)
+        let mut detector = RcfOutlierDetector::new(RCFOptions {
+            num_trees: Some(50),
+            sample_size: Some(256),
+            threshold: 0.8,
+            time_decay: None,
+            shingle_size: None,
+        })
+        .unwrap();
+        detector.set_data(&data);
+
+        // 100.0 should score highly and be considered an anomaly (adjust the threshold as needed)
         assert!(detector.is_anomaly(100.0));
     }
 }

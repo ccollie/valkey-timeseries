@@ -1,10 +1,15 @@
 mod harrell_davis_quantile_estimator;
 mod hyndman_fan_quantile_estimator;
-mod mad_estimator;
 mod samples;
 mod simple_quantile_estimator;
+mod trimmed_hd_estimator;
 
 use crate::analysis::common::Probability;
+
+pub use harrell_davis_quantile_estimator::*;
+pub use hyndman_fan_quantile_estimator::*;
+pub use samples::*;
+pub use simple_quantile_estimator::*;
 
 /// Trait for quantile estimators.
 pub trait QuantileEstimator {
@@ -35,9 +40,3 @@ pub trait QuantileEstimator {
     /// Indicates whether the estimator supports weighted samples.
     fn supports_weighted_samples(&self) -> bool;
 }
-
-pub use harrell_davis_quantile_estimator::*;
-pub use hyndman_fan_quantile_estimator::*;
-pub use mad_estimator::*;
-pub use samples::*;
-pub use simple_quantile_estimator::*;

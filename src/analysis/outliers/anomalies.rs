@@ -2,16 +2,18 @@
 //!
 //! This module provides various algorithms for detecting anomalies and outliers
 //! in time series data, including statistical process control, isolation forest,
-//! one-class SVM, distance-based, and prediction-based approaches.
+//! MAD, Double MAD, and Random Cut Forest approaches.
 
 use super::smoothed_zscores::SmoothedZScoreAnomalyDetector;
 use crate::analysis::common::Array2D;
-use crate::analysis::common::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
+use crate::analysis::outliers::mad_estimator::{
+    HarrellDavisNormalizedEstimator, InvariantMADEstimator, SimpleNormalizedEstimator,
+};
+use crate::analysis::outliers::mad_outlier_detector::MadOutlierDetector;
 use crate::analysis::outliers::rcf_outlier_detector::{RCFOptions, RcfOutlierDetector};
 use crate::analysis::outliers::{DoubleMadOutlierDetector, OutlierDetector};
-use crate::analysis::quantile_estimators::{
-    HarrellDavisNormalizedEstimator, InvariantMADEstimator, Samples, SimpleNormalizedEstimator,
-};
+use crate::analysis::quantile_estimators::Samples;
+use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use rand::prelude::*;
 use rand::seq::SliceRandom;
 use std::cmp::PartialEq;
@@ -19,23 +21,21 @@ use std::fmt::Debug;
 use std::str::FromStr;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-/// Method for analysis detection
+/// Method for outlier detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnomalyMethod {
     /// Statistical process control (Spc)
     StatisticalProcessControl,
     /// Isolation forest for time series
     IsolationForest,
-    /// One-class SVM for time series
-    DistanceBased,
-    /// Prediction-based analysis detection
-    PredictionBased,
     /// Z-score based detection
     ZScore,
     /// Modified Z-score using median absolute deviation
     ModifiedZScore,
     /// The Smoothed Z-Score algorithm
     SmoothedZScore,
+    /// Mean Absolute Deviation (MAD) method
+    MAD,
     /// Double median absolute deviation (MAD) method
     DoubleMAD,
     /// Interquartile range (IQR) method
@@ -50,11 +50,10 @@ impl AnomalyMethod {
         match self {
             AnomalyMethod::StatisticalProcessControl => "Statistical Process Control",
             AnomalyMethod::IsolationForest => "Isolation Forest",
-            AnomalyMethod::DistanceBased => "Distance-Based",
-            AnomalyMethod::PredictionBased => "Prediction-Based",
             AnomalyMethod::ZScore => "Z-Score",
             AnomalyMethod::ModifiedZScore => "Modified Z-Score",
             AnomalyMethod::SmoothedZScore => "Smoothed Z-Score",
+            AnomalyMethod::MAD => "Median Absolute Deviation (MAD)",
             AnomalyMethod::DoubleMAD => "Double MAD",
             AnomalyMethod::InterquartileRange => "Interquartile Range (IQR)",
             AnomalyMethod::RandomCutForest => "Random Cut Forest",
@@ -71,18 +70,19 @@ impl FromStr for AnomalyMethod {
             "spc" => Ok(AnomalyMethod::StatisticalProcessControl),
             "isolationforest" => Ok(AnomalyMethod::IsolationForest),
             "isolation-forest" => Ok(AnomalyMethod::IsolationForest),
-            "distance" => Ok(AnomalyMethod::DistanceBased),
-            "prediction" => Ok(AnomalyMethod::PredictionBased),
             "zscore" => Ok(AnomalyMethod::ZScore),
             "z-score" => Ok(AnomalyMethod::ZScore),
             "modifiedzscore" => Ok(AnomalyMethod::ModifiedZScore),
             "smoothed-zscore" => Ok(AnomalyMethod::SmoothedZScore),
             "smoothedzscore" => Ok(AnomalyMethod::SmoothedZScore),
-            "mad" => Ok(AnomalyMethod::ModifiedZScore),
+            "mad" => Ok(AnomalyMethod::MAD),
+            "double-mad" => Ok(AnomalyMethod::DoubleMAD),
             "doublemad" => Ok(AnomalyMethod::DoubleMAD),
+            "interquartile-range" => Ok(AnomalyMethod::InterquartileRange),
             "interquartilerange" => Ok(AnomalyMethod::InterquartileRange),
             "iqr" => Ok(AnomalyMethod::InterquartileRange),
             "rcf" => Ok(AnomalyMethod::RandomCutForest),
+            "random-cut-forest" => Ok(AnomalyMethod::RandomCutForest),
             "randomcutforest" => Ok(AnomalyMethod::RandomCutForest)
         };
         res.unwrap_or(Err(ValkeyError::String(format!(
@@ -111,12 +111,20 @@ pub enum SPCMethod {
     Ewma,
 }
 
-impl FromStr for SPCMethod {
-    type Err = ValkeyError;
+impl TryFrom<&str> for SPCMethod {
+    type Error = ValkeyError;
 
-    fn from_str(s: &str) -> ValkeyResult<Self> {
+    fn try_from(s: &str) -> ValkeyResult<Self> {
+        SPCMethod::try_from(s.as_bytes())
+    }
+}
+
+impl TryFrom<&[u8]> for SPCMethod {
+    type Error = ValkeyError;
+
+    fn try_from(s: &[u8]) -> ValkeyResult<Self> {
         let res = hashify::tiny_map_ignore_case! {
-            s.as_bytes(),
+            s,
             "shewhart" => SPCMethod::Shewhart,
             "cusum" => SPCMethod::Cusum,
             "ewma" => SPCMethod::Ewma
@@ -124,54 +132,11 @@ impl FromStr for SPCMethod {
         match res {
             Some(method) => Ok(method),
             None => {
-                let msg = format!("Unknown Spc method: {s}");
+                let invalid = String::from_utf8_lossy(s);
+                let msg = format!("Unknown Spc method: {invalid}");
                 Err(ValkeyError::String(msg))
             }
         }
-    }
-}
-
-/// Distance metric for distance-based analysis detection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DistanceMetric {
-    /// Euclidean distance
-    Euclidean,
-    /// Manhattan distance
-    Manhattan,
-    /// Mahalanobis distance
-    Mahalanobis,
-    /// Dynamic time warping distance
-    Dtw,
-}
-
-impl FromStr for DistanceMetric {
-    type Err = ValkeyError;
-
-    fn from_str(s: &str) -> ValkeyResult<Self> {
-        let res = hashify::tiny_map_ignore_case! {
-            s.as_bytes(),
-            "euclidean" => DistanceMetric::Euclidean,
-            "manhattan" => DistanceMetric::Manhattan,
-            "mahalanobis" => DistanceMetric::Mahalanobis,
-            "dtw" => DistanceMetric::Dtw,
-            "dynamic-time-warping" => DistanceMetric::Dtw
-        };
-        match res {
-            Some(metric) => Ok(metric),
-            None => {
-                let msg = format!("Unknown distance metric: {s}");
-                Err(ValkeyError::String(msg))
-            }
-        }
-    }
-}
-
-impl TryFrom<&ValkeyString> for DistanceMetric {
-    type Error = ValkeyError;
-
-    fn try_from(s: &ValkeyString) -> ValkeyResult<Self> {
-        let str = s.to_string_lossy();
-        Self::from_str(&str)
     }
 }
 
@@ -284,9 +249,6 @@ impl FromStr for AnomalyMADEstimator {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DoubleMADOptions {}
-
 /// Options for seasonal adjustment
 #[derive(Debug, Clone, Copy)]
 pub struct SeasonalAdjustment {
@@ -294,55 +256,134 @@ pub struct SeasonalAdjustment {
     pub seasonal_period: usize,
 }
 
-/// Options for analysis detection
-#[derive(Debug, Clone)]
-pub struct AnomalyOptions {
-    /// Detection method to use
-    pub method: AnomalyMethod,
-    /// Threshold for analysis detection (interpretation depends on method)
-    pub threshold: Option<f64>,
-    /// Window size for local analysis detection
-    pub window_size: Option<usize>,
+/// Options for Isolation Forest analysis detection
+#[derive(Debug, Clone, Copy)]
+pub struct IsolationForestOptions {
     /// Number of trees for isolation forest
     pub n_trees: usize,
     /// Subsampling size for isolation forest
     pub subsample_size: Option<usize>,
+    /// Window size for local analysis detection
+    pub window_size: Option<usize>,
+    /// Contamination rate (expected fraction of anomalies)
+    pub contamination: f64,
+}
+
+impl Default for IsolationForestOptions {
+    fn default() -> Self {
+        Self {
+            n_trees: 100,
+            subsample_size: None,
+            contamination: 0.1,
+            window_size: None,
+        }
+    }
+}
+
+/// Default alpha for Ewma SPC
+const EWMA_DEFAULT_ALPHA: f64 = 0.3;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SPCMethodOptions {
     /// Spc method (if using Spc)
     pub spc_method: SPCMethod,
     /// Alpha for Ewma (if using Ewma Spc)
-    pub ewma_alpha: f64,
-    /// Distance metric (if using a distance-based method)
-    pub distance_metric: DistanceMetric,
-    /// Number of nearest neighbors (for distance-based methods)
-    pub k_neighbors: usize,
-    /// Contamination rate (expected fraction of anomalies)
-    pub contamination: f64,
+    pub ewma_alpha: Option<f64>,
+}
+
+impl Default for SPCMethodOptions {
+    fn default() -> Self {
+        Self {
+            spc_method: SPCMethod::Shewhart,
+            ewma_alpha: Some(EWMA_DEFAULT_ALPHA),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MADAnomalyOptions {
+    pub k: f64,
+    pub estimator: AnomalyMADEstimator,
+}
+
+impl Default for MADAnomalyOptions {
+    fn default() -> Self {
+        Self {
+            k: 3.0,
+            estimator: AnomalyMADEstimator::Invariant,
+        }
+    }
+}
+
+pub const MODIFIED_ZSCORE_DEFAULT_THRESHOLD: f64 = 3.5;
+pub const ZSCORE_DEFAULT_THRESHOLD: f64 = 3.0;
+pub const IQR_DEFAULT_THRESHOLD: f64 = 1.5;
+
+#[derive(Debug, Clone)]
+pub enum AnomalyDetectionMethodOptions {
+    Spc(SPCMethodOptions),
+    InterQuartileRange(Option<f64>),
+    IsolationForest(IsolationForestOptions),
+    ZScore(Option<f64>),
+    SmoothedZScore(SmoothedZScoreOptions),
+    ModifiedZScore(Option<f64>),
+    MAD(MADAnomalyOptions),
+    DoubleMAD(MADAnomalyOptions),
+    RCF(RCFOptions),
+}
+
+impl Default for AnomalyDetectionMethodOptions {
+    fn default() -> Self {
+        AnomalyDetectionMethodOptions::ZScore(Some(3.0))
+    }
+}
+
+impl AnomalyDetectionMethodOptions {
+    pub fn method(&self) -> AnomalyMethod {
+        match self {
+            AnomalyDetectionMethodOptions::Spc(_) => AnomalyMethod::StatisticalProcessControl,
+            AnomalyDetectionMethodOptions::InterQuartileRange(_) => {
+                AnomalyMethod::InterquartileRange
+            }
+            AnomalyDetectionMethodOptions::IsolationForest(_) => AnomalyMethod::IsolationForest,
+            AnomalyDetectionMethodOptions::ZScore(_) => AnomalyMethod::ZScore,
+            AnomalyDetectionMethodOptions::SmoothedZScore(_) => AnomalyMethod::SmoothedZScore,
+            AnomalyDetectionMethodOptions::ModifiedZScore(_) => AnomalyMethod::ModifiedZScore,
+            AnomalyDetectionMethodOptions::MAD(_) => AnomalyMethod::MAD,
+            AnomalyDetectionMethodOptions::DoubleMAD(_) => AnomalyMethod::DoubleMAD,
+            AnomalyDetectionMethodOptions::RCF(_) => AnomalyMethod::RandomCutForest,
+        }
+    }
+
+    pub fn for_ewma(alpha: f64) -> Self {
+        AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
+            spc_method: SPCMethod::Ewma,
+            ewma_alpha: Some(alpha),
+        })
+    }
+}
+
+/// Options for analysis detection
+#[derive(Debug, Clone)]
+pub struct AnomalyOptions {
     /// Seasonal adjustment options
     pub seasonal_adjustment: Option<SeasonalAdjustment>,
-    pub smoothed_zscore_options: Option<SmoothedZScoreOptions>,
-    pub mad_estimator: Option<AnomalyMADEstimator>,
-    /// Random Cut Forest options
-    pub rcf_options: Option<RCFOptions>,
+    /// Analysis detection method options
+    pub options: AnomalyDetectionMethodOptions,
 }
 
 impl Default for AnomalyOptions {
     fn default() -> Self {
         Self {
-            method: AnomalyMethod::StatisticalProcessControl,
-            threshold: None,
-            window_size: None,
-            n_trees: 100,
-            subsample_size: None,
-            spc_method: SPCMethod::Shewhart,
-            ewma_alpha: 0.3,
-            distance_metric: DistanceMetric::Euclidean,
-            k_neighbors: 5,
-            contamination: 0.1,
             seasonal_adjustment: None,
-            smoothed_zscore_options: None,
-            mad_estimator: None,
-            rcf_options: None,
+            options: AnomalyDetectionMethodOptions::default(),
         }
+    }
+}
+
+impl AnomalyOptions {
+    pub fn method(&self) -> AnomalyMethod {
+        self.options.method()
     }
 }
 
@@ -446,7 +487,7 @@ pub struct AnomalyResult {
 }
 
 /// Method-specific information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum MethodInfo {
     /// Spc-specific information
     Spc {
@@ -459,11 +500,6 @@ pub enum MethodInfo {
     IsolationForest {
         /// Average path length for normal points
         average_path_length: f64,
-    },
-    /// Distance-based information
-    DistanceBased {
-        /// Distance scores for each point
-        distances: Vec<f64>,
     },
 }
 
@@ -529,24 +565,33 @@ fn handle_dispatch(
     options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     // Apply the selected analysis detection method
-    match options.method {
-        AnomalyMethod::StatisticalProcessControl => detect_anomalies_spc(ts, options),
-        AnomalyMethod::IsolationForest => detect_anomalies_isolation_forest(ts, options),
-        AnomalyMethod::DistanceBased => detect_anomalies_distance_based(ts, options),
-        AnomalyMethod::PredictionBased => detect_anomalies_prediction_based(ts, options),
-        AnomalyMethod::ZScore => detect_anomalies_zscore(ts, options),
-        AnomalyMethod::ModifiedZScore => detect_anomalies_modified_zscore(ts, options),
-        AnomalyMethod::DoubleMAD => detect_anomalies_double_mad(ts, options),
-        AnomalyMethod::SmoothedZScore => detect_anomalies_smoothed_zscore(ts, options),
-        AnomalyMethod::InterquartileRange => detect_anomalies_iqr(ts, options),
-        AnomalyMethod::RandomCutForest => detect_anomalies_rcf(ts, options),
+    match options.options {
+        AnomalyDetectionMethodOptions::Spc(opts) => detect_anomalies_spc(ts, opts),
+        AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => {
+            detect_anomalies_iqr(ts, threshold)
+        }
+        AnomalyDetectionMethodOptions::IsolationForest(options) => {
+            detect_anomalies_isolation_forest(ts, options)
+        }
+        AnomalyDetectionMethodOptions::ZScore(threshold) => detect_anomalies_zscore(ts, threshold),
+        AnomalyDetectionMethodOptions::SmoothedZScore(opts) => {
+            detect_anomalies_smoothed_zscore(ts, opts)
+        }
+        AnomalyDetectionMethodOptions::ModifiedZScore(threshold) => {
+            detect_anomalies_modified_zscore(ts, threshold)
+        }
+        AnomalyDetectionMethodOptions::MAD(options) => detect_anomalies_mad(ts, options),
+        AnomalyDetectionMethodOptions::DoubleMAD(options) => {
+            detect_anomalies_double_mad(ts, options)
+        }
+        AnomalyDetectionMethodOptions::RCF(opts) => detect_anomalies_rcf(ts, opts),
     }
 }
 
 /// Statistical Process Control (Spc) analysis detection
 fn detect_anomalies_spc(
     ts: &[f64],
-    options: &AnomalyOptions,
+    options: SPCMethodOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
     let mut scores = Vec::with_capacity(n);
@@ -632,7 +677,7 @@ fn detect_anomalies_spc(
         }
         SPCMethod::Ewma => {
             // Ewma control chart implementation
-            let alpha = options.ewma_alpha;
+            let alpha = options.ewma_alpha.unwrap_or(EWMA_DEFAULT_ALPHA);
             let training_size = (n as f64 * 0.5).min(100.0) as usize;
             let training_data = &ts[0..training_size];
 
@@ -678,7 +723,7 @@ fn detect_anomalies_spc(
 /// Isolation Forest analysis detection (simplified version)
 fn detect_anomalies_isolation_forest(
     ts: &[f64],
-    options: &AnomalyOptions,
+    options: IsolationForestOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
     let n_trees = options.n_trees;
@@ -715,16 +760,14 @@ fn detect_anomalies_isolation_forest(
         1.0
     };
 
-    // Calculate analysis scores (higher for anomalies)
-    let mut scores: Vec<f64> = Vec::with_capacity(n);
-    let mut anomaly_scores = Vec::with_capacity(n_windows);
-
+    // Calculate anomaly scores (higher for anomalies)
+    let mut anomaly_scores: Vec<f64> = vec![0.0; n_windows];
     for i in 0..n_windows {
-        let score = 2.0_f64.powf(-path_lengths[i] / c_n);
-        anomaly_scores[i] = score;
+        anomaly_scores[i] = 2.0_f64.powf(-path_lengths[i] / c_n);
     }
 
     // Map window scores back to time series
+    let mut scores: Vec<f64> = Vec::with_capacity(n);
     for i in 0..n {
         let window_idx = if i >= window_size {
             i - window_size + 1
@@ -738,7 +781,7 @@ fn detect_anomalies_isolation_forest(
     // Determine a threshold and anomalies
     let threshold = determine_threshold(&scores, options.contamination);
 
-    // The analysis score reflects how easily the point was isolated, not if the value itself is
+    // The anomaly score reflects how easily the point was isolated, not if the value itself is
     // numerically "above" or "below" the bulk of the data.
     let anomalies: Vec<AnomalySignal> = scores
         .iter()
@@ -765,13 +808,13 @@ fn detect_anomalies_isolation_forest(
 /// Z-score based analysis detection
 fn detect_anomalies_zscore(
     ts: &[f64],
-    options: &AnomalyOptions,
+    threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
     let mean = calculate_mean(ts);
     let std_dev = calculate_std_dev(ts); // todo: empty result should be (1.0);
 
-    let threshold = options.threshold.unwrap_or(3.0);
+    let threshold = threshold.unwrap_or(ZSCORE_DEFAULT_THRESHOLD);
 
     let mut scores = Vec::with_capacity(n);
     let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
@@ -806,10 +849,10 @@ fn detect_anomalies_zscore(
 /// Modified Z-score using median absolute deviation
 fn detect_anomalies_modified_zscore(
     ts: &[f64],
-    options: &AnomalyOptions,
+    threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
-    let threshold = options.threshold.unwrap_or(3.5);
+    let threshold = threshold.unwrap_or(MODIFIED_ZSCORE_DEFAULT_THRESHOLD);
 
     // Calculate median
     let mut sorted_values: Vec<f64> = ts.iter().map(|&x| normalize_value(x)).collect();
@@ -875,69 +918,128 @@ fn detect_anomalies_modified_zscore(
 
 fn detect_anomalies_smoothed_zscore(
     ts: &[f64],
-    options: &AnomalyOptions,
+    options: SmoothedZScoreOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let SmoothedZScoreOptions {
         lag,
         influence,
         threshold,
-    } = options.smoothed_zscore_options.unwrap_or_default();
+    } = options;
 
     if lag == 0 {
         return Err(TimeSeriesAnalysisError::InvalidInput(
-            "the length of the initial values is zero, the length is used as the lag for the algorithm".to_string()
+            "the length of the initial values is zero, the length is used as the lag for the algorithm"
+                .to_string(),
         ));
     }
 
     let n = ts.len();
+    if n < lag {
+        return Err(TimeSeriesAnalysisError::InsufficientData {
+            message: "Time series too short for smoothed z-score lag".to_string(),
+            required: lag,
+            actual: n,
+        });
+    }
+
     let (initial, rest) = ts.split_at(lag);
 
     let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, initial)?;
-    let mut scores: Vec<f64> = Vec::with_capacity(n);
 
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+    // Keep output lengths equal to the input length (pad the initial window).
+    let mut scores: Vec<f64> = vec![0.0; lag];
+    let mut anomalies: Vec<AnomalySignal> = vec![AnomalySignal::None; lag];
 
     for &value in rest {
         let signal = detector.next(value);
         anomalies.push(signal);
-        scores.push(detector.prev_score)
+        scores.push(detector.prev_score);
     }
 
     Ok(AnomalyResult {
         scores,
         anomalies,
         threshold,
-        method: AnomalyMethod::InterquartileRange,
+        method: AnomalyMethod::SmoothedZScore,
         method_info: None,
     })
 }
 
-fn detect_anomalies_double_mad(
+fn detect_anomalies_mad(
     ts: &[f64],
-    options: &AnomalyOptions,
+    options: MADAnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
-    let threshold = options.threshold.unwrap_or(3.0);
+    let threshold = options.k;
 
-    // Calculate median
-    let sorted_values: Vec<f64> = ts.iter().map(|&x| normalize_value(x)).collect();
-    let sample: Samples = Samples::new_unweighted(sorted_values);
+    let detector = match options.estimator {
+        AnomalyMADEstimator::Simple => MadOutlierDetector::with_k_and_estimator(
+            ts,
+            threshold,
+            &SimpleNormalizedEstimator::default(),
+        ),
+        AnomalyMADEstimator::HarrellDavis => MadOutlierDetector::with_k_and_estimator(
+            ts,
+            threshold,
+            &HarrellDavisNormalizedEstimator,
+        ),
+        AnomalyMADEstimator::Invariant => MadOutlierDetector::with_k_and_estimator(
+            ts,
+            threshold,
+            &InvariantMADEstimator::default(),
+        ),
+    };
 
-    let detector = match options
-        .mad_estimator
-        .unwrap_or(AnomalyMADEstimator::Invariant)
-    {
-        AnomalyMADEstimator::Simple => DoubleMadOutlierDetector::from_sample_with_k(
+    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+    let mut scores: Vec<f64> = Vec::with_capacity(n);
+    for &v in ts {
+        let value = normalize_value(v);
+        let score = value;
+        scores.push(score);
+
+        let anomaly_direction = if detector.is_upper_outlier(score) {
+            AnomalySignal::Positive
+        } else if detector.is_lower_outlier(score) {
+            AnomalySignal::Negative
+        } else {
+            AnomalySignal::None
+        };
+        anomalies.push(anomaly_direction);
+    }
+
+    Ok(AnomalyResult {
+        scores,
+        anomalies,
+        threshold,
+        method: AnomalyMethod::MAD,
+        method_info: None,
+    })
+}
+
+/// Double Median Absolute Deviation (MAD) analysis detection
+/// https://aakinshin.net/posts/harrell-davis-double-mad-outlier-detector/
+/// https://eurekastatistics.com/using-the-median-absolute-deviation-to-find-outliers/
+fn detect_anomalies_double_mad(
+    ts: &[f64],
+    options: MADAnomalyOptions,
+) -> TimeSeriesAnalysisResult<AnomalyResult> {
+    let n = ts.len();
+    let threshold = options.k;
+
+    let sample: Samples = Samples::new_unweighted(ts.to_vec());
+
+    let detector = match options.estimator {
+        AnomalyMADEstimator::Simple => DoubleMadOutlierDetector::with_k_and_estimator(
             &sample,
             threshold,
             Some(SimpleNormalizedEstimator::default()),
         ),
-        AnomalyMADEstimator::HarrellDavis => DoubleMadOutlierDetector::from_sample_with_k(
+        AnomalyMADEstimator::HarrellDavis => DoubleMadOutlierDetector::with_k_and_estimator(
             &sample,
             threshold,
             Some(HarrellDavisNormalizedEstimator),
         ),
-        AnomalyMADEstimator::Invariant => DoubleMadOutlierDetector::from_sample_with_k(
+        AnomalyMADEstimator::Invariant => DoubleMadOutlierDetector::with_k_and_estimator(
             &sample,
             threshold,
             Some(InvariantMADEstimator::default()),
@@ -973,14 +1075,14 @@ fn detect_anomalies_double_mad(
 /// Interquartile Range (IQR) analysis detection
 fn detect_anomalies_iqr(
     ts: &[f64],
-    options: &AnomalyOptions,
+    threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
-    let multiplier = options.threshold.unwrap_or(1.5);
+    let multiplier = threshold.unwrap_or(IQR_DEFAULT_THRESHOLD);
 
     // Calculate quartiles
     let mut sorted_values: Vec<f64> = ts.iter().map(|&x| normalize_value(x)).collect();
-    sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted_values.sort_by(|&a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let q1_idx = n / 4;
     let q3_idx = 3 * n / 4;
@@ -1018,167 +1120,33 @@ fn detect_anomalies_iqr(
     })
 }
 
-/// Placeholder implementations for complex methods
-fn detect_anomalies_one_class_svm(
-    ts: &[f64],
-    options: &AnomalyOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    // Simplified implementation using a distance-based approach as a substitute
-    detect_anomalies_distance_based(ts, options)
-}
-
-fn detect_anomalies_distance_based(
-    ts: &[f64],
-    options: &AnomalyOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
-    let window_size = options.window_size.unwrap_or(10.min(n / 4));
-    let k = options.k_neighbors;
-
-    // Create sliding windows
-    let windowed_data = create_sliding_windows(ts, window_size)?;
-    let n_windows = windowed_data.rows();
-
-    let mut distances = Vec::with_capacity(n_windows);
-
-    // Calculate the average distance to k nearest neighbors for each window
-    for i in 0..n_windows {
-        let mut window_distances = Vec::new();
-        let current_window = windowed_data.get_row(i).expect("Row index out of bounds");
-
-        for j in 0..n_windows {
-            if i != j {
-                let other_window = windowed_data.get_row(j).expect("Row index out of bounds");
-                let dist = euclidean_distance(current_window, other_window);
-                window_distances.push(dist);
-            }
-        }
-
-        window_distances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let avg_k_distance: f64 = window_distances.iter().take(k).sum::<f64>() / k as f64;
-        distances.push(avg_k_distance);
-    }
-
-    // Map back to time series
-    let mut scores = Vec::with_capacity(n);
-    for i in 0..n {
-        let window_idx = if i >= window_size {
-            i - window_size + 1
-        } else {
-            0
-        }
-        .min(n_windows - 1);
-        let d = distances[window_idx];
-        scores.push(d);
-    }
-
-    let threshold = determine_threshold(&scores, options.contamination);
-
-    // The analysis score reflects distance, not if the value itself is numerically "above" or "below"
-    let anomalies = scores
-        .iter()
-        .map(|&score| {
-            if score > threshold {
-                AnomalySignal::Positive
-            } else {
-                AnomalySignal::None
-            }
-        })
-        .collect();
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::DistanceBased,
-        method_info: Some(MethodInfo::DistanceBased {
-            distances: distances.to_owned(),
-        }),
-    })
-}
-
-/// Prediction-based analysis detection
-fn detect_anomalies_prediction_based(
-    ts: &[f64],
-    _options: &AnomalyOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    // Simplified prediction-based approach using moving average prediction
-    let n = ts.len();
-    let window_size = 10.min(n / 4);
-
-    let mut scores: Vec<f64> = Vec::with_capacity(n);
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
-
-    for i in window_size..n {
-        // Calculate moving average as a prediction
-        let window = &ts[i - window_size..i];
-        let prediction = calculate_mean(window);
-        let actual = normalize_value(ts[i]);
-
-        // Calculate prediction error
-        let error = (actual - prediction).abs();
-        scores.push(error);
-    }
-
-    // Calculate a threshold based on prediction errors
-    let valid_scores: Vec<f64> = scores.iter().skip(window_size).copied().collect();
-
-    if !valid_scores.is_empty() {
-        let mean_error = valid_scores.iter().sum::<f64>() / valid_scores.len() as f64;
-        let std_error = {
-            let variance = valid_scores
-                .iter()
-                .map(|&x| (x - mean_error).powi(2))
-                .sum::<f64>()
-                / valid_scores.len() as f64;
-            variance.sqrt()
-        };
-
-        let lower_bound = mean_error - 3.0 * std_error;
-        let upper_bound = mean_error + 3.0 * std_error;
-        let threshold = upper_bound; // Use the upper bound as the threshold
-
-        for &score in scores.iter().take(n).skip(window_size) {
-            let anomaly_direction = get_anomaly_direction(lower_bound, upper_bound, score);
-            anomalies.push(anomaly_direction);
-        }
-
-        Ok(AnomalyResult {
-            scores,
-            anomalies,
-            threshold,
-            method: AnomalyMethod::PredictionBased,
-            method_info: None,
-        })
-    } else {
-        Err(TimeSeriesAnalysisError::InsufficientData {
-            message: "Not enough data for prediction-based analysis detection".to_string(),
-            required: window_size + 1,
-            actual: n,
-        })
-    }
-}
-
+/// Random Cut Forest (RCF) analysis detection
 fn detect_anomalies_rcf(
     ts: &[f64],
-    options: &AnomalyOptions,
+    options: RCFOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let kcf_options = options.rcf_options.unwrap_or(RCFOptions::default());
-    let mut detector = RcfOutlierDetector::new(kcf_options)
+    let detector = RcfOutlierDetector::new(options)
         .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
     let mut scores: Vec<f64> = Vec::with_capacity(ts.len());
     let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(ts.len());
     for &value in ts {
-        let score = detector.score(&[value]);
+        let score = detector.score(value);
         scores.push(score);
 
-        let anomaly_direction = if score > kcf_options.threshold {
+        let anomaly_direction = if score > options.threshold {
             AnomalySignal::Positive
         } else {
             AnomalySignal::None
         };
         anomalies.push(anomaly_direction);
     }
+    Ok(AnomalyResult {
+        scores,
+        anomalies,
+        threshold: options.threshold,
+        method: AnomalyMethod::RandomCutForest,
+        method_info: None,
+    })
 }
 
 // Helper functions
@@ -1305,14 +1273,6 @@ fn calculate_isolation_path_length(
     }
 }
 
-fn euclidean_distance(a: &[f64], b: &[f64]) -> f64 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x - y).powi(2))
-        .sum::<f64>()
-        .sqrt()
-}
-
 fn determine_threshold(scores: &[f64], contamination: f64) -> f64 {
     let mut sorted_scores: Vec<f64> = scores.to_vec();
     sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1367,13 +1327,7 @@ mod tests {
         ts[25] = 5.0; // Clear analysis
         ts[75] = -5.0; // Clear analysis
 
-        let options = AnomalyOptions {
-            method: AnomalyMethod::ZScore,
-            threshold: Some(3.0),
-            ..Default::default()
-        };
-
-        let result = detect_anomalies(&ts, &options).unwrap();
+        let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
 
         // Should detect the two anomalies
         let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
@@ -1391,13 +1345,7 @@ mod tests {
     fn test_modified_zscore() {
         let ts = vec![1.0, 2.0, 1.5, 2.2, 1.8, 10.0, 2.1, 1.9]; // 10.0 is an outlier
 
-        let options = AnomalyOptions {
-            method: AnomalyMethod::ModifiedZScore,
-            threshold: Some(3.5),
-            ..Default::default()
-        };
-
-        let result = detect_anomalies(&ts, &options).unwrap();
+        let result = detect_anomalies_modified_zscore(&ts, Some(3.5)).unwrap();
 
         // Should detect the outlier at index 5
         assert!(
@@ -1412,13 +1360,7 @@ mod tests {
         let mut ts = vec![1.0; 100];
         ts[50] = 10.0; // Clear outlier
 
-        let options = AnomalyOptions {
-            method: AnomalyMethod::InterquartileRange,
-            threshold: Some(1.5),
-            ..Default::default()
-        };
-
-        let result = detect_anomalies(&ts, &options).unwrap();
+        let result = detect_anomalies_iqr(&ts, Some(1.5)).unwrap();
 
         // Should detect the outlier
         assert!(
@@ -1430,7 +1372,7 @@ mod tests {
     #[test]
     fn test_spc_shewhart() {
         // Create a time series with a shift in mean
-        let mut ts = Vec::with_capacity(100);
+        let mut ts = vec![0.0; 100];
         for i in 0..50 {
             let v = 1.0 + 0.1 * (i as f64 * 0.1).sin();
             ts.push(v);
@@ -1439,13 +1381,12 @@ mod tests {
             ts[i] = 5.0 + 0.1 * (i as f64 * 0.1).sin(); // Shift in mean
         }
 
-        let options = AnomalyOptions {
-            method: AnomalyMethod::StatisticalProcessControl,
+        let options = SPCMethodOptions {
             spc_method: SPCMethod::Shewhart,
             ..Default::default()
         };
 
-        let result = detect_anomalies(&ts, &options).unwrap();
+        let result = detect_anomalies_spc(&ts, options).unwrap();
 
         // Should detect anomalies in the second half
         let anomalies_second_half = result.anomalies[50..]
@@ -1463,15 +1404,14 @@ mod tests {
         let mut ts: Vec<f64> = (0..50).map(|i| (i as f64 / 5.0).sin()).collect();
         ts[25] = 10.0; // Anomaly
 
-        let options = AnomalyOptions {
-            method: AnomalyMethod::IsolationForest,
+        let if_options = IsolationForestOptions {
+            n_trees: 10, // Fewer trees for faster testing
             contamination: 0.1,
             window_size: Some(5),
-            n_trees: 10, // Fewer trees for faster testing
             ..Default::default()
         };
 
-        let result = detect_anomalies(&ts, &options).unwrap();
+        let result = detect_anomalies_isolation_forest(&ts, if_options).unwrap();
 
         // Should detect some anomalies
         let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
@@ -1489,13 +1429,8 @@ mod tests {
 
         // Test with constant time series
         let ts = vec![1.0; 50];
-        let options = AnomalyOptions {
-            method: AnomalyMethod::ZScore,
-            threshold: Some(3.0),
-            ..Default::default()
-        };
 
-        let result = detect_anomalies(&ts, &options).unwrap();
+        let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
         // Should detect no anomalies in constant series
         let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
         assert_eq!(

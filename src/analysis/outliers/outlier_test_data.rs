@@ -1,12 +1,9 @@
-// Converted from OutlierDetectorTests.cs
 // Note: This file defines abstract test data and helpers for outlier detector tests.
-// It assumes existence of an OutlierDetector trait and some test output helper.
+// It assumes the existence of an OutlierDetector trait and some test output helper.
 // The actual detector implementations and test harness setup are not included.
 
-#![allow(dead_code)]
-use std::fmt::Debug;
 use crate::analysis::outliers::OutlierDetector;
-// --- Data sets equivalent to static classes in C# ---
+use std::fmt::Debug;
 
 /// Data set based on Table 1 "Outlier Score Cases" from the referenced paper
 pub mod yang_data_set {
@@ -90,9 +87,7 @@ pub mod real_data_set {
     ];
 }
 
-/// <summary>
-/// Data set based on beta-distribution (1, 10) multiplied by 10000
-/// </summary>
+/// Data set based on beta-distribution (1, 10) multiplied by 10,000
 pub mod beta_data_set {
     pub const X0: [f64; 100] = [
         5.0, 8.0, 12.0, 40.0, 42.0, 58.0, 73.0, 80.0, 96.0, 111.0, 126.0, 128.0, 160.0, 166.0,
@@ -131,7 +126,7 @@ pub mod beta_data_set {
 }
 
 /// <summary>
-/// Data set based on beta-distribution (1, 10) multiplied by 10000 with additional outliers
+/// Data set based on beta-distribution (1, 10) multiplied by 10,000 with additional outliers
 /// </summary>
 pub mod modified_beta_data_set {
     pub const UPPER1: [f64; 101] = [
@@ -243,9 +238,6 @@ pub mod modified_beta_data_set {
     ];
 }
 
-// Other data sets omitted for brevity (see original file for details)
-// You may add beta_data_set, modified_beta_data_set, and corner_case_data_set as needed.
-
 pub struct TestData<'b> {
     pub values: &'b [f64],
     pub expected_outliers: &'b [f64],
@@ -264,6 +256,7 @@ pub const EMPTY_DATASET: [f64; 1] = [0.0];
 pub const SAME_DATASET: [f64; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
 
 pub(super) fn check_outliers<D: OutlierDetector + Debug, F: Fn(&[f64]) -> D>(
+    dataset_name: &str,
     test_data: &TestData,
     create_detector: F,
 ) {
@@ -281,9 +274,14 @@ pub(super) fn check_outliers<D: OutlierDetector + Debug, F: Fn(&[f64]) -> D>(
         println!("{:<17}: [{}]", name, formatted.join(", "));
     };
 
-    dump("Values", values);
+    let label = format!("Values - {dataset_name}");
+    dump(&label, values);
     dump("ExpectedOutliers", expected);
     dump("ActualOutliers", &actual);
 
-    assert_eq!(expected, actual.as_slice());
+    assert_eq!(
+        expected,
+        actual.as_slice(),
+        "Outliers do not match for dataset: {dataset_name}"
+    );
 }

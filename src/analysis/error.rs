@@ -1,7 +1,7 @@
 //! Error types for the time series module
 
-use thiserror::Error;
 use crate::error::TsdbError;
+use thiserror::Error;
 
 /// Error type for time series analysis operations
 #[derive(Debug, Error)]

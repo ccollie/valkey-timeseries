@@ -1,11 +1,14 @@
 #[cfg(test)]
 mod tests {
     use crate::analysis::outliers::DoubleMadOutlierDetector;
-    use crate::analysis::outliers::outlier_test_data::{
-        check_outliers,
-        EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, modified_beta_data_set, real_data_set,
+    use crate::analysis::outliers::mad_estimator::{
+        HarrellDavisNormalizedEstimator, SimpleNormalizedEstimator,
     };
-    use crate::analysis::quantile_estimators::{HarrellDavisNormalizedEstimator, Samples, SimpleNormalizedEstimator};
+    use crate::analysis::outliers::outlier_test_data::{
+        EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, check_outliers,
+        modified_beta_data_set, real_data_set,
+    };
+    use crate::analysis::quantile_estimators::Samples;
     use std::collections::HashMap;
 
     /// Data cases for SimpleQuantileEstimator
@@ -169,9 +172,9 @@ mod tests {
 
         for (test_data_key, test_data) in test_data_map.iter() {
             let action = || {
-                check_outliers(test_data, |values| {
+                check_outliers(test_data_key, test_data, |values| {
                     let samples = Samples::from(values);
-                    DoubleMadOutlierDetector::new_with_estimator(
+                    DoubleMadOutlierDetector::with_estimator(
                         &samples,
                         SimpleNormalizedEstimator::default(),
                     )
@@ -196,9 +199,12 @@ mod tests {
 
         for (test_data_key, test_data) in test_data_map.iter() {
             let action = || {
-                check_outliers(test_data, |values| {
+                check_outliers(test_data_key, test_data, |values| {
                     let samples = Samples::from(values);
-                    DoubleMadOutlierDetector::new_with_estimator(&samples, HarrellDavisNormalizedEstimator)
+                    DoubleMadOutlierDetector::with_estimator(
+                        &samples,
+                        HarrellDavisNormalizedEstimator,
+                    )
                 })
             };
 
