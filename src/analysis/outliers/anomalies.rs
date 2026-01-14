@@ -334,7 +334,7 @@ pub enum AnomalyDetectionMethodOptions {
 
 impl Default for AnomalyDetectionMethodOptions {
     fn default() -> Self {
-        AnomalyDetectionMethodOptions::ZScore(Some(3.0))
+        AnomalyDetectionMethodOptions::ZScore(Some(ZSCORE_DEFAULT_THRESHOLD))
     }
 }
 
