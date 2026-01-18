@@ -3,7 +3,7 @@ use crate::join::JoinValue;
 use joinkit::{EitherOrBoth, Joinkit};
 use min_max_heap::MinMaxHeap;
 
-/// Iterator adaptor implementing a streaming *right outer join* over two time\-sorted
+/// Iterator adaptor implementing a streaming *right outer join* over two time-sorted
 /// [`Sample`] streams.
 ///
 /// This iterator yields [`JoinValue`] rows for every timestamp present on the right side:
@@ -92,7 +92,7 @@ impl Iterator for JoinRightIter {
                 return None;
             }
 
-            // Iterate until we see a timestamp strictly greater than the previous boundary\.
+            // Iterate until we see a timestamp strictly greater than the previous boundary.
             while let Some(value) = self.inner.next() {
                 self.push_item(value);
 
