@@ -146,7 +146,7 @@ mod tests {
         let series = create_test_series();
 
         let aggr_options = AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregationType::Sum.into(),
             bucket_duration: 20,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -189,7 +189,7 @@ mod tests {
         }
 
         let aggr_options = AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregationType::Sum.into(),
             bucket_duration: 25,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Timestamp(0),
@@ -323,7 +323,7 @@ mod tests {
         let timestamps = vec![120, 130, 140, 150, 160];
 
         let aggr_options = AggregationOptions {
-            aggregation: AggregationType::Avg,
+            aggregation: AggregationType::Avg.into(),
             bucket_duration: 20,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -355,7 +355,7 @@ mod tests {
 
         // Create aggregation options with report_empty = true
         let aggr_options = AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregationType::Sum.into(),
             bucket_duration: 30, // 30ms buckets to create gaps
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,

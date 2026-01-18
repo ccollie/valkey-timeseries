@@ -1,6 +1,6 @@
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
 use crate::common::logging::log_warning;
-use crate::common::rdb::{rdb_load_timestamp, rdb_save_timestamp};
+use crate::common::rdb::{RdbSerializable, rdb_load_timestamp, rdb_save_timestamp};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
@@ -36,31 +36,6 @@ impl GetSize for CompactionRule {
 }
 
 impl CompactionRule {
-    pub fn save_to_rdb(&self, rdb: *mut raw::RedisModuleIO) {
-        raw::save_unsigned(rdb, self.dest_id);
-        self.aggregator.save(rdb);
-        raw::save_unsigned(rdb, self.bucket_duration);
-        rdb_save_timestamp(rdb, self.align_timestamp);
-        rdb_save_timestamp(rdb, self.bucket_start.unwrap_or(-1));
-    }
-
-    pub fn load_from_rdb(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
-        let dest_id = raw::load_unsigned(rdb)? as SeriesRef;
-        let aggregator = Aggregator::load(rdb)?;
-        let bucket_duration = raw::load_unsigned(rdb)?;
-        let align_timestamp = rdb_load_timestamp(rdb)?;
-        let start_ts = rdb_load_timestamp(rdb)?;
-        let bucket_start = if start_ts == -1 { None } else { Some(start_ts) };
-
-        Ok(CompactionRule {
-            dest_id,
-            aggregator,
-            bucket_duration,
-            align_timestamp,
-            bucket_start,
-        })
-    }
-
     fn calc_bucket_start(&self, ts: Timestamp) -> Timestamp {
         calc_bucket_start(ts, self.align_timestamp, self.bucket_duration)
     }
@@ -74,6 +49,33 @@ impl CompactionRule {
     fn reset(&mut self) {
         self.aggregator.reset();
         self.bucket_start = None;
+    }
+}
+
+impl RdbSerializable for CompactionRule {
+    fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
+        raw::save_unsigned(rdb, self.dest_id);
+        self.aggregator.rdb_save(rdb);
+        raw::save_unsigned(rdb, self.bucket_duration);
+        rdb_save_timestamp(rdb, self.align_timestamp);
+        rdb_save_timestamp(rdb, self.bucket_start.unwrap_or(-1));
+    }
+
+    fn rdb_load(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
+        let dest_id = raw::load_unsigned(rdb)? as SeriesRef;
+        let aggregator = Aggregator::rdb_load(rdb)?;
+        let bucket_duration = raw::load_unsigned(rdb)?;
+        let align_timestamp = rdb_load_timestamp(rdb)?;
+        let start_ts = rdb_load_timestamp(rdb)?;
+        let bucket_start = if start_ts == -1 { None } else { Some(start_ts) };
+
+        Ok(CompactionRule {
+            dest_id,
+            aggregator,
+            bucket_duration,
+            align_timestamp,
+            bucket_start,
+        })
     }
 }
 
@@ -139,14 +141,14 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // First sample for this rule - initialize the aggregation
         ctx.rule.bucket_start = Some(sample_bucket_start);
-        ctx.rule.aggregator.update(sample.value);
+        ctx.rule.aggregator.update(sample.timestamp, sample.value);
         return Ok(());
     };
 
     match sample_bucket_start.cmp(&current_bucket_start) {
         Ordering::Equal => {
             // Sample belongs to the current aggregation bucket
-            ctx.rule.aggregator.update(sample.value);
+            ctx.rule.aggregator.update(sample.timestamp, sample.value);
         }
         Ordering::Greater => {
             // Sample starts a new bucket - finalize the current bucket first
@@ -177,7 +179,9 @@ fn finalize_current_bucket(
     add_dest_bucket(ctx, current_bucket_start, aggregated_value)?;
 
     // Start a new bucket with the new sample
-    ctx.rule.aggregator.update(new_sample.value);
+    ctx.rule
+        .aggregator
+        .update(new_sample.timestamp, new_sample.value);
     ctx.rule.bucket_start = Some(new_bucket_start);
 
     Ok(())
@@ -193,7 +197,7 @@ fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // No current bucket, this is the first sample for this rule
         ctx.rule.bucket_start = Some(bucket_start);
-        ctx.rule.aggregator.update(sample.value);
+        ctx.rule.aggregator.update(sample.timestamp, sample.value);
         return Ok(());
     };
 
@@ -340,7 +344,7 @@ fn adjust_current_bucket_after_removal(
             .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
         for sample in bucket_samples {
-            new_aggregator.update(sample.value);
+            new_aggregator.update(sample.timestamp, sample.value);
         }
 
         ctx.rule.aggregator = new_aggregator;
@@ -550,7 +554,7 @@ where
         .range_iter(start, end)
         .filter(|sample| filter(sample.timestamp))
     {
-        aggregator.update(sample.value);
+        aggregator.update(sample.timestamp, sample.value);
         has_samples = true;
     }
     has_samples
@@ -558,6 +562,10 @@ where
 
 impl TimeSeries {
     pub fn add_compaction_rule(&mut self, rule: CompactionRule) {
+        let mut rule = rule;
+        if let Aggregator::Rate(r) = &mut rule.aggregator {
+            r.set_window_ms(rule.bucket_duration);
+        }
         self.rules.push(rule);
     }
 

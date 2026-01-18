@@ -29,7 +29,7 @@ pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     raw::save_unsigned(rdb, src_id);
     rdb_save_usize(rdb, series.rules.len());
     for rule in series.rules.iter() {
-        rule.save_to_rdb(rdb);
+        rule.rdb_save(rdb);
     }
 }
 
@@ -69,7 +69,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     let rules_len = rdb_load_usize(rdb)?;
     let mut rules = Vec::with_capacity(rules_len);
     for _ in 0..rules_len {
-        let rule = CompactionRule::load_from_rdb(rdb)?;
+        let rule = CompactionRule::rdb_load(rdb)?;
         rules.push(rule);
     }
     rules.shrink_to_fit();

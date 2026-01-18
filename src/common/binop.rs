@@ -1,4 +1,7 @@
+use get_size2::GetSize;
 use std::cmp::Ordering;
+use std::fmt::Display;
+use valkey_module::ValkeyError;
 
 pub type BinopFunc = fn(left: f64, right: f64) -> f64;
 
@@ -70,12 +73,18 @@ pub(crate) const fn op_lt(left: f64, right: f64) -> bool {
 /// Gte returns true if left >= right
 #[inline]
 pub(crate) const fn op_gte(left: f64, right: f64) -> bool {
+    if left.is_nan() {
+        return right.is_nan();
+    }
     left >= right
 }
 
 /// Lte returns true if left <= right
 #[inline]
 pub(crate) const fn op_lte(left: f64, right: f64) -> bool {
+    if left.is_nan() {
+        return right.is_nan();
+    }
     left <= right
 }
 
@@ -237,3 +246,99 @@ make_comparison_func_bool!(compare_gt_bool, op_gt);
 make_comparison_func_bool!(compare_lt_bool, op_lt);
 make_comparison_func_bool!(compare_gte_bool, op_gte);
 make_comparison_func_bool!(compare_lte_bool, op_lte);
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, GetSize)]
+#[repr(u8)]
+pub enum ComparisonOperator {
+    Equal = 0,
+    NotEqual = 1,
+    GreaterThan = 2,
+    GreaterThanOrEqual = 3,
+    LessThan = 4,
+    LessThanOrEqual = 5,
+}
+
+impl ComparisonOperator {
+    pub fn compare(&self, a: f64, b: f64) -> bool {
+        match self {
+            ComparisonOperator::Equal => op_eq(a, b),
+            ComparisonOperator::NotEqual => op_neq(a, b),
+            ComparisonOperator::GreaterThan => a > b,
+            ComparisonOperator::GreaterThanOrEqual => op_gte(a, b),
+            ComparisonOperator::LessThan => a < b,
+            ComparisonOperator::LessThanOrEqual => op_lte(a, b),
+        }
+    }
+
+    pub const fn get_func(&self) -> BinopFunc {
+        match self {
+            ComparisonOperator::Equal => compare_eq,
+            ComparisonOperator::NotEqual => compare_neq,
+            ComparisonOperator::GreaterThan => compare_gt,
+            ComparisonOperator::GreaterThanOrEqual => compare_gte,
+            ComparisonOperator::LessThan => compare_lt,
+            ComparisonOperator::LessThanOrEqual => compare_lte,
+        }
+    }
+}
+
+impl Display for ComparisonOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ComparisonOperator::Equal => "==",
+            ComparisonOperator::NotEqual => "!=",
+            ComparisonOperator::GreaterThan => ">",
+            ComparisonOperator::GreaterThanOrEqual => ">=",
+            ComparisonOperator::LessThan => "<",
+            ComparisonOperator::LessThanOrEqual => "<=",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl TryFrom<&str> for ComparisonOperator {
+    type Error = ValkeyError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let condition = hashify::tiny_map_ignore_case! {
+            value.as_bytes(),
+            "==" => ComparisonOperator::Equal,
+            "!=" => ComparisonOperator::NotEqual,
+            ">" => ComparisonOperator::GreaterThan,
+            ">=" => ComparisonOperator::GreaterThanOrEqual,
+            "<" => ComparisonOperator::LessThan,
+            "<=" => ComparisonOperator::LessThanOrEqual,
+        };
+        match condition {
+            Some(cond) => Ok(cond),
+            None => Err(ValkeyError::Str("TSDB: invalid comparison operator")),
+        }
+    }
+}
+
+impl TryFrom<u8> for ComparisonOperator {
+    type Error = ValkeyError;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(ComparisonOperator::Equal),
+            1 => Ok(ComparisonOperator::NotEqual),
+            2 => Ok(ComparisonOperator::GreaterThan),
+            3 => Ok(ComparisonOperator::GreaterThanOrEqual),
+            4 => Ok(ComparisonOperator::LessThan),
+            5 => Ok(ComparisonOperator::LessThanOrEqual),
+            _ => Err(ValkeyError::Str("TSDB: invalid comparison operator value")),
+        }
+    }
+}
+
+impl From<ComparisonOperator> for u8 {
+    fn from(value: ComparisonOperator) -> Self {
+        match value {
+            ComparisonOperator::Equal => 0,
+            ComparisonOperator::NotEqual => 1,
+            ComparisonOperator::GreaterThan => 2,
+            ComparisonOperator::GreaterThanOrEqual => 3,
+            ComparisonOperator::LessThan => 4,
+            ComparisonOperator::LessThanOrEqual => 5,
+        }
+    }
+}

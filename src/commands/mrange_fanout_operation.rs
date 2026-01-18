@@ -175,7 +175,7 @@ fn process_group(
     let labels = build_mrange_grouped_labels(
         &group_options.group_label,
         &label,
-        group_options.aggregation.name(),
+        group_options.aggregation.aggregation_name(),
         &data.keys,
     );
 

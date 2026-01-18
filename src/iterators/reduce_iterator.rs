@@ -1,12 +1,9 @@
-use crate::aggregators::{AggregationHandler, AggregationType, Aggregator};
+use crate::aggregators::{AggregationHandler, Aggregator};
 use crate::common::Sample;
 
 /// Perform the GROUP BY REDUCE operation on the samples. Specifically, it
 /// aggregates non-NAN samples based on the specified aggregation options.
-pub fn group_reduce(
-    samples: impl Iterator<Item = Sample>,
-    aggregation: AggregationType,
-) -> Vec<Sample> {
+pub fn group_reduce(samples: impl Iterator<Item = Sample>, aggregation: Aggregator) -> Vec<Sample> {
     ReduceIterator::new(samples, aggregation).collect()
 }
 
@@ -18,10 +15,10 @@ pub struct ReduceIterator<I: Iterator<Item = Sample>> {
 }
 
 impl<I: Iterator<Item = Sample>> ReduceIterator<I> {
-    pub fn new(iter: I, aggregation: AggregationType) -> Self {
+    pub fn new(iter: I, aggregator: Aggregator) -> Self {
         Self {
             iter,
-            aggregator: aggregation.into(),
+            aggregator,
             current_sample: None,
             is_init: false,
         }
@@ -43,14 +40,14 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
         let mut all_nans = current.value.is_nan();
 
         if !all_nans {
-            self.aggregator.update(current.value);
+            self.aggregator.update(current.timestamp, current.value);
         }
 
         for next in self.iter.by_ref() {
             if next.timestamp == current.timestamp {
                 let is_nan = next.value.is_nan();
                 all_nans = all_nans && is_nan;
-                self.aggregator.update(next.value);
+                self.aggregator.update(next.timestamp, next.value);
             } else {
                 // Finalize the current group
                 let value = if all_nans {

@@ -234,7 +234,8 @@ fn get_grouped_samples(
         .collect::<Vec<_>>();
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);
-    let reducer = ReduceIterator::new(multi_iter, grouping_options.aggregation);
+    let aggregator = grouping_options.aggregation.create_aggregator();
+    let reducer = ReduceIterator::new(multi_iter, aggregator);
 
     collect_samples(reducer, is_reverse, count)
 }
@@ -327,7 +328,7 @@ fn group_series_by_label<'a>(
 ) -> AHashMap<String, GroupedSeriesData<'a>> {
     let mut grouped: AHashMap<String, GroupedSeriesData<'a>> = AHashMap::new();
     let group_by_label_name = &grouping.group_label;
-    let reducer_name = grouping.aggregation.name();
+    let reducer_name = grouping.aggregation.aggregation_name();
 
     for mut meta in metas.into_iter() {
         if let Some(label_value_str) = meta.group_label_value.take() {

@@ -1,3 +1,6 @@
+import math
+from math import nan
+
 import pytest
 from valkey import ResponseError
 from valkeytestframework.util.waiters import *
@@ -276,6 +279,133 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
         assert float(result[0][1]) == pytest.approx(1.0)
         assert float(result[1][1]) == pytest.approx(4.0)
 
+    def test_increase_aggregation_with_reset(self):
+        """
+        Test INCREASE aggregator.
+
+        Data models a counter that increases, then resets (drops), then increases again.
+        We aggregate with a bucket size that ensures each non-empty bucket contains 2 samples,
+        so INCREASE can compute a delta within the bucket.
+        """
+        self.client.execute_command('TS.CREATE', 'counter_inc')
+
+        # Bucket size will be 2000ms with ALIGN 0:
+        #   [0,2000): 1000
+        #   [2000,4000): 2000, 3000
+        #   [4000,6000): 4000, 5000
+        self.client.execute_command('TS.ADD', 'counter_inc', 1000, 0)
+        self.client.execute_command('TS.ADD', 'counter_inc', 2000, 10)
+        self.client.execute_command('TS.ADD', 'counter_inc', 3000, 20)
+        self.client.execute_command('TS.ADD', 'counter_inc', 4000, 5)  # reset
+        self.client.execute_command('TS.ADD', 'counter_inc', 5000, 15)  # +10 after reset
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_inc', '-', '+',
+            'ALIGN', 0,
+            'AGGREGATION', 'INCREASE', 2000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        # Expect 3 buckets (start timestamps 0, 2000, 4000), but note:
+        # bucket with only 1 sample yields INCREASE=0 (no prior point inside the bucket)
+        assert len(result) == 3
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+        assert result[1][0] == 2000
+        assert float(result[1][1]) == pytest.approx(10.0)  # 20 - 10
+        assert result[2][0] == 4000
+        assert float(result[2][1]) == pytest.approx(10.0)  # reset ignored, 15 - 5
+
+    def test_increase_aggregation_monotonic(self):
+        """
+        INCREASE on a monotonic counter: per-bucket increase should be last - first
+        (and 0 for buckets with <2 samples).
+        """
+        self.client.execute_command('TS.CREATE', 'counter_inc_mono')
+
+        # Buckets of 2000ms with ALIGN 0:
+        # [0,2000): 1000 (single sample)
+        # [2000,4000): 2000,3000 (10->25 => +15)
+        # [4000,6000): 4000,5000 (25->60 => +35)
+        self.client.execute_command('TS.ADD', 'counter_inc_mono', 1000, 0)
+        self.client.execute_command('TS.ADD', 'counter_inc_mono', 2000, 10)
+        self.client.execute_command('TS.ADD', 'counter_inc_mono', 3000, 25)
+        self.client.execute_command('TS.ADD', 'counter_inc_mono', 4000, 25)
+        self.client.execute_command('TS.ADD', 'counter_inc_mono', 5000, 60)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_inc_mono', '-', '+',
+            'ALIGN', 0,
+            'AGGREGATION', 'INCREASE', 2000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+        assert result[1][0] == 2000
+        assert float(result[1][1]) == pytest.approx(15.0)
+        assert result[2][0] == 4000
+        assert float(result[2][1]) == pytest.approx(35.0)
+
+    def test_increase_aggregation_empty_buckets(self):
+        """
+        INCREASE with EMPTY: buckets with no samples should still be emitted, with value NaN.
+        """
+        self.client.execute_command('TS.CREATE', 'counter_inc_empty')
+
+        # Bucket=1000ms ALIGN 0 over [0..5000]
+        # Data only in buckets starting at 1000 and 4000.
+        self.client.execute_command('TS.ADD', 'counter_inc_empty', 1000, 5)
+        self.client.execute_command('TS.ADD', 'counter_inc_empty', 1900, 8)  # within [1000,2000): +3
+        self.client.execute_command('TS.ADD', 'counter_inc_empty', 4000, 10)
+        self.client.execute_command('TS.ADD', 'counter_inc_empty', 4900, 17)  # within [4000,5000): +7
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_inc_empty', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'INCREASE', 1000,
+            'BUCKETTIMESTAMP', 'START',
+            'EMPTY'
+        )
+
+        # Expect 4 buckets: 1000,2000,3000,4000
+        assert len(result) == 4
+
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[1000] == pytest.approx(3.0)  # 8 - 5
+        assert math.isnan(by_ts[2000]), "Expected Nan"  # empty
+        assert math.isnan(by_ts[3000]), "Expected Nan"  # empty
+        assert by_ts[4000] == pytest.approx(7.0)  # 17 - 10
+
+    def test_increase_aggregation_resets_within_bucket(self):
+        """
+        Multiple resets inside one bucket: decreases should not reduce the increase.
+        This locks in the "ignore drops" behavior within a bucket.
+        """
+        self.client.execute_command('TS.CREATE', 'counter_inc_multi_reset')
+
+        # Single bucket of 5000ms with ALIGN 0 includes all points:
+        # values: 0 -> 10 -> 2 (reset) -> 12 -> 1 (reset) -> 6
+        # Expected increase = (10-0) + (12-2) + (6-1) = 10 + 10 + 5 = 25
+        self.client.execute_command('TS.ADD', 'counter_inc_multi_reset', 1000, 0)
+        self.client.execute_command('TS.ADD', 'counter_inc_multi_reset', 1500, 10)
+        self.client.execute_command('TS.ADD', 'counter_inc_multi_reset', 2000, 2)
+        self.client.execute_command('TS.ADD', 'counter_inc_multi_reset', 2500, 12)
+        self.client.execute_command('TS.ADD', 'counter_inc_multi_reset', 3000, 1)
+        self.client.execute_command('TS.ADD', 'counter_inc_multi_reset', 3500, 6)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_inc_multi_reset', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'INCREASE', 5000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(25.0)
+
     def test_last_aggregation(self):
         """Test LAST aggregation"""
         self.setup_aggregation_data()
@@ -312,6 +442,107 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 2
         assert float(result[0][1]) == pytest.approx(2.0)  # 3-1
         assert float(result[1][1]) == pytest.approx(2.0)  # 6-4
+
+    def test_rate_aggregation(self):
+        """
+        RATE aggregator integration test.
+
+        Uses the same data as the INCREASE test, but validates that RATE is:
+          RATE = INCREASE / bucket_duration_seconds
+        With bucket=2000ms => 2 seconds, so expected RATE is 10/2 = 5 in the buckets that have +10 increase.
+        """
+        self.client.execute_command('TS.CREATE', 'counter_rate')
+
+        self.client.execute_command('TS.ADD', 'counter_rate', 1000, 0)
+        self.client.execute_command('TS.ADD', 'counter_rate', 2000, 10)
+        self.client.execute_command('TS.ADD', 'counter_rate', 3000, 20)
+        self.client.execute_command('TS.ADD', 'counter_rate', 4000, 5)  # reset
+        self.client.execute_command('TS.ADD', 'counter_rate', 5000, 15)  # +10 after reset
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_rate', '-', '+',
+            'ALIGN', 0,
+            'AGGREGATION', 'RATE', 2000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        print("result:", result)
+        assert len(result) == 3
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+        assert result[1][0] == 2000
+        assert float(result[1][1]) == pytest.approx(5.0)  # 10 increase / 2s
+        assert result[2][0] == 4000
+        assert float(result[2][1]) == pytest.approx(5.0)  # 10 increase / 2s
+
+    def test_irate_aggregation_basic(self):
+        """
+        IRATE aggregator integration test.
+
+        IRATE uses only the last two samples within each bucket:
+          irate = (v_last - v_prev) / ((t_last - t_prev) / 1000.0)
+        """
+        self.client.execute_command('TS.CREATE', 'counter_irate_basic')
+
+        self.client.execute_command('TS.ADD', 'counter_irate_basic', 1000, 0)
+        self.client.execute_command('TS.ADD', 'counter_irate_basic', 2000, 10)  # +10 over 1s => 10/s
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_irate_basic', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'IRATE', 5000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(10.0)
+
+    def test_irate_aggregation_uses_last_two_points(self):
+        """
+        IRATE should reflect only the *last* delta inside the bucket, not the total increase.
+        """
+        self.client.execute_command('TS.CREATE', 'counter_irate_last_two')
+
+        # Within one big bucket:
+        # 1000->2000: +10 over 1s (rate 10)
+        # 2000->4000: +30 over 2s (rate 15)  <-- expected
+        self.client.execute_command('TS.ADD', 'counter_irate_last_two', 1000, 0)
+        self.client.execute_command('TS.ADD', 'counter_irate_last_two', 2000, 10)
+        self.client.execute_command('TS.ADD', 'counter_irate_last_two', 4000, 40)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_irate_last_two', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'IRATE', 5000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(15.0)
+
+    def test_irate_aggregation_reset_returns_nan(self):
+        """
+        If the counter resets (value drops) on the last update in the bucket,
+        IRATE should have no valid rate for that bucket (emitted as NaN).
+        """
+        self.client.execute_command('TS.CREATE', 'counter_irate_reset')
+
+        self.client.execute_command('TS.ADD', 'counter_irate_reset', 1000, 100)
+        self.client.execute_command('TS.ADD', 'counter_irate_reset', 2000, 110)
+        self.client.execute_command('TS.ADD', 'counter_irate_reset', 3000, 5)  # reset/drop
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'counter_irate_reset', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'IRATE', 5000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert math.isnan(float(result[0][1])), f"Expected NaN, got {result[0][1]}"
 
     def test_std_p_aggregation(self):
         """Test STD.P aggregation (population standard deviation)"""
@@ -361,6 +592,369 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
                                              'AGGREGATION', 'VAR.S', 7000)
         assert len(result) == 1
         assert float(result[0][1]) == pytest.approx(3.5, abs=0.01)
+
+    def test_all_aggregation_all_true_single_bucket(self):
+        """
+        ALL aggregator: when all samples in the bucket are "true" (non-zero),
+        the aggregated value should be 1.
+        """
+        self.client.execute_command('TS.CREATE', 'all_true')
+
+        self.client.execute_command('TS.ADD', 'all_true', 1000, 1)
+        self.client.execute_command('TS.ADD', 'all_true', 2000, 1)
+        self.client.execute_command('TS.ADD', 'all_true', 3000, 2)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'all_true', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'ALL', 5000, 'CONDITION', ">=", 1,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        print("All result", result)
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(1.0)
+
+    def test_all_aggregation_false(self):
+        """
+        ALL aggregator: if any sample in the bucket is zero, aggregated value should be 0.
+        """
+        self.client.execute_command('TS.CREATE', 'all_has_zero')
+
+        self.client.execute_command('TS.ADD', 'all_has_zero', 1000, 1)
+        self.client.execute_command('TS.ADD', 'all_has_zero', 2000, 0)
+        self.client.execute_command('TS.ADD', 'all_has_zero', 3000, 1)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'all_has_zero', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'ALL', 5000, "CONDITION", "!=", 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        print("All with zero result", result)
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+
+    def test_all_aggregation_multiple_buckets(self):
+        """
+        ALL aggregator across multiple buckets to ensure per-bucket behavior.
+        """
+        self.client.execute_command('TS.CREATE', 'all_multi_bucket')
+
+        self.client.execute_command('TS.ADD', 'all_multi_bucket', 1000, 50)
+        self.client.execute_command('TS.ADD', 'all_multi_bucket', 2000, 1000)
+        self.client.execute_command('TS.ADD', 'all_multi_bucket', 3000, 200)
+        self.client.execute_command('TS.ADD', 'all_multi_bucket', 5000, 210)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'all_multi_bucket', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', 'ALL', 2000, "CONDITION", "<", 500,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[0] == pytest.approx(1.0)
+        assert by_ts[2000] == pytest.approx(0.0)
+        assert by_ts[4000] == pytest.approx(1.0)
+
+    def test_any_aggregation_any_true_single_bucket(self):
+        """
+        ANY aggregator: when at least one sample in the bucket matches the condition,
+        the aggregated value should be 1.
+        """
+        self.client.execute_command('TS.CREATE', 'any_true')
+
+        self.client.execute_command('TS.ADD', 'any_true', 1000, 0)
+        self.client.execute_command('TS.ADD', 'any_true', 2000, 0)
+        self.client.execute_command('TS.ADD', 'any_true', 3000, 2)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'any_true', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'ANY', 5000, 'CONDITION', ">=", 1,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == 1.0
+
+    def test_any_aggregation_none_true_single_bucket(self):
+        """
+        ANY aggregator: when no samples in the bucket match the condition,
+        the aggregated value should be 0.
+        """
+        self.client.execute_command('TS.CREATE', 'any_false')
+
+        self.client.execute_command('TS.ADD', 'any_false', 1000, 0)
+        self.client.execute_command('TS.ADD', 'any_false', 2000, 0)
+        self.client.execute_command('TS.ADD', 'any_false', 3000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'any_false', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'ANY', 5000, 'CONDITION', "!=", 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == 0.0
+
+    def test_any_aggregation_multiple_buckets(self):
+        """
+        ANY aggregator across multiple buckets to ensure per-bucket behavior.
+        """
+        self.client.execute_command('TS.CREATE', 'any_multi_bucket')
+
+        # bucket=2000ms, ALIGN 0 => buckets start at 0,2000,4000
+        # bucket 0: values [0] -> ANY(v>0)=0
+        # bucket 2000: values [1,0] -> ANY(v>0)=1
+        # bucket 4000: values [0] -> ANY(v>0)=0
+        self.client.execute_command('TS.ADD', 'any_multi_bucket', 1000, 0)
+        self.client.execute_command('TS.ADD', 'any_multi_bucket', 2000, 1)
+        self.client.execute_command('TS.ADD', 'any_multi_bucket', 3000, 0)
+        self.client.execute_command('TS.ADD', 'any_multi_bucket', 5000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'any_multi_bucket', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', 'ANY', 2000, "CONDITION", ">", 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[0] == pytest.approx(0.0)
+        assert by_ts[2000] == pytest.approx(1.0)
+        assert by_ts[4000] == pytest.approx(0.0)
+
+    def test_sumif_aggregation_all_match(self):
+        """
+        SUMIF aggregator: sum of samples that match CONDITION.
+        When all samples match, should equal regular SUM.
+        """
+        self.client.execute_command('TS.CREATE', 'sumif_all')
+
+        self.client.execute_command('TS.ADD', 'sumif_all', 1000, 10)
+        self.client.execute_command('TS.ADD', 'sumif_all', 2000, 20)
+        self.client.execute_command('TS.ADD', 'sumif_all', 3000, 30)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'sumif_all', 0, 4000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SUM', 4000, 'CONDITION', '>', 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(60.0)  # 10 + 20 + 30
+
+    def test_sumif_aggregation_none_match(self):
+        """
+        SUMIF aggregator: when no samples match the condition, sum should be 0.
+        """
+        self.client.execute_command('TS.CREATE', 'sumif_none')
+
+        self.client.execute_command('TS.ADD', 'sumif_none', 1000, 1)
+        self.client.execute_command('TS.ADD', 'sumif_none', 2000, 2)
+        self.client.execute_command('TS.ADD', 'sumif_none', 3000, 3)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'sumif_none', 0, 4000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SUMIF', 4000, 'CONDITION', '>', 10,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+
+    def test_sumif_aggregation_mixed(self):
+        """
+        SUMIF aggregator: sum only values matching the condition (> 5).
+        """
+        self.client.execute_command('TS.CREATE', 'sumif_mixed')
+
+        self.client.execute_command('TS.ADD', 'sumif_mixed', 1000, 3)
+        self.client.execute_command('TS.ADD', 'sumif_mixed', 2000, 10)
+        self.client.execute_command('TS.ADD', 'sumif_mixed', 3000, 2)
+        self.client.execute_command('TS.ADD', 'sumif_mixed', 4000, 15)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'sumif_mixed', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SUM', 5000, 'CONDITION', '>', 5,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(25.0)  # 10 + 15
+
+    def test_sumif_aggregation_multiple_buckets(self):
+        """
+        SUMIF aggregator across multiple buckets to ensure per-bucket behavior.
+        """
+        self.client.execute_command('TS.CREATE', 'sumif_multi')
+
+        # bucket=2000ms, ALIGN 0 => buckets start at 0, 2000, 4000
+        # bucket 0: [5, 3] => sumif(v>=5) = 5
+        # bucket 2000: [10, 2, 8] => sumif(v>=5) = 18
+        # bucket 4000: [1] => sumif(v>=5) = 0
+        self.client.execute_command('TS.ADD', 'sumif_multi', 1000, 5)
+        self.client.execute_command('TS.ADD', 'sumif_multi', 1500, 3)
+        self.client.execute_command('TS.ADD', 'sumif_multi', 2000, 10)
+        self.client.execute_command('TS.ADD', 'sumif_multi', 3000, 2)
+        self.client.execute_command('TS.ADD', 'sumif_multi', 3500, 8)
+        self.client.execute_command('TS.ADD', 'sumif_multi', 5000, 1)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'sumif_multi', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SUM', 2000, 'CONDITION', '>=', 5,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[0] == pytest.approx(5.0)
+        assert by_ts[2000] == pytest.approx(18.0)
+        assert by_ts[4000] == pytest.approx(0.0)
+
+    def test_countif_aggregation_all_match(self):
+        """
+        COUNTIF aggregator: count of samples that match CONDITION.
+        When all samples match, should equal regular COUNT.
+        """
+        self.client.execute_command('TS.CREATE', 'countif_all')
+
+        self.client.execute_command('TS.ADD', 'countif_all', 1000, 10)
+        self.client.execute_command('TS.ADD', 'countif_all', 2000, 20)
+        self.client.execute_command('TS.ADD', 'countif_all', 3000, 30)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'countif_all', 0, 4000,
+            'ALIGN', 0,
+            'AGGREGATION', 'COUNTIF', 4000, 'CONDITION', '>', 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(3.0)
+
+    def test_countif_aggregation_none_match(self):
+        """
+        COUNTIF aggregator: when no samples match the condition, count should be 0.
+        """
+        self.client.execute_command('TS.CREATE', 'countif_none')
+
+        self.client.execute_command('TS.ADD', 'countif_none', 1000, 1)
+        self.client.execute_command('TS.ADD', 'countif_none', 2000, 2)
+        self.client.execute_command('TS.ADD', 'countif_none', 3000, 3)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'countif_none', 0, 4000,
+            'ALIGN', 0,
+            'AGGREGATION', 'COUNT', 4000, 'CONDITION', '>', 10,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+
+    def test_countif_aggregation_mixed(self):
+        """
+        COUNTIF aggregator: count only values matching the condition (<= 5).
+        """
+        self.client.execute_command('TS.CREATE', 'countif_mixed')
+
+        self.client.execute_command('TS.ADD', 'countif_mixed', 1000, 3)
+        self.client.execute_command('TS.ADD', 'countif_mixed', 2000, 10)
+        self.client.execute_command('TS.ADD', 'countif_mixed', 3000, 2)
+        self.client.execute_command('TS.ADD', 'countif_mixed', 4000, 15)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'countif_mixed', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'COUNT', 5000, 'CONDITION', '<=', 5,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(2.0)  # 3 and 2
+
+    def test_countif_aggregation_multiple_buckets(self):
+        """
+        COUNTIF aggregator across multiple buckets to ensure per-bucket behavior.
+        """
+        self.client.execute_command('TS.CREATE', 'countif_multi')
+
+        # bucket=2000ms, ALIGN 0 => buckets start at 0, 2000, 4000
+        # bucket 0: [5, 3] => countif(v>=5) = 1
+        # bucket 2000: [10, 2, 8] => countif(v>=5) = 2
+        # bucket 4000: [1, 6] => countif(v>=5) = 1
+        self.client.execute_command('TS.ADD', 'countif_multi', 1000, 5)
+        self.client.execute_command('TS.ADD', 'countif_multi', 1500, 3)
+        self.client.execute_command('TS.ADD', 'countif_multi', 2000, 10)
+        self.client.execute_command('TS.ADD', 'countif_multi', 3000, 2)
+        self.client.execute_command('TS.ADD', 'countif_multi', 3500, 8)
+        self.client.execute_command('TS.ADD', 'countif_multi', 5000, 1)
+        self.client.execute_command('TS.ADD', 'countif_multi', 5500, 6)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'countif_multi', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', 'COUNTIF', 2000, 'CONDITION', '>=', 5,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[0] == pytest.approx(1.0)
+        assert by_ts[2000] == pytest.approx(2.0)
+        assert by_ts[4000] == pytest.approx(1.0)
+
+    def test_countif_aggregation_with_different_operators(self):
+        """
+        COUNTIF aggregator: test with different comparison operators.
+        """
+        self.client.execute_command('TS.CREATE', 'countif_ops')
+
+        self.client.execute_command('TS.ADD', 'countif_ops', 1000, 5)
+        self.client.execute_command('TS.ADD', 'countif_ops', 2000, 5)
+        self.client.execute_command('TS.ADD', 'countif_ops', 3000, 10)
+
+        # Test equality
+        result_eq = self.client.execute_command(
+            'TS.RANGE', 'countif_ops', 0, 4000,
+            'AGGREGATION', 'COUNTIF', 4000, 'CONDITION', '==', 5
+        )
+        assert float(result_eq[0][1]) == pytest.approx(2.0)
+
+        # Test not equal
+        result_neq = self.client.execute_command(
+            'TS.RANGE', 'countif_ops', 0, 4000,
+            'AGGREGATION', 'COUNTIF', 4000, 'CONDITION', '!=', 5
+        )
+        assert float(result_neq[0][1]) == pytest.approx(1.0)
+
+        # Test less than
+        result_lt = self.client.execute_command(
+            'TS.RANGE', 'countif_ops', 0, 4000,
+            'AGGREGATION', 'COUNTIF', 4000, 'CONDITION', '<', 10
+        )
+        assert float(result_lt[0][1]) == pytest.approx(2.0)
 
     def test_aggregation_single_value_bucket(self):
         """Test aggregation with buckets containing single values"""
@@ -430,6 +1024,170 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
         else:
             assert float(result[0][1]) == pytest.approx(expected_single_bucket)
 
+    def test_none_aggregation_none_match_single_bucket(self):
+        """
+        NONE aggregator: when *no* samples in the bucket match the condition,
+        the aggregated value should be 1.
+        """
+        self.client.execute_command('TS.CREATE', 'none_true')
+
+        self.client.execute_command('TS.ADD', 'none_true', 1000, 0)
+        self.client.execute_command('TS.ADD', 'none_true', 2000, 0)
+        self.client.execute_command('TS.ADD', 'none_true', 3000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'none_true', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'NONE', 5000, 'CONDITION', ">", 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(1.0)
+
+    def test_none_aggregation_some_match_single_bucket(self):
+        """
+        NONE aggregator: when at least one sample in the bucket matches the condition,
+        the aggregated value should be 0.
+        """
+        self.client.execute_command('TS.CREATE', 'none_false')
+
+        self.client.execute_command('TS.ADD', 'none_false', 1000, 0)
+        self.client.execute_command('TS.ADD', 'none_false', 2000, 2)
+        self.client.execute_command('TS.ADD', 'none_false', 3000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'none_false', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'NONE', 5000, 'CONDITION', ">=", 1,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+
+    def test_none_aggregation_multiple_buckets(self):
+        """
+        NONE aggregator across multiple buckets to ensure per-bucket behavior.
+        """
+        self.client.execute_command('TS.CREATE', 'none_multi_bucket')
+
+        # bucket=2000ms, ALIGN 0 => buckets start at 0,2000,4000
+        # bucket 0: values [0]      -> NONE(v>0)=1
+        # bucket 2000: values [1,0] -> NONE(v>0)=0
+        # bucket 4000: values [0]   -> NONE(v>0)=1
+        self.client.execute_command('TS.ADD', 'none_multi_bucket', 1000, 0)
+        self.client.execute_command('TS.ADD', 'none_multi_bucket', 2000, 1)
+        self.client.execute_command('TS.ADD', 'none_multi_bucket', 3000, 0)
+        self.client.execute_command('TS.ADD', 'none_multi_bucket', 5000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'none_multi_bucket', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', 'NONE', 2000, "CONDITION", ">", 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[0] == 1.0
+        assert by_ts[2000] == 0.0
+        assert by_ts[4000] == 1.0
+
+    def test_share_aggregation_all_match_single_bucket(self):
+        """
+        SHARE aggregator: share of samples that match CONDITION in the bucket.
+        If all samples match, share should be 1.
+        """
+        self.client.execute_command('TS.CREATE', 'share_all')
+
+        self.client.execute_command('TS.ADD', 'share_all', 1000, 1)
+        self.client.execute_command('TS.ADD', 'share_all', 2000, 2)
+        self.client.execute_command('TS.ADD', 'share_all', 3000, 3)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'share_all', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SHARE', 5000, 'CONDITION', '>', 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(1.0)
+
+    def test_share_aggregation_none_match_single_bucket(self):
+        """
+        SHARE aggregator: if no samples match, share should be 0.
+        """
+        self.client.execute_command('TS.CREATE', 'share_none')
+
+        self.client.execute_command('TS.ADD', 'share_none', 1000, 0)
+        self.client.execute_command('TS.ADD', 'share_none', 2000, 0)
+        self.client.execute_command('TS.ADD', 'share_none', 3000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'share_none', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SHARE', 5000, 'CONDITION', '!=', 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.0)
+
+    def test_share_aggregation_mixed_single_bucket(self):
+        """
+        SHARE aggregator: validate ratio for a mixed bucket (2 matching out of 4 => 0.5).
+        """
+        self.client.execute_command('TS.CREATE', 'share_mixed')
+
+        self.client.execute_command('TS.ADD', 'share_mixed', 1000, 1)
+        self.client.execute_command('TS.ADD', 'share_mixed', 2000, 0)
+        self.client.execute_command('TS.ADD', 'share_mixed', 3000, 2)
+        self.client.execute_command('TS.ADD', 'share_mixed', 4000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'share_mixed', 0, 5000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SHARE', 5000, 'CONDITION', '>', 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        assert float(result[0][1]) == pytest.approx(0.5)
+
+    def test_share_aggregation_multiple_buckets(self):
+        """
+        SHARE aggregator across multiple buckets to ensure per-bucket behavior.
+        """
+        self.client.execute_command('TS.CREATE', 'share_multi_bucket')
+
+        # bucket=2000ms, ALIGN 0 => buckets start at 0,2000,4000
+        # bucket 0: [1]           => share(v>0)=1.0
+        # bucket 2000: [0,2]      => share(v>0)=0.5
+        # bucket 4000: [0]        => share(v>0)=0.0
+        self.client.execute_command('TS.ADD', 'share_multi_bucket', 1000, 1)
+        self.client.execute_command('TS.ADD', 'share_multi_bucket', 2000, 0)
+        self.client.execute_command('TS.ADD', 'share_multi_bucket', 3000, 2)
+        self.client.execute_command('TS.ADD', 'share_multi_bucket', 5000, 0)
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'share_multi_bucket', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', 'SHARE', 2000, 'CONDITION', '>', 0,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 3
+        by_ts = {ts: float(val) for ts, val in result}
+        assert by_ts[0] == pytest.approx(1.0)
+        assert by_ts[2000] == pytest.approx(0.5)
+        assert by_ts[4000] == pytest.approx(0.0)
 
     def test_range_edge_cases(self):
         """Test TS.RANGE with edge case timestamps"""

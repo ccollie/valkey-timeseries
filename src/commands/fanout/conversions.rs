@@ -1,18 +1,21 @@
 use super::filters::{deserialize_matchers_list, serialize_matchers_list};
 use super::generated::{
     AggregationOptions as FanoutAggregationOptions, AggregationType as FanoutAggregationType,
-    BucketAlignmentType, BucketTimestampType, CompressionType as FanoutChunkEncoding, DateRange,
-    GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel, MultiRangeRequest,
+    AggregatorConfig as FanoutAggregatorConfig, BucketAlignmentType, BucketTimestampType,
+    ComparisonOperator as FanoutComparisonOperator, CompressionType as FanoutChunkEncoding,
+    DateRange, GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel, MultiRangeRequest,
     PostingStat as FanoutPostingStat, RangeRequest, Sample as FanoutSample,
-    SeriesSelector as FanoutSeriesSelector, StatsResponse, ValueRange as FanoutValueFilter,
+    SeriesSelector as FanoutSeriesSelector, StatsResponse,
+    ValueComparisonFilter as FanoutValueComparisonFilter, ValueRange as FanoutValueFilter,
 };
 use crate::commands::fanout::MGetValue;
+use crate::common::binop::ComparisonOperator;
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
-    AggregationOptions, AggregationType, BucketAlignment, MGetSeriesData, MRangeOptions,
-    MatchFilterOptions, RangeGroupingOptions, RangeOptions,
+    AggregationOptions, AggregationType, AggregatorConfig, BucketAlignment, MGetSeriesData,
+    MRangeOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
 };
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{
@@ -22,10 +25,36 @@ use crate::{
 };
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
 
+impl From<ComparisonOperator> for FanoutComparisonOperator {
+    fn from(value: ComparisonOperator) -> Self {
+        match value {
+            ComparisonOperator::Equal => FanoutComparisonOperator::Eq,
+            ComparisonOperator::NotEqual => FanoutComparisonOperator::Neq,
+            ComparisonOperator::GreaterThan => FanoutComparisonOperator::Gt,
+            ComparisonOperator::GreaterThanOrEqual => FanoutComparisonOperator::Gte,
+            ComparisonOperator::LessThan => FanoutComparisonOperator::Lt,
+            ComparisonOperator::LessThanOrEqual => FanoutComparisonOperator::Lte,
+        }
+    }
+}
+
+impl From<FanoutComparisonOperator> for ComparisonOperator {
+    fn from(value: FanoutComparisonOperator) -> Self {
+        match value {
+            FanoutComparisonOperator::Eq => ComparisonOperator::Equal,
+            FanoutComparisonOperator::Neq => ComparisonOperator::NotEqual,
+            FanoutComparisonOperator::Gt => ComparisonOperator::GreaterThan,
+            FanoutComparisonOperator::Gte => ComparisonOperator::GreaterThanOrEqual,
+            FanoutComparisonOperator::Lt => ComparisonOperator::LessThan,
+            FanoutComparisonOperator::Lte => ComparisonOperator::LessThanOrEqual,
+        }
+    }
+}
+
 impl From<ChunkEncoding> for FanoutChunkEncoding {
     fn from(value: ChunkEncoding) -> Self {
         match value {
-            ChunkEncoding::Uncompressed => FanoutChunkEncoding::None,
+            ChunkEncoding::Uncompressed => FanoutChunkEncoding::Uncompressed,
             ChunkEncoding::Gorilla => FanoutChunkEncoding::Gorilla,
             ChunkEncoding::Pco => FanoutChunkEncoding::Pco,
         }
@@ -35,7 +64,7 @@ impl From<ChunkEncoding> for FanoutChunkEncoding {
 impl From<FanoutChunkEncoding> for ChunkEncoding {
     fn from(value: FanoutChunkEncoding) -> Self {
         match value {
-            FanoutChunkEncoding::None => ChunkEncoding::Uncompressed,
+            FanoutChunkEncoding::Uncompressed => ChunkEncoding::Uncompressed,
             FanoutChunkEncoding::Gorilla => ChunkEncoding::Gorilla,
             FanoutChunkEncoding::Pco => ChunkEncoding::Pco,
         }
@@ -168,18 +197,42 @@ impl From<BucketAlignmentType> for BucketAlignment {
 impl From<AggregationType> for FanoutAggregationType {
     fn from(value: AggregationType) -> Self {
         match value {
-            AggregationType::Sum => FanoutAggregationType::Sum,
-            AggregationType::Min => FanoutAggregationType::Min,
-            AggregationType::Max => FanoutAggregationType::Max,
+            AggregationType::All => FanoutAggregationType::All,
+            AggregationType::Any => FanoutAggregationType::Any,
             AggregationType::Avg => FanoutAggregationType::Avg,
             AggregationType::Count => FanoutAggregationType::Count,
+            AggregationType::CountIf => FanoutAggregationType::CountIf,
             AggregationType::First => FanoutAggregationType::First,
+            AggregationType::Increase => FanoutAggregationType::Increase,
+            AggregationType::IRate => FanoutAggregationType::Irate,
             AggregationType::Last => FanoutAggregationType::Last,
-            AggregationType::StdS => FanoutAggregationType::StdS,
+            AggregationType::Min => FanoutAggregationType::Min,
+            AggregationType::Max => FanoutAggregationType::Max,
+            AggregationType::None => FanoutAggregationType::None,
+            AggregationType::Sum => FanoutAggregationType::Sum,
+            AggregationType::SumIf => FanoutAggregationType::SumIf,
+            AggregationType::Range => FanoutAggregationType::Range,
+            AggregationType::Rate => FanoutAggregationType::Rate,
+            AggregationType::Share => FanoutAggregationType::ShareIf,
             AggregationType::StdP => FanoutAggregationType::StdP,
+            AggregationType::StdS => FanoutAggregationType::StdS,
             AggregationType::VarP => FanoutAggregationType::VarP,
             AggregationType::VarS => FanoutAggregationType::VarS,
-            AggregationType::Range => FanoutAggregationType::Range,
+        }
+    }
+}
+
+impl From<AggregatorConfig> for FanoutAggregationType {
+    fn from(value: AggregatorConfig) -> Self {
+        value.aggregation_type().into()
+    }
+}
+
+impl From<FanoutAggregationType> for FanoutAggregatorConfig {
+    fn from(value: FanoutAggregationType) -> Self {
+        FanoutAggregatorConfig {
+            aggregator_type: value as i32,
+            value_filter: None,
         }
     }
 }
@@ -187,19 +240,44 @@ impl From<AggregationType> for FanoutAggregationType {
 impl From<FanoutAggregationType> for AggregationType {
     fn from(value: FanoutAggregationType) -> Self {
         match value {
-            FanoutAggregationType::Sum => AggregationType::Sum,
+            FanoutAggregationType::All => AggregationType::All,
+            FanoutAggregationType::Any => AggregationType::Any,
             FanoutAggregationType::Avg => AggregationType::Avg,
-            FanoutAggregationType::Min => AggregationType::Min,
-            FanoutAggregationType::Max => AggregationType::Max,
-            FanoutAggregationType::First => AggregationType::First,
-            FanoutAggregationType::Last => AggregationType::Last,
             FanoutAggregationType::Count => AggregationType::Count,
+            FanoutAggregationType::CountIf => AggregationType::CountIf,
+            FanoutAggregationType::First => AggregationType::First,
+            FanoutAggregationType::Increase => AggregationType::Increase,
+            FanoutAggregationType::Irate => AggregationType::IRate,
+            FanoutAggregationType::Last => AggregationType::Last,
+            FanoutAggregationType::Max => AggregationType::Max,
+            FanoutAggregationType::Min => AggregationType::Min,
+            FanoutAggregationType::None => AggregationType::None,
             FanoutAggregationType::Range => AggregationType::Range,
-            FanoutAggregationType::StdS => AggregationType::StdS,
+            FanoutAggregationType::Rate => AggregationType::Rate,
+            FanoutAggregationType::ShareIf => AggregationType::Share,
+            FanoutAggregationType::Sum => AggregationType::Sum,
+            FanoutAggregationType::SumIf => AggregationType::SumIf,
             FanoutAggregationType::StdP => AggregationType::StdP,
-            FanoutAggregationType::VarS => AggregationType::VarS,
+            FanoutAggregationType::StdS => AggregationType::StdS,
             FanoutAggregationType::VarP => AggregationType::VarP,
+            FanoutAggregationType::VarS => AggregationType::VarS,
         }
+    }
+}
+
+impl TryFrom<FanoutAggregatorConfig> for AggregatorConfig {
+    type Error = ValkeyError;
+
+    fn try_from(value: FanoutAggregatorConfig) -> Result<Self, Self::Error> {
+        let aggr_type: FanoutAggregationType = value
+            .aggregator_type
+            .try_into()
+            .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?;
+        let aggregation_type: AggregationType = aggr_type.into();
+
+        let filter = value.value_filter.map(|f| f.into());
+
+        AggregatorConfig::new(aggregation_type, filter)
     }
 }
 
@@ -207,12 +285,14 @@ impl TryFrom<&FanoutGroupingOptions> for RangeGroupingOptions {
     type Error = ValkeyError;
 
     fn try_from(value: &FanoutGroupingOptions) -> Result<RangeGroupingOptions, ValkeyError> {
-        let aggregation: FanoutAggregationType = value
+        let aggregation: AggregatorConfig = value
             .aggregation
+            .unwrap_or_default()
             .try_into()
             .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?; // todo: serialization error
+
         Ok(RangeGroupingOptions {
-            aggregation: aggregation.into(),
+            aggregation,
             group_label: value.group_label.clone(),
         })
     }
@@ -222,12 +302,11 @@ impl TryFrom<FanoutGroupingOptions> for RangeGroupingOptions {
     type Error = ValkeyError;
 
     fn try_from(value: FanoutGroupingOptions) -> Result<RangeGroupingOptions, ValkeyError> {
-        let aggregation: FanoutAggregationType = value
-            .aggregation
-            .try_into()
-            .map_err(|_| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?; // todo: serialization error
+        let aggregation_input = value.aggregation.unwrap_or_default();
+        let aggregation = aggregation_input.try_into()?;
+
         Ok(RangeGroupingOptions {
-            aggregation: aggregation.into(),
+            aggregation,
             group_label: value.group_label,
         })
     }
@@ -235,9 +314,9 @@ impl TryFrom<FanoutGroupingOptions> for RangeGroupingOptions {
 
 impl From<&RangeGroupingOptions> for FanoutGroupingOptions {
     fn from(value: &RangeGroupingOptions) -> Self {
-        let aggregation: FanoutAggregationType = value.aggregation.into();
+        let aggregation: FanoutAggregatorConfig = value.aggregation.into();
         FanoutGroupingOptions {
-            aggregation: aggregation.into(),
+            aggregation: Some(aggregation),
             group_label: value.group_label.clone(),
         }
     }
@@ -245,9 +324,9 @@ impl From<&RangeGroupingOptions> for FanoutGroupingOptions {
 
 impl From<RangeGroupingOptions> for FanoutGroupingOptions {
     fn from(value: RangeGroupingOptions) -> Self {
-        let aggregation: FanoutAggregationType = value.aggregation.into();
+        let aggregation: FanoutAggregatorConfig = value.aggregation.into();
         FanoutGroupingOptions {
-            aggregation: aggregation.into(),
+            aggregation: Some(aggregation),
             group_label: value.group_label,
         }
     }
@@ -323,9 +402,40 @@ impl From<FanoutSample> for ValkeyValue {
     }
 }
 
+impl From<ValueComparisonFilter> for FanoutValueComparisonFilter {
+    fn from(value: ValueComparisonFilter) -> Self {
+        let fanout_operator: FanoutComparisonOperator = value.operator.into();
+        FanoutValueComparisonFilter {
+            operator: fanout_operator.into(),
+            value: value.value,
+        }
+    }
+}
+
+impl From<FanoutValueComparisonFilter> for ValueComparisonFilter {
+    fn from(value: FanoutValueComparisonFilter) -> Self {
+        let fanout_operator: FanoutComparisonOperator = value.operator.try_into().unwrap();
+        let operator: ComparisonOperator = fanout_operator.into();
+        ValueComparisonFilter {
+            operator,
+            value: value.value,
+        }
+    }
+}
+
+impl From<AggregatorConfig> for FanoutAggregatorConfig {
+    fn from(value: AggregatorConfig) -> Self {
+        let aggr_type: FanoutAggregationType = value.aggregation_type().into();
+        FanoutAggregatorConfig {
+            aggregator_type: aggr_type.into(),
+            value_filter: value.filter().map(|filter| filter.into()),
+        }
+    }
+}
+
 impl From<AggregationOptions> for FanoutAggregationOptions {
     fn from(value: AggregationOptions) -> Self {
-        let aggregator: FanoutAggregationType = value.aggregation.into();
+        let aggregator: FanoutAggregatorConfig = value.aggregation.into();
         let bucket_timestamp_type: BucketTimestampType = value.timestamp_output.into();
 
         let (bucket_alignment, alignment_timestamp) = match value.alignment {
@@ -336,7 +446,7 @@ impl From<AggregationOptions> for FanoutAggregationOptions {
         };
 
         FanoutAggregationOptions {
-            aggregator: aggregator.into(),
+            aggregator: Some(aggregator),
             bucket_duration: value.bucket_duration as u32,
             bucket_timestamp_type: bucket_timestamp_type.into(),
             bucket_alignment: bucket_alignment.into(),
@@ -350,8 +460,11 @@ impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
     type Error = ValkeyError;
 
     fn try_from(value: FanoutAggregationOptions) -> Result<Self, Self::Error> {
-        let fanout_type: FanoutAggregationType = value.aggregator.try_into()?;
-        let aggregation: AggregationType = fanout_type.into();
+        let aggregation: AggregatorConfig = if let Some(agg) = value.aggregator {
+            agg.try_into()?
+        } else {
+            return Err(ValkeyError::Str("TSDB: aggregation config is required"));
+        };
         let bucket_duration = value.bucket_duration as u64;
         if bucket_duration == 0 {
             return Err(ValkeyError::Str("TSDB: bucket duration must be positive"));
@@ -600,7 +713,14 @@ mod tests {
     #[test]
     fn test_aggregation_options_to_fanout_full() {
         let options = AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregatorConfig::new(
+                AggregationType::CountIf,
+                Some(ValueComparisonFilter {
+                    operator: ComparisonOperator::GreaterThan,
+                    value: 10.0,
+                }),
+            )
+            .unwrap(),
             bucket_duration: 1000,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Timestamp(555),
@@ -609,7 +729,14 @@ mod tests {
 
         let fanout: FanoutAggregationOptions = options.into();
 
-        assert_eq!(fanout.aggregator, FanoutAggregationType::Sum as i32);
+        let f_aggr = fanout.aggregator.unwrap();
+        assert_eq!(
+            f_aggr.aggregator_type,
+            FanoutAggregationType::CountIf as i32
+        );
+        let filter = f_aggr.value_filter.unwrap();
+        assert_eq!(filter.operator, FanoutComparisonOperator::Gt as i32);
+        assert_eq!(filter.value, 10.0);
         assert_eq!(fanout.bucket_duration, 1000);
         assert_eq!(
             fanout.bucket_timestamp_type,
@@ -621,6 +748,8 @@ mod tests {
         );
         assert_eq!(fanout.alignment_timestamp, 555);
         assert!(fanout.report_empty);
+        assert_eq!(filter.operator, FanoutComparisonOperator::Gt as i32);
+        assert_eq!(filter.value, 10.0);
     }
 
     #[test]
@@ -632,8 +761,12 @@ mod tests {
         ];
 
         for (fanout_type, expected) in alignments {
+            let aggregator = FanoutAggregatorConfig {
+                aggregator_type: FanoutAggregationType::Max as i32,
+                value_filter: None,
+            };
             let fanout = FanoutAggregationOptions {
-                aggregator: FanoutAggregationType::Max as i32,
+                aggregator: Some(aggregator),
                 bucket_duration: 10,
                 bucket_timestamp_type: BucketTimestampType::End as i32,
                 bucket_alignment: fanout_type as i32,
@@ -648,8 +781,12 @@ mod tests {
 
     #[test]
     fn test_fanout_to_aggregation_options_invalid_duration() {
+        let aggregator = FanoutAggregatorConfig {
+            aggregator_type: FanoutAggregationType::Count as i32,
+            value_filter: None,
+        };
         let fanout = FanoutAggregationOptions {
-            aggregator: FanoutAggregationType::Count as i32,
+            aggregator: Some(aggregator),
             bucket_duration: 0, // Invalid duration
             bucket_timestamp_type: BucketTimestampType::Mid as i32,
             bucket_alignment: BucketAlignmentType::Default as i32,
@@ -673,7 +810,7 @@ mod tests {
             }),
             count: 10,
             aggregation: Some(FanoutAggregationOptions {
-                aggregator: FanoutAggregationType::Avg.into(),
+                aggregator: Some(FanoutAggregationType::Avg.into()),
                 bucket_duration: 60,
                 bucket_timestamp_type: BucketTimestampType::Mid.into(),
                 bucket_alignment: BucketAlignmentType::AlignStart.into(),
@@ -696,7 +833,7 @@ mod tests {
         assert_eq!(options.count, Some(10));
 
         let agg = options.aggregation.unwrap();
-        assert_eq!(agg.aggregation, AggregationType::Avg);
+        assert_eq!(agg.aggregation.aggregation_type(), AggregationType::Avg);
         assert_eq!(agg.bucket_duration, 60);
         assert_eq!(agg.timestamp_output, BucketTimestamp::Mid);
         assert_eq!(agg.alignment, BucketAlignment::Start);
@@ -747,11 +884,19 @@ mod tests {
 
     #[test]
     fn test_round_trip_conversion() {
+        let aggregation = AggregatorConfig::new(
+            AggregationType::CountIf,
+            Some(ValueComparisonFilter {
+                operator: ComparisonOperator::LessThan,
+                value: 50.0,
+            }),
+        )
+        .unwrap();
         let original_options = RangeOptions {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
             count: Some(5),
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Max,
+                aggregation,
                 bucket_duration: 10,
                 timestamp_output: BucketTimestamp::End,
                 alignment: BucketAlignment::Timestamp(123),
@@ -775,5 +920,6 @@ mod tests {
             BucketAlignment::Timestamp(123)
         );
         assert_eq!(back_to_options.value_filter.unwrap().min, 1.0);
+        assert_eq!(back_to_options.value_filter.unwrap().max, 2.0);
     }
 }

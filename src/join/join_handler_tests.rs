@@ -251,7 +251,7 @@ mod tests {
         let mut options = create_basic_options();
         options.reducer = Some(JoinReducer::Sum);
         options.aggregation = Some(AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregationType::Sum.into(),
             bucket_duration: 15,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -424,7 +424,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::Semi;
         options.aggregation = Some(AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregationType::Sum.into(),
             bucket_duration: 30,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -674,7 +674,7 @@ mod tests {
         let mut options = create_basic_options();
         options.join_type = JoinType::Anti;
         options.aggregation = Some(AggregationOptions {
-            aggregation: AggregationType::Sum,
+            aggregation: AggregationType::Sum.into(),
             bucket_duration: 25, // Bucket size to group timestamps 10 and 30
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,

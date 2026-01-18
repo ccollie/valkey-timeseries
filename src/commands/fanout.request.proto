@@ -142,23 +142,51 @@ message ClusterMessage {
 }
 
 enum AggregationType {
-  SUM = 0;
-  AVG = 1;
-  MIN = 2;
-  MAX = 3;
-  FIRST = 4;
-  LAST = 5;
-  COUNT = 6;
-  RANGE = 7;
-  STD_S = 8;
-  STD_P = 9;
-  VAR_S = 10;
-  VAR_P = 11;
+  ALL = 0;
+  ANY = 1;
+  AVG = 2;
+  COUNT = 3;
+  COUNT_IF = 4;
+  FIRST = 5;
+  INCREASE = 6;
+  IRATE = 7;
+  LAST = 8;
+  MAX = 9;
+  MIN = 10;
+  NONE = 11;
+  SHARE_IF = 12;
+  SUM = 13;
+  SUM_IF = 14;
+  RANGE = 15;
+  RATE = 16;
+  STD_S = 17;
+  STD_P = 18;
+  VAR_S = 19;
+  VAR_P = 20;
+}
+
+enum ComparisonOperator {
+  GT = 0;
+  GTE = 1;
+  LT = 2;
+  LTE = 3;
+  EQ = 4;
+  NEQ = 5;
+}
+
+message ValueComparisonFilter {
+  ComparisonOperator operator = 1;
+  double value = 2;
+}
+
+message AggregatorConfig {
+  AggregationType aggregator_type = 1;
+  ValueComparisonFilter value_filter = 2;
 }
 
 message GroupingOptions {
   string group_label = 1;
-  AggregationType aggregation = 2;
+  AggregatorConfig aggregation = 2;
 }
 
 enum BucketTimestampType {
@@ -175,7 +203,7 @@ enum BucketAlignmentType {
 }
 
 message AggregationOptions {
-  AggregationType aggregator = 1;
+  AggregatorConfig aggregator = 1;
   uint32 bucket_duration = 2;
   int64 alignment_timestamp = 3;
   BucketTimestampType bucket_timestamp_type = 4;

@@ -83,7 +83,7 @@ impl<'a> Iterator for TimeSeriesRangeIterator<'a> {
     }
 }
 
-/// An iterator that yields the latest sample from a compaction series, if it exists.
+/// An iterator that yields the latest sample from a compaction series if it exists.
 /// This is used specifically for the "LATEST" option in range queries. This simplifies the logic by
 /// isolating the latest sample retrieval so that the base sample iterator does not need to handle
 /// this special case. We simply `chain` this iterator with others as needed.
@@ -279,11 +279,11 @@ mod tests {
             date_range: date_range(0, 10000),
             count: None,
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Avg,
+                aggregation: AggregationType::Avg.into(),
                 bucket_duration: 2000,
                 timestamp_output: Default::default(),
                 alignment: Default::default(),
-                report_empty: false,
+                ..Default::default()
             }),
             timestamp_filter: None,
             value_filter: None,
@@ -430,7 +430,7 @@ mod tests {
     fn test_boundary_timestamps() {
         let series = create_test_series();
 
-        // Test exact boundary match
+        // Test the exact boundary match
         let options = RangeOptions {
             date_range: date_range(3000, 3000),
             count: None,

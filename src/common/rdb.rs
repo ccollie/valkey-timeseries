@@ -19,6 +19,13 @@ const STALE_NAN: f64 = f64::from_bits(0x7ff0000000000002);
 const OPTIONAL_MARKER_PRESENT: u64 = 0xfe;
 const OPTIONAL_MARKER_ABSENT: u64 = 0xff;
 
+pub trait RdbSerializable {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO);
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized;
+}
+
 pub(crate) fn load_optional_marker(rdb: *mut RedisModuleIO) -> ValkeyResult<bool> {
     let marker = raw::load_unsigned(rdb)?;
     match marker {
@@ -44,6 +51,17 @@ pub(crate) fn save_optional_unsigned(rdb: *mut RedisModuleIO, value: Option<u64>
     } else {
         raw::save_signed(rdb, -1);
     }
+}
+
+#[inline]
+pub(crate) fn rdb_save_f64(rdb: *mut RedisModuleIO, value: f64) {
+    raw::save_double(rdb, value);
+}
+
+#[inline]
+pub(crate) fn rdb_load_f64(rdb: *mut RedisModuleIO) -> ValkeyResult<f64> {
+    let value = raw::load_double(rdb)?;
+    Ok(value)
 }
 
 pub(crate) fn rdb_save_optional_f64(rdb: *mut RedisModuleIO, value: Option<f64>) {
@@ -161,7 +179,7 @@ pub fn rdb_load_bool(rdb: *mut RedisModuleIO) -> ValkeyResult<bool> {
     Ok(bool_val != 0)
 }
 
-pub fn save_optional_bool(rdb: *mut RedisModuleIO, value: Option<bool>) {
+pub fn rdb_save_optional_bool(rdb: *mut RedisModuleIO, value: Option<bool>) {
     if let Some(value) = value {
         rdb_save_bool(rdb, value);
     } else {
@@ -169,7 +187,7 @@ pub fn save_optional_bool(rdb: *mut RedisModuleIO, value: Option<bool>) {
     }
 }
 
-pub fn load_optional_bool(rdb: *mut RedisModuleIO) -> ValkeyResult<Option<bool>> {
+pub fn rdb_load_optional_bool(rdb: *mut RedisModuleIO) -> ValkeyResult<Option<bool>> {
     let marker = rdb_load_u8(rdb)?;
     match marker {
         0 => Ok(Some(false)),

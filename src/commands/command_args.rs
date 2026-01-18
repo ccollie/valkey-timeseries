@@ -1,5 +1,6 @@
 use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::Timestamp;
+use crate::common::binop::ComparisonOperator;
 use crate::common::rounding::{MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, RoundingStrategy};
 use crate::common::time::current_time_millis;
 use crate::error::{TsdbError, TsdbResult};
@@ -15,7 +16,8 @@ use crate::parser::{
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
-    AggregationOptions, MRangeOptions, MatchFilterOptions, RangeGroupingOptions, RangeOptions,
+    AggregationOptions, AggregatorConfig, MRangeOptions, MatchFilterOptions, RangeGroupingOptions,
+    RangeOptions, ValueComparisonFilter,
 };
 use crate::series::types::{DuplicatePolicy, ValueFilter};
 use crate::series::{TimestampRange, TimestampValue};
@@ -79,6 +81,7 @@ command_arg_tokens! {
     ChunkSize => "CHUNK_SIZE",
     Compressed => "COMPRESSED",
     Compression => "COMPRESSION",
+    Condition => "CONDITION",
     Count => "COUNT",
     DecimalDigits => "DECIMAL_DIGITS",
     DuplicatePolicy => "DUPLICATE_POLICY",
@@ -418,7 +421,7 @@ pub(crate) fn advance_if_next_token_one_of(
     None
 }
 
-fn peek_token(args: &mut CommandArgIterator) -> Option<CommandArgToken> {
+pub(super) fn peek_token(args: &mut CommandArgIterator) -> Option<CommandArgToken> {
     args.peek().and_then(|next| parse_command_arg_token(next))
 }
 
@@ -523,21 +526,21 @@ pub fn parse_aggregation_options(
         .next_str()
         .map_err(|_e| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?;
     let aggregator = AggregationType::try_from(agg_str)?;
+    let mut value_filter: Option<ValueComparisonFilter> = None;
     let bucket_duration = parse_duration_arg(&args.next_arg()?)
         .map_err(|_e| ValkeyError::Str("TSDB: Couldn't parse bucket duration"))?;
 
     let mut aggr: AggregationOptions = AggregationOptions {
-        aggregation: aggregator,
         bucket_duration: bucket_duration.as_millis() as u64,
         timestamp_output: BucketTimestamp::Start,
-        alignment: BucketAlignment::default(),
-        report_empty: false,
+        ..Default::default()
     };
 
     let valid_tokens = [
         CommandArgToken::Align,
         CommandArgToken::Empty,
         CommandArgToken::BucketTimestamp,
+        CommandArgToken::Condition,
     ];
 
     parse_optional_token_block(args, &valid_tokens, 3, |token, args| match token {
@@ -555,13 +558,33 @@ pub fn parse_aggregation_options(
             aggr.alignment = next.try_into()?;
             Ok(())
         }
+        CommandArgToken::Condition => {
+            value_filter = Some(parse_aggregator_value_filter(args)?);
+            Ok(())
+        }
         _ => Ok(()),
     })?;
+
+    aggr.aggregation = AggregatorConfig::new(aggregator, value_filter)?;
 
     Ok(aggr)
 }
 
-pub fn parse_grouping_params(args: &mut CommandArgIterator) -> ValkeyResult<RangeGroupingOptions> {
+pub(super) fn parse_aggregator_value_filter(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<ValueComparisonFilter> {
+    // get the comparison operator
+    let comp_str = args.next_str()?;
+    let operator = ComparisonOperator::try_from(comp_str)
+        .map_err(|_e| ValkeyError::Str(error_consts::INVALID_COMPARISON_OPERATOR))?;
+    // get the comparison value
+    let value = args.next_f64()?;
+    Ok(ValueComparisonFilter { operator, value })
+}
+
+pub(super) fn parse_grouping_params(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<RangeGroupingOptions> {
     // GROUPBY token already seen
     let label = args.next_str()?;
 
@@ -577,9 +600,27 @@ pub fn parse_grouping_params(args: &mut CommandArgIterator) -> ValkeyResult<Rang
         ValkeyError::String(msg)
     })?;
 
+    // Rate requires a time range, so it is not valid for grouping.
+    if aggregator == AggregationType::Rate {
+        let msg = "TSDB: aggregator not supported for GROUPBY reducer";
+        return Err(ValkeyError::Str(msg));
+    }
+
+    let mut value_filter: Option<ValueComparisonFilter> = None;
+
+    // see if we have a filter condition
+    if let Some(token) = peek_token(args)
+        && token == CommandArgToken::Condition
+    {
+        args.next(); // consume CONDITION
+        value_filter = Some(parse_aggregator_value_filter(args)?);
+    }
+
+    let aggregation = AggregatorConfig::new(aggregator, value_filter)?;
+
     Ok(RangeGroupingOptions {
         group_label: label.to_string(),
-        aggregation: aggregator,
+        aggregation,
     })
 }
 

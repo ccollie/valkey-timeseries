@@ -31,19 +31,6 @@ where
     AggregateIterator::new(iter, aggregation, aligned_timestamp)
 }
 
-pub(crate) fn aggregate_samples<T: Iterator<Item = Sample>>(
-    iter: T,
-    start_ts: Timestamp,
-    end_ts: Timestamp,
-    aggr_options: &AggregationOptions,
-) -> Vec<Sample> {
-    let aligned_timestamp = aggr_options
-        .alignment
-        .get_aligned_timestamp(start_ts, end_ts);
-    let iter = AggregateIterator::new(iter, aggr_options, aligned_timestamp);
-    iter.collect::<Vec<_>>()
-}
-
 /// Create an optimized range iterator for the given series and options
 pub fn create_range_iterator<'a>(
     series: &'a TimeSeries,
@@ -165,11 +152,13 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
     match (&options.aggregation, grouping) {
         (Some(agg), Some(grp)) => {
             let aggr_iter = create_aggregate_iterator(filtered, options, agg);
-            let reducer = ReduceIterator::new(aggr_iter, grp.aggregation);
+            let aggregator = grp.aggregation.create_aggregator();
+            let reducer = ReduceIterator::new(aggr_iter, aggregator);
             finalize(reducer, is_reverse, count)
         }
         (None, Some(grp)) => {
-            let reducer = ReduceIterator::new(filtered, grp.aggregation);
+            let aggregator = grp.aggregation.create_aggregator();
+            let reducer = ReduceIterator::new(filtered, aggregator);
             finalize(reducer, is_reverse, count)
         }
         (Some(agg), None) => {
@@ -235,7 +224,7 @@ pub enum TimestampFilter {
 
 impl TimestampFilter {
     pub fn new(timestamps: &[Timestamp]) -> Self {
-        if timestamps.len() > 16 {
+        if timestamps.len() > TIMESTAMP_FILTER_INLINE_THRESHOLD {
             Self::Set(IntSet::from_iter(timestamps.iter().copied()))
         } else {
             Self::List(SmallVec::from_slice_copy(timestamps))

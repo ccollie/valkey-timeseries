@@ -2,23 +2,27 @@
 // https://github.com/cryptorelay/redis-aggregation/tree/master
 // License: Apache License 2.0
 
-use super::AggregationType;
+use super::{AggregationType, AllAggregator, AnyAggregator, NoneAggregator};
+use crate::aggregators::filtered::{CountIfAggregator, ShareAggregator, SumIfAggregator};
+use crate::common::Sample;
 use crate::common::hash::hash_f64;
 use crate::common::rdb::{
-    rdb_load_bool, rdb_load_optional_f64, rdb_load_u8, rdb_load_usize, rdb_save_bool,
-    rdb_save_optional_f64, rdb_save_u8, rdb_save_usize,
+    RdbSerializable, rdb_load_bool, rdb_load_optional_f64, rdb_load_u8, rdb_load_usize,
+    rdb_save_bool, rdb_save_optional_f64, rdb_save_u8, rdb_save_usize,
 };
 use enum_dispatch::enum_dispatch;
 use get_size2::GetSize;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::time::Duration;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString, raw};
 
 type Value = f64;
+type Timestamp = i64;
 
 #[enum_dispatch]
-pub trait AggregationHandler {
-    fn update(&mut self, value: Value);
+pub trait AggregationHandler: RdbSerializable + Default + GetSize {
+    fn update(&mut self, timestamp: Timestamp, value: Value);
     fn reset(&mut self);
     fn current(&self) -> Option<Value>;
     fn empty_value(&self) -> Value {
@@ -33,13 +37,12 @@ pub trait AggregationHandler {
         self.reset();
         result
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO);
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct FirstAggregator(Option<Value>);
 impl AggregationHandler for FirstAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         if self.0.is_none() {
             self.0 = Some(value)
         }
@@ -50,13 +53,13 @@ impl AggregationHandler for FirstAggregator {
     fn current(&self) -> Option<Value> {
         self.0
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.current());
-    }
 }
 
-impl FirstAggregator {
-    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+impl RdbSerializable for FirstAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.0)
+    }
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
@@ -73,7 +76,7 @@ impl Hash for FirstAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct LastAggregator(Option<Value>);
 impl AggregationHandler for LastAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0 = Some(value)
     }
     fn reset(&mut self) {
@@ -82,13 +85,13 @@ impl AggregationHandler for LastAggregator {
     fn current(&self) -> Option<Value> {
         self.0
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.current());
-    }
 }
 
-impl LastAggregator {
-    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+impl RdbSerializable for LastAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.0)
+    }
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
@@ -105,7 +108,7 @@ impl Hash for LastAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MinAggregator(Option<Value>);
 impl AggregationHandler for MinAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0 = Some(match self.0 {
             None => value,
             Some(v) => v.min(value),
@@ -117,13 +120,13 @@ impl AggregationHandler for MinAggregator {
     fn current(&self) -> Option<Value> {
         self.0
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.current());
-    }
 }
 
-impl MinAggregator {
-    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+impl RdbSerializable for MinAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.0)
+    }
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
@@ -140,7 +143,7 @@ impl Hash for MinAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MaxAggregator(Option<Value>);
 impl AggregationHandler for MaxAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0 = Some(match self.0 {
             None => value,
             Some(v) => v.max(value),
@@ -152,17 +155,19 @@ impl AggregationHandler for MaxAggregator {
     fn current(&self) -> Option<Value> {
         self.0
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.current());
-    }
 }
 
-impl MaxAggregator {
-    pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+impl RdbSerializable for MaxAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.0);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(Self)
+        let value = rdb_load_optional_f64(rdb)?;
+        Ok(Self(value))
     }
 }
 
@@ -173,15 +178,52 @@ impl Hash for MaxAggregator {
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
-pub struct RangeAggregator {
+pub struct RangeAggregatorState {
     min: Value,
     max: Value,
-    init: bool,
+    _init: bool,
 }
-impl AggregationHandler for RangeAggregator {
-    fn update(&mut self, value: Value) {
-        if !self.init {
-            self.init = true;
+
+impl Hash for RangeAggregatorState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.min, state);
+        hash_f64(self.max, state);
+        self._init.hash(state);
+    }
+}
+
+impl RdbSerializable for RangeAggregatorState {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_bool(rdb, self._init);
+        if self._init {
+            raw::save_double(rdb, self.min);
+            raw::save_double(rdb, self.max);
+        }
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let init = rdb_load_bool(rdb)?;
+        if init {
+            let min = raw::load_double(rdb)?;
+            let max = raw::load_double(rdb)?;
+            Ok(Self {
+                min,
+                max,
+                _init: init,
+            })
+        } else {
+            Ok(Self::default())
+        }
+    }
+}
+
+impl RangeAggregatorState {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        if !self._init {
+            self._init = true;
             self.min = value;
             self.max = value;
         } else {
@@ -189,45 +231,45 @@ impl AggregationHandler for RangeAggregator {
             self.min = self.min.min(value);
         }
     }
+
     fn reset(&mut self) {
-        self.max = 0.;
         self.min = 0.;
-        self.init = false;
+        self.max = 0.;
+        self._init = false;
     }
+
     fn current(&self) -> Option<Value> {
-        if !self.init {
+        if !self._init {
             None
         } else {
             Some(self.max - self.min)
         }
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_bool(rdb, self.init);
-        if self.init {
-            raw::save_double(rdb, self.min);
-            raw::save_double(rdb, self.max);
-        }
+}
+
+#[derive(Clone, Default, Debug, PartialEq, GetSize, Hash)]
+pub struct RangeAggregator(Box<RangeAggregatorState>);
+impl AggregationHandler for RangeAggregator {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        self.0.update(_timestamp, value);
+    }
+
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+
+    fn current(&self) -> Option<Value> {
+        self.0.current()
     }
 }
 
-impl RangeAggregator {
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let init = rdb_load_bool(rdb)?;
-        if init {
-            let min = raw::load_double(rdb)?;
-            let max = raw::load_double(rdb)?;
-            Ok(Self { min, max, init })
-        } else {
-            Ok(Self::default())
-        }
+impl RdbSerializable for RangeAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
     }
-}
 
-impl Hash for RangeAggregator {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.init.hash(state);
-        hash_f64(self.min, state);
-        hash_f64(self.max, state);
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        RangeAggregatorState::rdb_load(rdb).map(|state| Self(Box::new(state)))
     }
 }
 
@@ -237,7 +279,7 @@ pub struct AvgAggregator {
     sum: Value,
 }
 impl AggregationHandler for AvgAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.sum += value;
         self.count += 1;
     }
@@ -252,14 +294,18 @@ impl AggregationHandler for AvgAggregator {
             Some(self.sum / self.count as f64)
         }
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
+}
+
+impl RdbSerializable for AvgAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
         raw::save_double(rdb, self.sum);
         rdb_save_usize(rdb, self.count);
     }
-}
 
-impl AvgAggregator {
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
         let sum = raw::load_double(rdb)?;
         let count = rdb_load_usize(rdb)?;
         Ok(Self { count, sum })
@@ -274,62 +320,71 @@ impl Hash for AvgAggregator {
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
-pub struct SumAggregator(Value);
+pub struct SumAggregator(Option<Value>);
 impl AggregationHandler for SumAggregator {
-    fn update(&mut self, value: Value) {
-        self.0 += value;
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        self.0 = self.0.map(|v| v + value).or(Some(value));
     }
     fn reset(&mut self) {
-        self.0 = 0.;
+        self.0 = None;
     }
     fn current(&self) -> Option<Value> {
-        Some(self.0)
+        self.0
     }
     fn empty_value(&self) -> Value {
         0.
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        raw::save_double(rdb, self.0);
-    }
 }
 
-impl SumAggregator {
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let value = raw::load_double(rdb)?;
-        Ok(Self(value))
+impl RdbSerializable for SumAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.0);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_optional_f64(rdb).map(Self)
     }
 }
 
 impl Hash for SumAggregator {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        hash_f64(self.0, state);
+        hash_f64(self.0.unwrap_or(f64::NAN), state);
     }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct CountAggregator(usize);
 impl AggregationHandler for CountAggregator {
-    fn update(&mut self, _value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, _value: Value) {
         self.0 += 1;
     }
     fn reset(&mut self) {
         self.0 = 0;
     }
     fn current(&self) -> Option<Value> {
+        if self.0 == 0 {
+            return None;
+        }
         Some(self.0 as Value)
     }
     fn empty_value(&self) -> Value {
         0.
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_usize(rdb, self.0);
-    }
 }
 
-impl CountAggregator {
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let value = rdb_load_usize(rdb)?;
-        Ok(Self(value))
+impl RdbSerializable for CountAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_usize(rdb, self.0);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_usize(rdb).map(Self)
     }
 }
 
@@ -358,27 +413,12 @@ impl AggStd {
         self.count = 0;
     }
     fn variance(&self) -> Value {
-        //  var(X) = sum((x_i - E[X])^2)
-        //  = sum(x_i^2) - 2 * sum(x_i) * E[X] + E^2[X]
         if self.count <= 1 {
             0.
         } else {
             let avg = self.sum / self.count as Value;
             self.sum_2 - 2. * self.sum * avg + avg * avg * self.count as Value
         }
-    }
-
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        raw::save_double(rdb, self.sum);
-        raw::save_double(rdb, self.sum_2);
-        rdb_save_usize(rdb, self.count);
-    }
-
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let sum = raw::load_double(rdb)?;
-        let sum_2 = raw::load_double(rdb)?;
-        let count = rdb_load_usize(rdb)?;
-        Ok(Self { sum, sum_2, count })
     }
 }
 
@@ -392,6 +432,24 @@ impl Display for AggStd {
     }
 }
 
+impl RdbSerializable for AggStd {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        raw::save_double(rdb, self.sum);
+        raw::save_double(rdb, self.sum_2);
+        rdb_save_usize(rdb, self.count);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let sum = raw::load_double(rdb)?;
+        let sum_2 = raw::load_double(rdb)?;
+        let count = rdb_load_usize(rdb)?;
+        Ok(Self { sum, sum_2, count })
+    }
+}
+
 impl Hash for AggStd {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         hash_f64(self.sum, state);
@@ -402,16 +460,24 @@ impl Hash for AggStd {
 
 // boxed to minimize size of stack Aggregator enum
 pub(crate) type OnlineAggregator = Box<AggStd>;
+impl RdbSerializable for OnlineAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.as_ref().rdb_save(rdb);
+    }
 
-fn load_online_aggregator(rdb: *mut RedisModuleIO) -> ValkeyResult<OnlineAggregator> {
-    let inner = AggStd::load_from_rdb(rdb)?;
-    Ok(Box::new(inner))
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let inner = AggStd::rdb_load(rdb)?;
+        Ok(Box::new(inner))
+    }
 }
 
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarPAggregator(OnlineAggregator);
 impl AggregationHandler for VarPAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -424,25 +490,25 @@ impl AggregationHandler for VarPAggregator {
             Some(self.0.variance() / self.0.count as Value)
         }
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        self.0.save_to_rdb(rdb);
-    }
 }
 
-impl VarPAggregator {
-    fn new() -> Self {
-        Self(Box::default())
+impl RdbSerializable for VarPAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
     }
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let inner = AggStd::load_from_rdb(rdb)?;
-        Ok(Self(Box::new(inner)))
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        OnlineAggregator::rdb_load(rdb).map(Self)
     }
 }
 
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarSAggregator(OnlineAggregator);
 impl AggregationHandler for VarSAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -457,25 +523,25 @@ impl AggregationHandler for VarSAggregator {
             Some(self.0.variance() / (self.0.count - 1) as Value)
         }
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        self.0.save_to_rdb(rdb);
-    }
 }
 
-impl VarSAggregator {
-    fn new() -> Self {
-        Self(Box::default())
+impl RdbSerializable for VarSAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
     }
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let inner = load_online_aggregator(rdb)?;
-        Ok(Self(inner))
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        OnlineAggregator::rdb_load(rdb).map(Self)
     }
 }
 
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdPAggregator(OnlineAggregator);
 impl AggregationHandler for StdPAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -488,25 +554,25 @@ impl AggregationHandler for StdPAggregator {
             Some((self.0.variance() / self.0.count as Value).sqrt())
         }
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        self.0.save_to_rdb(rdb);
-    }
 }
 
-impl StdPAggregator {
-    fn new() -> Self {
-        Self(Box::default())
+impl RdbSerializable for StdPAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
     }
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let inner = load_online_aggregator(rdb)?;
-        Ok(Self(inner))
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        OnlineAggregator::rdb_load(rdb).map(Self)
     }
 }
 
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdSAggregator(OnlineAggregator);
 impl AggregationHandler for StdSAggregator {
-    fn update(&mut self, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -521,36 +587,351 @@ impl AggregationHandler for StdSAggregator {
             Some((self.0.variance() / (self.0.count - 1) as Value).sqrt())
         }
     }
-    fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
-        self.0.save_to_rdb(rdb);
+}
+
+impl RdbSerializable for StdSAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        OnlineAggregator::rdb_load(rdb).map(Self)
     }
 }
 
-impl StdSAggregator {
-    fn new() -> Self {
-        Self(Box::default())
-    }
-    fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        let inner = load_online_aggregator(rdb)?;
-        Ok(Self(inner))
+/// State for rate/increase calculations of monotonically increasing counters.
+/// It also properly handles resets
+#[derive(Debug, Default, Clone, PartialEq, GetSize)]
+pub struct CounterAggregatorState {
+    /// Accumulated deltas
+    sum_deltas: f64,
+    // last raw value we saw
+    last_value: Option<f64>,
+}
+
+impl Hash for CounterAggregatorState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        hash_f64(self.sum_deltas, state);
+        hash_f64(self.last_value.unwrap_or(f64::NAN), state);
     }
 }
+
+impl RdbSerializable for CounterAggregatorState {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_optional_f64(rdb, self.last_value);
+        raw::save_double(rdb, self.sum_deltas);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let last_value = rdb_load_optional_f64(rdb)?;
+        let sum_deltas = raw::load_double(rdb)?;
+        Ok(CounterAggregatorState {
+            sum_deltas,
+            last_value,
+        })
+    }
+}
+
+impl CounterAggregatorState {
+    pub fn update(&mut self, _t: Timestamp, v: f64) {
+        // Compute delta with reset handling.
+        let delta = match self.last_value {
+            None => 0.0, // first point: no prior delta
+            Some(last) => {
+                let d = v - last;
+                if d >= 0.0 {
+                    d
+                } else {
+                    // Counter reset or went backwards: treat as 0 increment.
+                    0.0
+                }
+            }
+        };
+
+        self.last_value = Some(v);
+
+        // Add the new delta to the window.
+        if delta > 0.0 {
+            self.sum_deltas += delta;
+        } else {
+            // Even if delta == 0, we may want to keep the timestamp to
+            // age out the window precisely. For simplicity here, we don't.
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.sum_deltas = 0.0;
+        self.last_value = None;
+    }
+}
+
+#[derive(Debug, Default, Clone, Hash, PartialEq, GetSize)]
+pub struct IncreaseAggregator(CounterAggregatorState);
+
+impl AggregationHandler for IncreaseAggregator {
+    fn update(&mut self, timestamp: Timestamp, value: Value) {
+        self.0.update(timestamp, value);
+    }
+    fn reset(&mut self) {
+        self.0.clear();
+    }
+    fn current(&self) -> Option<Value> {
+        self.0.last_value?;
+        Some(self.0.sum_deltas)
+    }
+}
+
+impl RdbSerializable for IncreaseAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        CounterAggregatorState::rdb_load(rdb).map(Self)
+    }
+}
+
+#[derive(Debug, Default, Clone, Hash, PartialEq, GetSize)]
+pub struct RateAggregatorState {
+    window: u64,
+    counter: CounterAggregatorState,
+}
+
+/// Online rate calculator for a monotonically increasing counter with resets.
+///
+/// Algorithm:
+/// - For each new sample, compute delta = max(v - last_v, 0).
+///   This treats negative jumps as resets and never produces negative deltas.
+/// - Maintain a sliding time window of these deltas and their timestamps.
+/// - Rate ≈ sum(deltas in window) / window_length.
+#[derive(Debug, Default, Clone, Hash, PartialEq, GetSize)]
+pub struct RateAggregator(Box<RateAggregatorState>);
+
+impl RateAggregator {
+    /// Create a new online rate calculator with the given window length.
+    pub fn new(window: Duration) -> Self {
+        let counter = CounterAggregatorState {
+            sum_deltas: 0.0,
+            last_value: None,
+        };
+        let state = Box::new(RateAggregatorState {
+            window: window.as_secs(),
+            counter,
+        });
+        Self(state)
+    }
+
+    pub fn set_window_ms(&mut self, window: u64) {
+        let secs = window / 1000;
+        self.0.window = secs;
+    }
+
+    fn clear(&mut self) {
+        self.0.counter.clear();
+    }
+}
+
+impl RdbSerializable for RateAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_usize(rdb, self.0.window as usize);
+        self.0.counter.rdb_save(rdb);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let window = rdb_load_usize(rdb)? as u64;
+        let counter = CounterAggregatorState::rdb_load(rdb)?;
+        let state = Box::new(RateAggregatorState { window, counter });
+
+        Ok(Self(state))
+    }
+}
+
+impl AggregationHandler for RateAggregator {
+    fn update(&mut self, timestamp: Timestamp, value: Value) {
+        self.0.counter.update(timestamp, value);
+    }
+    fn reset(&mut self) {
+        self.clear();
+    }
+    fn current(&self) -> Option<Value> {
+        let state = &self.0;
+        state.counter.last_value?;
+        if state.window > 0 {
+            Some(state.counter.sum_deltas / state.window as f64)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, GetSize)]
+pub struct IRateAggregatorState {
+    dt: i64,
+    dv: f64,
+    last_sample: Option<Sample>,
+}
+
+impl Hash for IRateAggregatorState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.dt.hash(state);
+        hash_f64(self.dv, state);
+        if let Some(sample) = &self.last_sample {
+            sample.hash(state);
+        } else {
+            hash_f64(f64::NAN, state);
+        }
+    }
+}
+
+impl IRateAggregatorState {
+    fn update_irate(&mut self, timestamp: Timestamp, value: Value) {
+        let current = Sample { timestamp, value };
+
+        if let Some(prev) = self.last_sample {
+            // Detect reset: counter dropped instead of increased.
+            if current.value < prev.value {
+                // Treat as reset: keep current as the new baseline, but no rate.
+                self.dv = 0.0;
+                self.dt = 0;
+                self.last_sample = Some(current);
+            } else {
+                self.dt = current.timestamp - prev.timestamp;
+                if self.dt > 0 {
+                    self.dv = current.value - prev.value;
+                    self.last_sample = Some(current);
+                }
+            }
+        } else {
+            // First sample: just store it.
+            self.last_sample = Some(current);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.dt = 0;
+        self.dv = 0.0;
+        self.last_sample = None;
+    }
+}
+
+impl RdbSerializable for IRateAggregatorState {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        if let Some(x) = self.last_sample {
+            rdb_save_optional_f64(rdb, Some(x.value));
+            rdb_save_usize(rdb, x.timestamp as usize);
+            raw::save_signed(rdb, self.dt);
+            raw::save_double(rdb, self.dv);
+            return;
+        }
+        rdb_save_optional_f64(rdb, None);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let Some(value) = rdb_load_optional_f64(rdb)? else {
+            return Ok(Self {
+                last_sample: None,
+                dt: 0,
+                dv: 0.0,
+            });
+        };
+
+        let timestamp = rdb_load_usize(rdb)? as i64;
+        let last_sample = Some(Sample { timestamp, value });
+        let dt = raw::load_signed(rdb)?;
+        let dv = raw::load_double(rdb)?;
+
+        Ok(Self {
+            last_sample,
+            dt,
+            dv,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, GetSize, Hash, PartialEq)]
+pub struct IRateAggregator(Box<IRateAggregatorState>);
+
+impl RdbSerializable for IRateAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        self.0.rdb_save(rdb);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let inner = IRateAggregatorState::rdb_load(rdb)?;
+        Ok(Self(Box::new(inner)))
+    }
+}
+
+impl AggregationHandler for IRateAggregator {
+    fn update(&mut self, timestamp: Timestamp, value: Value) {
+        self.0.update_irate(timestamp, value);
+    }
+
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+
+    fn current(&self) -> Option<Value> {
+        if self.0.last_sample.is_none() || self.0.dt == 0 {
+            return None;
+        }
+        let rate = self.0.dv / (self.0.dt as f64 / 1e3);
+        Some(rate)
+    }
+}
+
+// Deriv implementation for gauge aggregators
+#[derive(Clone, Debug, Hash, PartialEq, GetSize)]
+pub struct DerivAggregator(IRateAggregatorState);
 
 #[enum_dispatch(AggregationHandler)]
 #[derive(Clone, Debug, Hash, PartialEq, GetSize)]
 pub enum Aggregator {
-    First(FirstAggregator),
-    Last(LastAggregator),
-    Min(MinAggregator),
-    Max(MaxAggregator),
+    All(AllAggregator),
+    Any(AnyAggregator),
     Avg(AvgAggregator),
-    Sum(SumAggregator),
     Count(CountAggregator),
+    CountIf(CountIfAggregator),
+    First(FirstAggregator),
+    Increase(IncreaseAggregator),
+    IRate(IRateAggregator),
+    Last(LastAggregator),
+    Max(MaxAggregator),
+    Min(MinAggregator),
+    None(NoneAggregator),
     Range(RangeAggregator),
-    StdS(StdSAggregator),
+    Rate(RateAggregator),
+    Share(ShareAggregator),
     StdP(StdPAggregator),
-    VarS(VarSAggregator),
+    StdS(StdSAggregator),
+    Sum(SumAggregator),
+    SumIf(SumIfAggregator),
     VarP(VarPAggregator),
+    VarS(VarSAggregator),
+}
+
+impl Default for Aggregator {
+    fn default() -> Self {
+        AggregationType::Avg.into()
+    }
 }
 
 impl TryFrom<&ValkeyString> for Aggregator {
@@ -575,95 +956,120 @@ impl TryFrom<&str> for Aggregator {
 impl From<AggregationType> for Aggregator {
     fn from(agg: AggregationType) -> Self {
         match agg {
+            AggregationType::All => Aggregator::All(AllAggregator::default()),
+            AggregationType::Any => Aggregator::Any(AnyAggregator::default()),
             AggregationType::Avg => Aggregator::Avg(AvgAggregator::default()),
             AggregationType::Count => Aggregator::Count(CountAggregator::default()),
+            AggregationType::CountIf => Aggregator::CountIf(CountIfAggregator::default()),
             AggregationType::First => Aggregator::First(FirstAggregator::default()),
+            AggregationType::Increase => Aggregator::Increase(IncreaseAggregator::default()),
+            AggregationType::IRate => Aggregator::IRate(IRateAggregator::default()),
             AggregationType::Last => Aggregator::Last(LastAggregator::default()),
             AggregationType::Max => Aggregator::Max(MaxAggregator::default()),
             AggregationType::Min => Aggregator::Min(MinAggregator::default()),
+            AggregationType::None => Aggregator::None(NoneAggregator::default()),
             AggregationType::Range => Aggregator::Range(RangeAggregator::default()),
+            AggregationType::Rate => Aggregator::Rate(RateAggregator::default()),
+            AggregationType::Share => Aggregator::Share(ShareAggregator::default()),
             AggregationType::StdP => Aggregator::StdP(StdPAggregator::default()),
             AggregationType::StdS => Aggregator::StdS(StdSAggregator::default()),
             AggregationType::VarP => Aggregator::VarP(VarPAggregator::default()),
             AggregationType::VarS => Aggregator::VarS(VarSAggregator::default()),
             AggregationType::Sum => Aggregator::Sum(SumAggregator::default()),
+            AggregationType::SumIf => Aggregator::SumIf(SumIfAggregator::default()),
+        }
+    }
+}
+
+impl RdbSerializable for Aggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        let agg_type = self.aggregation_type() as u8;
+        rdb_save_u8(rdb, agg_type);
+
+        match self {
+            Aggregator::All(agg) => agg.rdb_save(rdb),
+            Aggregator::Any(agg) => agg.rdb_save(rdb),
+            Aggregator::Avg(agg) => agg.rdb_save(rdb),
+            Aggregator::Count(agg) => agg.rdb_save(rdb),
+            Aggregator::CountIf(agg) => agg.rdb_save(rdb),
+            Aggregator::First(agg) => agg.rdb_save(rdb),
+            Aggregator::Increase(agg) => agg.rdb_save(rdb),
+            Aggregator::IRate(agg) => agg.rdb_save(rdb),
+            Aggregator::Last(agg) => agg.rdb_save(rdb),
+            Aggregator::Max(agg) => agg.rdb_save(rdb),
+            Aggregator::Min(agg) => agg.rdb_save(rdb),
+            Aggregator::None(agg) => agg.rdb_save(rdb),
+            Aggregator::Rate(agg) => agg.rdb_save(rdb),
+            Aggregator::Range(agg) => agg.rdb_save(rdb),
+            Aggregator::Share(agg) => agg.rdb_save(rdb),
+            Aggregator::Sum(agg) => agg.rdb_save(rdb),
+            Aggregator::SumIf(agg) => agg.rdb_save(rdb),
+            Aggregator::StdP(agg) => agg.rdb_save(rdb),
+            Aggregator::StdS(agg) => agg.rdb_save(rdb),
+            Aggregator::VarP(agg) => agg.rdb_save(rdb),
+            Aggregator::VarS(agg) => agg.rdb_save(rdb),
+        }
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        let agg_type_u8 = rdb_load_u8(rdb)?;
+        let agg_type = AggregationType::try_from(agg_type_u8)?;
+
+        match agg_type {
+            AggregationType::All => AllAggregator::rdb_load(rdb).map(Aggregator::All),
+            AggregationType::Any => AnyAggregator::rdb_load(rdb).map(Aggregator::Any),
+            AggregationType::Avg => AvgAggregator::rdb_load(rdb).map(Aggregator::Avg),
+            AggregationType::Count => CountAggregator::rdb_load(rdb).map(Aggregator::Count),
+            AggregationType::CountIf => CountIfAggregator::rdb_load(rdb).map(Aggregator::CountIf),
+            AggregationType::First => FirstAggregator::rdb_load(rdb).map(Aggregator::First),
+            AggregationType::Increase => {
+                IncreaseAggregator::rdb_load(rdb).map(Aggregator::Increase)
+            }
+            AggregationType::IRate => IRateAggregator::rdb_load(rdb).map(Aggregator::IRate),
+            AggregationType::Last => LastAggregator::rdb_load(rdb).map(Aggregator::Last),
+            AggregationType::Max => MaxAggregator::rdb_load(rdb).map(Aggregator::Max),
+            AggregationType::Min => MinAggregator::rdb_load(rdb).map(Aggregator::Min),
+            AggregationType::None => NoneAggregator::rdb_load(rdb).map(Aggregator::None),
+            AggregationType::Range => RangeAggregator::rdb_load(rdb).map(Aggregator::Range),
+            AggregationType::Rate => RateAggregator::rdb_load(rdb).map(Aggregator::Rate),
+            AggregationType::Share => ShareAggregator::rdb_load(rdb).map(Aggregator::Share),
+            AggregationType::StdP => StdPAggregator::rdb_load(rdb).map(Aggregator::StdP),
+            AggregationType::StdS => StdSAggregator::rdb_load(rdb).map(Aggregator::StdS),
+            AggregationType::VarP => VarPAggregator::rdb_load(rdb).map(Aggregator::VarP),
+            AggregationType::VarS => VarSAggregator::rdb_load(rdb).map(Aggregator::VarS),
+            AggregationType::Sum => SumAggregator::rdb_load(rdb).map(Aggregator::Sum),
+            AggregationType::SumIf => SumIfAggregator::rdb_load(rdb).map(Aggregator::SumIf),
         }
     }
 }
 
 impl Aggregator {
-    pub fn new(aggr: AggregationType) -> Self {
-        aggr.into()
-    }
-
     pub fn aggregation_type(&self) -> AggregationType {
         match self {
-            Aggregator::First(_) => AggregationType::First,
-            Aggregator::Last(_) => AggregationType::Last,
-            Aggregator::Min(_) => AggregationType::Min,
-            Aggregator::Max(_) => AggregationType::Max,
+            Aggregator::All(_) => AggregationType::All,
+            Aggregator::Any(_) => AggregationType::Any,
             Aggregator::Avg(_) => AggregationType::Avg,
-            Aggregator::Sum(_) => AggregationType::Sum,
             Aggregator::Count(_) => AggregationType::Count,
+            Aggregator::CountIf(_) => AggregationType::CountIf,
+            Aggregator::First(_) => AggregationType::First,
+            Aggregator::Increase(_) => AggregationType::Increase,
+            Aggregator::IRate(_) => AggregationType::IRate,
+            Aggregator::Last(_) => AggregationType::Last,
+            Aggregator::Max(_) => AggregationType::Max,
+            Aggregator::Min(_) => AggregationType::Min,
+            Aggregator::None(_) => AggregationType::None,
             Aggregator::Range(_) => AggregationType::Range,
+            Aggregator::Rate(_) => AggregationType::Rate,
+            Aggregator::Share(_) => AggregationType::Share,
             Aggregator::StdP(_) => AggregationType::StdP,
             Aggregator::StdS(_) => AggregationType::StdS,
             Aggregator::VarP(_) => AggregationType::VarP,
             Aggregator::VarS(_) => AggregationType::VarS,
+            Aggregator::Sum(_) => AggregationType::Sum,
+            Aggregator::SumIf(_) => AggregationType::SumIf,
         }
     }
-
-    pub fn save(&self, rdb: *mut RedisModuleIO) {
-        // Save the aggregation type first
-        let agg_type = self.aggregation_type();
-        save_aggregation_type(rdb, agg_type);
-
-        match self {
-            Aggregator::First(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Last(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Min(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Max(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Avg(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Sum(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Count(agg) => agg.save_to_rdb(rdb),
-            Aggregator::Range(agg) => agg.save_to_rdb(rdb),
-            Aggregator::StdP(agg) => agg.save_to_rdb(rdb),
-            Aggregator::StdS(agg) => agg.save_to_rdb(rdb),
-            Aggregator::VarP(agg) => agg.save_to_rdb(rdb),
-            Aggregator::VarS(agg) => agg.save_to_rdb(rdb),
-        }
-    }
-
-    pub fn load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
-        // Load the aggregation type
-        let agg_type = load_aggregation_type(rdb)?;
-        let agg: Aggregator = match agg_type {
-            AggregationType::Avg => AvgAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::Count => CountAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::First => FirstAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::Last => LastAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::Max => MaxAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::Min => MinAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::Range => RangeAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::StdP => StdPAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::StdS => StdSAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::VarP => VarPAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::VarS => VarSAggregator::load_from_rdb(rdb)?.into(),
-            AggregationType::Sum => SumAggregator::load_from_rdb(rdb)?.into(),
-        };
-        Ok(agg)
-    }
 }
-
-fn save_aggregation_type(rdb: *mut RedisModuleIO, agg_type: AggregationType) {
-    let val: u8 = agg_type.into();
-    rdb_save_u8(rdb, val);
-}
-
-fn load_aggregation_type(rdb: *mut RedisModuleIO) -> ValkeyResult<AggregationType> {
-    let val = rdb_load_u8(rdb)?;
-    AggregationType::try_from(val)
-}
-
-#[cfg(test)]
-mod tests {}

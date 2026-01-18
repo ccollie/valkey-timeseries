@@ -1,7 +1,6 @@
 use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
-use core::f64;
 use std::collections::VecDeque;
 use std::iter::Peekable;
 
@@ -21,11 +20,36 @@ struct AggregationHelper {
 }
 
 impl AggregationHelper {
+    pub(crate) fn new_from_aggregator(
+        aggregator: Aggregator,
+        bucket_duration: u64,
+        bucket_ts: BucketTimestamp,
+        align_timestamp: Timestamp,
+        report_empty: bool,
+    ) -> Self {
+        AggregationHelper {
+            align_timestamp,
+            report_empty,
+            aggregator,
+            bucket_duration,
+            bucket_ts,
+            bucket_range_start: 0,
+            bucket_range_end: 0,
+            all_nans: true,
+            count: 0,
+            prev_sample: Sample::new(0, f64::NAN),
+        }
+    }
+
     pub(crate) fn new(options: &AggregationOptions, align_timestamp: Timestamp) -> Self {
+        let mut aggregator = options.aggregation.create_aggregator();
+        if let Aggregator::Rate(r) = &mut aggregator {
+            r.set_window_ms(options.bucket_duration);
+        }
         AggregationHelper {
             align_timestamp,
             report_empty: options.report_empty,
-            aggregator: options.aggregation.into(),
+            aggregator,
             bucket_duration: options.bucket_duration,
             bucket_ts: options.timestamp_output,
             bucket_range_start: 0,
@@ -108,7 +132,7 @@ impl AggregationHelper {
     fn update(&mut self, sample: Sample) {
         let value = sample.value;
         if !value.is_nan() {
-            self.aggregator.update(value);
+            self.aggregator.update(sample.timestamp, value);
             self.all_nans = false;
         }
         self.prev_sample = sample;
@@ -243,7 +267,7 @@ mod tests {
 
     fn create_options(aggregator: AggregationType) -> AggregationOptions {
         AggregationOptions {
-            aggregation: aggregator,
+            aggregation: aggregator.into(),
             bucket_duration: 10,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
@@ -447,7 +471,7 @@ mod tests {
         ];
 
         let options = AggregationOptions {
-            aggregation: AggregationType::Range,
+            aggregation: AggregationType::Range.into(),
             bucket_duration: 10,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Start,
