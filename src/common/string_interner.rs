@@ -20,14 +20,10 @@
 //!   some CPU and memory overhead (due to storing and maintaining an
 //!   atomic counter).
 //! - Multithreading.  A single pool of interned strings is shared by all
-//!   threads in the program.  Inside `DashMap` this pool is protected by
-//!   sharded mutexes that are acquired every time an object is being interned or a
-//!   reference to an interned object is being dropped.  Although Rust mutexes
-//!   are fairly inexpensive when there is no contention, you may see a significant
-//!   drop in performance under contention.
-//! - Safe: this library is built on the ` Arc ` type from the Rust
-//!   standard library and the [`dashmap` crate](https://crates.io/crates/dashmap)
-//!   and does not contain any unsafe code (although std and dashmap do of course)
+//!   threads in the program.  The pool is protected by a RwLock, allowing
+//!   concurrent reads but exclusive writes.
+//! - Safe: this library is built on the `Arc` type from the Rust
+//!   standard library and does not contain any unsafe code.
 //!
 //! # Example
 //! ```rust
@@ -40,30 +36,26 @@
 //! ```
 
 use ahash::RandomState;
-use dashmap::DashMap;
 use get_size2::GetSize;
 use std::borrow::Borrow;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
-/// The maximum number of shards to use in `DashMap`. Higher values
-/// may improve performance under high contention, but will use more memory.
-const MAX_SHARDS: usize = 64;
-
-type StringContainer = DashMap<Arc<[u8]>, (), RandomState>;
+type StringContainer = RwLock<HashSet<Arc<[u8]>, RandomState>>;
 
 static STRING_POOL: LazyLock<StringContainer> =
-    LazyLock::new(|| StringContainer::with_hasher_and_shard_amount(RandomState::new(), MAX_SHARDS));
+    LazyLock::new(|| RwLock::new(HashSet::with_hasher(RandomState::new())));
 
 /// Total memory used by all interned strings.
 static STRING_MEMORY_USED: AtomicUsize = AtomicUsize::new(0);
 
-/// A pointer to an interned, reference-counted and immutable string object.
+/// A pointer to an interned, reference-counted, and immutable string object.
 ///
 /// The interned string will be held in memory only until its
 /// reference count reaches zero.
@@ -92,7 +84,7 @@ impl InternedString {
     /// previously allocated.
     ///
     /// Note that `InternedString::new` is a bit slower than direct allocation, since it needs to check
-    /// a mutex for its hash slot. However, the performance should be acceptable for our use cases,
+    /// a lock. However, the performance should be acceptable for our use cases,
     /// especially under low contention.
     pub fn new(val: &str) -> Self {
         let v = Arc::from(val.as_bytes());
@@ -100,31 +92,30 @@ impl InternedString {
     }
 
     fn from_arc(val: Arc<[u8]>) -> InternedString {
-        // First, try to get an existing entry without taking a write lock
-        if let Some(entry) = STRING_POOL.get(&val) {
+        // First, try to get an existing entry with a read lock
+        {
+            let pool = STRING_POOL.read().unwrap();
+            if let Some(existing) = pool.get(&val) {
+                return InternedString {
+                    arc: existing.clone(),
+                };
+            }
+        }
+
+        // If not found, acquire write lock and insert
+        let mut pool = STRING_POOL.write().unwrap();
+
+        // Double-check after acquiring write lock (another thread may have inserted)
+        if let Some(existing) = pool.get(&val) {
             return InternedString {
-                arc: entry.key().clone(),
+                arc: existing.clone(),
             };
         }
 
-        // If not found, use entry API to insert
-        // This properly handles the race condition where two threads try to insert
-        // the same value simultaneously
-        let val = {
-            let entry = STRING_POOL.entry(val);
-            let entry_ref = entry.or_insert_with(|| ());
-            entry_ref.key().clone()
-            // entry_ref is dropped here, releasing its Arc reference
-        };
-
-        // Check if we're the first reference to this value.
-        // If strong_count is 2, only the map and val hold references, so we just created it.
-        let ref_count = Arc::strong_count(&val);
-        if ref_count == 2 {
-            // we are the first reference, so account for the memory used
-            let size = val.get_size();
-            STRING_MEMORY_USED.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
-        }
+        // Insert new value
+        let size = val.get_size();
+        pool.insert(val.clone());
+        STRING_MEMORY_USED.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
 
         InternedString { arc: val }
     }
@@ -155,7 +146,7 @@ impl InternedString {
 
     /// Return the number of unique interned strings.
     pub fn interned_object_count() -> usize {
-        STRING_POOL.len()
+        STRING_POOL.read().unwrap().len()
     }
 
     /// Return the total memory used by all interned strings.
@@ -213,18 +204,20 @@ impl Display for InternedString {
 
 impl Drop for InternedString {
     fn drop(&mut self) {
-        STRING_POOL.remove_if(&self.arc, |k, _| {
-            // If the reference count is 2, then the only two remaining references
-            // to this value are held by `self` and the hashmap, and we can safely
-            // deallocate the value.
-            if Arc::strong_count(k) == 2 {
-                let size = self.get_size();
-                STRING_MEMORY_USED.fetch_sub(size, std::sync::atomic::Ordering::SeqCst);
+        // Fast path: if there are definitely other external refs, do nothing.
+        // Counts: 1 ref is held by the pool (if still interned) and 1 by `self`.
+        if Arc::strong_count(&self.arc) > 2 {
+            return;
+        }
 
-                return true;
-            }
-            false
-        });
+        let mut pool = STRING_POOL.write().unwrap();
+
+        // Only remove/account if the pool currently contains this arc AND `self` is
+        // the last external reference at the moment we hold the write lock.
+        if Arc::strong_count(&self.arc) == 2 && pool.remove(&self.arc) {
+            let size = self.arc.get_size();
+            STRING_MEMORY_USED.fetch_sub(size, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 
@@ -381,11 +374,10 @@ mod tests {
         assert_eq!(InternedString::interned_object_count(), 0);
     }
 
-    // Test InternedString
-
     // Helper to reset memory tracking before each test
     fn reset_memory_tracking() {
         STRING_MEMORY_USED.store(0, std::sync::atomic::Ordering::SeqCst);
+        STRING_POOL.write().unwrap().clear();
     }
 
     #[test]
@@ -445,7 +437,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_memory_tracking_on_first_creation() {
-        STRING_POOL.clear();
         reset_memory_tracking();
 
         assert_eq!(InternedString::memory_used(), 0);
@@ -467,7 +458,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_memory_tracking_on_drop() {
-        STRING_POOL.clear();
         reset_memory_tracking();
 
         let s1 = InternedString::new("test_drop_memory");
@@ -480,8 +470,7 @@ mod tests {
 
         // Dropping the last reference should decrease memory
         drop(s2);
-        // Note: Memory decrease happens when refcount reaches 0,
-        // which is checked in the Drop implementation
+        assert_eq!(InternedString::memory_used(), 0);
     }
 
     #[test]
