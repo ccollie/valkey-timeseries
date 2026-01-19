@@ -1,4 +1,7 @@
-use crate::analysis::math::beta_function::{beta_complete_log_value, beta_regularized_incomplete_inverse_value, beta_regularized_incomplete_value};
+use crate::analysis::math::beta_function::{
+    beta_complete_log_value, beta_regularized_incomplete_inverse_value,
+    beta_regularized_incomplete_value,
+};
 use std::fmt;
 
 /// Probability type alias (for clarity)
@@ -51,10 +54,9 @@ impl BetaDistribution {
             return 0.0;
         }
 
-        ((self.alpha - 1.0) * x.ln()
-            + (self.beta - 1.0) * (1.0 - x).ln()
+        ((self.alpha - 1.0) * x.ln() + (self.beta - 1.0) * (1.0 - x).ln()
             - beta_complete_log_value(self.alpha, self.beta))
-            .exp()
+        .exp()
     }
 
     /// Cumulative distribution function
@@ -82,9 +84,7 @@ impl BetaDistribution {
     }
 
     pub fn variance(&self) -> f64 {
-        self.alpha * self.beta
-            / (self.alpha + self.beta).powi(2)
-            / (self.alpha + self.beta + 1.0)
+        self.alpha * self.beta / (self.alpha + self.beta).powi(2) / (self.alpha + self.beta + 1.0)
     }
 
     pub fn std_dev(&self) -> f64 {
@@ -92,8 +92,7 @@ impl BetaDistribution {
     }
 
     pub fn skewness(&self) -> f64 {
-        2.0 * (self.beta - self.alpha)
-            * (self.alpha + self.beta + 1.0).sqrt()
+        2.0 * (self.beta - self.alpha) * (self.alpha + self.beta + 1.0).sqrt()
             / (self.alpha + self.beta + 2.0)
             / (self.alpha * self.beta).sqrt()
     }

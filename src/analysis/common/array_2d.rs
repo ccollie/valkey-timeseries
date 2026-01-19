@@ -209,10 +209,7 @@ mod tests {
 
     #[test]
     fn test_from_vec() {
-        let data = vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-        ];
+        let data = vec![vec![1, 2, 3], vec![4, 5, 6]];
         let arr = Array2D::from_vec(data).unwrap();
         assert_eq!(arr[(0, 0)], 1);
         assert_eq!(arr[(1, 2)], 6);
@@ -231,10 +228,7 @@ mod tests {
 
     #[test]
     fn test_row_operations() {
-        let mut arr = Array2D::from_vec(vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-        ]).unwrap();
+        let mut arr = Array2D::from_vec(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
 
         assert_eq!(arr.get_row(0), Some(&vec![1, 2, 3]));
         assert_eq!(arr.get_column(1), Some(vec![2, 5]));
@@ -250,10 +244,7 @@ mod tests {
 
     #[test]
     fn test_iterators() {
-        let arr = Array2D::from_vec(vec![
-            vec![1, 2],
-            vec![3, 4],
-        ]).unwrap();
+        let arr = Array2D::from_vec(vec![vec![1, 2], vec![3, 4]]).unwrap();
 
         let flat: Vec<i32> = arr.iter().cloned().collect();
         assert_eq!(flat, vec![1, 2, 3, 4]);
@@ -264,10 +255,7 @@ mod tests {
 
     #[test]
     fn test_display() {
-        let arr = Array2D::from_vec(vec![
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-        ]).unwrap();
+        let arr = Array2D::from_vec(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
 
         let displayed = format!("{}", arr);
         assert_eq!(displayed, "1 2 3\n4 5 6");

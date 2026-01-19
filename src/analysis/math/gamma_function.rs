@@ -25,16 +25,13 @@ pub fn log_gamma(x: f64) -> f64 {
     }
 
     if x < 1.0 {
-        return stirling_approximation_log(x + 3.0)
-            - (x * (x + 1.0) * (x + 2.0)).ln();
+        return stirling_approximation_log(x + 3.0) - (x * (x + 1.0) * (x + 2.0)).ln();
     }
     if x < 2.0 {
-        return stirling_approximation_log(x + 2.0)
-            - (x * (x + 1.0)).ln();
+        return stirling_approximation_log(x + 2.0) - (x * (x + 1.0)).ln();
     }
     if x < 3.0 {
-        return stirling_approximation_log(x + 1.0)
-            - x.ln();
+        return stirling_approximation_log(x + 1.0) - x.ln();
     }
 
     stirling_approximation_log(x)

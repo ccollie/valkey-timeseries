@@ -6,7 +6,7 @@ use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
 
 /// Outlier detector based on the median absolute deviation.
-/// Considers all values outside [median - k * MAD, median + k * MAD] as outliers.
+/// Considers all values outside [median - k * Mad, median + k * Mad] as outliers.
 #[derive(Debug)]
 pub struct MadOutlierDetector {
     lower_fence: f64,
@@ -17,7 +17,7 @@ pub struct MadOutlierDetector {
 impl MadOutlierDetector {
     const DEFAULT_K: f64 = 3.0;
 
-    /// Create a new MAD outlier detector for a slice of f64, given k.
+    /// Create a new Mad outlier detector for a slice of f64, given k.
     fn create(data: &[f64], k: f64, estimator: &impl MedianAbsoluteDeviationEstimator) -> Self {
         assert!(!data.is_empty(), "Sample cannot be empty");
         let samples = Samples::from(data.to_vec());
@@ -32,7 +32,7 @@ impl MadOutlierDetector {
         }
     }
 
-    /// Create a new MAD outlier detector for a slice of f64, given k.
+    /// Create a new Mad outlier detector for a slice of f64, given k.
     pub fn with_k_and_estimator(
         data: &[f64],
         k: f64,
@@ -45,7 +45,7 @@ impl MadOutlierDetector {
         Self::create(data, Self::DEFAULT_K, estimator)
     }
 
-    /// Create a new MAD outlier detector with default k.
+    /// Create a new Mad outlier detector with default k.
     pub fn new(data: &[f64]) -> Self {
         let estimator = SimpleNormalizedEstimator::new();
         Self::create(data, Self::DEFAULT_K, &estimator)

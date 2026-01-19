@@ -4,7 +4,7 @@
 /// Port of the golang implementation here:
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
-use super::anomalies::AnomalySignal;
+use super::AnomalySignal;
 use crate::analysis::TimeSeriesAnalysisError;
 
 struct MovingMeanStdDev {

@@ -2,9 +2,9 @@
 // Reference: Harrell, Frank E., and C. E. Davis. "A new distribution-free quantile estimator." Biometrika 69, no. 3 (1982): 635-640.
 // https://doi.org/10.1093/biomet/69.3.635
 
-use std::f64;
 use crate::analysis::math::{BetaDistribution, ConfidenceIntervalEstimator};
 use crate::analysis::quantile_estimators::{QuantileEstimator, Samples};
+use std::f64;
 
 pub struct HarrellDavisQuantileEstimator;
 

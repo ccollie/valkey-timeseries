@@ -404,13 +404,14 @@ where
     let nodes = unsafe { std::slice::from_raw_parts(nodes_ids, num_nodes) };
 
     for &node_id in nodes {
-        if let Some(node_info) = get_cluster_node_info(ctx, node_id) {
-            if !node_info.is_failed() && filter(&node_info) {
-                if node_info.is_local() {
-                    selected_targets.push(create_local_target());
-                } else {
-                    selected_targets.push(create_remote_target(&node_info));
-                }
+        if let Some(node_info) = get_cluster_node_info(ctx, node_id)
+            && !node_info.is_failed()
+            && filter(&node_info)
+        {
+            if node_info.is_local() {
+                selected_targets.push(create_local_target());
+            } else {
+                selected_targets.push(create_remote_target(&node_info));
             }
         }
     }

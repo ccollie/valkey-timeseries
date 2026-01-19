@@ -233,8 +233,8 @@ pub fn check<F>(test_data: &TestData, create_detector: F)
 where
     F: FnOnce(&[f64]) -> Box<dyn OutlierDetector>,
 {
-    let detector = create_detector(&test_data.values);
-    let actual_outliers = &test_data
+    let detector = create_detector(test_data.values);
+    let actual_outliers = test_data
         .values
         .iter()
         .copied()
@@ -277,7 +277,7 @@ mod tests {
             if test_data.values.is_empty() {
                 let result = std::panic::catch_unwind(|| {
                     MadOutlierDetector::with_estimator(
-                        &test_data.values,
+                        test_data.values,
                         &SimpleNormalizedEstimator::default(),
                     )
                 });
@@ -307,7 +307,7 @@ mod tests {
             if test_data.values.is_empty() {
                 let result = std::panic::catch_unwind(|| {
                     MadOutlierDetector::with_estimator(
-                        &test_data.values,
+                        test_data.values,
                         &HarrellDavisNormalizedEstimator,
                     )
                 });
