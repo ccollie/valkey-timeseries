@@ -175,6 +175,33 @@ impl SmoothedZScoreAnomalyDetector {
     pub fn next_batch(&mut self, values: Vec<f64>) -> Vec<AnomalySignal> {
         values.into_iter().map(|v| self.next(v)).collect()
     }
+
+    /// Calculates a normalized anomaly score in [0, 1] for `value`.
+    ///
+    /// The score is based on the current moving mean and standard deviation:
+    /// `z = |value - prev_mean| / prev_std_dev`.
+    /// It is then mapped to [0, 1] via `z / (threshold + z)` so that:
+    /// - `0.0` when `value == prev_mean`
+    /// - `0.5` when `z == threshold`
+    /// - approaches `1.0` as `z` grows
+    pub fn get_anomaly_score(&self, value: f64) -> f64 {
+        let deviation = (value - self.prev_mean).abs();
+
+        // Guard against degenerate or invalid std dev.
+        if !self.prev_std_dev.is_finite() || self.prev_std_dev <= 0.0 {
+            return if deviation <= f64::EPSILON { 0.0 } else { 1.0 };
+        }
+
+        // Guard against nonsensical thresholds.
+        if !self.threshold.is_finite() || self.threshold <= 0.0 {
+            return 0.0;
+        }
+
+        let z = deviation / self.prev_std_dev;
+        let score = z / (self.threshold + z);
+
+        score.clamp(0.0, 1.0)
+    }
 }
 
 impl Default for SmoothedZScoreAnomalyDetector {
@@ -247,5 +274,52 @@ mod tests {
         assert_eq!(signals.len(), 5);
         // The exact signals depend on the algorithm's internal state,
         // but we can verify the length matches
+    }
+
+    #[test]
+    fn test_get_anomaly_score_is_normalized_and_roughly_monotonic() {
+        let initial_values = vec![1.0, 2.0, 3.0, 2.0, 1.0];
+        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+
+        // At the mean => 0.0
+        let s0 = detector.get_anomaly_score(detector.prev_mean);
+        assert!((s0 - 0.0).abs() < 1e-12);
+
+        // At z == threshold => 0.5
+        // value = mean + threshold * std_dev
+        let at_threshold_value = detector.prev_mean + detector.threshold * detector.prev_std_dev;
+        let s_half = detector.get_anomaly_score(at_threshold_value);
+        assert!((s_half - 0.5).abs() < 1e-12);
+
+        // Larger deviation => higher score, still within [0, 1]
+        let far_value = detector.prev_mean + 10.0 * detector.threshold * detector.prev_std_dev;
+        let s_far = detector.get_anomaly_score(far_value);
+        assert!(s_far > s_half);
+        assert!((0.0..=1.0).contains(&s_far));
+    }
+
+    #[test]
+    fn test_get_anomaly_score_clamps_to_unit_interval() {
+        let initial_values = vec![1.0, 2.0, 3.0, 2.0, 1.0];
+        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+
+        let s = detector.get_anomaly_score(detector.prev_mean + 1e308);
+        assert!((0.0..=1.0).contains(&s));
+    }
+
+    #[test]
+    fn test_get_anomaly_score_handles_degenerate_std_dev() {
+        // All equal => std_dev == 0.0 after initialization.
+        let initial_values = vec![1.0; 10];
+        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+        assert!(detector.prev_std_dev <= 0.0);
+
+        // No deviation => 0.0
+        let s0 = detector.get_anomaly_score(1.0);
+        assert!((s0 - 0.0).abs() < 1e-12);
+
+        // Any deviation => 1.0
+        let s1 = detector.get_anomaly_score(2.0);
+        assert!((s1 - 1.0).abs() < 1e-12);
     }
 }
