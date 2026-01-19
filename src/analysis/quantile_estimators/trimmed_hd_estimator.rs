@@ -87,7 +87,7 @@ impl TrimmedHarrellDavisQuantileEstimator {
 
     /// Computes the log of the denormalized Beta PDF
     fn denormalized_log_beta_pdf(a: f64, b: f64, x: f64) -> f64 {
-        if x < 0.0 || x > 1.0 {
+        if !(0.0..=1.0).contains(&x) {
             return f64::NEG_INFINITY;
         }
 
@@ -147,14 +147,13 @@ impl QuantileEstimator for TrimmedHarrellDavisQuantileEstimator {
         if sample.is_weighted() {
             current_probability = 0.0;
             let weights = sample.sorted_weights.as_ref().unwrap();
-            for j in 0..sample.len() {
+            for (&weight, &value) in weights.iter().zip(sample.values.iter()) {
                 let beta_cdf_left = beta_cdf_right;
-                current_probability += weights[j] / sample.total_weight;
+                current_probability += weight / sample.total_weight;
 
-                let cdf_value = cdf(current_probability);
-                beta_cdf_right = cdf_value;
+                beta_cdf_right = cdf(current_probability);
                 let w = beta_cdf_right - beta_cdf_left;
-                c1 += w * sample.values[j];
+                c1 += w * value;
             }
         } else {
             let j_l = (hdi.0 * sample.len() as f64).floor() as usize;

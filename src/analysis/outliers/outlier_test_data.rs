@@ -263,7 +263,7 @@ pub(super) fn check_outliers<D: OutlierDetector + Debug, F: Fn(&[f64]) -> D>(
     let values = test_data.values;
     let expected = test_data.expected_outliers;
     let detector = create_detector(values);
-    let actual = &values
+    let actual = values
         .iter()
         .filter(|&&x| detector.is_lower_outlier(x) || detector.is_upper_outlier(x))
         .cloned()

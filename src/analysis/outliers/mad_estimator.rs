@@ -2,8 +2,8 @@ use crate::analysis::quantile_estimators::{
     HarrellDavisQuantileEstimator, QuantileEstimator, Samples, SimpleQuantileEstimator,
 };
 
-/// The median absolute deviation (MAD).
-/// MAD = ConsistencyFactor * median(abs(x[i] - median(x)))
+/// The median absolute deviation (Mad).
+/// Mad = ConsistencyFactor * median(abs(x[i] - median(x)))
 pub trait MedianAbsoluteDeviationEstimator: Sized {
     fn quantile_estimator(&self) -> &impl QuantileEstimator;
     fn scale_factor(&self, sample: &Samples) -> f64;

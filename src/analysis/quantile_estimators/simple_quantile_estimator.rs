@@ -1,5 +1,5 @@
+use super::{HyndmanFanQuantileEstimator, HyndmanFanType, QuantileEstimator, Samples};
 use std::fmt;
-use super::{QuantileEstimator, HyndmanFanQuantileEstimator, HyndmanFanType, Samples};
 
 /// The most common quantile estimator, also known as Type 7 (see [Hyndman 1996]).
 /// Consistent with many other statistical packages like R, Julia, NumPy, Excel (`PERCENTILE`, `PERCENTILE.INC`), Python (`inclusive`).
@@ -47,8 +47,8 @@ impl fmt::Debug for SimpleQuantileEstimator {
 
 #[cfg(test)]
 mod tests {
-    use crate::analysis::quantile_estimators::QuantileEstimator;
     use super::SimpleQuantileEstimator;
+    use crate::analysis::quantile_estimators::QuantileEstimator;
 
     #[test]
     fn test_quantile_type7() {

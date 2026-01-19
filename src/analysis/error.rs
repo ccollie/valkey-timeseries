@@ -45,6 +45,10 @@ pub enum TimeSeriesAnalysisError {
     #[error("Statistical error: {0}")]
     StatisticalError(String),
 
+    /// Anomaly detection error
+    #[error("Anomaly detection error: {0}")]
+    AnomalyDetectionError(String),
+
     /// Optimization error
     #[error("Optimization error: {0}")]
     OptimizationError(String),

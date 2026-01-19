@@ -1,4 +1,3 @@
-// In src/commands/analysis.rs
 use crate::analysis::outliers::{
     AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions, AnomalyResult,
     AnomalySignal, IsolationForestOptions, MADAnomalyOptions, MethodInfo, RCFOptions, SPCMethod,
@@ -27,7 +26,7 @@ enum OutputFormat {
 /// [DIRECTION <positive|negative|both>]
 /// METHOD <method> [method-specific-options]
 pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
-    if args.len() < 5 {
+    if args.len() < 6 {
         return Err(ValkeyError::WrongArity);
     }
 
@@ -55,42 +54,17 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 if options.is_some() {
                     return Err(ValkeyError::Str("TSDB: outliers METHOD already specified"));
                 }
-                let method_str = args.next_str()?;
 
                 // see if we have an spc method
                 if let Some(peek) = args.peek() {
                     let candidate = peek.as_slice();
-                    if let Ok(spc_method) = SPCMethod::try_from(candidate) {
-                        args.next();
-
-                        // If we have an SPC method, parse its options here (EWMA optionally takes ALPHA)
-                        let mut spc_options = AnomalyOptions {
-                            ..Default::default()
-                        };
-
-                        if spc_method == SPCMethod::Ewma {
-                            let ewma_alpha = if args.peek().is_some() {
-                                Some(parse_single_value(&mut args, "ALPHA")?)
-                            } else {
-                                None
-                            };
-                            spc_options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
-                                spc_method,
-                                ewma_alpha,
-                            });
-                        } else {
-                            spc_options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
-                                spc_method,
-                                ewma_alpha: None,
-                            });
-                        }
-
-                        options = Some(spc_options);
+                    if SPCMethod::try_from(candidate).is_ok() {
+                        options = Some(parse_spc_options(&mut args)?);
                         continue;
                     }
                 }
 
-                let method = method_str.parse()?;
+                let method: AnomalyMethod = args.next_str()?.parse()?;
                 options = Some(parse_method_options(method, &mut args)?);
                 break;
             },
@@ -117,7 +91,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     // Perform analysis detection
     let result = detect_anomalies(&values, &options)
-        .map_err(|e| ValkeyError::String(format!("TSDB: analysis detection failed: {e}")))?;
+        .map_err(|e| ValkeyError::String(format!("TSDB: outlier detection failed: {e}")))?;
 
     // Format result based on the requested format
     format_output(result, samples, anomaly_direction, output_format)
@@ -132,7 +106,7 @@ fn parse_method_options(
         AnomalyMethod::ZScore => parse_zscore_options(args),
         AnomalyMethod::ModifiedZScore => parse_modified_zscore_options(args),
         AnomalyMethod::SmoothedZScore => parse_smoothed_zscore_options(args),
-        AnomalyMethod::MAD => parse_mad_options(args),
+        AnomalyMethod::Mad => parse_mad_options(args),
         AnomalyMethod::DoubleMAD => parse_double_mad_options(args),
         AnomalyMethod::InterquartileRange => parse_iqr_options(args),
         AnomalyMethod::IsolationForest => parse_isolation_forest_options(args),
@@ -172,6 +146,7 @@ fn parse_spc_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 
     if spc_method == SPCMethod::Ewma {
         if args.peek().is_some() {
+            args.next(); // consume ALPHA
             let ewma_alpha = parse_single_value(args, "ALPHA")?;
             options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
                 spc_method,
@@ -246,7 +221,7 @@ fn parse_smoothed_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<
     Ok(options)
 }
 
-// MAD [ESTIMATOR <mad-estimator>] [<value>], e.g. MAD ESTIMATOR HarrellDavis THRESHOLD 3.0
+// Mad [ESTIMATOR <mad-estimator>] [<value>], e.g. Mad ESTIMATOR HarrellDavis THRESHOLD 3.0
 fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut mad_options = MADAnomalyOptions::default();
     while let Some(arg) = args.next() {
@@ -254,20 +229,20 @@ fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
             "ESTIMATOR" => {
                  let estimator_arg = args
                     .next_str()
-                    .map_err(|_| ValkeyError::Str("TSDB: Missing MAD estimator type"))?;
+                    .map_err(|_| ValkeyError::Str("TSDB: Missing Mad estimator type"))?;
                  mad_options.estimator = estimator_arg.parse()?;
             },
             "THRESHOLD" => {
                  mad_options.k = parse_single_value(args, "THRESHOLD")?;
             },
             _ => {
-                 return Err(ValkeyError::String(format!("TSDB: unknown MAD option {arg}")));
+                 return Err(ValkeyError::String(format!("TSDB: unknown Mad option {arg}")));
             }
         );
     }
 
     Ok(AnomalyOptions {
-        options: AnomalyDetectionMethodOptions::MAD(mad_options),
+        options: AnomalyDetectionMethodOptions::Mad(mad_options),
         ..Default::default()
     })
 }
@@ -281,14 +256,14 @@ fn parse_double_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<Anoma
             "ESTIMATOR" => {
                  let estimator_arg = args
                     .next_str()
-                    .map_err(|_| ValkeyError::Str("TSDB: Missing Double MAD estimator type"))?;
+                    .map_err(|_| ValkeyError::Str("TSDB: Missing Double Mad estimator type"))?;
                  double_mad_options.estimator = estimator_arg.parse()?;
             },
             "THRESHOLD" => {
                  double_mad_options.k = parse_single_value(args, "THRESHOLD")?;
             },
             _ => {
-                 return Err(ValkeyError::String(format!("TSDB: unknown Double MAD option {arg}")));
+                 return Err(ValkeyError::String(format!("TSDB: unknown Double Mad option {arg}")));
             }
         );
     }
@@ -301,8 +276,8 @@ fn parse_double_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<Anoma
 
 fn parse_iqr_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let threshold = if args.peek().is_some() {
-        // Expect: MULTIPLIER <value>
-        Some(parse_single_option_value(args, "MULTIPLIER")?)
+        // Expect: THRESHOLD <value>
+        Some(parse_single_option_value(args, "THRESHOLD")?)
     } else {
         None
     };
@@ -364,13 +339,19 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
             "DECAY" => {
                 rcf_options.time_decay = Some(parse_single_value(args, "DECAY")?);
             },
+            "SHINGLE_SIZE" => {
+                rcf_options.shingle_size = Some(parse_single_value(args, "SHINGLE_SIZE")? as usize);
+            },
+            "OUTPUT_AFTER" => {
+                rcf_options.output_after = Some(parse_single_value(args, "OUTPUT_AFTER")? as usize);
+            },
             _ => {
-                return Err(ValkeyError::String(format!("TSDB: unknown RCF option {arg}")));
+                return Err(ValkeyError::String(format!("TSDB: unknown Rcf option {arg}")));
             }
         );
     }
 
-    options.options = AnomalyDetectionMethodOptions::RCF(rcf_options);
+    options.options = AnomalyDetectionMethodOptions::Rcf(rcf_options);
 
     Ok(options)
 }
@@ -379,10 +360,10 @@ fn parse_single_option_value(
     iter: &mut CommandArgIterator,
     option_name: &str,
 ) -> ValkeyResult<f64> {
-    if let Some(arg) = iter.next() {
-        if arg.as_slice().eq_ignore_ascii_case(option_name.as_bytes()) {
-            return parse_single_value(iter, option_name);
-        }
+    if let Some(arg) = iter.next()
+        && arg.as_slice().eq_ignore_ascii_case(option_name.as_bytes())
+    {
+        return parse_single_value(iter, option_name);
     }
     Err(ValkeyError::String(format!(
         "TSDB: Missing or invalid {option_name}"
@@ -390,14 +371,17 @@ fn parse_single_option_value(
 }
 
 fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<f64> {
-    let Some(value_str) = iter.next() else {
+    let Ok(value_str) = iter.next_str() else {
         return Err(ValkeyError::String(format!(
             "TSDB: Missing value for {option_name}"
         )));
     };
-    value_str
-        .parse_float()
-        .map_err(|_| ValkeyError::String(format!("TSDB: invalid value for {option_name}")))
+
+    value_str.parse().map_err(|_e| {
+        ValkeyError::String(format!(
+            "TSDB: invalid value for {option_name}: {value_str}"
+        ))
+    })
 }
 
 fn parse_single_duration(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<i64> {
@@ -406,7 +390,7 @@ fn parse_single_duration(iter: &mut CommandArgIterator, option_name: &str) -> Va
             "TSDB: Missing value for {option_name}"
         )));
     };
-    let duration = parse_duration_ms(&value_str)?;
+    let duration = parse_duration_ms(value_str)?;
     if duration < 0 {
         return Err(ValkeyError::String(format!(
             "TSDB: invalid duration for {option_name}"

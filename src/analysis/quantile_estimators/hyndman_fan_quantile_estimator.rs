@@ -4,9 +4,9 @@
 // The American Statistician 50, no. 4 (1996): 361-365.
 // https://doi.org/10.2307/2684934
 
-use std::fmt;
 use crate::analysis::common::Probability;
 use crate::analysis::quantile_estimators::{QuantileEstimator, Samples};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HyndmanFanType {
@@ -65,11 +65,7 @@ impl HyndmanFanType {
     }
 
     /// Returns 1-based real index estimation (h)
-    fn get_h(
-        &self,
-        n: f64,
-        p: Probability,
-    ) -> f64 {
+    fn get_h(&self, n: f64, p: Probability) -> f64 {
         match self {
             HyndmanFanType::Type1 => n * p + 0.5,
             HyndmanFanType::Type2 => n * p + 0.5,
@@ -88,12 +84,7 @@ impl HyndmanFanType {
     /// - `n`: Number of samples (integer, must be >= 1)
     /// - `p`: Probability (0.0 <= p <= 1.0)
     /// - `get_value`: Closure that takes a 1-based index and returns the corresponding value
-    fn evaluate<F>(
-        self,
-        n: usize,
-        p: Probability,
-        mut get_value: F,
-    ) -> f64
+    fn evaluate<F>(self, n: usize, p: Probability, mut get_value: F) -> f64
     where
         F: FnMut(usize) -> f64,
     {
@@ -121,7 +112,6 @@ impl HyndmanFanType {
             _ => linear_interpolation(h, n, &mut get_value),
         }
     }
-
 }
 
 impl fmt::Display for HyndmanFanType {
@@ -136,15 +126,33 @@ pub struct HyndmanFanQuantileEstimator {
 }
 
 impl HyndmanFanQuantileEstimator {
-    pub const TYPE1: Self = Self { typ: HyndmanFanType::Type1 };
-    pub const TYPE2: Self = Self { typ: HyndmanFanType::Type2 };
-    pub const TYPE3: Self = Self { typ: HyndmanFanType::Type3 };
-    pub const TYPE4: Self = Self { typ: HyndmanFanType::Type4 };
-    pub const TYPE5: Self = Self { typ: HyndmanFanType::Type5 };
-    pub const TYPE6: Self = Self { typ: HyndmanFanType::Type6 };
-    pub const TYPE7: Self = Self { typ: HyndmanFanType::Type7 };
-    pub const TYPE8: Self = Self { typ: HyndmanFanType::Type8 };
-    pub const TYPE9: Self = Self { typ: HyndmanFanType::Type9 };
+    pub const TYPE1: Self = Self {
+        typ: HyndmanFanType::Type1,
+    };
+    pub const TYPE2: Self = Self {
+        typ: HyndmanFanType::Type2,
+    };
+    pub const TYPE3: Self = Self {
+        typ: HyndmanFanType::Type3,
+    };
+    pub const TYPE4: Self = Self {
+        typ: HyndmanFanType::Type4,
+    };
+    pub const TYPE5: Self = Self {
+        typ: HyndmanFanType::Type5,
+    };
+    pub const TYPE6: Self = Self {
+        typ: HyndmanFanType::Type6,
+    };
+    pub const TYPE7: Self = Self {
+        typ: HyndmanFanType::Type7,
+    };
+    pub const TYPE8: Self = Self {
+        typ: HyndmanFanType::Type8,
+    };
+    pub const TYPE9: Self = Self {
+        typ: HyndmanFanType::Type9,
+    };
 
     pub const fn new(typ: HyndmanFanType) -> Self {
         Self { typ }
@@ -189,7 +197,10 @@ impl HyndmanFanQuantileEstimator {
         let mut result = 0.0;
         let mut current = 0.0;
         let values = &sample.values;
-        let weights = sample.sorted_weights.as_ref().expect("Weights required for weighted sample");
+        let weights = sample
+            .sorted_weights
+            .as_ref()
+            .expect("Weights required for weighted sample");
 
         for i in 0..n {
             let next = current + weights[i] / total_weight;
@@ -200,7 +211,11 @@ impl HyndmanFanQuantileEstimator {
         result
     }
 
-    fn get_quantile_for_nonweighted_sample(&self, sample: &Samples, probability: Probability) -> f64 {
+    fn get_quantile_for_nonweighted_sample(
+        &self,
+        sample: &Samples,
+        probability: Probability,
+    ) -> f64 {
         let sorted_values = &sample.values;
         let n = sample.len();
 
@@ -217,7 +232,6 @@ impl HyndmanFanQuantileEstimator {
 
         self.typ.evaluate(n, probability, get_value)
     }
-
 }
 
 impl QuantileEstimator for HyndmanFanQuantileEstimator {
