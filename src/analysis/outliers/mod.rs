@@ -318,6 +318,25 @@ impl FromStr for AnomalyMADEstimator {
     }
 }
 
+/// Options for MAD-based anomaly detection
+#[derive(Debug, Clone, Copy)]
+pub struct MADAnomalyOptions {
+    /// Multiplier for MAD to set thresholds
+    pub k: f64,
+    /// Estimator to use for MAD calculation
+    pub estimator: AnomalyMADEstimator,
+}
+
+impl Default for MADAnomalyOptions {
+    fn default() -> Self {
+        Self {
+            k: 3.0,
+            estimator: AnomalyMADEstimator::Invariant,
+        }
+    }
+}
+
+/// Trait for outlier detection
 pub trait OutlierDetector {
     // Check if the value is a lower outlier
     fn is_lower_outlier(&self, x: f64) -> bool;

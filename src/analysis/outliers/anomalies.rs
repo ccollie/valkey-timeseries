@@ -6,26 +6,21 @@
 
 use super::iqr::detect_anomalies_iqr;
 use super::isolation_forest::{IsolationForestOptions, detect_anomalies_isolation_forest};
-use super::mad_estimator::{
-    HarrellDavisNormalizedEstimator, InvariantMADEstimator, SimpleNormalizedEstimator,
-};
 use super::mad_outlier_detector::MadOutlierDetector;
 use super::modified_zscore::detect_anomalies_modified_zscore;
-use super::rcf_outlier_detector::{RCFOptions, RcfOutlierDetector};
+use super::rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf};
 use super::smoothed_zscores::SmoothedZScoreAnomalyDetector;
 use super::spc_cusum::detect_anomalies_spc_cusum;
 use super::spc_ewma::{EWMA_DEFAULT_ALPHA, detect_anomalies_spc_ewma};
 use super::spc_shewart::detect_anomalies_spc_shewart;
 use super::zscore::{ZSCORE_DEFAULT_THRESHOLD, detect_anomalies_zscore};
 use super::{
-    AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, DoubleMadOutlierDetector,
-    OutlierDetector, SPCMethod,
+    AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions, OutlierDetector, SPCMethod,
+    detect_anomalies_double_mad,
 };
 use crate::analysis::math::calculate_mean;
-use crate::analysis::quantile_estimators::Samples;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use std::fmt::Debug;
-use valkey_module::logging::log_warning;
 
 /// Options for configuring the Smoothed Z-Score algorithm.
 ///
@@ -110,21 +105,6 @@ impl Default for SPCMethodOptions {
         Self {
             spc_method: SPCMethod::Shewhart,
             ewma_alpha: Some(EWMA_DEFAULT_ALPHA),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct MADAnomalyOptions {
-    pub k: f64,
-    pub estimator: AnomalyMADEstimator,
-}
-
-impl Default for MADAnomalyOptions {
-    fn default() -> Self {
-        Self {
-            k: 3.0,
-            estimator: AnomalyMADEstimator::Invariant,
         }
     }
 }
@@ -347,23 +327,7 @@ fn detect_anomalies_mad(
     let n = ts.len();
     let threshold = options.k;
 
-    let detector = match options.estimator {
-        AnomalyMADEstimator::Simple => MadOutlierDetector::with_k_and_estimator(
-            ts,
-            threshold,
-            &SimpleNormalizedEstimator::default(),
-        ),
-        AnomalyMADEstimator::HarrellDavis => MadOutlierDetector::with_k_and_estimator(
-            ts,
-            threshold,
-            &HarrellDavisNormalizedEstimator,
-        ),
-        AnomalyMADEstimator::Invariant => MadOutlierDetector::with_k_and_estimator(
-            ts,
-            threshold,
-            &InvariantMADEstimator::default(),
-        ),
-    };
+    let detector = MadOutlierDetector::create_with_options(ts, options);
 
     let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
     let mut scores: Vec<f64> = Vec::with_capacity(n);
@@ -387,100 +351,6 @@ fn detect_anomalies_mad(
         anomalies,
         threshold,
         method: AnomalyMethod::Mad,
-        method_info: None,
-    })
-}
-
-/// Double Median Absolute Deviation (Mad) anomaly detection
-/// https://aakinshin.net/posts/harrell-davis-double-mad-outlier-detector/
-/// https://eurekastatistics.com/using-the-median-absolute-deviation-to-find-outliers/
-fn detect_anomalies_double_mad(
-    ts: &[f64],
-    options: MADAnomalyOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
-    let threshold = options.k;
-
-    let sample: Samples = Samples::new_unweighted(ts.to_vec());
-
-    let detector = match options.estimator {
-        AnomalyMADEstimator::Simple => DoubleMadOutlierDetector::with_k_and_estimator(
-            &sample,
-            threshold,
-            Some(SimpleNormalizedEstimator::default()),
-        ),
-        AnomalyMADEstimator::HarrellDavis => DoubleMadOutlierDetector::with_k_and_estimator(
-            &sample,
-            threshold,
-            Some(HarrellDavisNormalizedEstimator),
-        ),
-        AnomalyMADEstimator::Invariant => DoubleMadOutlierDetector::with_k_and_estimator(
-            &sample,
-            threshold,
-            Some(InvariantMADEstimator::default()),
-        ),
-    };
-
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
-    let mut scores: Vec<f64> = Vec::with_capacity(n);
-    for &v in ts {
-        let value = normalize_value(v);
-        let score = value; // detector.score(value, &sample);
-        scores.push(score);
-
-        let anomaly_direction = if detector.is_upper_outlier(score) {
-            AnomalySignal::Positive
-        } else if detector.is_lower_outlier(score) {
-            AnomalySignal::Negative
-        } else {
-            AnomalySignal::None
-        };
-        anomalies.push(anomaly_direction);
-    }
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::DoubleMAD,
-        method_info: None,
-    })
-}
-
-/// Random Cut Forest (Rcf) anomaly detection
-fn detect_anomalies_rcf(
-    ts: &[f64],
-    options: RCFOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut options = options;
-    if options.output_after.is_none() {
-        options.output_after = Some(ts.len());
-    }
-    let detector = RcfOutlierDetector::new(options)
-        .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
-
-    let scores = detector.try_batch_scores(ts).map_err(|e| {
-        let msg = format!("Failed to score Rcf point: {e:?}");
-        log_warning(&msg);
-        TimeSeriesAnalysisError::AnomalyDetectionError("failed to compute RCF scores".to_string())
-    })?;
-
-    let anomalies: Vec<AnomalySignal> = scores
-        .iter()
-        .map(|&score| {
-            if score > options.threshold {
-                AnomalySignal::Positive
-            } else {
-                AnomalySignal::None
-            }
-        })
-        .collect();
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold: options.threshold,
-        method: AnomalyMethod::RandomCutForest,
         method_info: None,
     })
 }
