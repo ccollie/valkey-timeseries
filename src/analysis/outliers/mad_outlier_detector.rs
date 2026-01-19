@@ -1,7 +1,8 @@
-use crate::analysis::outliers::OutlierDetector;
 use crate::analysis::outliers::mad_estimator::{
-    MedianAbsoluteDeviationEstimator, SimpleNormalizedEstimator,
+    HarrellDavisNormalizedEstimator, InvariantMADEstimator, MedianAbsoluteDeviationEstimator,
+    SimpleNormalizedEstimator,
 };
+use crate::analysis::outliers::{AnomalyMADEstimator, MADAnomalyOptions, OutlierDetector};
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
 
@@ -12,6 +13,8 @@ pub struct MadOutlierDetector {
     lower_fence: f64,
     upper_fence: f64,
     pub mad: f64,
+    median: f64,
+    k: f64,
 }
 
 impl MadOutlierDetector {
@@ -26,9 +29,28 @@ impl MadOutlierDetector {
         let lower_fence = median - k * mad;
         let upper_fence = median + k * mad;
         MadOutlierDetector {
+            k,
             lower_fence,
             upper_fence,
+            median,
             mad,
+        }
+    }
+
+    pub fn create_with_options(data: &[f64], options: MADAnomalyOptions) -> Self {
+        let k = options.k;
+        match options.estimator {
+            AnomalyMADEstimator::Simple => MadOutlierDetector::with_k_and_estimator(
+                data,
+                k,
+                &SimpleNormalizedEstimator::default(),
+            ),
+            AnomalyMADEstimator::HarrellDavis => {
+                MadOutlierDetector::with_k_and_estimator(data, k, &HarrellDavisNormalizedEstimator)
+            }
+            AnomalyMADEstimator::Invariant => {
+                MadOutlierDetector::with_k_and_estimator(data, k, &InvariantMADEstimator::default())
+            }
         }
     }
 
@@ -65,6 +87,37 @@ impl MadOutlierDetector {
     pub fn upper_fence(&self) -> f64 {
         self.upper_fence
     }
+
+    /// Returns a normalized anomaly score in `[0.0..=1.0]` describing how "anomalous" `value` is.
+    ///
+    /// Interpretation:
+    /// - `0.0` means "at the median" (no deviation).
+    /// - `1.0` means "at or beyond the configured MAD fence" (i.e., `k * mad` away from the median).
+    ///
+    /// This is computed as:
+    /// `score = clamp(|value - median| / (k * mad), 0..1)`
+    /// where `k` is inferred from the detector's fences.
+    pub fn get_anomaly_score(&self, value: f64) -> f64 {
+        if !value.is_finite() {
+            return 0.0;
+        }
+        if !self.mad.is_finite() || self.mad <= 0.0 {
+            return 0.0;
+        }
+
+        let k = self.k;
+        if !k.is_finite() || k <= 0.0 {
+            return 0.0;
+        }
+
+        let denom = k * self.mad;
+        if !denom.is_finite() || denom <= 0.0 {
+            return 0.0;
+        }
+
+        let raw = (value - self.median).abs() / denom;
+        raw.clamp(0.0, 1.0)
+    }
 }
 
 impl OutlierDetector for MadOutlierDetector {
@@ -91,5 +144,26 @@ mod tests {
         assert!(!detector.is_outlier(1.0));
         // 2.0 is not an outlier
         assert!(!detector.is_outlier(2.0));
+    }
+
+    #[test]
+    fn test_get_anomaly_score_is_normalized() {
+        let data = [1.0, 2.0, 2.0, 2.0, 3.0, 14.0];
+        let detector = MadOutlierDetector::new(&data);
+
+        let score_at_median = detector.get_anomaly_score(2.0);
+        assert_eq!(score_at_median, 0.0);
+
+        // Exactly at the upper fence should be 1.0
+        let score_at_upper_fence = detector.get_anomaly_score(detector.upper_fence());
+        assert!((score_at_upper_fence - 1.0).abs() < 1e-12);
+
+        // Beyond the fence clamps to 1.0
+        let score_beyond = detector.get_anomaly_score(1e9);
+        assert!((score_beyond - 1.0).abs() < 1e-12);
+
+        // Non-finite values are treated as non-anomalous for scoring purposes
+        let score_nan = detector.get_anomaly_score(f64::NAN);
+        assert_eq!(score_nan, 0.0);
     }
 }
