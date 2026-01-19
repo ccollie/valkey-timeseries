@@ -4,6 +4,16 @@ use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal};
 
 pub const ZSCORE_DEFAULT_THRESHOLD: f64 = 3.0;
 
+/// Squash an unbounded non-negative score into the range [0..1].
+#[inline]
+fn normalize_unbounded_score(score: f64) -> f64 {
+    if !score.is_finite() || score <= 0.0 {
+        0.0
+    } else {
+        score / (score + 1.0)
+    }
+}
+
 /// Z-score based analysis detection using sample standard deviation
 pub(super) fn detect_anomalies_zscore(
     ts: &[f64],
@@ -33,7 +43,9 @@ pub(super) fn detect_anomalies_zscore(
         let zscore = (value - mean) / std_dev;
         let z_abs = zscore.abs();
 
-        scores.push(z_abs);
+        let normalized_score = normalize_unbounded_score(z_abs);
+        scores.push(normalized_score);
+
         let anomaly_direction = if z_abs > threshold {
             if zscore > 0.0 {
                 AnomalySignal::Positive
@@ -76,8 +88,10 @@ mod tests {
         );
 
         // Anomalies should have high scores
-        assert!(result.scores[25] > 3.0);
-        assert!(result.scores[75] > 3.0);
+        let score_25 = result.scores[25];
+        let score_75 = result.scores[75];
+        assert!(score_25 > 0.8);
+        assert!(score_75 > 0.8);
     }
 
     #[test]
@@ -164,5 +178,119 @@ mod tests {
         }
         assert_eq!(anomaly_count, 1, "Should detect exactly one anomaly");
         assert_eq!(anomaly_index, 3, "Anomaly should be at index 3");
+    }
+
+    #[test]
+    fn test_normalize_unbounded_score_range_and_edges() {
+        // Range contract + edge handling.
+        assert_eq!(normalize_unbounded_score(f64::NAN), 0.0);
+        assert_eq!(normalize_unbounded_score(f64::INFINITY), 0.0);
+        assert_eq!(normalize_unbounded_score(-1.0), 0.0);
+        assert_eq!(normalize_unbounded_score(0.0), 0.0);
+
+        let s = normalize_unbounded_score(1.0);
+        assert!(s > 0.0 && s < 1.0, "Expected (0,1) for score=1.0, got {s}");
+    }
+
+    #[test]
+    fn test_normalize_unbounded_score_monotonicity() {
+        // Monotonic squashing: larger inputs must not produce smaller outputs.
+        let a = normalize_unbounded_score(0.5);
+        let b = normalize_unbounded_score(1.0);
+        let c = normalize_unbounded_score(2.0);
+        let d = normalize_unbounded_score(10.0);
+
+        assert!(a < b, "Expected 0.5 < 1.0 mapping, got {a} vs {b}");
+        assert!(b < c, "Expected 1.0 < 2.0 mapping, got {b} vs {c}");
+        assert!(c < d, "Expected 2.0 < 10.0 mapping, got {c} vs {d}");
+        assert!(
+            d < 1.0,
+            "Expected strict less than 1.0 for finite inputs, got {d}"
+        );
+    }
+
+    #[test]
+    fn test_scores_are_normalized_0_to_1() {
+        // Any output score must be in [0..1], even for extreme values.
+        let ts = [0.0, 0.1, 0.05, 1000.0, -1000.0, 0.02, 0.03];
+        let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
+
+        assert_eq!(result.scores.len(), ts.len());
+        for (i, &s) in result.scores.iter().enumerate() {
+            assert!(
+                (0.0..=1.0).contains(&s),
+                "Score out of range at index {i}: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_anomalies_have_high_normalized_scores() {
+        // Keep the original intent: anomalies should score "high" on the normalized scale.
+        // Note: score cannot exceed 1.0 anymore, so check for closeness to 1 instead of > 3.
+        let mut ts: Vec<f64> = (0..100).map(|i| (i as f64 / 10.0).sin()).collect();
+        ts[25] = 5.0;
+        ts[75] = -5.0;
+
+        let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
+
+        let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
+        assert!(
+            anomaly_count >= 2,
+            "Should detect at least 2 anomalies, found {anomaly_count}"
+        );
+
+        assert!(
+            result.scores[25] > 0.75,
+            "Expected high normalized score at index 25, got {}",
+            result.scores[25]
+        );
+        assert!(
+            result.scores[75] > 0.75,
+            "Expected high normalized score at index 75, got {}",
+            result.scores[75]
+        );
+    }
+
+    #[test]
+    fn test_direction_and_score_zero_at_mean_like_points() {
+        // Basic sanity: non-anomalous points near the mean should have low scores;
+        // anomaly direction should still reflect the z-score sign.
+        const TS: [f64; 6] = [0.0, 0.02, -0.01, 0.01, 6.0, -6.0];
+
+        let result = detect_anomalies_zscore(&TS, Some(1.5)).unwrap();
+
+        // Near-mean points should be low.
+        for i in 0..4 {
+            assert!(
+                result.scores[i] < 0.5,
+                "Expected low score near mean at index {i}, got {}",
+                result.scores[i]
+            );
+        }
+
+        // Extremes should be anomalies with directional signals.
+        assert_eq!(
+            result.anomalies[4],
+            AnomalySignal::Positive,
+            "Expected positive anomaly at index 4"
+        );
+        assert_eq!(
+            result.anomalies[5],
+            AnomalySignal::Negative,
+            "Expected negative anomaly at index 5"
+        );
+
+        // And have "high" normalized scores.
+        assert!(
+            result.scores[4] > 0.6,
+            "Expected high score at index 4, got {}",
+            result.scores[4]
+        );
+        assert!(
+            result.scores[5] > 0.6,
+            "Expected high score at index 5, got {}",
+            result.scores[5]
+        );
     }
 }
