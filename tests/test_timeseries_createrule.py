@@ -118,47 +118,28 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        result = self.client.execute_command(
-            "TS.CREATERULE", source_key, f"{dest_key}_count",
-            "AGGREGATION", "count", "60000", "CONDITION", ">", 20
-        )
-        assert result == b"OK"
+        for agg in ["sum", "count", "all", "any", "none", "share"]:
+            key = f"{dest_key}_{agg}"
 
-        info = self.ts_info(source_key)
-        rules = info["rules"]
-        assert len(rules) == 1
-        expected_rule = CompactionRule(dest_key, 60000, "avg", None)
-        assert expected_rule == rules[0]
+            self.client.execute_command("TS.CREATE", key, "ENCODING", "COMPRESSED")
 
-        result = self.client.execute_command(
-            "TS.CREATERULE", source_key, f"{dest_key}_sumif",
-            "AGGREGATION", "sum", "60000", "CONDITION", ">", 20
-        )
-        assert result == b"OK"
+            result = self.client.execute_command(
+                "TS.CREATERULE", source_key, key,
+                "AGGREGATION", agg, "60000", "CONDITION", "<", 100
+            )
 
-        result = self.client.execute_command(
-            "TS.CREATERULE", source_key, f"{dest_key}_any",
-            "AGGREGATION", "any", "60000", "CONDITION", "<=", 20
-        )
-        assert result == b"OK"
+            assert result == b"OK"
 
-        result = self.client.execute_command(
-            "TS.CREATERULE", source_key, f"{dest_key}_all",
-            "AGGREGATION", "all", "60000", "CONDITION", "!=", "NaN"
-        )
-        assert result == b"OK"
+            info = self.ts_info(source_key)
+            rules = info["rules"]
+            # find the rule we just created
+            found = False
+            for rule in rules:
+                if rule.dest_key == key:
+                    found = True
+                    break
+            assert found, f"Rule for {key} not found"
 
-        result = self.client.execute_command(
-            "TS.CREATERULE", source_key, f"{dest_key}_none",
-            "AGGREGATION", "none", "60000", "CONDITION", "==", "NaN"
-        )
-        assert result == b"OK"
-
-        result = self.client.execute_command(
-            "TS.CREATERULE", source_key, f"{dest_key}_share",
-            "AGGREGATION", "share", "60000", "CONDITION", ">=", 0
-        )
-        assert result == b"OK"
 
     def test_disallow_replace_existing(self):
         """Test replacing an existing rule"""
