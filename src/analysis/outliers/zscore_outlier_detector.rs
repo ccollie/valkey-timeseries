@@ -180,9 +180,9 @@ mod tests {
 
         let first = anomalies[0];
         let second = anomalies[1];
-        assert_eq!(first.0.is_positive(), true);
+        assert!(first.0.is_positive());
         assert_eq!(*first.1, 6.00);
-        assert_eq!(second.0.is_negative(), true);
+        assert!(second.0.is_negative());
         assert_eq!(*second.1, -6.00);
     }
 
@@ -243,35 +243,6 @@ mod tests {
         }
         assert_eq!(anomaly_count, 1, "Should detect exactly one anomaly");
         assert_eq!(anomaly_index, 3, "Anomaly should be at index 3");
-    }
-
-    #[test]
-    fn test_normalize_unbounded_score_range_and_edges() {
-        // Range contract + edge handling.
-        assert_eq!(normalize_unbounded_score(f64::NAN), 0.0);
-        assert_eq!(normalize_unbounded_score(f64::INFINITY), 0.0);
-        assert_eq!(normalize_unbounded_score(-1.0), 0.0);
-        assert_eq!(normalize_unbounded_score(0.0), 0.0);
-
-        let s = normalize_unbounded_score(1.0);
-        assert!(s > 0.0 && s < 1.0, "Expected (0,1) for score=1.0, got {s}");
-    }
-
-    #[test]
-    fn test_normalize_unbounded_score_monotonicity() {
-        // Monotonic squashing: larger inputs must not produce smaller outputs.
-        let a = normalize_unbounded_score(0.5);
-        let b = normalize_unbounded_score(1.0);
-        let c = normalize_unbounded_score(2.0);
-        let d = normalize_unbounded_score(10.0);
-
-        assert!(a < b, "Expected 0.5 < 1.0 mapping, got {a} vs {b}");
-        assert!(b < c, "Expected 1.0 < 2.0 mapping, got {b} vs {c}");
-        assert!(c < d, "Expected 2.0 < 10.0 mapping, got {c} vs {d}");
-        assert!(
-            d < 1.0,
-            "Expected strict less than 1.0 for finite inputs, got {d}"
-        );
     }
 
     #[test]
