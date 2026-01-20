@@ -1,6 +1,6 @@
+use super::utils::normalize_value;
 use crate::analysis::common::Array2D;
 use crate::analysis::math::calculate_mean;
-use crate::analysis::outliers::anomalies::normalize_value;
 use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use rand::Rng;
@@ -78,6 +78,7 @@ pub(super) fn detect_anomalies_isolation_forest(
 
     // Map window scores back to time series
     let mut scores: Vec<f64> = Vec::with_capacity(n);
+    let (mut min_score, mut max_score) = (f64::INFINITY, f64::NEG_INFINITY);
     for i in 0..n {
         let window_idx = if i >= window_size {
             i - window_size + 1
@@ -85,7 +86,27 @@ pub(super) fn detect_anomalies_isolation_forest(
             0
         }
         .min(n_windows - 1);
-        scores.push(anomaly_scores[window_idx]);
+        let score = anomaly_scores[window_idx];
+        min_score = min_score.min(score);
+        max_score = max_score.max(score);
+
+        scores.push(score);
+    }
+
+    if min_score.is_finite() && max_score.is_finite() && (max_score - min_score).abs() > 0.0 {
+        let denom = max_score - min_score;
+        for s in scores.iter_mut() {
+            if s.is_finite() {
+                *s = ((*s - min_score) / denom).clamp(0.0, 1.0);
+            } else {
+                *s = 0.0;
+            }
+        }
+    } else {
+        // Degenerate case: all scores equal (or non-finite), treat as no anomaly signal
+        for s in scores.iter_mut() {
+            *s = 0.0;
+        }
     }
 
     // Determine a threshold and anomalies

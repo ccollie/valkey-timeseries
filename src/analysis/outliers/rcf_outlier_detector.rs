@@ -1,8 +1,10 @@
-use crate::analysis::outliers::OutlierDetector;
+use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector};
+use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use crate::common::threads::NUM_THREADS;
 use krcf::{RandomCutForest, RandomCutForestOptions};
 use orx_parallel::{ParIter, ParIterResult, Parallelizable};
 use std::sync::atomic::Ordering;
+use valkey_module::logging::log_warning;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 const DEFAULT_THRESHOLD: f64 = 0.7;
@@ -191,17 +193,83 @@ impl RcfOutlierDetector {
     pub fn is_anomaly(&self, value: f64) -> bool {
         self.score(value) > self.threshold
     }
+
+    pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let scores = self.try_batch_scores(ts).map_err(|e| {
+            let msg = format!("Failed to score Rcf point: {e:?}");
+            log_warning(&msg);
+            TimeSeriesAnalysisError::AnomalyDetectionError(
+                "failed to compute RCF scores".to_string(),
+            )
+        })?;
+
+        let anomalies: Vec<AnomalySignal> = scores
+            .iter()
+            .map(|&score| {
+                if score > self.threshold {
+                    AnomalySignal::Positive
+                } else {
+                    AnomalySignal::None
+                }
+            })
+            .collect();
+
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold: self.threshold,
+            method: AnomalyMethod::RandomCutForest,
+            method_info: None,
+        })
+    }
 }
 
 impl OutlierDetector for RcfOutlierDetector {
-    /// Rcf produces a symmetric anomaly score; treat above-threshold as outlier.
-    fn is_lower_outlier(&self, x: f64) -> bool {
-        self.is_anomaly(x)
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        let raw_score = self.score(value);
+        normalize_rcf_score(raw_score)
     }
 
-    fn is_upper_outlier(&self, x: f64) -> bool {
-        self.is_anomaly(x)
+    fn classify(&self, x: f64) -> AnomalySignal {
+        let score = self.score(x);
+        // Rcf produces a symmetric anomaly score; treat above-threshold as outlier.
+        if score > self.threshold {
+            AnomalySignal::Positive
+        } else {
+            AnomalySignal::None
+        }
     }
+}
+
+/// Normalize RCF anomaly scores to the range (0, 1].
+///
+/// RCF raw scores are unbounded (typically 0 to ~3+ for anomalies).
+/// This uses a sigmoid-like transformation to map scores to (0, 1].
+pub fn normalize_rcf_score(raw_score: f64) -> f64 {
+    if raw_score.is_nan() || raw_score < 0.0 {
+        return 0.0;
+    }
+    // Sigmoid transformation: 1 - e^(-score)
+    // - score=0 → 0
+    // - score→∞ → 1
+    // - score=1 ≈ 0.632
+    // - score=2 ≈ 0.865
+    // - score=3 ≈ 0.950
+    1.0 - (-raw_score).exp()
+}
+
+/// Random Cut Forest (Rcf) anomaly detection
+pub(super) fn detect_anomalies_rcf(
+    ts: &[f64],
+    options: RCFOptions,
+) -> TimeSeriesAnalysisResult<AnomalyResult> {
+    let mut options = options;
+    if options.output_after.is_none() {
+        options.output_after = Some(ts.len());
+    }
+    let detector = RcfOutlierDetector::new(options)
+        .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
+    detector.detect(ts)
 }
 
 #[cfg(test)]

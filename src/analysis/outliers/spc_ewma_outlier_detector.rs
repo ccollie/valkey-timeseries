@@ -1,63 +1,104 @@
+use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
-use crate::analysis::outliers::anomalies::normalize_value;
-use crate::analysis::outliers::{
-    AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, get_anomaly_direction,
-};
+use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
 
 /// Default alpha for Ewma SPC
 pub const EWMA_DEFAULT_ALPHA: f64 = 0.3;
+pub const EWMA_DEFAULT_MULTIPLIER: f64 = 3.0;
 
+/// SPC Exponentially Weighted Moving Average (EWMA) outlier detector
+#[derive(Debug)]
+pub struct EwmaOutlierDetector {
+    /// smoothing factor
+    alpha: f64,
+    /// target (process mean)
+    target: f64,
+    /// standard deviation of the process
+    sigma: f64,
+    /// number of standard deviations for control limits
+    multiplier: f64,
+}
+
+impl EwmaOutlierDetector {
+    pub fn new(alpha: f64, target: f64, sigma: f64) -> Self {
+        EwmaOutlierDetector {
+            alpha,
+            target,
+            sigma,
+            multiplier: EWMA_DEFAULT_MULTIPLIER,
+        }
+    }
+    pub fn from_series(ts: &[f64], alpha: f64) -> Self {
+        let training_size = (ts.len() as f64 * 0.5).min(100.0) as usize;
+        let training_data = &ts[0..training_size];
+
+        let target = calculate_mean(training_data);
+        let sigma = calculate_std_dev(training_data);
+        let multiplier = 3.0;
+
+        EwmaOutlierDetector {
+            alpha,
+            target,
+            sigma,
+            multiplier,
+        }
+    }
+
+    pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let n = ts.len();
+        let mut scores = Vec::with_capacity(n);
+        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+
+        let mut ewma = self.target;
+
+        for (i, &v) in ts.iter().enumerate() {
+            let value = normalize_value(v);
+            ewma = self.alpha * value + (1.0 - self.alpha) * ewma;
+
+            let ewma_variance = self.sigma * self.sigma * self.alpha / (2.0 - self.alpha)
+                * (1.0 - (1.0 - self.alpha).powi(2 * (i as i32 + 1)));
+            let ewma_std = ewma_variance.sqrt();
+
+            let distance = self.multiplier * ewma_std;
+            let ucl = self.target + distance;
+            let lcl = self.target - distance;
+
+            let raw_score = if !ewma_std.is_finite() || ewma_std <= f64::EPSILON {
+                0.0
+            } else {
+                (ewma - self.target).abs() / ewma_std
+            };
+            let score = normalize_unbounded_score(raw_score);
+
+            let anomaly_direction = get_anomaly_direction(lcl, ucl, value);
+            anomalies.push(anomaly_direction);
+
+            scores.push(score);
+        }
+
+        let distance = self.multiplier * self.sigma;
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold: self.multiplier,
+            method: AnomalyMethod::StatisticalProcessControl,
+            method_info: Some(MethodInfo::Spc {
+                control_limits: (self.target - distance, self.target + distance),
+                center_line: self.target,
+            }),
+        })
+    }
+}
 /// Statistical Process Control (Spc) anomaly detection
 pub(super) fn detect_anomalies_spc_ewma(
     ts: &[f64],
     alpha: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
-    let mut scores = Vec::with_capacity(n);
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
-
     // Ewma control chart implementation
     let alpha = alpha.unwrap_or(EWMA_DEFAULT_ALPHA);
-    let training_size = (n as f64 * 0.5).min(100.0) as usize;
-    let training_data = &ts[0..training_size];
-
-    let target = calculate_mean(training_data);
-    let sigma = calculate_std_dev(training_data);
-
-    let mut ewma = target;
-    // todo: maybe pass this in as threshold parameter
-    let l = 3.0; // Control limit multiplier
-
-    for (i, &v) in ts.iter().enumerate() {
-        let value = normalize_value(v);
-        ewma = alpha * value + (1.0 - alpha) * ewma;
-
-        let ewma_variance =
-            sigma * sigma * alpha / (2.0 - alpha) * (1.0 - (1.0 - alpha).powi(2 * (i as i32 + 1)));
-        let ewma_std = ewma_variance.sqrt();
-
-        let ucl = target + l * ewma_std;
-        let lcl = target - l * ewma_std;
-
-        let score = (ewma - target).abs() / ewma_std;
-
-        let anomaly_direction = get_anomaly_direction(lcl, ucl, value);
-        anomalies.push(anomaly_direction);
-
-        scores.push(score);
-    }
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold: l,
-        method: AnomalyMethod::StatisticalProcessControl,
-        method_info: Some(MethodInfo::Spc {
-            control_limits: (target - l * sigma, target + l * sigma),
-            center_line: target,
-        }),
-    })
+    let detector = EwmaOutlierDetector::from_series(ts, alpha);
+    return detector.detect(ts);
 }
 
 #[cfg(test)]

@@ -1,12 +1,12 @@
+use super::utils::{get_anomaly_direction, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
-use crate::analysis::outliers::anomalies::normalize_value;
 use crate::analysis::outliers::mad_estimator::{
     HarrellDavisNormalizedEstimator, InvariantMADEstimator, MedianAbsoluteDeviationEstimator,
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
     AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
-    OutlierDetector,
+    MethodInfo, OutlierDetector,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
@@ -18,8 +18,9 @@ use crate::analysis::quantile_estimators::Samples;
 /// https://aakinshin.net/posts/harrell-davis-double-mad-outlier-detector/
 #[derive(Debug)]
 pub struct DoubleMadOutlierDetector {
-    pub lower_fence: f64,
-    pub upper_fence: f64,
+    lower_fence: f64,
+    upper_fence: f64,
+    threshold: f64,
 }
 
 impl DoubleMadOutlierDetector {
@@ -85,6 +86,7 @@ impl DoubleMadOutlierDetector {
         Self {
             lower_fence: median - k * lower_mad,
             upper_fence: median + k * upper_mad,
+            threshold: k,
         }
     }
 
@@ -119,15 +121,39 @@ impl DoubleMadOutlierDetector {
     pub fn is_outlier(&self, value: f64) -> bool {
         value < self.lower_fence || value > self.upper_fence
     }
+
+    pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let n = ts.len();
+        let mut scores = Vec::with_capacity(n);
+        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+
+        for &value in ts {
+            let score = self.get_anomaly_score(value);
+            let anomaly = self.classify(value);
+            scores.push(score);
+            anomalies.push(anomaly);
+        }
+
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold: self.threshold,
+            method: AnomalyMethod::DoubleMAD,
+            method_info: Some(MethodInfo::Fenced {
+                lower_fence: self.lower_fence,
+                upper_fence: self.upper_fence,
+            }),
+        })
+    }
 }
 
 impl OutlierDetector for DoubleMadOutlierDetector {
-    fn is_lower_outlier(&self, x: f64) -> bool {
-        x < self.lower_fence
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        self.get_anomaly_score(value)
     }
 
-    fn is_upper_outlier(&self, x: f64) -> bool {
-        x > self.upper_fence
+    fn classify(&self, x: f64) -> AnomalySignal {
+        get_anomaly_direction(self.lower_fence, self.upper_fence, x)
     }
 }
 
@@ -150,13 +176,7 @@ pub fn detect_anomalies_double_mad(
         let score = detector.get_anomaly_score(value); // detector.score(value, &sample);
         scores.push(score);
 
-        let anomaly_direction = if detector.is_upper_outlier(score) {
-            AnomalySignal::Positive
-        } else if detector.is_lower_outlier(score) {
-            AnomalySignal::Negative
-        } else {
-            AnomalySignal::None
-        };
+        let anomaly_direction = detector.classify(v);
         anomalies.push(anomaly_direction);
     }
 
