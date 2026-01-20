@@ -4,18 +4,18 @@
 //! in time series data, including statistical process control, isolation forest,
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
+use super::cusum_outlier_detector::detect_anomalies_spc_cusum;
 use super::iqr::detect_anomalies_iqr;
 use super::isolation_forest::{IsolationForestOptions, detect_anomalies_isolation_forest};
 use super::mad_outlier_detector::MadOutlierDetector;
-use super::modified_zscore::detect_anomalies_modified_zscore;
+use super::modified_zscore_outlier_detector::detect_anomalies_modified_zscore;
 use super::rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf};
 use super::smoothed_zscores::SmoothedZScoreAnomalyDetector;
-use super::spc_cusum::detect_anomalies_spc_cusum;
-use super::spc_ewma::{EWMA_DEFAULT_ALPHA, detect_anomalies_spc_ewma};
-use super::spc_shewart::detect_anomalies_spc_shewart;
-use super::zscore::{ZSCORE_DEFAULT_THRESHOLD, detect_anomalies_zscore};
+use super::spc_ewma_outlier_detector::{EWMA_DEFAULT_ALPHA, detect_anomalies_spc_ewma};
+use super::spc_shewart_outlier_detector::detect_anomalies_spc_shewart;
+use super::zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore};
 use super::{
-    AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions, OutlierDetector, SPCMethod,
+    AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions, SPCMethod,
     detect_anomalies_double_mad,
 };
 use crate::analysis::math::calculate_mean;
@@ -124,7 +124,7 @@ pub enum AnomalyDetectionMethodOptions {
 
 impl Default for AnomalyDetectionMethodOptions {
     fn default() -> Self {
-        AnomalyDetectionMethodOptions::ZScore(Some(ZSCORE_DEFAULT_THRESHOLD))
+        AnomalyDetectionMethodOptions::ZScore(Some(ZScoreOutlierDetector::DEFAULT_THRESHOLD))
     }
 }
 
@@ -300,59 +300,26 @@ fn detect_anomalies_smoothed_zscore(
     let (initial, rest) = ts.split_at(lag);
 
     let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, initial)?;
+    let mut res = detector.detect(rest)?;
 
     // Keep output lengths equal to the input length (pad the initial window).
     let mut scores: Vec<f64> = vec![0.0; lag];
     let mut anomalies: Vec<AnomalySignal> = vec![AnomalySignal::None; lag];
 
-    for &value in rest {
-        let signal = detector.next(value);
-        anomalies.push(signal);
-        scores.push(detector.prev_score);
-    }
+    scores.append(&mut res.scores);
+    anomalies.append(&mut res.anomalies);
+    res.anomalies = anomalies;
+    res.scores = scores;
 
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::SmoothedZScore,
-        method_info: None,
-    })
+    Ok(res)
 }
 
 fn detect_anomalies_mad(
     ts: &[f64],
     options: MADAnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
-    let threshold = options.k;
-
-    let detector = MadOutlierDetector::create_with_options(ts, options);
-
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
-    let mut scores: Vec<f64> = Vec::with_capacity(n);
-    for &v in ts {
-        let value = normalize_value(v);
-        let score = value;
-        scores.push(score);
-
-        let anomaly_direction = if detector.is_upper_outlier(score) {
-            AnomalySignal::Positive
-        } else if detector.is_lower_outlier(score) {
-            AnomalySignal::Negative
-        } else {
-            AnomalySignal::None
-        };
-        anomalies.push(anomaly_direction);
-    }
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::Mad,
-        method_info: None,
-    })
+    let mut detector = MadOutlierDetector::create_with_options(ts, options);
+    detector.detect(ts)
 }
 
 // Helper functions
@@ -386,15 +353,9 @@ fn seasonally_adjust(ts: &[f64], period: usize) -> TimeSeriesAnalysisResult<Vec<
     Ok(adjusted)
 }
 
-#[inline]
-pub(super) fn normalize_value(v: f64) -> f64 {
-    if v.is_nan() { 0.0 } else { v }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::outliers::zscore::detect_anomalies_zscore;
 
     #[test]
     fn test_spc_shewhart() {

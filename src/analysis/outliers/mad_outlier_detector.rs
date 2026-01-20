@@ -1,8 +1,12 @@
+use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::mad_estimator::{
     HarrellDavisNormalizedEstimator, InvariantMADEstimator, MedianAbsoluteDeviationEstimator,
     SimpleNormalizedEstimator,
 };
-use crate::analysis::outliers::{AnomalyMADEstimator, MADAnomalyOptions, OutlierDetector};
+use crate::analysis::outliers::{
+    AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
+    MethodInfo, OutlierDetector,
+};
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
 
@@ -118,15 +122,45 @@ impl MadOutlierDetector {
         let raw = (value - self.median).abs() / denom;
         raw.clamp(0.0, 1.0)
     }
+
+    pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let n = ts.len();
+        let mut scores = Vec::with_capacity(n);
+        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+
+        for &value in ts {
+            let score = self.get_anomaly_score(value);
+            let anomaly = self.classify(value);
+            scores.push(score);
+            anomalies.push(anomaly);
+        }
+
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold: self.k,
+            method: AnomalyMethod::Mad,
+            method_info: Some(MethodInfo::Fenced {
+                lower_fence: self.lower_fence,
+                upper_fence: self.upper_fence,
+            }),
+        })
+    }
 }
 
 impl OutlierDetector for MadOutlierDetector {
-    fn is_lower_outlier(&self, x: f64) -> bool {
-        x < self.lower_fence
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        self.get_anomaly_score(value)
     }
 
-    fn is_upper_outlier(&self, x: f64) -> bool {
-        x > self.upper_fence
+    fn classify(&self, x: f64) -> AnomalySignal {
+        if x < self.lower_fence {
+            AnomalySignal::Negative
+        } else if x > self.upper_fence {
+            AnomalySignal::Positive
+        } else {
+            AnomalySignal::None
+        }
     }
 }
 

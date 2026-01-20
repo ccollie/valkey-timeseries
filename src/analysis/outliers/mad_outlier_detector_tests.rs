@@ -3,7 +3,7 @@ use super::outlier_test_data::{
     EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, modified_beta_data_set, real_data_set,
     yang_data_set,
 };
-use crate::analysis::outliers::OutlierDetector;
+use crate::analysis::outliers::{AnomalySignal, OutlierDetector};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -238,7 +238,7 @@ where
         .values
         .iter()
         .copied()
-        .filter(|&v| detector.is_upper_outlier(v) || detector.is_lower_outlier(v))
+        .filter(|&v| detector.classify(v) != AnomalySignal::None)
         .collect::<Vec<f64>>();
 
     assert_eq!(

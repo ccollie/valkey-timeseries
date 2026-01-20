@@ -21,7 +21,7 @@ pub fn gamma(x: f64) -> f64 {
 
 pub fn log_gamma(x: f64) -> f64 {
     if x < 1e-5 {
-        panic!("x should be positive");
+        panic!("log_gamma: x should be positive");
     }
 
     if x < 1.0 {

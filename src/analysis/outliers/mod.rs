@@ -1,4 +1,5 @@
 mod anomalies;
+mod cusum_outlier_detector;
 mod double_mad_outlier_detector;
 #[cfg(test)]
 mod double_mad_outlier_detector_tests;
@@ -8,15 +9,15 @@ pub mod mad_estimator;
 mod mad_outlier_detector;
 #[cfg(test)]
 mod mad_outlier_detector_tests;
-mod modified_zscore;
+mod modified_zscore_outlier_detector;
 #[cfg(test)]
 mod outlier_test_data;
 mod rcf_outlier_detector;
 mod smoothed_zscores;
-mod spc_cusum;
-mod spc_ewma;
-mod spc_shewart;
-mod zscore;
+mod spc_ewma_outlier_detector;
+mod spc_shewart_outlier_detector;
+mod utils;
+mod zscore_outlier_detector;
 
 pub use anomalies::*;
 pub use double_mad_outlier_detector::*;
@@ -242,6 +243,8 @@ impl From<AnomalySignal> for ValkeyValue {
 /// Method-specific information
 #[derive(Debug, Clone, Copy)]
 pub enum MethodInfo {
+    /// For methods like ZScore, MAD and IQR
+    Fenced { lower_fence: f64, upper_fence: f64 },
     /// Spc-specific information
     Spc {
         /// Control limits (lower, upper)
@@ -269,6 +272,23 @@ pub struct AnomalyResult {
     pub method: AnomalyMethod,
     /// Additional information specific to the method
     pub method_info: Option<MethodInfo>,
+}
+
+impl AnomalyResult {
+    /// Count the number of detected anomalies
+    pub fn count_anomalies(&self) -> usize {
+        self.anomalies.iter().filter(|&&a| a.is_anomaly()).count()
+    }
+
+    /// Get outlier percentage.
+    pub fn outlier_percentage(&self) -> f64 {
+        let count = self.count_anomalies();
+        if count == 0 {
+            0.0
+        } else {
+            100.0 * count as f64 / self.anomalies.len() as f64
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,36 +358,20 @@ impl Default for MADAnomalyOptions {
 
 /// Trait for outlier detection
 pub trait OutlierDetector {
-    // Check if the value is a lower outlier
-    fn is_lower_outlier(&self, x: f64) -> bool;
+    fn get_anomaly_score(&self, value: f64) -> f64;
 
-    // Check if the value is an upper outlier
-    fn is_upper_outlier(&self, x: f64) -> bool;
+    fn classify(&self, x: f64) -> AnomalySignal;
 }
 
 impl<T> OutlierDetector for Box<T>
 where
     T: OutlierDetector,
 {
-    fn is_lower_outlier(&self, x: f64) -> bool {
-        self.deref().is_lower_outlier(x)
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        self.deref().get_anomaly_score(value)
     }
 
-    fn is_upper_outlier(&self, x: f64) -> bool {
-        self.deref().is_upper_outlier(x)
-    }
-}
-
-pub(super) fn get_anomaly_direction(
-    low_threshold: f64,
-    hi_threshold: f64,
-    value: f64,
-) -> AnomalySignal {
-    if value < low_threshold {
-        AnomalySignal::Negative
-    } else if value > hi_threshold {
-        AnomalySignal::Positive
-    } else {
-        AnomalySignal::None
+    fn classify(&self, x: f64) -> AnomalySignal {
+        self.deref().classify(x)
     }
 }

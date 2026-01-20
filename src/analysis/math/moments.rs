@@ -23,7 +23,7 @@ impl Moments {
     }
 
     pub fn create<T: Deref<Target = [f64]>>(values: T) -> Moments {
-        assert!(!values.is_empty(), "values must not be empty");
+        debug_assert!(!values.is_empty(), "moments: values must not be empty");
         let n = values.len() as f64;
         let mean = values.iter().sum::<f64>() / n;
 

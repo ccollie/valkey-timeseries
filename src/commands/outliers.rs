@@ -511,6 +511,15 @@ fn format_output_full(
     // Add method-specific info if available
     if let Some(method_info) = result.method_info {
         match method_info {
+            MethodInfo::Fenced {
+                lower_fence,
+                upper_fence,
+            } => {
+                let mut fenced_info = HashMap::new();
+                fenced_info.insert("lower_fence".into(), ValkeyValue::Float(lower_fence));
+                fenced_info.insert("upper_fence".into(), ValkeyValue::Float(upper_fence));
+                res.insert("method_info".into(), ValkeyValue::Map(fenced_info));
+            }
             MethodInfo::Spc {
                 control_limits,
                 center_line,

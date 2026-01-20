@@ -4,8 +4,8 @@
 /// Port of the golang implementation here:
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
-use super::AnomalySignal;
-use crate::analysis::TimeSeriesAnalysisError;
+use super::{AnomalyMethod, AnomalyResult, AnomalySignal};
+use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
 struct MovingMeanStdDev {
     cache: Vec<f64>,
@@ -201,6 +201,28 @@ impl SmoothedZScoreAnomalyDetector {
         let score = z / (self.threshold + z);
 
         score.clamp(0.0, 1.0)
+    }
+
+    pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let n = ts.len();
+
+        // Keep output lengths equal to the input length (pad the initial window).
+        let mut scores: Vec<f64> = Vec::with_capacity(n);
+        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+
+        for &value in ts {
+            let signal = self.next(value);
+            anomalies.push(signal);
+            scores.push(self.prev_score);
+        }
+
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold: self.threshold,
+            method: AnomalyMethod::SmoothedZScore,
+            method_info: None,
+        })
     }
 }
 
