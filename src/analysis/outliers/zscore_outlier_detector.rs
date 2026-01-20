@@ -1,16 +1,122 @@
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
-use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal};
+use crate::analysis::outliers::utils::normalize_unbounded_score;
+use crate::analysis::outliers::{
+    AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
+};
 
-pub const ZSCORE_DEFAULT_THRESHOLD: f64 = 3.0;
+/// Outlier detector based on the Z-Score method.
+/// Considers all values outside [mean - k * std_dev, mean + k * std_dev] as outliers.
+#[derive(Debug)]
+pub struct ZScoreOutlierDetector {
+    threshold: f64,
+    mean: f64,
+    std_dev: f64,
+    lower_fence: f64,
+    upper_fence: f64,
+}
 
-/// Squash an unbounded non-negative score into the range [0..1].
-#[inline]
-fn normalize_unbounded_score(score: f64) -> f64 {
-    if !score.is_finite() || score <= 0.0 {
-        0.0
-    } else {
-        score / (score + 1.0)
+impl ZScoreOutlierDetector {
+    pub const DEFAULT_THRESHOLD: f64 = 3.0;
+
+    pub fn new(samples: &[f64]) -> Self {
+        Self::with_threshold(samples, Self::DEFAULT_THRESHOLD)
+    }
+
+    pub fn with_threshold(samples: &[f64], threshold: f64) -> Self {
+        // maybe use wellford here ?
+        let mean = calculate_mean(samples);
+        let std_dev = calculate_std_dev(samples);
+
+        let lower_fence = mean - threshold * std_dev;
+        let upper_fence = mean + threshold * std_dev;
+
+        ZScoreOutlierDetector {
+            mean,
+            std_dev,
+            threshold,
+            lower_fence,
+            upper_fence,
+        }
+    }
+
+    #[inline]
+    fn get_zscore(&self, value: f64) -> f64 {
+        if self.std_dev == 0.0 {
+            return 0.0;
+        }
+        (value - self.mean) / self.std_dev
+    }
+
+    pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let n = ts.len();
+        let threshold = self.threshold;
+
+        if self.std_dev < f64::EPSILON {
+            // All values are identical; no anomalies can be detected
+            return Ok(AnomalyResult {
+                scores: vec![0.0; n],
+                anomalies: vec![AnomalySignal::None; n],
+                threshold,
+                method: AnomalyMethod::ZScore,
+                method_info: None,
+            });
+        }
+
+        let mut scores = Vec::with_capacity(n);
+        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+
+        for &value in ts {
+            let value = if value.is_nan() { 0.0 } else { value };
+            let zscore = self.get_zscore(value);
+            let z_abs = zscore.abs();
+
+            let score = self.get_anomaly_score(value);
+            scores.push(score);
+
+            let anomaly_direction = if z_abs > threshold {
+                if zscore > 0.0 {
+                    AnomalySignal::Positive
+                } else {
+                    AnomalySignal::Negative
+                }
+            } else {
+                AnomalySignal::None
+            };
+            anomalies.push(anomaly_direction);
+        }
+
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold,
+            method: AnomalyMethod::ZScore,
+            method_info: Some(MethodInfo::Fenced {
+                lower_fence: self.lower_fence,
+                upper_fence: self.upper_fence,
+            }),
+        })
+    }
+}
+
+impl OutlierDetector for ZScoreOutlierDetector {
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        let z_abs = self.get_zscore(value).abs();
+        normalize_unbounded_score(z_abs)
+    }
+
+    fn classify(&self, x: f64) -> AnomalySignal {
+        let zscore = self.get_zscore(x);
+        let z_abs = zscore.abs();
+        if z_abs > self.threshold {
+            match zscore.signum() {
+                1.0 => AnomalySignal::Positive,
+                -1.0 => AnomalySignal::Negative,
+                _ => AnomalySignal::None,
+            }
+        } else {
+            AnomalySignal::None
+        }
     }
 }
 
@@ -19,52 +125,11 @@ pub(super) fn detect_anomalies_zscore(
     ts: &[f64],
     threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
-    let threshold = threshold.unwrap_or(ZSCORE_DEFAULT_THRESHOLD);
-    let mean = calculate_mean(ts);
-    let std_dev = calculate_std_dev(ts);
-
-    if std_dev < f64::EPSILON {
-        // All values are identical; no anomalies can be detected
-        return Ok(AnomalyResult {
-            scores: vec![0.0; n],
-            anomalies: vec![AnomalySignal::None; n],
-            threshold,
-            method: AnomalyMethod::ZScore,
-            method_info: None,
-        });
-    }
-
-    let mut scores = Vec::with_capacity(n);
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
-
-    for &value in ts {
-        let value = if value.is_nan() { 0.0 } else { value };
-        let zscore = (value - mean) / std_dev;
-        let z_abs = zscore.abs();
-
-        let normalized_score = normalize_unbounded_score(z_abs);
-        scores.push(normalized_score);
-
-        let anomaly_direction = if z_abs > threshold {
-            if zscore > 0.0 {
-                AnomalySignal::Positive
-            } else {
-                AnomalySignal::Negative
-            }
-        } else {
-            AnomalySignal::None
-        };
-        anomalies.push(anomaly_direction);
-    }
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::ZScore,
-        method_info: None,
-    })
+    let mut detector = ZScoreOutlierDetector::with_threshold(
+        ts,
+        threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
+    );
+    detector.detect(ts)
 }
 
 #[cfg(test)]
