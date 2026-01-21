@@ -10,80 +10,17 @@ use super::isolation_forest::{IsolationForestOptions, detect_anomalies_isolation
 use super::mad_outlier_detector::MadOutlierDetector;
 use super::modified_zscore_outlier_detector::detect_anomalies_modified_zscore;
 use super::rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf};
-use super::smoothed_zscores::SmoothedZScoreAnomalyDetector;
+use super::smoothed_zscores::SmoothedZScoreOptions;
 use super::spc_ewma_outlier_detector::{EWMA_DEFAULT_ALPHA, detect_anomalies_spc_ewma};
-use super::spc_shewart_outlier_detector::detect_anomalies_spc_shewart;
+use super::spc_shewhart_outlier_detector::detect_anomalies_spc_shewhart;
 use super::zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore};
 use super::{
-    AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions, SPCMethod,
-    detect_anomalies_double_mad,
+    AnomalyMethod, AnomalyResult, MADAnomalyOptions, SPCMethod, detect_anomalies_double_mad,
 };
 use crate::analysis::math::calculate_mean;
+use crate::analysis::outliers::smoothed_zscores::detect_anomalies_smoothed_zscore;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use std::fmt::Debug;
-
-/// Options for configuring the Smoothed Z-Score algorithm.
-///
-/// The Smoothed Z-Score algorithm is useful for detecting signals, such as anomalies or outliers, in time-series
-/// data by comparing new datapoints to a continually adjusted moving average and standard deviation. The following
-/// parameters influence its sensitivity and adaptability.
-///
-/// # Fields
-///
-/// * `threshold` - The number of standard deviations from the moving mean required to classify a new datapoint as
-///   a signal. A larger threshold reduces sensitivity to outliers, while a smaller threshold makes the algorithm
-///   more sensitive.
-///
-/// * `influence` - A value between 0 and 1 that determines how much detected signals influence the dataset's
-///   moving mean and standard deviation. A lower influence makes the algorithm less affected by signals, while a
-///   higher influence allows signals to have a greater impact.
-///
-/// * `lag` - The number of previous datapoints used to calculate the moving mean and standard deviation. Higher
-///   values result in a smoother long-term average, making the algorithm less responsive to short-term fluctuations
-///   but more robust to changes in the long-term trend.
-///
-/// # Examples
-///
-/// ```rust
-/// let options = SmoothedZScoreOptions {
-///     threshold: 3.5,
-///     influence: 0.5,
-///     lag: 10,
-/// };
-/// ```
-///
-/// This example initializes the `SmoothedZScoreOptions` structure with a threshold of 3.5 standard deviations,
-/// an influence of 0.5, and a lag of 10, providing a balanced configuration for detecting outliers in moderately
-/// stationary data.
-///
-/// # Notes
-///
-/// Adjusting these parameters requires an understanding of your dataset's characteristics. For highly
-/// non-stationary data, consider decreasing `lag` to improve adaptability. For datasets with frequent
-/// noise or minor fluctuations, increasing `threshold` can improve robustness, while tuning `influence`
-/// helps control the trade-off between reactivity and noise sensitivity.
-#[derive(Clone, Copy, Debug)]
-pub struct SmoothedZScoreOptions {
-    /// `threshold` is the number of standard deviations from the moving mean above which the algorithm will classify a new
-    /// datapoint as being a signal.
-    pub threshold: f64,
-    /// `influence` is the influence of signals on the algorithm's detection threshold.
-    pub influence: f64,
-    /// `lag` determines how much your data will be smoothed and how adaptive the algorithm is to change in the long-term
-    /// average of the data. The more stationary your data is, the more lags you should include to improve the
-    /// robustness of the algorithm.
-    pub lag: usize,
-}
-
-impl Default for SmoothedZScoreOptions {
-    fn default() -> Self {
-        Self {
-            threshold: 3.5,
-            influence: 0.0,
-            lag: 0,
-        }
-    }
-}
 
 /// Options for seasonal adjustment
 #[derive(Debug, Clone, Copy)]
@@ -259,7 +196,7 @@ fn detect_anomalies_spc(
     options: SPCMethodOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     match options.spc_method {
-        SPCMethod::Shewhart => detect_anomalies_spc_shewart(ts),
+        SPCMethod::Shewhart => detect_anomalies_spc_shewhart(ts),
         SPCMethod::Cusum => {
             // Cusum control chart implementation
             detect_anomalies_spc_cusum(ts)
@@ -269,49 +206,6 @@ fn detect_anomalies_spc(
             detect_anomalies_spc_ewma(ts, options.ewma_alpha)
         }
     }
-}
-
-fn detect_anomalies_smoothed_zscore(
-    ts: &[f64],
-    options: SmoothedZScoreOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let SmoothedZScoreOptions {
-        lag,
-        influence,
-        threshold,
-    } = options;
-
-    if lag == 0 {
-        return Err(TimeSeriesAnalysisError::InvalidInput(
-            "the length of the initial values is zero, the length is used as the lag for the algorithm"
-                .to_string(),
-        ));
-    }
-
-    let n = ts.len();
-    if n < lag {
-        return Err(TimeSeriesAnalysisError::InsufficientData {
-            message: "TSDB: insufficient samples for smoothed z-score lag".to_string(),
-            required: lag,
-            actual: n,
-        });
-    }
-
-    let (initial, rest) = ts.split_at(lag);
-
-    let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, initial)?;
-    let mut res = detector.detect(rest)?;
-
-    // Keep output lengths equal to the input length (pad the initial window).
-    let mut scores: Vec<f64> = vec![0.0; lag];
-    let mut anomalies: Vec<AnomalySignal> = vec![AnomalySignal::None; lag];
-
-    scores.append(&mut res.scores);
-    anomalies.append(&mut res.anomalies);
-    res.anomalies = anomalies;
-    res.scores = scores;
-
-    Ok(res)
 }
 
 fn detect_anomalies_mad(
@@ -356,38 +250,6 @@ fn seasonally_adjust(ts: &[f64], period: usize) -> TimeSeriesAnalysisResult<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_spc_shewhart() {
-        // Create baseline data (first 75 points)
-        let mut ts: Vec<f64> = (0..75)
-            .map(|i| 1.0 + 0.1 * (i as f64 * 0.1).sin())
-            .collect();
-
-        // Add shifted data (clear anomaly)
-        for i in 0..75 {
-            let v = 5.0 + 0.1 * (i as f64 * 0.1).sin();
-            ts.push(v);
-        }
-
-        let options = SPCMethodOptions {
-            spc_method: SPCMethod::Shewhart,
-            ..Default::default()
-        };
-
-        let result = detect_anomalies_spc(&ts, options).unwrap();
-
-        // Should detect anomalies in the second half
-        let anomalies_second_half = result.anomalies[75..]
-            .iter()
-            .filter(|&&x| x.is_anomaly())
-            .count();
-
-        assert!(
-            anomalies_second_half > 30,
-            "Should detect many anomalies in second half, found {anomalies_second_half}"
-        );
-    }
 
     #[test]
     fn test_edge_cases() {
