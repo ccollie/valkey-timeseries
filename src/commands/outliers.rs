@@ -42,13 +42,13 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     while let Some(arg) = args.next() {
         hashify::fnc_map_ignore_case!(arg.as_slice(),
-            "DIRECTION" => {
-                let dir_str = args.next_str()?;
-                anomaly_direction = dir_str.parse()?;
-            },
             "FORMAT" => {
                 let format_str = args.next_str()?;
                 output_format = parse_output_format(format_str)?;
+            },
+            "DIRECTION" => {
+                let dir_str = args.next_str()?;
+                anomaly_direction = dir_str.parse()?;
             },
             "METHOD" => {
                 if options.is_some() {
@@ -66,7 +66,6 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
                 let method: AnomalyMethod = args.next_str()?.parse()?;
                 options = Some(parse_method_options(method, &mut args)?);
-                break;
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown option OUTLIERS {arg}")));
@@ -421,7 +420,7 @@ fn format_output_simple(
     Ok(format_anomalies(result, samples, direction))
 }
 
-/// Returns all samples excluding those that are anomalies in the specified direction, as well anomalies
+/// Returns all samples excluding those that are anomalies in the specified direction, as well as anomalies
 fn format_output_cleaned(
     result: AnomalyResult,
     samples: Vec<Sample>,
