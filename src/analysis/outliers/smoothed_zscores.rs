@@ -213,7 +213,8 @@ impl SmoothedZScoreAnomalyDetector {
         for &value in ts {
             let signal = self.next(value);
             anomalies.push(signal);
-            scores.push(self.prev_score);
+            let score = self.get_anomaly_score(value);
+            scores.push(score);
         }
 
         Ok(AnomalyResult {
@@ -240,6 +241,113 @@ impl Default for SmoothedZScoreAnomalyDetector {
             prev_score: f64::NAN,
         }
     }
+}
+
+/// Options for configuring the Smoothed Z-Score algorithm.
+///
+/// The Smoothed Z-Score algorithm is useful for detecting signals, such as anomalies or outliers, in time-series
+/// data by comparing new datapoints to a continually adjusted moving average and standard deviation. The following
+/// parameters influence its sensitivity and adaptability.
+///
+/// # Fields
+///
+/// * `threshold` - The number of standard deviations from the moving mean required to classify a new datapoint as
+///   a signal. A larger threshold reduces sensitivity to outliers, while a smaller threshold makes the algorithm
+///   more sensitive.
+///
+/// * `influence` - A value between 0 and 1 that determines how much detected signals influence the dataset's
+///   moving mean and standard deviation. A lower influence makes the algorithm less affected by signals, while a
+///   higher influence allows signals to have a greater impact.
+///
+/// * `lag` - The number of previous datapoints used to calculate the moving mean and standard deviation. Higher
+///   values result in a smoother long-term average, making the algorithm less responsive to short-term fluctuations
+///   but more robust to changes in the long-term trend.
+///
+/// # Examples
+///
+/// ```rust
+/// let options = SmoothedZScoreOptions {
+///     threshold: 3.5,
+///     influence: 0.5,
+///     lag: 10,
+/// };
+/// ```
+///
+/// This example initializes the `SmoothedZScoreOptions` structure with a threshold of 3.5 standard deviations,
+/// an influence of 0.5, and a lag of 10, providing a balanced configuration for detecting outliers in moderately
+/// stationary data.
+///
+/// # Notes
+///
+/// Adjusting these parameters requires an understanding of your dataset's characteristics. For highly
+/// non-stationary data, consider decreasing `lag` to improve adaptability. For datasets with frequent
+/// noise or minor fluctuations, increasing `threshold` can improve robustness, while tuning `influence`
+/// helps control the trade-off between reactivity and noise sensitivity.
+#[derive(Clone, Copy, Debug)]
+pub struct SmoothedZScoreOptions {
+    /// `threshold` is the number of standard deviations from the moving mean above which the algorithm will classify a new
+    /// datapoint as being a signal.
+    pub threshold: f64,
+    /// `influence` is the influence of signals on the algorithm's detection threshold.
+    pub influence: f64,
+    /// `lag` determines how much your data will be smoothed and how adaptive the algorithm is to change in the long-term
+    /// average of the data. The more stationary your data is, the more lags you should include to improve the
+    /// robustness of the algorithm.
+    pub lag: usize,
+}
+
+impl Default for SmoothedZScoreOptions {
+    fn default() -> Self {
+        Self {
+            threshold: 3.5,
+            influence: 0.0,
+            lag: 0,
+        }
+    }
+}
+
+/// Detects anomalies in a time series using the Smoothed Z-Score algorithm.
+pub(super) fn detect_anomalies_smoothed_zscore(
+    ts: &[f64],
+    options: SmoothedZScoreOptions,
+) -> TimeSeriesAnalysisResult<AnomalyResult> {
+    let SmoothedZScoreOptions {
+        lag,
+        influence,
+        threshold,
+    } = options;
+
+    if lag == 0 {
+        return Err(TimeSeriesAnalysisError::InvalidInput(
+            "the length of the initial values is zero, the length is used as the lag for the algorithm"
+                .to_string(),
+        ));
+    }
+
+    let n = ts.len();
+    if n < lag {
+        return Err(TimeSeriesAnalysisError::InsufficientData {
+            message: "TSDB: insufficient samples for smoothed z-score lag".to_string(),
+            required: lag,
+            actual: n,
+        });
+    }
+
+    let (initial, rest) = ts.split_at(lag);
+
+    let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, initial)?;
+    let mut res = detector.detect(rest)?;
+
+    // Keep output lengths equal to the input length (pad the initial window).
+    let mut scores: Vec<f64> = vec![0.0; lag];
+    let mut anomalies: Vec<AnomalySignal> = vec![AnomalySignal::None; lag];
+
+    scores.append(&mut res.scores);
+    anomalies.append(&mut res.anomalies);
+    res.anomalies = anomalies;
+    res.scores = scores;
+
+    Ok(res)
 }
 
 #[cfg(test)]
@@ -343,5 +451,235 @@ mod tests {
         // Any deviation => 1.0
         let s1 = detector.get_anomaly_score(2.0);
         assert!((s1 - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_detect_with_valid_input() {
+        let ts = vec![
+            1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.1, 1.0, 1.0, 0.9, 1.0, 1.0,
+            1.1, 1.0, 1.0, 5.0, // anomaly
+            1.0, 1.0, 1.0,
+        ];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.0,
+            lag: 10,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options);
+        assert!(result.is_ok());
+
+        let anomaly_result = result.unwrap();
+        assert_eq!(anomaly_result.scores.len(), ts.len());
+        assert_eq!(anomaly_result.anomalies.len(), ts.len());
+        assert_eq!(anomaly_result.threshold, 2.0);
+        assert_eq!(anomaly_result.method, AnomalyMethod::SmoothedZScore);
+    }
+
+    #[test]
+    fn test_detect_with_zero_lag() {
+        let ts = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.5,
+            lag: 0,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            TimeSeriesAnalysisError::InvalidInput(msg) => {
+                assert!(msg.contains("zero"));
+            }
+            _ => panic!("Expected InvalidInput error"),
+        }
+    }
+
+    #[test]
+    fn test_detect_with_insufficient_data() {
+        let ts = vec![1.0, 2.0, 3.0];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.5,
+            lag: 10,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            TimeSeriesAnalysisError::InsufficientData {
+                required, actual, ..
+            } => {
+                assert_eq!(required, 10);
+                assert_eq!(actual, 3);
+            }
+            _ => panic!("Expected InsufficientData error"),
+        }
+    }
+
+    #[test]
+    fn test_detect_pads_initial_window() {
+        let ts = vec![1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 1.0];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.0,
+            lag: 5,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
+
+        // First `lag` elements should be padded with AnomalySignal::None and score 0.0
+        for i in 0..options.lag {
+            assert_eq!(result.anomalies[i], AnomalySignal::None);
+            assert_eq!(result.scores[i], 0.0);
+        }
+
+        // Length should match input
+        assert_eq!(result.anomalies.len(), ts.len());
+        assert_eq!(result.scores.len(), ts.len());
+    }
+
+    #[test]
+    fn test_detect_identifies_positive_anomaly() {
+        let ts = vec![
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 10.0, // clear positive anomaly
+        ];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.0,
+            lag: 10,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
+
+        // The anomaly should be detected at index 10
+        assert_eq!(result.anomalies[10], AnomalySignal::Positive);
+    }
+
+    #[test]
+    fn test_detect_identifies_negative_anomaly() {
+        let ts = vec![
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -10.0, // clear negative anomaly
+        ];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.0,
+            lag: 10,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
+
+        // The anomaly should be detected at index 10
+        assert_eq!(result.anomalies[10], AnomalySignal::Negative);
+    }
+
+    #[test]
+    fn test_detect_with_high_influence() {
+        let ts = vec![1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.0];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.9,
+            lag: 5,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options);
+        assert!(result.is_ok());
+
+        // With high influence, the algorithm should adapt to the new level
+        let anomaly_result = result.unwrap();
+        assert_eq!(anomaly_result.anomalies.len(), ts.len());
+    }
+
+    #[test]
+    fn test_detect_with_low_influence() {
+        let ts = vec![1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0, 5.0, 1.0];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.1,
+            lag: 5,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options);
+        assert!(result.is_ok());
+
+        // With low influence, anomalies should have minimal effect on threshold
+        let anomaly_result = result.unwrap();
+        assert_eq!(anomaly_result.anomalies.len(), ts.len());
+    }
+
+    #[test]
+    fn test_detect_exact_lag_length() {
+        let ts = vec![1.0, 1.0, 1.0, 1.0, 1.0];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.5,
+            lag: 5,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options);
+        assert!(result.is_ok());
+
+        let anomaly_result = result.unwrap();
+        assert_eq!(anomaly_result.anomalies.len(), 5);
+        assert_eq!(anomaly_result.scores.len(), 5);
+    }
+
+    #[test]
+    fn test_detect_default_options() {
+        let ts = vec![1.0; 20];
+
+        let options = SmoothedZScoreOptions::default();
+        let options_with_lag = SmoothedZScoreOptions { lag: 10, ..options };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options_with_lag);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_detect_scores_are_non_negative() {
+        let ts = vec![
+            1.0, 1.0, 1.0, 1.0, 1.0, 5.0, -5.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        ];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.5,
+            lag: 5,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
+
+        for score in result.scores {
+            assert!(score >= 0.0, "Score should be non-negative: {}", score);
+        }
+    }
+
+    #[test]
+    fn test_detect_with_flat_data() {
+        let ts = vec![5.0; 20];
+
+        let options = SmoothedZScoreOptions {
+            threshold: 2.0,
+            influence: 0.0,
+            lag: 10,
+        };
+
+        let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
+
+        // All should be non-anomalous in flat data
+        for signal in &result.anomalies[options.lag..] {
+            assert_eq!(*signal, AnomalySignal::None);
+        }
     }
 }
