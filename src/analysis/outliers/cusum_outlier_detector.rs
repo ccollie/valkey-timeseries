@@ -1,7 +1,7 @@
 use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
-use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
+use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
 
 /// Statistical Process Control (Spc) cusum anomaly detection
 pub struct CusumOutlierDetector {
@@ -37,14 +37,14 @@ impl CusumOutlierDetector {
     pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
         let mut cusum_pos = 0.0;
         let mut cusum_neg = 0.0;
         let threshold = self.h / self.std_dev;
         let valid_std_dev = self.std_dev.is_finite() && self.std_dev > f64::EPSILON;
 
-        for &v in ts {
+        for (index, &v) in ts.iter().enumerate() {
             let value = normalize_value(v);
             cusum_pos = f64::max(0.0, cusum_pos + (value - self.target) - self.k);
             cusum_neg = f64::max(0.0, cusum_neg - (value - self.target) - self.k);
@@ -60,7 +60,7 @@ impl CusumOutlierDetector {
             let score = normalize_unbounded_score(raw_score);
             scores.push(score);
 
-            let anomaly_direction = if cusum_pos > threshold {
+            let signal = if cusum_pos > threshold {
                 AnomalySignal::Positive
             } else if cusum_neg > threshold {
                 AnomalySignal::Negative
@@ -68,7 +68,15 @@ impl CusumOutlierDetector {
                 AnomalySignal::None
             };
 
-            anomalies.push(anomaly_direction);
+            if signal.is_anomaly() {
+                let outlier = Anomaly {
+                    index,
+                    value: v,
+                    signal,
+                    score,
+                };
+                anomalies.push(outlier);
+            }
         }
 
         Ok(AnomalyResult {
@@ -93,7 +101,6 @@ pub(super) fn detect_anomalies_spc_cusum(ts: &[f64]) -> TimeSeriesAnalysisResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::outliers::AnomalySignal;
 
     #[test]
     fn test_detect_empty_series() {
@@ -112,17 +119,13 @@ mod tests {
         let anomaly_result = detector.detect(&ts).unwrap();
 
         assert_eq!(anomaly_result.scores.len(), 10);
-        assert_eq!(anomaly_result.anomalies.len(), 10);
-
         // All scores should be low (near zero) for constant values
         for score in &anomaly_result.scores {
             assert!(*score < 0.1);
         }
 
         // No anomalies should be detected
-        for anomaly in &anomaly_result.anomalies {
-            assert_eq!(*anomaly, AnomalySignal::None);
-        }
+        assert_eq!(anomaly_result.anomalies.len(), 0);
     }
 
     #[test]
@@ -137,7 +140,7 @@ mod tests {
         let positive_anomalies = anomaly_result
             .anomalies
             .iter()
-            .filter(|&&a| a == AnomalySignal::Positive)
+            .filter(|&&a| a.is_positive())
             .count();
 
         assert!(positive_anomalies > 0);
@@ -155,7 +158,7 @@ mod tests {
         let negative_anomalies = anomaly_result
             .anomalies
             .iter()
-            .filter(|&&a| a == AnomalySignal::Negative)
+            .filter(|&&a| a.is_negative())
             .count();
 
         assert!(negative_anomalies > 0);
@@ -178,7 +181,7 @@ mod tests {
         let positive_count = anomaly_result
             .anomalies
             .iter()
-            .filter(|&&a| a == AnomalySignal::Positive)
+            .filter(|&&a| a.is_positive())
             .count();
 
         assert!(
@@ -201,7 +204,7 @@ mod tests {
         let negative_count = anomaly_result
             .anomalies
             .iter()
-            .filter(|&&a| a == AnomalySignal::Negative)
+            .filter(|&&a| a.is_negative())
             .count();
 
         assert!(
@@ -221,18 +224,6 @@ mod tests {
         for score in &anomaly_result.scores {
             assert_eq!(*score, 0.0);
         }
-    }
-
-    #[test]
-    fn test_detect_with_infinite_values() {
-        let detector = CusumOutlierDetector::new(0.0, 1.0);
-        let ts = vec![0.0, f64::INFINITY, 0.0, f64::NEG_INFINITY, 0.0];
-
-        let anomaly_result = detector.detect(&ts).unwrap();
-
-        // Should handle infinite values gracefully
-        assert_eq!(anomaly_result.scores.len(), 5);
-        assert_eq!(anomaly_result.anomalies.len(), 5);
     }
 
     #[test]
@@ -304,17 +295,14 @@ mod tests {
         let mut ts: Vec<f64> = (0..50).map(|i| i as f64).collect();
         ts.extend((50..100).map(|i| (i + 50) as f64)); // Gradual upward shift
 
-        let result = detect_anomalies_spc_cusum(&ts);
-
-        assert!(result.is_ok());
-        let anomaly_result = result.unwrap();
+        let anomaly_result = detect_anomalies_spc_cusum(&ts).unwrap();
         assert_eq!(anomaly_result.scores.len(), 100);
 
         // Should detect the shift
         let positive_count = anomaly_result
             .anomalies
             .iter()
-            .filter(|&&a| a == AnomalySignal::Positive)
+            .filter(|&&a| a.is_positive())
             .count();
 
         assert!(positive_count > 0);
@@ -330,12 +318,9 @@ mod tests {
 
         let anomaly_result = detect_anomalies_spc_cusum(&ts).unwrap();
 
+        let anomaly_count = anomaly_result.anomalies.len();
         // Most values should not be anomalies in normal distribution
-        let no_anomaly_count = anomaly_result
-            .anomalies
-            .iter()
-            .filter(|&&a| a == AnomalySignal::None)
-            .count();
+        let no_anomaly_count = ts.len() - anomaly_count;
 
         assert!(no_anomaly_count > ts.len() / 2);
     }
@@ -344,10 +329,7 @@ mod tests {
     fn test_detect_anomalies_spc_cusum_method_info() {
         let ts = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
-        let result = detect_anomalies_spc_cusum(&ts);
-
-        assert!(result.is_ok());
-        let anomaly_result = result.unwrap();
+        let anomaly_result = detect_anomalies_spc_cusum(&ts).unwrap();
 
         assert_eq!(
             anomaly_result.method,

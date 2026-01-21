@@ -1,11 +1,11 @@
-use super::utils::{get_anomaly_direction, normalize_value};
+use super::utils::get_anomaly_direction;
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::mad_estimator::{
     HarrellDavisNormalizedEstimator, InvariantMADEstimator, MedianAbsoluteDeviationEstimator,
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
-    AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
+    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
     MethodInfo, OutlierDetector,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
@@ -125,13 +125,21 @@ impl DoubleMadOutlierDetector {
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(n);
 
-        for &value in ts {
+        for (index, &value) in ts.iter().enumerate() {
             let score = self.get_anomaly_score(value);
             let anomaly = self.classify(value);
+            if anomaly.is_anomaly() {
+                let outlier = Anomaly {
+                    index,
+                    value,
+                    signal: anomaly,
+                    score,
+                };
+                anomalies.push(outlier);
+            }
             scores.push(score);
-            anomalies.push(anomaly);
         }
 
         Ok(AnomalyResult {
@@ -164,27 +172,6 @@ pub fn detect_anomalies_double_mad(
     ts: &[f64],
     options: MADAnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
-    let threshold = options.k;
-
-    let detector = DoubleMadOutlierDetector::with_data_and_options(ts, options);
-
-    let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
-    let mut scores: Vec<f64> = Vec::with_capacity(n);
-    for &v in ts {
-        let value = normalize_value(v);
-        let score = detector.get_anomaly_score(value); // detector.score(value, &sample);
-        scores.push(score);
-
-        let anomaly_direction = detector.classify(v);
-        anomalies.push(anomaly_direction);
-    }
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::DoubleMAD,
-        method_info: None,
-    })
+    let mut detector = DoubleMadOutlierDetector::with_data_and_options(ts, options);
+    detector.detect(ts)
 }

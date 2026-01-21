@@ -2,7 +2,7 @@ use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
 use crate::analysis::outliers::utils::normalize_unbounded_score;
 use crate::analysis::outliers::{
-    AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
 };
 
 /// Outlier detector based on the Z-Score method.
@@ -24,7 +24,7 @@ impl ZScoreOutlierDetector {
     }
 
     pub fn with_threshold(samples: &[f64], threshold: f64) -> Self {
-        // maybe use wellford here ?
+        // maybe use welford here ?
         let mean = calculate_mean(samples);
         let std_dev = calculate_std_dev(samples);
 
@@ -56,7 +56,7 @@ impl ZScoreOutlierDetector {
             // All values are identical; no anomalies can be detected
             return Ok(AnomalyResult {
                 scores: vec![0.0; n],
-                anomalies: vec![AnomalySignal::None; n],
+                anomalies: vec![],
                 threshold,
                 method: AnomalyMethod::ZScore,
                 method_info: None,
@@ -64,17 +64,17 @@ impl ZScoreOutlierDetector {
         }
 
         let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
-        for &value in ts {
-            let value = if value.is_nan() { 0.0 } else { value };
+        for (index, &v) in ts.iter().enumerate() {
+            let value = if v.is_nan() { 0.0 } else { v };
             let zscore = self.get_zscore(value);
             let z_abs = zscore.abs();
 
             let score = self.get_anomaly_score(value);
             scores.push(score);
 
-            let anomaly_direction = if z_abs > threshold {
+            let signal = if z_abs > threshold {
                 if zscore > 0.0 {
                     AnomalySignal::Positive
                 } else {
@@ -83,7 +83,16 @@ impl ZScoreOutlierDetector {
             } else {
                 AnomalySignal::None
             };
-            anomalies.push(anomaly_direction);
+
+            if signal.is_anomaly() {
+                let outlier = Anomaly {
+                    index,
+                    signal,
+                    value: v,
+                    score,
+                };
+                anomalies.push(outlier);
+            }
         }
 
         Ok(AnomalyResult {
@@ -307,12 +316,12 @@ mod tests {
 
         // Extremes should be anomalies with directional signals.
         assert_eq!(
-            result.anomalies[4],
+            result.anomalies[0].signal,
             AnomalySignal::Positive,
             "Expected positive anomaly at index 4"
         );
         assert_eq!(
-            result.anomalies[5],
+            result.anomalies[1].signal,
             AnomalySignal::Negative,
             "Expected negative anomaly at index 5"
         );

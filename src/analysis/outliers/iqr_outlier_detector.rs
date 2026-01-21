@@ -1,7 +1,7 @@
 use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::{
-    AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
 };
 
 pub const IQR_DEFAULT_THRESHOLD: f64 = 1.5;
@@ -43,13 +43,21 @@ impl IQROutlierDetector {
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let mut scores: Vec<f64> = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
-        for &v in ts {
+        for (index, &v) in ts.iter().enumerate() {
             let value = if v.is_nan() { 0.0 } else { v };
-            let direction = self.classify(value);
             let score = self.get_anomaly_score(value);
-            anomalies.push(direction);
+
+            let signal = self.classify(value);
+            if signal.is_anomaly() {
+                anomalies.push(Anomaly {
+                    index,
+                    signal,
+                    value: v,
+                    score,
+                });
+            }
             scores.push(score);
         }
 
@@ -103,7 +111,7 @@ pub(super) fn detect_anomalies_iqr(
 #[cfg(test)]
 mod tests {
     use crate::analysis::outliers::MethodInfo;
-    use crate::analysis::outliers::iqr::detect_anomalies_iqr;
+    use crate::analysis::outliers::iqr_outlier_detector::detect_anomalies_iqr;
 
     #[test]
     fn test_iqr_anomaly_detection() {
@@ -112,9 +120,13 @@ mod tests {
 
         let result = detect_anomalies_iqr(&ts, Some(1.5)).unwrap();
 
-        // Should detect the outlier
+        assert_eq!(result.anomalies.len(), 1);
         assert!(
-            result.anomalies[50].is_anomaly(),
+            result.anomalies[0].is_anomaly(),
+            "Should detect anomaly at index 50"
+        );
+        assert_eq!(
+            result.anomalies[0].index, 50,
             "Should detect anomaly at index 50"
         );
     }
@@ -126,13 +138,11 @@ mod tests {
 
         let result = detect_anomalies_iqr(&values, Some(1.5)).unwrap();
 
-        let anomaly_count: usize = result
-            .anomalies
-            .iter()
-            .filter(|&&signal| signal.is_anomaly())
-            .count();
-
-        assert_eq!(anomaly_count, 0, "Constant series should have no outliers");
+        assert_eq!(
+            result.anomalies.len(),
+            0,
+            "Constant series should have no outliers"
+        );
     }
 
     #[test]
@@ -161,16 +171,33 @@ mod tests {
 
         let result = detect_anomalies_iqr(&values, Some(1.5)).unwrap();
 
+        assert_eq!(result.anomalies.len(), 2, "Should detect two outliers");
         // Check high outlier
         assert!(
-            result.anomalies[5].is_positive(),
+            result.anomalies[0].is_positive(),
             "Expected positive outlier at index 5"
+        );
+        assert_eq!(
+            result.anomalies[0].index, 5,
+            "Outlier should have occurred at index 5"
+        );
+        assert_eq!(
+            result.anomalies[0].value, 100.0,
+            "Should detect 100.0 as high outlier"
         );
 
         // Check low outlier
         assert!(
-            result.anomalies[9].is_negative(),
+            result.anomalies[1].is_negative(),
             "Expected negative outlier at index 9"
+        );
+        assert_eq!(
+            result.anomalies[1].index, 9,
+            "Outlier should have occurred at index 9"
+        );
+        assert_eq!(
+            result.anomalies[1].value, 5.0,
+            "Should detect 5.0 as low outlier"
         );
     }
 
@@ -190,21 +217,25 @@ mod tests {
             // relative to the fences
             for (i, &value) in values.iter().enumerate() {
                 let is_outside = value < lower_fence || value > upper_fence;
-                assert_eq!(
-                    result.anomalies[i].is_anomaly(),
-                    is_outside,
-                    "Value {} at index {} should {}be an anomaly",
-                    value,
-                    i,
-                    if is_outside { "" } else { "not " }
-                );
+                if is_outside {
+                    assert!(
+                        result.anomalies.iter().any(|a| a.index == i),
+                        "Value {value} at index {i} should be an anomaly",
+                    );
+                    continue;
+                } else {
+                    assert!(
+                        result.anomalies.iter().all(|a| a.index != i),
+                        "Value {value} at index {i} should not be an anomaly"
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn test_iqr_large_dataset() {
-        // Test with larger dataset (100+ points)
+        // Test with a larger dataset (100+ points)
         let mut values: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64 * 0.1).sin()).collect();
 
         // Add outliers
@@ -213,13 +244,21 @@ mod tests {
 
         let result = detect_anomalies_iqr(&values, Some(1.5)).unwrap();
 
-        assert_eq!(result.anomalies.len(), 100);
+        assert_eq!(result.anomalies.len(), 2);
         assert!(
-            result.anomalies[25].is_anomaly(),
+            result.anomalies[0].is_positive(),
+            "Expected anomaly at index 25"
+        );
+        assert_eq!(
+            result.anomalies[0].index, 25,
             "Expected anomaly at index 25"
         );
         assert!(
-            result.anomalies[75].is_anomaly(),
+            result.anomalies[1].is_negative(),
+            "Expected anomaly at index 75"
+        );
+        assert_eq!(
+            result.anomalies[1].index, 75,
             "Expected anomaly at index 75"
         );
     }

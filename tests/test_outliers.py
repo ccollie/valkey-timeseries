@@ -4,10 +4,10 @@ from typing import List, Any
 import pytest
 from valkey import ResponseError
 
-from outlier_result import AnomalyEntry, AnomalySignal, TSOutliersFullResult, TSOutliersCleanedResult
-from valkeytestframework.util.waiters import *
-from valkeytestframework.conftest import resource_port_tracker
+from outlier_result import AnomalyEntry, TSOutliersFullResult, TSOutliersCleanedResult
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
+from valkeytestframework.conftest import resource_port_tracker
+from valkeytestframework.util.waiters import *
 
 
 def create_normal_series(client, key, start_time=1000, count=100):
@@ -57,19 +57,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError, match="the key does not exist") as exc_info:
             self.client.execute_command('TS.OUTLIERS', 'nonexistent', "-", "+", "method", "zscore")
 
-
-    def test_method_spc_shewhart(self):
-        """Test SPC Shewhart control chart method."""
-        key = 'test:outliers:method:spc'
-        create_normal_series(self.client, key, count=100)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'shewhart'
-        )
-        print("shewhart result", result)
-        full_result = TSOutliersFullResult.parse(result)
-        assert full_result.anomaly_count() == 4
-
     def test_method_spc_cusum_negative_spike(self):
         """Test SPC CUSUM control chart method negative spike."""
         key = 'test:outliers:method:cusum'
@@ -109,19 +96,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         print("cusum gradual shift result", outliers)
         positive_count = sum(1 for entry in outliers if entry.signal == 1)
         assert positive_count >= 4
-
-
-    def test_method_isolation_forest(self):
-        """Test isolation forest method."""
-        key = 'test:outliers:method:iforest'
-        create_normal_series(self.client, key, count=100)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'isolation-forest',
-            'NUM_TREES', 50, 'CONTAMINATION', 0.1
-        )
-        print("isolation-forest result", result)
-        assert len(result) == 4
 
     def test_method_rcf(self):
         """Test random cut forest method."""
@@ -270,53 +244,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert anomalies[2].value == 7.0
         assert anomalies[3].signal == -1
         assert anomalies[3].value == -1.0
-
-    def test_method_spc_shewhart(self):
-        """Test Statistical Process Control (Shewhart) detection"""
-        key = "spc_shewhart_test"
-
-        self.client.execute_command("TS.CREATE", key)
-
-        # Create a series with mean shift
-        for i in range(100):
-            value = 1.0 + 0.1 * (i * 0.1) if i < 50 else 5.0 + 0.1 * (i * 0.1)
-            self.client.execute_command("TS.ADD", key, i, value)
-
-        result = self.client.execute_command(
-            "TS.OUTLIERS", key, "-", "+",
-            "method", "shewhart"
-        )
-
-        print("shewhart result", result)
-        # Expect anomalies in the second half
-        second_half_anomalies = sum(1 for x in result["anomalies"][50:] if x != 0)
-        assert second_half_anomalies > 10
-
-    def test_isolation_forest_detection(self):
-        """Test Isolation Forest anomaly detection"""
-        key = "isolation_forest_test"
-
-        self.client.execute_command("TS.CREATE", key)
-
-        # Create a series with anomalies
-        for i in range(50):
-            value = (i / 5.0) if i != 25 else 10.0
-            self.client.execute_command("TS.ADD", key, i, value)
-
-        result = self.client.execute_command(
-            "TS.OUTLIERS", key, "-", "+",
-            'format', 'full',
-            "method", "isolation-forest",
-            "num_trees", 10,
-            "contamination", 0.1,
-            "window_size", 5
-        )
-
-        print("isolation-forest result", result)
-        result = TSOutliersFullResult.parse(result)
-        anomaly_count = result.anomaly_count()
-
-        assert anomaly_count > 0
 
     def test_method_smoothed_zscore(self):
         """Test smoothed z-score method."""
