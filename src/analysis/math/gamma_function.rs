@@ -1,9 +1,7 @@
 use std::f64::consts::PI;
 
 pub fn gamma(x: f64) -> f64 {
-    if x < 1e-5 {
-        panic!("x should be positive");
-    }
+    debug_assert!(x > 1e-5, "gamma: x should be positive");
 
     // For small x, use recurrence: gamma(x) = gamma(x+1) / x
     if x < 1.0 {
@@ -20,9 +18,7 @@ pub fn gamma(x: f64) -> f64 {
 }
 
 pub fn log_gamma(x: f64) -> f64 {
-    if x < 1e-5 {
-        panic!("log_gamma: x should be positive");
-    }
+    debug_assert!(x > 1e-5, "log_gamma: x should be positive");
 
     if x < 1.0 {
         return stirling_approximation_log(x + 3.0) - (x * (x + 1.0) * (x + 2.0)).ln();
