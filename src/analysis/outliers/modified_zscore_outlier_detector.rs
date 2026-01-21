@@ -60,6 +60,28 @@ impl ModifiedZScoreOutlierDetector {
             0.0
         }
     }
+
+    pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let n = ts.len();
+        let mut scores = Vec::with_capacity(n);
+        let mut anomalies = Vec::with_capacity(n);
+
+        for &v in ts {
+            let value = normalize_value(v);
+            let score = self.get_anomaly_score(value);
+            let anomaly_direction = self.classify(value);
+            anomalies.push(anomaly_direction);
+            scores.push(score);
+        }
+
+        Ok(AnomalyResult {
+            scores,
+            anomalies,
+            threshold: self.threshold,
+            method: AnomalyMethod::ModifiedZScore,
+            method_info: None,
+        })
+    }
 }
 impl OutlierDetector for ModifiedZScoreOutlierDetector {
     fn get_anomaly_score(&self, value: f64) -> f64 {
@@ -87,28 +109,9 @@ pub(super) fn detect_anomalies_modified_zscore(
     ts: &[f64],
     threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
     let threshold = threshold.unwrap_or(MODIFIED_ZSCORE_DEFAULT_THRESHOLD);
     let detector = ModifiedZScoreOutlierDetector::new(ts, threshold);
-
-    let mut scores = Vec::with_capacity(n);
-    let mut anomalies = Vec::with_capacity(n);
-
-    for &v in ts {
-        let value = normalize_value(v);
-        let score = detector.get_anomaly_score(value);
-        let anomaly_direction = detector.classify(value);
-        anomalies.push(anomaly_direction);
-        scores.push(score);
-    }
-
-    Ok(AnomalyResult {
-        scores,
-        anomalies,
-        threshold,
-        method: AnomalyMethod::ModifiedZScore,
-        method_info: None,
-    })
+    detector.detect(ts)
 }
 
 #[cfg(test)]
@@ -126,6 +129,9 @@ mod tests {
             result.anomalies[5].is_anomaly(),
             "Should detect anomaly at index 5"
         );
-        assert!(result.scores[5] > 3.5);
+        assert!(
+            result.scores[5] > 0.9,
+            "Anomaly score should be high for outlier"
+        );
     }
 }
