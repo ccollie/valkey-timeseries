@@ -1,6 +1,8 @@
 use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
-use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector};
+use crate::analysis::outliers::{
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector,
+};
 
 pub const MODIFIED_ZSCORE_DEFAULT_THRESHOLD: f64 = 3.5;
 
@@ -64,13 +66,21 @@ impl ModifiedZScoreOutlierDetector {
     pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let mut scores = Vec::with_capacity(n);
-        let mut anomalies = Vec::with_capacity(n);
+        let mut anomalies = Vec::with_capacity(4);
 
-        for &v in ts {
+        for (index, &v) in ts.iter().enumerate() {
             let value = normalize_value(v);
             let score = self.get_anomaly_score(value);
             let anomaly_direction = self.classify(value);
-            anomalies.push(anomaly_direction);
+            if anomaly_direction.is_anomaly() {
+                let anomaly = Anomaly {
+                    index,
+                    signal: anomaly_direction,
+                    value: v,
+                    score,
+                };
+                anomalies.push(anomaly);
+            }
             scores.push(score);
         }
 

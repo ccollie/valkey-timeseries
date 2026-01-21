@@ -3,8 +3,7 @@ mod cusum_outlier_detector;
 mod double_mad_outlier_detector;
 #[cfg(test)]
 mod double_mad_outlier_detector_tests;
-mod iqr;
-mod isolation_forest;
+mod iqr_outlier_detector;
 pub mod mad_estimator;
 mod mad_outlier_detector;
 #[cfg(test)]
@@ -15,13 +14,11 @@ mod outlier_test_data;
 mod rcf_outlier_detector;
 mod smoothed_zscores;
 mod spc_ewma_outlier_detector;
-mod spc_shewhart_outlier_detector;
 mod utils;
 mod zscore_outlier_detector;
 
 pub use anomalies::*;
 pub use double_mad_outlier_detector::*;
-pub use isolation_forest::*;
 pub use rcf_outlier_detector::*;
 pub use smoothed_zscores::*;
 use std::fmt::Display;
@@ -35,8 +32,6 @@ use valkey_module::{ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 pub enum AnomalyMethod {
     /// Statistical process control (Spc)
     StatisticalProcessControl,
-    /// Isolation forest for time series
-    IsolationForest,
     /// Z-score based detection
     ZScore,
     /// Modified Z-score using median absolute deviation
@@ -58,7 +53,6 @@ impl AnomalyMethod {
     pub fn name(&self) -> &'static str {
         match self {
             AnomalyMethod::StatisticalProcessControl => "Statistical Process Control",
-            AnomalyMethod::IsolationForest => "Isolation Forest",
             AnomalyMethod::ZScore => "Z-Score",
             AnomalyMethod::ModifiedZScore => "Modified Z-Score",
             AnomalyMethod::SmoothedZScore => "Smoothed Z-Score",
@@ -77,8 +71,6 @@ impl FromStr for AnomalyMethod {
         let res = hashify::tiny_map_ignore_case! {
             s.as_bytes(),
             "spc" => Ok(AnomalyMethod::StatisticalProcessControl),
-            "isolationforest" => Ok(AnomalyMethod::IsolationForest),
-            "isolation-forest" => Ok(AnomalyMethod::IsolationForest),
             "zscore" => Ok(AnomalyMethod::ZScore),
             "z-score" => Ok(AnomalyMethod::ZScore),
             "modified-zscore" => Ok(AnomalyMethod::ModifiedZScore),
@@ -113,8 +105,6 @@ impl TryFrom<&ValkeyString> for AnomalyMethod {
 /// Statistical process control method
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SPCMethod {
-    /// Shewhart control charts
-    Shewhart,
     /// Cusum control charts
     Cusum,
     /// Exponentially weighted moving average (Ewma)
@@ -135,7 +125,6 @@ impl TryFrom<&[u8]> for SPCMethod {
     fn try_from(s: &[u8]) -> ValkeyResult<Self> {
         let res = hashify::tiny_map_ignore_case! {
             s,
-            "shewhart" => SPCMethod::Shewhart,
             "cusum" => SPCMethod::Cusum,
             "ewma" => SPCMethod::Ewma
         };
@@ -260,20 +249,37 @@ pub enum MethodInfo {
         /// Center line value
         center_line: f64,
     },
-    /// Isolation Forest-specific information
-    IsolationForest {
-        /// Average path length for normal points
-        average_path_length: f64,
-    },
 }
 
-/// Result of analysis detection
+#[derive(Debug, Copy, Clone)]
+pub struct Anomaly {
+    pub signal: AnomalySignal,
+    pub value: f64,
+    pub score: f64,
+    pub index: usize,
+}
+
+impl Anomaly {
+    pub fn is_anomaly(&self) -> bool {
+        self.signal.is_anomaly()
+    }
+
+    pub fn is_negative(&self) -> bool {
+        self.signal.is_negative()
+    }
+
+    pub fn is_positive(&self) -> bool {
+        self.signal.is_positive()
+    }
+}
+
+/// Result of anomaly detection
 #[derive(Debug, Clone)]
 pub struct AnomalyResult {
     /// Anomaly scores for each point (higher scores indicate more anomalous)
     pub scores: Vec<f64>,
-    /// Direction of detected anomalies
-    pub anomalies: Vec<AnomalySignal>,
+    /// Detected anomalies
+    pub anomalies: Vec<Anomaly>,
     /// Threshold used for binary classification
     pub threshold: f64,
     /// Method used for detection
@@ -283,9 +289,19 @@ pub struct AnomalyResult {
 }
 
 impl AnomalyResult {
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            scores: Vec::with_capacity(n),
+            anomalies: Vec::with_capacity(4),
+            threshold: 0.0,
+            method: AnomalyMethod::ZScore,
+            method_info: None,
+        }
+    }
+
     /// Count the number of detected anomalies
     pub fn count_anomalies(&self) -> usize {
-        self.anomalies.iter().filter(|&&a| a.is_anomaly()).count()
+        self.anomalies.len()
     }
 
     /// Get outlier percentage.
@@ -294,7 +310,7 @@ impl AnomalyResult {
         if count == 0 {
             0.0
         } else {
-            100.0 * count as f64 / self.anomalies.len() as f64
+            100.0 * count as f64 / self.scores.len() as f64
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::analysis::outliers::mad_estimator::{
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
-    AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
+    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
     MethodInfo, OutlierDetector,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
@@ -126,13 +126,21 @@ impl MadOutlierDetector {
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
-        for &value in ts {
+        for (index, &value) in ts.iter().enumerate() {
             let score = self.get_anomaly_score(value);
-            let anomaly = self.classify(value);
+            let signal = self.classify(value);
+            if signal.is_anomaly() {
+                let outlier = Anomaly {
+                    index,
+                    signal,
+                    value,
+                    score,
+                };
+                anomalies.push(outlier);
+            }
             scores.push(score);
-            anomalies.push(anomaly);
         }
 
         Ok(AnomalyResult {

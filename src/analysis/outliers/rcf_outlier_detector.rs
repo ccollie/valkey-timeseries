@@ -1,4 +1,6 @@
-use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector};
+use crate::analysis::outliers::{
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector,
+};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use crate::common::threads::NUM_THREADS;
 use krcf::{RandomCutForest, RandomCutForestOptions};
@@ -100,6 +102,7 @@ impl RCFOptions {
         work >= 10_000
     }
 }
+
 impl From<RCFOptions> for RandomCutForestOptions {
     fn from(options: RCFOptions) -> RandomCutForestOptions {
         let parallel_execution_enabled = match options.parallel_enabled {
@@ -203,16 +206,17 @@ impl RcfOutlierDetector {
             )
         })?;
 
-        let anomalies: Vec<AnomalySignal> = scores
-            .iter()
-            .map(|&score| {
-                if score > self.threshold {
-                    AnomalySignal::Positive
-                } else {
-                    AnomalySignal::None
-                }
-            })
-            .collect();
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
+        for (index, &score) in scores.iter().enumerate() {
+            if score > self.threshold {
+                anomalies.push(Anomaly {
+                    index,
+                    signal: AnomalySignal::Positive,
+                    value: ts[index],
+                    score,
+                });
+            }
+        }
 
         Ok(AnomalyResult {
             scores,

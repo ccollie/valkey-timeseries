@@ -1,7 +1,7 @@
 use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
-use crate::analysis::outliers::{AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
+use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
 
 /// Default alpha for Ewma SPC
 pub const EWMA_DEFAULT_ALPHA: f64 = 0.3;
@@ -49,7 +49,7 @@ impl EwmaOutlierDetector {
     pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
         let mut ewma = self.target;
 
@@ -61,21 +61,35 @@ impl EwmaOutlierDetector {
                 * (1.0 - (1.0 - self.alpha).powi(2 * (i as i32 + 1)));
             let ewma_std = ewma_variance.sqrt();
 
-            let distance = self.multiplier * ewma_std;
-            let ucl = self.target + distance;
-            let lcl = self.target - distance;
-
             let raw_score = if !ewma_std.is_finite() || ewma_std <= f64::EPSILON {
                 0.0
             } else {
                 (ewma - self.target).abs() / ewma_std
             };
+
             let score = normalize_unbounded_score(raw_score);
-
-            let anomaly_direction = get_anomaly_direction(lcl, ucl, value);
-            anomalies.push(anomaly_direction);
-
             scores.push(score);
+
+            if ewma_std <= f64::EPSILON {
+                continue; // No variation, skip anomaly detection
+            }
+
+            let distance = self.multiplier * ewma_std;
+            let ucl = self.target + distance;
+            let lcl = self.target - distance;
+
+            // Fix: Handle zero variance case where ucl == lcl == target
+            // If distance is effectively zero, we only flag anomalies if there is a real deviation
+            let signal = get_anomaly_direction(lcl, ucl, ewma);
+
+            if signal != AnomalySignal::None {
+                anomalies.push(Anomaly {
+                    index: i,
+                    signal,
+                    value,
+                    score,
+                });
+            }
         }
 
         let distance = self.multiplier * self.sigma;
@@ -119,22 +133,32 @@ mod tests {
         let result = detect_anomalies_spc_ewma(&ts, Some(0.3)).unwrap();
 
         // Should detect both anomalies
+        assert!(result.anomalies.len() >= 2);
+
+        // find the anomalies at index 30 and 40
+        let anomalies: Vec<Anomaly> = result
+            .anomalies
+            .iter()
+            .filter(|a| a.index == 30 || a.index == 40)
+            .cloned()
+            .collect();
+
         assert!(
-            result.anomalies[30].is_positive(),
+            anomalies[0].is_positive(),
             "Should detect positive anomaly at index 30"
         );
         assert!(
-            result.anomalies[40].is_negative(),
+            anomalies[1].is_negative(),
             "Should detect negative anomaly at index 40"
         );
 
         // Anomalies should have high scores
         assert!(
-            result.scores[30] > 0.8,
+            anomalies[0].score > 0.8,
             "Positive anomaly score should be > 3.0"
         );
         assert!(
-            result.scores[40] > 0.8,
+            anomalies[1].score > 0.8,
             "Negative anomaly score should be > 3.0"
         );
     }
@@ -148,10 +172,8 @@ mod tests {
         // Default alpha (0.3
         let result = detect_anomalies_spc_ewma(&ts, None).unwrap();
 
-        assert!(
-            result.anomalies[15].is_anomaly(),
-            "Should detect anomaly with default alpha"
-        );
+        assert_eq!(result.anomalies.len(), 1);
+        assert!(result.anomalies[0].is_positive());
     }
 
     #[test]
@@ -194,14 +216,16 @@ mod tests {
         let result = detect_anomalies_spc_ewma(&ts, Some(0.2)).unwrap();
 
         // Should detect anomalies in the shifted region
-        let shifted_anomalies = result.anomalies[35..]
-            .iter()
-            .filter(|&&x| x.is_anomaly())
-            .count();
-
         assert!(
-            shifted_anomalies > 10,
-            "Should detect anomalies in shifted region, found {shifted_anomalies}"
+            result.anomalies.len() > 10,
+            "Should detect anomalies in shifted region, found {}",
+            result.anomalies.len()
+        );
+        // find the first anomaly index
+        let first_anomaly_index = result.anomalies.first().map(|a| a.index).unwrap_or(0);
+        assert!(
+            first_anomaly_index >= 30,
+            "First anomaly should be in the shifted region"
         );
     }
 
@@ -235,9 +259,9 @@ mod tests {
         let result = detect_anomalies_spc_ewma(&ts, Some(0.3)).unwrap();
 
         // Should detect no anomalies in constant series
-        let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
         assert_eq!(
-            anomaly_count, 0,
+            result.anomalies.len(),
+            0,
             "Should detect no anomalies in constant series"
         );
     }
@@ -250,10 +274,13 @@ mod tests {
         let result = detect_anomalies_spc_ewma(&ts, Some(0.5)).unwrap();
 
         // Should detect the spike at index 3
+        assert_eq!(result.anomalies.len(), 3);
+
         assert!(
-            result.anomalies[3].is_anomaly(),
+            result.anomalies[0].is_positive(),
             "Should detect anomaly at index 3"
         );
+        assert_eq!(result.anomalies[0].value, 5.0);
     }
 
     #[test]
@@ -338,7 +365,7 @@ mod tests {
         let result = detect_anomalies_spc_ewma(&ts, Some(0.25)).unwrap();
 
         // Count detected anomalies
-        let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
+        let anomaly_count = result.anomalies.len();
 
         assert!(
             anomaly_count >= 4,

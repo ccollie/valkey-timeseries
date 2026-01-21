@@ -4,7 +4,7 @@
 /// Port of the golang implementation here:
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
-use super::{AnomalyMethod, AnomalyResult, AnomalySignal};
+use super::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
 struct MovingMeanStdDev {
@@ -208,12 +208,20 @@ impl SmoothedZScoreAnomalyDetector {
 
         // Keep output lengths equal to the input length (pad the initial window).
         let mut scores: Vec<f64> = Vec::with_capacity(n);
-        let mut anomalies: Vec<AnomalySignal> = Vec::with_capacity(n);
+        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
-        for &value in ts {
-            let signal = self.next(value);
-            anomalies.push(signal);
+        for (index, &value) in ts.iter().enumerate() {
             let score = self.get_anomaly_score(value);
+
+            let signal = self.next(value);
+            if signal != AnomalySignal::None {
+                anomalies.push(Anomaly {
+                    index,
+                    signal,
+                    value,
+                    score,
+                });
+            }
             scores.push(score);
         }
 
@@ -340,11 +348,12 @@ pub(super) fn detect_anomalies_smoothed_zscore(
 
     // Keep output lengths equal to the input length (pad the initial window).
     let mut scores: Vec<f64> = vec![0.0; lag];
-    let mut anomalies: Vec<AnomalySignal> = vec![AnomalySignal::None; lag];
 
     scores.append(&mut res.scores);
-    anomalies.append(&mut res.anomalies);
-    res.anomalies = anomalies;
+    // if we have anomalies, the index must account for the initial lag
+    for anomaly in &mut res.anomalies {
+        anomaly.index += lag;
+    }
     res.scores = scores;
 
     Ok(res)
@@ -467,12 +476,15 @@ mod tests {
             lag: 10,
         };
 
-        let result = detect_anomalies_smoothed_zscore(&ts, options);
-        assert!(result.is_ok());
+        let anomaly_result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
-        let anomaly_result = result.unwrap();
         assert_eq!(anomaly_result.scores.len(), ts.len());
-        assert_eq!(anomaly_result.anomalies.len(), ts.len());
+
+        assert_eq!(anomaly_result.anomalies.len(), 1);
+        assert_eq!(anomaly_result.anomalies[0].index, 20);
+        assert_eq!(anomaly_result.anomalies[0].signal, AnomalySignal::Positive);
+        assert_eq!(anomaly_result.anomalies[0].value, 5.0);
+
         assert_eq!(anomaly_result.threshold, 2.0);
         assert_eq!(anomaly_result.method, AnomalyMethod::SmoothedZScore);
     }
@@ -534,14 +546,7 @@ mod tests {
 
         let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
-        // First `lag` elements should be padded with AnomalySignal::None and score 0.0
-        for i in 0..options.lag {
-            assert_eq!(result.anomalies[i], AnomalySignal::None);
-            assert_eq!(result.scores[i], 0.0);
-        }
-
-        // Length should match input
-        assert_eq!(result.anomalies.len(), ts.len());
+        assert_eq!(result.anomalies.len(), 1);
         assert_eq!(result.scores.len(), ts.len());
     }
 
@@ -560,7 +565,8 @@ mod tests {
         let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
         // The anomaly should be detected at index 10
-        assert_eq!(result.anomalies[10], AnomalySignal::Positive);
+        assert_eq!(result.anomalies.len(), 1);
+        assert_eq!(result.anomalies[0].signal, AnomalySignal::Positive);
     }
 
     #[test]
@@ -575,10 +581,11 @@ mod tests {
             lag: 10,
         };
 
-        let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
+        let anomaly_result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
         // The anomaly should be detected at index 10
-        assert_eq!(result.anomalies[10], AnomalySignal::Negative);
+        assert_eq!(anomaly_result.anomalies.len(), 1);
+        assert_eq!(anomaly_result.anomalies[0].signal, AnomalySignal::Negative);
     }
 
     #[test]
@@ -591,12 +598,10 @@ mod tests {
             lag: 5,
         };
 
-        let result = detect_anomalies_smoothed_zscore(&ts, options);
-        assert!(result.is_ok());
+        let anomaly_result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
         // With high influence, the algorithm should adapt to the new level
-        let anomaly_result = result.unwrap();
-        assert_eq!(anomaly_result.anomalies.len(), ts.len());
+        assert_eq!(anomaly_result.anomalies.len(), 3);
     }
 
     #[test]
@@ -609,12 +614,10 @@ mod tests {
             lag: 5,
         };
 
-        let result = detect_anomalies_smoothed_zscore(&ts, options);
-        assert!(result.is_ok());
+        let anomaly_result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
-        // With low influence, anomalies should have minimal effect on threshold
-        let anomaly_result = result.unwrap();
-        assert_eq!(anomaly_result.anomalies.len(), ts.len());
+        // With low influence, anomalies should have minimal effect on the threshold
+        assert_eq!(anomaly_result.anomalies.len(), 6);
     }
 
     #[test]
@@ -627,11 +630,9 @@ mod tests {
             lag: 5,
         };
 
-        let result = detect_anomalies_smoothed_zscore(&ts, options);
-        assert!(result.is_ok());
+        let anomaly_result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
-        let anomaly_result = result.unwrap();
-        assert_eq!(anomaly_result.anomalies.len(), 5);
+        assert_eq!(anomaly_result.anomalies.len(), 0);
         assert_eq!(anomaly_result.scores.len(), 5);
     }
 
@@ -678,8 +679,6 @@ mod tests {
         let result = detect_anomalies_smoothed_zscore(&ts, options).unwrap();
 
         // All should be non-anomalous in flat data
-        for signal in &result.anomalies[options.lag..] {
-            assert_eq!(*signal, AnomalySignal::None);
-        }
+        assert_eq!(result.anomalies.len(), 0);
     }
 }

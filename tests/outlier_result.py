@@ -80,12 +80,19 @@ class AnomalyMethod(Enum):
 class Sample:
     timestamp: int
     value: float
+    score: Optional[float] = None
 
     @staticmethod
     def parse(value: Any) -> "Sample":
-        if not isinstance(value, Sequence) or len(value) != 2:
+        if not isinstance(value, Sequence) or (len(value) != 2 and len(value) != 3):
             raise TypeError("Sample must be a 2-item array: [timestamp, value]")
-        return Sample(timestamp=to_int(value[0]), value=to_float(value[1]))
+        timestamp = to_int(value[0])
+        val = to_float(value[1])
+        score = None
+        if len(value) == 3:
+            score = to_float(value[2])
+
+        return Sample(timestamp=timestamp, value=val, score=score)
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,8 +155,7 @@ class TSOutliersFullResult:
     method: AnomalyMethod
     threshold: float
     samples: List[Sample]
-    scores: List[float]
-    anomalies: List[AnomalySignal]
+    anomalies: List[AnomalyEntry]
     method_info: Optional[MethodInfo] = None
 
     @staticmethod
@@ -160,8 +166,7 @@ class TSOutliersFullResult:
 
         Expected shape (as Python types):
         - dict with keys: method, threshold, samples, scores, anomalies, optional method_info
-        - samples: list of [timestamp, value]
-        - scores: list of floats
+        - samples: list of [timestamp, value, Score?]
         - anomalies: list of ints (-1, 0, 1)
         - method_info: dict with one of:
             * {lower_fence, upper_fence}
@@ -179,15 +184,11 @@ class TSOutliersFullResult:
             Sample(to_int(pair[0]), to_float(pair[1])) for pair in raw_samples
         ]
 
-        scores = [to_float(x) for x in (value.get("scores") or [])]
-
-        anomalies_raw = value.get("anomalies") or []
-        anomalies: List[AnomalySignal] = []
-        for x in anomalies_raw:
-            xi = int(x)
-            if xi not in (-1, 0, 1):
-                raise ValueError(f"Invalid anomaly signal: {xi}")
-            anomalies.append(xi)  # type: ignore[arg-type]
+        anomalies_raw = value.get("outliers") or []
+        anomalies: List[AnomalyEntry] = []
+        for raw_anomaly in anomalies_raw:
+            anomaly = AnomalyEntry.parse(raw_anomaly)
+            anomalies.append(anomaly)  # type: ignore[arg-type]
 
         method_info_val = value.get("method_info")
         method_info: Optional[MethodInfo] = None
@@ -212,7 +213,6 @@ class TSOutliersFullResult:
             method=method,
             threshold=threshold,
             samples=samples,
-            scores=scores,
             anomalies=anomalies,
             method_info=method_info,
         )
@@ -259,10 +259,10 @@ class TSOutliersCleanedResult:
         value = maybe_map_from_kv_array(value)
 
         if not isinstance(value, Mapping):
-            raise TypeError("FORMAT cleaned result must be a map with keys: samples, anomalies")
+            raise TypeError("FORMAT cleaned result must be a map with keys: samples, outliers")
 
         raw_samples = value.get("samples") or []
-        raw_anomalies = value.get("anomalies") or []
+        raw_anomalies = value.get("outliers") or []
 
         samples = [Sample.parse(item) for item in raw_samples]
         anomalies = [AnomalyEntry.parse(item) for item in raw_anomalies]
