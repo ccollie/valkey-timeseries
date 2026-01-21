@@ -4,8 +4,6 @@ mod samples;
 mod simple_quantile_estimator;
 mod trimmed_hd_estimator;
 
-use crate::analysis::common::Probability;
-
 pub use harrell_davis_quantile_estimator::*;
 pub use hyndman_fan_quantile_estimator::*;
 pub use samples::*;
