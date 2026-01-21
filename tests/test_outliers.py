@@ -1,7 +1,10 @@
 import math
+from typing import List, Any
 
 import pytest
 from valkey import ResponseError
+
+from outlier_result import AnomalyEntry, AnomalySignal, TSOutliersFullResult, TSOutliersCleanedResult
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -27,44 +30,18 @@ def create_series_with_outliers(client, key, start_time=1000):
     return start_time, len(values)
 
 
-class TestOutliersBasic(ValkeyTimeSeriesTestCaseBase):
-    """Basic functionality tests for TS.OUTLIERS"""
+def convert_anomaly_entries(result: List[Any]) -> list[AnomalyEntry]:
+    """Convert raw TS.OUTLIERS result to a list of AnomalyEntry."""
+    entries = []
+    result = result or []
+    for entry in result:
+        entry = AnomalyEntry.parse(entry)
+        entries.append(entry)
+    return entries
 
-    def test_outliers_zscore_default(self):
-        """Test outlier detection with default z-score method."""
-        key = 'test:outliers:zscore'
-        client = self.client
-        start_time, count = create_series_with_outliers(client, key)
 
-        result = client.execute_command('TS.OUTLIERS', key, "-", "+", "method", "zscore")
-
-        # Should return [timestamps, values, scores, signals]
-        assert len(result) == 4
-        timestamps, values, scores, signals = result
-
-        assert len(timestamps) == count
-        assert len(values) == count
-        assert len(scores) == count
-        assert len(signals) == count
-
-        # Check that outliers are detected (values 10.0 and 50.0)
-        outlier_count = sum(1 for s in signals if s != 0)
-        assert outlier_count >= 2
-
-    def test_outliers_with_threshold(self):
-        """Test outlier detection with a custom threshold."""
-        key = 'test:outliers:threshold'
-        start_time, count = create_series_with_outliers(self.client, key)
-
-        # A lower threshold should detect more outliers
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore', 'THRESHOLD', 2.0
-        )
-
-        print("threshold result", result)
-        timestamps, values, scores, signals = result[0]
-        outlier_count = sum(1 for s in signals if s != 0)
-        assert outlier_count >= 2
+class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
+    """Test different outlier detection methods."""
 
     def test_outliers_empty_series(self):
         """Test outlier detection on empty series."""
@@ -81,69 +58,6 @@ class TestOutliersBasic(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command('TS.OUTLIERS', 'nonexistent', "-", "+", "method", "zscore")
 
 
-class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
-    """Test different outlier detection methods."""
-
-    def test_method_zscore(self):
-        """Test z-score method."""
-        key = 'test:outliers:method:zscore'
-        create_series_with_outliers(self.client, key)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'zscore'
-        )
-        print("zscore result", result)
-        assert len(result) == 4
-
-    def test_method_modified_zscore(self):
-        """Test modified z-score method."""
-        key = 'test:outliers:method:modified'
-        create_series_with_outliers(self.client, key)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, "-", "+", 'METHOD', 'modified-zscore'
-        )
-
-        print("modified-zscore result", result)
-        assert len(result) == 4
-
-        timestamps, values, scores, signals = result[0]
-        outlier_count = sum(1 for s in signals if s != 0)
-        assert outlier_count >= 1
-
-    def test_method_iqr(self):
-        """Test interquartile range method."""
-        key = 'test:outliers:method:iqr'
-        create_series_with_outliers(self.client, key)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'iqr', 'threshold', 1.5
-        )
-        print("iqr result", result)
-        assert len(result) == 4
-
-    def test_method_mad(self):
-        """Test median absolute deviation method."""
-        key = 'test:outliers:method:mad'
-        create_series_with_outliers(self.client, key)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'mad', 'threshold', 3.0
-        )
-        print("mad result", result)
-        assert len(result) == 4
-
-    def test_method_double_mad(self):
-        """Test double Mad method."""
-        key = 'test:outliers:method:double-mad'
-        create_series_with_outliers(self.client, key)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'double-mad', 'threshold', 3.0
-        )
-        print("double result", result)
-        assert len(result) == 4
-
     def test_method_spc_shewhart(self):
         """Test SPC Shewhart control chart method."""
         key = 'test:outliers:method:spc'
@@ -153,42 +67,49 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
             'TS.OUTLIERS', key, '-', '+', 'METHOD', 'shewhart'
         )
         print("shewhart result", result)
-        assert len(result) == 4
+        full_result = TSOutliersFullResult.parse(result)
+        assert full_result.anomaly_count() == 4
 
-    def test_method_spc_cusum(self):
-        """Test SPC CUSUM control chart method."""
+    def test_method_spc_cusum_negative_spike(self):
+        """Test SPC CUSUM control chart method negative spike."""
         key = 'test:outliers:method:cusum'
-        create_normal_series(self.client, key, count=100)
+
+        ts = [10.0, 9.0, 11.0, 10.5, 9.5, 10.0, 9.0, 11.0, 10.5, 9.5, 9.0]
+        ts.extend([-30.0] * 10)  # Negative spike - much larger deviation
+        ts.extend([10.0, 9.0, 11.0, 10.5, 9.5, 8.0])
+
+        for i, val in enumerate(ts):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
 
         result = self.client.execute_command(
             'TS.OUTLIERS', key, '-', '+', 'METHOD', 'cusum'
         )
+
         print("cusum result", result)
         assert len(result) == 4
 
-    def test_method_spc_ewma(self):
-        """Test SPC EWMA control chart method."""
-        key = 'test:outliers:method:ewma'
-        create_normal_series(self.client, key, count=100)
+    def test_method_spc_cusum_gradual_shift(self):
+        """Test SPC CUSUM control chart method gradual shift."""
+
+        key = 'test:outliers:method:cusum:shift'
+        ts = [float(i) for i in range(0, 50)]
+
+        # Gradual upward shift
+        for i in range(50):
+            ts.append(float(i + 50))
+
+        for i, val in enumerate(ts):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
 
         result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'ewma',
-            'ALPHA', 0.3
+            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'cusum'
         )
-        print("ewma result", result)
-        assert len(result) == 4
+        outliers = convert_anomaly_entries(result)
 
-    def test_method_smoothed_zscore(self):
-        """Test smoothed z-score method."""
-        key = 'test:outliers:method:smoothed'
-        create_series_with_outliers(self.client, key)
+        print("cusum gradual shift result", outliers)
+        positive_count = sum(1 for entry in outliers if entry.signal == 1)
+        assert positive_count >= 4
 
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'smoothed-zscore',
-            'LAG', 5, 'THRESHOLD', 3.5, 'INFLUENCE', 0.5
-        )
-        print("smoothed-zscore result", result)
-        assert len(result) == 4
 
     def test_method_isolation_forest(self):
         """Test isolation forest method."""
@@ -219,42 +140,35 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         key = 'test:outliers:invalid'
         create_series_with_outliers(self.client, key)
 
-        with pytest.raises(ResponseError, match='TSDB: unknown outlier detection method'):
+        with pytest.raises(ResponseError, match='TSDB: unknown anomaly detection method'):
             self.client.execute_command('TS.OUTLIERS', key, '-', '+', 'METHOD', 'invalid')
 
+    def test_method_zscore(self):
+        """Test outlier detection with default z-score method."""
+        key = 'test:outliers:zscore'
+        client = self.client
 
-class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
-    """Tests for TS.OUTLIERS command"""
+        data = [
+            0.10, 0.05, 0.12, 0.08, 0.11, 0.09, 0.07, 0.10, 0.06, 0.08, 0.09, 0.11, 0.10, 0.07,
+            0.08, 0.12, 0.09, 0.10, 0.08, 0.07, 6.00,  # strong positive anomaly
+            0.09, 0.11, 0.08, 0.10, 0.07, 0.09, 0.10, -6.00,  # strong negative anomaly
+            0.08, 0.09, 0.10,
+        ]
 
-    def test_zscore_anomaly_detection(self):
-        """Test Z-score based anomaly detection"""
-        key = "zscore_test"
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
 
-        self.client.execute_command("TS.CREATE", key)
+        result = client.execute_command('TS.OUTLIERS', key, "-", "+", "method", "zscore")
+        anomalies = convert_anomaly_entries(result)
 
-        # Create a time series with clear anomalies
-        for i in range(100):
-            value = (i / 10.0) if i != 25 and i != 75 else (5.0 if i == 25 else -5.0)
-            self.client.execute_command("TS.ADD", key, i, value)
+        assert len(anomalies) == 2
+        assert anomalies[0].signal == 1
+        assert anomalies[0].value == 6.00
 
-        # Detect anomalies using the Z-score method
-        result = self.client.execute_command(
-            "TS.OUTLIERS", key, "-", "+",
-            "method", "zscore",
-            "threshold", 3.0
-        )
+        assert anomalies[1].signal == -1
+        assert anomalies[1].value == -6.00
 
-        print("zscore result", result)
-        assert result is not None
-        assert "scores" in result
-        assert "anomalies" in result
-        assert len(result["anomalies"]) == 100
-
-        # Verify anomalies at indices 25 and 75
-        anomaly_count = sum(1 for x in result["anomalies"] if x != 0)
-        assert anomaly_count >= 2
-
-    def test_modified_zscore_detection(self):
+    def test_method_modified_zscore(self):
         """Test Modified Z-score using median absolute deviation"""
         key = "modified_zscore_test"
 
@@ -270,10 +184,14 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
             "method", "modified-zscore",
             "threshold", 3.5
         )
-        print("modified-zscore result", result)
-        assert result["anomalies"][5] != 0  # Outlier at index 5
 
-    def test_iqr_anomaly_detection(self):
+        outliers = convert_anomaly_entries(result)
+
+        assert len(outliers) == 1
+        assert outliers[0].signal == 1
+        assert outliers[0].value == 10.0
+
+    def test_method_iqr(self):
         """Test Interquartile Range (IQR) anomaly detection"""
         key = "iqr_test"
 
@@ -290,11 +208,70 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
             "threshold", 1.5
         )
 
-        print("iqr result", result)
+        result = convert_anomaly_entries(result)
+        assert len(result) == 1
+        assert result[0].signal == 1
+        assert result[0].value == 10.00
 
-        assert result["anomalies"][50] != 0  # Outlier detected
+        VALUES = [
+            50.0, 51.0, 49.0, 52.0, 48.0,  # Normal range
+            100.0,  # High outlier
+            50.0, 49.0, 51.0,  # Normal range
+            5.0,  # Low outlier
+            50.0, 52.0,  # Normal range
+        ]
 
-    def test_spc_shewhart_detection(self):
+        key2 = "iqr_test_2"
+        self.client.execute_command("TS.CREATE", key2)
+        for i, value in enumerate(VALUES):
+            self.client.execute_command("TS.ADD", key2, 1000 + i * 1000, value)
+
+        result2 = self.client.execute_command(
+            "TS.OUTLIERS", key2, "-", "+",
+            "method", "iqr",
+            "threshold", 1.5
+        )
+
+        outliers = convert_anomaly_entries(result2)
+        assert len(outliers) == 2
+
+        assert outliers[0].signal == 1
+        assert outliers[0].value == 100.0
+        assert outliers[1].signal == -1
+        assert outliers[1].value == 5.0
+
+    def test_method_spc_ewma(self):
+        """Test SPC EWMA control chart method."""
+        key = 'test:outliers:method:ewma'
+        self.client.execute_command('TS.CREATE', key)
+
+        # Test with multiple scattered anomalies
+        ts = [2.0 + 0.1 * math.sin(i * 0.1) for i in range(100)]
+        # Add multiple anomalies
+        ts[10] = 6.0
+        ts[30] = -2.0
+        ts[50] = 7.0
+        ts[80] = -1.0
+
+        for i, val in enumerate(ts):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
+
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'ewma',
+            'ALPHA', 0.3
+        )
+        anomalies = convert_anomaly_entries(result)
+        assert len(anomalies) >= 4
+        assert anomalies[0].signal == 1
+        assert anomalies[0].value == 6.0
+        assert anomalies[1].signal == -1
+        assert anomalies[1].value == -2.0
+        assert anomalies[2].signal == 1
+        assert anomalies[2].value == 7.0
+        assert anomalies[3].signal == -1
+        assert anomalies[3].value == -1.0
+
+    def test_method_spc_shewhart(self):
         """Test Statistical Process Control (Shewhart) detection"""
         key = "spc_shewhart_test"
 
@@ -328,6 +305,7 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
 
         result = self.client.execute_command(
             "TS.OUTLIERS", key, "-", "+",
+            'format', 'full',
             "method", "isolation-forest",
             "num_trees", 10,
             "contamination", 0.1,
@@ -335,47 +313,56 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
         )
 
         print("isolation-forest result", result)
+        result = TSOutliersFullResult.parse(result)
+        anomaly_count = result.anomaly_count()
 
-        anomaly_count = sum(1 for x in result["anomalies"] if x != 0)
         assert anomaly_count > 0
 
-    def test_smoothed_zscore_detection(self):
-        """Test Smoothed Z-Score anomaly detection"""
-        key = "smoothed_zscore_test"
+    def test_method_smoothed_zscore(self):
+        """Test smoothed z-score method."""
+        key = 'test:outliers:method:smoothed'
 
-        self.client.execute_command("TS.CREATE", key)
+        ts = [
+            1.0, 1.0, 1.1, 1.0, 0.9, 1.0, 1.0, 1.1, 1.0, 0.9,
+            1.0, 1.1, 1.0, 1.0, 0.9, 1.0, 1.0, 1.1, 1.0, 1.0,
+            5.0,  # anomaly
+            1.0, 1.0, 1.0,
+        ]
+        for i, val in enumerate(ts):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
 
-        # Create a series with peaks
-        initial = [1.0] * 20
-        for i, value in enumerate(initial):
-            self.client.execute_command("TS.ADD", key, i, value)
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'METHOD', 'smoothed-zscore', 'LAG', 10, 'THRESHOLD', 2.0, 'INFLUENCE', 0.0
+        )
+        anomalies = convert_anomaly_entries(result)
+        print("smoothed-zscore result", anomalies)
+        assert len(anomalies) == 1
+        assert anomalies[0].signal == 1  # Positive anomaly
+        assert anomalies[0].value == 5.0
 
-        # Add test values
-        test_values = [1.0, 5.0, 1.0, -3.0, 1.0]
-        for i, value in enumerate(test_values, start=20):
-            self.client.execute_command("TS.ADD", key, i, value)
-
-        result = self.client.execute_command("TS.OUTLIERS",
-                                             key, "-", "+",
-                                             "method", "smoothed-zscore",
-                                             "lag", 20,
-                                             "threshold", 2.0,
-                                             "influence", 0.0
-                                             )
-
-        print("smoothed-zscore result", result)
-
-        assert len(result["anomalies"]) == 25
-
-    def test_mad_detection(self):
+    def test_method_mad(self):
         """Test Median Absolute Deviation (Mad) detection"""
         key = "mad_test"
 
         self.client.execute_command("TS.CREATE", key)
 
-        values = [1.0, 2.0, 1.5, 2.2, 1.8, 10.0, 2.1, 1.9]
+        values = [
+            1067.0, 1085.0, 1133.0, 1643.0, 3328.0, 3351.0, 3369.0, 3385.0, 3412.0, 3438.0, 3441.0,
+            3451.0, 3462.0, 3465.0, 3497.0, 3505.0, 3514.0, 3519.0, 3521.0, 3525.0, 3529.0, 3531.0,
+            3555.0, 3575.0, 3587.0, 3600.0, 3624.0, 3634.0, 3635.0, 3639.0, 3652.0, 3652.0, 3660.0,
+            3662.0, 3665.0, 3667.0, 3673.0, 3677.0, 3687.0, 3688.0, 3700.0, 3717.0, 3736.0, 3739.0,
+            3743.0, 3761.0, 3773.0, 3780.0, 3783.0, 3791.0, 3823.0, 3833.0, 3834.0, 3848.0, 3859.0,
+            3860.0, 3861.0, 3866.0, 3870.0, 3881.0, 3882.0, 3884.0, 3892.0, 3897.0, 3903.0, 3909.0,
+            3920.0, 3921.0, 3928.0, 3942.0, 3946.0, 3959.0, 3994.0, 3998.0, 4023.0, 4065.0, 4115.0,
+            4161.0, 4175.0, 4183.0, 4228.0, 4247.0, 4253.0, 4256.0, 4275.0, 4277.0, 4327.0, 4398.0,
+            4416.0, 4642.0,
+        ]
+
+        expected = [1067.0, 1085.0, 1133.0, 1643.0, 4642.0]
+
         for i, value in enumerate(values):
-            self.client.execute_command("TS.ADD", key, i, value)
+            self.client.execute_command("TS.ADD", key, 1000 + i * 1000, value)
 
         result = self.client.execute_command("TS.OUTLIERS",
                                              key, "-", "+",
@@ -384,18 +371,34 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
                                              "estimator", "simple"
                                              )
 
-        print("mad result", result)
+        anomalies = convert_anomaly_entries(result)
 
-        assert any(x != 0 for x in result["anomalies"])
+        print("mad result", anomalies)
+        assert len(anomalies) == len(expected)
+        for anomaly, exp in zip(anomalies, expected):
+            assert anomaly.value == exp
 
-    def test_double_mad_detection(self):
+    def test_method_double_mad(self):
         """Test Double Median Absolute Deviation (Double Mad) outlier detection"""
         key = "double_mad_test"
 
         self.client.execute_command("TS.CREATE", key)
 
-        values = [1.0] * 10 + [5.0] + [1.0] * 10
-        for i, value in enumerate(values):
+        VALUES = [
+            -2002.0, -2001.0, -2000.0, 9.0, 47.0, 50.0, 71.0, 78.0, 79.0, 97.0, 98.0, 117.0, 123.0,
+            136.0, 138.0, 143.0, 145.0, 167.0, 185.0, 202.0, 216.0, 217.0, 229.0, 235.0, 242.0, 257.0,
+            297.0, 300.0, 315.0, 344.0, 347.0, 347.0, 360.0, 362.0, 368.0, 387.0, 400.0, 428.0, 455.0,
+            468.0, 484.0, 493.0, 523.0, 557.0, 574.0, 586.0, 605.0, 617.0, 618.0, 634.0, 641.0, 646.0,
+            649.0, 674.0, 678.0, 689.0, 699.0, 703.0, 709.0, 714.0, 740.0, 795.0, 798.0, 839.0, 880.0,
+            938.0, 941.0, 983.0, 1014.0, 1021.0, 1022.0, 1165.0, 1183.0, 1195.0, 1250.0, 1254.0,
+            1288.0, 1292.0, 1326.0, 1362.0, 1363.0, 1421.0, 1549.0, 1585.0, 1605.0, 1629.0, 1694.0,
+            1695.0, 1719.0, 1799.0, 1827.0, 1828.0, 1862.0, 1991.0, 2140.0, 2186.0, 2255.0, 2266.0,
+            2295.0, 2321.0, 2419.0, 2919.0, 3612.0, 6000.0, 6001.0, 6002.0,
+        ]
+
+        EXPECTED = [-2002.0, -2001.0, -2000.0, 6000.0, 6001.0, 6002.0]
+
+        for i, value in enumerate(VALUES):
             self.client.execute_command("TS.ADD", key, i, value)
 
         result = self.client.execute_command("TS.OUTLIERS",
@@ -405,9 +408,11 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
                                              "estimator", "harrell-davis"
                                              )
 
-        print("double mad result", result)
-
-        assert result["anomalies"][10] != 0  # Outlier at index 10
+        outliers = convert_anomaly_entries(result)
+        print("double mad result", outliers)
+        assert len(outliers) == len(EXPECTED)
+        for outlier, exp in zip(outliers, EXPECTED):
+            assert outlier.value == exp
 
     def test_anomaly_direction_filtering(self):
         """Test filtering anomalies by direction"""
@@ -415,24 +420,67 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
 
         self.client.execute_command("TS.CREATE", key)
 
-        for i in range(50):
-            value = 1.0
-            if i == 20:
-                value = 5.0  # Positive anomaly
-            elif i == 30:
-                value = -3.0  # Negative anomaly
+        # Create a sufficient baseline with variance
+        values = []
+        for i in range(30):
+            # Add slight variance around 10.0 for valid std dev
+            values.append(10.0 + 0.2 * math.sin(i * 0.5))
+
+        # Add positive anomaly
+        values.append(20.0)  # Strong positive spike
+
+        # More baseline
+        for i in range(10):
+            values.append(10.0 + 0.2 * math.sin(i * 0.5))
+
+        # Add negative anomaly
+        values.append(-5.0)  # Strong negative spike
+
+        # Final baseline
+        for i in range(9):
+            values.append(10.0 + 0.2 * math.sin(i * 0.5))
+
+        for i, value in enumerate(values):
             self.client.execute_command("TS.ADD", key, i, value)
 
-        # Detect only positive anomalies
+        # Test direction="positive"
         result = self.client.execute_command("TS.OUTLIERS",
                                              key, "-", "+",
                                              "method", "zscore",
-                                             "threshold", 2.0,
-                                             "direction", "positive"
-        )
+                                             "threshold", 3.0,
+                                             "direction", "positive")
 
-        assert result["anomalies"][20] == 1  # Positive signal
-        assert result["anomalies"][30] == 0  # Negative filtered out
+        outliers = convert_anomaly_entries(result)
+        assert len(outliers) == 1
+        assert outliers[0].signal == 1  # Positive signal
+        assert outliers[0].value == 20.0
+
+        # Test direction="negative"
+        result = self.client.execute_command("TS.OUTLIERS",
+                                             key, "-", "+",
+                                             "method", "zscore",
+                                             "threshold", 3.0,
+                                             "direction", "negative")
+
+        outliers = convert_anomaly_entries(result)
+        assert len(outliers) == 1
+        assert outliers[0].signal == -1  # Negative signal
+        assert outliers[0].value == -5.0
+
+        # Test direction="both"
+        result = self.client.execute_command("TS.OUTLIERS",
+                                             key, "-", "+",
+                                             "method", "zscore",
+                                             "threshold", 3.0,
+                                             "direction", "both")
+
+        outliers = convert_anomaly_entries(result)
+
+        assert len(outliers) == 2
+        assert outliers[0].signal == 1  # Positive signal
+        assert outliers[0].value == 20.0
+        assert outliers[1].signal == -1  # Negative signal
+        assert outliers[1].value == -5.0
 
     def test_seasonal_adjustment(self):
         """Test anomaly detection with seasonal adjustment"""
@@ -448,11 +496,13 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
 
         result = self.client.execute_command("TS.OUTLIERS",
                                              key, "-", "+",
+                                             "FORMAT", "full",
                                              "method", "zscore",
                                              "threshold", 3.0,
-                                             "seasonal_period", 7
-        )
+                                             "seasonal_period", 7)
 
+        print("seasonal adjustment", result)
+        result = TSOutliersFullResult.parse(result)
         assert result is not None
         assert "anomalies" in result
 
@@ -469,8 +519,8 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(Exception):
             self.client.execute_command("TS.OUTLIERS", key, method="zscore")
 
-    def test_constant_series(self):
-        """Test anomaly detection on constant series"""
+    def test_zscore_constant_series(self):
+        """Test anomaly detection on constant series (no anomalies expected)"""
         key = "constant_test"
 
         self.client.execute_command("TS.CREATE", key)
@@ -482,12 +532,10 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command("TS.OUTLIERS",
                                              key, "-", "+",
                                              "method", "zscore",
-                                             "threshold", 3.0
+                                             "threshold", 3.0,
         )
 
-        # No anomalies in constant series
-        anomaly_count = sum(1 for x in result["anomalies"] if x != 0)
-        assert anomaly_count == 0
+        assert len(result) == 0
 
     def test_rcf_detection(self):
         """Test Random Cut Forest (Rcf) anomaly detection"""
@@ -501,8 +549,95 @@ class TestTimeSeriesAnomalyDetection(ValkeyTimeSeriesTestCaseBase):
 
         result = self.client.execute_command("TS.OUTLIERS",
                                              key, "-", "+",
+                                             "FORMAT", "full",
                                              "method", "rcf",
-                                             "threshold", 2.5
+                                             "threshold", 2.5)
+
+        print("rcf result", result)
+        result = TSOutliersFullResult.parse(result)
+
+        assert any(x != 0 for x in result.anomalies)
+
+    def test_format_cleaned(self):
+        """Test FORMAT cleaned returns samples without anomalies and anomaly list."""
+        key = 'test:outliers:format:cleaned'
+
+        # Create data with clear anomalies
+        data = [
+            10.0, 10.5, 9.8, 10.2, 9.9,  # Normal values
+            50.0,  # Positive anomaly
+            10.1, 10.3, 9.7, 10.0,  # Normal values
+            -30.0,  # Negative anomaly
+            10.2, 9.9, 10.1,  # Normal values
+        ]
+
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
+
+        # Test FORMAT cleaned with DIRECTION both (default)
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'FORMAT', 'cleaned',
+            'METHOD', 'zscore', 'THRESHOLD', '2.5'
         )
 
-        assert any(x != 0 for x in result["anomalies"])
+        # The result should be a map with 'samples' and 'anomalies' keys
+        result = TSOutliersCleanedResult.parse(result)
+        print("result FORMAT cleaned", result)
+        anomaly_values = [float(a.value) for a in result.anomalies]
+
+        # Anomalies should contain the outliers (50.0 and -30.0)
+        assert result.anomaly_count() == 2
+
+        assert 50.0 in anomaly_values
+        assert -30.0 in anomaly_values
+
+        # Cleaned samples should exclude anomalies
+        sample_values = [s.value for s in result.samples]
+        assert 50.0 not in sample_values
+        assert -30.0 not in sample_values
+        assert len(sample_values) == len(data) - 2  # Total minus anomalies
+
+        # Test FORMAT cleaned with DIRECTION positive (only removes positive anomalies)
+        result_positive = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'FORMAT', 'cleaned',
+            'DIRECTION', 'positive',
+            'METHOD', 'zscore', 'THRESHOLD', '2.5'
+        )
+
+        res = TSOutliersCleanedResult.parse(result_positive)
+        samples_pos = res.samples
+        anomalies_pos = res.anomalies
+
+        assert len(anomalies_pos) == 1
+        assert anomalies_pos[0].value == 50.0
+        assert anomalies_pos[0].signal == 1
+
+        # Cleaned samples should only exclude positive anomaly
+        sample_values_pos = [s.value for s in samples_pos]
+        assert 50.0 not in sample_values_pos
+        assert -30.0 in sample_values_pos  # Negative anomaly should remain
+        assert len(samples_pos) == len(data) - 1
+
+        # Test FORMAT cleaned with DIRECTION negative (only removes negative anomalies)
+        result_negative = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'FORMAT', 'cleaned',
+            'DIRECTION', 'negative',
+            'METHOD', 'zscore', 'THRESHOLD', '2.5'
+        )
+
+        res = TSOutliersCleanedResult.parse(result_negative)
+        samples_neg = res.samples
+        anomalies_neg = res.anomalies
+
+        assert len(anomalies_neg) == 1
+        assert anomalies_neg[0].value == -30.0
+        assert anomalies_neg[0].signal == -1
+
+        # Cleaned samples should only exclude negative anomaly
+        sample_values_neg = [s.value for s in samples_neg]
+        assert -30.0 not in sample_values_neg
+        assert 50.0 in sample_values_neg  # Positive anomaly should remain
+        assert len(samples_neg) == len(data) - 1
