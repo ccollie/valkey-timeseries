@@ -5,14 +5,12 @@
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
 use super::cusum_outlier_detector::detect_anomalies_spc_cusum;
-use super::iqr::detect_anomalies_iqr;
-use super::isolation_forest::{IsolationForestOptions, detect_anomalies_isolation_forest};
+use super::iqr_outlier_detector::detect_anomalies_iqr;
 use super::mad_outlier_detector::MadOutlierDetector;
 use super::modified_zscore_outlier_detector::detect_anomalies_modified_zscore;
 use super::rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf};
 use super::smoothed_zscores::SmoothedZScoreOptions;
 use super::spc_ewma_outlier_detector::{EWMA_DEFAULT_ALPHA, detect_anomalies_spc_ewma};
-use super::spc_shewhart_outlier_detector::detect_anomalies_spc_shewhart;
 use super::zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore};
 use super::{
     AnomalyMethod, AnomalyResult, MADAnomalyOptions, SPCMethod, detect_anomalies_double_mad,
@@ -40,7 +38,7 @@ pub struct SPCMethodOptions {
 impl Default for SPCMethodOptions {
     fn default() -> Self {
         Self {
-            spc_method: SPCMethod::Shewhart,
+            spc_method: SPCMethod::Ewma,
             ewma_alpha: Some(EWMA_DEFAULT_ALPHA),
         }
     }
@@ -50,7 +48,6 @@ impl Default for SPCMethodOptions {
 pub enum AnomalyDetectionMethodOptions {
     Spc(SPCMethodOptions),
     InterQuartileRange(Option<f64>),
-    IsolationForest(IsolationForestOptions),
     ZScore(Option<f64>),
     SmoothedZScore(SmoothedZScoreOptions),
     ModifiedZScore(Option<f64>),
@@ -72,7 +69,6 @@ impl AnomalyDetectionMethodOptions {
             AnomalyDetectionMethodOptions::InterQuartileRange(_) => {
                 AnomalyMethod::InterquartileRange
             }
-            AnomalyDetectionMethodOptions::IsolationForest(_) => AnomalyMethod::IsolationForest,
             AnomalyDetectionMethodOptions::ZScore(_) => AnomalyMethod::ZScore,
             AnomalyDetectionMethodOptions::SmoothedZScore(_) => AnomalyMethod::SmoothedZScore,
             AnomalyDetectionMethodOptions::ModifiedZScore(_) => AnomalyMethod::ModifiedZScore,
@@ -172,9 +168,6 @@ fn handle_dispatch(
         AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => {
             detect_anomalies_iqr(ts, threshold)
         }
-        AnomalyDetectionMethodOptions::IsolationForest(options) => {
-            detect_anomalies_isolation_forest(ts, options)
-        }
         AnomalyDetectionMethodOptions::ZScore(threshold) => detect_anomalies_zscore(ts, threshold),
         AnomalyDetectionMethodOptions::SmoothedZScore(opts) => {
             detect_anomalies_smoothed_zscore(ts, opts)
@@ -196,7 +189,6 @@ fn detect_anomalies_spc(
     options: SPCMethodOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     match options.spc_method {
-        SPCMethod::Shewhart => detect_anomalies_spc_shewhart(ts),
         SPCMethod::Cusum => {
             // Cusum control chart implementation
             detect_anomalies_spc_cusum(ts)

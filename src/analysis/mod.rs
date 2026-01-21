@@ -1,4 +1,3 @@
-pub mod common;
 mod error;
 pub mod math;
 pub mod outliers;

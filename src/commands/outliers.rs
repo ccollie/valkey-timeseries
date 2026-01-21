@@ -1,10 +1,11 @@
 use crate::analysis::outliers::{
-    AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions, AnomalyResult,
-    AnomalySignal, IsolationForestOptions, MADAnomalyOptions, MethodInfo, RCFOptions, SPCMethod,
-    SPCMethodOptions, SmoothedZScoreOptions, detect_anomalies,
+    Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
+    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, SPCMethod, SPCMethodOptions,
+    SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::commands::{CommandArgIterator, parse_duration_ms, parse_timestamp_range};
 use crate::common::Sample;
+use crate::common::hash::IntSet;
 use crate::error_consts;
 use crate::series::get_timeseries;
 use crate::series::range_utils::get_range;
@@ -108,7 +109,6 @@ fn parse_method_options(
         AnomalyMethod::Mad => parse_mad_options(args),
         AnomalyMethod::DoubleMAD => parse_double_mad_options(args),
         AnomalyMethod::InterquartileRange => parse_iqr_options(args),
-        AnomalyMethod::IsolationForest => parse_isolation_forest_options(args),
         AnomalyMethod::RandomCutForest => parse_rcf_options(args),
     }
 }
@@ -287,37 +287,6 @@ fn parse_iqr_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
     })
 }
 
-fn parse_isolation_forest_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let mut if_options = IsolationForestOptions::default();
-
-    while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
-           "NUM_TREES" => {
-                if_options.n_trees = parse_single_value(args, "NUM_TREES")? as usize;
-            },
-            "CONTAMINATION" => {
-                if_options.contamination = parse_single_value(args, "CONTAMINATION")?;
-            },
-            "WINDOW_SIZE" => {
-                if_options.window_size = Some(parse_single_value(args, "WINDOW_SIZE")? as usize);
-            },
-            "SUBSAMPLE_SIZE" => {
-                if_options.subsample_size = Some(parse_single_value(args, "SUBSAMPLE_SIZE")? as usize);
-            },
-            _ => {
-                return Err(ValkeyError::String(format!("TSDB: unknown option {arg}")));
-            }
-        );
-    }
-
-    let options = AnomalyOptions {
-        options: AnomalyDetectionMethodOptions::IsolationForest(if_options),
-        ..Default::default()
-    };
-
-    Ok(options)
-}
-
 fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut options = AnomalyOptions {
         ..Default::default()
@@ -417,7 +386,7 @@ fn format_output_simple(
     samples: &[Sample],
     direction: AnomalyDirection,
 ) -> ValkeyResult {
-    Ok(format_anomalies(result, samples, direction))
+    Ok(format_anomalies(&result, samples, direction))
 }
 
 /// Returns all samples excluding those that are anomalies in the specified direction, as well as anomalies
@@ -427,57 +396,74 @@ fn format_output_cleaned(
     direction: AnomalyDirection,
 ) -> ValkeyResult {
     let cleaned_samples = format_cleaned_samples(&samples, &result.anomalies, direction);
-    let anomalies = format_anomalies(result, &samples, direction);
+    let anomalies = format_anomalies(&result, &samples, direction);
     let result: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::from([
         ("samples".into(), ValkeyValue::Array(cleaned_samples)),
-        ("anomalies".into(), anomalies),
+        ("outliers".into(), anomalies),
     ]);
     Ok(ValkeyValue::Map(result))
 }
 
+fn format_cleaned_samples(
+    samples: &[Sample],
+    outliers: &[Anomaly],
+    direction: AnomalyDirection,
+) -> Vec<ValkeyValue> {
+    if outliers.is_empty() {
+        return samples
+            .iter()
+            .map(|sample| sample.into())
+            .collect::<Vec<ValkeyValue>>();
+    }
+
+    let indices: IntSet<usize> = outliers
+        .iter()
+        .filter(|anomaly| anomaly.signal.matches_direction(direction))
+        .map(|anomaly| anomaly.index)
+        .collect();
+
+    samples
+        .iter()
+        .enumerate()
+        .filter(|(index, _x)| !indices.contains(index))
+        .map(|(_, sample)| sample.into())
+        .collect::<Vec<ValkeyValue>>()
+}
 /// Returns anomalies only as a list of tuples (timestamp, value, anomaly_direction, score)
 fn format_anomalies(
-    result: AnomalyResult,
+    result: &AnomalyResult,
     samples: &[Sample],
     direction: AnomalyDirection,
 ) -> ValkeyValue {
     // Collect only the anomalies
     let anomalies: Vec<ValkeyValue> = result
         .anomalies
-        .into_iter()
-        .zip(samples.iter())
-        .zip(result.scores)
-        .filter(|((signal, _), _)| signal.matches_direction(direction))
-        .map(|((signal, sample), score)| {
-            let anomaly: ValkeyValue = signal.into();
+        .iter()
+        .filter_map(|outlier| {
+            if !outlier.signal.matches_direction(direction) {
+                return None;
+            }
+            let sample = samples.get(outlier.index)?;
+            let anomaly: ValkeyValue = outlier.signal.into();
             let timestamp = ValkeyValue::Integer(sample.timestamp);
             let sample_value = ValkeyValue::Float(sample.value);
-            let anomaly_score = ValkeyValue::Float(score);
-            ValkeyValue::Array(vec![timestamp, sample_value, anomaly, anomaly_score])
+            let anomaly_score = ValkeyValue::Float(outlier.score);
+            Some(ValkeyValue::Array(vec![
+                timestamp,
+                sample_value,
+                anomaly,
+                anomaly_score,
+            ]))
         })
         .collect();
 
     ValkeyValue::Array(anomalies)
 }
 
-fn format_cleaned_samples(
-    samples: &[Sample],
-    anomalies: &[AnomalySignal],
-    direction: AnomalyDirection,
-) -> Vec<ValkeyValue> {
-    // filter out samples that are anomalies in the specified direction
-    samples
-        .iter()
-        .zip(anomalies.iter())
-        .filter(|(_, dir)| !dir.matches_direction(direction))
-        .map(|(s, _)| s.into())
-        .collect()
-}
-
 fn format_output_full(
     result: AnomalyResult,
     samples: &[Sample],
-    _direction: AnomalyDirection,
+    direction: AnomalyDirection,
 ) -> ValkeyResult {
     let mut res: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::new();
 
@@ -491,21 +477,31 @@ fn format_output_full(
     res.insert("threshold".into(), ValkeyValue::Float(result.threshold));
 
     // Add samples
-    let sample_values: Vec<ValkeyValue> = samples.iter().map(|s| s.into()).collect();
+    let sample_values: Vec<ValkeyValue> = samples
+        .iter()
+        .zip(result.scores.iter())
+        .map(|(sample, score)| {
+            ValkeyValue::Array(vec![
+                ValkeyValue::Integer(sample.timestamp),
+                ValkeyValue::Float(sample.value),
+                ValkeyValue::Float(*score),
+            ])
+        })
+        .collect();
     res.insert("samples".into(), ValkeyValue::Array(sample_values));
 
     // Add scores
-    let scores: Vec<ValkeyValue> = result.scores.into_iter().map(ValkeyValue::Float).collect();
+    let scores: Vec<ValkeyValue> = result
+        .scores
+        .iter()
+        .map(|&x| ValkeyValue::Float(x))
+        .collect();
     res.insert("scores".into(), ValkeyValue::Array(scores));
 
     // Add anomalies
-    let anomalies: Vec<ValkeyValue> = result
-        .anomalies
-        .into_iter()
-        .map(|signal| signal.into())
-        .collect();
+    let anomalies = format_anomalies(&result, samples, direction);
 
-    res.insert("anomalies".into(), ValkeyValue::Array(anomalies.clone()));
+    res.insert("outliers".into(), anomalies);
 
     // Add method-specific info if available
     if let Some(method_info) = result.method_info {
@@ -533,16 +529,6 @@ fn format_output_full(
                 );
                 spc_info.insert("center_line".into(), ValkeyValue::Float(center_line));
                 res.insert("method_info".into(), ValkeyValue::Map(spc_info));
-            }
-            MethodInfo::IsolationForest {
-                average_path_length,
-            } => {
-                let mut if_info = HashMap::new();
-                if_info.insert(
-                    "average_path_length".into(),
-                    ValkeyValue::Float(average_path_length),
-                );
-                res.insert("method_info".into(), ValkeyValue::Map(if_info));
             }
         }
     }
