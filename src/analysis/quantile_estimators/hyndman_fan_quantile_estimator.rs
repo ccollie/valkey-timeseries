@@ -4,9 +4,10 @@
 // The American Statistician 50, no. 4 (1996): 361-365.
 // https://doi.org/10.2307/2684934
 
-use crate::analysis::common::Probability;
 use crate::analysis::quantile_estimators::{QuantileEstimator, Samples};
 use std::fmt;
+
+pub type Probability = f64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HyndmanFanType {
