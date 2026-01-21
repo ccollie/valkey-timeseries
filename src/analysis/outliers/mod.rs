@@ -15,7 +15,7 @@ mod outlier_test_data;
 mod rcf_outlier_detector;
 mod smoothed_zscores;
 mod spc_ewma_outlier_detector;
-mod spc_shewart_outlier_detector;
+mod spc_shewhart_outlier_detector;
 mod utils;
 mod zscore_outlier_detector;
 
@@ -23,6 +23,8 @@ pub use anomalies::*;
 pub use double_mad_outlier_detector::*;
 pub use isolation_forest::*;
 pub use rcf_outlier_detector::*;
+pub use smoothed_zscores::*;
+use std::fmt::Display;
 
 use std::ops::Deref;
 use std::str::FromStr;
@@ -198,6 +200,12 @@ impl TryFrom<&ValkeyString> for AnomalyDirection {
     fn try_from(s: &ValkeyString) -> ValkeyResult<Self> {
         let str = s.to_string_lossy();
         Self::from_str(&str)
+    }
+}
+
+impl Display for AnomalyDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
     }
 }
 
