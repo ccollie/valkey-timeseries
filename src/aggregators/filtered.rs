@@ -7,7 +7,6 @@ use crate::common::rdb::{
 };
 use crate::series::request_types::ValueComparisonFilter;
 use get_size2::GetSize;
-use logger_rust::log_debug;
 use std::hash::Hash;
 use valkey_module::RedisModuleIO;
 use valkey_module::ValkeyResult;
@@ -300,16 +299,11 @@ impl AllNoneAggregatorState {
     fn update_all(&mut self, value: f64) {
         match self.matches {
             Some(false) => {
-                log_debug!("AllAggregatorState already failed, skipping update");
-            } // already failed
+                return; // already failed
+            }
             _ => {
                 let matched = self.compare(value);
                 self.matches = Some(matched);
-                log_debug!(
-                    "Evaluating {value} {} {}: ({matched})",
-                    self.filter.operator,
-                    self.filter.value
-                );
             }
         }
     }
