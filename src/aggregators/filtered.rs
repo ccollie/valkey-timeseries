@@ -298,8 +298,7 @@ pub struct AllNoneAggregatorState {
 impl AllNoneAggregatorState {
     fn update_all(&mut self, value: f64) {
         match self.matches {
-            Some(false) => {
-                return; // already failed
+            Some(false) => { // already failed
             }
             _ => {
                 let matched = self.compare(value);
