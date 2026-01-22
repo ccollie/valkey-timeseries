@@ -1,4 +1,4 @@
-// The code in this file is copied from
+// Initial code based on:
 // https://github.com/cryptorelay/redis-aggregation/tree/master
 // License: Apache License 2.0
 

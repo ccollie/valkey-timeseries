@@ -360,7 +360,7 @@ fn process_series_with_compaction(
     // Process current series compaction rules
     apply_rules_on_series(ctx, series, op)?;
 
-    // Collect child series (one level, behavior preserved)
+    // Collect child series (one level deep)
     let child_series = series
         .rules
         .iter()
