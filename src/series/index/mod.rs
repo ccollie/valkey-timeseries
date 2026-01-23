@@ -16,6 +16,7 @@ use crate::series::request_types::MatchFilterOptions;
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
 pub use index_key::IndexKey;
 pub use posting_stats::*;
+pub use postings::PostingsBitmap;
 pub use querier::*;
 pub use timeseries_index::*;
 

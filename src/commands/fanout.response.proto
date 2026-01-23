@@ -48,6 +48,10 @@ message MultiGetResponse {
   repeated MGetValue values = 1;
 }
 
+message MDelResponse {
+  uint64 deleted_count = 1;
+}
+
 message MultiRangeResponse {
   repeated SeriesRangeResponse series = 1;
 }

@@ -232,14 +232,18 @@ pub struct TimestampRange {
 impl TimestampRange {
     pub fn new(start: TimestampValue, end: TimestampValue) -> ValkeyResult<Self> {
         if start > end {
-            return Err(ValkeyError::Str("ERR invalid timestamp range: start > end"));
+            return Err(ValkeyError::Str(
+                "TSDB: invalid timestamp range: start > end",
+            ));
         }
         Ok(TimestampRange { start, end })
     }
 
     pub fn from_timestamps(start: Timestamp, end: Timestamp) -> ValkeyResult<Self> {
         if start > end {
-            return Err(ValkeyError::Str("ERR invalid timestamp range: start > end"));
+            return Err(ValkeyError::Str(
+                "TSDB: invalid timestamp range: start > end",
+            ));
         }
         Ok(TimestampRange {
             start: TimestampValue::Specific(start),

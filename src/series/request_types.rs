@@ -365,5 +365,16 @@ impl From<MGetSeriesData> for ValkeyValue {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct MDelRequest {
+    pub range: Option<TimestampRange>,
+    pub filters: Vec<SeriesSelector>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MDelResponse {
+    pub deleted_count: usize,
+}
+
 #[cfg(test)]
 mod tests {}

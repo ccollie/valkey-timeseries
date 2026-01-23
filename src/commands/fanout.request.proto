@@ -88,6 +88,12 @@ message MultiGetRequest {
   bool latest = 4;
 }
 
+message MDelRequest {
+  DateRange range = 1;
+  repeated SeriesSelector filters = 2;
+}
+
+
 message RangeRequest {
   DateRange range = 1;
   uint32 count = 2;
