@@ -37,7 +37,7 @@ pub fn series_by_selectors(
         // done early if we have only one selector. Do not collapse with the loop below, since
         // this condition possibly spares us an allocation (by forcing us to own the Cow).
         if selectors.len() == 1 {
-            return collect_series(ctx, postings, first.iter(), range);
+            return collect_series_from_postings(ctx, postings, first.iter(), range);
         }
 
         let mut result = first.into_owned();
@@ -45,7 +45,7 @@ pub fn series_by_selectors(
             let bitmap = postings.postings_for_selector(selector)?;
             result.and_inplace(&bitmap);
         }
-        collect_series(ctx, postings, result.iter(), range)
+        collect_series_from_postings(ctx, postings, result.iter(), range)
     })
 }
 
@@ -80,7 +80,7 @@ fn collect_series_keys(
     date_range: Option<TimestampRange>,
 ) -> ValkeyResult<Vec<ValkeyString>> {
     if let Some(date_range) = date_range {
-        let series = collect_series(ctx, postings, ids, Some(date_range))?;
+        let series = collect_series_from_postings(ctx, postings, ids, Some(date_range))?;
         let keys = series.into_iter().map(|g| g.key_inner).collect();
         return Ok(keys);
     }
@@ -100,7 +100,7 @@ fn collect_series_keys(
     Ok(keys)
 }
 
-fn collect_series(
+pub(crate) fn collect_series_from_postings(
     ctx: &Context,
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,

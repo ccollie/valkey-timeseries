@@ -582,6 +582,31 @@ impl Postings {
         }
     }
 
+    pub fn postings_for_selectors(
+        &'_ self,
+        selectors: &[SeriesSelector],
+    ) -> ValkeyResult<Cow<'_, PostingsBitmap>> {
+        match selectors {
+            [] => Ok(Cow::Borrowed(&*EMPTY_BITMAP)),
+            [selector] => self.postings_for_selector(selector),
+            _ => {
+                let first = self.postings_for_selector(&selectors[0])?;
+
+                let mut result = first.into_owned();
+                for selector in &selectors[1..] {
+                    let bitmap = self.postings_for_selector(selector)?;
+                    result.and_inplace(&bitmap);
+                }
+
+                if !self.stale_ids.is_empty() {
+                    result.andnot_inplace(&self.stale_ids);
+                }
+
+                Ok(Cow::Owned(result))
+            }
+        }
+    }
+
     fn process_or_matchers(
         &'_ self,
         filters: &[FilterList],

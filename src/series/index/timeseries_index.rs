@@ -4,6 +4,7 @@ use std::sync::RwLock;
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
+use crate::common::context::is_real_user_client;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, SeriesLabel};
@@ -11,7 +12,7 @@ use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size2::GetSize;
 use std::mem::size_of;
-use valkey_module::{ValkeyError, ValkeyResult};
+use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<Postings>,
@@ -136,6 +137,104 @@ impl TimeSeriesIndex {
             let res = postings.into_owned();
             Ok(res)
         })
+    }
+
+    /// Returns the series keys that match the given selectors.
+    /// If `acl_permissions` is provided, it checks if the current user has the required permissions
+    /// to access all the keys.
+    ///
+    /// ## Note
+    /// If the user does not have permission to access all keys, an error is returned.
+    /// Non-user clients (e.g., AOF client) bypass permission checks.
+    pub fn keys_for_selectors(
+        &self,
+        ctx: &Context,
+        filters: &[SeriesSelector],
+        acl_permissions: Option<AclPermissions>,
+    ) -> ValkeyResult<Vec<ValkeyString>> {
+        let mut keys: Vec<ValkeyString> = Vec::new();
+
+        // get keys from ids
+        self.with_postings(&mut keys, |postings, keys| {
+            let ids = postings.postings_for_selectors(filters)?;
+
+            let expected_count = ids.cardinality() as usize;
+            if expected_count == 0 {
+                return Ok(());
+            }
+
+            keys.reserve(expected_count);
+
+            let current_user = ctx.get_current_user();
+            let is_user_client = is_real_user_client(ctx);
+            let has_all_keys_permission = if !is_user_client {
+                true
+            } else {
+                match &acl_permissions {
+                    Some(perms) => ctx
+                        .acl_check_key_permission(&current_user, &ctx.create_string("*"), perms)
+                        .is_ok(),
+                    None => true,
+                }
+            };
+
+            for series_ref in ids.iter() {
+                let key = postings.get_key_by_id(series_ref);
+                match key {
+                    Some(key) => {
+                        let real_key = ctx.create_string(key.as_ref());
+                        if is_user_client
+                            && !has_all_keys_permission
+                            && let Some(perms) = &acl_permissions
+                        {
+                            // check if the user has permission for this key
+                            if ctx
+                                .acl_check_key_permission(&current_user, &real_key, perms)
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        keys.push(real_key);
+                    }
+                    None => {
+                        // this should not happen, but in case it does, we log an error and continue
+                        ctx.log_warning("Index consistency: some keys are missing from the index.");
+                        // todo: fix here by removing the stale id from the index
+                    }
+                }
+            }
+
+            if keys.len() != expected_count {
+                // User does not have permission to read some keys, or some keys are missing
+                // Customize the error message accordingly
+                match &acl_permissions {
+                    Some(perms) => {
+                        if perms.contains(AclPermissions::DELETE) {
+                            return Err(ValkeyError::Str(
+                                error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
+                            ));
+                        }
+                        if perms.contains(AclPermissions::UPDATE) {
+                            return Err(ValkeyError::Str(
+                                error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
+                            ));
+                        }
+                        return Err(ValkeyError::Str(
+                            error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
+                        ));
+                    }
+                    None => {
+                        // todo: fix the problem here, for now we just log a warning
+                        ctx.log_warning("Index consistency: some keys are missing from the index.");
+                    }
+                }
+            }
+
+            Ok(())
+        })?;
+
+        Ok(keys)
     }
 
     pub fn get_cardinality_by_selectors(
