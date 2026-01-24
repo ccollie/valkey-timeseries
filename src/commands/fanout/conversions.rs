@@ -2,7 +2,8 @@ use super::filters::{deserialize_matchers_list, serialize_matchers_list};
 use super::generated::{
     AggregationOptions as FanoutAggregationOptions, AggregationType as FanoutAggregationType,
     BucketAlignmentType, BucketTimestampType, CompressionType as FanoutChunkEncoding, DateRange,
-    GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel, MultiRangeRequest,
+    GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel,
+    MetaDateRangeFilter as FanoutMetaDateRangeFilter, MultiRangeRequest,
     PostingStat as FanoutPostingStat, RangeRequest, Sample as FanoutSample,
     SeriesSelector as FanoutSeriesSelector, StatsResponse, ValueRange as FanoutValueFilter,
 };
@@ -12,7 +13,7 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
     AggregationOptions, AggregationType, BucketAlignment, MGetSeriesData, MRangeOptions,
-    MatchFilterOptions, RangeGroupingOptions, RangeOptions,
+    MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions, RangeOptions,
 };
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{
@@ -275,15 +276,15 @@ impl From<MGetSeriesData> for MGetValue {
 }
 
 pub fn deserialize_match_filter_options(
-    range: Option<DateRange>,
+    range: Option<FanoutMetaDateRangeFilter>,
     filters: Option<Vec<FanoutSeriesSelector>>,
 ) -> ValkeyResult<MatchFilterOptions> {
-    let date_range: Option<TimestampRange> = range.map(|r| r.into());
+    let date_range: Option<MetaDateRangeFilter> = range.map(|r| r.into());
     let matchers: Vec<SeriesSelector> = deserialize_matchers_list(filters)?;
     Ok(MatchFilterOptions {
         date_range,
         matchers,
-        ..Default::default()
+        limit: None,
     })
 }
 

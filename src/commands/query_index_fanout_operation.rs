@@ -35,7 +35,7 @@ impl FanoutOperation for QueryIndexFanoutOperation {
         req: IndexQueryRequest,
     ) -> ValkeyResult<IndexQueryResponse> {
         let options = deserialize_match_filter_options(req.range, Some(req.filters))?;
-        let keys = series_keys_by_selectors(ctx, &options.matchers, None)?;
+        let keys = series_keys_by_selectors(ctx, &options.matchers, options.date_range)?;
         let keys = keys.into_iter().map(|k| k.to_string()).collect::<Vec<_>>();
         Ok(IndexQueryResponse { keys })
     }

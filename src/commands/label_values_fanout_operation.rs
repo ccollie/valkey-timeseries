@@ -1,10 +1,9 @@
-use super::fanout::generated::{DateRange, LabelValuesRequest, LabelValuesResponse};
+use super::fanout::generated::{LabelValuesRequest, LabelValuesResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
 use crate::fanout::{FanoutOperation, NodeInfo};
 use crate::labels::filters::SeriesSelector;
-use crate::series::TimestampRange;
-use crate::series::request_types::MatchFilterOptions;
+use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
 use std::collections::BTreeSet;
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
@@ -37,7 +36,7 @@ impl FanoutOperation for LabelValuesFanoutOperation {
         ctx: &Context,
         req: LabelValuesRequest,
     ) -> ValkeyResult<LabelValuesResponse> {
-        let date_range: Option<TimestampRange> = req.range.map(|x| x.into());
+        let date_range: Option<MetaDateRangeFilter> = req.range.map(|r| r.into());
         let matchers: Vec<SeriesSelector> = deserialize_matchers_list(Some(req.filters))?;
         let options = MatchFilterOptions {
             date_range,
@@ -50,12 +49,11 @@ impl FanoutOperation for LabelValuesFanoutOperation {
     }
 
     fn generate_request(&self) -> LabelValuesRequest {
-        let range: Option<DateRange> = self.options.date_range.map(|r| r.into());
         let filters = serialize_matchers_list(self.options.matchers.as_ref())
             .expect("serialize matchers list");
         LabelValuesRequest {
             label: self.label.clone(),
-            range,
+            range: self.options.date_range.map(|x| x.into()),
             filters,
         }
     }

@@ -11,6 +11,22 @@ use std::fmt::Display;
 use std::ops::RangeBounds;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyString};
 
+/// Simple date range with start and end timestamps.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct DateRange {
+    pub start: Timestamp,
+    pub end: Timestamp,
+}
+
+impl Default for DateRange {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            end: MAX_TIMESTAMP,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Copy)]
 pub enum TimestampValue {
     /// The timestamp of the earliest sample in the series
@@ -270,6 +286,11 @@ impl TimestampRange {
 
     pub fn is_empty(&self) -> bool {
         self.end == TimestampValue::Latest && self.start == TimestampValue::Earliest
+    }
+
+    pub fn resolve(self, now: Option<Timestamp>) -> DateRange {
+        let (start, end) = self.get_timestamps(now);
+        DateRange { start, end }
     }
 }
 

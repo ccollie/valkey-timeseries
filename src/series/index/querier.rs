@@ -14,11 +14,13 @@
 
 use super::postings::{KeyType, Postings};
 use super::{with_timeseries_index, with_timeseries_postings};
+use crate::common::Timestamp;
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::check_key_read_permission;
-use crate::series::{SeriesGuard, SeriesRef, TimestampRange};
+use crate::series::request_types::MetaDateRangeFilter;
+use crate::series::{SeriesGuard, SeriesRef, TimeSeries};
 use blart::AsBytes;
 use orx_parallel::{IterIntoParIter, ParIter};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
@@ -26,7 +28,7 @@ use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeySt
 pub fn series_by_selectors(
     ctx: &Context,
     selectors: &[SeriesSelector],
-    range: Option<TimestampRange>,
+    range: Option<MetaDateRangeFilter>,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
     if selectors.is_empty() {
         return Ok(Vec::new());
@@ -52,7 +54,7 @@ pub fn series_by_selectors(
 pub fn series_keys_by_selectors(
     ctx: &Context,
     selectors: &[SeriesSelector],
-    range: Option<TimestampRange>,
+    range: Option<MetaDateRangeFilter>,
 ) -> ValkeyResult<Vec<ValkeyString>> {
     if selectors.is_empty() {
         return Ok(Vec::new());
@@ -77,7 +79,7 @@ fn collect_series_keys(
     ctx: &Context,
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
-    date_range: Option<TimestampRange>,
+    date_range: Option<MetaDateRangeFilter>,
 ) -> ValkeyResult<Vec<ValkeyString>> {
     if let Some(date_range) = date_range {
         let series = collect_series(ctx, postings, ids, Some(date_range))?;
@@ -104,7 +106,7 @@ fn collect_series(
     ctx: &Context,
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
-    date_range: Option<TimestampRange>,
+    date_range: Option<MetaDateRangeFilter>,
 ) -> ValkeyResult<Vec<SeriesGuard>> {
     let capacity_estimate = ids.size_hint().1.unwrap_or(8);
     let iter = ids.filter_map(|id| postings.get_key_by_id(id));
@@ -126,11 +128,23 @@ fn collect_series(
     };
 
     // Filter series by date range
-    let (start, end) = date_range.get_timestamps(None);
+    let (start, end) = date_range.range();
+    let exclude = date_range.is_exclude();
+
+    #[inline(always)]
+    fn matches_date_range(
+        series: &TimeSeries,
+        start: Timestamp,
+        end: Timestamp,
+        exclude: bool,
+    ) -> bool {
+        let in_range = series.has_samples_in_range(start, end);
+        in_range != exclude
+    }
 
     if result.len() == 1 {
         // SAFETY: we have already checked above that we have at least one element.
-        return if unsafe { result.get_unchecked(0) }.has_samples_in_range(start, end) {
+        return if unsafe { matches_date_range(result.get_unchecked(0), start, end, exclude) } {
             Ok(result)
         } else {
             Ok(Vec::new())
@@ -144,7 +158,13 @@ fn collect_series(
         .iter()
         .map(|guard| (guard.get_series(), guard.id))
         .iter_into_par()
-        .filter_map(|(series, id)| series.has_samples_in_range(start, end).then_some(id))
+        .filter_map(|(series, id)| {
+            if matches_date_range(series, start, end, exclude) {
+                Some(id)
+            } else {
+                None
+            }
+        })
         .collect();
 
     match matching_ids.len() {
@@ -193,7 +213,7 @@ fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<Serie
 
 pub fn count_matched_series(
     ctx: &Context,
-    date_range: Option<TimestampRange>,
+    date_range: Option<MetaDateRangeFilter>,
     matchers: &[SeriesSelector],
 ) -> ValkeyResult<usize> {
     let count = match (date_range, matchers.is_empty()) {
@@ -206,8 +226,8 @@ pub fn count_matched_series(
             // if we don't have a date range, we can simply count postings...
             with_timeseries_index(ctx, |index| index.get_cardinality_by_selectors(matchers))?
         }
-        (Some(_), false) => {
-            let matched_series = series_by_selectors(ctx, matchers, date_range)?;
+        (Some(range), false) => {
+            let matched_series = series_by_selectors(ctx, matchers, Some(range))?;
             matched_series.len()
         }
         _ => {

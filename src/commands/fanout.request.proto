@@ -22,11 +22,10 @@ message DateRange {
   int64 end = 2;
 }
 
-message DateFilter {
-  oneof range {
-    DateRange exclude = 1;
-    DateRange include = 2;
-  }
+message MetaDateRangeFilter {
+  int64 start = 1;
+  int64 end = 2;
+  bool exclude = 3;
 }
 
 message ValueRange {
@@ -99,28 +98,28 @@ message RangeRequest {
 }
 
 message IndexQueryRequest {
-  DateRange range = 1;
+  MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;
 }
 
 message LabelNamesRequest {
-  DateRange range = 1;
+  MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;
 }
 
 message LabelValuesRequest {
   string label = 1;
-  DateRange range = 2;
+  MetaDateRangeFilter range = 2;
   repeated SeriesSelector filters = 3;
 }
 
 message CardinalityRequest {
-  DateRange range = 1;
+  MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;
 }
 
 message MetadataRequest {
-  DateFilter filter = 1;
+  MetaDateRangeFilter filter = 1;
   repeated SeriesSelector filters = 2;
   uint32 limit = 3;
 }

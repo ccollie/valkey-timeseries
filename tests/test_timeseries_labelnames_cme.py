@@ -119,12 +119,44 @@ class TestTimeSeriesLabelNamesCME(ValkeySearchClusterTestCaseDebugMode):
 
         # Query that matches only one series
         result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 400, "+", 'FILTER', 'name=cpu')
-        print("Result:", result)
 
         # Should only include ts6 (now+500)
         assert b'name' in result
         assert b'node' in result
         assert b'ts6' in result
+        assert len(result) == 3
+
+        # Exclude middle series (ts2 and ts5) - should return ts1 and ts6
+        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 50, now + 250, 'FILTER',
+                                        'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert b'ts1' in result
+        assert b'ts6' in result
+        assert b'ts2' not in result
+        assert b'ts5' not in result
+        assert len(result) == 5
+
+        # Exclude ts6 (now+500) - should return ts1, ts2, ts5
+        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 400, "+", 'FILTER', 'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert b'ts1' in result
+        assert b'ts2' in result
+        assert b'ts5' in result
+        assert b'ts6' not in result
+        assert len(result) == 6
+
+        # Exclude early data (ts1, ts2, ts5) - should only include ts6
+        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', "-", now + 250, 'FILTER', 'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'ts6' in result
+        assert b'ts1' not in result
+        assert b'ts2' not in result
+        assert b'ts5' not in result
         assert len(result) == 3
 
 

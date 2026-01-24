@@ -90,6 +90,35 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER_BY_RANGE', 900, 2000, "FILTER", 'common=1')
         assert result == [b'alice', b'bob']
 
+        # Test negative date range filtering with NOT
+        # Exclude ts_old (500) - should only return 'new' and '45' values
+        result = self.client.execute_command('TS.LABELVALUES', 'age', 'FILTER_BY_RANGE', 'NOT', '-', 1000, 'FILTER',
+                                             'common=1')
+        assert result == [b'45', b'new']
+        assert b'old' not in result
+
+        # Exclude ts_new (2500) - should only return 'old' age value
+        result = self.client.execute_command('TS.LABELVALUES', 'age', 'FILTER_BY_RANGE', 'NOT', 2000, '+', 'FILTER',
+                                             'common=1')
+        assert result == [b'32', b'45', b'old']
+        assert b'new' not in result
+
+        # Exclude middle range (ts_1 at 1000 and ts_2 at 1700) - should exclude both alice and bob
+        result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER_BY_RANGE', 'NOT', 900, 2000, 'FILTER',
+                                             'common=1')
+        assert b'alice' not in result
+        assert b'bob' not in result
+        # Only archive and recent should remain from the series with common=1
+        assert set(result) == {b'archive', b'recent'}
+
+        # Exclude late data (ts_new at 2500) - should return archive, alice, and bob
+        result = self.client.execute_command('TS.LABELVALUES', 'name', 'FILTER_BY_RANGE', 'NOT', 2400, '+', 'FILTER',
+                                             'common=1')
+        assert b'recent' not in result
+        assert b'archive' in result
+        assert b'alice' in result
+        assert b'bob' in result
+
     def test_label_values_with_limit(self):
         """Test retrieving label values with LIMIT parameter"""
         self.setup_test_data(self.client)
