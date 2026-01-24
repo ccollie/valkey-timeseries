@@ -279,3 +279,21 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         self.setup_or_test_data(cluster)
         result = client.execute_command('TS.QUERYINDEX', 'http_status{method!~"GET"} or api_host{env="staging"}')
         assert result == [TS2, TS4, TS7, TS8]
+
+    def test_filter_by_range(self):
+        cluster = self.new_cluster_client()
+        client = self.new_client_for_primary(0)
+        self.setup_test_data(cluster)
+
+        # add data points to a few series (1 per node)
+        cluster.execute_command('TS.ADD', TS1, 1000, 1)
+        cluster.execute_command('TS.ADD', TS5, 1000, 1)
+        cluster.execute_command('TS.ADD', TS6, 1000, 1)
+
+        # Filter by range of status codes using regex
+        result = client.execute_command('TS.QUERYINDEX', 'FILTER_BY_RANGE', 500, 1500, 'name=cpu')
+        assert result == [TS1, TS5, TS6]
+
+        # filter excluding certain range
+        result = client.execute_command('TS.QUERYINDEX', 'FILTER_BY_RANGE', 'NOT', 500, 1500, 'name=cpu')
+        assert result == [TS2]

@@ -102,12 +102,70 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         # Query that matches only one series
         result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 400, "+", 'FILTER', 'name=cpu')
 
-        print("RESULT = ", result)
         # Should only include ts6 (now+500)
         assert b'name' in result
         assert b'node' in result
         assert b'ts6' in result
         assert len(result) == 3
+
+        # Test negative date range filtering with NOT
+        # Exclude ts1 (now) and ts2 (now+100) - should return ts5 and ts6
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now, now + 150, 'FILTER',
+                                             'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'ts5' in result
+        assert b'ts6' in result
+        assert b'ts1' not in result
+        assert b'ts2' not in result
+        assert len(result) == 5  # name, node, ts5, ts6, type
+
+        # Exclude middle series (ts2 and ts5) - should return ts1 and ts6
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 50, now + 250, 'FILTER',
+                                             'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert b'ts1' in result
+        assert b'ts6' in result
+        assert b'ts2' not in result
+        assert b'ts5' not in result
+        assert len(result) == 5
+
+        # Exclude ts6 (now+500) - should return ts1, ts2, ts5
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 400, "+", 'FILTER',
+                                             'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert b'ts1' in result
+        assert b'ts2' in result
+        assert b'ts5' in result
+        assert b'ts6' not in result
+        assert len(result) == 6
+
+        # Exclude early data - should only include ts6
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', "-", now + 250, 'FILTER',
+                                             'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'ts6' in result
+        assert b'ts1' not in result
+        assert b'ts2' not in result
+        assert b'ts5' not in result
+        assert len(result) == 3
+
+        # Exclude late data (ts6) - should return ts1, ts2, ts5
+        result = self.client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 400, "+", 'FILTER',
+                                             'name=cpu')
+        assert b'name' in result
+        assert b'node' in result
+        assert b'type' in result
+        assert b'ts1' in result
+        assert b'ts2' in result
+        assert b'ts5' in result
+        assert b'ts6' not in result
+        assert len(result) == 6
 
 
     def test_labelnames_with_combined_parameters(self):

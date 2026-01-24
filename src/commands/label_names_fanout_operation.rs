@@ -42,8 +42,10 @@ impl FanoutOperation for LabelNamesFanoutOperation {
     fn generate_request(&self) -> LabelNamesRequest {
         let filters =
             serialize_matchers_list(&self.options.matchers).expect("serialize matchers list");
-        let range = self.options.date_range.map(|x| x.into());
-        LabelNamesRequest { range, filters }
+        LabelNamesRequest {
+            range: self.options.date_range.map(|x| x.into()),
+            filters,
+        }
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {

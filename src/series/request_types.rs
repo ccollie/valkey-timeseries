@@ -8,7 +8,8 @@ use crate::common::{Sample, Timestamp};
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::TimeSeriesChunk;
-use crate::series::{TimestampRange, ValueFilter};
+use crate::series::{DateRange, TimestampRange, ValueFilter};
+use std::fmt::Display;
 use get_size2::GetSize;
 use std::hash::Hash;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -162,6 +163,61 @@ pub struct AggregationOptions {
     pub report_empty: bool,
 }
 
+/// A filter that can be either inclusive or exclusive over a date range.
+/// Used primarily in metadata queries.
+#[derive(Copy, Clone, Debug)]
+pub enum MetaDateRangeFilter {
+    Includes(DateRange),
+    Excludes(DateRange),
+}
+
+impl Default for MetaDateRangeFilter {
+    fn default() -> Self {
+        MetaDateRangeFilter::Includes(DateRange::default())
+    }
+}
+
+impl Display for MetaDateRangeFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MetaDateRangeFilter::Includes(range) => {
+                write!(f, "[{} .. {}]", range.start, range.end)
+            }
+            MetaDateRangeFilter::Excludes(range) => {
+                write!(f, "NOT IN [{} .. {}]", range.start, range.end)
+            }
+        }
+    }
+}
+
+impl MetaDateRangeFilter {
+    pub fn new(start: Timestamp, end: Timestamp) -> ValkeyResult<Self> {
+        Ok(MetaDateRangeFilter::Includes(DateRange { start, end }))
+    }
+
+    pub fn excludes(start: Timestamp, end: Timestamp) -> ValkeyResult<Self> {
+        Ok(MetaDateRangeFilter::Excludes(DateRange { start, end }))
+    }
+
+    pub fn range(&self) -> (Timestamp, Timestamp) {
+        match self {
+            MetaDateRangeFilter::Includes(range) => (range.start, range.end),
+            MetaDateRangeFilter::Excludes(range) => (range.start, range.end),
+        }
+    }
+
+    pub fn is_exclude(&self) -> bool {
+        matches!(self, MetaDateRangeFilter::Excludes(_))
+    }
+}
+
+impl From<TimestampRange> for MetaDateRangeFilter {
+    fn from(value: TimestampRange) -> Self {
+        let (start, end) = value.get_timestamps(None);
+        MetaDateRangeFilter::Includes(DateRange { start, end })
+    }
+}
+
 impl Default for AggregationOptions {
     fn default() -> Self {
         Self {
@@ -182,7 +238,7 @@ impl AggregationOptions {
 
 #[derive(Default, Clone, Debug)]
 pub struct MatchFilterOptions {
-    pub date_range: Option<TimestampRange>,
+    pub date_range: Option<MetaDateRangeFilter>,
     pub matchers: Vec<SeriesSelector>,
     pub limit: Option<usize>,
 }

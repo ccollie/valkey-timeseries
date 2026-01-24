@@ -88,13 +88,16 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Add data at different time ranges
-        cluster.execute_command('TS.CREATE', 'early:{1}:series', 'LABELS', 'timing', 'early', 'slot', 'slot1')
+        cluster.execute_command('TS.CREATE', 'early:{1}:series', 'LABELS', 'timing', 'early', 'slot', 'slot1', 'type',
+                                'test')
         cluster.execute_command('TS.ADD', 'early:{1}:series', 1000, 10)  # Early data
 
-        cluster.execute_command('TS.CREATE', 'middle:{2}:series', 'LABELS', 'timing', 'middle', 'slot', 'slot2')
+        cluster.execute_command('TS.CREATE', 'middle:{2}:series', 'LABELS', 'timing', 'middle', 'slot', 'slot2', 'type',
+                                'test')
         cluster.execute_command('TS.ADD', 'middle:{2}:series', 2000, 20)  # Middle data
 
-        cluster.execute_command('TS.CREATE', 'late:{3}:series', 'LABELS', 'timing', 'late', 'slot', 'slot3')
+        cluster.execute_command('TS.CREATE', 'late:{3}:series', 'LABELS', 'timing', 'late', 'slot', 'slot3', 'type',
+                                'test')
         cluster.execute_command('TS.ADD', 'late:{3}:series', 3000, 30)  # Late data
 
         node0 = self.client_for_primary(0)
@@ -114,6 +117,24 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         
         result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1500, '+', 'FILTER', 'timing!=early')
         assert result == 2  # middle and late series
+
+        # Test negative date range filtering with NOT
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 1000, 1500, 'FILTER', 'type=test')
+        assert result == 2  # (excludes early series in range 1000-1500)
+
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 1500, 2500, 'FILTER', 'slot!=slot1')
+        assert result == 1  # Only late series (excludes middle series in range 1500-2500)
+
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 2500, 3500, 'FILTER', 'type=test')
+        assert result == 2  # (excludes middle series)
+
+        # Test NOT with special timestamp values
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', '-', 2000, 'FILTER', 'slot!=slot3')
+        assert result == 0  # No series excluded (all early/middle data is before/at 2000)
+
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 2000, '+', 'FILTER', 'timing!=late')
+        assert result == 1  # Only early series (excludes middle and late which have data at/after 2000)
+
 
     def test_cluster_complex_label_queries(self):
         """Test complex label filtering patterns for cluster deployment"""

@@ -128,6 +128,55 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 0, 5000, 'FILTER', 'sensor!=light')
         assert result == 4  # All except ts_nodata because it has no data points
 
+    def test_card_with_negative_date_range(self):
+        """Test TS.CARD with negative date range filtering (FILTER_BY_RANGE ... NOT)"""
+
+        self.setup_data()
+
+        # temp series are ts1 (1000,2000) and ts2 (1500,2500).
+        # In range [1000,2000], both have samples. With NOT, neither should match.
+        result = self.client.execute_command(
+            'TS.CARD',
+            'FILTER_BY_RANGE', 'NOT', 1000, 2000,
+            'FILTER', 'sensor=temp',
+        )
+        assert result == 0
+
+        # In range [2100,2400], ts1 has no samples, ts2 has no samples (2500 is outside),
+        # so both should match with NOT.
+        result = self.client.execute_command(
+            'TS.CARD',
+            'FILTER_BY_RANGE', 'NOT', 2100, 2400,
+            'FILTER', 'sensor=temp',
+        )
+        assert result == 2
+
+        # For non-light sensors (ts1, ts2, ts3, ts4), in range [0,5000] they all have samples.
+        # With NOT, none should match.
+        result = self.client.execute_command(
+            'TS.CARD',
+            'FILTER_BY_RANGE', 'NOT', 0, 5000,
+            'FILTER', 'sensor!=light',
+        )
+        assert result == 0
+
+        # For all series except light, in range [3000,4000] none have samples (ts4 max is 2800),
+        # so all 4 should match with NOT.
+        result = self.client.execute_command(
+            'TS.CARD',
+            'FILTER_BY_RANGE', 'NOT', 3000, 4000,
+            'FILTER', 'sensor!=light',
+        )
+        assert result == 4
+
+        # A series with no samples should always match any NOT range when it matches labels.
+        result = self.client.execute_command(
+            'TS.CARD',
+            'FILTER_BY_RANGE', 'NOT', 0, 5000,
+            'FILTER', 'sensor=light',
+        )
+        assert result == 1
+
     def test_card_timestamp_parameter_formats(self):
         """Test TS.CARD with different timestamp parameter formats"""
 

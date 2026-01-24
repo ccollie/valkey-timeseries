@@ -16,7 +16,8 @@ use crate::parser::{
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
-    AggregationOptions, AggregatorConfig, MRangeOptions, MatchFilterOptions, RangeGroupingOptions,
+    AggregationOptions, AggregatorConfig, MRangeOptions, MatchFilterOptions, MetaDateRangeFilter,
+    RangeGroupingOptions,
     RangeOptions, ValueComparisonFilter,
 };
 use crate::series::types::{DuplicatePolicy, ValueFilter};
@@ -106,6 +107,7 @@ command_arg_tokens! {
     Name => "NAME",
     Nearest => "NEAREST",
     Next => "NEXT",
+    Not => "NOT",
     OnDuplicate => "ON_DUPLICATE",
     Previous => "PREVIOUS",
     Prior => "PRIOR",
@@ -783,6 +785,25 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
     Ok(options)
 }
 
+pub fn parse_filter_by_range_options(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<MetaDateRangeFilter> {
+    let mut exclude_range = false;
+    // see if we want to negate the condition
+    if let Some(peek) = peek_token(args)
+        && peek == CommandArgToken::Not
+    {
+        exclude_range = true;
+        args.next();
+    }
+
+    let range = parse_timestamp_range(args)?.resolve(None);
+    match exclude_range {
+        true => Ok(MetaDateRangeFilter::Excludes(range)),
+        false => Ok(MetaDateRangeFilter::Includes(range)),
+    }
+}
+
 pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
     const RANGE_OPTION_ARGS: [CommandArgToken; 12] = [
         CommandArgToken::Align,
@@ -1033,17 +1054,14 @@ pub(crate) fn parse_metadata_command_args(
         [CommandArgToken::FilterByRange, CommandArgToken::Limit];
 
     let mut matchers = Vec::with_capacity(4);
-    let mut start_value: Option<TimestampValue> = None;
-    let mut end_value: Option<TimestampValue> = None;
     let mut limit: Option<usize> = None;
+    let mut date_range: Option<MetaDateRangeFilter> = None;
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
             CommandArgToken::FilterByRange => {
-                let range = parse_timestamp_range(args)?;
-                start_value = Some(range.start);
-                end_value = Some(range.end);
+                date_range = Some(parse_filter_by_range_options(args)?);
             }
             CommandArgToken::Filter => {
                 let m = parse_series_selector_list(args, &ARG_TOKENS)?;
@@ -1066,23 +1084,43 @@ pub(crate) fn parse_metadata_command_args(
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
 
-    let mut options = MatchFilterOptions {
+    Ok(MatchFilterOptions {
         matchers,
         limit,
-        ..Default::default()
+        date_range,
+    })
+}
+
+pub(super) fn parse_query_index_command_args(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<MatchFilterOptions> {
+    let mut date_range: Option<MetaDateRangeFilter> = None;
+
+    if let Some(token) = peek_token(args)
+        && token == CommandArgToken::FilterByRange
+    {
+        // FILTER_BY_RANGE [NOT] <from> <to>
+        args.next(); // consume token
+        date_range = Some(parse_filter_by_range_options(args)?);
     };
 
-    if start_value.is_some() || end_value.is_some() {
-        let range = TimestampRange {
-            start: start_value.unwrap_or(TimestampValue::Earliest),
-            end: end_value.unwrap_or(TimestampValue::Latest),
-        };
-        if !range.is_empty() {
-            options.date_range = Some(range);
-        }
+    // everything else are filters
+
+    let mut matchers = Vec::with_capacity(4);
+    while let Ok(arg) = args.next_str() {
+        let selector = parse_series_selector(arg)?;
+        matchers.push(selector);
     }
 
-    Ok(options)
+    if matchers.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+
+    Ok(MatchFilterOptions {
+        date_range,
+        matchers,
+        limit: None,
+    })
 }
 
 pub const DEFAULT_STATS_RESULTS_LIMIT: usize = 10;
