@@ -1,3 +1,50 @@
+/// Online mean/variance via Welford's method
+/// Tracks distribution of m_t so we can z-score it.
+#[derive(Debug, Clone)]
+pub struct RunningStats {
+    n: usize,
+    mean: f64,
+    mean_sq: f64, // sum of squares of deviations from the mean
+}
+
+impl RunningStats {
+    pub fn new() -> Self {
+        Self {
+            n: 0,
+            mean: 0.0,
+            mean_sq: 0.0,
+        }
+    }
+
+    pub fn update(&mut self, x: f64) {
+        self.n += 1;
+        let delta = x - self.mean;
+        self.mean += delta / self.n as f64;
+        let delta2 = x - self.mean;
+        self.mean_sq += delta * delta2;
+    }
+
+    pub fn count(&self) -> usize {
+        self.n
+    }
+
+    pub fn mean(&self) -> f64 {
+        self.mean
+    }
+
+    pub fn variance(&self) -> f64 {
+        if self.n > 1 {
+            self.mean_sq / (self.n as f64 - 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn std(&self) -> f64 {
+        self.variance().sqrt()
+    }
+}
+
 pub fn calculate_std_dev(data: &[f64]) -> f64 {
     let n = data.len();
     if n <= 1 {
