@@ -111,6 +111,7 @@ impl From<RCFOptions> for RandomCutForestOptions {
         };
 
         RandomCutForestOptions {
+            dimensions: 1,
             num_trees: options.num_trees,
             sample_size: options.sample_size,
             lambda: options.time_decay,
@@ -197,7 +198,8 @@ impl RcfOutlierDetector {
         self.score(value) > self.threshold
     }
 
-    pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+    pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        self.set_data(ts);
         let scores = self.try_batch_scores(ts).map_err(|e| {
             let msg = format!("Failed to score Rcf point: {e:?}");
             log_warning(&msg);
@@ -271,7 +273,7 @@ pub(super) fn detect_anomalies_rcf(
     if options.output_after.is_none() {
         options.output_after = Some(ts.len());
     }
-    let detector = RcfOutlierDetector::new(options)
+    let mut detector = RcfOutlierDetector::new(options)
         .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
     detector.detect(ts)
 }
