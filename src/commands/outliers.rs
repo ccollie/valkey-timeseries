@@ -157,6 +157,11 @@ fn parse_spc_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
                 ewma_alpha: None,
             });
         }
+    } else {
+        options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
+            spc_method,
+            ewma_alpha: None,
+        });
     }
     args.done()?;
 
