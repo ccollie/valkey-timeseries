@@ -796,8 +796,8 @@ mod tests {
         let result = TimestampRange::new(start, end);
 
         assert!(
-            matches!(result, Err(ValkeyError::Str(err)) if err == "ERR invalid timestamp range: start > end"),
-            "Expected Err with message 'ERR invalid timestamp range: start > end', got {result:?}"
+            matches!(result, Err(ValkeyError::Str(err)) if err == "TSDB: invalid timestamp range: start > end"),
+            "Expected Err with message 'TSDB: invalid timestamp range: start > end', got {result:?}"
         );
     }
 
@@ -808,8 +808,8 @@ mod tests {
         let result = TimestampRange::new(start, end);
 
         assert!(
-            matches!(result, Err(ValkeyError::Str(err)) if err == "ERR invalid timestamp range: start > end"),
-            "Expected Err with message 'ERR invalid timestamp range: start > end', got {result:?}"
+            matches!(result, Err(ValkeyError::Str(err)) if err == "TSDB: invalid timestamp range: start > end"),
+            "Expected Err with message 'TSDB: invalid timestamp range: start > end', got {result:?}"
         );
     }
 
