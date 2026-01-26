@@ -36,7 +36,7 @@ pub type SeriesRef = u64;
 /// Represents a time series consisting of chunks of samples, each with a timestamp and value.
 #[derive(Clone, Debug, Hash, PartialEq, GetSize)]
 pub struct TimeSeries {
-    /// fixed internal id used in indexing
+    /// fixed, opaque internal id used in indexing
     pub id: SeriesRef,
     /// The label/value pairs
     pub labels: MetricName,

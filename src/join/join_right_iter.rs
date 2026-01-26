@@ -3,7 +3,7 @@ use crate::join::JoinValue;
 use joinkit::{EitherOrBoth, Joinkit};
 use min_max_heap::MinMaxHeap;
 
-/// Iterator adaptor implementing a streaming *right outer join* over two time\-sorted
+/// Iterator adaptor implementing a streaming *right outer join* over two time-sorted
 /// [`Sample`] streams.
 ///
 /// This iterator yields [`JoinValue`] rows for every timestamp present on the right side:
@@ -21,10 +21,6 @@ use min_max_heap::MinMaxHeap;
 /// used to buffer expanded join rows (e.g., one left sample joined with multiple right
 /// samples) and to emit them in sorted order.
 ///
-/// ## Complexity
-/// Linear in the number of input items plus the number of emitted join rows, with
-/// `O(h)` additional memory for the internal heap buffer, where `h` is the number of
-/// buffered rows for the current timestamp boundary.
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 pub(super) struct JoinRightIter {
     exhausted: bool,
@@ -92,7 +88,7 @@ impl Iterator for JoinRightIter {
                 return None;
             }
 
-            // Iterate until we see a timestamp strictly greater than the previous boundary\.
+            // Iterate until we see a timestamp strictly greater than the previous boundary.
             while let Some(value) = self.inner.next() {
                 self.push_item(value);
 

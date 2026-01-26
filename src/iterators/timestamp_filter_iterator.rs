@@ -13,7 +13,7 @@ use std::borrow::Cow;
 /// chunks and reuses chunk lookup state to avoid redundant searches across chunks.
 ///
 /// ### Example
-/// Imagine we have a time series with 12 chunks, each with 500 samples (600 in total).
+/// Imagine we have a time series with 12 chunks, each with 500 samples (6000 in total).
 /// If we want to filter by the following timestamps:
 ///
 /// `[150, 250, 750, 1250, 1750, 2250, 2750, 3500, 4500, 5500]`
@@ -119,10 +119,6 @@ impl<'a> TimestampFilterIterator<'a> {
             return;
         }
 
-        // Otherwise, a decreasing timestamp sequence can miss values if the buffer is
-        // capped at the first requested timestamp. For example, if timestamps [7, 5]
-        // are requested in reverse order from a chunk containing [3, 5, 7, 9],
-        // stopping at 7 would miss 5.
         let it = chunk.range_iter(chunk.first_timestamp(), chunk.last_timestamp());
 
         if let Cow::Owned(ref mut buf) = self.buffer {
