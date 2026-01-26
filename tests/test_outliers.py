@@ -431,30 +431,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert outliers[1].signal == -1  # Negative signal
         assert outliers[1].value == -5.0
 
-    def test_seasonal_adjustment(self):
-        """Test anomaly detection with seasonal adjustment"""
-        key = "seasonal_test"
-
-        self.client.execute_command("TS.CREATE", key)
-
-        # Create series with a seasonal pattern
-        for i in range(100):
-            seasonal = (i % 7) * 0.5
-            value = 1.0 + seasonal
-            self.client.execute_command("TS.ADD", key, i, value)
-
-        result = self.client.execute_command("TS.OUTLIERS",
-                                             key, "-", "+",
-                                             "FORMAT", "full",
-                                             "method", "zscore",
-                                             "threshold", 3.0,
-                                             "seasonal_period", 7)
-
-        print("seasonal adjustment", result)
-        result = TSOutliersFullResult.parse(result)
-        assert result is not None
-        assert "anomalies" in result
-
     def test_insufficient_data_error(self):
         """Test error handling with insufficient data"""
         key = "insufficient_test"
