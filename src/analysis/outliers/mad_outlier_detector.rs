@@ -16,7 +16,7 @@ use crate::analysis::quantile_estimators::Samples;
 pub struct MadOutlierDetector {
     lower_fence: f64,
     upper_fence: f64,
-    pub mad: f64,
+    mad: f64,
     median: f64,
     k: f64,
 }
@@ -198,11 +198,11 @@ mod tests {
 
         // Exactly at the upper fence should be 1.0
         let score_at_upper_fence = detector.get_anomaly_score(detector.upper_fence());
-        assert!((score_at_upper_fence - 1.0).abs() < 1e-12);
+        assert!((score_at_upper_fence - 1.0).abs() < f64::EPSILON);
 
         // Beyond the fence clamps to 1.0
         let score_beyond = detector.get_anomaly_score(1e9);
-        assert!((score_beyond - 1.0).abs() < 1e-12);
+        assert!((score_beyond - 1.0).abs() < f64::EPSILON);
 
         // Non-finite values are treated as non-anomalous for scoring purposes
         let score_nan = detector.get_anomaly_score(f64::NAN);
