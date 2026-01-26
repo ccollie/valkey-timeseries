@@ -9,7 +9,6 @@ use crate::series::{
 };
 use blart::AsBytes;
 use croaring::bitmap64::Bitmap64Iterator;
-use logger_rust::log_debug;
 use orx_parallel::ParIter;
 use orx_parallel::ParallelizableCollectionMut;
 use smallvec::SmallVec;
@@ -73,19 +72,15 @@ fn handle_delete_range(
 
     let num_threads = usize::min(NUM_THREADS.load(Ordering::Relaxed), 2);
     let mut total_deleted = 0;
-    log_debug!(
+    ctx.log_notice(&format!(
         "Starting deletion of range [{start}, {end}] for {} series. Num threads: {num_threads}",
         ids.cardinality()
-    );
+    ));
 
     let mut iter = ids.iter();
     loop {
         let (series_batch, keys_batch) = fetch_series_batch(ctx, &mut iter, num_threads);
         if series_batch.is_empty() {
-            log_debug!(
-                "No more series to process, total deleted: {}",
-                total_deleted
-            );
             break;
         }
 
@@ -112,16 +107,12 @@ fn delete_range_batch(
     // Run compaction after deletions
     for (i, (deleted, ts)) in res.iter().zip(series.iter_mut()).enumerate() {
         if let Err(err) = deleted {
-            log_debug!(
+            ctx.log_warning(&format!(
                 "Got error removing range from series {}: {err:?}",
                 keys[i].to_string_lossy()
-            );
+            ));
         }
         if let Ok(deleted) = deleted {
-            log_debug!(
-                "Deleted {deleted} points from series {}",
-                keys[i].to_string_lossy()
-            );
             if *deleted == 0 {
                 continue;
             }
@@ -164,7 +155,6 @@ fn fetch_series_batch<'a>(
 
         // Read ids in chunks until we gather `buf_size` valid series or cursor is exhausted.
         for id in cursor.by_ref() {
-            log_debug!("fetch_series_batch: reading {id} from iter");
             let Some(k) = postings.get_key_by_id(id) else {
                 stale_ids.push(id);
                 continue;
