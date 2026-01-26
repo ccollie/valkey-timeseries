@@ -88,7 +88,7 @@ fn write_data<T: Number>(
     let save_pos = dest.len();
     // placeholder for data length
     write_usize(dest, save_pos);
-    simple_compress_into(values, config, dest).map_err(map_err)?;
+    simple_compress_into(values, config, &mut *dest).map_err(map_err)?;
     let len = dest.len() - save_pos;
     dest[save_pos..save_pos + size_of::<usize>()].copy_from_slice(&len.to_le_bytes());
     Ok(len)

@@ -29,7 +29,7 @@ num-traits = "0.2.19"
 joinkit = "0.2.0"
 lazy_static = "1.5.0"
 papaya = "0.2"
-pco = "0.4"
+pco = "1.0"
 prost = "0.14"
 rand = { version = "0.9", features = ["small_rng"] }
 smallvec = { version = "2.0.0-alpha.12", features = ["std"] }

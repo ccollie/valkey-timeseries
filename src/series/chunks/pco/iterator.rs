@@ -4,13 +4,13 @@ use crate::error_consts;
 use pco::FULL_BATCH_N;
 use pco::data_types::Number;
 use pco::errors::PcoError;
-use pco::standalone::{FileDecompressor, MaybeChunkDecompressor};
+use pco::standalone::{DecompressorItem, FileDecompressor};
 use valkey_module::{ValkeyError, ValkeyResult};
 
 const EMPTY_SLICE: [u8; 0] = [];
 struct StreamState<'a, T: Number> {
     decompressor: FileDecompressor,
-    chunk_decompressor: MaybeChunkDecompressor<T, &'a [u8]>,
+    chunk_decompressor: DecompressorItem<T, &'a [u8]>,
     values: [T; FULL_BATCH_N],
     cursor: &'a [u8],
     count: usize,
@@ -27,7 +27,7 @@ impl<'a, T: Number + Default> StreamState<'a, T> {
 
         let state = Self {
             decompressor,
-            chunk_decompressor: MaybeChunkDecompressor::EndOfData(&EMPTY_SLICE),
+            chunk_decompressor: DecompressorItem::EndOfData(&EMPTY_SLICE),
             cursor,
             count: 0,
             chunk_idx: 0,
@@ -45,20 +45,20 @@ impl<'a, T: Number + Default> StreamState<'a, T> {
             return Ok(false);
         }
         self.count = 0;
-        if let MaybeChunkDecompressor::Some(chunk_decompressor) = &mut self.chunk_decompressor {
+        if let DecompressorItem::Chunk(chunk_decompressor) = &mut self.chunk_decompressor {
             let progress = chunk_decompressor
-                .decompress(&mut self.values)
+                .read(&mut self.values)
                 .map_err(convert_error)?;
             self.finished_chunk = progress.finished;
             self.count = progress.n_processed;
             if self.finished_chunk {
-                let mut replacement = MaybeChunkDecompressor::<T, &[u8]>::EndOfData(&EMPTY_SLICE);
+                let mut replacement = DecompressorItem::<T, &[u8]>::EndOfData(&EMPTY_SLICE);
                 std::mem::swap(&mut self.chunk_decompressor, &mut replacement);
                 match replacement {
-                    MaybeChunkDecompressor::Some(replacement) => {
+                    DecompressorItem::Chunk(replacement) => {
                         self.cursor = replacement.into_src();
                     }
-                    MaybeChunkDecompressor::EndOfData(_) => {
+                    DecompressorItem::EndOfData(_) => {
                         self.is_finished = true;
                     }
                 }
@@ -74,7 +74,7 @@ impl<'a, T: Number + Default> StreamState<'a, T> {
 
     fn next_chunk_decompressor(&mut self) -> ValkeyResult<bool> {
         match self.decompressor.chunk_decompressor::<T, _>(self.cursor) {
-            Ok(MaybeChunkDecompressor::EndOfData(_)) => {
+            Ok(DecompressorItem::EndOfData(_)) => {
                 self.is_finished = true;
                 Ok(false)
             }
