@@ -35,19 +35,8 @@ pub fn series_by_selectors(
     }
 
     with_timeseries_postings(ctx, |postings| {
-        let first = postings.postings_for_selector(&selectors[0])?;
-        // done early if we have only one selector. Do not collapse with the loop below, since
-        // this condition possibly spares us an allocation (by forcing us to own the Cow).
-        if selectors.len() == 1 {
-            return collect_series_from_postings(ctx, postings, first.iter(), range);
-        }
-
-        let mut result = first.into_owned();
-        for selector in &selectors[1..] {
-            let bitmap = postings.postings_for_selector(selector)?;
-            result.and_inplace(&bitmap);
-        }
-        collect_series_from_postings(ctx, postings, result.iter(), range)
+        let series_refs = postings.postings_for_selectors(selectors)?;
+        collect_series_from_postings(ctx, postings, series_refs.iter(), range)
     })
 }
 
@@ -61,17 +50,8 @@ pub fn series_keys_by_selectors(
     }
 
     with_timeseries_postings(ctx, |postings| {
-        let first = postings.postings_for_selector(&selectors[0])?;
-        if selectors.len() == 1 {
-            return collect_series_keys(ctx, postings, first.iter(), range);
-        }
-
-        let mut result = first.into_owned();
-        for selector in &selectors[1..] {
-            let bitmap = postings.postings_for_selector(selector)?;
-            result.and_inplace(&bitmap);
-        }
-        collect_series_keys(ctx, postings, result.iter(), range)
+        let series_refs = postings.postings_for_selectors(selectors)?;
+        collect_series_keys(ctx, postings, series_refs.iter(), range)
     })
 }
 
