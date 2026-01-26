@@ -211,11 +211,12 @@ impl RcfOutlierDetector {
         let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
         for (index, &score) in scores.iter().enumerate() {
             if score > self.threshold {
+                let anomaly_score = normalize_rcf_score(score);
                 anomalies.push(Anomaly {
                     index,
                     signal: AnomalySignal::Positive,
                     value: ts[index],
-                    score,
+                    score: anomaly_score,
                 });
             }
         }
@@ -247,10 +248,10 @@ impl OutlierDetector for RcfOutlierDetector {
     }
 }
 
-/// Normalize RCF anomaly scores to the range (0, 1].
+/// Normalize RCF anomaly scores to the range [0, 1].
 ///
 /// RCF raw scores are unbounded (typically 0 to ~3+ for anomalies).
-/// This uses a sigmoid-like transformation to map scores to (0, 1].
+/// This uses a sigmoid-like transformation to map scores to [0, 1].
 pub fn normalize_rcf_score(raw_score: f64) -> f64 {
     if raw_score.is_nan() || raw_score < 0.0 {
         return 0.0;
