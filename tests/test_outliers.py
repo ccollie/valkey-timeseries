@@ -234,7 +234,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
             'ALPHA', 0.3
         )
         anomalies = convert_anomaly_entries(result)
-        print("ewma result", anomalies)
 
         assert len(anomalies) >= 3
         assert anomalies[0].signal == 1
@@ -264,7 +263,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
             'METHOD', 'smoothed-zscore', 'LAG', 10, 'THRESHOLD', 2.0, 'INFLUENCE', 0.0
         )
         anomalies = convert_anomaly_entries(result)
-        print("smoothed-zscore result", anomalies)
+
         assert len(anomalies) == 1
         assert anomalies[0].signal == 1  # Positive anomaly
         assert anomalies[0].value == 5.0
@@ -301,7 +300,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         anomalies = convert_anomaly_entries(result)
 
-        print("mad result", anomalies)
         assert len(anomalies) == len(expected)
         for anomaly, exp in zip(anomalies, expected):
             assert anomaly.value == exp
@@ -337,7 +335,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
                                              )
 
         outliers = convert_anomaly_entries(result)
-        print("double mad result", outliers)
+
         assert len(outliers) == len(EXPECTED)
         for outlier, exp in zip(outliers, EXPECTED):
             assert outlier.value == exp
@@ -511,7 +509,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         # The result should be a map with 'samples' and 'anomalies' keys
         result = TSOutliersCleanedResult.parse(result)
-        print("result FORMAT cleaned", result)
+
         anomaly_values = [float(a.value) for a in result.anomalies]
 
         # Anomalies should contain the outliers (50.0 and -30.0)
