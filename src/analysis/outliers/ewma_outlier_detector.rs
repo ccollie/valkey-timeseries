@@ -97,7 +97,7 @@ impl EwmaOutlierDetector {
             scores,
             anomalies,
             threshold: self.multiplier,
-            method: AnomalyMethod::StatisticalProcessControl,
+            method: AnomalyMethod::Ewma,
             method_info: Some(MethodInfo::Spc {
                 control_limits: (self.target - distance, self.target + distance),
                 center_line: self.target,

@@ -26,7 +26,7 @@ impl MadOutlierDetector {
 
     /// Create a new Mad outlier detector for a slice of f64, given k.
     fn create(data: &[f64], k: f64, estimator: &impl MedianAbsoluteDeviationEstimator) -> Self {
-        assert!(!data.is_empty(), "Sample cannot be empty");
+        debug_assert!(!data.is_empty(), "Sample cannot be empty");
         let samples = Samples::from(data.to_vec());
         let median = estimator.quantile_estimator().median(&samples);
         let mad = estimator.mad(&samples);
@@ -92,7 +92,7 @@ impl MadOutlierDetector {
         self.upper_fence
     }
 
-    /// Returns a normalized anomaly score in `[0.0..=1.0]` describing how "anomalous" `value` is.
+    /// Returns a normalized anomaly score in `[0..1]` describing how "anomalous" `value` is.
     ///
     /// Interpretation:
     /// - `0.0` means "at the median" (no deviation).

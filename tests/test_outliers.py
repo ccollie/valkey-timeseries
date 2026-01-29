@@ -566,3 +566,168 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert -30.0 not in sample_values_neg
         assert 50.0 in sample_values_neg  # Positive anomaly should remain
         assert len(samples_neg) == len(data) - 1
+
+    def test_daily_seasonality_with_spike(self):
+        """Test detection on daily seasonal pattern with anomalous spike."""
+        key = 'test:seasonality:daily:spike'
+
+        # Create daily pattern with one anomaly
+        data = []
+        for day in range(7):
+            for hour in range(24):
+                if 9 <= hour <= 17:
+                    value = 100.0 + 20.0 * math.sin((hour - 9) * math.pi / 8)
+                else:
+                    value = 30.0 + 10.0 * math.sin(hour * math.pi / 12)
+
+                # Add spike on day 3, hour 14
+                if day == 3 and hour == 14:
+                    value = 500.0
+
+                data.append(value)
+
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 3600000, val)
+
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'SEASONALITY', 24,
+            'METHOD', 'zscore', 'THRESHOLD', '3.0'
+        )
+
+        anomalies = convert_anomaly_entries(result)
+        assert len(anomalies) >= 1
+        assert any(a.value == 500.0 and a.signal == 1 for a in anomalies)
+
+    def test_seasonality_with_ewma_method(self):
+        """Test EWMA method with seasonal decomposition."""
+        key = 'test:seasonality:ewma'
+
+        # Create pattern with daily seasonality
+        data = []
+        for day in range(14):
+            for hour in range(24):
+                base = 100.0
+                seasonal = 40.0 * math.sin(hour * math.pi / 12)
+                noise = 2.0 * math.sin((day * 24 + hour) * 0.5)
+
+                value = base + seasonal + noise
+                data.append(value)
+
+        # Add multiple anomalies
+        data[100] = 250.0
+        data[200] = 10.0
+        data[280] = 270.0
+
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 3600000, val)
+
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'SEASONALITY', 24,
+            'METHOD', 'ewma', 'ALPHA', '0.3'
+        )
+
+        anomalies = convert_anomaly_entries(result)
+        assert len(anomalies) >= 2
+        assert any(abs(a.value - 250.0) < 0.1 for a in anomalies)
+
+    def test_multiple_seasonalities_daily_and_weekly(self):
+        """Test detection with both daily and weekly seasonality patterns."""
+        key = 'test:seasonality:multiple:daily:weekly'
+
+        # Create pattern with both daily (24h) and weekly (7d) cycles
+        data = []
+        for week in range(6):
+            for day in range(7):
+                # Weekly component - weekday vs weekend pattern
+                weekly_factor = 1.3 if day < 5 else 0.6  # Weekdays higher than weekends
+
+                for hour in range(24):
+                    # Daily component - business hours pattern
+                    if 9 <= hour <= 17:
+                        daily_component = 80.0 + 30.0 * math.sin((hour - 13) * math.pi / 8)
+                    else:
+                        daily_component = 40.0 + 15.0 * math.sin(hour * math.pi / 12)
+
+                    value = weekly_factor * daily_component
+                    data.append(value)
+
+        # Add anomalies at different times
+        # Week 2, Wednesday (day 2), 2 PM (hour 14) - during high activity
+        data[2 * 7 * 24 + 2 * 24 + 14] = 400.0  # Positive spike
+
+        # Week 3, Sunday (day 6), 3 AM (hour 3) - during low activity
+        data[3 * 7 * 24 + 6 * 24 + 3] = -50.0  # Negative spike
+
+        # Week 4, Friday (day 4), 11 AM (hour 11) - during business hours
+        data[4 * 7 * 24 + 4 * 24 + 11] = 380.0  # Positive spike
+
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 3600000, val)
+
+        # Test with both daily and weekly seasonality periods
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'SEASONALITY', 24, 168,  # 24 hours (daily), 168 hours (weekly)
+            'METHOD', 'zscore', 'THRESHOLD', '3.0'
+        )
+
+        anomalies = convert_anomaly_entries(result)
+
+        # Should detect all three anomalies
+        assert len(anomalies) >= 3
+
+        # Check for the specific anomaly values
+        anomaly_values = [a.value for a in anomalies]
+        assert 400.0 in anomaly_values
+        assert -50.0 in anomaly_values
+        assert 380.0 in anomaly_values
+
+        # Verify signals
+        positive_anomalies = [a for a in anomalies if a.signal == 1]
+        negative_anomalies = [a for a in anomalies if a.signal == -1]
+
+        assert len(positive_anomalies) >= 2
+        assert len(negative_anomalies) >= 1
+
+    def test_multiple_seasonalities_with_trend(self):
+        """Test detection with multiple seasonalities and an underlying trend."""
+        key = 'test:seasonality:multiple:trend'
+
+        # Create pattern with daily, weekly cycles, and upward trend
+        data = []
+        for week in range(8):
+            for day in range(7):
+                # Weekly component
+                weekly_component = 20.0 * math.sin(day * math.pi / 3.5)
+
+                for hour in range(24):
+                    # Daily component
+                    daily_component = 30.0 * math.sin(hour * math.pi / 12)
+
+                    # Upward trend
+                    trend = (week * 7 + day) * 2.0
+
+                    value = 100.0 + weekly_component + daily_component + trend
+                    data.append(value)
+
+        # Add anomalies
+        data[300] = 500.0  # Strong positive spike
+        data[600] = 10.0  # Strong negative spike
+
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 3600000, val)
+
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'SEASONALITY', 24, 168,
+            'METHOD', 'modified-zscore', 'THRESHOLD', '3.5'
+        )
+
+        anomalies = convert_anomaly_entries(result)
+        assert len(anomalies) >= 2
+
+        anomaly_values = [a.value for a in anomalies]
+        assert 500.0 in anomaly_values
+        assert 10.0 in anomaly_values

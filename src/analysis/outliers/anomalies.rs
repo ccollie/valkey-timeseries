@@ -4,49 +4,35 @@
 //! in time series data, including statistical process control, isolation forest,
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
-use super::cusum_outlier_detector::detect_anomalies_spc_cusum;
-use super::iqr_outlier_detector::detect_anomalies_iqr;
-use super::mad_outlier_detector::MadOutlierDetector;
-use super::modified_zscore_outlier_detector::detect_anomalies_modified_zscore;
-use super::rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf};
-use super::smoothed_zscores::SmoothedZScoreOptions;
-use super::spc_ewma_outlier_detector::{EWMA_DEFAULT_ALPHA, detect_anomalies_spc_ewma};
-use super::zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore};
 use super::{
-    AnomalyMethod, AnomalyResult, MADAnomalyOptions, SPCMethod, detect_anomalies_double_mad,
+    AnomalyMethod, AnomalyResult, MADAnomalyOptions,
+    cusum_outlier_detector::detect_anomalies_spc_cusum,
+    detect_anomalies_double_mad,
+    ewma_outlier_detector::detect_anomalies_spc_ewma,
+    iqr_outlier_detector::detect_anomalies_iqr,
+    mad_outlier_detector::MadOutlierDetector,
+    modified_zscore_outlier_detector::detect_anomalies_modified_zscore,
+    rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf},
+    smoothed_zscores::{SmoothedZScoreOptions, detect_anomalies_smoothed_zscore},
+    zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore},
 };
-use crate::analysis::math::calculate_mean;
-use crate::analysis::outliers::smoothed_zscores::detect_anomalies_smoothed_zscore;
-use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
-use std::fmt::Debug;
+use crate::analysis::{
+    TimeSeriesAnalysisError, TimeSeriesAnalysisResult,
+    seasonality::{mstl::Mstl, stl::Stl},
+};
 
-/// Options for seasonal adjustment
-#[derive(Debug, Clone, Copy)]
+const INSUFFICIENT_DATA_ERROR: &str = "TSDB: insufficient samples for anomaly detection";
+
+#[derive(Debug, Clone)]
 pub struct SeasonalAdjustment {
     /// Seasonal period for adjustment
-    pub seasonal_period: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SPCMethodOptions {
-    /// Spc method (if using Spc)
-    pub spc_method: SPCMethod,
-    /// Alpha for Ewma (if using Ewma Spc)
-    pub ewma_alpha: Option<f64>,
-}
-
-impl Default for SPCMethodOptions {
-    fn default() -> Self {
-        Self {
-            spc_method: SPCMethod::Ewma,
-            ewma_alpha: Some(EWMA_DEFAULT_ALPHA),
-        }
-    }
+    pub seasonal_periods: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub enum AnomalyDetectionMethodOptions {
-    Spc(SPCMethodOptions),
+    Cusum,
+    Ewma(Option<f64>),
     InterQuartileRange(Option<f64>),
     ZScore(Option<f64>),
     SmoothedZScore(SmoothedZScoreOptions),
@@ -65,24 +51,20 @@ impl Default for AnomalyDetectionMethodOptions {
 impl AnomalyDetectionMethodOptions {
     pub fn method(&self) -> AnomalyMethod {
         match self {
-            AnomalyDetectionMethodOptions::Spc(_) => AnomalyMethod::StatisticalProcessControl,
-            AnomalyDetectionMethodOptions::InterQuartileRange(_) => {
-                AnomalyMethod::InterquartileRange
-            }
-            AnomalyDetectionMethodOptions::ZScore(_) => AnomalyMethod::ZScore,
-            AnomalyDetectionMethodOptions::SmoothedZScore(_) => AnomalyMethod::SmoothedZScore,
-            AnomalyDetectionMethodOptions::ModifiedZScore(_) => AnomalyMethod::ModifiedZScore,
-            AnomalyDetectionMethodOptions::Mad(_) => AnomalyMethod::Mad,
-            AnomalyDetectionMethodOptions::DoubleMAD(_) => AnomalyMethod::DoubleMAD,
-            AnomalyDetectionMethodOptions::Rcf(_) => AnomalyMethod::RandomCutForest,
+            Self::Cusum => AnomalyMethod::Cusum,
+            Self::Ewma(_) => AnomalyMethod::Ewma,
+            Self::InterQuartileRange(_) => AnomalyMethod::InterquartileRange,
+            Self::ZScore(_) => AnomalyMethod::ZScore,
+            Self::SmoothedZScore(_) => AnomalyMethod::SmoothedZScore,
+            Self::ModifiedZScore(_) => AnomalyMethod::ModifiedZScore,
+            Self::Mad(_) => AnomalyMethod::Mad,
+            Self::DoubleMAD(_) => AnomalyMethod::DoubleMAD,
+            Self::Rcf(_) => AnomalyMethod::RandomCutForest,
         }
     }
 
     pub fn for_ewma(alpha: f64) -> Self {
-        AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
-            spc_method: SPCMethod::Ewma,
-            ewma_alpha: Some(alpha),
-        })
+        AnomalyDetectionMethodOptions::Ewma(Some(alpha))
     }
 }
 
@@ -98,6 +80,12 @@ pub struct AnomalyOptions {
 impl AnomalyOptions {
     pub fn method(&self) -> AnomalyMethod {
         self.options.method()
+    }
+
+    pub fn set_seasonal_periods(&mut self, periods: Vec<usize>) {
+        self.seasonal_adjustment = Some(SeasonalAdjustment {
+            seasonal_periods: periods,
+        });
     }
 }
 
@@ -143,15 +131,15 @@ pub fn detect_anomalies(
 
     if n < 3 {
         return Err(TimeSeriesAnalysisError::InsufficientData {
-            message: "TSDB: insufficient samples for anomaly detection".to_string(),
+            message: INSUFFICIENT_DATA_ERROR.to_string(),
             required: 3,
             actual: n,
         });
     }
 
     // Apply seasonal adjustment if requested
-    if let Some(adjustment) = options.seasonal_adjustment {
-        let adjusted = seasonally_adjust(ts, adjustment.seasonal_period)?;
+    if let Some(adjustment) = &options.seasonal_adjustment {
+        let adjusted = seasonality_adjust(ts, &adjustment.seasonal_periods)?;
         return handle_dispatch(&adjusted, options);
     };
 
@@ -162,9 +150,9 @@ fn handle_dispatch(
     ts: &[f64],
     options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    // Apply the selected analysis detection method
     match options.options {
-        AnomalyDetectionMethodOptions::Spc(opts) => detect_anomalies_spc(ts, opts),
+        AnomalyDetectionMethodOptions::Cusum => detect_anomalies_spc_cusum(ts),
+        AnomalyDetectionMethodOptions::Ewma(alpha) => detect_anomalies_spc_ewma(ts, alpha),
         AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => {
             detect_anomalies_iqr(ts, threshold)
         }
@@ -183,23 +171,6 @@ fn handle_dispatch(
     }
 }
 
-/// Statistical Process Control (Spc) anomaly detection
-fn detect_anomalies_spc(
-    ts: &[f64],
-    options: SPCMethodOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    match options.spc_method {
-        SPCMethod::Cusum => {
-            // Cusum control chart implementation
-            detect_anomalies_spc_cusum(ts)
-        }
-        SPCMethod::Ewma => {
-            // Ewma control chart implementation
-            detect_anomalies_spc_ewma(ts, options.ewma_alpha)
-        }
-    }
-}
-
 fn detect_anomalies_mad(
     ts: &[f64],
     options: MADAnomalyOptions,
@@ -208,35 +179,51 @@ fn detect_anomalies_mad(
     detector.detect(ts)
 }
 
-// Helper functions
-fn seasonally_adjust(ts: &[f64], period: usize) -> TimeSeriesAnalysisResult<Vec<f64>> {
-    let n = ts.len();
-    if n < period * 2 {
+fn validate_insufficient_data<T: Default>(
+    required: usize,
+    actual: usize,
+) -> TimeSeriesAnalysisResult<T> {
+    if actual >= required {
+        return Ok(T::default());
+    }
+    Err(TimeSeriesAnalysisError::InsufficientData {
+        message: "TSDB: insufficient samples for anomaly detection".to_string(),
+        required,
+        actual,
+    })
+}
+
+/// Seasonal adjustment using (M)Stl decomposition
+fn seasonality_adjust(ts: &[f64], periods: &[usize]) -> TimeSeriesAnalysisResult<Vec<f64>> {
+    if periods.is_empty() {
         return Ok(ts.to_vec());
     }
 
-    let mut adjusted = ts.to_vec();
+    let n = ts.len();
+    if periods.len() == 1 {
+        let required = 2 * periods[0];
+        validate_insufficient_data::<Vec<f64>>(required, n)?;
 
-    // Simple seasonal adjustment using period-wise detrending
-    for season in 0..period {
-        let mut seasonal_values = Vec::new();
-        let mut indices = Vec::new();
+        Stl::new(periods[0])
+            .robust()
+            .decompose(ts)
+            .map(|res| res.remainder)
+            .ok_or_else(|| {
+                TimeSeriesAnalysisError::DecompositionError("STL decomposition failed".to_string())
+            })
+    } else {
+        let max_period = periods[periods.len() - 1];
+        let required = 2 * max_period;
+        validate_insufficient_data::<Vec<f64>>(required, n)?;
 
-        for i in (season..n).step_by(period) {
-            seasonal_values.push(ts[i]);
-            indices.push(i);
-        }
-
-        if seasonal_values.len() > 1 {
-            let seasonal_mean = calculate_mean(&seasonal_values);
-
-            for &idx in &indices {
-                adjusted[idx] -= seasonal_mean;
-            }
-        }
+        Mstl::new(periods.to_vec())
+            .robust()
+            .decompose(ts)
+            .map(|res| res.remainder)
+            .ok_or_else(|| {
+                TimeSeriesAnalysisError::DecompositionError("MSTL decomposition failed".to_string())
+            })
     }
-
-    Ok(adjusted)
 }
 
 #[cfg(test)]
