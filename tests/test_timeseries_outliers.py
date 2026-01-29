@@ -474,7 +474,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         result = self.client.execute_command("TS.OUTLIERS",
                                              key, "-", "+",
-                                             "FORMAT", "full",
+                                             "OUTPUT", "full",
                                              "method", "rcf",
                                              "threshold", 2.5)
 
@@ -484,7 +484,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert any(x != 0 for x in result.anomalies)
 
     def test_format_cleaned(self):
-        """Test FORMAT cleaned returns samples without anomalies and anomaly list."""
+        """Test OUTPUT cleaned returns samples without anomalies and anomaly list."""
         key = 'test:outliers:format:cleaned'
 
         # Create data with clear anomalies
@@ -499,10 +499,10 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         for i, val in enumerate(data):
             self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
 
-        # Test FORMAT cleaned with DIRECTION both (default)
+        # Test OUTPUT cleaned with DIRECTION both (default)
         result = self.client.execute_command(
             'TS.OUTLIERS', key, '-', '+',
-            'FORMAT', 'cleaned',
+            'OUTPUT', 'cleaned',
             'METHOD', 'zscore', 'THRESHOLD', '2.5'
         )
 
@@ -523,10 +523,10 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert -30.0 not in sample_values
         assert len(sample_values) == len(data) - 2  # Total minus anomalies
 
-        # Test FORMAT cleaned with DIRECTION positive (only removes positive anomalies)
+        # Test OUTPUT cleaned with DIRECTION positive (only removes positive anomalies)
         result_positive = self.client.execute_command(
             'TS.OUTLIERS', key, '-', '+',
-            'FORMAT', 'cleaned',
+            'OUTPUT', 'cleaned',
             'DIRECTION', 'positive',
             'METHOD', 'zscore', 'THRESHOLD', '2.5'
         )
@@ -545,10 +545,10 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert -30.0 in sample_values_pos  # Negative anomaly should remain
         assert len(samples_pos) == len(data) - 1
 
-        # Test FORMAT cleaned with DIRECTION negative (only removes negative anomalies)
+        # Test OUTPUT cleaned with DIRECTION negative (only removes negative anomalies)
         result_negative = self.client.execute_command(
             'TS.OUTLIERS', key, '-', '+',
-            'FORMAT', 'cleaned',
+            'OUTPUT', 'cleaned',
             'DIRECTION', 'negative',
             'METHOD', 'zscore', 'THRESHOLD', '2.5'
         )
@@ -568,10 +568,10 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert len(samples_neg) == len(data) - 1
 
     def test_daily_seasonality_with_spike(self):
-        """Test detection on daily seasonal pattern with anomalous spike."""
+        """Test detection on a daily seasonal pattern with anomalous spike."""
         key = 'test:seasonality:daily:spike'
 
-        # Create daily pattern with one anomaly
+        # Create a daily pattern with one anomaly
         data = []
         for day in range(7):
             for hour in range(24):
@@ -695,7 +695,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         """Test detection with multiple seasonalities and an underlying trend."""
         key = 'test:seasonality:multiple:trend'
 
-        # Create pattern with daily, weekly cycles, and upward trend
+        # Create a pattern with daily, weekly cycles, and upward trend
         data = []
         for week in range(8):
             for day in range(7):
@@ -736,7 +736,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         """Test detection with daily seasonality and a moderate upward trend."""
         key = 'test:seasonality:daily:moderate_trend'
 
-        # Create pattern with daily and weekly cycles, plus moderate upward trend
+        # Create a pattern with daily and weekly cycles, plus moderate upward trend
         data = []
         for week in range(8):
             for day in range(7):
