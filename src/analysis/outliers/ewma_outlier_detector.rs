@@ -105,7 +105,8 @@ impl EwmaOutlierDetector {
         })
     }
 }
-/// Statistical Process Control (Spc) anomaly detection
+
+/// EWMA anomaly detection
 pub(super) fn detect_anomalies_spc_ewma(
     ts: &[f64],
     alpha: Option<f64>,

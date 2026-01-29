@@ -11,7 +11,7 @@ use valkey_module::{ValkeyError, ValkeyResult};
 
 const DEFAULT_THRESHOLD: f64 = 0.7;
 
-/// Configuration options for the Rcf outlier detector.
+/// Configuration options for the RCF outlier detector.
 #[derive(Debug, Copy, Clone)]
 pub struct RCFOptions {
     /// The number of trees in the Random Cut Forest.
@@ -373,7 +373,7 @@ mod tests {
             threshold: 0.75,
             time_decay: Some(0.1),
             shingle_size: Some(1),
-            output_after: Some(30), // allow training period
+            output_after: Some(30), // allow a training period
             parallel_enabled: Some(false),
         })
         .unwrap();
