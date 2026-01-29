@@ -47,7 +47,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     while let Some(arg) = args.next() {
         hashify::fnc_map_ignore_case!(arg.as_slice(),
-            "FORMAT" => {
+            "OUTPUT" => {
                 let format_str = args.next_str()?;
                 output_format = parse_output_format(format_str)?;
             },
@@ -326,7 +326,7 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
                 rcf_options.output_after = Some(parse_single_value(args, "OUTPUT_AFTER")? as usize);
             },
             _ => {
-                return Err(ValkeyError::String(format!("TSDB: unknown Rcf option {arg}")));
+                return Err(ValkeyError::String(format!("TSDB: unknown RCF option {arg}")));
             }
         );
     }
