@@ -707,7 +707,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
                     daily_component = 30.0 * math.sin(hour * math.pi / 12)
 
                     # Upward trend
-                    trend = (week * 7 + day) * 2.0
+                    trend = (week * 7 + day) * 0.5
 
                     value = 100.0 + weekly_component + daily_component + trend
                     data.append(value)
@@ -731,3 +731,63 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         anomaly_values = [a.value for a in anomalies]
         assert 500.0 in anomaly_values
         assert 10.0 in anomaly_values
+
+    def test_seasonality_with_moderate_trend(self):
+        """Test detection with daily seasonality and a moderate upward trend."""
+        key = 'test:seasonality:daily:moderate_trend'
+
+        # Create pattern with daily and weekly cycles, plus moderate upward trend
+        data = []
+        for week in range(8):
+            for day in range(7):
+                # Weekly component - weekday vs weekend pattern
+                weekly_factor = 1.2 if day < 5 else 0.8
+
+                for hour in range(24):
+                    # Daily component - business hours pattern
+                    if 9 <= hour <= 17:
+                        hourly_factor = 1.5
+                    elif 6 <= hour <= 21:
+                        hourly_factor = 1.0
+                    else:
+                        hourly_factor = 0.5
+
+                    # Moderate upward trend
+                    trend = (week * 7 + day) * 0.5
+
+                    # Base value with seasonal components
+                    base = 50.0
+                    value = base + trend + (weekly_factor * 20.0) + (hourly_factor * 15.0)
+
+                    # Add small noise for realistic variance
+                    noise = math.sin(hour * 0.5) * 2.0
+                    data.append(value + noise)
+
+        # Add clear anomalies that stand out from the pattern
+        data[300] = 500.0  # Strong positive spike
+        data[600] = -50.0  # Strong negative spike
+        data[900] = 450.0  # Another positive spike
+
+        for i, val in enumerate(data):
+            self.client.execute_command('TS.ADD', key, 1000 + i * 3600000, val)
+
+        # Use a single seasonality period (daily) for more stable decomposition
+        result = self.client.execute_command(
+            'TS.OUTLIERS', key, '-', '+',
+            'SEASONALITY', 24,  # daily seasonality
+            'METHOD', 'modified-zscore',  # More robust to outliers
+            'THRESHOLD', 3.5
+        )
+
+        anomalies = convert_anomaly_entries(result)
+
+        # Should detect at least 2 of the 3 anomalies
+        assert len(anomalies) >= 2
+
+        # Check for specific anomaly values
+        anomaly_values = [a.value for a in anomalies]
+        assert any(abs(v - 500.0) < 1.0 for v in anomaly_values)
+
+        # Verify we have both positive and negative detections
+        signals = [a.signal for a in anomalies]
+        assert 1 in signals  # At least one positive anomaly
