@@ -3,6 +3,7 @@ mod cusum_outlier_detector;
 mod double_mad_outlier_detector;
 #[cfg(test)]
 mod double_mad_outlier_detector_tests;
+mod ewma_outlier_detector;
 mod iqr_outlier_detector;
 pub mod mad_estimator;
 mod mad_outlier_detector;
@@ -13,7 +14,6 @@ mod modified_zscore_outlier_detector;
 mod outlier_test_data;
 mod rcf_outlier_detector;
 mod smoothed_zscores;
-mod spc_ewma_outlier_detector;
 mod utils;
 mod zscore_outlier_detector;
 
@@ -30,8 +30,10 @@ use valkey_module::{ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 /// Method for outlier detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnomalyMethod {
-    /// Statistical process control (Spc)
-    StatisticalProcessControl,
+    /// Ewma-based statistical process control
+    Ewma,
+    /// CUSUM-based statistical process control
+    Cusum,
     /// Z-score based detection
     ZScore,
     /// Modified Z-score using median absolute deviation
@@ -52,7 +54,8 @@ impl AnomalyMethod {
     /// Returns a human-readable name for the method
     pub fn name(&self) -> &'static str {
         match self {
-            AnomalyMethod::StatisticalProcessControl => "Statistical Process Control",
+            AnomalyMethod::Ewma => "EWMA",
+            AnomalyMethod::Cusum => "CUSUM",
             AnomalyMethod::ZScore => "Z-Score",
             AnomalyMethod::ModifiedZScore => "Modified Z-Score",
             AnomalyMethod::SmoothedZScore => "Smoothed Z-Score",
@@ -70,7 +73,8 @@ impl FromStr for AnomalyMethod {
     fn from_str(s: &str) -> ValkeyResult<Self> {
         let res = hashify::tiny_map_ignore_case! {
             s.as_bytes(),
-            "spc" => Ok(AnomalyMethod::StatisticalProcessControl),
+            "ewma" => Ok(AnomalyMethod::Ewma),
+            "cusum" => Ok(AnomalyMethod::Cusum),
             "zscore" => Ok(AnomalyMethod::ZScore),
             "z-score" => Ok(AnomalyMethod::ZScore),
             "modified-zscore" => Ok(AnomalyMethod::ModifiedZScore),
@@ -99,43 +103,6 @@ impl TryFrom<&ValkeyString> for AnomalyMethod {
     fn try_from(s: &ValkeyString) -> ValkeyResult<Self> {
         let str = s.to_string_lossy();
         Self::from_str(&str)
-    }
-}
-
-/// Statistical process control method
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SPCMethod {
-    /// Cusum control charts
-    Cusum,
-    /// Exponentially weighted moving average (Ewma)
-    Ewma,
-}
-
-impl TryFrom<&str> for SPCMethod {
-    type Error = ValkeyError;
-
-    fn try_from(s: &str) -> ValkeyResult<Self> {
-        SPCMethod::try_from(s.as_bytes())
-    }
-}
-
-impl TryFrom<&[u8]> for SPCMethod {
-    type Error = ValkeyError;
-
-    fn try_from(s: &[u8]) -> ValkeyResult<Self> {
-        let res = hashify::tiny_map_ignore_case! {
-            s,
-            "cusum" => SPCMethod::Cusum,
-            "ewma" => SPCMethod::Ewma
-        };
-        match res {
-            Some(method) => Ok(method),
-            None => {
-                let invalid = String::from_utf8_lossy(s);
-                let msg = format!("TSDB: unknown Spc method: {invalid}");
-                Err(ValkeyError::String(msg))
-            }
-        }
     }
 }
 
@@ -349,8 +316,8 @@ impl FromStr for AnomalyMADEstimator {
             "simple" => AnomalyMADEstimator::Simple,
             "harrell-davis" => AnomalyMADEstimator::HarrellDavis,
             "harrelldavis" => AnomalyMADEstimator::HarrellDavis,
-            "invariant" => AnomalyMADEstimator::Invariant,
             "hd" => AnomalyMADEstimator::HarrellDavis,
+            "invariant" => AnomalyMADEstimator::Invariant,
         };
         match res {
             Some(estimator) => Ok(estimator),

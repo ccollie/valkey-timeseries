@@ -177,7 +177,7 @@ impl RcfOutlierDetector {
     pub fn try_batch_scores(&self, values: &[f64]) -> ValkeyResult<Vec<f64>> {
         let num_threads = NUM_THREADS.load(Ordering::Relaxed);
 
-        // Heuristic: only parallelize for sufficiently large batches.
+        // Heuristic: only parallelize for large enough batches.
         // Rationale: scoring a single point is relatively small work; thread context switching overhead
         // can dominate for small N.
         let should_parallelize = num_threads > 1 && values.len() >= 256 * num_threads;

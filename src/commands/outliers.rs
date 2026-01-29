@@ -1,7 +1,7 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, SPCMethod, SPCMethodOptions,
-    SmoothedZScoreOptions, detect_anomalies,
+    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, SmoothedZScoreOptions,
+    detect_anomalies,
 };
 use crate::commands::{CommandArgIterator, parse_duration_ms, parse_timestamp_range};
 use crate::common::Sample;
@@ -16,6 +16,8 @@ use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+const MAX_SEASONALITY_PERIODS: usize = 4;
+
 enum OutputFormat {
     Full,
     Simple,
@@ -25,6 +27,7 @@ enum OutputFormat {
 /// TS.OUTLIERS key fromTimestamp toTimestamp
 /// [FORMAT <full|simple|cleaned>]
 /// [DIRECTION <positive|negative|both>]
+/// [SEASONALITY <period1> [period2] ...]
 /// METHOD <method> [method-specific-options]
 pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 6 {
@@ -40,6 +43,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut anomaly_direction = AnomalyDirection::Both;
     let mut output_format = OutputFormat::Simple;
     let mut options: Option<AnomalyOptions> = None;
+    let mut seasonal_periods: Option<Vec<usize>> = None;
 
     while let Some(arg) = args.next() {
         hashify::fnc_map_ignore_case!(arg.as_slice(),
@@ -51,18 +55,30 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 let dir_str = args.next_str()?;
                 anomaly_direction = dir_str.parse()?;
             },
+            "SEASONALITY" => {
+                let mut periods: Vec<usize> = Vec::with_capacity(4);
+                // loop while the next token is a number
+                while let Some(v) = args.peek() {
+                    if let Ok(value) = v.parse_unsigned_integer() {
+                        periods.push(value as usize);
+                        args.next();
+                        continue;
+                    }
+                    break;
+                }
+                if periods.is_empty() || periods.len() > MAX_SEASONALITY_PERIODS {
+                    return Err(ValkeyError::Str("TSDB: invalid SEASONALITY periods"));
+                }
+                // periods should be unique and sorted
+                periods.sort_unstable();
+                if !periods.windows(2).all(|w| w[0] != w[1]) {
+                    return Err(ValkeyError::Str("TSDB: SEASONALITY periods must be unique"));
+                }
+                seasonal_periods = Some(periods);
+            },
             "METHOD" => {
                 if options.is_some() {
                     return Err(ValkeyError::Str("TSDB: outliers METHOD already specified"));
-                }
-
-                // see if we have an spc method
-                if let Some(peek) = args.peek() {
-                    let candidate = peek.as_slice();
-                    if SPCMethod::try_from(candidate).is_ok() {
-                        options = Some(parse_spc_options(&mut args)?);
-                        continue;
-                    }
                 }
 
                 let method: AnomalyMethod = args.next_str()?.parse()?;
@@ -73,8 +89,6 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             }
         );
     }
-
-    let options = options.unwrap_or_default();
 
     let Some(series) = get_timeseries(ctx, key, Some(AclPermissions::ACCESS), true)? else {
         return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
@@ -89,6 +103,11 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let samples = get_range(&series, &range_options, true);
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
+    let mut options = options.unwrap_or_default();
+    if let Some(periods) = seasonal_periods {
+        options.set_seasonal_periods(periods);
+    }
+
     // Perform analysis detection
     let result = detect_anomalies(&values, &options)
         .map_err(|e| ValkeyError::String(format!("TSDB: outlier detection failed: {e}")))?;
@@ -102,7 +121,14 @@ fn parse_method_options(
     args: &mut CommandArgIterator,
 ) -> ValkeyResult<AnomalyOptions> {
     match method {
-        AnomalyMethod::StatisticalProcessControl => parse_spc_options(args),
+        AnomalyMethod::Ewma => parse_ewma_options(args),
+        AnomalyMethod::Cusum => {
+            // Cusum has no additional options
+            Ok(AnomalyOptions {
+                options: AnomalyDetectionMethodOptions::Cusum,
+                ..Default::default()
+            })
+        }
         AnomalyMethod::ZScore => parse_zscore_options(args),
         AnomalyMethod::ModifiedZScore => parse_modified_zscore_options(args),
         AnomalyMethod::SmoothedZScore => parse_smoothed_zscore_options(args),
@@ -131,39 +157,20 @@ fn parse_output_format(arg: &str) -> ValkeyResult<OutputFormat> {
     )))
 }
 
-// Sub-command parsers for each analysis detection method
-fn parse_spc_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
+fn parse_ewma_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
+    let alpha = if args.peek().is_some() {
+        args.next(); // consume ALPHA
+        Some(parse_single_value(args, "ALPHA")?)
+    } else {
+        None
+    };
+    args.done()?;
+
     let mut options = AnomalyOptions {
         ..Default::default()
     };
 
-    let Some(arg) = args.next() else {
-        return Ok(options);
-    };
-
-    let spc_method: SPCMethod = arg.as_slice().try_into()?;
-
-    if spc_method == SPCMethod::Ewma {
-        if args.peek().is_some() {
-            args.next(); // consume ALPHA
-            let ewma_alpha = parse_single_value(args, "ALPHA")?;
-            options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
-                spc_method,
-                ewma_alpha: Some(ewma_alpha),
-            });
-        } else {
-            options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
-                spc_method,
-                ewma_alpha: None,
-            });
-        }
-    } else {
-        options.options = AnomalyDetectionMethodOptions::Spc(SPCMethodOptions {
-            spc_method,
-            ewma_alpha: None,
-        });
-    }
-    args.done()?;
+    options.options = AnomalyDetectionMethodOptions::Ewma(alpha);
 
     Ok(options)
 }

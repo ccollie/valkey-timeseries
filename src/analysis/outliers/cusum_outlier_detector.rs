@@ -83,7 +83,7 @@ impl CusumOutlierDetector {
             scores,
             anomalies,
             threshold,
-            method: AnomalyMethod::StatisticalProcessControl,
+            method: AnomalyMethod::Cusum,
             method_info: Some(MethodInfo::Spc {
                 control_limits: (-self.h, self.h),
                 center_line: self.target,
@@ -257,10 +257,7 @@ mod tests {
 
         let anomaly_result = detector.detect(&ts).unwrap();
 
-        assert_eq!(
-            anomaly_result.method,
-            AnomalyMethod::StatisticalProcessControl
-        );
+        assert_eq!(anomaly_result.method, AnomalyMethod::Cusum);
         assert!(anomaly_result.method_info.is_some());
 
         if let Some(MethodInfo::Spc {
@@ -331,10 +328,7 @@ mod tests {
 
         let anomaly_result = detect_anomalies_spc_cusum(&ts).unwrap();
 
-        assert_eq!(
-            anomaly_result.method,
-            AnomalyMethod::StatisticalProcessControl
-        );
+        assert_eq!(anomaly_result.method, AnomalyMethod::Cusum);
         assert!(anomaly_result.method_info.is_some());
 
         if let Some(MethodInfo::Spc {

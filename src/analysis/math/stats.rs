@@ -64,3 +64,13 @@ pub fn calculate_mean(data: &[f64]) -> f64 {
     }
     data.iter().sum::<f64>() / n as f64
 }
+
+/// Compute variance.
+pub fn calculate_variance(values: &[f64]) -> f64 {
+    let n = values.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mean: f64 = values.iter().sum::<f64>() / n as f64;
+    values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64
+}
