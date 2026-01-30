@@ -9,8 +9,8 @@ use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::TimeSeriesChunk;
 use crate::series::{DateRange, TimestampRange, ValueFilter};
-use std::fmt::Display;
 use get_size2::GetSize;
+use std::fmt::Display;
 use std::hash::Hash;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 

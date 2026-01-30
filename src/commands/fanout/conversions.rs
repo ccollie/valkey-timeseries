@@ -16,7 +16,8 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::request_types::{
     AggregationOptions, AggregationType, AggregatorConfig, BucketAlignment, MGetSeriesData,
-    MRangeOptions, MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
+    MRangeOptions, MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions, RangeOptions,
+    ValueComparisonFilter,
 };
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{

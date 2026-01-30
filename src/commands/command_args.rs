@@ -17,8 +17,7 @@ use crate::parser::{
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
     AggregationOptions, AggregatorConfig, MRangeOptions, MatchFilterOptions, MetaDateRangeFilter,
-    RangeGroupingOptions,
-    RangeOptions, ValueComparisonFilter,
+    RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
 };
 use crate::series::types::{DuplicatePolicy, ValueFilter};
 use crate::series::{TimestampRange, TimestampValue};
