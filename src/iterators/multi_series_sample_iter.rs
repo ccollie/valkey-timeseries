@@ -136,6 +136,15 @@ mod tests {
         // three entries with timestamp 2 should be preserved
         assert_eq!(timestamps, vec![1, 2, 2, 2, 3]);
         assert_eq!(iter.next(), None);
+
+        let b = vec![make_sample(2, 55.0)];
+        let c = vec![make_sample(2, 40.0)];
+        let a = vec![make_sample(1, 100.0)];
+        let mut iter =
+            MultiSeriesSampleIter::new(vec![a.into_iter(), b.into_iter(), c.into_iter()]);
+        let timestamps: Vec<i64> = iter.by_ref().map(|s| s.timestamp).collect();
+        assert_eq!(timestamps, vec![1, 2, 2]);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
