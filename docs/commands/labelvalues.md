@@ -3,7 +3,7 @@
 #### Syntax
 
 ```
-TS.LABEL-VALUES label [START fromTimestamp] [END toTimestamp]
+TS.LABELVALUES label [START fromTimestamp] [END toTimestamp]
 ```
 returns a list of label mut values for a provided label name.
 
@@ -40,8 +40,7 @@ Return an error reply in the following cases:
 
 This example queries for all label mut values for the job label:
 ```
-// Create a chat application with LLM model and vector store.
-TS.LABEL-VALUES job
+TS.LABELVALUES job
 ```
 ```json
 {
