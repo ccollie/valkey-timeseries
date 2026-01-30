@@ -1,14 +1,14 @@
-# TS.RANGE
+# TS.REVRANGE
 
-Return samples (timestamp/value pairs) from a time-series key over a timestamp range, with optional filtering, limiting,
-and downsampling via aggregation.
+Return samples (timestamp/value pairs) from a time-series key over a timestamp range, ordered **from newest to oldest**.
+Supports the same filtering, limiting, and aggregation/downsampling options as `TS.RANGE`.
 
 ---
 
 ## Syntax
 
 ```plain text
-TS.RANGE key fromTimestamp toTimestamp
+TS.REVRANGE key fromTimestamp toTimestamp
   [LATEST]
   [FILTER_BY_TS ts...]
   [FILTER_BY_VALUE min max]
@@ -18,11 +18,12 @@ TS.RANGE key fromTimestamp toTimestamp
   ]
 ```
 
+> Ordering: results are returned in reverse chronological order.  
+> When using `AGGREGATION`, “reverse” refers to the order of returned buckets.
+
 ---
 
-## Parameters
-
-### Required
+## Required Parameters
 
 | Parameter       |      Type | Description                                                                    |
 |-----------------|----------:|--------------------------------------------------------------------------------|
@@ -34,9 +35,9 @@ TS.RANGE key fromTimestamp toTimestamp
 
 `fromTimestamp` / `toTimestamp` accept:
 
-- **Numeric timestamp** (milliseconds).
-- `-` meaning **earliest** (start of series).
-- `+` meaning **latest** (most recent).
+- **Numeric timestamp** (milliseconds)
+- `-` meaning **earliest**
+- `+` meaning **latest**
 
 ---
 
@@ -54,25 +55,24 @@ TS.RANGE key fromTimestamp toTimestamp
 | Option            | Arguments | Description                                                                                                                                                                                     |
 |-------------------|-----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `FILTER_BY_TS`    | `ts...`   | Only return samples whose timestamps match one of the provided timestamps. Must provide at least 1 timestamp; capped at **128** timestamps; timestamps outside the requested range are ignored. |
-| `FILTER_BY_VALUE` | `min max` | Only return samples with values in `[min, max]`. `min`/`max` support numeric values (and number-with-unit parsing, if enabled elsewhere in your parser); `max` must be `>= min`.                |
+| `FILTER_BY_VALUE` | `min max` | Only return samples with values in `[min, max]`. `max` must be `>= min`.                                                                                                                        |
 
 #### Aggregation / downsampling
 
-| Option            | Arguments                   | Description                                                                                                       |
-|-------------------|-----------------------------|-------------------------------------------------------------------------------------------------------------------|
-| `AGGREGATION`     | `aggregator bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply `aggregator` per bucket.                    |
-| `ALIGN`           | `align`                     | Bucket alignment anchor.                                                                                          |
-| `BUCKETTIMESTAMP` | `bt`                        | Controls the timestamp emitted for each bucket. Default: `start`.                                                 |
-| `EMPTY`           | (none)                      | Include empty buckets (buckets with no samples).                                                                  |
-| `CONDITION`       | `operator value`            | Provides a comparison filter used by conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`). |
+| Option            | Arguments                   | Description                                                                                                               |
+|-------------------|-----------------------------|---------------------------------------------------------------------------------------------------------------------------|
+| `AGGREGATION`     | `aggregator bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply `aggregator` per bucket.                            |
+| `ALIGN`           | `align`                     | Bucket alignment anchor. May appear before `AGGREGATION` (`ALIGN … AGGREGATION …`) or after it (`AGGREGATION … ALIGN …`). |
+| `BUCKETTIMESTAMP` | `bt`                        | Controls the timestamp emitted for each bucket. Default: `start`.                                                         |
+| `EMPTY`           | (none)                      | Include empty buckets (buckets with no samples).                                                                          |
+| `CONDITION`       | `operator value`            | Comparison filter used by conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`).                    |
 
 ##### `bucketDuration` format
 
-`bucketDuration` is a **duration**. It can be:
+`bucketDuration` is a duration:
 
-- An integer (milliseconds), e.g. `60000`
-- A duration string accepted by the module’s duration parser (e.g., `5s`, `1m`, etc., depending on what your duration
-  parser supports)
+- Integer milliseconds, e.g. `60000`
+- Or a duration string accepted by the module’s duration parser (e.g., `5s`, `1m`, etc., depending on supported units)
 
 ##### Alignment restrictions (important)
 
@@ -85,7 +85,7 @@ When aggregation is used:
 
 ## Available aggregators
 
-These are the supported `aggregator` values for `AGGREGATION`:
+Supported `aggregator` values for `AGGREGATION`:
 
 | Aggregator | Description                                                                                            |
 |------------|--------------------------------------------------------------------------------------------------------|
@@ -101,7 +101,7 @@ These are the supported `aggregator` values for `AGGREGATION`:
 | `var.s`    | Sample variance.                                                                                       |
 | `std.p`    | Population standard deviation.                                                                         |
 | `std.s`    | Sample standard deviation.                                                                             |
-| `increase` | Counter increase over the bucket (handles counter resets/backward jumps).                              |
+| `increase` | Counter increase over the bucket (handles counter resets).                                             |
 | `rate`     | Counter rate per second over the bucket window (`increase / window_seconds`).                          |
 | `irate`    | Instantaneous per-second rate from the last two samples in the bucket/window (handles counter resets). |
 | `countif`  | Count of samples matching `CONDITION operator value`.                                                  |
@@ -115,7 +115,7 @@ These are the supported `aggregator` values for `AGGREGATION`:
 
 ## Return value
 
-An array of samples:
+An array of samples (or buckets), ordered from newest to oldest:
 
 ```plain text
 [
@@ -125,56 +125,55 @@ An array of samples:
 ]
 ```
 
-- Without `AGGREGATION`: each entry is a raw sample.
-- With `AGGREGATION`: each entry represents a bucket; the emitted timestamp depends on `BUCKETTIMESTAMP` (default
+- Without `AGGREGATION`: raw samples in reverse chronological order.
+- With `AGGREGATION`: buckets in reverse order; the bucket timestamp is controlled by `BUCKETTIMESTAMP` (default
   `start`).
 
 ---
 
 ## Examples
 
-### Raw range query
+### Reverse range query (raw samples)
 
 ```plain text
-TS.RANGE temperature:office 1700000000000 1700003600000
+TS.REVRANGE temperature:office 1700000000000 1700003600000
 ```
 
-### Limit results
+### Full history in reverse (using `-` / `+`)
 
 ```plain text
-TS.RANGE temperature:office 1700000000000 1700003600000 COUNT 100
+TS.REVRANGE temperature:office - +
 ```
 
-### Filter by value
+### Reverse query with limit
 
 ```plain text
-TS.RANGE temperature:office 1700000000000 1700003600000 FILTER_BY_VALUE 20 25
+TS.REVRANGE temperature:office 1700000000000 1700003600000 COUNT 50
 ```
 
-### Downsample to 1-minute average buckets
+### Reverse query with value filter
 
 ```plain text
-TS.RANGE temperature:office 1700000000000 1700003600000 AGGREGATION avg 60000
+TS.REVRANGE temperature:office 1700000000000 1700003600000 FILTER_BY_VALUE 20 25
 ```
 
-### Aggregation with alignment + empty buckets
+### Reverse downsampling: 1-minute max buckets
 
 ```plain text
-TS.RANGE temperature:office 1700000000000 1700003600000 ALIGN 1700000000000 AGGREGATION sum 60000 EMPTY
+TS.REVRANGE temperature:office 1700000000000 1700003600000 AGGREGATION max 60000
 ```
 
-### Conditional aggregation (`countif`) with `CONDITION`
+### Conditional aggregation in reverse (`any`)
 
-Count how many times per 5-minute interval that cpu-utilization exceeded 90%:
+Return `1.0` for each 5-minute bucket where any sample exceeds 0.9:
 
 ```plain text
-TS.RANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION countif 300000 CONDITION > 0.90
+TS.REVRANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION any 300000 CONDITION > 0.9
 ```
 
-### Share of samples matching a condition
+---
 
-Over the past hour, what percentage of per minute error rates exceeded 5%:
+## Notes
 
-```plain text
-TS.RANGE errors:rate -1h * AGGREGATION share 60000 CONDITION > 0.05
-```
+- `TS.REVRANGE` is identical to `TS.RANGE` except for **output order** (reverse).
+- `COUNT` applies to the number of returned items (samples or buckets).

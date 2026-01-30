@@ -1,4 +1,6 @@
-**TS.CARD** counts the number of distinct series.
+# TS.CARD
+
+counts the number of distinct series.
 
 #### Syntax
 ```
