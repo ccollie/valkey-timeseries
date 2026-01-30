@@ -34,7 +34,7 @@ prost = "0.14"
 rand = { version = "0.9", features = ["small_rng"] }
 smallvec = { version = "2.0.0-alpha.12", features = ["std"] }
 speedate = "0.17"
-thiserror = "2.0.17"
+thiserror = "2.0"
 topo_sort = "0.4.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"
