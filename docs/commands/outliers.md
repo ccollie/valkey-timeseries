@@ -1,6 +1,6 @@
 # TS.OUTLIERS
 
-Detect anomalies and outliers in a time series.
+Detect outliers in a time series.
 
 ## Syntax
 
@@ -82,7 +82,7 @@ SEASONALITY period1 [period2 [period3 [period4]]]
 <details open>
 <summary><code>METHOD</code></summary>
 
-Specifies the outliers detection algorithm. **Required**.
+Specifies the outliers detection algorithm. **Required**. The following methods are supported:
 
 #### CUSUM
 

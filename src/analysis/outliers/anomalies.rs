@@ -68,12 +68,12 @@ impl AnomalyDetectionMethodOptions {
     }
 }
 
-/// Options for analysis detection
+/// Options for anomaly detection
 #[derive(Debug, Clone, Default)]
 pub struct AnomalyOptions {
     /// Seasonal adjustment options
     pub seasonal_adjustment: Option<SeasonalAdjustment>,
-    /// Analysis detection method options
+    /// Anomaly detection method options
     pub options: AnomalyDetectionMethodOptions,
 }
 
@@ -121,7 +121,7 @@ impl AnomalyOptions {
 /// };
 ///
 /// let result = detect_anomalies(&ts, &options).unwrap();
-/// println!("Anomalies detected: {}", result.is_anomaly.iter().filter(|&&x| x).count());
+/// println!("Anomalies detected: {}", result.anomalies.len());
 /// ```
 pub fn detect_anomalies(
     ts: &[f64],
