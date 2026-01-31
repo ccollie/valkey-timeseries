@@ -47,7 +47,11 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
             if next.timestamp == current.timestamp {
                 let is_nan = next.value.is_nan();
                 all_nans = all_nans && is_nan;
-                self.aggregator.update(next.timestamp, next.value);
+
+                // Only aggregate non-NaN samples; still track "all_nans" for the group.
+                if !is_nan {
+                    self.aggregator.update(next.timestamp, next.value);
+                }
             } else {
                 // Finalize the current group
                 let value = if all_nans {
@@ -69,10 +73,12 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
 
         // Finalize the last group when the inner iterator is exhausted
         let value = if all_nans {
+            self.aggregator.reset();
             f64::NAN
         } else {
             self.aggregator.finalize()
         };
+
         Some(Sample {
             timestamp: current.timestamp,
             value,
