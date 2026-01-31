@@ -84,7 +84,7 @@ SEASONALITY period1 [period2 [period3 [period4]]]
 
 Specifies the outliers detection algorithm. **Required**.
 
-### CUSUM
+#### CUSUM
 
 Cumulative Sum statistical process control method.
 
@@ -96,7 +96,7 @@ Detects shifts in the mean by accumulating deviations from the target. No additi
 
 ---
 
-### EWMA
+#### EWMA
 
 Exponentially Weighted Moving Average.
 
@@ -110,7 +110,7 @@ METHOD EWMA [ALPHA alpha]
 
 ---
 
-### IQR
+#### IQR
 
 Interquartile Range method.
 
@@ -125,7 +125,7 @@ METHOD IQR [THRESHOLD k]
 
 ---
 
-### ZSCORE
+#### ZSCORE
 
 Standard Z-score method.
 
@@ -140,7 +140,7 @@ METHOD ZSCORE [THRESHOLD threshold]
 
 ---
 
-### MODIFIED-ZSCORE
+#### MODIFIED-ZSCORE
 
 Modified Z-score using Median Absolute Deviation (MAD).
 
@@ -156,7 +156,7 @@ Uses `0.6745 × (value - median) / MAD` for scoring.
 
 ---
 
-### SMOOTHED-ZSCORE
+#### SMOOTHED-ZSCORE
 
 Smoothed Z-score with adaptive filtering.
 
@@ -173,7 +173,7 @@ METHOD SMOOTHED-ZSCORE [THRESHOLD threshold] [LAG lag] [INFLUENCE influence]
 
 ---
 
-### MAD
+#### MAD
 
 Median Absolute Deviation.
 
@@ -188,7 +188,7 @@ METHOD MAD [ESTIMATOR estimator] [THRESHOLD k]
 
 ---
 
-### DOUBLE-MAD
+#### DOUBLE-MAD
 
 Double MAD for asymmetric distributions.
 
@@ -205,7 +205,7 @@ Separately analyzes values above and below the median for better handling of ske
 
 ---
 
-### RCF
+#### RCF
 
 Random Cut Forest algorithm (AWS implementation).
 
@@ -229,7 +229,7 @@ METHOD RCF [NUM_TREES trees] [SAMPLE_SIZE size] [THRESHOLD threshold]
 
 Returns anomaly information based on the `OUTPUT` format:
 
-### SIMPLE format
+#### SIMPLE format
 
 **Array reply:** Each anomaly as `[timestamp, value, signal, score]`
 
@@ -238,7 +238,7 @@ Returns anomaly information based on the `OUTPUT` format:
 * `signal` - Anomaly direction: `1` (positive) or `-1` (negative)
 * `score` - Anomaly score (0.0-1.0, higher = stronger anomaly)
 
-### FULL format
+#### FULL format
 
 **Map reply** with keys:
 
@@ -251,7 +251,7 @@ Returns anomaly information based on the `OUTPUT` format:
     * For IQR: `lower_fence`, `upper_fence`
     * For SPC methods (CUSUM, EWMA): `control_limits`, `center_line`
 
-### CLEANED format
+#### CLEANED format
 
 **Map reply** with keys:
 
@@ -274,7 +274,7 @@ O(N × M) where:
 <details open>
 <summary><b>Detect outliers using Modified Z-score</b></summary>
 
-Detect outliers in temperature sensor data with default threshold:
+Detect outliers in temperature sensor data with the default threshold:
 
 ```valkey-cli
 127.0.0.1:6379> TS.OUTLIERS temperature:sensor1 - + METHOD MODIFIED-ZSCORE
@@ -382,7 +382,7 @@ Extract normal operating data and anomalies separately:
 <details open>
 <summary><b>Random Cut Forest for contextual anomalies</b></summary>
 
-Detect pattern-based anomalies using sliding window:
+Detect pattern-based anomalies using a sliding window:
 
 ```valkey-cli
 127.0.0.1:6379> TS.OUTLIERS metrics:response_time - + METHOD RCF NUM_TREES 150 SHINGLE_SIZE 8 THRESHOLD 1.2
