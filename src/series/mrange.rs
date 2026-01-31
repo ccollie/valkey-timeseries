@@ -1,8 +1,8 @@
 use crate::common::Sample;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::error_consts;
-use crate::iterators::{MultiSeriesSampleIter, create_range_iterator};
-use crate::iterators::{ReduceIterator, create_sample_iterator_adapter};
+use crate::iterators::create_sample_iterator_adapter;
+use crate::iterators::{MultiSeriesSampleIter, SampleReducer, create_range_iterator};
 use crate::labels::Label;
 use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
@@ -235,7 +235,7 @@ fn get_grouped_samples(
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);
     let aggregator = grouping_options.aggregation.create_aggregator();
-    let reducer = ReduceIterator::new(multi_iter, aggregator);
+    let reducer = SampleReducer::new(multi_iter, aggregator);
 
     collect_samples(reducer, is_reverse, count)
 }
