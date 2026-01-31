@@ -23,10 +23,12 @@ impl ModifiedZScoreOutlierDetector {
         let mut sorted_values: Vec<f64> = ts.iter().map(|&x| normalize_value(x)).collect();
         sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
+        let half = n / 2;
+
         let median = if n.is_multiple_of(2) {
-            (sorted_values[n / 2 - 1] + sorted_values[n / 2]) / 2.0
+            (sorted_values[half - 1] + sorted_values[half]) / 2.0
         } else {
-            sorted_values[n / 2]
+            sorted_values[half]
         };
 
         // Calculate Mad (Median Absolute Deviation)
@@ -36,7 +38,6 @@ impl ModifiedZScoreOutlierDetector {
             .collect();
         abs_deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-        let half = n / 2;
         let mad = if n.is_multiple_of(2) {
             (abs_deviations[half - 1] + abs_deviations[half]) / 2.0
         } else {
