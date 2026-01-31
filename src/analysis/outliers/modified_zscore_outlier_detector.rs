@@ -135,13 +135,11 @@ mod tests {
 
         let result = detect_anomalies_modified_zscore(&ts, Some(3.5)).unwrap();
 
+        assert_eq!(result.anomalies.len(), 1, "Should detect one anomaly");
         // Should detect the outlier at index 5
+        assert_eq!(result.anomalies[0].value, 10.0, "Should detect one anomaly");
         assert!(
-            result.anomalies[5].is_anomaly(),
-            "Should detect anomaly at index 5"
-        );
-        assert!(
-            result.scores[5] > 0.9,
+            result.anomalies[0].score > 0.9,
             "Anomaly score should be high for outlier"
         );
     }

@@ -149,8 +149,8 @@ mod tests {
     fn test_zscore_anomaly_detection() {
         // Create a time series with clear anomalies
         let mut ts: Vec<f64> = (0..100).map(|i| (i as f64 / 10.0).sin()).collect();
-        ts[25] = 5.0; // Clear analysis
-        ts[75] = -5.0; // Clear analysis
+        ts[25] = 5.0; // Clear anomaly
+        ts[75] = -5.0; // Clear anomaly
 
         let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
 
@@ -179,20 +179,14 @@ mod tests {
         ];
 
         let result = detect_anomalies_zscore(&STRONG_ANOMALIES, Some(3.0)).unwrap();
-        let anomalies = result
-            .anomalies
-            .iter()
-            .zip(STRONG_ANOMALIES.iter())
-            .filter(|&(&x, _)| x.is_anomaly())
-            .collect::<Vec<_>>();
-        assert_eq!(anomalies.len(), 2);
+        assert_eq!(result.anomalies.len(), 2);
 
-        let first = anomalies[0];
-        let second = anomalies[1];
-        assert!(first.0.is_positive());
-        assert_eq!(*first.1, 6.00);
-        assert!(second.0.is_negative());
-        assert_eq!(*second.1, -6.00);
+        let first = result.anomalies[0];
+        let second = result.anomalies[1];
+        assert!(first.is_positive());
+        assert_eq!(first.value, 6.00);
+        assert!(second.is_negative());
+        assert_eq!(second.value, -6.00);
     }
 
     #[test]
@@ -220,18 +214,16 @@ mod tests {
         ];
 
         let result = detect_anomalies_zscore(&NOISY_SPIKE, Some(3.0)).unwrap();
-        let mut anomaly_count = 0;
-        let mut anomaly_index = 0;
 
-        // Should detect the spike
-        for (i, &signal) in result.anomalies.iter().enumerate() {
-            if signal.is_anomaly() {
-                anomaly_index = i;
-                anomaly_count += 1;
-            }
-        }
-        assert_eq!(anomaly_count, 1, "Should detect exactly one anomaly");
-        assert_eq!(anomaly_index, 20, "Anomaly should be at index 20");
+        assert_eq!(
+            result.anomalies.len(),
+            1,
+            "Should detect exactly one anomaly"
+        );
+        assert_eq!(
+            result.anomalies[0].value, 3.5,
+            "Anomaly should be at index 20"
+        );
     }
 
     #[test]
@@ -241,17 +233,16 @@ mod tests {
 
         // because of a small sample size, use a lower threshold.
         let result = detect_anomalies_zscore(&SMALL_SAMPLE_SIZE, Some(1.3)).unwrap();
-        let mut anomaly_count = 0;
-        let mut anomaly_index = 0;
-        // Should detect the outlier
-        for (i, &signal) in result.anomalies.iter().enumerate() {
-            if signal.is_anomaly() {
-                anomaly_index = i;
-                anomaly_count += 1;
-            }
-        }
-        assert_eq!(anomaly_count, 1, "Should detect exactly one anomaly");
-        assert_eq!(anomaly_index, 3, "Anomaly should be at index 3");
+
+        assert_eq!(
+            result.anomalies.len(),
+            1,
+            "Should detect exactly one anomaly"
+        );
+        assert_eq!(
+            result.anomalies[0].value, 5.0,
+            "Anomaly should be at index 3"
+        );
     }
 
     #[test]
