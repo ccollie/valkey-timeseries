@@ -1,3 +1,5 @@
+# TS.JOIN
+
 ```
 TS.JOIN leftKey rightKey fromTimestamp toTimestamp
     [[INNER] | [FULL] | [LEFT] | [RIGHT] | [ANTI] | [SEMI] | [ASOF [PREVIOUS | NEXT | NEAREST] [tolerance] ALLOW_EXACT_MATCH]]

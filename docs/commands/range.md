@@ -1,13 +1,12 @@
 # TS.RANGE
 
-Return samples (timestamp/value pairs) from a time-series key over a timestamp range, with optional filtering, limiting,
-and downsampling via aggregation.
+Return a range of samples from a time-series.
 
 ---
 
 ## Syntax
 
-```plain text
+```bash
 TS.RANGE key fromTimestamp toTimestamp
   [LATEST]
   [FILTER_BY_TS ts...]
@@ -20,23 +19,73 @@ TS.RANGE key fromTimestamp toTimestamp
 
 ---
 
-## Parameters
+## Required Arguments
 
-### Required
+<details open><summary><code>key</code></summary> 
 
-| Parameter       |      Type | Description                                                                    |
-|-----------------|----------:|--------------------------------------------------------------------------------|
-| `key`           |    string | Time-series key to query.                                                      |
-| `fromTimestamp` | timestamp | Range start. Supports numeric timestamps and special range tokens (see below). |
-| `toTimestamp`   | timestamp | Range end. Supports numeric timestamps and special range tokens (see below).   |
+is the key name of the time series.
 
-#### Timestamp formats (range endpoints)
+</details>
 
-`fromTimestamp` / `toTimestamp` accept:
 
-- **Numeric timestamp** (milliseconds).
-- `-` meaning **earliest** (start of series).
-- `+` meaning **latest** (most recent).
+<details open><summary><code>fromTimestamp</code></summary>
+
+`fromTimestamp` is the first timestamp or relative delta from the current time of the request range.
+
+</details>
+
+<details open><summary><code>toTimestamp</code></summary>
+
+`toTimestamp` is the last timestamp of the requested range, or a relative delta from `fromTimestamp`
+
+</details>
+
+### Timestamp formats
+
+The `fromTimestamp` and `toTimestamp` arguments accept the following formats:
+
+#### Absolute Timestamps
+
+**Numeric timestamp** (milliseconds since Unix epoch)
+
+```bash
+TS.RANGE temperature:office 1700000000000 1700003600000
+```
+
+#### Relative Timestamps
+
+| Symbol | Meaning                                                                  | Example                             |
+|--------|--------------------------------------------------------------------------|-------------------------------------|
+| `-`    | **Earliest** — start of the time series                                  | `TS.RANGE temperature:office - +`   |
+| `+`    | **Latest** — most recent data point                                      | `TS.RANGE temperature:office -1h +` |
+| `*`    | **Current time** — equivalent to the current server time in milliseconds | `TS.RANGE temperature:office - *`   |
+
+#### Relative Time Offsets
+
+Time offsets relative to the current time.
+
+Supported formats:
+
+- **Integer milliseconds:** `60000`, `3600000`
+- **Duration strings:** `5s`, `1m`, `2h`, `1d`, `1w`, etc.
+  - `s` = seconds
+  - `m` = minutes
+  - `h` = hours
+  - `d` = days
+  - `w` = weeks, specified as 7 days
+
+Examples:
+
+```bash
+# Last hour of data
+TS.RANGE temperature:office -1h *
+
+# Last 5 minutes
+TS.RANGE temperature:office -5m *
+
+# From earliest to 2 hours ago
+TS.RANGE temperature:office - -2h
+```
 
 ---
 
@@ -44,17 +93,17 @@ TS.RANGE key fromTimestamp toTimestamp
 
 #### Range shaping & limits
 
-| Option   | Arguments | Description                                                                                                                                             |
-|----------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LATEST` | (none)    | Enable “latest” behavior for the query (implementation-defined; typically affects whether the most recent sample is considered/returned in edge cases). |
-| `COUNT`  | `count`   | Maximum number of returned samples (or buckets when aggregated). Must be a non-negative integer.                                                        |
+| Option   | Arguments | Description                                                                                      |
+|----------|-----------|--------------------------------------------------------------------------------------------------|
+| `LATEST` | (none)    | Return the current value of the latest "unclosed" bucket, if it exists.                          |
+| `COUNT`  | `count`   | Maximum number of returned samples (or buckets when aggregated). Must be a non-negative integer. |
 
 #### Filtering
 
-| Option            | Arguments | Description                                                                                                                                                                                     |
-|-------------------|-----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `FILTER_BY_TS`    | `ts...`   | Only return samples whose timestamps match one of the provided timestamps. Must provide at least 1 timestamp; capped at **128** timestamps; timestamps outside the requested range are ignored. |
-| `FILTER_BY_VALUE` | `min max` | Only return samples with values in `[min, max]`. `min`/`max` support numeric values (and number-with-unit parsing, if enabled elsewhere in your parser); `max` must be `>= min`.                |
+| Option            | Arguments | Description                                                                                                                                                                      |
+|-------------------|-----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `FILTER_BY_TS`    | `ts...`   | Only return samples whose timestamps match one of the provided timestamps. Supports up to **128** timestamps;                                                                    |
+| `FILTER_BY_VALUE` | `min max` | Only return samples with values in `[min, max]`. `min`/`max` support numeric values (and number-with-unit parsing, if enabled elsewhere in your parser); `max` must be `>= min`. |
 
 #### Aggregation / downsampling
 
@@ -71,10 +120,9 @@ TS.RANGE key fromTimestamp toTimestamp
 `bucketDuration` is a **duration**. It can be:
 
 - An integer (milliseconds), e.g. `60000`
-- A duration string accepted by the module’s duration parser (e.g., `5s`, `1m`, etc., depending on what your duration
-  parser supports)
+- A duration string (e.g., `5s`, `1m`, etc.)
 
-##### Alignment restrictions (important)
+##### Alignment restrictions
 
 When aggregation is used:
 
@@ -135,31 +183,31 @@ An array of samples:
 
 ### Raw range query
 
-```plain text
+```bash
 TS.RANGE temperature:office 1700000000000 1700003600000
 ```
 
 ### Limit results
 
-```plain text
+```bash
 TS.RANGE temperature:office 1700000000000 1700003600000 COUNT 100
 ```
 
 ### Filter by value
 
-```plain text
+```bash
 TS.RANGE temperature:office 1700000000000 1700003600000 FILTER_BY_VALUE 20 25
 ```
 
 ### Downsample to 1-minute average buckets
 
-```plain text
+```bash
 TS.RANGE temperature:office 1700000000000 1700003600000 AGGREGATION avg 60000
 ```
 
 ### Aggregation with alignment + empty buckets
 
-```plain text
+```bash
 TS.RANGE temperature:office 1700000000000 1700003600000 ALIGN 1700000000000 AGGREGATION sum 60000 EMPTY
 ```
 
@@ -167,7 +215,7 @@ TS.RANGE temperature:office 1700000000000 1700003600000 ALIGN 1700000000000 AGGR
 
 Count how many times per 5-minute interval that cpu-utilization exceeded 90%:
 
-```plain text
+```bash
 TS.RANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION countif 300000 CONDITION > 0.90
 ```
 
@@ -175,6 +223,6 @@ TS.RANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION countif 300000 
 
 Over the past hour, what percentage of per minute error rates exceeded 5%:
 
-```plain text
+```bash
 TS.RANGE errors:rate -1h * AGGREGATION share 60000 CONDITION > 0.05
 ```

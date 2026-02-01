@@ -64,7 +64,7 @@ Deletes all api latency time series that have both `region=us-west` and `status=
 - In cluster mode, the operation fans out to a replica per shard
 - Deleted samples trigger compaction on the affected series
 - Keyspace events are emitted for each modified series (`ts.del`)
-- Use with caution - deletions are permanent
+- Use with caution – overly broad filters may delete more data than intended
 
 ## Related commands
 

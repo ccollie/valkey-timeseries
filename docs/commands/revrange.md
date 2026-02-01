@@ -1,6 +1,6 @@
 # TS.REVRANGE
 
-Return samples (timestamp/value pairs) from a time-series key over a timestamp range, ordered **from newest to oldest**.
+Return a range of samples ordered **from newest to oldest**.
 Supports the same filtering, limiting, and aggregation/downsampling options as `TS.RANGE`.
 
 ---
@@ -45,10 +45,10 @@ TS.REVRANGE key fromTimestamp toTimestamp
 
 #### Range shaping & limits
 
-| Option   | Arguments | Description                                                                                                                                             |
-|----------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LATEST` | (none)    | Enable “latest” behavior for the query (implementation-defined; typically affects whether the most recent sample is considered/returned in edge cases). |
-| `COUNT`  | `count`   | Maximum number of returned samples (or buckets when aggregated). Must be a non-negative integer.                                                        |
+| Option   | Arguments | Description                                                                                      |
+|----------|-----------|--------------------------------------------------------------------------------------------------|
+| `LATEST` | (none)    | Return the current value of the latest "unclosed" bucket, if it exists.                          |
+| `COUNT`  | `count`   | Maximum number of returned samples (or buckets when aggregated). Must be a non-negative integer. |
 
 #### Filtering
 
@@ -72,7 +72,7 @@ TS.REVRANGE key fromTimestamp toTimestamp
 `bucketDuration` is a duration:
 
 - Integer milliseconds, e.g. `60000`
-- Or a duration string accepted by the module’s duration parser (e.g., `5s`, `1m`, etc., depending on supported units)
+- Or a duration string (e.g., `5s`, `1m`, etc.,)
 
 ##### Alignment restrictions (important)
 
