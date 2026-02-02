@@ -208,6 +208,7 @@ fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     }
 
     // This is a historical upsert - need to recalculate the affected bucket
+    let bucket_end = bucket_start.saturating_add_unsigned(duration);
     recalculate_bucket(ctx, bucket_start, bucket_end, null_ts_filter)
 }
 
@@ -356,7 +357,7 @@ fn process_series_with_compaction(
     // Process current series compaction rules
     apply_rules_on_series(ctx, series, op)?;
 
-    // Collect child series (one level, behavior preserved)
+    // Collect child series
     let child_series = series
         .rules
         .iter()
@@ -652,7 +653,6 @@ pub fn check_new_rule_circular_dependency(
     }
 
     // Check if the new rule would create a circular dependency
-    // log_info(format!("candidate rule {} -> {}", series.id, dest.id));
     graph.insert(series.id, vec![dest.id]);
     build_dependency_graph_internal(ctx, dest, &mut graph)?;
 
