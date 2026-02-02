@@ -17,7 +17,6 @@ fn unterminated_string_literal(_: &mut Lexer<Token>) -> ParseResult<()> {
 #[logos(subpattern binary = r"-?0[bB][0-1][_0-1]*")]
 #[logos(subpattern float = r"-?(?:([0-9]*[.])?[0-9][0-9_]*)(?:[eE][+-]?[0-9][0-9_]*)?")]
 #[logos(skip r"[ \t\n\f\r]+")]
-#[logos(skip r"#[^\r\n]*(\r\n|\n)?")] // single line comment
 pub enum Token {
     #[token(b"or", ignore(case))]
     OpOr,
@@ -299,12 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn py_comment() {
-        // comments are skipped
-        test_tokens!("# hi", []);
-    }
-
-    #[test]
     fn junk() {
         let src = "💩";
         let mut lex = Token::lexer(src);
@@ -347,15 +340,6 @@ mod tests {
         ];
 
         test_success(s, &expected);
-    }
-
-    #[test]
-    fn comments() {
-        let s = r"# comment # sdf
-		foobar # comment
-		baz
-		# yet another comment";
-        test_success(s, &["foobar", "baz"])
     }
 
     #[test]
