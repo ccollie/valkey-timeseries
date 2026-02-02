@@ -767,22 +767,18 @@ impl ClusterMap {
 
         shard_entry.owned_slots.insert_range(start, end);
 
-        if shard_entry.primary.is_none() {
-            // new shard initial fill
-            primary_node.id = shard_id;
-            shard_entry.primary = Some(primary_node);
-            shard_entry.replicas = replicas;
-        } else {
+        if let Some(item) = &shard_entry.primary {
             // existing shard -> verify consistency
-            let consistent = is_existing_shard_consistent(
-                shard_entry,
-                shard_entry.primary.as_ref().unwrap(),
-                &replicas,
-            );
+            let consistent = is_existing_shard_consistent(shard_entry, item, &replicas);
             if !consistent {
                 log_warning("Inconsistency shard info found on existing slot ranges!");
                 self.is_consistent = false;
             }
+        } else {
+            // new shard initial fill
+            primary_node.id = shard_id;
+            shard_entry.primary = Some(primary_node);
+            shard_entry.replicas = replicas;
         }
 
         slot_ranges.push(SlotRangeInfo {
