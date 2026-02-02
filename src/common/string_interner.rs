@@ -570,6 +570,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_unicode_strings() {
         reset_memory_tracking();
 
