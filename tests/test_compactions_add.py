@@ -164,7 +164,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.create_source_and_dest_series(source_key, dest_key)
         self.add_compaction_rule(source_key, dest_key, "avg", 10000, 1000)
 
-        base_ts = int(time.time() * 1000)
+        base_ts = 100000
 
         # Add samples out of order
         samples = [
