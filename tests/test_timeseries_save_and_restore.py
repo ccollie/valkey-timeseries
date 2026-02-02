@@ -12,28 +12,27 @@ def get_info(client, key):
 class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
 
     def test_basic_save_and_restore(self):
-        client = self.server.get_new_client()
-        ts_add_result_1 = client.execute_command('TS.ADD testSave 1000 1.0')
+        ts_add_result_1 = self.client.execute_command('TS.ADD', 'testSave', 1000, '1.0')
         assert ts_add_result_1 == 1000
-        ts_exists_result_1 = client.execute_command('EXISTS testSave')
+        ts_exists_result_1 = self.client.execute_command('EXISTS', 'testSave')
         assert ts_exists_result_1 == 1
-        ts_info_result_1 = get_info(client, 'testSave')
+        ts_info_result_1 = get_info(self.client, 'testSave')
         assert ts_add_result_1 is not None
         curr_item_count_1 = self.num_keys()
         # cmd debug digest
-        server_digest = client.execute_command("DEBUG DIGEST")
-        assert server_digest != None or 0000000000000000000000000000000000000000
-        object_digest = client.execute_command('DEBUG DIGEST-VALUE testSave')
+        server_digest = self.client.execute_command("DEBUG", "DIGEST")
+        assert server_digest is not None or 0000000000000000000000000000000000000000
+        object_digest = self.client.execute_command('DEBUG', 'DIGEST-VALUE', 'testSave')
 
         # save rdb, restart sever
-        client.bgsave()
+        self.client.bgsave()
         self.server.wait_for_save_done()
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
 
         assert self.server.is_alive()
         wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
-        restored_server_digest = client.execute_command("DEBUG", "DIGEST")
-        restored_object_digest = client.execute_command('DEBUG DIGEST-VALUE testSave')
+        restored_server_digest = self.client.execute_command("DEBUG", "DIGEST")
+        restored_object_digest = self.client.execute_command('DEBUG', 'DIGEST-VALUE', 'testSave')
         assert restored_server_digest == server_digest
         assert restored_object_digest == object_digest
         self.server.verify_string_in_logfile("Loading RDB produced by Valkey")
@@ -42,9 +41,9 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         # verify restore results
         curr_item_count_2 = self.num_keys()
         assert curr_item_count_2 == curr_item_count_1
-        ts_exists_result_2 = client.execute_command('EXISTS testSave')
+        ts_exists_result_2 = self.client.execute_command('EXISTS', 'testSave')
         assert ts_exists_result_2 == 1
-        ts_info_result_2 = get_info(client, 'testSave')
+        ts_info_result_2 = get_info(self.client, 'testSave')
 
         # Remove memory usage from the info result for comparison
         del ts_info_result_2['memoryUsage']
@@ -52,18 +51,17 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         assert ts_info_result_2 == ts_info_result_1
 
     def test_basic_save_many(self):
-        client = self.server.get_new_client()
         count = 500
         for i in range(0, count):
             name = str(i) + "key"
 
-            ts_add_result_1 = client.execute_command('TS.ADD', name,  1000, 1.0)
+            ts_add_result_1 = self.client.execute_command('TS.ADD', name, 1000, 1.0)
             assert ts_add_result_1 == 1000
 
         curr_item_count_1 = self.num_keys()
         assert curr_item_count_1 == count
         # save rdb, restart sever
-        client.bgsave()
+        self.client.bgsave()
         self.server.wait_for_save_done()
 
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
@@ -85,13 +83,13 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         dest_key = 'test:dest:compaction'
 
         # Create source and destination series
-        client.execute_command('TS.CREATE', source_key,
+        self.client.execute_command('TS.CREATE', source_key,
                                'RETENTION', 86400000,  # 24 hours
                                'LABELS', 'sensor', 'temperature', 'location', 'room1')
-        client.execute_command('TS.CREATE', dest_key)
+        self.client.execute_command('TS.CREATE', dest_key)
 
         # Add compaction rule
-        client.execute_command('TS.CREATERULE', source_key, dest_key,
+        self.client.execute_command('TS.CREATERULE', source_key, dest_key,
                                'AGGREGATION', 'avg', 10000)
 
         # Add some data to trigger compaction
@@ -104,28 +102,28 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         ]
 
         for ts, value in samples:
-            client.execute_command('TS.ADD', source_key, ts, value)
+            self.client.execute_command('TS.ADD', source_key, ts, value)
 
         # Get the original state
-        original_source_info = get_info(client, source_key)
-        original_dest_info = get_info(client, dest_key)
-        original_source_samples = client.execute_command('TS.RANGE', source_key, '-', '+')
-        original_dest_samples = client.execute_command('TS.RANGE', dest_key, '-', '+')
+        original_source_info = get_info(self.client, source_key)
+        original_dest_info = get_info(self.client, dest_key)
+        original_source_samples = self.client.execute_command('TS.RANGE', source_key, '-', '+')
+        original_dest_samples = self.client.execute_command('TS.RANGE', dest_key, '-', '+')
 
         # Verify compaction occurred
         assert len(original_dest_samples) >= 1, "Compaction should have occurred"
 
         # Save and restart
-        client.bgsave()
+        self.client.bgsave()
         self.server.wait_for_save_done()
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
         wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
 
         # Verify after restore
-        restored_source_info = get_info(client, source_key)
-        restored_dest_info = get_info(client, dest_key)
-        restored_source_samples = client.execute_command('TS.RANGE', source_key, '-', '+')
+        restored_source_info = get_info(self.client, source_key)
+        restored_dest_info = get_info(self.client, dest_key)
+        restored_source_samples = self.client.execute_command('TS.RANGE', source_key, '-', '+')
         restored_dest_samples = client.execute_command('TS.RANGE', dest_key, '-', '+')
 
         # Remove memory usage for comparison
@@ -138,51 +136,51 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         assert restored_dest_samples == original_dest_samples, "Destination series samples should match after restore"
 
         # Verify rules are still functional after restore
-        client.execute_command('TS.ADD', source_key, base_ts + 25000, 50.0)
-        new_dest_samples = client.execute_command('TS.RANGE', dest_key, '-', '+')
+        self.client.execute_command('TS.ADD', source_key, base_ts + 25000, 50.0)
+        new_dest_samples = self.client.execute_command('TS.RANGE', dest_key, '-', '+')
         assert len(new_dest_samples) >= len(restored_dest_samples), "Compaction should still work"
 
     def test_save_restore_multiple_series_with_mixed_properties(self):
         """Test save/restore with multiple series having different properties"""
-        client = self.server.get_new_client()
+        client = self.client
 
         # Series 1: Basic series
         key1 = 'series:basic'
-        client.execute_command('TS.CREATE', key1)
-        client.execute_command('TS.ADD', key1, 1000, 10.0)
+        self.client.execute_command('TS.CREATE', key1)
+        self.client.execute_command('TS.ADD', key1, 1000, 10.0)
 
         # Series 2: With labels and retention
         key2 = 'series:labeled'
-        client.execute_command('TS.CREATE', key2,
+        self.client.execute_command('TS.CREATE', key2,
                                'RETENTION', 300000,
                                'LABELS', 'type', 'sensor', 'id', '123')
         for i in range(20):
-            client.execute_command('TS.ADD', key2, 1000 + i * 1000, i * 2.0)
+            self.client.execute_command('TS.ADD', key2, 1000 + i * 1000, i * 2.0)
 
         # Series 3: With compaction (source)
         key3 = 'series:source'
         key4 = 'series:compacted'
-        client.execute_command('TS.CREATE', key3, 'CHUNK_SIZE', 64)
-        client.execute_command('TS.CREATE', key4)
-        client.execute_command('TS.CREATERULE', key3, key4, 'AGGREGATION', 'sum', 5000)
+        self.client.execute_command('TS.CREATE', key3, 'CHUNK_SIZE', 64)
+        self.client.execute_command('TS.CREATE', key4)
+        self.client.execute_command('TS.CREATERULE', key3, key4, 'AGGREGATION', 'sum', 5000)
 
         # Add data to trigger compaction
         base_ts = 10000
         for i in range(30):
-            client.execute_command('TS.ADD', key3, base_ts + i * 200, i)
+            self.client.execute_command('TS.ADD', key3, base_ts + i * 200, i)
 
         # Series 5: Large series with multiple chunks
         key5 = 'series:large'
-        client.execute_command('TS.CREATE', key5, 'CHUNK_SIZE', 128)
+        self.client.execute_command('TS.CREATE', key5, 'CHUNK_SIZE', 128)
         for i in range(200):
-            client.execute_command('TS.ADD', key5, 20000 + i * 100, i * 0.5)
+            self.client.execute_command('TS.ADD', key5, 20000 + i * 100, i * 0.5)
 
         all_keys = [key1, key2, key3, key4, key5]
 
         # Get original states
         original_states = {}
         for key in all_keys:
-            info = get_info(client, key)
+            info = get_info(self.client, key)
             samples = client.execute_command('TS.RANGE', key, '-', '+')
             original_states[key] = {'info': info, 'samples': samples}
 
@@ -190,7 +188,7 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         assert self.num_keys() == len(all_keys)
 
         # Save and restart
-        client.bgsave()
+        self.client.bgsave()
         self.server.wait_for_save_done()
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
@@ -222,7 +220,7 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
 
     def test_save_restore_preserves_exact_digest(self):
         """Test that save/restore preserves exact digest for complex series"""
-        client = self.server.get_new_client()
+        client = self.client
         keys = []
 
         # Create various series with different properties
