@@ -57,7 +57,7 @@ pub(crate) fn init_background_tasks(ctx: &Context) {
 
     let cron_interval = Duration::from_millis(interval_ms);
 
-    register_task(ctx, RETENTION_CLEANUP_INTERVAL, cron_interval, process_trim);
+    // register_task(ctx, RETENTION_CLEANUP_INTERVAL, cron_interval, process_trim);
     register_task(
         ctx,
         STALE_ID_CLEANUP_INTERVAL,
