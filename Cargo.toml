@@ -23,10 +23,10 @@ hashify = { version = "0.2" }
 linkme = "0.3"
 logos = "0.16"
 orx-parallel = "3.4"
-min-max-heap = "1.3.0"
-num-traits = "0.2.19"
+min-max-heap = "1.3"
+num-traits = "0.2"
 joinkit = "0.2.0"
-krcf = "0.3"
+krcf = "0.4"
 lazy_static = "1.5.0"
 papaya = "0.2"
 pco = "1.0"
@@ -45,6 +45,8 @@ strum = { version = "0.27.2", features = ["derive"] }
 strum_macros = "0.27.2"
 logger-rust = "0.2.12"
 simd-json = "0.17.0"
+log = "0.4"
+statrs = "0.18"
 
 [dev-dependencies]
 test-case = "3.3"

@@ -13,6 +13,7 @@ mod modified_zscore_outlier_detector;
 #[cfg(test)]
 mod outlier_test_data;
 mod rcf_outlier_detector;
+mod sesd_outlier_detector;
 mod smoothed_zscores;
 mod utils;
 mod zscore_outlier_detector;
@@ -20,6 +21,7 @@ mod zscore_outlier_detector;
 pub use anomalies::*;
 pub use double_mad_outlier_detector::*;
 pub use rcf_outlier_detector::*;
+pub use sesd_outlier_detector::SESDOutlierOptions;
 pub use smoothed_zscores::*;
 use std::fmt::Display;
 
@@ -48,6 +50,8 @@ pub enum AnomalyMethod {
     InterquartileRange,
     /// Random Cut Forest (Rcf) method
     RandomCutForest,
+    /// Seasonal (H) ESD
+    SESD,
 }
 
 impl AnomalyMethod {
@@ -63,6 +67,7 @@ impl AnomalyMethod {
             AnomalyMethod::DoubleMAD => "Double Mad",
             AnomalyMethod::InterquartileRange => "Interquartile Range (IQR)",
             AnomalyMethod::RandomCutForest => "Random Cut Forest",
+            AnomalyMethod::SESD => "Seasonal ESD",
         }
     }
 }
@@ -73,6 +78,7 @@ impl FromStr for AnomalyMethod {
     fn from_str(s: &str) -> ValkeyResult<Self> {
         let res = hashify::tiny_map_ignore_case! {
             s.as_bytes(),
+            "esd" => Ok(AnomalyMethod::SESD),
             "ewma" => Ok(AnomalyMethod::Ewma),
             "cusum" => Ok(AnomalyMethod::Cusum),
             "zscore" => Ok(AnomalyMethod::ZScore),

@@ -3,6 +3,8 @@
 use crate::error::TsdbError;
 use thiserror::Error;
 
+pub const INSUFFICIENT_DATA_ERROR: &str = "TSDB: insufficient samples for anomaly detection";
+
 /// Error type for time series analysis operations
 #[derive(Debug, Error)]
 pub enum TimeSeriesAnalysisError {

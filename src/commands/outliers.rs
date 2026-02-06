@@ -1,7 +1,7 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, SmoothedZScoreOptions,
-    detect_anomalies,
+    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, SESDOutlierOptions,
+    SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::commands::{CommandArgIterator, parse_duration_ms, parse_timestamp_range};
 use crate::common::Sample;
@@ -109,7 +109,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
 
     // Perform analysis detection
-    let result = detect_anomalies(&values, &options)
+    let result = detect_anomalies(&values, options)
         .map_err(|e| ValkeyError::String(format!("TSDB: outlier detection failed: {e}")))?;
 
     // Format result based on the requested format
@@ -136,6 +136,7 @@ fn parse_method_options(
         AnomalyMethod::DoubleMAD => parse_double_mad_options(args),
         AnomalyMethod::InterquartileRange => parse_iqr_options(args),
         AnomalyMethod::RandomCutForest => parse_rcf_options(args),
+        AnomalyMethod::SESD => parse_sesd_options(args),
     }
 }
 
@@ -336,6 +337,37 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
     Ok(options)
 }
 
+fn parse_sesd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
+    let mut options = AnomalyOptions {
+        ..Default::default()
+    };
+
+    let mut sesd_options = SESDOutlierOptions::default();
+
+    while let Some(arg) = args.next() {
+        hashify::fnc_map_ignore_case!(arg.as_slice(),
+           "ALPHA" => {
+                sesd_options.alpha = parse_single_value(args, "ALPHA")?;
+            },
+            "HYBRID" => {
+                sesd_options.hybrid = true;
+            },
+            "PERIOD" => {
+                sesd_options.period = Some(parse_single_value(args, "PERIOD")? as usize);
+            },
+            "MAX_OUTLIERS" => {
+                sesd_options.max_outliers = Some(parse_single_value(args, "MAX_OUTLIERS")? as usize);
+            },
+            _ => {
+                return Err(ValkeyError::String(format!("TSDB: unknown SESD option {arg}")));
+            }
+        );
+    }
+
+    options.options = AnomalyDetectionMethodOptions::SESD(Option::from(sesd_options));
+
+    Ok(options)
+}
 fn parse_single_option_value(
     iter: &mut CommandArgIterator,
     option_name: &str,
