@@ -13,15 +13,14 @@ use super::{
     mad_outlier_detector::MadOutlierDetector,
     modified_zscore_outlier_detector::detect_anomalies_modified_zscore,
     rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf},
+    sesd_outlier_detector::{SESDOutlierOptions, detect_anomalies_sesd},
     smoothed_zscores::{SmoothedZScoreOptions, detect_anomalies_smoothed_zscore},
     zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore},
 };
 use crate::analysis::{
-    TimeSeriesAnalysisError, TimeSeriesAnalysisResult,
+    INSUFFICIENT_DATA_ERROR, TimeSeriesAnalysisError, TimeSeriesAnalysisResult,
     seasonality::{mstl::Mstl, stl::Stl},
 };
-
-const INSUFFICIENT_DATA_ERROR: &str = "TSDB: insufficient samples for anomaly detection";
 
 #[derive(Debug, Clone)]
 pub struct SeasonalAdjustment {
@@ -40,6 +39,7 @@ pub enum AnomalyDetectionMethodOptions {
     Mad(MADAnomalyOptions),
     DoubleMAD(MADAnomalyOptions),
     Rcf(RCFOptions),
+    SESD(Option<SESDOutlierOptions>),
 }
 
 impl Default for AnomalyDetectionMethodOptions {
@@ -60,6 +60,7 @@ impl AnomalyDetectionMethodOptions {
             Self::Mad(_) => AnomalyMethod::Mad,
             Self::DoubleMAD(_) => AnomalyMethod::DoubleMAD,
             Self::Rcf(_) => AnomalyMethod::RandomCutForest,
+            Self::SESD(_) => AnomalyMethod::SESD,
         }
     }
 
@@ -125,7 +126,7 @@ impl AnomalyOptions {
 /// ```
 pub fn detect_anomalies(
     ts: &[f64],
-    options: &AnomalyOptions,
+    options: AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
 
@@ -146,10 +147,7 @@ pub fn detect_anomalies(
     handle_dispatch(ts, options)
 }
 
-fn handle_dispatch(
-    ts: &[f64],
-    options: &AnomalyOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
+fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisResult<AnomalyResult> {
     match options.options {
         AnomalyDetectionMethodOptions::Cusum => detect_anomalies_spc_cusum(ts),
         AnomalyDetectionMethodOptions::Ewma(alpha) => detect_anomalies_spc_ewma(ts, alpha),
@@ -168,6 +166,7 @@ fn handle_dispatch(
             detect_anomalies_double_mad(ts, options)
         }
         AnomalyDetectionMethodOptions::Rcf(opts) => detect_anomalies_rcf(ts, opts),
+        AnomalyDetectionMethodOptions::SESD(opts) => detect_anomalies_sesd(ts, opts),
     }
 }
 
@@ -236,7 +235,7 @@ mod tests {
         let ts = vec![1.0, 2.0];
         let options = AnomalyOptions::default();
 
-        let result = detect_anomalies(&ts, &options);
+        let result = detect_anomalies(&ts, options);
         assert!(result.is_err());
 
         // Test with constant time series
