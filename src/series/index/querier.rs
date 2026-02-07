@@ -18,7 +18,7 @@ use crate::common::Timestamp;
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
-use crate::series::acl::check_key_read_permission;
+use crate::series::acl::{check_key_read_permission, has_all_keys_permissions};
 use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{SeriesGuard, SeriesRef, TimeSeries};
 use blart::AsBytes;
@@ -166,7 +166,10 @@ pub(crate) fn collect_series_from_postings(
     }
 }
 
-fn get_guard_from_key(ctx: &Context, key: &KeyType) -> ValkeyResult<Option<SeriesGuard>> {
+pub(super) fn get_guard_from_key(
+    ctx: &Context,
+    key: &KeyType,
+) -> ValkeyResult<Option<SeriesGuard>> {
     let real_key = ctx.create_string(key.as_bytes());
     let perms = Some(AclPermissions::ACCESS);
     match SeriesGuard::new(ctx, real_key, perms) {
@@ -198,8 +201,16 @@ pub fn count_matched_series(
 ) -> ValkeyResult<usize> {
     let count = match (date_range, matchers.is_empty()) {
         (None, true) => {
-            // todo: check to see if user can read all keys, otherwise error
+            // check to see if the user can read all keys, otherwise error
             // a bare TS.CARD is a request for the cardinality of the entire index
+            let current_user = ctx.get_current_user();
+            let can_access_all_keys =
+                has_all_keys_permissions(ctx, &current_user, Some(AclPermissions::ACCESS));
+            if !can_access_all_keys {
+                return Err(ValkeyError::Str(
+                    error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
+                ));
+            }
             with_timeseries_index(ctx, |index| index.count())
         }
         (None, false) => {
