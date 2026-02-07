@@ -8,6 +8,7 @@ use crate::common::context::is_real_user_client;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, SeriesLabel};
+use crate::series::acl::{clone_permissions, has_all_keys_permissions};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size2::GetSize;
@@ -167,16 +168,9 @@ impl TimeSeriesIndex {
 
             let current_user = ctx.get_current_user();
             let is_user_client = is_real_user_client(ctx);
-            let has_all_keys_permission = if !is_user_client {
-                true
-            } else {
-                match &acl_permissions {
-                    Some(perms) => ctx
-                        .acl_check_key_permission(&current_user, &ctx.create_string("*"), perms)
-                        .is_ok(),
-                    None => true,
-                }
-            };
+
+            let cloned_perms = acl_permissions.as_ref().map(clone_permissions);
+            let can_access_all_keys = has_all_keys_permissions(ctx, &current_user, acl_permissions);
 
             for series_ref in ids.iter() {
                 let key = postings.get_key_by_id(series_ref);
@@ -184,8 +178,8 @@ impl TimeSeriesIndex {
                     Some(key) => {
                         let real_key = ctx.create_string(key.as_ref());
                         if is_user_client
-                            && !has_all_keys_permission
-                            && let Some(perms) = &acl_permissions
+                            && !can_access_all_keys
+                            && let Some(perms) = &cloned_perms
                         {
                             // check if the user has permission for this key
                             if ctx
@@ -208,7 +202,7 @@ impl TimeSeriesIndex {
             if keys.len() != expected_count {
                 // User does not have permission to read some keys, or some keys are missing
                 // Customize the error message accordingly
-                match &acl_permissions {
+                match cloned_perms {
                     Some(perms) => {
                         if perms.contains(AclPermissions::DELETE) {
                             return Err(ValkeyError::Str(
