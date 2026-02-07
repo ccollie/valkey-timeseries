@@ -49,13 +49,12 @@ pub(crate) const fn op_or(left: f64, right: f64) -> f64 {
 // implement xor
 #[inline]
 pub(crate) const fn op_xor(left: f64, right: f64) -> f64 {
-    if left.is_nan() && right.is_nan() {
-        return 0.;
+    match (left.is_nan(), right.is_nan()) {
+        (true, true) => f64::NAN,
+        (true, false) => right,
+        (false, true) => left,
+        (false, false) => f64::NAN,
     }
-    if left == right {
-        return 0.;
-    }
-    1.
 }
 
 /// gt returns true if left > right
@@ -125,41 +124,6 @@ pub(crate) const fn op_mod(left: f64, right: f64) -> f64 {
 #[inline]
 pub(crate) fn op_pow(left: f64, right: f64) -> f64 {
     left.powf(right)
-}
-
-/// returns left or right if left is NaN.
-#[inline]
-pub(crate) const fn op_default(left: f64, right: f64) -> f64 {
-    if left.is_nan() {
-        return right;
-    }
-    left
-}
-
-/// Returns left if right is not NaN. Otherwise, NaN is returned.
-#[inline]
-pub(crate) const fn op_if(left: f64, right: f64) -> f64 {
-    if right.is_nan() {
-        return f64::NAN;
-    }
-    left
-}
-
-/// if_not returns left if right is NaN. Otherwise, NaN is returned.
-#[inline]
-pub const fn op_if_not(left: f64, right: f64) -> f64 {
-    if right.is_nan() {
-        return left;
-    }
-    f64::NAN
-}
-
-#[inline]
-pub const fn op_unless(left: f64, right: f64) -> f64 {
-    if right != left {
-        return f64::NAN;
-    }
-    left
 }
 
 /// convert true to x, false to NaN.

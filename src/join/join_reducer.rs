@@ -1,7 +1,7 @@
 use crate::common::binop::{
     BinopFunc, abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte,
-    compare_neq, max, min, op_and, op_default, op_div, op_if, op_if_not, op_minus, op_mod, op_mul,
-    op_or, op_plus, op_pow, op_unless, op_xor, percent_change, sgn_diff,
+    compare_neq, max, min, op_and, op_div, op_minus, op_mod, op_mul, op_or, op_plus, op_pow,
+    op_xor, percent_change, sgn_diff,
 };
 use std::fmt;
 use std::str::FromStr;
@@ -13,7 +13,6 @@ pub enum JoinReducer {
     And,
     Avg,
     Cmp,
-    Default,
     Div,
     #[default]
     Eql,
@@ -23,8 +22,6 @@ pub enum JoinReducer {
     Sub,
     Gt,
     Gte,
-    If,
-    IfNot,
     Lt,
     Lte,
     Max,
@@ -34,7 +31,6 @@ pub enum JoinReducer {
     PctChange,
     SgnDiff,
     Sum,
-    Unless,
     Xor,
 }
 
@@ -60,17 +56,12 @@ fn join_reducer_get(key: &str) -> Option<JoinReducer> {
         // logic set ops
         "and" => JoinReducer::And,
         "or" => JoinReducer::Or,
-        "unless" => JoinReducer::Unless,
-
-        "if" => JoinReducer::If,
-        "ifnot" => JoinReducer::IfNot,
-        "default" => JoinReducer::Default,
+        "xor" => JoinReducer::Xor,
 
         "sum" => JoinReducer::Sum,
         "avg" => JoinReducer::Avg,
         "max" => JoinReducer::Max,
         "min" => JoinReducer::Min,
-        "xor" => JoinReducer::Xor,
     }
 }
 
@@ -82,13 +73,10 @@ impl JoinReducer {
             Sum => "sum",
             And => "and",
             Cmp => "cmp",
-            Default => "default",
             Div => "/",
             Eql => "==",
             Gt => ">",
             Gte => ">=",
-            If => "if",
-            IfNot => "ifNot",
             Mod => "%",
             Mul => "*",
             Lt => "<",
@@ -99,7 +87,6 @@ impl JoinReducer {
             SgnDiff => "sgn_diff",
             PctChange => "pct_change",
             Sub => "-",
-            Unless => "unless",
             Avg => "avg",
             Max => "max",
             Min => "min",
@@ -117,7 +104,6 @@ impl JoinReducer {
             Sum => op_plus,
             And => op_and,
             Cmp => cmp,
-            Default => op_default,
             Div => op_div,
             Eql => compare_eq,
             Mod => op_mod,
@@ -126,14 +112,11 @@ impl JoinReducer {
             Sub => op_minus,
             Gt => compare_gt,
             Gte => compare_gte,
-            If => op_if,
-            IfNot => op_if_not,
             Lt => compare_lt,
             Lte => compare_lte,
             NotEq => compare_neq,
             Or => op_or,
             SgnDiff => sgn_diff,
-            Unless => op_unless,
             PctChange => percent_change,
             Xor => op_xor,
         }
