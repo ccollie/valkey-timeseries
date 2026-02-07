@@ -2,6 +2,20 @@ use crate::common::context::is_real_user_client;
 use crate::error_consts;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
+pub fn clone_permissions(permissions: &AclPermissions) -> AclPermissions {
+    let mut cloned = AclPermissions::empty();
+    if permissions.contains(AclPermissions::ACCESS) {
+        cloned |= AclPermissions::ACCESS;
+    }
+    if permissions.contains(AclPermissions::UPDATE) {
+        cloned |= AclPermissions::UPDATE;
+    }
+    if permissions.contains(AclPermissions::DELETE) {
+        cloned |= AclPermissions::DELETE;
+    }
+    cloned
+}
+
 #[inline]
 fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
     if !is_real_user_client(ctx) {
@@ -10,6 +24,21 @@ fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermis
     let user = ctx.get_current_user();
     ctx.acl_check_key_permission(&user, key, &permissions)
         .is_ok()
+}
+
+pub fn has_all_keys_permissions(
+    ctx: &Context,
+    user: &ValkeyString,
+    permissions: Option<AclPermissions>,
+) -> bool {
+    if !is_real_user_client(ctx) {
+        return true;
+    }
+    let all_keys = ctx.create_string("*");
+    match &permissions {
+        Some(perms) => ctx.acl_check_key_permission(user, &all_keys, perms).is_ok(),
+        None => true,
+    }
 }
 
 pub fn check_key_read_permission(ctx: &Context, key: &ValkeyString) -> bool {
