@@ -1,228 +1,233 @@
 # TS.RANGE
 
-Return a range of samples from a time-series.
+Query a time series for raw samples or aggregated data over a specified time range.
 
----
-
-## Syntax
+### Syntax
 
 ```bash
 TS.RANGE key fromTimestamp toTimestamp
   [LATEST]
-  [FILTER_BY_TS ts...]
+  [FILTER_BY_TS timestamp ...]
   [FILTER_BY_VALUE min max]
   [COUNT count]
-  [
-      [ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION operator value] [BUCKETTIMESTAMP bt] [EMPTY]
-  ]
+  [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
 ```
 
 ---
 
 ## Required Arguments
 
-<details open><summary><code>key</code></summary> 
-
-is the key name of the time series.
-
+<details open><summary><code>key</code></summary>
+the time series key to query.
 </details>
-
-
 <details open><summary><code>fromTimestamp</code></summary>
-
-`fromTimestamp` is the first timestamp or relative delta from the current time of the request range.
-
+the start of the time range to query, inclusive. Accepts:
+- Numeric timestamp in milliseconds
+- `-` for the earliest timestamp in the series
+- Duration spec (e.g., `2h` for 2 hours ago)
 </details>
-
 <details open><summary><code>toTimestamp</code></summary>
-
-`toTimestamp` is the last timestamp of the requested range, or a relative delta from `fromTimestamp`
-
+the end of the time range to query, inclusive. Accepts:
+  - Numeric timestamp in milliseconds
+  - `+` for the latest timestamp in the series
+  - `*` for the current time
+  - Duration spec (e.g., `30m` for 30 minutes ago)
 </details>
 
-### Timestamp formats
+## Optional Arguments
 
-The `fromTimestamp` and `toTimestamp` arguments accept the following formats:
+<details open><summary><code>LATEST</code></summary>
+When querying a compaction, return the latest bucket value even if the bucket is not yet closed. This is in addition to the regular range results. 
+</details>
+<details open><summary><code>FILTER_BY_TS timestamp ...</code></summary>
+Include only samples at the specified timestamp(s). Multiple timestamps can be provided. Applied before aggregation.
+</details>
+<details open><summary><code>FILTER_BY_VALUE min max</code></summary>
+Include only samples with values in `[min, max]`. Both bounds are inclusive. Applied before aggregation.
+</details>
+<details open><summary><code>COUNT count</code></summary>
+Limit output to the first `count` samples or buckets. When used with aggregation, limits bucket
+count (not samples per bucket).
+</details>
+<details open><summary><code>AGGREGATION aggregator bucketDuration</code></summary>
+Aggregate raw samples into fixed-size time buckets. See [Aggregators](#aggregators) for supported aggregation functions.
+</details>
+<details open><summary><code>ALIGN align</code></summary> 
+Control bucket alignment:
+  - `start` — Align buckets to range start
+  - `end` — Align buckets to range end
+  - Numeric timestamp — Align all buckets to a specific timestamp
+  - If omitted, uses module default alignment.
+</details>
+<details open><summary><code>BUCKETTIMESTAMP bt</code></summary>
+(Optional) Which timestamp to return for each bucket:
 
-#### Absolute Timestamps
+- `start` (default) — Bucket start time
+- `end` — Bucket end time
+- `mid` — Bucket midpoint
 
-**Numeric timestamp** (milliseconds since Unix epoch)
+</details>
+<details open><summary><code>CONDITION op value</code></summary>
+Comparison filter for conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`):
+- `op` is a comparison operator: `>`, `<`, `>=`, `<=`, `==`, or `!=`
+- `value` is the value to compare against
+Only samples satisfying the condition are included in the aggregation.
+</details>
 
-```bash
-TS.RANGE temperature:office 1700000000000 1700003600000
-```
+### Aggregation
 
-#### Relative Timestamps
+- **`AGGREGATION aggregator bucketDuration`** — Aggregate raw samples into fixed-size time buckets
+  - **`aggregator`** — Aggregation function to apply (see [Aggregators](#aggregators))
+  - **`bucketDuration`** — Bucket size in milliseconds (must be positive)
+---
 
-| Symbol | Meaning                                                                  | Example                             |
-|--------|--------------------------------------------------------------------------|-------------------------------------|
-| `-`    | **Earliest** — start of the time series                                  | `TS.RANGE temperature:office - +`   |
-| `+`    | **Latest** — most recent data point                                      | `TS.RANGE temperature:office -1h +` |
-| `*`    | **Current time** — equivalent to the current server time in milliseconds | `TS.RANGE temperature:office - *`   |
+## Supported Aggregators
 
-#### Relative Time Offsets
+### Simple Aggregators
 
-Time offsets relative to the current time.
+| Aggregator | Description                    | Empty Bucket Value |
+|------------|--------------------------------|--------------------|
+| `avg`      | Arithmetic mean                | `NaN`              |
+| `sum`      | Sum of all values              | `0`                |
+| `count`    | Number of samples              | `0`                |
+| `min`      | Minimum value                  | `NaN`              |
+| `max`      | Maximum value                  | `NaN`              |
+| `range`    | Difference between max and min | `NaN`              |
+| `first`    | Earliest sample value          | —                  |
+| `last`     | Latest sample value            | —                  |
 
-Supported formats:
+### Statistical Aggregators
 
-- **Integer milliseconds:** `60000`, `3600000`
-- **Duration strings:** `5s`, `1m`, `2h`, `1d`, `1w`, etc.
-  - `s` = seconds
-  - `m` = minutes
-  - `h` = hours
-  - `d` = days
-  - `w` = weeks, specified as 7 days
+| Aggregator | Description                   | Empty Bucket Value     |
+|------------|-------------------------------|------------------------|
+| `std.p`    | Population standard deviation | `NaN`                  |
+| `std.s`    | Sample standard deviation     | `NaN` (if < 2 samples) |
+| `var.p`    | Population variance           | `NaN`                  |
+| `var.s`    | Sample variance               | `NaN` (if < 2 samples) |
 
-Examples:
+### Counter/Rate Aggregators
 
-```bash
-# Last hour of data
-TS.RANGE temperature:office -1h *
+| Aggregator | Description                                      | Notes                                                                 |
+|------------|--------------------------------------------------|-----------------------------------------------------------------------|
+| `increase` | Total increase for monotonic counters            | Handles resets                                                        |
+| `rate`     | Rate of change per second over the bucket window | —                                                                     |
+| `irate`    | Instantaneous rate from the last two samples     | Requires ≥ 2 samples and positive time delta; returns `NaN` otherwise |
 
-# Last 5 minutes
-TS.RANGE temperature:office -5m *
+### Filtered Aggregators
 
-# From earliest to 2 hours ago
-TS.RANGE temperature:office - -2h
-```
+> These operate only on samples matching a comparison condition.
+
+| Aggregator | Description                                           | Empty Bucket Value |
+|------------|-------------------------------------------------------|--------------------|
+| `countif`  | Count of samples matching condition                   | `0`                |
+| `sumif`    | Sum of samples matching condition                     | `0`                |
+| `share`    | Fraction of samples matching condition (`[0.0, 1.0]`) | `NaN`              |
+| `all`      | `1.0` if all samples match, `0.0` otherwise           | `NaN`              |
+| `any`      | `1.0` if any sample matches, `0.0` otherwise          | `NaN`              |
+| `none`     | `1.0` if no samples match, `0.0` otherwise            | `NaN`              |
 
 ---
 
-### Optional Arguments
+## Return Value
 
-#### Range shaping & limits
+**Without aggregation:**  
+Array of `[timestamp, value]` pairs
 
-| Option   | Arguments | Description                                                                                      |
-|----------|-----------|--------------------------------------------------------------------------------------------------|
-| `LATEST` | (none)    | Return the current value of the latest "unclosed" bucket, if it exists.                          |
-| `COUNT`  | `count`   | Maximum number of returned samples (or buckets when aggregated). Must be a non-negative integer. |
-
-#### Filtering
-
-| Option            | Arguments | Description                                                                                                                                                                      |
-|-------------------|-----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `FILTER_BY_TS`    | `ts...`   | Only return samples whose timestamps match one of the provided timestamps. Supports up to **128** timestamps;                                                                    |
-| `FILTER_BY_VALUE` | `min max` | Only return samples with values in `[min, max]`. `min`/`max` support numeric values (and number-with-unit parsing, if enabled elsewhere in your parser); `max` must be `>= min`. |
-
-#### Aggregation / downsampling
-
-| Option            | Arguments                   | Description                                                                                                       |
-|-------------------|-----------------------------|-------------------------------------------------------------------------------------------------------------------|
-| `AGGREGATION`     | `aggregator bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply `aggregator` per bucket.                    |
-| `ALIGN`           | `align`                     | Bucket alignment anchor.                                                                                          |
-| `BUCKETTIMESTAMP` | `bt`                        | Controls the timestamp emitted for each bucket. Default: `start`.                                                 |
-| `EMPTY`           | (none)                      | Include empty buckets (buckets with no samples).                                                                  |
-| `CONDITION`       | `operator value`            | Provides a comparison filter used by conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`). |
-
-##### `bucketDuration` format
-
-`bucketDuration` is a **duration**. It can be:
-
-- An integer (milliseconds), e.g. `60000`
-- A duration string (e.g., `5s`, `1m`, etc.)
-
-##### Alignment restrictions
-
-When aggregation is used:
-
-- If `fromTimestamp` is `-` (earliest), you **cannot** use `ALIGN start`.
-- If `toTimestamp` is `+` (latest), you **cannot** use `ALIGN end`.
-
----
-
-## Available aggregators
-
-These are the supported `aggregator` values for `AGGREGATION`:
-
-| Aggregator | Description                                                                                            |
-|------------|--------------------------------------------------------------------------------------------------------|
-| `avg`      | Average of values in the bucket.                                                                       |
-| `sum`      | Sum of values in the bucket. If `EMPTY` is enabled, empty buckets yield `0`.                           |
-| `count`    | Number of samples in the bucket. If `EMPTY` is enabled, empty buckets yield `0`.                       |
-| `min`      | Minimum value in the bucket.                                                                           |
-| `max`      | Maximum value in the bucket.                                                                           |
-| `range`    | `max - min` within the bucket.                                                                         |
-| `first`    | First value encountered in the bucket.                                                                 |
-| `last`     | Last value encountered in the bucket.                                                                  |
-| `var.p`    | Population variance.                                                                                   |
-| `var.s`    | Sample variance.                                                                                       |
-| `std.p`    | Population standard deviation.                                                                         |
-| `std.s`    | Sample standard deviation.                                                                             |
-| `increase` | Counter increase over the bucket (handles counter resets/backward jumps).                              |
-| `rate`     | Counter rate per second over the bucket window (`increase / window_seconds`).                          |
-| `irate`    | Instantaneous per-second rate from the last two samples in the bucket/window (handles counter resets). |
-| `countif`  | Count of samples matching `CONDITION operator value`.                                                  |
-| `sumif`    | Sum of sample values matching `CONDITION operator value`.                                              |
-| `share`    | Fraction of samples matching `CONDITION` (range `[0..1]`), or empty when no samples.                   |
-| `all`      | `1.0` if all samples match `CONDITION`, else `0.0`.                                                    |
-| `any`      | `1.0` if any sample matches `CONDITION`, else `0.0`.                                                   |
-| `none`     | `1.0` if no samples match `CONDITION`, else `0.0`.                                                     |
-
----
-
-## Return value
-
-An array of samples:
-
-```plain text
-[
-  [timestamp, value],
-  [timestamp, value],
-  ...
-]
-```
-
-- Without `AGGREGATION`: each entry is a raw sample.
-- With `AGGREGATION`: each entry represents a bucket; the emitted timestamp depends on `BUCKETTIMESTAMP` (default
-  `start`).
+**With aggregation:**  
+Array of `[bucketTimestamp, aggregatedValue]` pairs
 
 ---
 
 ## Examples
 
-### Raw range query
+### Basic Query
 
-```bash
-TS.RANGE temperature:office 1700000000000 1700003600000
+Get all samples in a time range:
+
+```
+TS.RANGE temperature 1609459200000 1609545600000
 ```
 
-### Limit results
+### Latest Sample
 
-```bash
-TS.RANGE temperature:office 1700000000000 1700003600000 COUNT 100
+Get the most recent sample:
+
+```
+TS.RANGE temperature - + LATEST
 ```
 
-### Filter by value
+### Value Filtering
 
-```bash
-TS.RANGE temperature:office 1700000000000 1700003600000 FILTER_BY_VALUE 20 25
+Get samples where value is between 20 and 30:
+
+```
+TS.RANGE temperature 1609459200000 1609545600000 FILTER_BY_VALUE 20 30
 ```
 
-### Downsample to 1-minute average buckets
+### Specific Timestamps
 
-```bash
-TS.RANGE temperature:office 1700000000000 1700003600000 AGGREGATION avg 60000
+Get samples at exact timestamps:
+
+```
+TS.RANGE sensor:001 - + FILTER_BY_TS -2h 1609459260000 1609459320000
 ```
 
-### Aggregation with alignment + empty buckets
+### Hourly Average
 
-```bash
-TS.RANGE temperature:office 1700000000000 1700003600000 ALIGN 1700000000000 AGGREGATION sum 60000 EMPTY
+Compute average per hour:
+
+```
+TS.RANGE requests 1609459200000 1609545600000 AGGREGATION avg 3600000
 ```
 
-### Conditional aggregation (`countif`) with `CONDITION`
+### 5-Minute Sums with Empty Buckets
 
-Count how many times per 5-minute interval that cpu-utilization exceeded 90%:
-
-```bash
-TS.RANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION countif 300000 CONDITION > 0.90
+```
+TS.RANGE bytes 1609459200000 1609470000000 
+  ALIGN start 
+  AGGREGATION sum 300000 
+  BUCKETTIMESTAMP mid 
+  EMPTY
 ```
 
-### Share of samples matching a condition
+### Limited Results
 
-Over the past hour, what percentage of per minute error rates exceeded 5%:
+Get first 100 aggregated buckets:
 
-```bash
-TS.RANGE errors:rate -1h * AGGREGATION share 60000 CONDITION > 0.05
 ```
+TS.RANGE metrics 1609459200000 1609545600000 
+  AGGREGATION avg 60000 
+  COUNT 100
+```
+
+---
+
+## Behavior Notes
+
+- **Timestamp Inclusivity:** Both `fromTimestamp` and `toTimestamp` are inclusive
+- **Empty Buckets:** Omitted by default; use `EMPTY` to include them
+- **Filtered Aggregators:** Condition filters are applied within each bucket after timestamp/value filters
+- **Reverse Queries:** `TS.REVRANGE` adjusts semantics of `FIRST`/`LAST` appropriately
+- **Bucket Boundaries:** Computed based on alignment and `bucketDuration`
+- **Special Values:** Use `-inf`/`+inf` for unbounded value ranges
+
+---
+
+## Common Errors
+
+- **Wrong arity** — Missing required arguments
+- **invalid AGGREGATION value** — Unrecognized aggregator name
+- **invalid BUCKETTIMESTAMP** — Invalid bucket timestamp option
+- **invalid ALIGN** — Invalid alignment parameter
+- **invalid bucketDuration** — Bucket duration must be a positive integer
+
+---
+
+## See Also
+
+- `TS.REVRANGE` — Same query in reverse order
+- `TS.MRANGE` — Query multiple time series at once
+- `TS.GET` — Get the latest sample only
+- `TS.ADD` — Add samples to a time series
+
+
