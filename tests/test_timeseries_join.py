@@ -1,4 +1,5 @@
 import pytest
+import math
 from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
@@ -277,6 +278,229 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
                 expected_idx = (right_ts - (self.now - 200)) // 1000
                 assert float(right_val) == expected_idx * 100
 
+    def test_reducer_and_comprehensive(self):
+        """Comprehensive test for AND reducer across different join types and value scenarios."""
+        self.setup_data()
+
+        # Test 1: INNER join - both operands present, returns left value
+        result = self.client.execute_command(
+            "TS.JOIN", self.ts1, self.ts2,
+            self.now + 5000, self.now + 9000,
+            "INNER", "REDUCE", "and"
+        )
+
+        assert len(result) == 5
+        for ts, value in result:
+            idx = (ts - self.now) // 1000
+            expected_left = idx * 10
+            assert float(value) == expected_left
+
+        # Test 2: LEFT join on left-only timestamps - right missing produces NaN
+        result = self.client.execute_command(
+            "TS.JOIN", self.ts1, self.ts2,
+            self.now, self.now + 4000,
+            "LEFT", "REDUCE", "and"
+        )
+
+        assert len(result) == 5
+        for ts, value in result:
+            assert math.isnan(float(value))
+
+    def test_reducer_or(self):
+        """Verify OR reducer returns the right operand when only right exists."""
+        self.setup_data()
+
+        # Right-only timestamps are indexes 10-14 (self.now+10000 .. self.now+14000)
+        result = self.client.execute_command(
+            "TS.JOIN", self.ts1, self.ts2,
+            self.now + 10000, self.now + 14000,
+            "RIGHT", "REDUCE", "or"
+        )
+
+        assert len(result) == 5
+
+        for ts, value in result:
+            idx = (ts - self.now) // 1000
+            expected_right = idx * 5
+            assert float(value) == expected_right
+
+    def test_reducer_xor(self):
+        """Verify XOR reducer returns the non-NaN operand when one side is missing."""
+        self.setup_data()
+
+        # Left-only timestamps are indexes 0-4 (self.now .. self.now+4000)
+        result = self.client.execute_command(
+            "TS.JOIN", self.ts1, self.ts2,
+            self.now, self.now + 4000,
+            "LEFT", "REDUCE", "xor"
+        )
+
+        # Expect one result per left timestamp in range
+        assert len(result) == 5
+
+        for ts, value in result:
+            idx = (ts - self.now) // 1000
+            expected_left = idx * 10
+            assert float(value) == expected_left
+
+    def test_reducer_cmp(self):
+        """Test CMP reducer which returns -1, 0, or 1 based on comparison."""
+        self.setup_data()
+
+        # Test 1: INNER join with CMP - left < right
+        # At indexes 5-9: left = idx*10, right = idx*5
+        # So left > right, should return 1.0
+        result = self.client.execute_command(
+            "TS.JOIN", self.ts1, self.ts2,
+            self.now + 5000, self.now + 9000,
+            "INNER", "REDUCE", "cmp"
+        )
+
+        assert len(result) == 5
+        for ts, value in result:
+            # left > right, so cmp should return 1.0
+            assert float(value) == 1.0
+
+        # Test 2: LEFT join with equal values scenario
+        # Create a special case where we can test equality
+        ts_equal1 = "test_cmp_equal1"
+        ts_equal2 = "test_cmp_equal2"
+        self.client.execute_command("TS.CREATE", ts_equal1)
+        self.client.execute_command("TS.CREATE", ts_equal2)
+
+        base = 2000
+        # Add matching values
+        for i in range(5):
+            ts = base + i * 1000
+            self.client.execute_command("TS.ADD", ts_equal1, ts, i * 10)
+            self.client.execute_command("TS.ADD", ts_equal2, ts, i * 10)
+
+        result = self.client.execute_command(
+            "TS.JOIN", ts_equal1, ts_equal2,
+            base, base + 5000,
+            "INNER", "REDUCE", "cmp"
+        )
+
+        assert len(result) == 5
+        for ts, value in result:
+            # Values are equal, so cmp should return 0.0
+            assert float(value) == 0.0
+
+        # Test 3: LEFT join with left < right scenario
+        ts_less1 = "test_cmp_less1"
+        ts_less2 = "test_cmp_less2"
+        self.client.execute_command("TS.CREATE", ts_less1)
+        self.client.execute_command("TS.CREATE", ts_less2)
+
+        base = 3000
+        for i in range(5):
+            ts = base + i * 1000
+            self.client.execute_command("TS.ADD", ts_less1, ts, (i + 1) * 5)  # Smaller values
+            self.client.execute_command("TS.ADD", ts_less2, ts, (i + 1) * 10)  # Larger values
+
+        result = self.client.execute_command(
+            "TS.JOIN", ts_less1, ts_less2,
+            base, base + 5000,
+            "INNER", "REDUCE", "cmp"
+        )
+
+        print("CMP less-than result:", result)
+        assert len(result) == 5
+        for ts, value in result:
+            # left < right, so cmp should return -1.0
+            assert float(value) == -1.0
+
+    def test_reducer_pct_change(self):
+        """Test PCT_CHANGE reducer which computes percentage change from left to right."""
+        self.setup_data()
+
+        # Test 1: INNER join with PCT_CHANGE
+        # At indexes 5-9: left = idx*10, right = idx*5
+        # pct_change = (right - left) / left = (idx*5 - idx*10) / (idx*10) = -0.5
+        result = self.client.execute_command(
+            "TS.JOIN", self.ts1, self.ts2,
+            self.now + 5000, self.now + 9000,
+            "INNER", "REDUCE", "pct_change"
+        )
+
+        assert len(result) == 5
+        for ts, value in result:
+            idx = (ts - self.now) // 1000
+            left_val = idx * 10
+            right_val = idx * 5
+            expected = (right_val - left_val) / left_val
+            assert float(value) == expected
+            assert float(value) == -0.5
+
+        # Test 2: Positive percentage change
+        ts_pos1 = "test_pct_pos1"
+        ts_pos2 = "test_pct_pos2"
+        self.client.execute_command("TS.CREATE", ts_pos1)
+        self.client.execute_command("TS.CREATE", ts_pos2)
+
+        base = 4000
+        # Add values where right > left (positive growth)
+        for i in range(1, 6):
+            ts = base + i * 1000
+            left_val = i * 10
+            right_val = i * 20  # 100% increase
+            self.client.execute_command("TS.ADD", ts_pos1, ts, left_val)
+            self.client.execute_command("TS.ADD", ts_pos2, ts, right_val)
+
+        result = self.client.execute_command(
+            "TS.JOIN", ts_pos1, ts_pos2,
+            base, base + 6000,
+            "INNER", "REDUCE", "pct_change"
+        )
+
+        assert len(result) == 5
+        for ts, value in result:
+            # 100% increase: (20 - 10) / 10 = 1.0
+            assert float(value) == 1.0
+
+        # Test 3: Zero left value (division by zero edge case)
+        ts_zero1 = "test_pct_zero1"
+        ts_zero2 = "test_pct_zero2"
+        self.client.execute_command("TS.CREATE", ts_zero1)
+        self.client.execute_command("TS.CREATE", ts_zero2)
+
+        base = 5000
+        # When left = 0, should return 0.0 (per implementation)
+        self.client.execute_command("TS.ADD", ts_zero1, base, 0.0)
+        self.client.execute_command("TS.ADD", ts_zero2, base, 100.0)
+
+        result = self.client.execute_command(
+            "TS.JOIN", ts_zero1, ts_zero2,
+            base, base + 1000,
+            "INNER", "REDUCE", "pct_change"
+        )
+
+        assert len(result) == 1
+        ts, value = result[0]
+        # Division by zero case should return 0.0
+        assert float(value) == 0.0
+
+        # Test 4: Small values with fractional change
+        ts_frac1 = "test_pct_frac1"
+        ts_frac2 = "test_pct_frac2"
+        self.client.execute_command("TS.CREATE", ts_frac1)
+        self.client.execute_command("TS.CREATE", ts_frac2)
+
+        base = 6000
+        self.client.execute_command("TS.ADD", ts_frac1, base, 100.0)
+        self.client.execute_command("TS.ADD", ts_frac2, base, 150.0)
+
+        result = self.client.execute_command(
+            "TS.JOIN", ts_frac1, ts_frac2,
+            base, base + 1000,
+            "INNER", "REDUCE", "pct_change"
+        )
+
+        assert len(result) == 1
+        ts, value = result[0]
+        # (150 - 100) / 100 = 0.5 (50% increase)
+        assert float(value) == 0.5
+
     def test_asof_strategies(self):
         """Test different ASOF join strategies with comprehensive scenarios"""
 
@@ -394,7 +618,7 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         for ts, val in right_points.items():
             self.client.execute_command("TS.ADD", right_series, ts, val)
 
-        # Test with exact tolerance boundary (PREVIOUS)
+        # Test with an exact tolerance boundary (PREVIOUS)
         result = self.client.execute_command(
             "TS.JOIN", left_series, right_series,
             base_time, base_time + 5000,
@@ -597,9 +821,8 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         reducers = [
-            "sum", "avg", "min", "max",
-            "eq", "ne", "gt", "lt", "gte", "lte",
-            "mul", "div", "mod", "pow", "abs_diff", "sgn_diff"
+            "abs_diff", "and", "avg", "div", "eq", "gt", "gte", "lt", "lte", "sum", "max", "min",
+            "ne", "or", "mul", "mod", "pow", "sgn_diff", "xor"
         ]
 
         for reducer in reducers:
