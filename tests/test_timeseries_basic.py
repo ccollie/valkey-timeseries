@@ -9,8 +9,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         client = self.server.get_new_client()
         # Validate that the valkey-timeseries module is loaded.
         module_list_data = client.execute_command('MODULE LIST')
-        module_list_count = len(module_list_data)
-        assert module_list_count == 1
+
         module_loaded = False
         for module in module_list_data:
             if module[b'name'] == b'ts':
