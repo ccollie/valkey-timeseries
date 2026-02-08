@@ -16,7 +16,6 @@ bon = "3.8"
 byte-pool = "0.2.4"
 cfg-if = "1.0.4"
 croaring = "2.5"
-dashmap = "6.1"
 enquote = "1.1.0"
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
