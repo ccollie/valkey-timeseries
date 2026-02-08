@@ -156,6 +156,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         first_bucket_ts = dest_samples[0][0]
         assert (first_bucket_ts - align_ts) % 10000 == 0
 
+
     def test_compaction_maintains_order_with_out_of_order_samples(self):
         """Test compaction handles out-of-order sample insertion correctly"""
         source_key = "test:source:ooo"
@@ -164,28 +165,33 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.create_source_and_dest_series(source_key, dest_key)
         self.add_compaction_rule(source_key, dest_key, "avg", 10000, 1000)
 
-        base_ts = int(time.time() * 1000)
+        # Use a fixed base timestamp aligned to bucket boundary (align=1000, bucket=10000)
+        # Bucket covers [1000, 11000), so all samples at 1000..8000 are in the same bucket.
+        base_ts = 1000
 
-        # Add samples out of order
+        # Add samples out of order — all within the same bucket [1000, 11000)
         samples = [
-            (base_ts + 15000, 30.0),  # Future sample first
+            (base_ts + 7000, 30.0),  # Future sample first
             (base_ts, 10.0),  # Past sample
-            (base_ts + 5000, 20.0),  # Middle sample
+            (base_ts + 4000, 20.0),  # Middle sample
             (base_ts + 2000, 15.0),  # Another past sample (upsert scenario)
         ]
 
         for ts, value in samples:
             self.client.execute_command("TS.ADD", source_key, ts, value)
 
+        # Add a sample in the next bucket to finalize the first one
+        self.client.execute_command("TS.ADD", source_key, base_ts + 10000, 0.0)
+
         # Verify source maintains all samples in correct order
         source_samples = self.client.execute_command("TS.RANGE", source_key, "-", "+")
-        assert len(source_samples) == 4
+        assert len(source_samples) == 5
 
         # Verify compaction handled the out-of-order inserts correctly
         dest_samples = self.client.execute_command("TS.RANGE", dest_key, "-", "+")
         assert len(dest_samples) >= 1
 
-        # (10 + 15 + 20 + 30) / 4
+        # (10 + 15 + 20 + 30) / 4 = 18.75
         assert dest_samples[0][1] == b"18.75"
 
     def test_compaction_bucket_finalization(self):
@@ -222,7 +228,7 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
         self.create_source_and_dest_series(source_key, dest_key)
         self.add_compaction_rule(source_key, dest_key, "avg", 10000, 1000)
 
-        base_ts = int(time.time() * 1000)
+        base_ts = 1000
 
         # Add initial samples
         self.add_sample(source_key, base_ts, 10.0)
