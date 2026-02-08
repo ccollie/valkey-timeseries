@@ -1,8 +1,9 @@
+
 # TS.ADDBULK
 
 Ingest time-series samples from a JSON payload into a series.
 
-## Syntax
+### Syntax
 
 ```
 TS.ADDBULK key data 
@@ -16,68 +17,92 @@ TS.ADDBULK key data
   [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ```
 
-## Required arguments
+### Required arguments
 
-**key**
+<summary><code>key</code>
 
-> Key name for the time series.
+key name for the time series.
+</summary>
 
-**data**
+<summary><code>data</code>
 
-> JSON payload containing sample data. Must be a single JSON object with `values` and `timestamps` arrays.
+JSON payload containing sample data. Must be a single JSON object with `values` and `timestamps` arrays. Up to 1000
+samples
+can be ingested per command.
+</summary>
 
-## Optional arguments
+### Optional arguments
 
-**RETENTION duration**
+<summary><code>RETENTION duration</code>
 
-> Maximum retention period in milliseconds. Samples older than this are automatically deleted. `0` means infinite
-> retention. Default: module configuration.
+Maximum retention period in milliseconds. Samples older than this are automatically deleted. `0` means infinite
+retention. Default: module configuration.
+</summary>
 
-**DUPLICATE_POLICY policy**
+<summary><code>DUPLICATE_POLICY policy</code>
 
-> Policy for handling duplicate timestamps:
-> - `BLOCK` - Ignore duplicate (default when no policy is set)
-> - `FIRST` - Keep first occurrence
-> - `LAST` - Keep last occurrence
-> - `MIN` - Keep minimum value
-> - `MAX` - Keep maximum value
-> - `SUM` - Sum all values
+Policy for handling duplicate timestamps:
 
-**ON_DUPLICATE policy_ovr**
+- `BLOCK` - Ignore duplicate (default when no policy is set)
+- `FIRST` - Keep first occurrence
+- `LAST` - Keep last occurrence
+- `MIN` - Keep minimum value
+- `MAX` - Keep maximum value
+- `SUM` - Sum all values
 
-> Override the duplicate policy for this command invocation only. Does not modify the series' configured policy.
+</summary>
 
-**ENCODING COMPRESSED|UNCOMPRESSED**
+<summary><code>ON_DUPLICATE policy_ovr</code>
 
-> Storage encoding:
-> - `COMPRESSED` - Gorilla compression (default)
-> - `UNCOMPRESSED` - Raw storage
+Override the duplicate policy for this command invocation only. Does not modify the series' configured policy.
 
-**CHUNK_SIZE chunkSize**
+</summary>
 
-> Maximum size in bytes for each chunk. Actual memory usage may exceed this slightly. Default: 4096.
+<summary><code>ENCODING COMPRESSED|UNCOMPRESSED</code>
 
-**METRIC metric** | **LABELS labelName labelValue ...**
+Storage encoding:
 
-> Series metadata for filtering and queries:
-> - `METRIC` - A prometheus style metric specification (e.g. http_errors_total{service="auth",region="us-east"})
-> - `LABELS` - Explicit label name-value pairs
+- `COMPRESSED` - Gorilla compression (default)
+- `UNCOMPRESSED` - Raw storage
 
-**IGNORE ignoreMaxTimediff ignoreMaxValDiff**
+</summary>
 
-> Filtering thresholds for incoming samples:
-> - `ignoreMaxTimediff` - Maximum time difference (ms) from last sample
-> - `ignoreMaxValDiff` - Maximum absolute value difference from last sample
->
-> Samples exceeding either threshold are dropped.
+<summary><code>CHUNK_SIZE chunkSize</code>
 
-**SIGNIFICANT_DIGITS significantDigits** | **DECIMAL_DIGITS decimalDigits**
+Maximum size in bytes for each chunk. Actual memory usage may exceed this slightly. Default: 4096.
 
-> Value precision control (mutually exclusive):
-> - `SIGNIFICANT_DIGITS` - Number of significant digits (0-18)
-> - `DECIMAL_DIGITS` - Number of decimal places
+</summary>
 
-## JSON payload format
+<summary><code>METRIC metric** | **LABELS labelName labelValue ...</code>
+
+Series metadata for filtering and queries:
+
+- `METRIC` - A prometheus style metric specification (e.g. http_errors_total{service="auth",region="us-east"})
+- `LABELS` - Explicit label name-value pairs
+
+</summary>
+
+<summary><code>IGNORE ignoreMaxTimediff ignoreMaxValDiff</code>
+
+Filtering thresholds for incoming samples:
+
+- `ignoreMaxTimediff` - Maximum time difference (ms) from last sample
+- `ignoreMaxValDiff` - Maximum absolute value difference from last sample
+
+Samples exceeding either threshold are dropped.
+
+</summary>
+
+<summary><code>SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits</code>
+
+Value precision control (mutually exclusive):
+
+- `SIGNIFICANT_DIGITS` - Number of significant digits (0-18)
+- `DECIMAL_DIGITS` - Number of decimal places
+
+</summary>
+
+### JSON payload format
 
 The `data` argument expects a JSON object with the following structure:
 
@@ -106,14 +131,14 @@ The `data` argument expects a JSON object with the following structure:
 - `values` and `timestamps` arrays must have equal length
 - At least one sample must be present
 
-## Return value
+### Return value
 
 [Array reply](https://valkey.io/docs/reference/protocol-spec/#arrays) of two integers:
 
 1. Number of successfully ingested samples
 2. Total number of samples in the payload
 
-## Behavior
+### Behavior
 
 - **Sorting:** Input samples are automatically sorted by timestamp before insertion
 - **Retention filtering:** Samples older than the retention window are dropped before processing
@@ -123,9 +148,9 @@ The `data` argument expects a JSON object with the following structure:
 - **Ingestion count:** Only successfully inserted samples are counted; dropped or blocked samples are excluded from the
   success count
 
-## Examples
+### Examples
 
-### Basic ingestion
+#### Basic ingestion
 
 Ingest two samples into a series:
 
@@ -146,21 +171,7 @@ TS.ADDBULK sensor:temp:room1 '{"values":[22.5,23.1],"timestamps":[1620000000000,
 TS.ADDBULK sensor:pressure:tank2 '{"values":[101.3,101.5],"timestamps":[1620000000000,1620000001000]}' RETENTION 86400000 CHUNK_SIZE 8192 DUPLICATE_POLICY LAST LABELS sensor_type pressure location tank2
 ```
 
-### Override duplicate policy
-
-```valkey-cli
-TS.ADDBULK sensor:temp:room1 '{"values":[22.5,22.8],"timestamps":[1620000000000,1620000000000]}' ON_DUPLICATE MAX
-```
-
-**Result:**
-
-```
-1) (integer) 1
-2) (integer) 2
-```
-
-
-## Error conditions
+#### Error conditions
 
 - **WRONGTYPE:** Key exists but is not a time series
 - **Wrong arity:** Incorrect number of arguments
@@ -170,23 +181,10 @@ TS.ADDBULK sensor:temp:room1 '{"values":[22.5,22.8],"timestamps":[1620000000000,
 - **TSDB: no timestamps or values:** Arrays are empty
 - **missing key or metric_name:** `metric` provided without `key` or `metric_name`
 
-## Notes
+#### Notes
 
 - If the key does not exist, it will be created with the provided options
 - Input samples are sorted by timestamp before insertion
-- Samples are **not** guaranteed to be inserted in the same order as the input when timestamps differ across chunk
-  boundaries
 - Retention filtering occurs **before** chunk grouping and insertion
 - The ingested count may be less than the payload count if samples are dropped due to retention, duplicates, or filters
 - When the series doesn't exist and no options are provided, module-level defaults apply
-- For bulk ingestion from external sources (e.g., Prometheus, VictoriaMetrics), this command provides an efficient
-  single-call interface
-
-## Complexity
-
-O(N*log(M)) where N is the number of samples and M is the number of existing chunks. Parallel processing is used for
-chunk insertion when multiple chunks are affected.
-
-## See also
-
-[`TS.ADD`](ts.add.md) | [`TS.MADD`](ts.madd.md) | [`TS.RANGE`](ts.range.md) | [`TS.CREATE`](ts.create.md)
