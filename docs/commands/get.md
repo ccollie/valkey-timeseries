@@ -8,7 +8,7 @@ Get the last sample (most recent data point) from a time series.
 TS.GET key [LATEST]
 ```
 
-## Required Arguments
+### Required Arguments
 
 **key**: the time series key.
 

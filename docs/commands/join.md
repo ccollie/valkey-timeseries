@@ -150,13 +150,10 @@ performs an operation on the value in each returned row.
   | `abs_diff`   | abs(`left` - `right`)                                                   |
   | `and`        | Returns `left` if either value is NAN, `right` otherwise                |
   | `avg`        | Arithmetic mean of both mut values                                      |
-  | `default`    | If `left` is is NaN, return `right`, else `left`                        | 
   | `div`        | `left` / `right`                                                        |
   | `eq`         | Returns 1 if `left` == `right`, 0 otherwise                             |
   | `gt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
   | `gte`        | Returns 1 if left is greater than or equals right, otherwise returns 0  |
-  | `if`         | Returns `left` if `right` is not NaN. Otherwise, NaN is returned.       |
-  | `ifnot`      | returns `left` if `right` is NaN. Otherwise, NaN is returned.           |
   | `lt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
   | `lte`        | Returns 1 if `left` is less than or equals `right`, otherwise returns 0 |
   | `min`        | Minimum value                                                           |
@@ -169,7 +166,7 @@ performs an operation on the value in each returned row.
   | `sub`        | `left` - `right`                                                        |
   | `sum`        | `left` + `right`                                                        |
   | `or`         | return the first non-NaN item. If both are NaN, it returns NaN.         |
-  | `unless`     | Returns Null unless `left` equals `right`                               |
+  | `xor`        | Returns the first non-NaN if `left` != `right`, NaN otherwise           |
 
 </details>
 

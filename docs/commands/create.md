@@ -14,7 +14,7 @@ TS.CREATE key
 - **ENCODING**: The encoding to use for the timeseries. Default is `COMPRESSED`.
 - **DUPLICATE_POLICY**: The policy to use for duplicate samples. Default is `BLOCK`.
 
-## Required arguments
+### Required arguments
 
 <details open><summary><code>key</code></summary>
 is key name for the time series.
@@ -25,7 +25,8 @@ The metric name in Prometheus format, e.g. `node_memory_used_bytes{hostname="hos
 is key name for time series. See https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
 </details>
 
-## Optional Arguments 
+### Optional Arguments
+
 <details open><summary><code>retentionPeriod</code></summary>
 The period of time for which to keep series samples. Retention can be specified as an integer indication
 the duration as milliseconds, or a duration expression like `3wk`

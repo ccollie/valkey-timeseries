@@ -8,7 +8,7 @@ TS.DEL key fromTimestamp toTimestamp
 
 **TS.DEL** deletes data for a selection of series in a time range.
 
-#### Options
+### Required Arguments
 
 - **key**: the key being deleted from.
 - **fromTimestamp**: Start timestamp, inclusive. Optional.
