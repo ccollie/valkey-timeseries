@@ -60,7 +60,7 @@ TS.ADDBULK key data
 **METRIC metric** | **LABELS labelName labelValue ...**
 
 > Series metadata for filtering and queries:
-> - `METRIC` - Labels from JSON payload (when payload includes `metric` object)
+> - `METRIC` - A prometheus style metric specification (e.g. http_errors_total{service="auth",region="us-east"})
 > - `LABELS` - Explicit label name-value pairs
 
 **IGNORE ignoreMaxTimediff ignoreMaxValDiff**
@@ -159,15 +159,6 @@ TS.ADDBULK sensor:temp:room1 '{"values":[22.5,22.8],"timestamps":[1620000000000,
 2) (integer) 2
 ```
 
-*Note: Second sample at same timestamp replaces first due to `MAX` policy.*
-
-### With value filtering
-
-```valkey-cli
-TS.ADDBULK sensor:temp:room1 '{"values":[22.5,22.6,25.0],"timestamps":[1620000000000,1620000001000,1620000002000]}' IGNORE 5000 2.0
-```
-
-*Samples exceeding 2.0 difference or 5000ms gap from previous sample are dropped.*
 
 ## Error conditions
 
