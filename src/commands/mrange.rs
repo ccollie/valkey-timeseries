@@ -11,7 +11,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 //   [FILTER_BY_VALUE min max]
 //   [WITHLABELS | <SELECTED_LABELS label...>]
 //   [COUNT count]
-//   [[ALIGN align] AGGREGATION aggregator bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
+//   [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
 //   FILTER filterExpr...
 //   [GROUPBY label REDUCE reducer]
 pub fn mrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
