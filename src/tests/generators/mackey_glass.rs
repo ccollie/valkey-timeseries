@@ -27,7 +27,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 use crate::tests::generators::create_rng;
-use rand::Rng;
+use rand::RngExt;
 use std::collections::VecDeque;
 
 // https://github.com/mila-iqia/summerschool2015/blob/master/rnn_tutorial/synthetic.py

@@ -1,7 +1,7 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use ahash::{AHashMap, HashSet, HashSetExt};
-use rand::{Rng, rng};
+use rand::{Rng, RngExt, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
 use std::borrow::Borrow;
 use std::cmp::Ordering;

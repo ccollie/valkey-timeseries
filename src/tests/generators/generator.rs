@@ -1,6 +1,6 @@
 use crate::tests::generators::create_rng;
 use crate::tests::generators::mackey_glass::mackey_glass;
-use rand::Rng;
+use rand::RngExt;
 use rand::prelude::StdRng;
 use std::ops::Range;
 
