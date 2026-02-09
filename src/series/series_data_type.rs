@@ -27,7 +27,7 @@ use valkey_module_macros::flush_event_handler;
 const TIMESERIES_TYPE_ENCODING_VERSION: i32 = 1;
 
 pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
-    "vktseries",
+    "TSDB-TYPE",
     TIMESERIES_TYPE_ENCODING_VERSION,
     RedisModuleTypeMethods {
         version: valkey_module::TYPE_METHOD_VERSION,
