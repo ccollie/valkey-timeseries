@@ -145,7 +145,7 @@ impl InternedString {
     }
 
     /// Return the number of unique interned strings.
-    pub fn interned_object_count() -> usize {
+    pub fn interned_count() -> usize {
         STRING_POOL.read().unwrap().len()
     }
 
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(InternedString::new("foo"), InternedString::new("foo"));
         assert_ne!(InternedString::new("foo"), InternedString::new("bar"));
         // The above refs should be deallocated by now.
-        assert_eq!(InternedString::interned_object_count(), 0);
+        assert_eq!(InternedString::interned_count(), 0);
 
         let _interned1 = InternedString::new("foo");
         {
@@ -307,11 +307,11 @@ mod tests {
             assert_eq!(interned2.ref_count(), 2);
             assert_eq!(interned3.ref_count(), 1);
             // We now have two unique interned strings: "foo" and "bar".
-            assert_eq!(InternedString::interned_object_count(), 2);
+            assert_eq!(InternedString::interned_count(), 2);
         }
 
         // "bar" is now gone.
-        assert_eq!(InternedString::interned_object_count(), 1);
+        assert_eq!(InternedString::interned_count(), 1);
     }
 
     // Ordering should be based on values, not pointers.
@@ -344,7 +344,7 @@ mod tests {
             }
         }
 
-        assert_eq!(InternedString::interned_object_count(), 0);
+        assert_eq!(InternedString::interned_count(), 0);
     }
 
     // Quickly create and destroy a small number of interned objects from
@@ -371,7 +371,7 @@ mod tests {
             h.join().unwrap()
         }
 
-        assert_eq!(InternedString::interned_object_count(), 0);
+        assert_eq!(InternedString::interned_count(), 0);
     }
 
     // Helper to reset memory tracking before each test
