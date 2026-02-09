@@ -18,7 +18,6 @@ fn unterminated_string_literal(_: &mut Lexer<Token>) -> ParseResult<()> {
 #[logos(subpattern float = r"-?(?:([0-9]*[.])?[0-9][0-9_]*)(?:[eE][+-]?[0-9][0-9_]*)?")]
 #[logos(skip r"[ \t\n\f\r]+")]
 #[logos(skip(r"#[^\r\n]*(\r\n|\n)?", allow_greedy = true))] // single line comment
-
 pub enum Token {
     #[token(b"or", ignore(case))]
     OpOr,
