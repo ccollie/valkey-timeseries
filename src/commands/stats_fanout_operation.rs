@@ -2,7 +2,7 @@ use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsR
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::fanout::{FanoutOperation, NodeInfo};
-use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, with_timeseries_index};
+use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, get_timeseries_index};
 use ahash::AHashMap;
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
@@ -53,7 +53,8 @@ impl FanoutOperation for StatsFanoutOperation {
 
     fn get_local_response(ctx: &Context, req: StatsRequest) -> ValkeyResult<StatsResponse> {
         let limit = req.limit as usize;
-        let stats = with_timeseries_index(ctx, |index| index.stats(METRIC_NAME_LABEL, limit));
+        let index = get_timeseries_index(ctx);
+        let stats = index.stats(METRIC_NAME_LABEL, limit);
 
         Ok(stats.into())
     }

@@ -18,21 +18,19 @@ fn handle_key_restore(ctx: &Context, key: &[u8]) {
 }
 
 fn reindex_series(ctx: &Context, series: &TimeSeries, key: &[u8]) -> ValkeyResult<()> {
-    with_timeseries_index(ctx, |index| {
-        index.reindex_timeseries(series, key);
-        Ok(())
-    })
+    let index = get_timeseries_index(ctx);
+    index.reindex_timeseries(series, key);
+    Ok(())
 }
 
 fn handle_key_rename(ctx: &Context, _old_key: &[u8], new_key: &[u8]) {
-    with_timeseries_index(ctx, |index| {
-        let key = ctx.create_string(new_key);
-        let Ok(Some(series)) = get_timeseries(ctx, key, None, false) else {
-            logging::log_warning("Failed to load series for key rename");
-            return;
-        };
-        index.reindex_timeseries(&series, new_key)
-    })
+    let index = get_timeseries_index(ctx);
+    let key = ctx.create_string(new_key);
+    let Ok(Some(series)) = get_timeseries(ctx, key, None, false) else {
+        logging::log_warning("Failed to load series for key rename");
+        return;
+    };
+    index.reindex_timeseries(&series, new_key);
 }
 
 fn handle_loaded(ctx: &Context, key: &[u8]) {
@@ -41,19 +39,19 @@ fn handle_loaded(ctx: &Context, key: &[u8]) {
         logging::log_warning("Failed to load series");
         return;
     };
+    let db = get_current_db(ctx);
+    series._db = db;
 
-    with_timeseries_index(ctx, |index| {
-        series._db = get_current_db(ctx);
-        if !index.has_id(series.id) {
-            index.index_timeseries(&series, key);
+    let index = get_db_index(db);
+    if !index.has_id(series.id) {
+        index.index_timeseries(&series, key);
 
-            // On module load, our series id generator would have been reset to zero. We have to ensure
-            // that after a load the counter has the value of the highest series id
-            TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
-        } else {
-            logging::log_warning("Trying to load a series that is already in the index");
-        }
-    });
+        // On module load, our series id generator would have been reset to zero. We have to ensure
+        // that after a load the counter has the value of the highest series id
+        TIMESERIES_ID.fetch_max(series.id, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        logging::log_warning("Trying to load a series that is already in the index");
+    }
 }
 
 fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
@@ -64,15 +62,14 @@ fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
         logging::log_warning("Failed to load series for key move");
         return;
     };
-    let guard = TIMESERIES_INDEX.guard();
 
     // remove the series from the old db index
-    let old_index = get_timeseries_index_for_db(old_db, &guard);
+    let old_index = get_db_index(old_db);
     old_index.remove_timeseries(&series);
 
     // add the series to the new db index
     series._db = new_db;
-    let new_index = get_timeseries_index_for_db(new_db, &guard);
+    let new_index = get_db_index(new_db);
     new_index.index_timeseries(&series, key);
 }
 

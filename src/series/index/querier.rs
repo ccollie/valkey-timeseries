@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::postings::{KeyType, Postings};
-use super::{with_timeseries_index, with_timeseries_postings};
+use super::{get_timeseries_index, with_timeseries_postings};
 use crate::common::Timestamp;
 use crate::common::hash::IntMap;
 use crate::error_consts;
@@ -211,11 +211,13 @@ pub fn count_matched_series(
                     error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
                 ));
             }
-            with_timeseries_index(ctx, |index| index.count())
+            let index = get_timeseries_index(ctx);
+            index.count()
         }
         (None, false) => {
             // if we don't have a date range, we can simply count postings...
-            with_timeseries_index(ctx, |index| index.get_cardinality_by_selectors(matchers))?
+            let index = get_timeseries_index(ctx);
+            index.get_cardinality_by_selectors(matchers)?
         }
         (Some(range), false) => {
             let matched_series = series_by_selectors(ctx, matchers, Some(range))?;

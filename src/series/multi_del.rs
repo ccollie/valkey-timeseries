@@ -2,7 +2,7 @@ use crate::common::Timestamp;
 use crate::common::context::is_real_user_client;
 use crate::common::threads::NUM_THREADS;
 use crate::labels::filters::SeriesSelector;
-use crate::series::index::{PostingsBitmap, with_timeseries_index, with_timeseries_postings};
+use crate::series::index::{PostingsBitmap, get_timeseries_index, with_timeseries_postings};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
     CompactionOp, SeriesGuardMut, SeriesRef, TimeSeries, TimestampRange, apply_compaction,
@@ -48,14 +48,13 @@ fn delete_key(ctx: &Context, key: &ValkeyString) -> ValkeyResult<usize> {
 
 fn handle_delete_keys(ctx: &Context, filters: &[SeriesSelector]) -> ValkeyResult<usize> {
     // get keys from ids
-    with_timeseries_index(ctx, |index| {
-        let keys = index.keys_for_selectors(ctx, filters, Some(AclPermissions::DELETE))?;
-        let mut total_deleted = 0;
-        for key in keys {
-            total_deleted += delete_key(ctx, &ctx.create_string(key.as_ref()))?;
-        }
-        Ok(total_deleted)
-    })
+    let index = get_timeseries_index(ctx);
+    let keys = index.keys_for_selectors(ctx, filters, Some(AclPermissions::DELETE))?;
+    let mut total_deleted = 0;
+    for key in keys {
+        total_deleted += delete_key(ctx, &ctx.create_string(key.as_ref()))?;
+    }
+    Ok(total_deleted)
 }
 
 fn handle_delete_range(
@@ -192,11 +191,10 @@ fn fetch_series_batch<'a>(
         }
 
         if !stale_ids.is_empty() {
-            with_timeseries_index(ctx, |index| {
-                for id in stale_ids {
-                    index.mark_id_as_stale(id);
-                }
-            });
+            let index = get_timeseries_index(ctx);
+            for id in stale_ids {
+                index.mark_id_as_stale(id);
+            }
         }
 
         (result, keys)

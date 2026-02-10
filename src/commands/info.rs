@@ -1,6 +1,6 @@
 use crate::common::constants::META_KEY_LABEL;
 use crate::common::rounding::RoundingStrategy;
-use crate::series::index::with_timeseries_index;
+use crate::series::index::get_timeseries_index;
 use crate::series::{
     SeriesRef, TimeSeries,
     chunks::{Chunk, TimeSeriesChunk},
@@ -218,20 +218,19 @@ fn get_key_by_id(ctx: &Context, id: SeriesRef) -> Option<String> {
 }
 
 fn get_keys_by_id(ctx: &Context, ids: &[SeriesRef]) -> HashMap<SeriesRef, String> {
-    with_timeseries_index(ctx, |index| {
-        let mut state = ();
-        index.with_postings(&mut state, |posting, _| {
-            let mut map = HashMap::with_capacity(ids.len());
-            for id in ids.iter().cloned() {
-                if let Some(key) = posting.get_key_by_id(id) {
-                    let key_str = String::from_utf8_lossy(key.as_bytes()).to_string();
-                    map.insert(id, key_str);
-                } else {
-                    let msg = format!("Series with id {id} not found");
-                    ctx.log_warning(&msg);
-                }
+    let index = get_timeseries_index(ctx);
+    let mut state = ();
+    index.with_postings(&mut state, |posting, _| {
+        let mut map = HashMap::with_capacity(ids.len());
+        for id in ids.iter().cloned() {
+            if let Some(key) = posting.get_key_by_id(id) {
+                let key_str = String::from_utf8_lossy(key.as_bytes()).to_string();
+                map.insert(id, key_str);
+            } else {
+                let msg = format!("Series with id {id} not found");
+                ctx.log_warning(&msg);
             }
-            map
-        })
+        }
+        map
     })
 }

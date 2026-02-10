@@ -3,7 +3,7 @@ use crate::common::hash::{BuildNoHashHasher, IntMap};
 use crate::common::logging::{log_debug, log_warning};
 use crate::common::threads::spawn;
 use crate::series::index::{
-    IndexKey, TIMESERIES_INDEX, with_db_index, with_timeseries_index, with_timeseries_postings,
+    IndexKey, TIMESERIES_INDEX, get_db_index, get_timeseries_index, with_timeseries_postings,
 };
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
 use blart::AsBytes;
@@ -321,11 +321,10 @@ fn fetch_series_batch(
         }
 
         if !stale_ids.is_empty() {
-            with_timeseries_index(ctx, |index| {
-                for id in stale_ids {
-                    index.mark_id_as_stale(id)
-                }
-            });
+            let index = get_timeseries_index(ctx);
+            for id in stale_ids {
+                index.mark_id_as_stale(id)
+            }
         }
 
         result
@@ -388,9 +387,8 @@ fn optimize_indices(_ctx: &ThreadSafeContext<DetachedFromClient>) {
     let results = cursors
         .into_par()
         .map(|(db, cursor)| {
-            let new_cursor = with_db_index(db, |index| {
-                index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE)
-            });
+            let index = get_db_index(db);
+            let new_cursor = index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE);
             (db, new_cursor)
         })
         .collect::<Vec<_>>();

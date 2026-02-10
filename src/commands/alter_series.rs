@@ -1,8 +1,9 @@
 use crate::commands::command_args::CommandArgToken;
 use crate::commands::parse_series_options;
 use crate::labels::MetricName;
-use crate::series::index::with_timeseries_index;
+use crate::series::index::get_timeseries_index;
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions, with_timeseries_mut};
+use std::ops::Deref;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, VALKEY_OK, ValkeyError, ValkeyResult, ValkeyString,
 };
@@ -83,16 +84,18 @@ fn update_series(
         has_changed = true;
 
         // reindex the series
-        with_timeseries_index(ctx, |ts_index| {
-            ts_index.remove_timeseries(series);
-            // update labels in series
-            series.labels = if labels.is_empty() {
-                MetricName::default()
-            } else {
-                MetricName::new(&labels)
-            };
-            ts_index.index_timeseries(series, key.as_slice());
-        });
+        let guard = get_timeseries_index(ctx);
+        let ts_index = guard.deref();
+
+        ts_index.remove_timeseries(series);
+        // update labels in series
+        series.labels = if labels.is_empty() {
+            MetricName::default()
+        } else {
+            MetricName::new(&labels)
+        };
+
+        ts_index.index_timeseries(series, key.as_slice());
     }
 
     if let Some(retention) = options.retention

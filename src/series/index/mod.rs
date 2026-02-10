@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::sync::atomic::AtomicU64;
 mod index_key;
 mod posting_stats;
@@ -6,7 +7,7 @@ mod querier;
 mod timeseries_index;
 
 use crate::common::context::get_current_db;
-use papaya::{Guard, HashMap};
+use papaya::{Guard, HashMap, LocalGuard};
 use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
@@ -27,6 +28,25 @@ mod postings_query_tests;
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
 
+pub struct TimeSeriesIndexGuard<'a> {
+    guard: LocalGuard<'a>,
+    pub db: i32,
+}
+
+impl<'a> TimeSeriesIndexGuard<'a> {
+    fn new(guard: LocalGuard<'a>, db: i32) -> Self {
+        Self { guard, db }
+    }
+}
+
+impl Deref for TimeSeriesIndexGuard<'_> {
+    type Target = TimeSeriesIndex;
+
+    fn deref(&self) -> &Self::Target {
+        get_timeseries_index_for_db(self.db, &self.guard)
+    }
+}
+
 pub(crate) static TIMESERIES_INDEX: LazyLock<TimeSeriesIndexMap> =
     LazyLock::new(TimeSeriesIndexMap::default);
 
@@ -40,8 +60,18 @@ pub fn reset_timeseries_id(id: u64) {
     TIMESERIES_ID.store(id, std::sync::atomic::Ordering::SeqCst);
 }
 
+pub fn get_db_index<'a>(db: i32) -> TimeSeriesIndexGuard<'a> {
+    let guard = TIMESERIES_INDEX.guard();
+    TimeSeriesIndexGuard::new(guard, db)
+}
+
+pub fn get_timeseries_index(ctx: &'_ Context) -> TimeSeriesIndexGuard<'_> {
+    let db = get_current_db(ctx);
+    get_db_index(db)
+}
+
 #[inline]
-pub fn get_timeseries_index_for_db(db: i32, guard: &impl Guard) -> &TimeSeriesIndex {
+fn get_timeseries_index_for_db(db: i32, guard: &impl Guard) -> &TimeSeriesIndex {
     TIMESERIES_INDEX.get_or_insert_with(db, TimeSeriesIndex::new, guard)
 }
 
@@ -49,9 +79,8 @@ pub fn with_db_index<F, R>(db: i32, f: F) -> R
 where
     F: FnOnce(&TimeSeriesIndex) -> R,
 {
-    let guard = TIMESERIES_INDEX.guard();
-    let index = get_timeseries_index_for_db(db, &guard);
-    let res = f(index);
+    let guard = get_db_index(db);
+    let res = f(&guard);
     drop(guard);
     res
 }
@@ -117,21 +146,18 @@ pub fn get_series_by_id(
 }
 
 pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString> {
-    let map = TIMESERIES_INDEX.pin();
     let db = get_current_db(ctx);
-    let index = map.get(&db)?;
+    let index_guard = get_db_index(db);
     let mut state = 0;
-    index.with_postings(&mut state, |posting, _| {
+    index_guard.with_postings(&mut state, |posting, _| {
         let key = posting.get_key_by_id(id)?;
         Some(ctx.create_string(key.as_ref()))
     })
 }
 
 pub fn remove_series_from_index(ts: &TimeSeries) {
-    let guard = TIMESERIES_INDEX.guard();
-    let index = get_timeseries_index_for_db(ts._db, &guard);
-    index.remove_timeseries(ts);
-    drop(guard);
+    let guard = get_db_index(ts._db);
+    guard.remove_timeseries(ts);
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {
@@ -159,9 +185,8 @@ pub fn swap_timeseries_index_dbs(from_db: i32, to_db: i32) {
 
 pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
     // mark the id for removal, signal to src_series to remove it
-    with_timeseries_index(ctx, |index| {
-        index.mark_id_as_stale(id);
-    });
+    let index = get_timeseries_index(ctx);
+    index.mark_id_as_stale(id);
 }
 
 pub(crate) fn init_croaring_allocator() {

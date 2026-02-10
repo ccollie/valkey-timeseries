@@ -4,11 +4,12 @@ use crate::error_consts;
 use crate::labels::Label;
 use crate::series::acl::check_key_permissions;
 use crate::series::chunks::ChunkEncoding;
-use crate::series::index::{next_timeseries_id, with_timeseries_index};
+use crate::series::index::{get_db_index, next_timeseries_id};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{
     SeriesGuard, SeriesGuardMut, TimeSeries, TimeSeriesOptions, create_compaction_rules_from_config,
 };
+use std::ops::Deref;
 use std::time::Duration;
 use valkey_module::key::ValkeyKeyWritable;
 use valkey_module::{
@@ -104,22 +105,23 @@ pub fn create_series(
     }
 
     ts._db = get_current_db(ctx);
+    let guard = get_db_index(ts._db);
 
-    with_timeseries_index(ctx, |index| {
-        // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
-        // We do this only in the case where we have a __name__ label, signaling that the user is
-        // opting in to Prometheus semantics, meaning a metric name is unique to a series.
-        if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
-            let labels = ts.labels.to_label_vec();
-            // will return an error if the series already exists
-            if index.series_id_by_labels(&labels).is_some() {
-                return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
-            }
+    let index = guard.deref();
+
+    // Check if this refers to an existing series (a pre-existing series with the same label-value pairs)
+    // We do this only in the case where we have a __name__ label, signaling that the user is
+    // opting in to Prometheus semantics, meaning a metric name is unique to a series.
+    if ts.labels.get_value(METRIC_NAME_LABEL).is_some() {
+        let labels = ts.labels.to_label_vec();
+        // will return an error if the series already exists
+        if index.series_id_by_labels(&labels).is_some() {
+            return Err(ValkeyError::Str(error_consts::DUPLICATE_SERIES));
         }
+    }
 
-        index.index_timeseries(&ts, key.iter().as_slice());
-        Ok(ts)
-    })
+    index.index_timeseries(&ts, key.iter().as_slice());
+    Ok(ts)
 }
 
 pub fn create_and_store_internal(

@@ -1,6 +1,6 @@
 use ahash::AHashMap;
 use std::collections::hash_map::Entry;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard};
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
@@ -13,7 +13,29 @@ use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size2::GetSize;
 use std::mem::size_of;
+use std::ops::Deref;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
+
+/// A read-only guard for accessing Postings data.
+/// This provides a safe, ergonomic way to read from Postings without allowing modification.
+pub struct PostingsReadGuard<'a> {
+    guard: RwLockReadGuard<'a, Postings>,
+}
+
+impl<'a> PostingsReadGuard<'a> {
+    /// Creates a new PostingsReadGuard from an RwLockReadGuard
+    pub(crate) fn new(guard: RwLockReadGuard<'a, Postings>) -> Self {
+        Self { guard }
+    }
+}
+
+impl<'a> Deref for PostingsReadGuard<'a> {
+    type Target = Postings;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
 
 pub struct TimeSeriesIndex {
     pub(crate) inner: RwLock<Postings>,
@@ -75,6 +97,11 @@ impl TimeSeriesIndex {
     pub fn has_id(&self, id: SeriesRef) -> bool {
         let inner = self.inner.read().unwrap();
         inner.has_id(id)
+    }
+
+    pub fn get_postings(&'_ self) -> PostingsReadGuard<'_> {
+        let guard = self.inner.read().unwrap();
+        PostingsReadGuard::new(guard)
     }
 
     /// Return all series ids corresponding to the given label value pairs

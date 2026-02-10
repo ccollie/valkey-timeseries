@@ -12,9 +12,7 @@ use valkey_module::{
 use crate::common::context::get_current_db;
 use crate::series::TimeSeries;
 use crate::series::defrag_series;
-use crate::series::index::{
-    TIMESERIES_INDEX, get_timeseries_index_for_db, next_timeseries_id, with_timeseries_index,
-};
+use crate::series::index::{get_db_index, next_timeseries_id};
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use std::os::raw::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,10 +77,8 @@ fn remove_series_from_index(ts: &TimeSeries) {
     if is_flushing_in_process() {
         return;
     }
-    let guard = TIMESERIES_INDEX.guard();
-    let index = get_timeseries_index_for_db(ts._db, &guard);
+    let index = get_db_index(ts._db);
     index.remove_timeseries(ts);
-    drop(guard);
 }
 
 unsafe extern "C" fn rdb_save(rdb: *mut RedisModuleIO, value: *mut c_void) {
@@ -121,18 +117,20 @@ unsafe extern "C" fn copy(
     value: *const c_void,
 ) -> *mut c_void {
     let guard = valkey_module::MODULE_CONTEXT.lock();
-    with_timeseries_index(&guard, |index| {
-        let old_series = unsafe { &*value.cast::<TimeSeries>() };
-        let mut new_series = old_series.clone();
-        new_series._db = get_current_db(&guard);
-        new_series.id = next_timeseries_id();
-        new_series.src_series = None;
-        new_series.rules.clear();
-        let key = ValkeyString::from_redis_module_string(guard.ctx, to_key);
-        index.index_timeseries(&new_series, key.as_slice());
-        let boxed = Box::new(new_series);
-        Box::into_raw(boxed).cast::<c_void>()
-    })
+    let db = get_current_db(&guard);
+
+    let old_series = unsafe { &*value.cast::<TimeSeries>() };
+    let mut new_series = old_series.clone();
+    new_series._db = db;
+    new_series.id = next_timeseries_id();
+    new_series.src_series = None;
+    new_series.rules.clear();
+    let key = ValkeyString::from_redis_module_string(guard.ctx, to_key);
+
+    let index = get_db_index(db);
+    index.index_timeseries(&new_series, key.as_slice());
+    let boxed = Box::new(new_series);
+    Box::into_raw(boxed).cast::<c_void>()
 }
 
 unsafe extern "C" fn unlink(_key: *mut RedisModuleString, value: *const c_void) {
