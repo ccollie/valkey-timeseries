@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use super::postings::{KeyType, Postings};
-use super::{get_timeseries_index, with_timeseries_postings};
+use super::{get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
+use crate::common::context::get_current_db;
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
@@ -34,10 +35,12 @@ pub fn series_by_selectors(
         return Ok(Vec::new());
     }
 
-    with_timeseries_postings(ctx, |postings| {
-        let series_refs = postings.postings_for_selectors(selectors)?;
-        collect_series_from_postings(ctx, postings, series_refs.iter(), range)
-    })
+    let db = get_current_db(ctx);
+    let index = get_db_index(db);
+    let postings = index.get_postings();
+
+    let series_refs = postings.postings_for_selectors(selectors)?;
+    collect_series_from_postings(ctx, &postings, series_refs.iter(), range)
 }
 
 pub fn series_keys_by_selectors(
@@ -49,10 +52,12 @@ pub fn series_keys_by_selectors(
         return Ok(Vec::new());
     }
 
-    with_timeseries_postings(ctx, |postings| {
-        let series_refs = postings.postings_for_selectors(selectors)?;
-        collect_series_keys(ctx, postings, series_refs.iter(), range)
-    })
+    let db = get_current_db(ctx);
+    let index = get_db_index(db);
+    let postings = index.get_postings();
+
+    let series_refs = postings.postings_for_selectors(selectors)?;
+    collect_series_keys(ctx, &postings, series_refs.iter(), range)
 }
 
 fn collect_series_keys(
