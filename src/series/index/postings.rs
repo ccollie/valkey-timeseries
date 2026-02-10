@@ -14,6 +14,7 @@ use croaring::Bitmap64;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -219,6 +220,37 @@ impl Postings {
         if !self.stale_ids.is_empty() {
             postings.andnot_inplace(&self.stale_ids);
         }
+    }
+
+    pub fn get_label_names(&self) -> BTreeSet<String> {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for (k, map) in self.label_index.iter() {
+            if let Some((key, _)) = k.split()
+                && !map.is_empty()
+                && key != ALL_POSTINGS_KEY_NAME
+            {
+                if names.contains(key) {
+                    continue;
+                }
+                names.insert(key.to_string());
+            }
+        }
+        names
+    }
+
+    pub fn get_label_values(&self, label_name: &str) -> Vec<String> {
+        let prefix = KeyBuffer::for_prefix(label_name);
+        let mut values = Vec::with_capacity(8);
+        for (k, map) in self.label_index.prefix(prefix.as_bytes()) {
+            if !map.is_empty()
+                && let Some((key, value)) = k.split()
+                && !value.is_empty()
+                && key != ALL_POSTINGS_KEY_NAME
+            {
+                values.push(value.to_string());
+            }
+        }
+        values
     }
 
     pub fn postings_for_all_label_values(&self, label_name: &str) -> PostingsBitmap {

@@ -1,4 +1,5 @@
 use ahash::AHashMap;
+use std::collections::BTreeSet;
 use std::collections::hash_map::Entry;
 use std::sync::{RwLock, RwLockReadGuard};
 
@@ -165,6 +166,16 @@ impl TimeSeriesIndex {
             let res = postings.into_owned();
             Ok(res)
         })
+    }
+
+    pub fn get_label_names(&self) -> BTreeSet<String> {
+        let inner = self.inner.read().unwrap();
+        inner.get_label_names()
+    }
+
+    pub fn get_label_values(&self, label_name: &str) -> Vec<String> {
+        let inner = self.inner.read().unwrap();
+        inner.get_label_values(label_name)
     }
 
     /// Returns the series keys that match the given selectors.
