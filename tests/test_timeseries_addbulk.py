@@ -1,5 +1,4 @@
 import pytest
-from valkey import ResponseError
 
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
