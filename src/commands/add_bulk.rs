@@ -1,4 +1,5 @@
 use crate::commands::parse_series_options;
+use crate::common::Sample;
 use crate::series::{
     IngestedSamples, TimeSeries, bulk_insert_samples, create_and_store_series, get_timeseries_mut,
 };
@@ -22,43 +23,45 @@ pub fn add_bulk(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let key = args[1].clone();
     // I don't like the copying here, but we need a mutable buffer
-    let buf = {
+    let samples = {
         let data = args[2].as_slice();
-        data.to_vec()
+        let mut buf = data.to_vec();
+        let sample_data = IngestedSamples::from_json_lines(&mut buf)?;
+        sample_data.samples
     };
 
     let options = parse_series_options(args, 4, &[])?;
 
     if let Some(mut guard) = get_timeseries_mut(ctx, &key, false, Some(AclPermissions::UPDATE))? {
-        return process_series(ctx, &mut guard, buf);
+        return process_series(ctx, &mut guard, samples);
     }
 
     let mut series = create_and_store_series(ctx, &key, options, true, true)?;
-    process_series(ctx, &mut series, buf)
+    process_series(ctx, &mut series, samples)
 }
 
 #[inline]
-fn process_series(ctx: &Context, series: &mut TimeSeries, buf: Vec<u8>) -> ValkeyResult {
-    let val = handle_ingest(ctx, series, buf);
-    ctx.replicate_verbatim();
-    val
+fn process_series(ctx: &Context, series: &mut TimeSeries, samples: Vec<Sample>) -> ValkeyResult {
+    match handle_ingest(ctx, series, samples) {
+        Ok(val) => {
+            ctx.replicate_verbatim();
+            Ok(val)
+        }
+        Err(err) => Err(err),
+    }
 }
 
-fn handle_ingest(ctx: &Context, series: &mut TimeSeries, buf: Vec<u8>) -> ValkeyResult {
-    let mut buf = buf;
-
-    let sample_data = IngestedSamples::from_json_lines(&mut buf)?;
-
-    let samples = &sample_data.samples;
+fn handle_ingest(ctx: &Context, series: &mut TimeSeries, samples: Vec<Sample>) -> ValkeyResult {
+    let sample_count = samples.len();
     let duplicate_policy = series.sample_duplicates.resolve_policy(None);
 
-    let results = bulk_insert_samples(ctx, series, samples, Some(duplicate_policy));
+    let results = bulk_insert_samples(ctx, series, &samples, Some(duplicate_policy));
 
     let success_count = results.iter().filter(|res| res.is_ok()).count();
 
     let result = vec![
         ValkeyValue::Integer(success_count as i64),
-        ValkeyValue::Integer(sample_data.samples.len() as i64),
+        ValkeyValue::Integer(sample_count as i64),
     ];
 
     Ok(ValkeyValue::Array(result))
