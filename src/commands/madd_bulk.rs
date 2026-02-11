@@ -3,8 +3,8 @@ use crate::error_consts;
 use crate::series::acl::check_key_permissions;
 use crate::series::{IngestedSamples, bulk_insert_samples, get_timeseries_mut};
 use valkey_module::{
-    AclPermissions, Context, NotifyEvent, ThreadSafeContext, ValkeyError, ValkeyResult,
-    ValkeyString, ValkeyValue,
+    AclPermissions, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
+    ValkeyValue,
 };
 
 /// TS.MADDBULK key payload [key payload ...]
