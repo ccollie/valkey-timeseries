@@ -28,12 +28,12 @@ pub fn add_bulk(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         data.to_vec()
     };
 
+    let options = parse_series_options(args, 4, &[])?;
+
     if let Some(mut guard) = get_timeseries_mut(ctx, &key, false, Some(AclPermissions::UPDATE))? {
         // args.done()?;
         return handle_ingest(ctx, &mut guard, buf);
     }
-
-    let options = parse_series_options(args, 4, &[])?;
 
     let mut series = create_and_store_series(ctx, &key, options, true, true)?;
 
