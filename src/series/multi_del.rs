@@ -12,6 +12,7 @@ use croaring::bitmap64::Bitmap64Iterator;
 use orx_parallel::ParIter;
 use orx_parallel::ParallelizableCollectionMut;
 use smallvec::SmallVec;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
@@ -147,58 +148,63 @@ fn fetch_series_batch<'a>(
             .is_ok()
     };
 
-    with_timeseries_postings(ctx, |postings| {
-        let mut stale_ids: SmallVec<SeriesRef, 8> = SmallVec::new();
-        let mut result: Vec<SeriesGuardMut<'a>> = Vec::with_capacity(buf_size);
-        let mut keys: Vec<ValkeyString> = Vec::with_capacity(buf_size);
+    let index = get_timeseries_index(ctx);
+    let postings_guard = index.get_postings();
 
-        // Read ids in chunks until we gather `buf_size` valid series or cursor is exhausted.
-        for id in cursor.by_ref() {
-            let Some(k) = postings.get_key_by_id(id) else {
+    let mut stale_ids: SmallVec<SeriesRef, 8> = SmallVec::new();
+    let mut result: Vec<SeriesGuardMut<'a>> = Vec::with_capacity(buf_size);
+    let mut keys: Vec<ValkeyString> = Vec::with_capacity(buf_size);
+
+    let postings = postings_guard.deref();
+    // Read ids in chunks until we gather `buf_size` valid series or cursor is exhausted.
+    for id in cursor.by_ref() {
+        let Some(k) = postings.get_key_by_id(id) else {
+            stale_ids.push(id);
+            continue;
+        };
+
+        let key = ctx.create_string(k.as_bytes());
+
+        if is_user_client
+            && !has_all_keys_permission
+            && ctx
+                .acl_check_key_permission(&user, &key, &AclPermissions::DELETE)
+                .is_err()
+        {
+            continue;
+        }
+
+        match get_timeseries(ctx, &key) {
+            Err(_) => {
                 stale_ids.push(id);
                 continue;
-            };
-
-            let key = ctx.create_string(k.as_bytes());
-
-            if is_user_client
-                && !has_all_keys_permission
-                && ctx
-                    .acl_check_key_permission(&user, &key, &AclPermissions::DELETE)
-                    .is_err()
-            {
+            }
+            Ok(None) => {
+                stale_ids.push(id);
                 continue;
             }
-
-            match get_timeseries(ctx, &key) {
-                Err(_) => {
-                    stale_ids.push(id);
-                    continue;
-                }
-                Ok(None) => {
-                    stale_ids.push(id);
-                    continue;
-                }
-                Ok(Some(series)) => {
-                    result.push(series);
-                    keys.push(key);
-                }
-            }
-
-            if result.len() >= buf_size {
-                break;
+            Ok(Some(series)) => {
+                result.push(series);
+                keys.push(key);
             }
         }
 
-        if !stale_ids.is_empty() {
-            let index = get_timeseries_index(ctx);
-            for id in stale_ids {
-                index.mark_id_as_stale(id);
-            }
+        if result.len() >= buf_size {
+            break;
         }
+    }
 
-        (result, keys)
-    })
+    drop(postings_guard);
+
+    if !stale_ids.is_empty() {
+        let mut postings_guard = index.get_postings_mut();
+        let postings = postings_guard.deref_mut();
+        for id in stale_ids {
+            postings.mark_id_as_stale(id);
+        }
+    }
+
+    (result, keys)
 }
 
 fn get_timeseries<'a>(

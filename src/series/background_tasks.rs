@@ -290,7 +290,7 @@ fn fetch_series_batch(
     start_id: SeriesRef,
     pred: fn(&TimeSeries) -> bool,
 ) -> Vec<SeriesGuardMut<'_>> {
-    with_timeseries_postings(ctx, |postings| {
+    let (result, stale_ids) = with_timeseries_postings(ctx, |postings| {
         let all_postings = postings.all_postings();
         let mut cursor = all_postings.cursor();
         cursor.reset_at_or_after(start_id);
@@ -298,7 +298,7 @@ fn fetch_series_batch(
         let mut buf = [0_u64; SERIES_TRIM_BATCH_SIZE];
         let n = cursor.read_many(&mut buf);
         if n == 0 {
-            return vec![];
+            return (vec![], vec![]);
         }
 
         let mut stale_ids = Vec::new();
@@ -320,15 +320,17 @@ fn fetch_series_batch(
             }
         }
 
-        if !stale_ids.is_empty() {
-            let index = get_timeseries_index(ctx);
-            for id in stale_ids {
-                index.mark_id_as_stale(id)
-            }
-        }
+        (result, stale_ids)
+    });
 
-        result
-    })
+    if !stale_ids.is_empty() {
+        let index = get_timeseries_index(ctx);
+        for id in stale_ids {
+            index.mark_id_as_stale(id)
+        }
+    }
+
+    result
 }
 
 fn remove_stale_series_internal(db: i32) {
