@@ -773,8 +773,8 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
         self.setup_data()
 
         reducers = [
-            "abs_diff", "and", "avg", "div", "eq", "gt", "gte", "lt", "lte", "sum", "max", "min",
-            "ne", "or", "mul", "mod", "pow", "sgn_diff", "xor"
+            "abs_diff", "avg", "cmp", "div", "eq", "gt", "gte", "lt", "lte", "sum", "max", "min",
+            "ne", "mul", "mod", "pow", "sgn_diff", "pct_change", "coalesce"
         ]
 
         for reducer in reducers:

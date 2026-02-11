@@ -192,12 +192,13 @@ impl TimeSeriesIndex {
         acl_permissions: Option<AclPermissions>,
     ) -> ValkeyResult<Vec<ValkeyString>> {
         let mut keys: Vec<ValkeyString> = Vec::new();
+        let mut missing_keys: Vec<SeriesRef> = Vec::new();
 
         // get keys from ids
         self.with_postings(&mut keys, |postings, keys| {
             let ids = postings.postings_for_selectors(filters)?;
 
-            let expected_count = ids.cardinality() as usize;
+            let mut expected_count = ids.cardinality() as usize;
             if expected_count == 0 {
                 return Ok(());
             }
@@ -231,9 +232,22 @@ impl TimeSeriesIndex {
                     }
                     None => {
                         // this should not happen, but in case it does, we log an error and continue
-                        ctx.log_warning("Index consistency: some keys are missing from the index.");
-                        // todo: fix here by removing the stale id from the index
+                        missing_keys.push(series_ref);
                     }
+                }
+            }
+
+            expected_count -= missing_keys.len();
+            if !missing_keys.is_empty() {
+                let msg = format!(
+                    "Index consistency: {} keys are missing from the index.",
+                    missing_keys.len()
+                );
+                ctx.log_warning(&msg);
+
+                let mut postings = self.inner.write().unwrap();
+                for missing_id in missing_keys {
+                    postings.mark_id_as_stale(missing_id);
                 }
             }
 

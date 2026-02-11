@@ -1,7 +1,6 @@
 use crate::commands::parse_series_options;
 use crate::series::{
-    DuplicatePolicy, IngestedSamples, TimeSeries, bulk_insert_samples, create_and_store_series,
-    get_timeseries_mut,
+    IngestedSamples, TimeSeries, bulk_insert_samples, create_and_store_series, get_timeseries_mut,
 };
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -48,9 +47,7 @@ fn handle_ingest(ctx: &Context, series: &mut TimeSeries, buf: Vec<u8>) -> Valkey
     let sample_data = IngestedSamples::from_json_lines(&mut buf)?;
 
     let samples = &sample_data.samples;
-    let duplicate_policy = series
-        .sample_duplicates
-        .resolve_policy(Some(DuplicatePolicy::Block));
+    let duplicate_policy = series.sample_duplicates.resolve_policy(None);
 
     let results = bulk_insert_samples(ctx, series, samples, Some(duplicate_policy));
 
