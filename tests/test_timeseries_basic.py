@@ -39,7 +39,7 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
         client = self.server.get_new_client()
         assert client.execute_command('TS.ADD series 2000 45.0') == 2000
         type_result = client.execute_command('TYPE series')
-        assert type_result == b"vktseries"
+        assert type_result == b"TSDB-TYPE"
         # Validate the name of the Module data type.
         encoding_result = client.execute_command('OBJECT ENCODING series')
         assert encoding_result == b"raw"
