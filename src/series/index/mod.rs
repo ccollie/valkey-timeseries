@@ -60,7 +60,7 @@ pub fn reset_timeseries_id(id: u64) {
     TIMESERIES_ID.store(id, std::sync::atomic::Ordering::SeqCst);
 }
 
-pub fn get_db_index<'a>(db: i32) -> TimeSeriesIndexGuard<'a> {
+pub fn get_db_index(db: i32) -> TimeSeriesIndexGuard<'static> {
     let guard = TIMESERIES_INDEX.guard();
     TimeSeriesIndexGuard::new(guard, db)
 }
