@@ -37,7 +37,7 @@ class TestTimeSeriesMdel(ValkeyTimeSeriesTestCaseBase):
 
         # Delete all CPU metrics
         deleted_count = self.client.execute_command('TS.MDEL', 'FILTER', 'name=cpu')
-        assert deleted_count == b'4'
+        assert deleted_count == 4
 
         # Verify deletion by attempting to get the deleted series
         with pytest.raises(ResponseError):
@@ -67,7 +67,7 @@ class TestTimeSeriesMdel(ValkeyTimeSeriesTestCaseBase):
         # Delete CPU metrics in the time range 50 to 150. Since each series has only one sample at timestamp 100,
         # we should expect that 4 samples are deleted.
         deleted_count = self.client.execute_command('TS.MDEL', 50, 150, 'FILTER', 'name=cpu')
-        assert deleted_count == b'4'
+        assert deleted_count == 4
 
     def test_compaction_rule_updates_after_range_delete(self):
         # Source series with SUM compaction into dest series.
@@ -94,7 +94,7 @@ class TestTimeSeriesMdel(ValkeyTimeSeriesTestCaseBase):
 
         # Delete the source series via TS.MDEL using a time range and label filter.
         deleted_count = self.client.execute_command('TS.MDEL', 1, 40, 'FILTER', 'name=cpu', 'type=usage', 'node=node1')
-        assert deleted_count == b'40'
+        assert deleted_count == 40
 
         data = self.client.execute_command('TS.RANGE', 'dst', 1, 40)
         assert len(data) == 0

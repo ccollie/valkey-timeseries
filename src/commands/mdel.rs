@@ -31,7 +31,7 @@ pub fn mdel(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     ctx.replicate_verbatim();
 
-    Ok(ValkeyValue::BigNumber(total_deleted.to_string()))
+    Ok(ValkeyValue::from(total_deleted))
 }
 
 fn parse_mdel_args(
