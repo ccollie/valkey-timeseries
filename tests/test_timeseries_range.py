@@ -1,5 +1,4 @@
 import math
-from math import nan
 
 import pytest
 from valkey import ResponseError
