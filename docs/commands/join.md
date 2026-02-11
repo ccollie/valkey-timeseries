@@ -148,8 +148,9 @@ performs an operation on the value in each returned row.
   | `operator`   | Description                                                             |
   |--------------|-------------------------------------------------------------------------| 
   | `abs_diff`   | abs(`left` - `right`)                                                   |
-  | `and`        | Returns `left` if either value is NAN, `right` otherwise                |
   | `avg`        | Arithmetic mean of both mut values                                      |
+  | `cmp`        | Returns 1 if `left` > `right`, -1 if `left` < `right`, 0 otherwise      |
+  | `coalesce`   | return the first non-NaN item. If both are NaN, it returns NaN.         |
   | `div`        | `left` / `right`                                                        |
   | `eq`         | Returns 1 if `left` == `right`, 0 otherwise                             |
   | `gt`         | Returns 1 if `left` > `right`, otherwise returns 0                      |
@@ -165,8 +166,6 @@ performs an operation on the value in each returned row.
   | `sgn_diff`   | sgn(`left` - `right`)                                                   |
   | `sub`        | `left` - `right`                                                        |
   | `sum`        | `left` + `right`                                                        |
-  | `or`         | return the first non-NaN item. If both are NaN, it returns NaN.         |
-  | `xor`        | Returns the first non-NaN if `left` != `right`, NaN otherwise           |
 
 </details>
 
