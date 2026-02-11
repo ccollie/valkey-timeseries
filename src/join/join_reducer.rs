@@ -1,7 +1,7 @@
 use crate::common::binop::{
     BinopFunc, abs_diff, avg, cmp, compare_eq, compare_gt, compare_gte, compare_lt, compare_lte,
-    compare_neq, max, min, op_and, op_div, op_minus, op_mod, op_mul, op_or, op_plus, op_pow,
-    op_xor, percent_change, sgn_diff,
+    compare_neq, max, min, op_coalesce, op_div, op_minus, op_mod, op_mul, op_plus, op_pow,
+    percent_change, sgn_diff,
 };
 use std::fmt;
 use std::str::FromStr;
@@ -10,9 +10,9 @@ use valkey_module::ValkeyError;
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum JoinReducer {
     AbsDiff,
-    And,
     Avg,
     Cmp,
+    Coalesce,
     Div,
     #[default]
     Eql,
@@ -27,11 +27,9 @@ pub enum JoinReducer {
     Max,
     Min,
     NotEq,
-    Or,
     PctChange,
     SgnDiff,
     Sum,
-    Xor,
 }
 
 fn join_reducer_get(key: &str) -> Option<JoinReducer> {
@@ -39,6 +37,7 @@ fn join_reducer_get(key: &str) -> Option<JoinReducer> {
         key.as_bytes(),
         "abs_diff" => JoinReducer::AbsDiff,
         "cmp" => JoinReducer::Cmp,
+        "coalesce" => JoinReducer::Coalesce,
         "eq" => JoinReducer::Eql,
         "gt" => JoinReducer::Gt,
         "gte" => JoinReducer::Gte,
@@ -53,11 +52,6 @@ fn join_reducer_get(key: &str) -> Option<JoinReducer> {
         "sgn_diff" => JoinReducer::SgnDiff,
         "pct_change" => JoinReducer::PctChange,
 
-        // logic set ops
-        "and" => JoinReducer::And,
-        "or" => JoinReducer::Or,
-        "xor" => JoinReducer::Xor,
-
         "sum" => JoinReducer::Sum,
         "avg" => JoinReducer::Avg,
         "max" => JoinReducer::Max,
@@ -71,8 +65,8 @@ impl JoinReducer {
         match self {
             AbsDiff => "abs_diff",
             Sum => "sum",
-            And => "and",
             Cmp => "cmp",
+            Coalesce => "coalesce",
             Div => "/",
             Eql => "==",
             Gt => ">",
@@ -82,7 +76,6 @@ impl JoinReducer {
             Lt => "<",
             Lte => "<=",
             NotEq => "!=",
-            Or => "or",
             Pow => "^",
             SgnDiff => "sgn_diff",
             PctChange => "pct_change",
@@ -90,7 +83,6 @@ impl JoinReducer {
             Avg => "avg",
             Max => "max",
             Min => "min",
-            Xor => "xor",
         }
     }
 
@@ -102,8 +94,8 @@ impl JoinReducer {
             Avg => avg,
             AbsDiff => abs_diff,
             Sum => op_plus,
-            And => op_and,
             Cmp => cmp,
+            Coalesce => op_coalesce,
             Div => op_div,
             Eql => compare_eq,
             Mod => op_mod,
@@ -115,10 +107,8 @@ impl JoinReducer {
             Lt => compare_lt,
             Lte => compare_lte,
             NotEq => compare_neq,
-            Or => op_or,
             SgnDiff => sgn_diff,
             PctChange => percent_change,
-            Xor => op_xor,
         }
     }
 }

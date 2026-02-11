@@ -1,5 +1,4 @@
 import pytest
-import math
 from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
@@ -278,43 +277,15 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
                 expected_idx = (right_ts - (self.now - 200)) // 1000
                 assert float(right_val) == expected_idx * 100
 
-    def test_reducer_and_comprehensive(self):
-        """Comprehensive test for AND reducer across different join types and value scenarios."""
-        self.setup_data()
-
-        # Test 1: INNER join - both operands present, returns left value
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now + 5000, self.now + 9000,
-            "INNER", "REDUCE", "and"
-        )
-
-        assert len(result) == 5
-        for ts, value in result:
-            idx = (ts - self.now) // 1000
-            expected_left = idx * 10
-            assert float(value) == expected_left
-
-        # Test 2: LEFT join on left-only timestamps - right missing produces NaN
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 4000,
-            "LEFT", "REDUCE", "and"
-        )
-
-        assert len(result) == 5
-        for ts, value in result:
-            assert math.isnan(float(value))
-
-    def test_reducer_or(self):
-        """Verify OR reducer returns the right operand when only right exists."""
+    def test_reducer_coalesce(self):
+        """Verify coalesce reducer returns the right operand when only right exists."""
         self.setup_data()
 
         # Right-only timestamps are indexes 10-14 (self.now+10000 .. self.now+14000)
         result = self.client.execute_command(
             "TS.JOIN", self.ts1, self.ts2,
             self.now + 10000, self.now + 14000,
-            "RIGHT", "REDUCE", "or"
+            "RIGHT", "REDUCE", "coalesce"
         )
 
         assert len(result) == 5
@@ -323,25 +294,6 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             idx = (ts - self.now) // 1000
             expected_right = idx * 5
             assert float(value) == expected_right
-
-    def test_reducer_xor(self):
-        """Verify XOR reducer returns the non-NaN operand when one side is missing."""
-        self.setup_data()
-
-        # Left-only timestamps are indexes 0-4 (self.now .. self.now+4000)
-        result = self.client.execute_command(
-            "TS.JOIN", self.ts1, self.ts2,
-            self.now, self.now + 4000,
-            "LEFT", "REDUCE", "xor"
-        )
-
-        # Expect one result per left timestamp in range
-        assert len(result) == 5
-
-        for ts, value in result:
-            idx = (ts - self.now) // 1000
-            expected_left = idx * 10
-            assert float(value) == expected_left
 
     def test_reducer_cmp(self):
         """Test CMP reducer which returns -1, 0, or 1 based on comparison."""
