@@ -194,91 +194,89 @@ impl TimeSeriesIndex {
         let mut keys: Vec<ValkeyString> = Vec::new();
         let mut missing_keys: Vec<SeriesRef> = Vec::new();
 
+        let postings = self.inner.read().unwrap();
         // get keys from ids
-        self.with_postings(&mut keys, |postings, keys| {
-            let ids = postings.postings_for_selectors(filters)?;
+        let ids = postings.postings_for_selectors(filters)?;
 
-            let mut expected_count = ids.cardinality() as usize;
-            if expected_count == 0 {
-                return Ok(());
-            }
+        let mut expected_count = ids.cardinality() as usize;
+        if expected_count == 0 {
+            return Ok(Vec::new());
+        }
 
-            keys.reserve(expected_count);
+        keys.reserve(expected_count);
 
-            let current_user = ctx.get_current_user();
-            let is_user_client = is_real_user_client(ctx);
+        let current_user = ctx.get_current_user();
+        let is_user_client = is_real_user_client(ctx);
 
-            let cloned_perms = acl_permissions.as_ref().map(clone_permissions);
-            let can_access_all_keys = has_all_keys_permissions(ctx, &current_user, acl_permissions);
+        let cloned_perms = acl_permissions.as_ref().map(clone_permissions);
+        let can_access_all_keys = has_all_keys_permissions(ctx, &current_user, acl_permissions);
 
-            for series_ref in ids.iter() {
-                let key = postings.get_key_by_id(series_ref);
-                match key {
-                    Some(key) => {
-                        let real_key = ctx.create_string(key.as_ref());
-                        if is_user_client
-                            && !can_access_all_keys
-                            && let Some(perms) = &cloned_perms
+        for series_ref in ids.iter() {
+            let key = postings.get_key_by_id(series_ref);
+            match key {
+                Some(key) => {
+                    let real_key = ctx.create_string(key.as_ref());
+                    if is_user_client
+                        && !can_access_all_keys
+                        && let Some(perms) = &cloned_perms
+                    {
+                        // check if the user has permission for this key
+                        if ctx
+                            .acl_check_key_permission(&current_user, &real_key, perms)
+                            .is_err()
                         {
-                            // check if the user has permission for this key
-                            if ctx
-                                .acl_check_key_permission(&current_user, &real_key, perms)
-                                .is_err()
-                            {
-                                break;
-                            }
+                            break;
                         }
-                        keys.push(real_key);
                     }
-                    None => {
-                        // this should not happen, but in case it does, we log an error and continue
-                        missing_keys.push(series_ref);
-                    }
+                    keys.push(real_key);
+                }
+                None => {
+                    // this should not happen, but in case it does, we log an error and continue
+                    missing_keys.push(series_ref);
                 }
             }
+        }
 
-            expected_count -= missing_keys.len();
-            if !missing_keys.is_empty() {
-                let msg = format!(
-                    "Index consistency: {} keys are missing from the index.",
-                    missing_keys.len()
-                );
-                ctx.log_warning(&msg);
+        expected_count -= missing_keys.len();
 
-                let mut postings = self.inner.write().unwrap();
-                for missing_id in missing_keys {
-                    postings.mark_id_as_stale(missing_id);
-                }
-            }
-
-            if keys.len() != expected_count {
-                // User does not have permission to read some keys, or some keys are missing
-                // Customize the error message accordingly
-                match cloned_perms {
-                    Some(perms) => {
-                        if perms.contains(AclPermissions::DELETE) {
-                            return Err(ValkeyError::Str(
-                                error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
-                            ));
-                        }
-                        if perms.contains(AclPermissions::UPDATE) {
-                            return Err(ValkeyError::Str(
-                                error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
-                            ));
-                        }
+        if keys.len() != expected_count {
+            // User does not have permission to read some keys, or some keys are missing
+            // Customize the error message accordingly
+            match cloned_perms {
+                Some(perms) => {
+                    if perms.contains(AclPermissions::DELETE) {
                         return Err(ValkeyError::Str(
-                            error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
+                            error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
                         ));
                     }
-                    None => {
-                        // todo: fix the problem here, for now we just log a warning
-                        ctx.log_warning("Index consistency: some keys are missing from the index.");
+                    if perms.contains(AclPermissions::UPDATE) {
+                        return Err(ValkeyError::Str(
+                            error_consts::ALL_KEYS_WRITE_PERMISSION_ERROR,
+                        ));
                     }
+                    return Err(ValkeyError::Str(
+                        error_consts::ALL_KEYS_READ_PERMISSION_ERROR,
+                    ));
+                }
+                None => {
+                    // todo: fix the problem here, for now we just log a warning
+                    ctx.log_warning("Index consistency: some keys are missing from the index.");
                 }
             }
+        }
 
-            Ok(())
-        })?;
+        if !missing_keys.is_empty() {
+            let msg = format!(
+                "Index consistency: {} keys are missing from the index.",
+                missing_keys.len()
+            );
+            ctx.log_warning(&msg);
+
+            let mut postings = self.inner.write().unwrap();
+            for missing_id in missing_keys {
+                postings.mark_id_as_stale(missing_id);
+            }
+        }
 
         Ok(keys)
     }
