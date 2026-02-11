@@ -92,31 +92,3 @@ fn parse_args(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<Vec<Ingest
 
     Ok(results)
 }
-
-fn handle_replication(ctx: &Context, inputs: IngestedSamples) {
-    // construct payload for replication
-    let timestamps = inputs
-        .samples
-        .iter()
-        .map(|s| s.timestamp.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let values = inputs
-        .samples
-        .iter()
-        .map(|s| s.value.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-
-    let payload = format!("{{timestamps:[{timestamps}], values:[{values}]}}");
-    let key = ctx.create_string(inputs.key.as_bytes());
-    let payload_arg = ctx.create_string(payload.as_bytes());
-    drop(payload);
-
-    let replication_args = vec![&key, &payload_arg];
-
-    if !replication_args.is_empty() {
-        ctx.replicate("TS.MADDBULK", replication_args.as_slice());
-        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", replication_args[0]);
-    }
-}
