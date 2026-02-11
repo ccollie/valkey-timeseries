@@ -37,15 +37,6 @@ pub(crate) const fn op_and(left: f64, right: f64) -> f64 {
     }
 }
 
-// return the first non-NaN item. If both left and right are NaN, it returns NaN.
-#[inline]
-pub(crate) const fn op_or(left: f64, right: f64) -> f64 {
-    if !left.is_nan() {
-        return left;
-    }
-    right
-}
-
 #[inline]
 pub(crate) const fn op_coalesce(left: f64, right: f64) -> f64 {
     if !left.is_nan() {
@@ -69,18 +60,12 @@ pub(crate) const fn op_lt(left: f64, right: f64) -> bool {
 /// Gte returns true if left >= right
 #[inline]
 pub(crate) const fn op_gte(left: f64, right: f64) -> bool {
-    if left.is_nan() {
-        return right.is_nan();
-    }
     left >= right
 }
 
 /// Lte returns true if left <= right
 #[inline]
 pub(crate) const fn op_lte(left: f64, right: f64) -> bool {
-    if left.is_nan() {
-        return right.is_nan();
-    }
     left <= right
 }
 
