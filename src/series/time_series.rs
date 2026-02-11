@@ -374,7 +374,7 @@ impl TimeSeries {
                 })
                 .collect::<Vec<_>>()
         } else {
-            let mut new_chunks = Vec::with_capacity(usize::max(2, self.chunks.len() / 6));
+            let mut new_chunks = Vec::with_capacity(std::cmp::max(2, self.chunks.len() / 6));
             for c in self.chunks.iter_mut().filter(|c| c.is_full()) {
                 if let Ok(split_chunk) = c.split() {
                     new_chunks.push(split_chunk);
