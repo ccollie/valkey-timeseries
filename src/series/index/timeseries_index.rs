@@ -14,7 +14,7 @@ use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
 use get_size2::GetSize;
 use std::mem::size_of;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// A read-only guard for accessing Postings data.
@@ -35,6 +35,30 @@ impl<'a> Deref for PostingsReadGuard<'a> {
 
     fn deref(&self) -> &Self::Target {
         &self.guard
+    }
+}
+
+pub struct PostingsWriteGuard<'a> {
+    guard: std::sync::RwLockWriteGuard<'a, Postings>,
+}
+
+impl<'a> PostingsWriteGuard<'a> {
+    fn new(guard: std::sync::RwLockWriteGuard<'a, Postings>) -> Self {
+        Self { guard }
+    }
+}
+
+impl<'a> Deref for PostingsWriteGuard<'a> {
+    type Target = Postings;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl<'a> DerefMut for PostingsWriteGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
     }
 }
 
@@ -103,6 +127,11 @@ impl TimeSeriesIndex {
     pub fn get_postings(&'_ self) -> PostingsReadGuard<'_> {
         let guard = self.inner.read().unwrap();
         PostingsReadGuard::new(guard)
+    }
+
+    pub fn get_postings_mut(&'_ self) -> PostingsWriteGuard<'_> {
+        let guard = self.inner.write().unwrap();
+        PostingsWriteGuard::new(guard)
     }
 
     /// Return all series ids corresponding to the given label value pairs
@@ -194,7 +223,7 @@ impl TimeSeriesIndex {
         let mut keys: Vec<ValkeyString> = Vec::new();
         let mut missing_keys: Vec<SeriesRef> = Vec::new();
 
-        let postings = self.inner.read().unwrap();
+        let postings = self.inner.read()?;
         // get keys from ids
         let ids = postings.postings_for_selectors(filters)?;
 
@@ -272,7 +301,7 @@ impl TimeSeriesIndex {
             );
             ctx.log_warning(&msg);
 
-            let mut postings = self.inner.write().unwrap();
+            let mut postings = self.inner.write()?;
             for missing_id in missing_keys {
                 postings.mark_id_as_stale(missing_id);
             }
