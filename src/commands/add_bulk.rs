@@ -30,13 +30,16 @@ pub fn add_bulk(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_series_options(args, 4, &[])?;
 
     if let Some(mut guard) = get_timeseries_mut(ctx, &key, false, Some(AclPermissions::UPDATE))? {
-        // args.done()?;
-        return handle_ingest(ctx, &mut guard, buf);
+        return process_series(ctx, &mut guard, buf);
     }
 
     let mut series = create_and_store_series(ctx, &key, options, true, true)?;
+    process_series(ctx, &mut series, buf)
+}
 
-    let val = handle_ingest(ctx, &mut series, buf);
+#[inline]
+fn process_series(ctx: &Context, series: &mut TimeSeries, buf: Vec<u8>) -> ValkeyResult {
+    let val = handle_ingest(ctx, series, buf);
     ctx.replicate_verbatim();
     val
 }
