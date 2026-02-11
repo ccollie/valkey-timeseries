@@ -1,7 +1,7 @@
 use crate::aggregators::{AggregationHandler, Aggregator};
 use crate::common::Sample;
 
-/// Iterator that groups samples by timestamp and emits max value per timestamp
+/// Iterator that groups samples by timestamp
 pub struct SampleReducer<I>
 where
     I: Iterator<Item = Sample>,
