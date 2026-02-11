@@ -356,7 +356,6 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             "INNER", "REDUCE", "cmp"
         )
 
-        print("CMP less-than result:", result)
         assert len(result) == 5
         for ts, value in result:
             # left < right, so cmp should return -1.0
@@ -810,8 +809,6 @@ class TestTSJoin(ValkeyTimeSeriesTestCaseBase):
             base_time, base_time + 1000,
             "ASOF", "NEAREST", "1000"
         )
-
-        print("ASOF with empty right series result:", result)
 
         assert len(result) == 0
 
