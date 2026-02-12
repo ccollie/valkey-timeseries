@@ -537,11 +537,18 @@ pub fn parse_aggregation_options(
         ..Default::default()
     };
 
+    // check for CONDITION
+    if let Some(token) = peek_token(args)
+        && token == CommandArgToken::Condition
+    {
+        args.next(); // consume CONDITION
+        value_filter = Some(parse_aggregator_value_filter(args)?);
+    }
+
     let valid_tokens = [
         CommandArgToken::Align,
         CommandArgToken::Empty,
         CommandArgToken::BucketTimestamp,
-        CommandArgToken::Condition,
     ];
 
     parse_optional_token_block(args, &valid_tokens, 3, |token, args| match token {
@@ -557,10 +564,6 @@ pub fn parse_aggregation_options(
         CommandArgToken::Align => {
             let next = args.next_str()?;
             aggr.alignment = next.try_into()?;
-            Ok(())
-        }
-        CommandArgToken::Condition => {
-            value_filter = Some(parse_aggregator_value_filter(args)?);
             Ok(())
         }
         _ => Ok(()),
