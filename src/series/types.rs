@@ -240,17 +240,11 @@ impl SampleDuplicatePolicy {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum SampleAddResult {
     Ok(Sample),
+    #[default]
     Duplicate,
     Ignored(Timestamp),
     TooOld,
     Error(&'static str),
-    CapacityFull,
-    #[default]
-    InvalidKey,
-    InvalidPermissions,
-    InvalidValue,
-    InvalidTimestamp,
-    NegativeTimestamp,
 }
 
 impl SampleAddResult {
@@ -267,12 +261,6 @@ impl Display for SampleAddResult {
             SampleAddResult::Ignored(ts) => write!(f, "Ignored. Using ts: {ts}"),
             SampleAddResult::TooOld => write!(f, "{}", error_consts::SAMPLE_TOO_OLD),
             SampleAddResult::Error(e) => write!(f, "{e}"),
-            SampleAddResult::CapacityFull => write!(f, "Capacity full"),
-            SampleAddResult::InvalidKey => write!(f, "{}", error_consts::INVALID_TIMESERIES_KEY),
-            SampleAddResult::InvalidPermissions => write!(f, "{}", error_consts::PERMISSION_DENIED),
-            SampleAddResult::InvalidValue => write!(f, "{}", error_consts::INVALID_VALUE),
-            SampleAddResult::InvalidTimestamp => write!(f, "{}", error_consts::INVALID_TIMESTAMP),
-            SampleAddResult::NegativeTimestamp => write!(f, "{}", error_consts::NEGATIVE_TIMESTAMP),
         }
     }
 }
@@ -286,23 +274,7 @@ impl From<SampleAddResult> for ValkeyValue {
                 ValkeyValue::SimpleStringStatic(error_consts::DUPLICATE_SAMPLE)
             }
             SampleAddResult::TooOld => ValkeyValue::StaticError(error_consts::SAMPLE_TOO_OLD),
-            SampleAddResult::InvalidTimestamp => {
-                ValkeyValue::StaticError(error_consts::INVALID_TIMESTAMP)
-            }
-            SampleAddResult::InvalidPermissions => {
-                ValkeyValue::StaticError(error_consts::PERMISSION_DENIED)
-            }
-            SampleAddResult::InvalidKey => {
-                ValkeyValue::StaticError(error_consts::INVALID_TIMESERIES_KEY)
-            }
-            SampleAddResult::InvalidValue => ValkeyValue::StaticError(error_consts::INVALID_VALUE),
-            SampleAddResult::NegativeTimestamp => {
-                ValkeyValue::StaticError(error_consts::NEGATIVE_TIMESTAMP)
-            }
-            SampleAddResult::Error(_) => {
-                ValkeyValue::StaticError(error_consts::ERROR_ADDING_SAMPLE)
-            }
-            SampleAddResult::CapacityFull => ValkeyValue::StaticError(error_consts::CAPACITY_FULL),
+            SampleAddResult::Error(e) => ValkeyValue::StaticError(e),
         }
     }
 }
@@ -314,21 +286,7 @@ impl From<SampleAddResult> for ValkeyResult {
             SampleAddResult::Ignored(ts) => Ok(ValkeyValue::Integer(ts)),
             SampleAddResult::Duplicate => Err(ValkeyError::Str(error_consts::DUPLICATE_SAMPLE)),
             SampleAddResult::TooOld => Err(ValkeyError::Str(error_consts::SAMPLE_TOO_OLD)),
-            SampleAddResult::InvalidTimestamp => {
-                Err(ValkeyError::Str(error_consts::INVALID_TIMESTAMP))
-            }
-            SampleAddResult::InvalidPermissions => {
-                Err(ValkeyError::Str(error_consts::PERMISSION_DENIED))
-            }
-            SampleAddResult::InvalidKey => {
-                Err(ValkeyError::Str(error_consts::INVALID_TIMESERIES_KEY))
-            }
-            SampleAddResult::InvalidValue => Err(ValkeyError::Str(error_consts::INVALID_VALUE)),
-            SampleAddResult::NegativeTimestamp => {
-                Err(ValkeyError::Str(error_consts::NEGATIVE_TIMESTAMP))
-            }
             SampleAddResult::Error(e) => Err(ValkeyError::Str(e)),
-            SampleAddResult::CapacityFull => Err(ValkeyError::Str(error_consts::CAPACITY_FULL)),
         }
     }
 }
