@@ -223,7 +223,11 @@ impl TimeSeriesIndex {
         let mut keys: Vec<ValkeyString> = Vec::new();
         let mut missing_keys: Vec<SeriesRef> = Vec::new();
 
-        let postings = self.inner.read()?;
+        let postings = self
+            .inner
+            .read()
+            .expect("keys_for_selector - TimeSeries lock poisoned");
+
         // get keys from ids
         let ids = postings.postings_for_selectors(filters)?;
 
@@ -301,7 +305,11 @@ impl TimeSeriesIndex {
             );
             ctx.log_warning(&msg);
 
-            let mut postings = self.inner.write()?;
+            let mut postings = self
+                .inner
+                .write()
+                .expect("keys_for_selector - TimeSeries lock poisoned");
+
             for missing_id in missing_keys {
                 postings.mark_id_as_stale(missing_id);
             }
