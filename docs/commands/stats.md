@@ -162,5 +162,3 @@ Useful in production when you want a quick snapshot with minimal overhead.
 
 Roughly proportional to the number of postings entries (label=value pairs).  
 Using a larger `LIMIT` does not change the full scan cost, but increases output and heap operations for top-N tracking.
-
-```
