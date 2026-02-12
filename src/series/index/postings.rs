@@ -620,7 +620,15 @@ impl Postings {
     ) -> ValkeyResult<Cow<'_, PostingsBitmap>> {
         match selectors {
             [] => Ok(Cow::Borrowed(&*EMPTY_BITMAP)),
-            [selector] => self.postings_for_selector(selector),
+            [selector] => {
+                let result = self.postings_for_selector(selector)?;
+                if !self.stale_ids.is_empty() {
+                    let mut result = result.into_owned();
+                    result.andnot_inplace(&self.stale_ids);
+                    return Ok(Cow::Owned(result));
+                }
+                Ok(result)
+            }
             _ => {
                 let first = self.postings_for_selector(&selectors[0])?;
 
