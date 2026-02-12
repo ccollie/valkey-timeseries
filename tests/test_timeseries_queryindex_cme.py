@@ -290,7 +290,7 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         cluster.execute_command('TS.ADD', TS5, 1000, 1)
         cluster.execute_command('TS.ADD', TS6, 1000, 1)
 
-        # Filter by range of status codes using regex
+        # filter by range (inclusive)
         result = client.execute_command('TS.QUERYINDEX', 'FILTER_BY_RANGE', 500, 1500, 'name=cpu')
         assert result == [TS1, TS5, TS6]
 
