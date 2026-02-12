@@ -153,7 +153,6 @@ valkey_module! {
         ["TS.GET", commands::get, "readonly fast", 1, 1, 1, "fast read timeseries"],
         ["TS.MGET", commands::mget, "readonly fast", 0, 0, -1, "fast read timeseries"],
         ["TS.MADD", commands::madd, "write deny-oom", 1, -1, 3, "fast write timeseries"],
-        ["TS.MADDBULK", commands::madd_bulk, "write deny-oom", 1, -1, 2, "write timeseries"],
         ["TS.DEL", commands::del, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.DECRBY", commands::decrby, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.INCRBY", commands::incrby, "write deny-oom", 1, 1, 1, "write timeseries"],
