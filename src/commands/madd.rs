@@ -1,6 +1,7 @@
 use crate::commands::command_args::{parse_timestamp, parse_value_arg};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
+use crate::error_consts;
 use crate::series::{
     PerSeriesSamples, SampleAddResult, SeriesGuardMut, TimeSeriesOptions, create_and_store_series,
     get_timeseries_mut, multi_series_merge_samples,
@@ -71,7 +72,10 @@ fn handle_update(
 ) -> ValkeyResult<Vec<SampleAddResult>> {
     // Start with parse-time results; merge-time results will overwrite only successful parses.
     let mut results: Vec<SampleAddResult> = all_inputs.iter().map(|i| i.res).collect();
-    results.resize(sample_count, SampleAddResult::InvalidValue);
+    results.resize(
+        sample_count,
+        SampleAddResult::Error(error_consts::INVALID_VALUE),
+    );
 
     let mut per_series_samples: Vec<PerSeriesSamples> = Vec::with_capacity(4);
 
@@ -122,73 +126,84 @@ fn parse_args<'a>(
     AHashMap<&'a ValkeyString, SeriesSamples<'a>>,
     Vec<ParsedInput<'a>>,
 )> {
+    let sample_count = args.len() / 3;
+
     let mut input_map: AHashMap<&ValkeyString, SeriesSamples> =
-        AHashMap::with_capacity(args.len() / 3);
-
-    let mut all_inputs: Vec<ParsedInput<'a>> = Vec::with_capacity(args.len() / 3);
-
-    let mut index: usize = 0;
-    let mut arg_index: usize = 0;
+        AHashMap::with_capacity(sample_count);
+    let mut all_inputs: Vec<ParsedInput<'a>> = Vec::with_capacity(sample_count);
 
     let options = TimeSeriesOptions::from_config();
-    while index < args.len() {
-        let key = &args[index];
-        let mut raw_timestamp = &args[index + 1];
-        let raw_value = &args[index + 2];
-        let timestamp_str = raw_timestamp.try_as_str()?;
+
+    for (sample_index, chunk) in args.chunks_exact(3).enumerate() {
+        let key = &chunk[0];
+
+        let raw_timestamp_in = &chunk[1];
+        let raw_value = &chunk[2];
+
+        // Normalize replication timestamp first ("*" becomes the concrete current timestamp)
+        let (raw_timestamp, timestamp_str) = {
+            let s = raw_timestamp_in.try_as_str()?;
+            if s == "*" {
+                (current_ts, "*")
+            } else {
+                (raw_timestamp_in, s)
+            }
+        };
 
         let series_samples = input_map.entry(key).or_default();
 
-        let mut res = if series_samples.samples.is_empty() {
-            match get_timeseries_mut(ctx, key, false, Some(AclPermissions::UPDATE)) {
-                Ok(Some(guard)) => {
-                    series_samples.series = Some(guard);
-                    series_samples.err = SampleAddResult::Ok(Sample::default());
-                    SampleAddResult::Ok(Sample::default())
-                }
-                Ok(None) => {
-                    let guard = create_and_store_series(ctx, key, options.clone(), true, true)?;
-                    series_samples.series = Some(guard);
-                    series_samples.err = SampleAddResult::Ok(Sample::default());
-                    SampleAddResult::Ok(Sample::default())
-                }
-                Err(_) => SampleAddResult::InvalidPermissions,
-            }
-        } else {
-            series_samples.err
-        };
+        // Resolve per-series guard once (first time we see a key); cache series-level error.
+        if series_samples.samples.is_empty() {
+            series_samples.err =
+                match get_timeseries_mut(ctx, key, false, Some(AclPermissions::UPDATE)) {
+                    Ok(Some(guard)) => {
+                        series_samples.series = Some(guard);
+                        SampleAddResult::Ok(Sample::default())
+                    }
+                    Ok(None) => {
+                        let guard = create_and_store_series(ctx, key, options.clone(), true, true)?;
+                        series_samples.series = Some(guard);
+                        SampleAddResult::Ok(Sample::default())
+                    }
+                    Err(ValkeyError::WrongType) => {
+                        SampleAddResult::Error(error_consts::INVALID_TIMESERIES_KEY)
+                    }
+                    Err(ValkeyError::Str(err)) => SampleAddResult::Error(err),
+                    Err(_) => SampleAddResult::Error(error_consts::PERMISSION_DENIED),
+                };
+        }
 
+        // Parse timestamp/value only if the series is usable.
+        let mut res = series_samples.err;
         let (timestamp, value) = if !res.is_ok() {
             (0, 0.0)
         } else {
             let ts = match parse_timestamp(timestamp_str) {
                 Ok(ts) => ts,
                 Err(_) => {
-                    res = SampleAddResult::InvalidTimestamp;
+                    res = SampleAddResult::Error(error_consts::INVALID_TIMESTAMP);
                     0
                 }
             };
-            let value = match parse_value_arg(raw_value) {
+
+            let v = match parse_value_arg(raw_value) {
                 Ok(v) => v,
                 Err(_) => {
-                    res = SampleAddResult::InvalidValue;
+                    res = SampleAddResult::Error(error_consts::INVALID_VALUE);
                     0.0
                 }
             };
-            (ts, value)
+
+            (ts, v)
         };
 
-        if timestamp_str == "*" {
-            raw_timestamp = current_ts;
-        }
-
-        let parsed = ParsedInput {
+        let input = ParsedInput {
             key,
             raw_timestamp,
             raw_value,
             timestamp,
             value,
-            index: arg_index,
+            index: sample_index,
             res,
         };
 
@@ -198,15 +213,13 @@ fn parse_args<'a>(
             raw_value,
             timestamp,
             value,
-            index: arg_index,
+            index: sample_index,
             res,
         };
 
-        series_samples.samples.push(parsed);
+        // Keep both collections in input order (same struct, duplicated storage).
+        series_samples.samples.push(input);
         all_inputs.push(second);
-
-        arg_index += 1;
-        index += 3;
     }
 
     Ok((input_map, all_inputs))
