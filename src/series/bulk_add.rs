@@ -27,7 +27,6 @@ const EARLY_CHUNK_SAMPLE_THRESHOLD: usize = 10;
 
 #[derive(Debug)]
 pub struct IngestedSamples {
-    pub metric_name: String,
     pub key: String,
     pub samples: Vec<Sample>,
 }
@@ -79,7 +78,6 @@ impl IngestedSamples {
         samples.sort_by_key(|s| s.timestamp);
 
         Ok(IngestedSamples {
-            metric_name: String::new(),
             key: String::new(),
             samples,
         })
