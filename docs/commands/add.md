@@ -120,5 +120,3 @@ O(1) amortized time to add a sample.
 ## ACL Categories
 
 `@write`, `@fast`, `@timeseries`
-
-```
