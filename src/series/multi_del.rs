@@ -70,16 +70,17 @@ fn handle_delete_range(
         Ok::<PostingsBitmap, ValkeyError>(ids)
     })?;
 
-    let num_threads = usize::min(NUM_THREADS.load(Ordering::Relaxed), 2);
+    let num_threads = usize::max(NUM_THREADS.load(Ordering::Relaxed), 2);
     let mut total_deleted = 0;
     ctx.log_notice(&format!(
         "Starting deletion of range [{start}, {end}] for {} series. Num threads: {num_threads}",
         ids.cardinality()
     ));
 
+    let batch_size = usize::max(ids.cardinality() as usize / num_threads, 32);
     let mut iter = ids.iter();
     loop {
-        let (series_batch, keys_batch) = fetch_series_batch(ctx, &mut iter, num_threads);
+        let (series_batch, keys_batch) = fetch_series_batch(ctx, &mut iter, batch_size);
         if series_batch.is_empty() {
             break;
         }
@@ -137,7 +138,7 @@ fn delete_range_batch(
 fn fetch_series_batch<'a>(
     ctx: &'a Context,
     cursor: &mut Bitmap64Iterator<'_>,
-    buf_size: usize,
+    batch_size: usize,
 ) -> (Vec<SeriesGuardMut<'a>>, Vec<ValkeyString>) {
     let user = ctx.get_current_user();
     let is_user_client = is_real_user_client(ctx);
@@ -152,8 +153,8 @@ fn fetch_series_batch<'a>(
     let postings_guard = index.get_postings();
 
     let mut stale_ids: SmallVec<SeriesRef, 8> = SmallVec::new();
-    let mut result: Vec<SeriesGuardMut<'a>> = Vec::with_capacity(buf_size);
-    let mut keys: Vec<ValkeyString> = Vec::with_capacity(buf_size);
+    let mut result: Vec<SeriesGuardMut<'a>> = Vec::with_capacity(batch_size);
+    let mut keys: Vec<ValkeyString> = Vec::with_capacity(batch_size);
 
     let postings = postings_guard.deref();
     // Read ids in chunks until we gather `buf_size` valid series or cursor is exhausted.
@@ -189,7 +190,7 @@ fn fetch_series_batch<'a>(
             }
         }
 
-        if result.len() >= buf_size {
+        if result.len() >= batch_size {
             break;
         }
     }
