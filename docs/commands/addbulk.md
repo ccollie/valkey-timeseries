@@ -19,10 +19,16 @@ TS.ADDBULK key data
 
 ### Required arguments
 
-<summary><code>key</code>
+<details>
+
+  <summary><code>key</code>
 
 key name for the time series.
-</summary>
+  </summary>
+
+</details>
+
+<details>
 
 <summary><code>data</code>
 
@@ -30,6 +36,8 @@ JSON payload containing sample data. Must be a single JSON object with `values` 
 samples
 can be ingested per command.
 </summary>
+
+</details>
 
 ### Optional arguments
 
