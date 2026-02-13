@@ -553,10 +553,14 @@ fn format_output_full(
             MethodInfo::Fenced {
                 lower_fence,
                 upper_fence,
+                center_line,
             } => {
                 let mut fenced_info = HashMap::new();
                 fenced_info.insert("lower_fence".into(), ValkeyValue::Float(lower_fence));
                 fenced_info.insert("upper_fence".into(), ValkeyValue::Float(upper_fence));
+                if let Some(center) = center_line {
+                    fenced_info.insert("center_line".into(), ValkeyValue::Float(center));
+                }
                 res.insert("method_info".into(), ValkeyValue::Map(fenced_info));
             }
             MethodInfo::Spc {

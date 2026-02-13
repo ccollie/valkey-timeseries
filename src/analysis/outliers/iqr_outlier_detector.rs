@@ -69,6 +69,7 @@ impl IQROutlierDetector {
             method_info: Some(MethodInfo::Fenced {
                 lower_fence: self.lower_fence,
                 upper_fence: self.upper_fence,
+                center_line: Some((self.lower_fence + self.upper_fence) / 2.0),
             }),
         })
     }
@@ -211,6 +212,7 @@ mod tests {
         if let Some(MethodInfo::Fenced {
             lower_fence,
             upper_fence,
+            ..
         }) = result.method_info
         {
             // Check that extreme values in the dataset are classified correctly
