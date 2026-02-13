@@ -151,6 +151,7 @@ impl MadOutlierDetector {
             method_info: Some(MethodInfo::Fenced {
                 lower_fence: self.lower_fence,
                 upper_fence: self.upper_fence,
+                center_line: None,
             }),
         })
     }

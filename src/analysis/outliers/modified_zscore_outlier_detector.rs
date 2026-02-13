@@ -1,7 +1,7 @@
 use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
 };
 
 pub const MODIFIED_ZSCORE_DEFAULT_THRESHOLD: f64 = 3.5;
@@ -69,6 +69,16 @@ impl ModifiedZScoreOutlierDetector {
         let mut scores = Vec::with_capacity(n);
         let mut anomalies = Vec::with_capacity(4);
 
+        // Modified Z-score threshold |z| > T translates to:
+        // x < median - T * (MAD / 0.6745)  OR  x > median + T * (MAD / 0.6745)
+        let delta = if self.mad_scaled > 1e-10 {
+            self.threshold * self.mad_scaled
+        } else {
+            0.0
+        };
+        let lower_fence = self.median - delta;
+        let upper_fence = self.median + delta;
+
         for (index, &v) in ts.iter().enumerate() {
             let value = normalize_value(v);
             let score = self.get_anomaly_score(value);
@@ -90,7 +100,11 @@ impl ModifiedZScoreOutlierDetector {
             anomalies,
             threshold: self.threshold,
             method: AnomalyMethod::ModifiedZScore,
-            method_info: None,
+            method_info: Some(MethodInfo::Fenced {
+                lower_fence,
+                upper_fence,
+                center_line: None,
+            }),
         })
     }
 }

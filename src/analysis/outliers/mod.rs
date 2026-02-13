@@ -214,7 +214,11 @@ impl From<AnomalySignal> for ValkeyValue {
 #[derive(Debug, Clone, Copy)]
 pub enum MethodInfo {
     /// For methods like ZScore, MAD and IQR
-    Fenced { lower_fence: f64, upper_fence: f64 },
+    Fenced {
+        lower_fence: f64,
+        upper_fence: f64,
+        center_line: Option<f64>,
+    },
     /// Spc-specific information
     Spc {
         /// Control limits (lower, upper)
