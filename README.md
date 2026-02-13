@@ -47,9 +47,12 @@ The following commands are supported
 
 ```aiignore
 TS.ADD
+TS.ADDBULK
 TS.ALTER
 TS.CARD
 TS.CREATE
+TS.CREATERULE
+TS.DELETERULE
 TS.DECRBY
 TS.DEL
 TS.GET
