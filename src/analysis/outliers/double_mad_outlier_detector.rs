@@ -21,6 +21,8 @@ pub struct DoubleMadOutlierDetector {
     lower_fence: f64,
     upper_fence: f64,
     threshold: f64,
+    midpoint: f64,
+    half_range: f64,
 }
 
 impl DoubleMadOutlierDetector {
@@ -83,9 +85,16 @@ impl DoubleMadOutlierDetector {
         let median = estimator.quantile_estimator().median(sample);
         let lower_mad = estimator.lower_mad(sample);
         let upper_mad = estimator.upper_mad(sample);
+        let lower_fence = median - k * lower_mad;
+        let upper_fence = median + k * upper_mad;
+        let midpoint = (lower_fence + upper_fence) / 2.0;
+        let half_range = (upper_fence - lower_fence) / 2.0;
+
         Self {
-            lower_fence: median - k * lower_mad,
-            upper_fence: median + k * upper_mad,
+            lower_fence,
+            upper_fence,
+            midpoint,
+            half_range,
             threshold: k,
         }
     }
@@ -96,8 +105,8 @@ impl DoubleMadOutlierDetector {
     /// - Returns values approaching 1.0 as the value moves further beyond the fences.
     /// - Values within fences return scores < 0.5, values outside return scores >= 0.5.
     pub fn get_anomaly_score(&self, value: f64) -> f64 {
-        let midpoint = (self.lower_fence + self.upper_fence) / 2.0;
-        let half_range = (self.upper_fence - self.lower_fence) / 2.0;
+        let midpoint = self.midpoint;
+        let half_range = self.half_range;
 
         // Guard against zero range (all values identical)
         if half_range <= 0.0 {
@@ -150,6 +159,7 @@ impl DoubleMadOutlierDetector {
             method_info: Some(MethodInfo::Fenced {
                 lower_fence: self.lower_fence,
                 upper_fence: self.upper_fence,
+                center_line: None,
             }),
         })
     }
