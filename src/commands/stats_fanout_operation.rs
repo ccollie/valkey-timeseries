@@ -7,7 +7,6 @@ use crate::series::index::{
     get_timeseries_index, serialize_bitmap,
 };
 use ahash::AHashMap;
-use logger_rust::log_debug;
 use std::default::Default;
 use std::ops::Deref;
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
@@ -100,16 +99,10 @@ impl FanoutOperation for StatsFanoutOperation {
             &mut self.state.series_count_by_label_value_pairs,
             &resp.series_count_by_label_value_pairs,
         );
-        if self.selected_label.is_some() {
-            log_debug!(
-                "Collating focus label value stats from target: {:?}",
-                resp.series_count_by_focus_label_value
-            );
-            collate_stats_values(
-                &mut self.state.series_count_by_focus_label_value,
-                &resp.series_count_by_focus_label_value,
-            );
-        }
+        collate_stats_values(
+            &mut self.state.series_count_by_focus_label_value,
+            &resp.series_count_by_focus_label_value,
+        );
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
