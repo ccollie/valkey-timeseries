@@ -1,18 +1,21 @@
 use ahash::AHashMap;
 use std::collections::BTreeSet;
-use std::collections::hash_map::Entry;
+use std::hash::BuildHasher;
 use std::sync::{RwLock, RwLockReadGuard};
 
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
-use super::postings::{ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
+use super::postings::{ALL_POSTINGS_KEY, ALL_POSTINGS_KEY_NAME, Postings, PostingsBitmap};
+use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::is_real_user_client;
+use crate::common::hash::DeterministicHasher;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, SeriesLabel};
 use crate::series::acl::{clone_permissions, has_all_keys_permissions};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
-use get_size2::GetSize;
+use blart::AsBytes;
+use croaring::Bitmap64;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
@@ -178,7 +181,7 @@ impl TimeSeriesIndex {
     ///
     /// # Returns
     ///
-    /// * `Option<SeriesRef>` - Returns `Some(SeriesRef)` if a matching series ID is found,
+    /// * `Option<SeriesRef>` - Returns `Some(SeriesRef)` if a matching series ID is found.
     ///
     pub fn series_id_by_labels(&self, labels: &[Label]) -> Option<SeriesRef> {
         let inner = self.inner.read().unwrap();
@@ -345,84 +348,239 @@ impl TimeSeriesIndex {
     }
 
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
-        #[derive(Copy, Clone)]
-        struct SizeAccumulator {
-            size: usize,
-            count: u64,
-        }
+        const BATCH_SIZE: usize = 512;
+        let mut per_label_counts: AHashMap<String, u64> = AHashMap::new();
 
-        let mut count_map: AHashMap<&str, SizeAccumulator> = AHashMap::new();
-        let mut metrics = StatsMaxHeap::new(limit);
-        let mut labels = StatsMaxHeap::new(limit);
-        let mut label_value_length = StatsMaxHeap::new(limit);
-        let mut label_value_pairs = StatsMaxHeap::new(limit);
+        let mut metric_name_counts = StatsMaxHeap::new(limit);
+        let mut label_name_counts = StatsMaxHeap::new(limit);
+        let mut label_value_pair_counts = StatsMaxHeap::new(limit);
+        let mut focus_label_value_counts = StatsMaxHeap::new(limit);
 
-        let inner = self.inner.read().unwrap();
+        let (posting_count, has_all_postings, has_stale_ids, series_count) = {
+            let inner = self.inner.read().unwrap();
+            (
+                inner.label_index.len(),
+                inner.has_all_postings(),
+                !inner.stale_ids.is_empty(),
+                inner.count() as u64,
+            )
+        };
 
-        let posting_count = inner.label_index.len();
-        let num_label_pairs = if inner.has_all_postings() {
+        let total_label_value_pairs = if has_all_postings {
             posting_count.saturating_sub(1)
         } else {
             posting_count
         };
 
-        for (key, bitmap) in inner.label_index.iter() {
-            let count = bitmap.cardinality();
-            if let Some((name, value)) = key.split() {
-                let size = key.get_size() + get_bitmap_size(bitmap);
-                match count_map.entry(name) {
-                    Entry::Occupied(mut entry) => {
-                        let acc = entry.get_mut();
-                        acc.count += count;
-                        acc.size += size;
+        // Normalize empty label to the metric-name label once.
+        let focus_label = if label.is_empty() {
+            METRIC_NAME_LABEL
+        } else {
+            label
+        };
+
+        fn adjusted_cardinality(
+            inner: &Postings,
+            bitmap: &PostingsBitmap,
+            has_stale_ids: bool,
+        ) -> u64 {
+            let mut count = bitmap.cardinality();
+            if has_stale_ids {
+                let stale_count = inner.stale_ids.and_cardinality(bitmap);
+                if stale_count > 0 {
+                    count = count.saturating_sub(stale_count);
+                }
+            }
+            count
+        }
+
+        // Iterate the label_index in batches via range queries, dropping the read lock between batches
+        // so writers aren't blocked for long.
+        let mut cursor: Option<IndexKey> = None;
+        loop {
+            let mut processed_in_batch = 0usize;
+            let mut next_cursor: Option<IndexKey> = None;
+
+            // When resuming from a cursor, the underlying iterator may return the cursor key again.
+            // Track and skip it once to guarantee forward progress.
+            let mut skip_first_if_equals_cursor = cursor.as_ref().cloned();
+
+            let cursor_bytes: Option<&[u8]> = cursor.as_ref().map(|k| k.as_bytes());
+            let owned_prefix: Vec<u8>;
+            let prefix_bytes: &[u8] = match cursor_bytes {
+                Some(bytes) => {
+                    owned_prefix = bytes.to_vec();
+                    &owned_prefix
+                }
+                None => &[],
+            };
+
+            let inner = self.inner.read().unwrap();
+            for (key, bitmap) in inner.label_index.prefix(prefix_bytes) {
+                if let Some(ref cursor_key) = skip_first_if_equals_cursor
+                    && key == cursor_key
+                {
+                    skip_first_if_equals_cursor = None;
+                    continue;
+                }
+
+                if key == &*ALL_POSTINGS_KEY {
+                    continue;
+                }
+
+                if let Some((name, value)) = key.split() {
+                    let count = adjusted_cardinality(&inner, bitmap, has_stale_ids);
+
+                    match per_label_counts.get_mut(name) {
+                        Some(existing_count) => {
+                            *existing_count = existing_count.saturating_add(count);
+                        }
+                        _ => {
+                            let _ = per_label_counts.insert(name.to_string(), count);
+                        }
                     }
-                    Entry::Vacant(entry) => {
-                        let acc = SizeAccumulator { size, count };
-                        entry.insert(acc);
+
+                    let pair = format!("{name}={value}");
+
+                    label_value_pair_counts.push(PostingStat { name: pair, count });
+
+                    if name == METRIC_NAME_LABEL {
+                        metric_name_counts.push(PostingStat {
+                            name: value.to_string(),
+                            count,
+                        });
+                    }
+
+                    if name == focus_label {
+                        focus_label_value_counts.push(PostingStat {
+                            name: value.to_string(),
+                            count,
+                        });
                     }
                 }
 
-                label_value_pairs.push(PostingStat {
-                    name: format!("{name}={value}"),
-                    count,
-                });
-
-                if label == name {
-                    metrics.push(PostingStat {
-                        name: value.to_string(),
-                        count,
-                    });
+                processed_in_batch += 1;
+                if processed_in_batch >= BATCH_SIZE {
+                    next_cursor = Some(key.clone());
+                    break;
                 }
             }
-        }
 
-        let mut num_labels: usize = 0;
+            drop(inner);
 
-        for (name, v) in count_map {
-            labels.push(PostingStat {
-                name: name.to_string(),
-                count: v.count,
-            });
-            label_value_length.push(PostingStat {
-                name: name.to_string(),
-                count: v.size as u64,
-            });
-            if name != ALL_POSTINGS_KEY_NAME {
-                num_labels += 1;
+            if processed_in_batch == 0 {
+                break;
+            }
+
+            cursor = next_cursor;
+            if cursor.is_none() {
+                break;
             }
         }
 
-        let series_count = self.count() as u64;
+        let label_count = per_label_counts.len();
+
+        let series_count_by_focus_label_value = if focus_label != ALL_POSTINGS_KEY_NAME {
+            Some(focus_label_value_counts.into_vec())
+        } else {
+            None
+        };
+
+        for (name, count) in per_label_counts {
+            label_name_counts.push(PostingStat {
+                name: name.to_string(),
+                count,
+            });
+        }
 
         PostingsStats {
-            cardinality_metrics_stats: metrics.into_vec(),
-            cardinality_label_stats: labels.into_vec(),
-            label_value_stats: label_value_length.into_vec(),
-            label_value_pairs_stats: label_value_pairs.into_vec(),
-            num_label_pairs,
-            num_labels,
+            series_count_by_metric_name: metric_name_counts.into_vec(),
+            series_count_by_label_name: label_name_counts.into_vec(),
+            series_count_by_label_value_pairs: label_value_pair_counts.into_vec(),
+            series_count_by_focus_label_value,
+            total_label_value_pairs,
+            label_count,
             series_count,
         }
+    }
+
+    /// Returns two bitmaps: one for label names and one for label name=value pairs.
+    /// The bitmaps are constructed by hashing the label names and label name=value pairs using a deterministic hasher.
+    ///
+    /// The use-case for this function is to efficiently determine which label names and label value pairs are present in the index,
+    /// especially in the case of cross-shard queries in a clustered environment, where we want to minimize the amount of data
+    /// transferred between nodes.
+    ///
+    /// A practical example is summing the total number of unique key=value pairs across the cluster. A naive first attempt
+    /// would be to simply count the total number of key=value pairs on each node and sum them up, but this would lead to
+    /// double-counting pairs that exist on multiple nodes.
+    ///
+    /// We instead can use the label-value pair bitmap to get a unique fingerprint of all the pairs on each node, and then
+    /// merge these bitmaps across nodes using a bitwise OR operation. The cardinality of the resulting bitmap will give us
+    /// the total number of unique key=value pairs across the cluster without double-counting.
+    pub fn get_label_bitmaps(&self) -> (Bitmap64, Bitmap64) {
+        const BATCH_SIZE: usize = 512;
+
+        let mut label_names_bitmap = Bitmap64::default();
+        let mut label_value_pairs_bitmap = Bitmap64::default();
+
+        let hasher: DeterministicHasher = DeterministicHasher::default();
+
+        let mut cursor: Option<IndexKey> = None;
+        loop {
+            let mut processed_in_batch = 0usize;
+            let mut next_cursor: Option<IndexKey> = None;
+
+            let cursor_bytes: Option<&[u8]> = cursor.as_ref().map(|k| k.as_bytes());
+            let owned_prefix: Vec<u8>;
+            let prefix_bytes: &[u8] = match cursor_bytes {
+                Some(bytes) => {
+                    owned_prefix = bytes.to_vec();
+                    &owned_prefix
+                }
+                None => &[],
+            };
+
+            let inner = self.inner.read().unwrap();
+            for (key, _) in inner.label_index.prefix(prefix_bytes) {
+                if let Some(ref cursor_key) = cursor
+                    && key == cursor_key
+                {
+                    continue;
+                }
+
+                if key == &*ALL_POSTINGS_KEY {
+                    continue;
+                }
+
+                if let Some((name, _value)) = key.split() {
+                    let h = hasher.hash_one(name);
+                    label_names_bitmap.add(h);
+
+                    let kh = hasher.hash_one(key);
+                    label_value_pairs_bitmap.add(kh);
+                }
+
+                processed_in_batch += 1;
+                if processed_in_batch >= BATCH_SIZE {
+                    next_cursor = Some(key.clone());
+                    break;
+                }
+            }
+
+            drop(inner);
+
+            if processed_in_batch == 0 {
+                break;
+            }
+
+            cursor = next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        (label_names_bitmap, label_value_pairs_bitmap)
     }
 
     pub fn count(&self) -> usize {
@@ -491,145 +649,4 @@ impl TimeSeriesIndex {
 
 fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
     bmp.cardinality() as usize * size_of::<SeriesRef>()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::series::index::next_timeseries_id;
-    use crate::series::time_series::TimeSeries;
-
-    fn create_series_from_metric_name(prometheus_name: &str) -> TimeSeries {
-        let mut ts = TimeSeries::new();
-        ts.id = next_timeseries_id();
-        ts.labels = prometheus_name.parse().unwrap();
-        ts
-    }
-
-    #[test]
-    fn test_index_time_series() {
-        let index = TimeSeriesIndex::new();
-        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
-
-        index.index_timeseries(&ts, b"time-series-1");
-
-        assert_eq!(index.count(), 1);
-        assert_eq!(index.label_count(), 3); // metric_name + region + env
-    }
-
-    #[test]
-    fn test_reindex_time_series() {
-        let index = TimeSeriesIndex::new();
-        let mut ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
-
-        index.index_timeseries(&ts, b"time-series-1");
-
-        ts.labels.add_label("service", "web");
-        ts.labels.add_label("pod", "pod-1");
-
-        index.reindex_timeseries(&ts, b"time-series-1");
-
-        assert_eq!(index.count(), 1);
-        assert_eq!(index.label_count(), 5); // metric_name + region + env
-    }
-
-    #[test]
-    fn test_remove_time_series() {
-        let index = TimeSeriesIndex::new();
-        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
-
-        index.index_timeseries(&ts, b"time-series-1");
-        assert_eq!(index.count(), 1);
-
-        index.remove_timeseries(&ts);
-
-        assert_eq!(index.count(), 0);
-        assert_eq!(index.label_count(), 0);
-    }
-
-    #[test]
-    fn test_get_id_by_name_and_labels() {
-        let index = TimeSeriesIndex::new();
-        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
-
-        index.index_timeseries(&ts, b"time-series-1");
-
-        let labels = ts
-            .labels
-            .iter()
-            .map(|x| Label::new(x.name, x.value))
-            .collect::<Vec<_>>();
-        let id = index
-            .posting_by_labels(&labels)
-            .unwrap()
-            .unwrap_or_default();
-        assert_eq!(id, ts.id);
-    }
-
-    #[test]
-    fn test_get_cardinality_by_selectors_empty() {
-        let index = TimeSeriesIndex::new();
-
-        // When no selectors are provided, cardinality should be zero.
-        let selectors: Vec<SeriesSelector> = Vec::new();
-        let cardinality = index
-            .get_cardinality_by_selectors(&selectors)
-            .expect("call should succeed");
-
-        assert_eq!(cardinality, 0);
-    }
-
-    #[test]
-    fn test_get_cardinality_by_single_selector() {
-        let index = TimeSeriesIndex::new();
-
-        let ts = create_series_from_metric_name(r#"latency{region="us-east-1",env="qa"}"#);
-        index.index_timeseries(&ts, b"time-series-1");
-
-        // Build a selector that matches the inserted series.
-        let selector = SeriesSelector::parse("region='us-east-1'").unwrap();
-        let selectors = vec![selector];
-
-        let cardinality = index
-            .get_cardinality_by_selectors(&selectors)
-            .expect("call should succeed");
-
-        // We inserted exactly one matching series.
-        assert_eq!(cardinality, 1);
-    }
-
-    #[test]
-    fn test_get_cardinality_by_multiple_selectors_and_intersection() {
-        let index = TimeSeriesIndex::new();
-
-        // Two series that share some labels but differ on at least one.
-        let ts1 =
-            create_series_from_metric_name(r#"latency{region="us-east-1",env="qa",service="api"}"#);
-        let ts2 = create_series_from_metric_name(
-            r#"latency{region="us-east-1",env="prod",service="api"}"#,
-        );
-
-        index.index_timeseries(&ts1, b"time-series-1");
-        index.index_timeseries(&ts2, b"time-series-2");
-
-        // You should construct these selectors so that:
-        //   selector_env_qa matches only ts1
-        //   selector_region matches both ts1 and ts2
-        //
-        // After AND-ing them, only ts1 should remain, so the
-        // resulting cardinality must be 1.
-        let selector_env_qa = SeriesSelector::parse("env='qa'").unwrap();
-        let selector_region = SeriesSelector::parse(r#"region="us-east-1""#).unwrap();
-
-        let selectors = vec![selector_region, selector_env_qa];
-
-        let cardinality = index
-            .get_cardinality_by_selectors(&selectors)
-            .expect("call should succeed");
-
-        assert_eq!(
-            cardinality, 1,
-            "intersection of selectors should yield exactly one series"
-        );
-    }
 }

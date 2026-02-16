@@ -1,29 +1,36 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
-use crate::common::constants::METRIC_NAME_LABEL;
+use crate::common::threads::join;
 use crate::fanout::{FanoutOperation, NodeInfo};
-use crate::series::index::{PostingStat, PostingsStats, StatsMaxHeap, get_timeseries_index};
+use crate::series::index::{
+    PostingStat, PostingsBitmap, PostingsStats, StatsMaxHeap, deserialize_bitmap,
+    get_timeseries_index, serialize_bitmap,
+};
 use ahash::AHashMap;
+use logger_rust::log_debug;
+use std::default::Default;
+use std::ops::Deref;
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 struct StatsResults {
-    num_label_pairs: usize,
-    num_labels: usize,
     series_count: usize,
-    cardinality_metrics_map: AHashMap<String, PostingStat>,
-    cardinality_labels_map: AHashMap<String, PostingStat>,
-    label_values_map: AHashMap<String, PostingStat>,
-    pairs_map: AHashMap<String, PostingStat>,
+    series_count_by_metric_name: AHashMap<String, PostingStat>,
+    series_count_by_label_name: AHashMap<String, PostingStat>,
+    series_count_by_label_value_pairs: AHashMap<String, PostingStat>,
+    series_count_by_focus_label_value: AHashMap<String, PostingStat>,
+    labels_bitmap: PostingsBitmap,
+    label_value_pairs_bitmap: PostingsBitmap,
 }
 
 pub struct StatsFanoutOperation {
     pub limit: usize,
+    pub selected_label: Option<String>,
     state: StatsResults,
 }
 
 impl StatsFanoutOperation {
-    pub fn new(limit: usize) -> Self {
+    pub fn new(limit: usize, selected_label: Option<String>) -> Self {
         let limit = if limit == 0 {
             DEFAULT_STATS_RESULTS_LIMIT
         } else {
@@ -32,6 +39,7 @@ impl StatsFanoutOperation {
 
         Self {
             limit,
+            selected_label,
             state: StatsResults::default(),
         }
     }
@@ -39,7 +47,7 @@ impl StatsFanoutOperation {
 
 impl Default for StatsFanoutOperation {
     fn default() -> Self {
-        Self::new(DEFAULT_STATS_RESULTS_LIMIT)
+        Self::new(DEFAULT_STATS_RESULTS_LIMIT, None)
     }
 }
 
@@ -53,34 +61,55 @@ impl FanoutOperation for StatsFanoutOperation {
 
     fn get_local_response(ctx: &Context, req: StatsRequest) -> ValkeyResult<StatsResponse> {
         let limit = req.limit as usize;
-        let index = get_timeseries_index(ctx);
-        let stats = index.stats(METRIC_NAME_LABEL, limit);
+        let index_guard = get_timeseries_index(ctx);
+        let index = index_guard.deref();
+        let label = req.selected_label.as_deref().unwrap_or("");
+        let (stats, (labels_bitmap, label_value_pairs_bitmap)) =
+            join(|| index.stats(label, limit), || index.get_label_bitmaps());
 
-        Ok(stats.into())
+        let mut response: StatsResponse = stats.into();
+        response.labels_bitmap = serialize_bitmap(&labels_bitmap);
+        response.label_value_pairs_bitmap = serialize_bitmap(&label_value_pairs_bitmap);
+
+        Ok(response)
     }
 
     fn generate_request(&self) -> StatsRequest {
         StatsRequest {
             limit: self.limit as u32,
+            selected_label: self.selected_label.clone(),
         }
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         // Handle the response from a remote target
-        self.state.num_label_pairs += resp.num_label_pairs as usize;
-        self.state.num_labels += resp.num_labels as usize;
         self.state.series_count += resp.series_count as usize;
 
+        self.state.labels_bitmap |= deserialize_bitmap(&resp.labels_bitmap);
+        self.state.label_value_pairs_bitmap |= deserialize_bitmap(&resp.label_value_pairs_bitmap);
+
         collate_stats_values(
-            &mut self.state.cardinality_metrics_map,
-            &resp.cardinality_metric_stats,
+            &mut self.state.series_count_by_metric_name,
+            &resp.series_count_by_metric_name,
         );
         collate_stats_values(
-            &mut self.state.cardinality_labels_map,
-            &resp.cardinality_label_stats,
+            &mut self.state.series_count_by_label_name,
+            &resp.series_count_by_label_name,
         );
-        collate_stats_values(&mut self.state.label_values_map, &resp.label_value_stats);
-        collate_stats_values(&mut self.state.pairs_map, &resp.label_value_pairs_stats);
+        collate_stats_values(
+            &mut self.state.series_count_by_label_value_pairs,
+            &resp.series_count_by_label_value_pairs,
+        );
+        if self.selected_label.is_some() {
+            log_debug!(
+                "Collating focus label value stats from target: {:?}",
+                resp.series_count_by_focus_label_value
+            );
+            collate_stats_values(
+                &mut self.state.series_count_by_focus_label_value,
+                &resp.series_count_by_focus_label_value,
+            );
+        }
     }
 
     fn generate_reply(&mut self, ctx: &Context) -> Status {
@@ -88,16 +117,31 @@ impl FanoutOperation for StatsFanoutOperation {
         let state = std::mem::take(&mut self.state);
 
         // Calculate num_labels from the aggregated map to ensure uniqueness
-        let num_labels = state.cardinality_labels_map.len();
+        let label_count = state.labels_bitmap.cardinality() as usize;
+        let total_label_value_pairs = state.label_value_pairs_bitmap.cardinality() as usize;
+        let focused = if self.selected_label.is_some() {
+            Some(collect_map_values(
+                state.series_count_by_focus_label_value,
+                limit,
+            ))
+        } else {
+            None
+        };
 
         let result = PostingsStats {
             series_count: state.series_count as u64,
-            num_labels,
-            num_label_pairs: state.num_label_pairs,
-            cardinality_metrics_stats: collect_map_values(state.cardinality_metrics_map, limit),
-            cardinality_label_stats: collect_map_values(state.cardinality_labels_map, limit),
-            label_value_stats: collect_map_values(state.label_values_map, limit),
-            label_value_pairs_stats: collect_map_values(state.pairs_map, limit),
+            label_count,
+            total_label_value_pairs,
+            series_count_by_metric_name: collect_map_values(
+                state.series_count_by_metric_name,
+                limit,
+            ),
+            series_count_by_label_name: collect_map_values(state.series_count_by_label_name, limit),
+            series_count_by_label_value_pairs: collect_map_values(
+                state.series_count_by_label_value_pairs,
+                limit,
+            ),
+            series_count_by_focus_label_value: focused,
         };
 
         let result: ValkeyValue = result.into();

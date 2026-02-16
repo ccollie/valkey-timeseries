@@ -108,58 +108,64 @@ impl From<PostingStat> for FanoutPostingStat {
 impl From<PostingsStats> for StatsResponse {
     fn from(value: PostingsStats) -> Self {
         StatsResponse {
-            cardinality_metric_stats: value
-                .cardinality_metrics_stats
+            series_count_by_metric_name: value
+                .series_count_by_metric_name
                 .into_iter()
                 .map(|s| s.into())
                 .collect(),
-            cardinality_label_stats: value
-                .cardinality_label_stats
+            series_count_by_label_name: value
+                .series_count_by_label_name
                 .into_iter()
                 .map(|s| s.into())
                 .collect(),
-            label_value_stats: value
-                .label_value_stats
+            series_count_by_label_value_pairs: value
+                .series_count_by_label_value_pairs
                 .into_iter()
                 .map(|s| s.into())
                 .collect(),
-            label_value_pairs_stats: value
-                .label_value_pairs_stats
-                .into_iter()
-                .map(|s| s.into())
-                .collect(),
-            num_label_pairs: value.num_label_pairs as u64,
-            num_labels: value.num_labels as u64,
+            series_count_by_focus_label_value: value
+                .series_count_by_focus_label_value
+                .map(|v| v.into_iter().map(|s| s.into()).collect())
+                .unwrap_or_default(),
             series_count: value.series_count,
+            labels_bitmap: vec![],
+            label_value_pairs_bitmap: vec![],
         }
     }
 }
 
 impl From<StatsResponse> for PostingsStats {
     fn from(value: StatsResponse) -> Self {
+        let focused = if value.series_count_by_focus_label_value.is_empty() {
+            None
+        } else {
+            Some(
+                value
+                    .series_count_by_focus_label_value
+                    .into_iter()
+                    .map(|s| s.into())
+                    .collect(),
+            )
+        };
         PostingsStats {
-            cardinality_metrics_stats: value
-                .cardinality_metric_stats
+            series_count_by_metric_name: value
+                .series_count_by_metric_name
                 .into_iter()
                 .map(|s| s.into())
                 .collect(),
-            cardinality_label_stats: value
-                .cardinality_label_stats
+            series_count_by_label_name: value
+                .series_count_by_label_name
                 .into_iter()
                 .map(|s| s.into())
                 .collect(),
-            label_value_stats: value
-                .label_value_stats
+            series_count_by_label_value_pairs: value
+                .series_count_by_label_value_pairs
                 .into_iter()
                 .map(|s| s.into())
                 .collect(),
-            label_value_pairs_stats: value
-                .label_value_pairs_stats
-                .into_iter()
-                .map(|s| s.into())
-                .collect(),
-            num_label_pairs: value.num_label_pairs as usize,
-            num_labels: value.num_labels as usize,
+            series_count_by_focus_label_value: focused,
+            total_label_value_pairs: 0,
+            label_count: 0,
             series_count: value.series_count,
         }
     }

@@ -97,6 +97,7 @@ command_arg_tokens! {
     GroupBy => "GROUPBY",
     Ignore => "IGNORE",
     Inner => "INNER",
+    Label => "LABEL",
     Labels => "LABELS",
     Latest => "LATEST",
     Left => "LEFT",
@@ -1128,18 +1129,32 @@ pub(super) fn parse_query_index_command_args(
 pub const DEFAULT_STATS_RESULTS_LIMIT: usize = 10;
 pub const MAX_STATS_RESULTS_LIMIT: usize = 1000;
 
-pub(super) fn parse_stats_command_args(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
-    let limit = if args.peek().is_none() {
-        DEFAULT_STATS_RESULTS_LIMIT // No args, use default limit
-    } else {
-        parse_next_token(args, Some(&[CommandArgToken::Limit]))?;
-        let next = args
-            .next_str()
-            .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?;
-        parse_limit_value(next)?.unwrap_or(DEFAULT_STATS_RESULTS_LIMIT)
-    };
+pub(super) fn parse_stats_command_args(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<(Option<String>, usize)> {
+    let mut label: Option<String> = None;
+    let mut limit = DEFAULT_STATS_RESULTS_LIMIT;
 
-    Ok(limit)
+    while let Some(arg) = args.next() {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        match token {
+            CommandArgToken::Label => {
+                label = Some(args.next_string()?);
+            }
+            CommandArgToken::Limit => {
+                let next = args
+                    .next_str()
+                    .map_err(|_| ValkeyError::Str(error_consts::MISSING_LIMIT_VALUE))?;
+                limit = parse_limit_value(next)?.unwrap_or(DEFAULT_STATS_RESULTS_LIMIT);
+            }
+            _ => {
+                let msg = "TSDB: invalid argument";
+                return Err(ValkeyError::Str(msg));
+            }
+        };
+    }
+
+    Ok((label, limit))
 }
 
 fn parse_limit_value(val: &str) -> ValkeyResult<Option<usize>> {

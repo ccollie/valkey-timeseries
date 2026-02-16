@@ -11,12 +11,12 @@ pub struct PostingStat {
 
 #[derive(Clone, Debug, Default)]
 pub struct PostingsStats {
-    pub cardinality_metrics_stats: Vec<PostingStat>,
-    pub cardinality_label_stats: Vec<PostingStat>,
-    pub label_value_stats: Vec<PostingStat>,
-    pub label_value_pairs_stats: Vec<PostingStat>,
-    pub num_label_pairs: usize,
-    pub num_labels: usize,
+    pub series_count_by_metric_name: Vec<PostingStat>,
+    pub series_count_by_label_name: Vec<PostingStat>,
+    pub series_count_by_label_value_pairs: Vec<PostingStat>,
+    pub series_count_by_focus_label_value: Option<Vec<PostingStat>>,
+    pub total_label_value_pairs: usize,
+    pub label_count: usize,
     pub series_count: u64,
 }
 
@@ -30,32 +30,34 @@ impl From<&PostingsStats> for ValkeyValue {
     fn from(stats: &PostingsStats) -> Self {
         let mut data = HashMap::with_capacity(4);
         data.insert(
-            "numSeries".into(),
+            "totalSeries".into(),
             ValkeyValue::Integer(stats.series_count as i64),
         );
         data.insert(
-            "numLabels".into(),
-            ValkeyValue::Integer(stats.num_labels as i64),
+            "totalLabels".into(),
+            ValkeyValue::Integer(stats.label_count as i64),
         );
         data.insert(
-            "numLabelPairs".into(),
-            ValkeyValue::Integer(stats.num_label_pairs as i64),
+            "totalLabelValuePairs".into(),
+            ValkeyValue::Integer(stats.total_label_value_pairs as i64),
         );
         data.insert(
             "seriesCountByMetricName".into(),
-            stats_slice_to_value(&stats.cardinality_metrics_stats),
+            stats_slice_to_value(&stats.series_count_by_metric_name),
         );
         data.insert(
             "labelValueCountByLabelName".into(),
-            stats_slice_to_value(&stats.cardinality_label_stats),
+            stats_slice_to_value(&stats.series_count_by_label_name),
         );
+        if let Some(series_count_by_focus_label_value) = &stats.series_count_by_focus_label_value {
+            data.insert(
+                "seriesCountByFocusLabelValue".into(),
+                stats_slice_to_value(series_count_by_focus_label_value),
+            );
+        }
         data.insert(
-            "memoryInBytesByLabelPair".into(),
-            stats_slice_to_value(&stats.label_value_stats),
-        );
-        data.insert(
-            "seriesCountByLabelPair".into(),
-            stats_slice_to_value(&stats.label_value_pairs_stats),
+            "seriesCountByLabelValuePair".into(),
+            stats_slice_to_value(&stats.series_count_by_label_value_pairs),
         );
 
         ValkeyValue::Map(data)
@@ -76,7 +78,6 @@ fn posting_stat_to_value(stat: &PostingStat) -> ValkeyValue {
     ValkeyValue::Map(res)
 }
 
-#[derive(Debug)]
 pub(crate) struct StatsMaxHeap {
     max_length: usize,
     min_value: usize,

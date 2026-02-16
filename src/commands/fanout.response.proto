@@ -96,11 +96,11 @@ message PostingStat {
 }
 
 message StatsResponse {
-  repeated PostingStat cardinality_metric_stats = 1;
-  repeated PostingStat cardinality_label_stats = 2;
-  repeated PostingStat label_value_stats = 3;
-  repeated PostingStat label_value_pairs_stats = 4;
-  uint64 num_label_pairs = 5;
-  uint64 num_labels = 6;
-  uint64 series_count = 7;
+  uint64 series_count = 1;
+  repeated PostingStat series_count_by_metric_name = 2;
+  repeated PostingStat series_count_by_label_name = 3;
+  repeated PostingStat series_count_by_label_value_pairs = 4;
+  repeated PostingStat series_count_by_focus_label_value = 5;
+  bytes labels_bitmap = 6;
+  bytes label_value_pairs_bitmap = 7;
 }

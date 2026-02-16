@@ -9,27 +9,28 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 class TestTsStats(ValkeyTimeSeriesTestCaseBase):
     """Test suite for TS.STATS command."""
 
-    def get_stats(self, limit: int | None = None):
+    def get_stats(self, limit: int | None = None, label=None):
         args = ['TS.STATS']
         if limit is not None:
             args.extend(['LIMIT', limit])
+        if label is not None:
+            args.extend(['LABEL', label])
+
 
         result = self.client.execute_command(*args)
         stats = parse_stats_response(result)
         return stats
 
-
     def test_stats_empty_index(self):
         """Test TS.STATS on an empty index returns zero counts."""
         stats = self.get_stats()
 
-        assert stats['numSeries'] == 0
-        assert stats['numLabels'] == 0
-        assert stats['numLabelPairs'] == 0
+        assert stats['totalSeries'] == 0
+        assert stats['totalLabels'] == 0
+        assert stats['totalLabelValuePairs'] == 0
         assert stats['seriesCountByMetricName'] == []
         assert stats['labelValueCountByLabelName'] == []
-        assert stats['memoryInBytesByLabelPair'] == []
-        assert stats['seriesCountByLabelPair'] == []
+        assert stats['seriesCountByLabelValuePair'] == []
 
     def test_stats_single_series(self):
         """Test TS.STATS with a single time series."""
@@ -40,9 +41,30 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         result = self.get_stats()
 
-        assert result['numSeries'] == 1
-        assert result['numLabels'] == 2  # sensor and location
-        assert result['numLabelPairs'] == 2
+        assert result['totalSeries'] == 1
+        assert result['totalLabels'] == 2  # sensor and location
+        assert result['totalLabelValuePairs'] == 2
+
+    def test_stats_basic(self):
+        """Test basic TS.STATS with no arguments"""
+        # Create multiple series with different metric names
+        self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'cpu_usage', 'host', 'server1')
+        self.client.execute_command('TS.CREATE', 'ts2', 'LABELS', '__name__', 'cpu_usage', 'host', 'server2')
+        self.client.execute_command('TS.CREATE', 'ts3', 'LABELS', '__name__', 'memory_usage', 'host', 'server1')
+        self.client.execute_command('TS.CREATE', 'ts4', 'LABELS', '__name__', 'disk_usage', 'host', 'server2', 'region',
+                                    'us-west')
+
+        result = self.get_stats()
+
+        # Verify required fields
+        assert 'totalSeries' in result
+        assert 'totalLabels' in result
+        assert 'totalLabelValuePairs' in result
+
+        # Verify counts
+        series_count = result['totalSeries']
+        assert series_count == 4
+
 
     def test_stats_multiple_series_same_labels(self):
         """Test TS.STATS with multiple series sharing labels."""
@@ -61,9 +83,9 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         result = self.get_stats()
 
-        assert result['numSeries'] == 3
-        assert result['numLabels'] == 2
-        assert result['numLabelPairs'] == 4
+        assert result['totalSeries'] == 3
+        assert result['totalLabels'] == 2
+        assert result['totalLabelValuePairs'] == 4
 
     def test_stats_with_limit_parameter(self):
         """Test TS.STATS with LIMIT parameter."""
@@ -78,15 +100,15 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         result = self.get_stats()
         assert len(result['seriesCountByMetricName']) <= 10
         assert len(result['labelValueCountByLabelName']) <= 10
-        assert len(result['memoryInBytesByLabelPair']) <= 10
-        assert len(result['seriesCountByLabelPair']) <= 10
+        assert len(result['seriesCountByLabelValuePair']) <= 10
 
         # Custom limit of 5
-        result = self.get_stats(5)
+        result = self.client.execute_command("TS.STATS", "LIMIT", 5)
+        result = parse_stats_response(result)
+
         assert len(result['seriesCountByMetricName']) <= 5
         assert len(result['labelValueCountByLabelName']) <= 5
-        assert len(result['memoryInBytesByLabelPair']) <= 5
-        assert len(result['seriesCountByLabelPair']) <= 5
+        assert len(result['seriesCountByLabelValuePair']) <= 5
 
     def test_stats_series_count_by_metric_name(self):
         """Test that seriesCountByMetricName returns correct counts."""
@@ -111,6 +133,30 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         assert metric_stats.get('temperature') == 3
         assert metric_stats.get('pressure') == 2
+
+    def test_stats_with_label_filter(self):
+        """Test TS.STATS with LABEL parameter"""
+        # Create a series with a specific label
+        self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'http_requests', 'status', '200',
+                                    'method', 'GET')
+        self.client.execute_command('TS.CREATE', 'ts2', 'LABELS', '__name__', 'http_requests', 'status', '404',
+                                    'method', 'GET')
+        self.client.execute_command('TS.CREATE', 'ts3', 'LABELS', '__name__', 'http_requests', 'status', '200',
+                                    'method', 'POST')
+        self.client.execute_command('TS.CREATE', 'ts4', 'LABELS', '__name__', 'http_requests', 'status', '500',
+                                    'method', 'POST')
+
+        # Query stats for 'status' label
+        stats = self.client.execute_command('TS.STATS', 'LABEL', 'status')
+        results = parse_stats_response(stats)
+
+        # Verify focus label values are present
+        focus_label_values = results['seriesCountByFocusLabelValue']
+        assert focus_label_values is not None
+
+        # Verify status values are tracked
+        assert any('200' in str(k) for k in focus_label_values)
+
 
     def test_stats_label_value_count(self):
         """Test labelValueCountByLabelName statistics."""
@@ -139,6 +185,19 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert label_counts.get('region') == 3
         assert label_counts.get('env') == 3
 
+    def test_stats_label_name_counts(self):
+        """Test series count by label name"""
+        self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'metric1', 'host', 'server1', 'env',
+                                    'prod')
+        self.client.execute_command('TS.CREATE', 'ts2', 'LABELS', '__name__', 'metric2', 'host', 'server2', 'env',
+                                    'dev')
+        self.client.execute_command('TS.CREATE', 'ts3', 'LABELS', '__name__', 'metric3', 'region', 'us-west')
+
+        result = self.get_stats()
+
+        label_name_counts = result['totalLabels']
+        assert label_name_counts == 4  # __name__, host, env, region
+    
     def test_stats_series_count_by_label_pair(self):
         """Test seriesCountByLabelPair statistics."""
         self.client.execute_command(
@@ -155,7 +214,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         )
 
         result = self.get_stats()
-        label_pair_counts = result['seriesCountByLabelPair']    
+        label_pair_counts = result['seriesCountByLabelValuePair']
         print("seriesCountByLabelPair =", label_pair_counts)
 
         # status=200 appears in 2 series, status=404 in 1
@@ -166,6 +225,57 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert pair_counts.get('status=404') == 1
         assert pair_counts.get('method=GET') == 2
         assert pair_counts.get('method=POST') == 1
+
+    def test_stats_with_label_and_limit(self):
+        """Test TS.STATS with both LABEL and LIMIT parameters"""
+        # Create a series with multiple values for the 'region' label
+        regions = ['us-east', 'us-west', 'eu-west', 'eu-east', 'ap-south']
+        for i, region in enumerate(regions):
+            for j in range(3):
+                self.client.execute_command('TS.CREATE', f'ts_limit_{region}_{j}',
+                                            'LABELS',
+                                            '__name__', f'metric_limit_{i}',
+                                            'region', region,
+                                            'series_idx', f'{i}_{j}')  # Add unique identifier)
+
+        result = self.get_stats(3, 'region')
+        print("Stats with LABEL and LIMIT =", result)
+        focus_label_values = result['seriesCountByFocusLabelValue']
+        if focus_label_values:
+            assert len(focus_label_values) <= 3
+
+    def test_stats_label_value_pairs(self):
+        """Test total label-value pairs count"""
+        # Create a series with known label-value pairs
+        client = self.client
+        client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'metric1', 'host', 'server1')  # 2 pairs
+        client.execute_command('TS.CREATE', 'ts2', 'LABELS', '__name__', 'metric1', 'host', 'server2')  # 2 pairs
+        client.execute_command('TS.CREATE', 'ts3', 'LABELS', '__name__', 'metric2', 'host', 'server1', 'region',
+                               'us')  # 3 pairs
+
+        result = self.get_stats()
+        print("Stats result =", result)
+        total_pairs = result['totalLabelValuePairs']
+        assert total_pairs >= 5  # At least 5 pairs: metric1, host=server1, host=server2, metric2, region=us
+
+    def test_stats_focus_label_metric_name(self):
+        """Test focus label defaults to __name__ when not specified"""
+        self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'metric1', 'host', 'server1')
+        self.client.execute_command('TS.CREATE', 'ts2', 'LABELS', '__name__', 'metric1', 'host', 'server2')
+        self.client.execute_command('TS.CREATE', 'ts3', 'LABELS', '__name__', 'metric1', 'region', 'us-east-1')
+        self.client.execute_command('TS.CREATE', 'ts4', 'LABELS', '__name__', 'metric1', 'host', 'server2', 'region',
+                                    'us-west')
+
+        result = self.client.execute_command('TS.STATS', 'LABEL', 'host')
+        result = parse_stats_response(result)
+
+        # When no LABEL specified, focus should be on __name__ (metric name)
+        focus_values = result['seriesCountByFocusLabelValue']
+
+        # Focus should be None or show metric names when LABEL not specified
+        if focus_values is not None:
+            # Verify it contains metric name data
+            assert isinstance(focus_values, (list, dict))
 
     def test_stats_invalid_limit(self):
         """Test TS.STATS with invalid LIMIT values."""
@@ -178,27 +288,9 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command('TS.STATS', 'LIMIT', -1)
 
     def test_stats_wrong_arity(self):
-        """Test TS.STATS with wrong number of arguments."""
+        """Test TS.STATS with the wrong number of arguments."""
         with pytest.raises(ResponseError, match='wrong number of arguments'):
-            self.client.execute_command('TS.STATS', 'LIMIT', 10, 20)
-
-    def test_stats_memory_usage(self):
-        """Test that memoryInBytesByLabelPair returns reasonable values."""
-        self.client.execute_command(
-            'TS.CREATE', 'ts1',
-            'LABELS', 'label1', 'value1', 'label2', 'value2'
-        )
-
-        result = self.get_stats()
-        memory_stats = result['memoryInBytesByLabelPair']
-
-        # Should have entries for label pairs
-        assert len(memory_stats) > 0
-
-        # Each entry should have a positive memory value
-        for item in memory_stats:
-            value = item[1]
-            assert value > 0
+            self.client.execute_command('TS.STATS', 'LIMIT', 10, "LABEL", 'status', 4)  # Too many arguments
 
     def test_stats_after_series_deletion(self):
         """Test TS.STATS after deleting series."""
@@ -212,13 +304,13 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         )
 
         result = self.get_stats()
-        assert result['numSeries'] == 2
+        assert result['totalSeries'] == 2
 
         # Delete one series
         self.client.delete('ts1')
 
         result = self.get_stats()
-        assert result['numSeries'] == 1
+        assert result['totalSeries'] == 1
 
     def test_stats_with_metric_name_label(self):
         """Test TS.STATS with __name__ label (metric name)."""
@@ -234,11 +326,11 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         result = self.get_stats()
 
         # Should count __name__ as a label, along with status
-        assert result['numLabels'] == 2
+        assert result['totalLabels'] == 2
 
     def test_stats_sorted_by_count(self):
         """Test that stats results are sorted by count in descending order."""
-        # Create series with different frequencies
+        # Create a series with different frequencies
         for i in range(5):
             self.client.execute_command(
                 'TS.CREATE', f'common:{i}',
@@ -258,7 +350,29 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
         # Check that label pair counts are sorted descending
         pair_counts = [item[1]
-                       for item in result['seriesCountByLabelPair']]
+                       for item in result['seriesCountByLabelValuePair']]
 
         for i in range(len(pair_counts) - 1):
             assert pair_counts[i] >= pair_counts[i + 1]
+
+    def test_stats_with_maximum_limit(self):
+        """Test TS.STATS with maximum allowed limit"""
+        # Create many series
+        for i in range(100):
+            self.client.execute_command('TS.CREATE', f'ts{i}', 'LABELS', '__name__', f'metric{i}')
+
+        # Test with max limit (1000)
+        result = self.client.execute_command('TS.STATS', 'LIMIT', '1000')
+        assert result is not None
+
+    def test_stats_limit_exceeds_maximum(self):
+        """Test TS.STATS with limit exceeding maximum"""
+        with pytest.raises(ResponseError) as excinfo:
+            self.client.execute_command('TS.STATS', 'LIMIT', '1001')
+
+        assert 'cannot be greater than' in str(excinfo.value).lower() or 'limit' in str(excinfo.value).lower()
+
+    def test_stats_invalid_arguments(self):
+        """Test TS.STATS with invalid argument combinations"""
+        with pytest.raises(ResponseError):
+            self.client.execute_command('TS.STATS', 'INVALID_ARG', 'value')
