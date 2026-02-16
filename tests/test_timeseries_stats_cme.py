@@ -100,7 +100,6 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         stats = self.get_stats()
 
         assert stats['totalSeries'] == 3
-        print("stats:", stats)
         # env=prod (2), env=dev (1), region=us-east (2), region=us-west (1), tier=web (2), tier=api (1)
         assert stats['totalLabelValuePairs'] == 6
 
@@ -223,7 +222,6 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
                                     'host', f'host{i % 10}')
 
         stats = self.get_stats()
-        print("stats:", stats)
         assert stats['totalSeries'] == 50
         # 5 unique metrics + 10 unique hosts = 15 unique label pairs
         assert stats['totalLabelValuePairs'] == 15
