@@ -22,13 +22,13 @@ struct StatsResults {
     label_value_pairs_bitmap: PostingsBitmap,
 }
 
-pub struct StatsFanoutOperation {
+pub struct LabelStatsFanoutOperation {
     pub limit: usize,
     pub selected_label: Option<String>,
     state: StatsResults,
 }
 
-impl StatsFanoutOperation {
+impl LabelStatsFanoutOperation {
     pub fn new(limit: usize, selected_label: Option<String>) -> Self {
         let limit = if limit == 0 {
             DEFAULT_STATS_RESULTS_LIMIT
@@ -44,18 +44,18 @@ impl StatsFanoutOperation {
     }
 }
 
-impl Default for StatsFanoutOperation {
+impl Default for LabelStatsFanoutOperation {
     fn default() -> Self {
         Self::new(DEFAULT_STATS_RESULTS_LIMIT, None)
     }
 }
 
-impl FanoutOperation for StatsFanoutOperation {
+impl FanoutOperation for LabelStatsFanoutOperation {
     type Request = StatsRequest;
     type Response = StatsResponse;
 
     fn name() -> &'static str {
-        "stats"
+        "label_stats"
     }
 
     fn get_local_response(ctx: &Context, req: StatsRequest) -> ValkeyResult<StatsResponse> {

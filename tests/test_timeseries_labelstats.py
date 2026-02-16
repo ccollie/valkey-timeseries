@@ -7,10 +7,10 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 
 class TestTsStats(ValkeyTimeSeriesTestCaseBase):
-    """Test suite for TS.STATS command."""
+    """Test suite for TS.LABELSTATS command."""
 
     def get_stats(self, limit: int | None = None, label=None):
-        args = ['TS.STATS']
+        args = ['TS.LABELSTATS']
         if limit is not None:
             args.extend(['LIMIT', limit])
         if label is not None:
@@ -22,7 +22,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         return stats
 
     def test_stats_empty_index(self):
-        """Test TS.STATS on an empty index returns zero counts."""
+        """Test TS.LABELSTATS on an empty index returns zero counts."""
         stats = self.get_stats()
 
         assert stats['totalSeries'] == 0
@@ -33,7 +33,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert stats['seriesCountByLabelValuePair'] == []
 
     def test_stats_single_series(self):
-        """Test TS.STATS with a single time series."""
+        """Test TS.LABELSTATS with a single time series."""
         self.client.execute_command(
             'TS.CREATE', 'temperature',
             'LABELS', 'sensor', 'temp1', 'location', 'room1'
@@ -46,7 +46,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert result['totalLabelValuePairs'] == 2
 
     def test_stats_basic(self):
-        """Test basic TS.STATS with no arguments"""
+        """Test basic TS.LABELSTATS with no arguments"""
         # Create multiple series with different metric names
         self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'cpu_usage', 'host', 'server1')
         self.client.execute_command('TS.CREATE', 'ts2', 'LABELS', '__name__', 'cpu_usage', 'host', 'server2')
@@ -67,7 +67,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
 
 
     def test_stats_multiple_series_same_labels(self):
-        """Test TS.STATS with multiple series sharing labels."""
+        """Test TS.LABELSTATS with multiple series sharing labels."""
         self.client.execute_command(
             'TS.CREATE', 'temp1',
             'LABELS', 'sensor', 'temp', 'location', 'room1'
@@ -88,7 +88,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert result['totalLabelValuePairs'] == 4
 
     def test_stats_with_limit_parameter(self):
-        """Test TS.STATS with LIMIT parameter."""
+        """Test TS.LABELSTATS with LIMIT parameter."""
         # Create multiple series with different metric names
         for i in range(15):
             self.client.execute_command(
@@ -103,7 +103,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert len(result['seriesCountByLabelValuePair']) <= 10
 
         # Custom limit of 5
-        result = self.client.execute_command("TS.STATS", "LIMIT", 5)
+        result = self.client.execute_command("TS.LABELSTATS", "LIMIT", 5)
         result = parse_stats_response(result)
 
         assert len(result['seriesCountByMetricName']) <= 5
@@ -135,7 +135,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert metric_stats.get('pressure') == 2
 
     def test_stats_with_label_filter(self):
-        """Test TS.STATS with LABEL parameter"""
+        """Test TS.LABELSTATS with LABEL parameter"""
         # Create a series with a specific label
         self.client.execute_command('TS.CREATE', 'ts1', 'LABELS', '__name__', 'http_requests', 'status', '200',
                                     'method', 'GET')
@@ -147,7 +147,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
                                     'method', 'POST')
 
         # Query stats for 'status' label
-        stats = self.client.execute_command('TS.STATS', 'LABEL', 'status')
+        stats = self.client.execute_command('TS.LABELSTATS', 'LABEL', 'status')
         results = parse_stats_response(stats)
 
         # Verify focus label values are present
@@ -227,7 +227,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert pair_counts.get('method=POST') == 1
 
     def test_stats_with_label_and_limit(self):
-        """Test TS.STATS with both LABEL and LIMIT parameters"""
+        """Test TS.LABELSTATS with both LABEL and LIMIT parameters"""
         # Create a series with multiple values for the 'region' label
         regions = ['us-east', 'us-west', 'eu-west', 'eu-east', 'ap-south']
         for i, region in enumerate(regions):
@@ -266,7 +266,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         self.client.execute_command('TS.CREATE', 'ts4', 'LABELS', '__name__', 'metric1', 'host', 'server2', 'region',
                                     'us-west')
 
-        result = self.client.execute_command('TS.STATS', 'LABEL', 'host')
+        result = self.client.execute_command('TS.LABELSTATS', 'LABEL', 'host')
         result = parse_stats_response(result)
 
         # When no LABEL specified, focus should be on __name__ (metric name)
@@ -278,22 +278,22 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
             assert isinstance(focus_values, (list, dict))
 
     def test_stats_invalid_limit(self):
-        """Test TS.STATS with invalid LIMIT values."""
+        """Test TS.LABELSTATS with invalid LIMIT values."""
         # LIMIT must be greater than 0
         with pytest.raises(ResponseError, match='LIMIT must be greater than 0'):
-            self.client.execute_command('TS.STATS', 'LIMIT', 0)
+            self.client.execute_command('TS.LABELSTATS', 'LIMIT', 0)
 
         # LIMIT cannot be negative
         with pytest.raises(ResponseError):
-            self.client.execute_command('TS.STATS', 'LIMIT', -1)
+            self.client.execute_command('TS.LABELSTATS', 'LIMIT', -1)
 
     def test_stats_wrong_arity(self):
-        """Test TS.STATS with the wrong number of arguments."""
+        """Test TS.LABELSTATS with the wrong number of arguments."""
         with pytest.raises(ResponseError, match='wrong number of arguments'):
-            self.client.execute_command('TS.STATS', 'LIMIT', 10, "LABEL", 'status', 4)  # Too many arguments
+            self.client.execute_command('TS.LABELSTATS', 'LIMIT', 10, "LABEL", 'status', 4)  # Too many arguments
 
     def test_stats_after_series_deletion(self):
-        """Test TS.STATS after deleting series."""
+        """Test TS.LABELSTATS after deleting series."""
         self.client.execute_command(
             'TS.CREATE', 'ts1',
             'LABELS', 'type', 'test'
@@ -313,7 +313,7 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert result['totalSeries'] == 1
 
     def test_stats_with_metric_name_label(self):
-        """Test TS.STATS with __name__ label (metric name)."""
+        """Test TS.LABELSTATS with __name__ label (metric name)."""
         self.client.execute_command(
             'TS.CREATE', 'ts1',
             'LABELS', '__name__', 'http_requests', 'status', '200'
@@ -356,23 +356,23 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
             assert pair_counts[i] >= pair_counts[i + 1]
 
     def test_stats_with_maximum_limit(self):
-        """Test TS.STATS with maximum allowed limit"""
+        """Test TS.LABELSTATS with maximum allowed limit"""
         # Create many series
         for i in range(100):
             self.client.execute_command('TS.CREATE', f'ts{i}', 'LABELS', '__name__', f'metric{i}')
 
         # Test with max limit (1000)
-        result = self.client.execute_command('TS.STATS', 'LIMIT', '1000')
+        result = self.client.execute_command('TS.LABELSTATS', 'LIMIT', '1000')
         assert result is not None
 
     def test_stats_limit_exceeds_maximum(self):
-        """Test TS.STATS with limit exceeding maximum"""
+        """Test TS.LABELSTATS with limit exceeding maximum"""
         with pytest.raises(ResponseError) as excinfo:
-            self.client.execute_command('TS.STATS', 'LIMIT', '1001')
+            self.client.execute_command('TS.LABELSTATS', 'LIMIT', '1001')
 
         assert 'cannot be greater than' in str(excinfo.value).lower() or 'limit' in str(excinfo.value).lower()
 
     def test_stats_invalid_arguments(self):
-        """Test TS.STATS with invalid argument combinations"""
+        """Test TS.LABELSTATS with invalid argument combinations"""
         with pytest.raises(ResponseError):
-            self.client.execute_command('TS.STATS', 'INVALID_ARG', 'value')
+            self.client.execute_command('TS.LABELSTATS', 'INVALID_ARG', 'value')

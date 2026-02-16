@@ -4,10 +4,10 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 from common import parse_stats_response
 
 class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
-    """Test suite for TS.STATS command in cluster mode."""
+    """Test suite for TS.LABELSTATS command in cluster mode."""
 
     def get_stats(self, limit: int | None = None, label: str | None = None):
-        args = ['TS.STATS']
+        args = ['TS.LABELSTATS']
         if limit is not None:
             args.extend(['LIMIT', limit])
         if label is not None:
@@ -21,7 +21,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
 
 
     def test_stats_cluster_basic(self):
-        """Test TS.STATS aggregates series counts from multiple shards."""
+        """Test TS.LABELSTATS aggregates series counts from multiple shards."""
         # Create series on different shards using hash tags to ensure distribution
         cluster: ValkeyCluster = self.new_cluster_client()
 
@@ -40,7 +40,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert stats['totalLabelValuePairs'] == 5
 
     def test_stats_cluster_top_k_aggregation(self):
-        """Test TS.STATS aggregates top-k lists across shards correctly."""
+        """Test TS.LABELSTATS aggregates top-k lists across shards correctly."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Shard 1: 2 series with type=A
@@ -65,7 +65,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert pair_counts.get('type=B') == 3
 
     def test_stats_cluster_limit(self):
-        """Test TS.STATS LIMIT parameter in cluster mode."""
+        """Test TS.LABELSTATS LIMIT parameter in cluster mode."""
         # Create 15 unique label values across shards
         cluster: ValkeyCluster = self.new_cluster_client()
         for i in range(15):
@@ -82,14 +82,14 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert len(stats['seriesCountByLabelValuePair']) <= 5
 
     def test_stats_cluster_empty(self):
-        """Test TS.STATS on an empty cluster."""
+        """Test TS.LABELSTATS on an empty cluster."""
         stats = self.get_stats()
         assert stats['totalSeries'] == 0
         assert stats['totalLabelValuePairs'] == 0
         assert stats['seriesCountByLabelValuePair'] == []
 
     def test_stats_cluster_multiple_labels_per_series(self):
-        """Test TS.STATS with series having multiple labels across the cluster."""
+        """Test TS.LABELSTATS with series having multiple labels across the cluster."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Create multiple series with multiple labels on different shards
@@ -109,7 +109,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert pair_counts.get('tier=web') == 2
 
     def test_stats_cluster_after_series_deletion(self):
-        """Test TS.STATS reflects series deletions across cluster."""
+        """Test TS.LABELSTATS reflects series deletions across cluster."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', 'temp', 'sensor1')
@@ -127,7 +127,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert stats['totalLabelValuePairs'] == 2  # temp=sensor1, temp=sensor3
 
     def test_stats_cluster_duplicate_label_values(self):
-        """Test TS.STATS counts duplicate label values correctly across shards."""
+        """Test TS.LABELSTATS counts duplicate label values correctly across shards."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Multiple series with same label value on different shards
@@ -142,7 +142,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert pair_counts.get('status=active') == 10
 
     def test_stats_cluster_mixed_labeled_unlabeled(self):
-        """Test TS.STATS with a mix of labeled and unlabeled series."""
+        """Test TS.LABELSTATS with a mix of labeled and unlabeled series."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Labeled series
@@ -160,7 +160,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert stats['totalLabelValuePairs'] == 1
 
     def test_stats_cluster_large_limit(self):
-        """Test TS.STATS with limit larger than available label pairs."""
+        """Test TS.LABELSTATS with limit larger than available label pairs."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Create only 3 unique label pairs
@@ -174,7 +174,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert len(stats['seriesCountByLabelValuePair']) == 3
 
     def test_stats_cluster_uneven_distribution(self):
-        """Test TS.STATS with uneven series distribution across shards."""
+        """Test TS.LABELSTATS with uneven series distribution across shards."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Heavily load shard 1
@@ -192,7 +192,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert pair_counts.get('shard=2') == 1
 
     def test_stats_cluster_after_data_addition(self):
-        """Test TS.STATS remains consistent after adding data points."""
+        """Test TS.LABELSTATS remains consistent after adding data points."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', 'metric', 'temp')
@@ -211,7 +211,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert stats_before['totalLabelValuePairs'] == stats_after['totalLabelValuePairs']
 
     def test_stats_cluster_many_unique_labels(self):
-        """Test TS.STATS with many unique label combinations."""
+        """Test TS.LABELSTATS with many unique label combinations."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Create 50 series with unique label combinations
@@ -227,7 +227,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert stats['totalLabelValuePairs'] == 15
 
     def test_stats_cluster_same_key_different_labels(self):
-        """Test TS.STATS doesn't count the same label name with different values incorrectly."""
+        """Test TS.LABELSTATS doesn't count the same label name with different values incorrectly."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', 'env', 'prod')
@@ -243,7 +243,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert len([k for k in pair_counts.keys() if k.startswith('env=')]) == 3
 
     def test_stats_cluster_label_parameter_custom_label(self):
-        """Test TS.STATS LABEL parameter."""
+        """Test TS.LABELSTATS LABEL parameter."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', 'region', 'us-east', 'env', 'prod')
@@ -262,7 +262,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert focus_label_counts.get(b'eu-west') == 1
 
     def test_stats_cluster_label_parameter_with_limit(self):
-        """Test TS.STATS LABEL parameter combined with LIMIT."""
+        """Test TS.LABELSTATS LABEL parameter combined with LIMIT."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Create series with many different status values
@@ -277,7 +277,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert len(stats['seriesCountByFocusLabelValue']) <= 5
 
     def test_stats_cluster_label_parameter_nonexistent_label(self):
-        """Test TS.STATS LABEL parameter with a label name that doesn't exist."""
+        """Test TS.LABELSTATS LABEL parameter with a label name that doesn't exist."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', 'env', 'prod')
@@ -291,7 +291,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
             stats['seriesCountByFocusLabelValue']) == 0
 
     def test_stats_cluster_label_parameter_partial_coverage(self):
-        """Test TS.STATS LABEL parameter where only some series have the label."""
+        """Test TS.LABELSTATS LABEL parameter where only some series have the label."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Some series with 'tier' label, some without
@@ -312,7 +312,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert len(focus_label_counts) == 2
 
     def test_stats_cluster_label_parameter_duplicate_values(self):
-        """Test TS.STATS LABEL parameter with many series sharing the same label value."""
+        """Test TS.LABELSTATS LABEL parameter with many series sharing the same label value."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # 15 series all with priority=high
@@ -335,7 +335,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert focus_label_counts.get(b'low') == 5
 
     def test_stats_cluster_label_parameter_empty_string(self):
-        """Test TS.STATS with empty LABEL parameter defaults to __name__."""
+        """Test TS.LABELSTATS with empty LABEL parameter defaults to __name__."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         cluster.execute_command('TS.CREATE', 'ts:{1}', 'LABELS', '__name__', 'metric1', 'env', 'test')
@@ -350,7 +350,7 @@ class TestTsStatsCluster(ValkeyTimeSeriesClusterTestCase):
         assert focus_label_counts.get(b'metric2') == 1
 
     def test_stats_cluster_label_parameter_across_all_shards(self):
-        """Test TS.STATS LABEL parameter aggregates correctly across all shards."""
+        """Test TS.LABELSTATS LABEL parameter aggregates correctly across all shards."""
         cluster: ValkeyCluster = self.new_cluster_client()
 
         # Distribute series with the same label across different shards

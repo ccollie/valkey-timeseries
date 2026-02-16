@@ -167,7 +167,7 @@ valkey_module! {
         ["TS.CARD", commands::cardinality, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELNAMES", commands::label_names, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELVALUES", commands::label_values, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.STATS", commands::stats, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELSTATS", commands::label_stats, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CREATERULE", commands::create_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
     ]
