@@ -248,16 +248,15 @@ def parse_stats_response(response):
     stats = {}
 
     int_fields = {
-        'numSeries',
-        'numLabels',
-        'numLabelPairs'
+        'totalSeries',
+        'totalLabels',
+        'totalLabelValuePairs'
     }
 
     value_fields = {
         'seriesCountByMetricName',
         'labelValueCountByLabelName',
-        'memoryInBytesByLabelPair', 
-        'seriesCountByLabelPair'
+        'seriesCountByLabelValuePair'
     }
 
 

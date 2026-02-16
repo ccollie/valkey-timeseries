@@ -7,11 +7,13 @@ mod querier;
 mod timeseries_index;
 
 use crate::common::context::get_current_db;
+use croaring::Portable;
 use papaya::{Guard, HashMap, LocalGuard};
 use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
 use crate::common::hash::BuildNoHashHasher;
+use crate::common::logging::log_warning;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
@@ -24,6 +26,8 @@ pub use timeseries_index::*;
 mod key_buffer;
 #[cfg(test)]
 mod postings_query_tests;
+#[cfg(test)]
+mod timeseries_index_tests;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
@@ -192,4 +196,26 @@ pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
 pub(crate) fn init_croaring_allocator() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| unsafe { croaring::configure_rust_alloc() });
+}
+
+const BITMAP_SERIALIZATION_VERSION: u8 = 1;
+pub fn serialize_bitmap(bitmap: &PostingsBitmap) -> Vec<u8> {
+    let serialization_size = bitmap.get_serialized_size_in_bytes::<Portable>();
+    let mut buffer = Vec::with_capacity(1 + serialization_size);
+    buffer.push(BITMAP_SERIALIZATION_VERSION);
+    let _ = bitmap.serialize_into_vec::<Portable>(&mut buffer);
+    buffer
+}
+
+pub fn deserialize_bitmap(bitmap: &[u8]) -> PostingsBitmap {
+    if bitmap.is_empty() {
+        return PostingsBitmap::default();
+    }
+    let version = bitmap[0];
+    if version != BITMAP_SERIALIZATION_VERSION {
+        let msg = format!("Unsupported bitmap serialization version: {version}");
+        log_warning(&msg);
+        return PostingsBitmap::default();
+    }
+    PostingsBitmap::deserialize::<Portable>(&bitmap[1..])
 }
