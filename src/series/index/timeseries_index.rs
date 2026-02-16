@@ -17,7 +17,7 @@ use crate::series::{SeriesRef, TimeSeries};
 use blart::AsBytes;
 use croaring::Bitmap64;
 use std::mem::size_of;
-use std::ops::{Deref, DerefMut};
+use std::ops::{ControlFlow, Deref, DerefMut};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// A read-only guard for accessing Postings data.
@@ -348,7 +348,6 @@ impl TimeSeriesIndex {
     }
 
     pub fn stats(&self, label: &str, limit: usize) -> PostingsStats {
-        const BATCH_SIZE: usize = 512;
         let mut per_label_counts: AHashMap<String, u64> = AHashMap::new();
 
         let mut metric_name_counts = StatsMaxHeap::new(limit);
@@ -356,21 +355,12 @@ impl TimeSeriesIndex {
         let mut label_value_pair_counts = StatsMaxHeap::new(limit);
         let mut focus_label_value_counts = StatsMaxHeap::new(limit);
 
-        let (posting_count, has_all_postings, has_stale_ids, series_count) = {
+        let series_count = {
             let inner = self.inner.read().unwrap();
-            (
-                inner.label_index.len(),
-                inner.has_all_postings(),
-                !inner.stale_ids.is_empty(),
-                inner.count() as u64,
-            )
+            inner.count() as u64
         };
 
-        let total_label_value_pairs = if has_all_postings {
-            posting_count.saturating_sub(1)
-        } else {
-            posting_count
-        };
+        let mut total_label_value_pairs = 0usize;
 
         // Normalize empty label to the metric-name label once.
         let focus_label = if label.is_empty() {
@@ -379,58 +369,12 @@ impl TimeSeriesIndex {
             label
         };
 
-        fn adjusted_cardinality(
-            inner: &Postings,
-            bitmap: &PostingsBitmap,
-            has_stale_ids: bool,
-        ) -> u64 {
-            let mut count = bitmap.cardinality();
-            if has_stale_ids {
-                let stale_count = inner.stale_ids.and_cardinality(bitmap);
-                if stale_count > 0 {
-                    count = count.saturating_sub(stale_count);
-                }
-            }
-            count
-        }
+        const BATCH_SIZE: usize = 512;
+        let mut iterator = BatchIterator::new(self, BATCH_SIZE);
 
-        // Iterate the label_index in batches via range queries, dropping the read lock between batches
-        // so writers aren't blocked for long.
-        let mut cursor: Option<IndexKey> = None;
-        loop {
-            let mut processed_in_batch = 0usize;
-            let mut next_cursor: Option<IndexKey> = None;
-
-            // When resuming from a cursor, the underlying iterator may return the cursor key again.
-            // Track and skip it once to guarantee forward progress.
-            let mut skip_first_if_equals_cursor = cursor.as_ref().cloned();
-
-            let cursor_bytes: Option<&[u8]> = cursor.as_ref().map(|k| k.as_bytes());
-            let owned_prefix: Vec<u8>;
-            let prefix_bytes: &[u8] = match cursor_bytes {
-                Some(bytes) => {
-                    owned_prefix = bytes.to_vec();
-                    &owned_prefix
-                }
-                None => &[],
-            };
-
-            let inner = self.inner.read().unwrap();
-            for (key, bitmap) in inner.label_index.prefix(prefix_bytes) {
-                if let Some(ref cursor_key) = skip_first_if_equals_cursor
-                    && key == cursor_key
-                {
-                    skip_first_if_equals_cursor = None;
-                    continue;
-                }
-
-                if key == &*ALL_POSTINGS_KEY {
-                    continue;
-                }
-
+        while !iterator.is_complete() {
+            iterator.next_batch(|key, _, count| {
                 if let Some((name, value)) = key.split() {
-                    let count = adjusted_cardinality(&inner, bitmap, has_stale_ids);
-
                     match per_label_counts.get_mut(name) {
                         Some(existing_count) => {
                             *existing_count = existing_count.saturating_add(count);
@@ -440,8 +384,9 @@ impl TimeSeriesIndex {
                         }
                     }
 
-                    let pair = format!("{name}={value}");
+                    total_label_value_pairs += 1;
 
+                    let pair = format!("{name}={value}");
                     label_value_pair_counts.push(PostingStat { name: pair, count });
 
                     if name == METRIC_NAME_LABEL {
@@ -458,24 +403,8 @@ impl TimeSeriesIndex {
                         });
                     }
                 }
-
-                processed_in_batch += 1;
-                if processed_in_batch >= BATCH_SIZE {
-                    next_cursor = Some(key.clone());
-                    break;
-                }
-            }
-
-            drop(inner);
-
-            if processed_in_batch == 0 {
-                break;
-            }
-
-            cursor = next_cursor;
-            if cursor.is_none() {
-                break;
-            }
+                ControlFlow::Continue(())
+            })
         }
 
         let label_count = per_label_counts.len();
@@ -523,61 +452,21 @@ impl TimeSeriesIndex {
 
         let mut label_names_bitmap = Bitmap64::default();
         let mut label_value_pairs_bitmap = Bitmap64::default();
+        let hasher = DeterministicHasher::default();
 
-        let hasher: DeterministicHasher = DeterministicHasher::default();
+        let mut iterator = BatchIterator::new(self, BATCH_SIZE);
 
-        let mut cursor: Option<IndexKey> = None;
-        loop {
-            let mut processed_in_batch = 0usize;
-            let mut next_cursor: Option<IndexKey> = None;
-
-            let cursor_bytes: Option<&[u8]> = cursor.as_ref().map(|k| k.as_bytes());
-            let owned_prefix: Vec<u8>;
-            let prefix_bytes: &[u8] = match cursor_bytes {
-                Some(bytes) => {
-                    owned_prefix = bytes.to_vec();
-                    &owned_prefix
-                }
-                None => &[],
-            };
-
-            let inner = self.inner.read().unwrap();
-            for (key, _) in inner.label_index.prefix(prefix_bytes) {
-                if let Some(ref cursor_key) = cursor
-                    && key == cursor_key
-                {
-                    continue;
-                }
-
-                if key == &*ALL_POSTINGS_KEY {
-                    continue;
-                }
-
+        while !iterator.is_complete() {
+            iterator.next_batch(|key, _bitmap, _| {
                 if let Some((name, _value)) = key.split() {
-                    let h = hasher.hash_one(name);
-                    label_names_bitmap.add(h);
+                    let name_hash = hasher.hash_one(name);
+                    label_names_bitmap.add(name_hash);
 
-                    let kh = hasher.hash_one(key);
-                    label_value_pairs_bitmap.add(kh);
+                    let key_hash = hasher.hash_one(key);
+                    label_value_pairs_bitmap.add(key_hash);
                 }
-
-                processed_in_batch += 1;
-                if processed_in_batch >= BATCH_SIZE {
-                    next_cursor = Some(key.clone());
-                    break;
-                }
-            }
-
-            drop(inner);
-
-            if processed_in_batch == 0 {
-                break;
-            }
-
-            cursor = next_cursor;
-            if cursor.is_none() {
-                break;
-            }
+                ControlFlow::Continue(())
+            });
         }
 
         (label_names_bitmap, label_value_pairs_bitmap)
@@ -644,6 +533,104 @@ impl TimeSeriesIndex {
     ) -> Option<IndexKey> {
         let mut inner = self.inner.write().unwrap();
         inner.optimize_postings(start_prefix, count)
+    }
+}
+
+/// Helper struct for batch iteration over the label index
+struct BatchIterator<'a> {
+    index: &'a TimeSeriesIndex,
+    cursor: Option<IndexKey>,
+    batch_size: usize,
+    is_finished: bool,
+}
+
+impl<'a> BatchIterator<'a> {
+    fn new(index: &'a TimeSeriesIndex, batch_size: usize) -> Self {
+        Self {
+            index,
+            cursor: None,
+            batch_size,
+            is_finished: false,
+        }
+    }
+
+    #[inline]
+    fn adjusted_cardinality(inner: &Postings, bitmap: &PostingsBitmap, has_stale_ids: bool) -> u64 {
+        let mut count = bitmap.cardinality();
+        if has_stale_ids {
+            let stale_count = inner.stale_ids.and_cardinality(bitmap);
+            if stale_count > 0 {
+                count = count.saturating_sub(stale_count);
+            }
+        }
+        count
+    }
+
+    fn next_batch<F>(&mut self, mut processor: F)
+    where
+        F: FnMut(&IndexKey, &PostingsBitmap, u64) -> ControlFlow<()>,
+    {
+        if self.is_finished {
+            return;
+        }
+
+        let mut processed_in_batch = 0usize;
+
+        let cursor_bytes = self.cursor.as_ref().map(|k| k.as_bytes());
+        let owned_prefix: Vec<u8>;
+        let prefix_bytes: &[u8] = match cursor_bytes {
+            Some(bytes) => {
+                owned_prefix = bytes.to_vec();
+                &owned_prefix
+            }
+            None => &[],
+        };
+
+        let inner = self.index.inner.read().unwrap();
+        let has_stale_ids = !inner.stale_ids.is_empty();
+        let mut cursor: Option<&IndexKey> = None;
+
+        for (key, bitmap) in inner.label_index.prefix(prefix_bytes) {
+            // Skip the cursor key to ensure forward progress
+            if let Some(ref cursor_key) = self.cursor
+                && key == cursor_key
+            {
+                continue;
+            }
+
+            processed_in_batch += 1;
+
+            if key == &*ALL_POSTINGS_KEY {
+                continue;
+            }
+
+            let cardinality = Self::adjusted_cardinality(&inner, bitmap, has_stale_ids);
+            if cardinality > 0
+                && let ControlFlow::Break(_) = processor(key, bitmap, cardinality)
+            {
+                self.is_finished = true;
+                return;
+            }
+
+            cursor = Some(key);
+            if processed_in_batch >= self.batch_size {
+                break;
+            }
+        }
+
+        if processed_in_batch == 0 || cursor.is_none() {
+            self.cursor = None; // Signal completion
+            self.is_finished = true;
+        } else if let Some(cursor) = cursor {
+            // Set the cursor to the last processed key to ensure we continue from there in the next batch
+            self.cursor = Some(cursor.clone());
+        }
+
+        drop(inner);
+    }
+
+    fn is_complete(&self) -> bool {
+        self.is_finished
     }
 }
 
