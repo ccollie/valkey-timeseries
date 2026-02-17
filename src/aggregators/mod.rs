@@ -9,6 +9,7 @@ mod filtered;
 mod handlers;
 #[cfg(test)]
 mod handlers_tests;
+mod kahan;
 
 pub use aggregate_iterator::*;
 pub use filtered::*;

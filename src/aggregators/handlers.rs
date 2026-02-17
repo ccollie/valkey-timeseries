@@ -4,6 +4,7 @@
 
 use super::{AggregationType, AllAggregator, AnyAggregator, NoneAggregator};
 use crate::aggregators::filtered::{CountIfAggregator, ShareAggregator, SumIfAggregator};
+use crate::aggregators::kahan::{KahanAvg, KahanSum};
 use crate::common::Sample;
 use crate::common::hash::hash_f64;
 use crate::common::rdb::{
@@ -273,63 +274,50 @@ impl RdbSerializable for RangeAggregator {
     }
 }
 
-#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
-pub struct AvgAggregator {
-    count: usize,
-    sum: Value,
-}
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize, Hash)]
+pub struct AvgAggregator(KahanAvg);
+
 impl AggregationHandler for AvgAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.sum += value;
-        self.count += 1;
+        self.0 += value;
     }
     fn reset(&mut self) {
-        self.count = 0;
-        self.sum = 0.;
+        self.0.reset();
     }
     fn current(&self) -> Option<Value> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.sum / self.count as f64)
-        }
+        self.0.value()
     }
 }
 
 impl RdbSerializable for AvgAggregator {
     fn rdb_save(&self, rdb: *mut RedisModuleIO) {
-        raw::save_double(rdb, self.sum);
-        rdb_save_usize(rdb, self.count);
+        self.0.rdb_save(rdb);
     }
 
     fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
-        let sum = raw::load_double(rdb)?;
-        let count = rdb_load_usize(rdb)?;
-        Ok(Self { count, sum })
+        let inner = KahanAvg::rdb_load(rdb)?;
+        Ok(Self(inner))
     }
 }
 
-impl Hash for AvgAggregator {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        hash_f64(self.sum, state);
-        self.count.hash(state);
-    }
-}
-
-#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
-pub struct SumAggregator(Option<Value>);
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize, Hash)]
+pub struct SumAggregator(KahanSum);
 impl AggregationHandler for SumAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.0 = self.0.map(|v| v + value).or(Some(value));
+        self.0 += value;
     }
     fn reset(&mut self) {
-        self.0 = None;
+        self.0.reset();
     }
     fn current(&self) -> Option<Value> {
-        self.0
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.value())
+        }
     }
     fn empty_value(&self) -> Value {
         0.
@@ -338,20 +326,15 @@ impl AggregationHandler for SumAggregator {
 
 impl RdbSerializable for SumAggregator {
     fn rdb_save(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.0);
+        self.0.rdb_save(rdb);
     }
 
     fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(Self)
-    }
-}
-
-impl Hash for SumAggregator {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        hash_f64(self.0.unwrap_or(f64::NAN), state);
+        let inner = KahanSum::rdb_load(rdb)?;
+        Ok(Self(inner))
     }
 }
 
