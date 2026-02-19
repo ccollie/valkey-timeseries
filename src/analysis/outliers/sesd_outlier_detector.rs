@@ -2,6 +2,7 @@ use crate::analysis::math::{calculate_mean, calculate_std_dev};
 use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal};
 use crate::analysis::seasonality::stl::Stl;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
+use statrs::distribution::{ContinuousCDF, StudentsT};
 
 /// SESD (Seasonal Extreme Studentized Deviate) anomaly detector
 #[derive(Clone, Debug)]
@@ -127,9 +128,17 @@ fn esd_test(
         if std_dev == 0.0 {
             break;
         }
+        // Robust location and scale: median + MAD
+        let med = median(&data);
+        let mad = mad(&data, med);
+
+        // Avoid division by zero; if MAD ~ 0, we can't meaningfully scale.
+        if mad == 0.0 {
+            break;
+        }
 
         // Compute z-scores for all remaining points
-        let z_scores: Vec<f64> = data.iter().map(|&v| ((v - mean) / std_dev).abs()).collect();
+        let z_scores: Vec<f64> = data.iter().map(|&v| ((v - med) / mad).abs()).collect();
 
         // Find max deviation
         let (max_idx, max_val) = z_scores
@@ -198,6 +207,139 @@ fn esd_test(
     }
 
     Ok((anomalies, scores))
+}
+
+pub fn sh_esd_mad(
+    y: &[f64],
+    period: usize,
+    max_anoms_frac: f64,
+    alpha: f64,
+) -> TimeSeriesAnalysisResult<Vec<Anomaly>> {
+    assert!(!y.is_empty());
+    assert!(period > 0);
+    assert!((0.0..=1.0).contains(&max_anoms_frac));
+    assert!((0.0..1.0).contains(&alpha));
+
+    let n = y.len();
+    let k_max = (max_anoms_frac * n as f64).floor() as usize;
+    if k_max == 0 {
+        return Ok(Vec::new());
+    }
+
+    let resid = calculate_stl_residual(y, period)?;
+
+    let mut x: Vec<f64> = resid.clone();
+    let mut remaining_idx: Vec<usize> = (0..n).collect();
+
+    // (orig_idx, R_i, lambda_i, Direction, score)
+    let mut candidates: Vec<(usize, f64, f64, AnomalySignal, f64)> = Vec::with_capacity(k_max);
+
+    for i in 0..k_max {
+        if x.len() <= 2 {
+            break;
+        }
+
+        let med = median(&x);
+        let mad = mad(&x, med);
+        if mad == 0.0 {
+            break;
+        }
+
+        let mut max_dev = f64::NEG_INFINITY;
+        let mut max_dir = AnomalySignal::None;
+        let mut j_star = 0usize;
+
+        for (j, &val) in x.iter().enumerate() {
+            let base = (val - med) / mad; // signed
+            let dev = base.abs();
+            if dev > max_dev {
+                max_dev = dev;
+                max_dir = if base >= 0.0 {
+                    AnomalySignal::Positive
+                } else {
+                    AnomalySignal::Negative
+                };
+                j_star = j;
+            }
+        }
+
+        if max_dev <= 0.0 {
+            break;
+        }
+
+        let r_i = max_dev;
+
+        let m = n - i;
+        if m <= 2 {
+            break;
+        }
+        let p = 1.0 - alpha / (2.0 * (m as f64));
+        let df = (m - 2) as f64;
+        let t_dist = StudentsT::new(0.0, 1.0, df).unwrap();
+        let t = t_dist.inverse_cdf(p);
+
+        let m_f = m as f64;
+        let lambda = ((m_f - 1.0) * t) / (((m_f - 2.0 + t * t) * m_f).sqrt());
+
+        let orig_idx = remaining_idx[j_star];
+        let score = if lambda > 0.0 {
+            max_dev / (max_dev + lambda)
+        } else {
+            1.0
+        };
+        candidates.push((orig_idx, r_i, lambda, max_dir, score));
+
+        x.remove(j_star);
+        remaining_idx.remove(j_star);
+    }
+
+    let mut k_star = 0usize;
+    for (idx, &(_, r_i, lambda_i, _, _)) in candidates.iter().enumerate() {
+        if r_i > lambda_i {
+            k_star = idx + 1;
+        }
+    }
+    if k_star == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut selected: Vec<Anomaly> = candidates[..k_star]
+        .iter()
+        .map(|(idx, _r, _lambda_i, dir, score)| Anomaly {
+            signal: *dir,
+            value: resid[*idx],
+            score: *score,
+            index: *idx,
+        })
+        .collect();
+
+    selected.sort_by_key(|a| a.index);
+    Ok(selected)
+}
+
+fn median(x: &[f64]) -> f64 {
+    let n = x.len();
+    assert!(n > 0);
+    let mut v: Vec<f64> = x.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        let a = v[n / 2 - 1];
+        let b = v[n / 2];
+        0.5 * (a + b)
+    }
+}
+
+fn mad(x: &[f64], med: f64) -> f64 {
+    if x.is_empty() {
+        return 0.0;
+    }
+    let mut devs: Vec<f64> = x.iter().map(|v| (v - med).abs()).collect();
+    devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = median(&devs);
+    // Scale factor for consistency with normal distribution (optional).
+    1.4826 * m
 }
 
 #[cfg(test)]
