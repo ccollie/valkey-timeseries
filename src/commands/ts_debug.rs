@@ -1,7 +1,7 @@
 use super::ts_debug_configs::list_configs_cmd;
 use crate::commands::CommandArgIterator;
 use crate::commands::command_parser::parse_query_index_command_args;
-use crate::common::replies::*;
+use crate::common::context::replies::*;
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
 use crate::series::index::series_keys_by_selectors;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
