@@ -34,7 +34,7 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// The request type.
     type Request: Serializable + Send + 'static;
     /// The response type.
-    type Response: Serializable + Send;
+    type Response: Serializable + Default + Send;
 
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
@@ -80,6 +80,13 @@ pub trait FanoutCommand: Default + Send + 'static {
     {
         let targets = self.get_targets(ctx);
         exec_command(ctx, self, targets, started, timeout, f)
+    }
+
+    /// Execute the fanout operation synchronously across cluster nodes.
+    fn exec_sync(self, ctx: &Context) -> FanoutResult<Self::Response> {
+        let timeout = self.get_timeout();
+        let targets = self.get_targets(ctx);
+        exec_command_sync(ctx, self, targets, timeout)
     }
 
     /// Generate the request to be sent to each target node.
@@ -301,6 +308,37 @@ enum FanoutLifecycleState {
     Active,
     /// Completed: the callback has run, or runs once the state lock is released.
     Completed,
+}
+
+/// Execute the fanout operation synchronously across cluster nodes.
+pub fn exec_command_sync<OP: FanoutCommand>(
+    ctx: &Context,
+    command: OP,
+    targets: FanoutTarget,
+    timeout: Duration,
+) -> FanoutResult<OP::Response> {
+    use std::sync::Condvar;
+
+    let pair = Arc::new((Mutex::new(None), Condvar::new()));
+    let pair_clone = pair.clone();
+
+    let callback = move |op: OP, result: FanoutCommandResult| {
+        let (lock, cvar) = &*pair_clone;
+        let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
+        *completed = Some((op, result));
+        cvar.notify_one();
+    };
+
+    exec_command(ctx, command, targets, timeout, callback)?;
+
+    let (lock, cvar) = &*pair;
+    let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
+    while completed.is_none() {
+        completed = cvar.wait(completed).expect(MUTEX_POISONED_MSG);
+    }
+
+    let (op, result) = completed.take().unwrap();
+    result.map(|_| op.get_response())
 }
 
 /// Internal structure to manage the state of an ongoing fanout operation.
