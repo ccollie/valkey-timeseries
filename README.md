@@ -10,9 +10,10 @@ well as provide a superset of the _RedisTimeSeries_ API.
 - Configurable encoding
 - Single sample and range queries
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
-- Advanced [Label and Metric Discovery](docs/topics/label-discovery.md) with fuzzy matching and server-side filtering
-- Anomaly detection using multiple algorithms, including [ZScore](https://en.wikipedia.org/wiki/Standard_score), [IQR](https://en.wikipedia.org/wiki/Interquartile_range), [MAD](https://crispinagar.github.io/blogs/mad-anomaly-detection.html), and [Random Cut Forest](https://christianalexander.com/2023/08/06/random-cut-forests-in-elixir/)
-- Compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
+- PromQL-style querying with the `TS.QUERY` and `TS.QUERYRANGE` commands, which
+  support [instant and range queries](https://victoriametrics.com/blog/prometheus-monitoring-instant-range-query/)
+  respectively.
+- Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
 ## Scaling
 
@@ -74,6 +75,7 @@ The following commands are supported
 - [`TS.OUTLIERS`](docs/commands/ts.outliers.md)
 - [`TS.QUERYINDEX`](docs/commands/ts.queryindex.md)
 - [`TS.QUERYLABELS`](docs/commands/ts.querylabels.md)
+- [`TS.QUERYRANGE`](docs/commands/ts.queryrange.md)
 - [`TS.RANGE`](docs/commands/ts.range.md)
 - [`TS.READ`](docs/commands/ts.read.md)
 - [`TS.REVRANGE`](docs/commands/ts.revrange.md)
