@@ -48,6 +48,12 @@ impl FanoutClientCommand for CardFanoutCommand {
         self.result += resp.cardinality as usize;
     }
 
+    fn get_response(self) -> Self::Response {
+        CardinalityResponse {
+            cardinality: self.result as u64,
+        }
+    }
+
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
         ctx.reply_with_i64(self.result as i64)
     }

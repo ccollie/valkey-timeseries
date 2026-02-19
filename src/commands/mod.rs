@@ -57,6 +57,7 @@ pub use ts_mget::*;
 pub use ts_mrange::*;
 pub use ts_outliers::*;
 pub use ts_queryindex::*;
+pub use ts_queryrange::*;
 pub use ts_range::*;
 use valkey_module::ValkeyResult;
 

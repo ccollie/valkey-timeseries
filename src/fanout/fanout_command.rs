@@ -19,7 +19,7 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// The request type.
     type Request: Serializable + Send + 'static;
     /// The response type.
-    type Response: Serializable + Send;
+    type Response: Serializable + Default + Send;
 
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
@@ -49,6 +49,13 @@ pub trait FanoutCommand: Default + Send + 'static {
         exec_command(ctx, self, targets, timeout, f)
     }
 
+    /// Execute the fanout operation synchronously across cluster nodes.
+    fn exec_sync(self, ctx: &Context) -> FanoutResult<Self::Response> {
+        let timeout = self.get_timeout();
+        let targets = self.get_targets(ctx);
+        exec_command_sync(ctx, self, targets, timeout)
+    }
+
     /// Generate the request to be sent to each target node.
     fn generate_request(&self) -> Self::Request;
 
@@ -67,6 +74,12 @@ pub trait FanoutCommand: Default + Send + 'static {
 
     /// Called once all responses have been received, or on timeout.
     fn on_completion(&mut self) {}
+
+    /// Return the final response after the fanout operation is complete.
+    /// By default, it returns a default instance of the response type.
+    fn get_response(self) -> Self::Response {
+        Self::Response::default()
+    }
 
     fn generate_error_reply(&self) -> FanoutError {
         let message = "Internal error found.";
@@ -141,6 +154,37 @@ where
     }
 
     Ok(())
+}
+
+/// Execute the fanout operation synchronously across cluster nodes.
+pub fn exec_command_sync<OP: FanoutCommand>(
+    ctx: &Context,
+    command: OP,
+    targets: Arc<HashSet<NodeInfo>>,
+    timeout: Duration,
+) -> FanoutResult<OP::Response> {
+    use std::sync::Condvar;
+
+    let pair = Arc::new((Mutex::new(None), Condvar::new()));
+    let pair_clone = pair.clone();
+
+    let callback = move |op: OP, result: FanoutCommandResult| {
+        let (lock, cvar) = &*pair_clone;
+        let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
+        *completed = Some((op, result));
+        cvar.notify_one();
+    };
+
+    exec_command(ctx, command, targets, timeout, callback)?;
+
+    let (lock, cvar) = &*pair;
+    let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
+    while completed.is_none() {
+        completed = cvar.wait(completed).expect(MUTEX_POISONED_MSG);
+    }
+
+    let (op, result) = completed.take().unwrap();
+    result.map(|_| op.get_response())
 }
 
 /// Internal structure to manage the state of an ongoing fanout operation.

@@ -15,7 +15,7 @@ use std::ops::{Deref, DerefMut};
 
 const EMPTY_TEXT: &str = "";
 
-#[derive(Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum MatchOp {
     Equal,
     NotEqual,
@@ -187,7 +187,7 @@ impl Hash for RegexMatcher {
 }
 
 impl RegexMatcher {
-    fn new(regex: Regex, value: String) -> Self {
+    pub(crate) fn new(regex: Regex, value: String) -> Self {
         Self { regex, value }
     }
 
@@ -548,6 +548,12 @@ impl DerefMut for FilterList {
 impl From<Vec<LabelFilter>> for FilterList {
     fn from(value: Vec<LabelFilter>) -> Self {
         Self::new(value)
+    }
+}
+
+impl From<SmallVec<LabelFilter, 3>> for FilterList {
+    fn from(value: SmallVec<LabelFilter, 3>) -> Self {
+        Self(value)
     }
 }
 
