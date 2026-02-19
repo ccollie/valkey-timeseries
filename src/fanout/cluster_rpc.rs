@@ -9,8 +9,10 @@ use crate::common::pool::get_pooled_buffer;
 use crate::common::threads::spawn_with_context;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
+use crate::fanout::fanout_command::FanoutResponseCallback;
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
-use crate::fanout::{FanoutResponseCallback, FanoutResult, NodeInfo};
+use crate::fanout::serialization::Serializable;
+use crate::fanout::{FanoutResult, NodeInfo};
 use ahash::HashSet;
 use core::time::Duration;
 use papaya::HashMap;
@@ -157,6 +159,21 @@ fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
 pub fn get_cluster_command_timeout() -> Duration {
     let timeout = FANOUT_COMMAND_TIMEOUT.load(Ordering::Relaxed);
     Duration::from_millis(timeout)
+}
+
+pub fn invoke_rpc<Request: Serializable>(
+    ctx: &Context,
+    name: &str,
+    req: Request,
+    targets: Arc<HashSet<NodeInfo>>,
+    response_handler: FanoutResponseCallback,
+    timeout: Duration,
+) -> ValkeyResult<()> {
+    // Consider using a byte-pool buffer here if serialization size is predictable
+    let mut buf = Vec::with_capacity(512);
+    req.serialize(&mut buf);
+
+    send_cluster_request(ctx, &buf, targets, name, response_handler, Some(timeout))
 }
 
 pub(super) fn send_cluster_request(

@@ -1,7 +1,7 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::common::threads::join;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::{FanoutCommand, FanoutOperation, NodeInfo};
 use crate::series::index::{
     PostingStat, PostingsBitmap, PostingsStats, StatsMaxHeap, deserialize_bitmap,
     get_timeseries_index, serialize_bitmap,
@@ -9,7 +9,7 @@ use crate::series::index::{
 use ahash::AHashMap;
 use std::default::Default;
 use std::ops::Deref;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 struct StatsResults {
@@ -50,7 +50,7 @@ impl Default for LabelStatsFanoutOperation {
     }
 }
 
-impl FanoutOperation for LabelStatsFanoutOperation {
+impl FanoutCommand for LabelStatsFanoutOperation {
     type Request = StatsRequest;
     type Response = StatsResponse;
 
@@ -104,8 +104,10 @@ impl FanoutOperation for LabelStatsFanoutOperation {
             &resp.series_count_by_focus_label_value,
         );
     }
+}
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
+impl FanoutOperation for LabelStatsFanoutOperation {
+    fn reply(&mut self, ctx: &ThreadSafeContext<BlockedClient>) -> Status {
         let limit = self.limit;
         let state = std::mem::take(&mut self.state);
 

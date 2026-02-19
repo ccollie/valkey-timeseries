@@ -1,11 +1,11 @@
 use super::fanout::filters::serialize_matchers_list;
 use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
 use super::utils::reply_with_btree_set;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::{FanoutCommand, FanoutOperation, NodeInfo};
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, Status, ValkeyResult};
+use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult};
 
 #[derive(Clone, Debug, Default)]
 pub struct QueryIndexFanoutOperation {
@@ -22,7 +22,7 @@ impl QueryIndexFanoutOperation {
     }
 }
 
-impl FanoutOperation for QueryIndexFanoutOperation {
+impl FanoutCommand for QueryIndexFanoutOperation {
     type Request = IndexQueryRequest;
     type Response = IndexQueryResponse;
 
@@ -52,9 +52,12 @@ impl FanoutOperation for QueryIndexFanoutOperation {
             self.keys.insert(key);
         }
     }
+}
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
-        reply_with_btree_set(ctx, &self.keys);
+impl FanoutOperation for QueryIndexFanoutOperation {
+    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
+        let ctx = thread_ctx.lock();
+        reply_with_btree_set(&ctx, &self.keys);
         Status::Ok
     }
 }

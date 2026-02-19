@@ -1,11 +1,11 @@
 use super::fanout::generated::{LabelValuesRequest, LabelValuesResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::{FanoutCommand, FanoutOperation, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
 use std::collections::BTreeSet;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 pub struct LabelValuesFanoutOperation {
@@ -24,7 +24,7 @@ impl LabelValuesFanoutOperation {
     }
 }
 
-impl FanoutOperation for LabelValuesFanoutOperation {
+impl FanoutCommand for LabelValuesFanoutOperation {
     type Request = LabelValuesRequest;
     type Response = LabelValuesResponse;
 
@@ -63,8 +63,10 @@ impl FanoutOperation for LabelValuesFanoutOperation {
             self.results.insert(value);
         }
     }
+}
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
+impl FanoutOperation for LabelValuesFanoutOperation {
+    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
         let count = self.options.limit.unwrap_or(self.results.len());
         let results = std::mem::take(&mut self.results);
         let values = results
@@ -73,6 +75,6 @@ impl FanoutOperation for LabelValuesFanoutOperation {
             .map(ValkeyValue::BulkString)
             .collect::<Vec<ValkeyValue>>();
         let res = ValkeyValue::Array(values);
-        ctx.reply(Ok(res))
+        thread_ctx.reply(Ok(res))
     }
 }

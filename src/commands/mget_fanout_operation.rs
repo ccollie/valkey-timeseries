@@ -3,9 +3,11 @@ use super::utils::{reply_with_bulk_string, reply_with_fanout_labels, reply_with_
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
 use crate::error_consts;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::{FanoutCommand, FanoutOperation, NodeInfo};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{Context, Status, ValkeyError, ValkeyResult, reply_with_array};
+use valkey_module::{
+    BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, reply_with_array,
+};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutOperation {
@@ -22,7 +24,7 @@ impl MGetFanoutOperation {
     }
 }
 
-impl FanoutOperation for MGetFanoutOperation {
+impl FanoutCommand for MGetFanoutOperation {
     type Request = MultiGetRequest;
     type Response = MultiGetResponse;
 
@@ -62,15 +64,18 @@ impl FanoutOperation for MGetFanoutOperation {
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         self.series.extend(resp.values);
     }
+}
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
+impl FanoutOperation for MGetFanoutOperation {
+    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
+        let ctx = thread_ctx.lock();
         let count = self.series.len();
         let status = reply_with_array(ctx.ctx, count as i64);
         if status != Status::Ok {
             return status;
         }
         for response in self.series.iter() {
-            let status = reply_with_mget_value(ctx, response);
+            let status = reply_with_mget_value(&ctx, response);
             if status != Status::Ok {
                 return status;
             }

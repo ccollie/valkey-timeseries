@@ -1,7 +1,7 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
 use crate::common::Sample;
-use crate::fanout::FanoutOperation;
 use crate::fanout::NodeInfo;
+use crate::fanout::{FanoutCommand, FanoutOperation};
 use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
@@ -13,7 +13,7 @@ use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
-use valkey_module::{Context, Status, ValkeyResult};
+use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult};
 
 #[derive(Default)]
 pub struct MRangeFanoutOperation {
@@ -30,7 +30,7 @@ impl MRangeFanoutOperation {
     }
 }
 
-impl FanoutOperation for MRangeFanoutOperation {
+impl FanoutCommand for MRangeFanoutOperation {
     type Request = MultiRangeRequest;
     type Response = MultiRangeResponse;
 
@@ -68,8 +68,10 @@ impl FanoutOperation for MRangeFanoutOperation {
         let mut resp = resp;
         self.series.append(&mut resp.series);
     }
+}
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
+impl FanoutOperation for MRangeFanoutOperation {
+    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
         self.options.range.latest = false;
         self.options.range.timestamp_filter = None;
         self.options.range.value_filter = None;
@@ -87,11 +89,13 @@ impl FanoutOperation for MRangeFanoutOperation {
         match result {
             Ok(mut series) => {
                 sort_mrange_results(&mut series, is_grouped);
-                ctx.reply(Ok(series.into()))
+                thread_ctx.reply(Ok(series.into()))
             }
             Err(e) => {
-                ctx.log_warning(&format!("Error processing series responses: {e}"));
-                ctx.reply_error_string("Internal error processing grouped series");
+                let warning = format!("Error processing MRange responses: {e:?}");
+                thread_ctx.reply(Err(e));
+                let ctx = thread_ctx.lock();
+                ctx.log_warning(&warning);
                 Status::Err
             }
         }
