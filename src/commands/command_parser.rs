@@ -129,7 +129,6 @@ command_arg_tokens! {
     Start => "START",
     Step => "STEP",
     Time => "TIME",
-    Timeout => "TIMEOUT",
     Timestamp => "TIMESTAMP",
     True => "TRUE",
     Uncompressed => "UNCOMPRESSED",
@@ -891,7 +890,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
     Ok(options)
 }
 
-pub(super) fn parse_filter_by_range_options(
+pub fn parse_filter_by_range_options(
     args: &mut CommandArgIterator,
 ) -> ValkeyResult<MetaDateRangeFilter> {
     let mut exclude_range = false;
@@ -910,7 +909,7 @@ pub(super) fn parse_filter_by_range_options(
     }
 }
 
-pub(super) fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
+pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
     const RANGE_OPTION_ARGS: [CommandArgToken; 12] = [
         CommandArgToken::Align,
         CommandArgToken::Aggregation,
@@ -1329,13 +1328,12 @@ fn parse_duration_internal(arg: Option<ValkeyString>, token_name: &str) -> Valke
 pub(super) fn parse_query_range_command_args(
     config: &PromqlConfig,
     args: &mut CommandArgIterator,
-) -> ValkeyResult<(EvalStmt, crate::promql::QueryOptions)> {
+) -> ValkeyResult<EvalStmt> {
     let query = args.next_string()?;
     let mut start_value: Option<TimestampValue> = None;
     let mut end_value: Option<TimestampValue> = None;
     let mut lookback_delta: Duration = config.lookback_delta;
     let mut step: Option<Duration> = None;
-    let mut options = crate::promql::QueryOptions::default();
 
     let expr = parse_promql_query(&query, config)?;
 
@@ -1355,15 +1353,6 @@ pub(super) fn parse_query_range_command_args(
             }
             CommandArgToken::LookbackDelta => {
                 lookback_delta = parse_duration_internal(args.next(), token.as_str())?;
-            }
-            CommandArgToken::Timeout => {
-                let mut timeout = parse_duration_internal(args.next(), token.as_str())?;
-                if !config.max_query_duration.is_zero() {
-                    timeout = timeout.min(config.max_query_duration);
-                }
-                let deadline = current_time_millis().saturating_add(timeout.as_millis() as i64);
-                options.timeout = Some(timeout);
-                options.deadline = Some(deadline);
             }
             _ => {
                 let msg = format!("ERR invalid argument '{}'", arg);
@@ -1411,18 +1400,17 @@ pub(super) fn parse_query_range_command_args(
         lookback_delta,
     };
 
-    Ok((eval_stmt, options))
+    Ok(eval_stmt)
 }
 
 pub(super) fn parse_query_command_args(
     config: &PromqlConfig,
     args: &mut CommandArgIterator,
-) -> ValkeyResult<(EvalStmt, crate::promql::QueryOptions)> {
+) -> ValkeyResult<EvalStmt> {
     let query = args.next_string()?;
 
     let mut evaluation_ts: TimestampValue = TimestampValue::Now;
     let mut lookback_delta: Duration = config.lookback_delta;
-    let mut options = crate::promql::QueryOptions::default();
 
     let expr = parse_promql_query(&query, config)?;
 
@@ -1435,9 +1423,6 @@ pub(super) fn parse_query_command_args(
             }
             CommandArgToken::LookbackDelta => {
                 lookback_delta = parse_duration_internal(args.next(), token.as_str())?;
-            }
-            CommandArgToken::Timeout => {
-                options.timeout = Some(parse_duration_internal(args.next(), token.as_str())?);
             }
             _ => {
                 let msg = format!("TSDB: invalid query argument '{}'", arg);
@@ -1456,7 +1441,7 @@ pub(super) fn parse_query_command_args(
         lookback_delta,
     };
 
-    Ok((eval_stmt, options))
+    Ok(eval_stmt)
 }
 
 #[cfg(test)]
