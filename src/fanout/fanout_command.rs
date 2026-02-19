@@ -475,6 +475,7 @@ where
             Ok(()) => self.rpc_done(),
             Err(err) => self.on_error(err, target),
         }
+        self.rpc_done()
     }
 
     /// Completes the fan-out for a client that has gone. True when it was still running, so
