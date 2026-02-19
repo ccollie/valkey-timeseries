@@ -121,8 +121,6 @@ fn handle_add(
     value: f64,
     on_duplicate: Option<DuplicatePolicy>,
 ) -> ValkeyResult {
-    let mut ignored = false;
-
     let last_ts = series.last_sample.map(|s| s.timestamp);
     // Compared after the add to decide whether to wake blocked `TS.READ` readers. A count
     // comparison rather than `!is_upsert`: an out-of-order insert *below* the tail is not an
@@ -131,41 +129,22 @@ fn handle_add(
     // signal.
     let samples_before = series.total_samples;
 
-    let (replication_timestamp, ts, value) = match series.add(timestamp, value, on_duplicate) {
+    let (replication_timestamp, sample, ignored) = match series.add(timestamp, value, on_duplicate)
+    {
         SampleAddResult::Ignored(res_ts) => {
-            ignored = true;
-            let timestamp = if timestamp_str == "*" {
-                Some(res_ts)
-            } else {
-                None
-            };
-            (timestamp, res_ts, value)
+            let replication_ts = (timestamp_str == "*").then_some(res_ts);
+            (replication_ts, Sample::new(res_ts, value), true)
         }
         SampleAddResult::Ok(added) => {
-            let timestamp = if timestamp_str == "*" {
-                Some(added.timestamp)
-            } else {
-                None
-            };
-            (timestamp, added.timestamp, added.value)
+            let replication_ts = (timestamp_str == "*").then_some(added.timestamp);
+            (replication_ts, added, false)
         }
-        res => {
-            return res.into();
-        }
+        res => return res.into(),
     };
 
-    let is_upsert = if let Some(last_ts) = last_ts {
-        ts <= last_ts
-    } else {
-        false
-    };
+    let is_upsert = last_ts.is_some_and(|last| sample.timestamp <= last);
 
-    // `ignored` is true when the sample is not added because the timestamp or value delta is below
-    // the appropriate threshold.
-    // If there's not a change, we don't want to run compaction.
-    // Question: should we replicate the command in this case?
     if !ignored && !series.rules.is_empty() {
-        let sample = Sample::new(ts, value);
         if is_upsert {
             if let Err(res) = series.upsert_compaction(ctx, sample) {
                 let msg = format!(
@@ -179,9 +158,8 @@ fn handle_add(
             // any other add (the early return here previously skipped both,
             // leaving replicas without the sample).
         } else {
-            let sample = series.last_sample.unwrap_or(Sample::new(ts, value));
-            // If the sample is not an upsert, we run compaction
-            series.run_compaction(ctx, sample)?;
+            let compaction_sample = series.last_sample.unwrap_or(sample);
+            series.run_compaction(ctx, compaction_sample)?;
         }
     }
 
@@ -190,7 +168,7 @@ fn handle_add(
     }
 
     replicate_and_notify(ctx, args, replication_timestamp);
-    Ok(ValkeyValue::Integer(ts))
+    Ok(ValkeyValue::Integer(sample.timestamp))
 }
 
 fn replicate_and_notify(ctx: &Context, args: Vec<ValkeyString>, timestamp: Option<Timestamp>) {
