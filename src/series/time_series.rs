@@ -812,6 +812,9 @@ impl TimeSeries {
     }
 
     pub fn get_sample(&self, start_time: Timestamp) -> ValkeyResult<Option<Sample>> {
+        if self.is_empty() {
+            return Ok(None);
+        }
         let (index, found) = get_chunk_index(&self.chunks, start_time);
         if found {
             let chunk = &self.chunks[index];
