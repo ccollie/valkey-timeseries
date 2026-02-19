@@ -10,6 +10,9 @@ well as provide a superset of the _RedisTimeSeries_ API.
 - Configurable encoding
 - Single sample and range queries
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
+- PromQL-style querying with the `TS.QUERY` and `TS.QUERYRANGE` commands, which
+  support [instant and range queries](https://victoriametrics.com/blog/prometheus-monitoring-instant-range-query/)
+  respectively.
 - Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
 ## Scaling
@@ -68,6 +71,7 @@ TS.MRANGE
 TS.MREVRANGE
 TS.OUTLIERS
 TS.QUERYINDEX
+TS.QUERYRANGE
 TS.RANGE
 TS.REVRANGE
 TS._DEBUG

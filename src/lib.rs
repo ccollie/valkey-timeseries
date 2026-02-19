@@ -11,6 +11,7 @@ use crate::commands::register_fanout_operations;
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
+use crate::promql::register_promql;
 use logger_rust::{LogLevel, set_log_level};
 use std::sync::atomic::AtomicBool;
 use std::thread::ThreadId;
@@ -28,6 +29,7 @@ pub mod iterators;
 mod join;
 mod labels;
 mod parser;
+pub mod promql;
 mod series;
 mod server_events;
 mod tests;
@@ -41,7 +43,7 @@ pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
 static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static MAIN_THREAD_ID: std::sync::OnceLock<ThreadId> = std::sync::OnceLock::new();
+static MAIN_THREAD_ID: OnceLock<ThreadId> = OnceLock::new();
 
 pub fn is_module_initialized() -> bool {
     IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
@@ -107,6 +109,11 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
             ctx.log_warning(&msg);
             return Status::Err;
         };
+        if let Err(e) = register_promql() {
+            let msg = format!("Failed to register promql: {e}");
+            ctx.log_warning(&msg);
+            return Status::Err;
+        }
     }
 
     if let Err(e) = register_server_events(ctx) {
@@ -174,7 +181,9 @@ valkey_module! {
         ["TS.RANGE", commands::ts_range_cmd, "readonly", 1, 1, 1, "read timeseries"],
         ["TS.REVRANGE", commands::ts_revrange_cmd, "readonly", 1, 1, 1, "read timeseries"],
         ["TS.INFO", commands::ts_info_cmd, "readonly", 0, 0, 0, "read fast timeseries"],
+        ["TS.QUERY", commands::ts_query_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.QUERYINDEX", commands::ts_queryindex_cmd, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.QUERYRANGE", commands::ts_queryrange_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CARD", commands::ts_card_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELNAMES", commands::ts_labelnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELVALUES", commands::ts_labelvalues_cmd, "readonly", 0, 0, 0, "read timeseries"],

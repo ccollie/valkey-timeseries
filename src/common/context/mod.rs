@@ -1,3 +1,8 @@
+mod blocked;
+mod client_reply_context;
+pub mod replies;
+mod thread_safe;
+
 use std::ffi::CString;
 use std::os::raw::c_int;
 use valkey_module::{
@@ -6,12 +11,16 @@ use valkey_module::{
     ValkeyModuleServerInfoData, ValkeyResult,
 };
 
+pub use blocked::*;
+pub(crate) use client_reply_context::*;
+pub use thread_safe::*;
+
 // Safety: RedisModule_GetSelectedDb is safe to call
-pub fn get_current_db(ctx: &Context) -> i32 {
+pub(crate) fn get_current_db(ctx: &Context) -> i32 {
     unsafe { RedisModule_GetSelectedDb.unwrap()(ctx.ctx) }
 }
 
-pub fn set_current_db(ctx: &Context, db: i32) -> Status {
+pub(crate) fn set_current_db(ctx: &Context, db: i32) -> Status {
     // Safety: RedisModule_SelectDb is safe to call. It is a bug in the valkey_module
     // if the function is not available.
     unsafe {
@@ -23,13 +32,13 @@ pub fn set_current_db(ctx: &Context, db: i32) -> Status {
 }
 
 #[inline]
-pub fn is_aof_client(client_id: u64) -> bool {
+pub(crate) fn is_aof_client(client_id: u64) -> bool {
     client_id == u64::MAX
 }
 
-pub fn is_real_user_client(ctx: &Context) -> bool {
+pub(crate) fn is_real_user_client(ctx: &Context) -> bool {
     let client_id = ctx.get_client_id();
-    if client_id == 0 || is_aof_client(client_id) {
+    if client_id == 0 || crate::common::context::is_aof_client(client_id) {
         return false;
     }
     if ctx.get_flags().contains(ContextFlags::REPLICATED) {
@@ -38,7 +47,7 @@ pub fn is_real_user_client(ctx: &Context) -> bool {
     true
 }
 
-pub fn get_server_info(ctx: &Context, section: &str) -> *mut ValkeyModuleServerInfoData {
+pub(crate) fn get_server_info(ctx: &Context, section: &str) -> *mut ValkeyModuleServerInfoData {
     let info_fn = unsafe { ValkeyModule_GetServerInfo.unwrap() };
     let context = ctx.ctx as *mut ValkeyModuleCtx;
     let section_cstr = CString::new(section).expect("Failed to convert section to CString");
@@ -65,16 +74,16 @@ fn get_server_info_field_signed(
     }
 }
 
-pub fn get_available_memory(ctx: &Context) -> Option<i64> {
+pub(crate) fn get_available_memory(ctx: &Context) -> Option<i64> {
     // Fetch INFO MEMORY
-    let info = get_server_info(ctx, "memory");
+    let info = crate::common::context::get_server_info(ctx, "memory");
 
     let used_memory: i64 = get_server_info_field_signed(info, "used_memory").ok()?;
-    let maxmemory: i64 = get_server_info_field_signed(info, "maxmemory").ok()?;
+    let max_memory: i64 = get_server_info_field_signed(info, "maxmemory").ok()?;
 
-    // Compute available = maxmemory - used_memory (clamped to >= 0)
-    if maxmemory > 0 {
-        let diff = maxmemory - used_memory;
+    // Compute available = maxm_emory - used_memory (clamped to >= 0)
+    if max_memory > 0 {
+        let diff = max_memory - used_memory;
         Some(if diff > 0 { diff } else { 0 })
     } else {
         None

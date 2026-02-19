@@ -15,10 +15,12 @@ blart = "0.4"
 bon = "3.9"
 byte-pool = "0.2.4"
 cfg-if = "1.0.4"
+chrono = { version = "0.4" }
 croaring = "2.6"
 enquote = "1.1.0"
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
+halfbrown = { version = "0.4", features = ["arraybackend"] }
 hashify = { version = "0.2" }
 itertools = "0.14"
 linkme = "0.3"
@@ -40,6 +42,7 @@ topo_sort = "0.4.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"
 range-set-blaze = "0.5"
+rayon = "1"
 rayon-core = "1.13"
 regex = "1"
 strum = { version = "0.28", features = ["derive"] }
@@ -51,6 +54,7 @@ statrs = "0.18"
 welch-sde = "0.1.0"
 
 [dev-dependencies]
+rstest = "0.26.1"
 test-case = "3.3"
 serial_test = { version = "3.3", default-features = false }
 

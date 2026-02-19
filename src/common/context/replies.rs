@@ -8,7 +8,7 @@ use valkey_module::{
 };
 
 /// A small trait that allows reply helpers to accept either a raw
-/// `*mut raw::RedisModuleCtx` or a `&Context` and obtain the underlying raw
+/// `*mut raw::RedisModuleCtx` or a `&Context` and get the underlying raw
 /// context pointer.
 pub trait IntoRawCtx {
     fn into_raw(self) -> *mut raw::RedisModuleCtx;
@@ -83,16 +83,16 @@ pub fn reply_with_labels<C: IntoRawCtx>(ctx: C, labels: &[Label]) {
     }
 }
 
-pub fn reply_with_sample_ex<C: IntoRawCtx>(ctx: C, timestamp: Timestamp, value: f64) {
+pub fn reply_with_sample_ex<C: IntoRawCtx>(ctx: C, timestamp: Timestamp, value: f64) -> Status {
     let raw_ctx = ctx.into_raw();
     reply_with_array(raw_ctx, 2);
     reply_with_i64(raw_ctx, timestamp);
-    raw::reply_with_double(raw_ctx, value);
+    raw::reply_with_double(raw_ctx, value)
 }
 
 #[inline]
-pub fn reply_with_sample<C: IntoRawCtx>(ctx: C, sample: &Sample) {
-    reply_with_sample_ex(ctx, sample.timestamp, sample.value);
+pub fn reply_with_sample<C: IntoRawCtx>(ctx: C, sample: &Sample) -> Status {
+    reply_with_sample_ex(ctx, sample.timestamp, sample.value)
 }
 
 pub fn reply_with_samples<C: IntoRawCtx>(ctx: C, samples: impl Iterator<Item = Sample>) {
@@ -173,6 +173,16 @@ pub fn reply_with_array<C: IntoRawCtx>(ctx: C, len: usize) -> Status {
 pub fn reply_with_postponed_array<C: IntoRawCtx>(ctx: C) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_array(raw_ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long)
+}
+
+pub fn reply_with_map<C: IntoRawCtx>(ctx: C, len: usize) -> Status {
+    let raw_ctx = ctx.into_raw();
+    raw::reply_with_map(raw_ctx, len as c_long)
+}
+
+pub fn reply_with_string_key<C: IntoRawCtx>(ctx: C, value: &str) -> Status {
+    let raw_ctx = ctx.into_raw();
+    raw::reply_with_string_buffer(raw_ctx, value.as_ptr().cast::<c_char>(), value.len())
 }
 
 pub fn reply_with_key<C: IntoRawCtx>(ctx: C, result: ValkeyValueKey) -> Status {

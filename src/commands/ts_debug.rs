@@ -1,6 +1,6 @@
 use super::ts_debug_configs::list_configs_cmd;
 use crate::commands::CommandArgIterator;
-use crate::common::replies::*;
+use crate::common::context::replies::*;
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
