@@ -59,10 +59,7 @@ tracing = "0.1"
 twox-hash = { version = "2.1", features = ["std", "xxhash3_128"] }
 
 [dev-dependencies]
-criterion = "0.8.2"
-proptest = "1.11.0"
-rstest = "0.26"
-serial_test = { version = "3.4", default-features = false }
+rstest = "0.26.1"
 test-case = "3.3"
 
 [build-dependencies]
