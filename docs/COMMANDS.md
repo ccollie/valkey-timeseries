@@ -40,6 +40,7 @@ scan until the next source write.
 - [`TS.OUTLIERS`](commands/ts.outliers.md)
 - [`TS.QUERYINDEX`](commands/ts.queryindex.md)
 - [`TS.QUERYLABELS`](commands/ts.querylabels.md)
+- [`TS.QUERYRANGE`](commands/ts.queryrange.md)
 - [`TS.RANGE`](commands/ts.range.md)
 - [`TS.READ`](commands/ts.read.md)
 - [`TS.REVRANGE`](commands/ts.revrange.md)

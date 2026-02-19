@@ -4,7 +4,7 @@ use crate::common::binop::ComparisonOperator;
 use crate::common::rounding::{
     MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, MIN_SIGNIFICANT_DIGITS, RoundingStrategy,
 };
-use crate::common::time::current_time_millis;
+use crate::common::time::{current_time_millis, timestamp_so_system_time};
 use crate::config::is_strict_rts_compat;
 use crate::error_consts;
 use crate::join::{AsOfJoinOptions, AsOfJoinStrategy, JoinOptions, JoinReducer, JoinType};
@@ -15,6 +15,7 @@ use crate::parser::{
     ParseError, metric_name::parse_metric_name as parse_metric, parse_nonnegative_duration_value,
     timestamp::parse_timestamp as parse_timestamp_internal, timestamp::timestamp_error,
 };
+use crate::promql::engine::config::PromqlConfig;
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
     AggregationOptions, AggregatorConfig, MAX_AGGREGATIONS, MRangeOptions, MatchFilterOptions,
@@ -101,6 +102,7 @@ command_arg_tokens! {
     Latest => "LATEST",
     Left => "LEFT",
     Limit => "LIMIT",
+    LookbackDelta => "LOOKBACK_DELTA",
     Match => "MATCH",
     Metric => "METRIC",
     Method => "METHOD",
@@ -123,6 +125,7 @@ command_arg_tokens! {
     Start => "START",
     Step => "STEP",
     HashTag => "HASHTAG",
+    Time => "TIME",
     Timestamp => "TIMESTAMP",
     True => "TRUE",
     Uncompressed => "UNCOMPRESSED",
