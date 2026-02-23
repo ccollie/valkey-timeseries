@@ -22,7 +22,6 @@ pub use posting_stats::*;
 pub use postings::PostingsBitmap;
 pub use querier::*;
 pub use timeseries_index::*;
-use crate::series::index::memory_postings::MemoryPostings;
 
 mod key_buffer;
 #[cfg(test)]
@@ -111,21 +110,6 @@ where
     res
 }
 
-pub fn with_timeseries_postings<F, R>(ctx: &Context, f: F) -> R
-where
-    F: FnOnce(&MemoryPostings) -> R,
-{
-    let db = get_current_db(ctx);
-    let guard = TIMESERIES_INDEX.guard();
-    let index = get_timeseries_index_for_db(db, &guard);
-    let mut state = ();
-    let res = index.with_postings(&mut state, |postings, _| {
-        f(postings)
-    });
-    drop(guard);
-    res
-}
-
 pub fn with_matched_series<F, STATE>(
     ctx: &Context,
     acc: &mut STATE,
@@ -206,13 +190,6 @@ pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
     // mark the id for removal, signal to src_series to remove it
     let index = get_timeseries_index(ctx);
     index.mark_id_as_stale(id);
-}
-
-pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
-    // mark the id for removal, signal to src_series to remove it
-    with_timeseries_index(ctx, |index| {
-        index.mark_id_as_stale(id);
-    });
 }
 
 pub(crate) fn init_croaring_allocator() {

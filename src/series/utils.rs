@@ -15,7 +15,6 @@ use valkey_module::key::ValkeyKeyWritable;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
-use crate::series::chunks::ChunkEncoding;
 
 pub fn with_timeseries<R>(
     ctx: &Context,

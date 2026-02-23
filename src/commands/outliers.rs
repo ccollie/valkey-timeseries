@@ -90,7 +90,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         );
     }
 
-    let Some(series) = get_timeseries(ctx, key, Some(AclPermissions::ACCESS), true)? else {
+    let Some(series) = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)? else {
         return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
     };
 
@@ -100,7 +100,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ..Default::default()
     };
 
-    let samples = get_range(&series, &range_options, true);
+    let samples = get_range(Some(ctx), &series, &range_options);
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
     let mut options = options.unwrap_or_default();
@@ -136,7 +136,7 @@ fn parse_method_options(
         AnomalyMethod::DoubleMAD => parse_double_mad_options(args),
         AnomalyMethod::InterquartileRange => parse_iqr_options(args),
         AnomalyMethod::RandomCutForest => parse_rcf_options(args),
-        AnomalyMethod::SESD => parse_sesd_options(args),
+        AnomalyMethod::Sesd => parse_sesd_options(args),
     }
 }
 
@@ -364,7 +364,7 @@ fn parse_sesd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOpti
         );
     }
 
-    options.options = AnomalyDetectionMethodOptions::SESD(Option::from(sesd_options));
+    options.options = AnomalyDetectionMethodOptions::Sesd(Option::from(sesd_options));
 
     Ok(options)
 }
