@@ -19,13 +19,14 @@ The module is architected for scenarios requiring low-latency storage and retrie
 
 ## Supported Commands
 
-The command set generally follows the `TS.<COMMAND>` pattern and is case-insensitive.
+The command set generally follows the `TS.<COMMAND>` pattern.
 
 ### Management
 
 * `TS.CREATE`: Create a new time series with specific retention, encoding, and chunk size policies.
 * `TS.ALTER`: Modify the configuration of an existing series.
-* `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
+* `TS.DEL`: Remove an entire time series from the database.
+* `TS.MDEL`: Remove multiple time series matching a filter from the database.
 
 ### Ingestion
 
@@ -48,6 +49,15 @@ The command set generally follows the `TS.<COMMAND>` pattern and is case-insensi
   buckets.
 * `TS.DELETERULE`: Remove an existing compaction rule.
 
+### Metadata & Indexing
+
+* `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
+* `TS.QUERYINDEX`: Retrieve all series keys matching a label filter.
+* `TS.CARD`: Get the cardinality of the index for a specific label filter.
+* `TS.LABELNAMES`: Get all label names used in the index.
+* `TS.LABELVALUES`: Get all values for a specific label name in the index.
+* `TS.LABELSTATS`: Get statistics about label usage in the index.
+
 ## Indexes
 
 Valkey TimeSeries uses a label-based indexing system separate from the key space.
@@ -60,11 +70,7 @@ Valkey TimeSeries uses a label-based indexing system separate from the key space
   usage and query efficiency.
 
 `valkey-timeseries` maintains a per-node, per-database inverted index to map labels to series.
-Query expressions are constructed like a filter that uses the data in the columns to identify keys. The actual
-implementation is
-based on an inverted index, not linear filtering. Each Valkey database has a separate namespace of indexes.
-
-Indexes exist separate from the Valkey database. Updates of the database trigger updates of one or more indexes which
+Indexes exist separate from the Valkey database itself. Updates of the database trigger updates the index which
 are done by background threads. Query operations are also performed by background threads optionally switching to the
 main thread to access the Valkey database. The consistency model between these two domains is further described below.
 Applications don't directly put data into an index, rather mutation operations on keys within the declared keyspace of
@@ -98,37 +104,10 @@ intra-cluster RPC to execute commands as needed. Thus, the application interface
 in cluster and non-cluster mode.
 
 Timeseries uses a simple architecture where index definitions are replicated on every node, but the corresponding index
-only
-contains the data which is co-resident on that node. Index update operations remain wholly local to a node and will
+only contains the data which is co-resident on that node. Index update operations remain wholly local to a node and will
 scale horizontally (save/restore operations also wholly node local). Vertical scaling is also effective because of the
 multithreaded architecture.
 
 Query operations are performed by one node of each shard on its local index, and the results are transparently merged to
 form a full command response. Query operations are subject to increasing overhead as the cluster shard count increases,
 meaning that query operations may scale sub-linearly with increasing shard count.
-
-
-## Index Consistency
-
-The TimeSeries architecture relies on having identical index definitions distributed across the cluster. The protocol
-relies on a Merkle-tree checksum of all indexes defined on a node being broadcast over the cluster bus periodically.
-Nodes which discover a mismatch in the checksum contact each other and negotiate a resolution using version numbers and
-last-writer-wins timestamps, one index at a time. If a node loses the negotiation for an index, it will delete its
-version of the index and recreate it using the winning definition.
-
-On top of the eventual consistency machinery, the individual commands also perform additional consistency checks on the
-involved index, typically retrying operations until consistency is achieved or a timeout occurs, terminating the command
-with a consistency error message.
-
-The commands operate by mutating the local copy of the metadata and then triggering the convergence protocol. The most
-likely cause of failure is a shard-down or network partition situation.
-
-The `TS.INFO` command has options that allow aggregation of index statistics and status across the cluster.
-
-## Query Consistency
-
-The query operations: `TS.MRANGE` and other multi-shard aggregation queries can only be executed by nodes that share the
-same index definition and slot ownership map. Cross-shard query commands contain a checksum of the coordinator's index
-definition and slot ownership. If a receiving node's index checksum or slot ownership checksum mismatches then the query
-is rejected and the coordinator will retry the operation. If a timeout occurs, then by default an error is returned and
-the client must retry once the cluster has converged to a consistent state.
