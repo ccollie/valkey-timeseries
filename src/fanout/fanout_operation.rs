@@ -1,4 +1,5 @@
 use super::fanout_command::FanoutCommand;
+use crate::common::threads::run_on_main_thread;
 use crate::fanout::FanoutResult;
 use valkey_module::{
     BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
@@ -12,17 +13,22 @@ pub trait FanoutOperation: FanoutCommand {
     fn exec(self, ctx: &Context) -> ValkeyResult<ValkeyValue> {
         let blocked_client = ctx.block_client();
 
+        // IMPORTANT: this callback calls thread_ctx.lock() (acquires the GIL).
+        // It must never be invoked while the GIL is already held on the same
+        // thread.
         let handle_response = move |op: &mut Self, result: FanoutResult| {
-            let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-            match result {
-                Ok(_) => {
-                    op.reply(&thread_ctx);
+            run_on_main_thread(|| {
+                let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                match result {
+                    Ok(_) => {
+                        op.reply(&thread_ctx);
+                    }
+                    Err(err) => {
+                        let _err: ValkeyError = err.into();
+                        thread_ctx.reply(Err(_err));
+                    }
                 }
-                Err(err) => {
-                    let _err: ValkeyError = err.into();
-                    thread_ctx.reply(Err(_err));
-                }
-            }
+            });
         };
 
         Self::exec_command(self, ctx, handle_response)?;

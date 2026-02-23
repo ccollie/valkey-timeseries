@@ -7,6 +7,7 @@ mod fanout_message;
 mod fanout_operation;
 mod registry;
 pub mod serialization;
+mod simple_fanout_operation;
 mod utils;
 
 use ahash::HashSet;
@@ -18,6 +19,7 @@ use super::fanout::cluster_rpc::register_cluster_message_handlers;
 pub use fanout_command::*;
 pub use fanout_error::*;
 pub use fanout_operation::*;
+pub use simple_fanout_operation::*;
 pub use utils::*;
 
 pub use cluster_map::{ClusterMap, FanoutTargetMode, NodeInfo};

@@ -285,7 +285,7 @@ mod tests {
     fn test_fanout_error_error_trait() {
         // Test with an empty message
         let error = FanoutError::timeout();
-        assert_eq!(error.to_string(), "Fanout command timed out");
+        assert_eq!(error.to_string(), TIMEOUT_ERROR);
     }
 
     #[test]

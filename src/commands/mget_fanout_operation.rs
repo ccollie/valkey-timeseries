@@ -3,7 +3,7 @@ use super::utils::{reply_with_bulk_string, reply_with_fanout_labels, reply_with_
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
 use crate::error_consts;
-use crate::fanout::{FanoutCommand, FanoutOperation, NodeInfo};
+use crate::fanout::{NodeInfo, SimpleFanoutOperation};
 use crate::series::request_types::MGetRequest;
 use valkey_module::{
     BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, reply_with_array,
@@ -24,7 +24,7 @@ impl MGetFanoutOperation {
     }
 }
 
-impl FanoutCommand for MGetFanoutOperation {
+impl SimpleFanoutOperation for MGetFanoutOperation {
     type Request = MultiGetRequest;
     type Response = MultiGetResponse;
 
@@ -64,9 +64,7 @@ impl FanoutCommand for MGetFanoutOperation {
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
         self.series.extend(resp.values);
     }
-}
 
-impl FanoutOperation for MGetFanoutOperation {
     fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
         let ctx = thread_ctx.lock();
         let count = self.series.len();

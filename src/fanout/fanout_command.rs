@@ -1,12 +1,12 @@
 use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
-use crate::common::threads::spawn_with_context;
+use crate::common::threads::spawn;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use ahash::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use valkey_module::{Context, ValkeyResult};
+use valkey_module::{Context, MODULE_CONTEXT, ValkeyResult};
 
 pub(super) type FanoutResponseCallback = Box<dyn Fn(FanoutResult<&[u8]>, &NodeInfo) + Send + Sync>;
 
@@ -19,7 +19,7 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// The request type.
     type Request: Serializable + Send + 'static;
     /// The response type.
-    type Response: Serializable;
+    type Response: Serializable + Send;
 
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
@@ -143,21 +143,20 @@ where
 /// Internal structure to manage the state of an ongoing fanout operation.
 struct FanoutStateInner<OP, F>
 where
-    OP: FanoutCommand,
-    F: FnOnce(&mut OP, FanoutCommandResult),
+    OP: FanoutCommand + 'static,
+    F: FnOnce(&mut OP, FanoutCommandResult) + Send,
 {
     operation: OP,
     outstanding: usize,
     timed_out: bool,
     error_count: usize,
-    responded: bool,
     callback: Option<F>,
 }
 
 impl<OP, F> FanoutStateInner<OP, F>
 where
-    OP: FanoutCommand,
-    F: FnOnce(&mut OP, FanoutCommandResult),
+    OP: FanoutCommand + 'static,
+    F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
 {
     fn rpc_done(&mut self) {
         self.outstanding = self.outstanding.saturating_sub(1);
@@ -182,10 +181,10 @@ where
     }
 
     fn on_completion(&mut self) {
-        if self.responded {
+        let Some(callback) = self.callback.take() else {
+            // we've already responded
             return;
-        }
-        self.responded = true;
+        };
 
         let result = if self.timed_out {
             Err(FanoutError::timeout())
@@ -196,27 +195,26 @@ where
             Ok(())
         };
 
-        let callback = self.callback.take().unwrap();
         callback(&mut self.operation, result);
     }
 }
 
-impl<OP, F> Drop for FanoutStateInner<OP, F>
-where
-    OP: FanoutCommand,
-    F: FnOnce(&mut OP, FanoutCommandResult),
-{
-    fn drop(&mut self) {
-        self.on_completion();
-    }
-}
+// impl<OP, F> Drop for FanoutStateInner<OP, F>
+// where
+//     OP: FanoutCommand + 'static,
+//     F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
+// {
+//     fn drop(&mut self) {
+//         self.on_completion();
+//     }
+// }
 
 /// Internal structure to manage the state of an ongoing fanout operation.
 /// It tracks outstanding RPCs, errors, and coordinates the final reply generation.
 struct FanoutState<OP, F>
 where
     OP: FanoutCommand,
-    F: FnOnce(&mut OP, FanoutCommandResult),
+    F: FnOnce(&mut OP, FanoutCommandResult) + Send,
 {
     inner: Mutex<FanoutStateInner<OP, F>>,
 }
@@ -225,8 +223,8 @@ static MUTEX_POISONED_MSG: &str = "FanoutState mutex poisoned";
 
 impl<OP, F> FanoutState<OP, F>
 where
-    OP: FanoutCommand,
-    F: FnOnce(&mut OP, FanoutCommandResult),
+    OP: FanoutCommand + 'static,
+    F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
 {
     fn new(operation: OP, outstanding: usize, f: F) -> Self {
         Self {
@@ -235,7 +233,6 @@ where
                 outstanding,
                 error_count: 0,
                 timed_out: false,
-                responded: false,
                 callback: Some(f),
             }),
         }
@@ -264,9 +261,18 @@ fn spawn_local_request<OP, F>(state: Arc<FanoutState<OP, F>>, req: OP::Request, 
 where
     OP: FanoutCommand,
     OP::Request: Send + 'static,
+    OP::Response: Send + 'static,
     F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
 {
-    spawn_with_context(move |ctx| {
-        state.handle_local_request(ctx, req, &target);
+    spawn(move || {
+        // Minimize the scope of GIL locking, avoiding re-entering the GIL which is non-reentrant.
+        let result = {
+            let ctx = MODULE_CONTEXT.lock();
+            OP::get_local_response(&ctx, req)
+        };
+        match result {
+            Ok(response) => state.on_response(response, &target),
+            Err(err) => state.on_error(err.into(), &target),
+        }
     });
 }
