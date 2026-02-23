@@ -39,7 +39,7 @@ pub enum AnomalyDetectionMethodOptions {
     Mad(MADAnomalyOptions),
     DoubleMAD(MADAnomalyOptions),
     Rcf(RCFOptions),
-    SESD(Option<SESDOutlierOptions>),
+    Sesd(Option<SESDOutlierOptions>),
 }
 
 impl Default for AnomalyDetectionMethodOptions {
@@ -60,7 +60,7 @@ impl AnomalyDetectionMethodOptions {
             Self::Mad(_) => AnomalyMethod::Mad,
             Self::DoubleMAD(_) => AnomalyMethod::DoubleMAD,
             Self::Rcf(_) => AnomalyMethod::RandomCutForest,
-            Self::SESD(_) => AnomalyMethod::SESD,
+            Self::Sesd(_) => AnomalyMethod::Sesd,
         }
     }
 
@@ -166,7 +166,7 @@ fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisRes
             detect_anomalies_double_mad(ts, options)
         }
         AnomalyDetectionMethodOptions::Rcf(opts) => detect_anomalies_rcf(ts, opts),
-        AnomalyDetectionMethodOptions::SESD(opts) => detect_anomalies_sesd(ts, opts),
+        AnomalyDetectionMethodOptions::Sesd(opts) => detect_anomalies_sesd(ts, opts),
     }
 }
 

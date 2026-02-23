@@ -51,7 +51,7 @@ pub enum AnomalyMethod {
     /// Random Cut Forest (Rcf) method
     RandomCutForest,
     /// Seasonal (H) ESD
-    SESD,
+    Sesd,
 }
 
 impl AnomalyMethod {
@@ -67,7 +67,7 @@ impl AnomalyMethod {
             AnomalyMethod::DoubleMAD => "Double Mad",
             AnomalyMethod::InterquartileRange => "Interquartile Range (IQR)",
             AnomalyMethod::RandomCutForest => "Random Cut Forest",
-            AnomalyMethod::SESD => "Seasonal ESD",
+            AnomalyMethod::Sesd => "Seasonal ESD",
         }
     }
 }
@@ -78,7 +78,7 @@ impl FromStr for AnomalyMethod {
     fn from_str(s: &str) -> ValkeyResult<Self> {
         let res = hashify::tiny_map_ignore_case! {
             s.as_bytes(),
-            "esd" => Ok(AnomalyMethod::SESD),
+            "esd" => Ok(AnomalyMethod::Sesd),
             "ewma" => Ok(AnomalyMethod::Ewma),
             "cusum" => Ok(AnomalyMethod::Cusum),
             "zscore" => Ok(AnomalyMethod::ZScore),
