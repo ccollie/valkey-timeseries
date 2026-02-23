@@ -34,14 +34,6 @@ pub fn valkey_cached_time_millis() -> i64 {
     valkey_cached_time_micros() / 1000
 }
 
-pub fn valkey_cached_time_micros() -> i64 {
-    unsafe { RedisModule_CachedMicroseconds.unwrap()() }
-}
-
-pub fn valkey_cached_time_millis() -> i64 {
-    valkey_cached_time_micros() / 1000
-}
-
 pub fn current_time_millis() -> i64 {
     cfg_if::cfg_if! {
         if #[cfg(test)] {
