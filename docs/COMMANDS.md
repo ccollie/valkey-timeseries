@@ -13,6 +13,7 @@
 - [`TS.INFO`](commands/ts.info.md)
 - [`TS.MRANGE`](commands/ts.mrange.md)
 - [`TS.MREVRANGE`](commands/ts.mrevrange.md)
+- [`TS.OUTLIERS`](commands/ts.outliers.md)
 - [`TS.QUERYINDEX`](commands/ts.queryindex.md)
 - [`TS.CREATERULE`](commands/ts.createrule.md)
 - [`TS.DELETERULE`](commands/ts.deleterule.md)
