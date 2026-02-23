@@ -67,7 +67,7 @@ pub(super) fn detect_anomalies_sesd(
         scores,
         method_info: None,
         threshold: max_outliers as f64, // ESD doesn't have a fixed threshold, so we can return the max outlier count as info
-        method: AnomalyMethod::SESD,
+        method: AnomalyMethod::Sesd,
     })
 }
 
