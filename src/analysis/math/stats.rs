@@ -74,3 +74,17 @@ pub fn calculate_variance(values: &[f64]) -> f64 {
     let mean: f64 = values.iter().sum::<f64>() / n as f64;
     values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64
 }
+
+pub fn calculate_median(data: &[f64]) -> f64 {
+    let n = data.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let mut sorted_data = data.to_vec();
+    sorted_data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if n % 2 == 1 {
+        sorted_data[n / 2]
+    } else {
+        (sorted_data[n / 2 - 1] + sorted_data[n / 2]) / 2.0
+    }
+}

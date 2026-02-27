@@ -1,4 +1,4 @@
-use crate::analysis::math::{calculate_mean, calculate_std_dev};
+use crate::analysis::math::{calculate_mean, calculate_median, calculate_std_dev};
 use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal};
 use crate::analysis::seasonality::stl::Stl;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
@@ -129,7 +129,7 @@ fn esd_test(
             break;
         }
         // Robust location and scale: median + MAD
-        let med = median(&data);
+        let med = calculate_median(&data);
         let mad = mad(&data, med);
 
         // Avoid division by zero; if MAD ~ 0, we can't meaningfully scale.
@@ -239,7 +239,7 @@ pub fn sh_esd_mad(
             break;
         }
 
-        let med = median(&x);
+        let med = calculate_median(&x);
         let mad = mad(&x, med);
         if mad == 0.0 {
             break;
@@ -317,27 +317,13 @@ pub fn sh_esd_mad(
     Ok(selected)
 }
 
-fn median(x: &[f64]) -> f64 {
-    let n = x.len();
-    assert!(n > 0);
-    let mut v: Vec<f64> = x.to_vec();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        let a = v[n / 2 - 1];
-        let b = v[n / 2];
-        0.5 * (a + b)
-    }
-}
-
 fn mad(x: &[f64], med: f64) -> f64 {
     if x.is_empty() {
         return 0.0;
     }
     let mut devs: Vec<f64> = x.iter().map(|v| (v - med).abs()).collect();
     devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let m = median(&devs);
+    let m = calculate_median(&devs);
     // Scale factor for consistency with normal distribution (optional).
     1.4826 * m
 }
