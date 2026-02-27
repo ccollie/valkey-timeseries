@@ -141,7 +141,12 @@ pub fn detect_anomalies(
     // Apply seasonal adjustment if requested
     if let Some(adjustment) = &options.seasonal_adjustment {
         let adjusted = seasonality_adjust(ts, &adjustment.seasonal_periods)?;
-        return handle_dispatch(&adjusted, options);
+        let mut result = handle_dispatch(&adjusted, options)?;
+        // we calculate anomalies on the seasonally adjusted data, but we want to report the original values in the result
+        for anomaly in &mut result.anomalies {
+            anomaly.value = ts[anomaly.index];
+        }
+        return Ok(result);
     };
 
     handle_dispatch(ts, options)
