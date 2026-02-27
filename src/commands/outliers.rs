@@ -129,7 +129,7 @@ fn parse_method_options(
                 ..Default::default()
             })
         }
-        AnomalyMethod::ZScore => parse_zscore_options(args),
+        AnomalyMethod::ZScore => parse_zscore_options_ex(args),
         AnomalyMethod::ModifiedZScore => parse_modified_zscore_options(args),
         AnomalyMethod::SmoothedZScore => parse_smoothed_zscore_options(args),
         AnomalyMethod::Mad => parse_mad_options(args),
@@ -203,6 +203,86 @@ fn parse_modified_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<
     };
 
     Ok(options)
+}
+
+#[derive(PartialEq, Eq)]
+enum ZScoreType {
+    Standard,
+    Modified,
+    Smoothed,
+}
+
+fn parse_zscore_options_ex(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
+    let mut threshold: Option<f64> = None;
+    let mut influence: Option<f64> = None;
+    let mut lag: Option<usize> = None;
+    let mut zscore_type: Option<ZScoreType> = None;
+
+    if let Some(arg) = args.peek() {
+        zscore_type = hashify::tiny_map_ignore_case!(arg.as_slice(),
+            "STANDARD" => ZScoreType::Standard,
+            "MODIFIED" => ZScoreType::Modified,
+            "SMOOTHED" => ZScoreType::Smoothed
+        );
+        if zscore_type.is_some() {
+            args.next(); // consume the zscore type argument
+        }
+    }
+
+    while let Some(arg) = args.next() {
+        hashify::fnc_map_ignore_case!(arg.as_slice(),
+            "THRESHOLD" => {
+                let value = parse_single_value(args, "THRESHOLD")?;
+                threshold = Some(value);
+            },
+            "INFLUENCE" => {
+                let value = parse_single_value(args, "INFLUENCE")?;
+                influence = Some(value);
+            },
+            "LAG" => {
+                let value = parse_single_value(args, "LAG")? as usize;
+                lag = Some(value);
+            },
+            _ => {
+                return Err(ValkeyError::String(format!("TSDB: unknown zscore option {arg}")));
+            }
+        );
+    }
+
+    // lag and influence only apply to smoothed z-score, so if a type is not specified, we treat it as smoothed z-score
+    if lag.is_some() || influence.is_some() {
+        if zscore_type.is_none() {
+            zscore_type = Some(ZScoreType::Smoothed);
+        } else if zscore_type != Some(ZScoreType::Smoothed) {
+            return Err(ValkeyError::String(
+                "TSDB: LAG and INFLUENCE options only apply to smoothed z-score".to_string(),
+            ));
+        }
+    }
+
+    let zscore_type = zscore_type.unwrap_or(ZScoreType::Standard);
+    let options = match zscore_type {
+        ZScoreType::Standard => AnomalyDetectionMethodOptions::ZScore(threshold),
+        ZScoreType::Modified => AnomalyDetectionMethodOptions::ModifiedZScore(threshold),
+        ZScoreType::Smoothed => {
+            let mut smoothed_options = SmoothedZScoreOptions::default();
+            if let Some(threshold) = threshold {
+                smoothed_options.threshold = threshold;
+            }
+            if let Some(influence) = influence {
+                smoothed_options.influence = influence;
+            }
+            if let Some(lag) = lag {
+                smoothed_options.lag = lag;
+            }
+            AnomalyDetectionMethodOptions::SmoothedZScore(smoothed_options)
+        }
+    };
+
+    Ok(AnomalyOptions {
+        options,
+        ..Default::default()
+    })
 }
 
 fn parse_smoothed_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
