@@ -38,8 +38,9 @@
 use ahash::RandomState;
 use get_size2::GetSize;
 use std::borrow::Borrow;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
+use std::fmt;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
@@ -54,6 +55,73 @@ static STRING_POOL: LazyLock<StringContainer> =
 
 /// Total memory used by all interned strings.
 static STRING_MEMORY_USED: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Default)]
+pub struct BucketStats {
+    pub count: usize,
+    pub bytes: usize,
+    pub allocated: usize,
+}
+
+impl BucketStats {
+    pub fn get_avg_size(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.bytes as f64 / self.count as f64
+        }
+    }
+
+    pub fn get_avg_allocated(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.allocated as f64 / self.count as f64
+        }
+    }
+
+    pub fn get_utilization(&self) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+
+        let avg_size = self.get_avg_size();
+        let avg_allocated = self.get_avg_allocated();
+
+        if avg_size == 0.0 || avg_allocated == 0.0 {
+            0.0
+        } else {
+            avg_size / avg_allocated
+        }
+    }
+}
+
+impl Display for BucketStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let avg_size = self.get_avg_size();
+        let avg_allocated = self.get_avg_allocated();
+
+        let utilization = self.get_utilization();
+
+        write!(
+            f,
+            "Count: {} Bytes: {} AvgSize: {:.2} Allocated: {} AvgAllocated: {:.2} Utilization: {}%",
+            self.count,
+            self.bytes,
+            avg_size,
+            self.allocated,
+            avg_allocated,
+            (100.0 * utilization) as i64
+        )
+    }
+}
+
+#[derive(Default)]
+pub struct Stats {
+    pub by_ref_stats: BTreeMap<usize, BucketStats>,
+    pub by_size_stats: BTreeMap<usize, BucketStats>,
+    pub total_stats: BucketStats,
+}
 
 /// A pointer to an interned, reference-counted, and immutable string object.
 ///
@@ -152,6 +220,33 @@ impl InternedString {
     /// Return the total memory used by all interned strings.
     pub fn memory_used() -> usize {
         STRING_MEMORY_USED.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn get_stats() -> Stats {
+        let pool = STRING_POOL.read().unwrap();
+        let mut stats = Stats::default();
+
+        for arc in pool.iter() {
+            let ref_count = Arc::strong_count(arc) - 1; // exclude the pool's reference
+            let allocated = arc.get_size();
+            let bytes = arc.as_ref().len();
+
+            let by_ref_stats = stats.by_ref_stats.entry(ref_count).or_default();
+            by_ref_stats.count += 1;
+            by_ref_stats.bytes += bytes;
+            by_ref_stats.allocated += allocated;
+
+            let by_size_stats = stats.by_size_stats.entry(bytes).or_default();
+            by_size_stats.count += 1;
+            by_size_stats.bytes += bytes;
+            by_size_stats.allocated += allocated;
+
+            stats.total_stats.count += 1;
+            stats.total_stats.bytes += bytes;
+            stats.total_stats.allocated += allocated;
+        }
+
+        stats
     }
 }
 
