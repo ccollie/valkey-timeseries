@@ -10,12 +10,13 @@ use crate::series::{
     clear_compaction_policy_config,
 };
 use lazy_static::lazy_static;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
 use valkey_module::configuration::{
-    ConfigurationContext, ConfigurationFlags, get_i64_default_config_value,
-    get_string_default_config_value, register_i64_configuration, register_string_configuration,
+    ConfigurationContext, ConfigurationFlags, get_bool_default_config_value,
+    get_i64_default_config_value, get_string_default_config_value, register_bool_configuration,
+    register_i64_configuration, register_string_configuration,
 };
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
@@ -28,9 +29,12 @@ use valkey_module_macros::config_changed_event_handler;
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
 pub const SPLIT_FACTOR: f64 = 1.2;
 
-const FANOUT_COMMAND_TIMEOUT_MIN: i64 = 500;
-const FANOUT_COMMAND_TIMEOUT_MAX: i64 = 10000;
-const FANOUT_COMMAND_TIMEOUT_DEFAULT: &str = "5000";
+const ONE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
+const ONE_YEAR_MS: i64 = 365 * ONE_DAY_MS;
+
+pub(crate) const FANOUT_COMMAND_TIMEOUT_MIN: i64 = 500;
+pub(crate) const FANOUT_COMMAND_TIMEOUT_MAX: i64 = 10000;
+pub(crate) const FANOUT_COMMAND_TIMEOUT_DEFAULT: &str = "5000";
 
 pub const CHUNK_SIZE_MIN: i64 = 64;
 pub const CHUNK_SIZE_MAX: i64 = 1024 * 1024;
@@ -47,16 +51,13 @@ pub const DEFAULT_DUPLICATE_POLICY: DuplicatePolicy = DuplicatePolicy::Block;
 pub const DEFAULT_RETENTION_PERIOD: Duration = Duration::ZERO;
 pub const IGNORE_MAX_TIME_DIFF_DEFAULT: i64 = 0;
 pub const IGNORE_MAX_TIME_DIFF_MIN: i64 = 0;
-pub const IGNORE_MAX_TIME_DIFF_MAX: i64 = i64::MAX;
+pub const IGNORE_MAX_TIME_DIFF_MAX: i64 = ONE_DAY_MS * 365 * 100; // 100 years
 pub const IGNORE_MAX_VALUE_DIFF_MIN: f64 = 0.0;
 pub const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
 
 pub const MIN_THREADS: i64 = 1;
 pub const MAX_THREADS: i64 = 16;
-pub const DEFAULT_THREADS: i64 = 1;
-
-const ONE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
-const ONE_YEAR_MS: i64 = 365 * ONE_DAY_MS;
+pub const DEFAULT_THREADS: i64 = 4;
 
 pub const RETENTION_POLICY_MIN: i64 = 0;
 pub const RETENTION_POLICY_MAX: i64 = 10 * ONE_YEAR_MS; //
@@ -66,17 +67,17 @@ const IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING: &str = "0";
 const RETENTION_POLICY_DEFAULT_STRING: &str = "0";
 const IGNORE_MAX_TIME_DIFF_DEFAULT_STRING: &str = "0";
 
-const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
-const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
-const COMPACTION_POLICY_DEFAULT_STRING: &str = "";
-const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
-const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
-const DEFAULT_COMPACTION_POLICY: &str = "";
+pub(crate) const SIGNIFICANT_DIGITS_DEFAULT_STRING: &str = "none";
+pub(crate) const DECIMAL_DIGITS_DEFAULT_STRING: &str = "none";
+pub(crate) const COMPACTION_POLICY_DEFAULT_STRING: &str = "";
+pub(crate) const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
+pub(crate) const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
+pub(crate) const DEFAULT_COMPACTION_POLICY: &str = "";
 
-pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 250; // default: 0.25 second
-const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
-const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
-const CLUSTER_MAP_EXPIRATION_DEFAULT_STRING: &str = "250";
+pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 750; // default: 0.25 second
+pub(crate) const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
+pub(crate) const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
+pub const CLUSTER_MAP_EXPIRATION_DEFAULT_STRING: &str = "750";
 
 #[derive(Clone, Debug)]
 pub struct ConfigSettings {
@@ -87,6 +88,9 @@ pub struct ConfigSettings {
     pub duplicate_policy: SampleDuplicatePolicy,
     pub compaction_policy: String,
     pub fanout_command_timeout: Duration,
+    pub cluster_map_expiration: Duration,
+    pub is_debug_mode_enabled: bool,
+    pub num_threads: usize,
 }
 
 impl Default for ConfigSettings {
@@ -99,6 +103,9 @@ impl Default for ConfigSettings {
             duplicate_policy: SampleDuplicatePolicy::default(),
             compaction_policy: String::new(),
             fanout_command_timeout: Duration::from_millis(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS),
+            cluster_map_expiration: Duration::from_millis(CLUSTER_MAP_EXPIRATION_MS_DEFAULT),
+            is_debug_mode_enabled: false,
+            num_threads: DEFAULT_THREADS as usize,
         }
     }
 }
@@ -108,7 +115,6 @@ pub static NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
 pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
 lazy_static! {
-    pub static ref CONFIG_SETTINGS: RwLock<ConfigSettings> = RwLock::new(ConfigSettings::default());
     pub static ref ROUNDING_STRATEGY: Mutex<Option<RoundingStrategy>> = Mutex::new(None);
     pub static ref DECIMAL_DIGITS: AtomicI64 = AtomicI64::new(DECIMAL_DIGITS_MAX);
     pub static ref SIGNIFICANT_DIGITS: AtomicI64 = AtomicI64::new(SIGNIFICANT_DIGITS_MAX);
@@ -148,6 +154,14 @@ lazy_static! {
     static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
         ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING)
     );
+    static ref IS_DEBUG_MODE: AtomicBool = AtomicBool::default();
+}
+
+static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
+    LazyLock::new(|| RwLock::from(ConfigSettings::default()));
+
+pub fn get_config() -> ConfigSettings {
+    SETTINGS.read().expect("config lock poisoned").clone()
 }
 
 #[config_changed_event_handler]
@@ -155,10 +169,7 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
     if changed_configs.is_empty() {
         return;
     }
-    let mut cfg = CONFIG_SETTINGS
-        .read()
-        .expect("Failed to acquire read lock on CONFIG_SETTINGS")
-        .clone();
+    let mut cfg: ConfigSettings = get_config();
 
     let mut modified = false;
     for &name in changed_configs {
@@ -177,6 +188,7 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
             },
             "ts-num-threads" => {
                 // nothing to do here
+                cfg.num_threads = NUM_THREADS.load(Ordering::Relaxed) as usize;
             },
             "ts-retention-policy" => {
                 let period = *RETENTION_PERIOD.lock().unwrap();
@@ -196,11 +208,21 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-significant-digits" => {
+                cfg.rounding = *ROUNDING_STRATEGY.lock().unwrap();
+                modified = true;
             },
             "ts-compaction-policy" => {
             },
             "ts-fanout-command-timeout" => {
                 cfg.fanout_command_timeout = Duration::from_millis(FANOUT_COMMAND_TIMEOUT.load(Ordering::Relaxed));
+                modified = true;
+            },
+            "debug-mode" => {
+                cfg.is_debug_mode_enabled = IS_DEBUG_MODE.load(Ordering::Relaxed);
+                modified = true;
+            },
+             "ts-cluster-map-expiration-ms" => {
+                cfg.cluster_map_expiration = Duration::from_millis(CLUSTER_MAP_EXPIRATION_MS.load(Ordering::Relaxed));
                 modified = true;
             },
             _ => {}
@@ -211,10 +233,8 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
     }
     if modified {
         log_notice(format!("Configuration updated: {cfg:?}"));
-        CONFIG_SETTINGS
-            .write()
-            .expect("Failed to acquire write lock on CONFIG_SETTINGS")
-            .clone_from(&cfg);
+        let mut guard = SETTINGS.write().expect("config lock poisoned");
+        *guard = cfg;
     }
 }
 
@@ -293,7 +313,17 @@ fn update_compaction_policy(v: &str) -> ValkeyResult<()> {
         clear_compaction_policy_config();
         return Ok(());
     }
-    add_compaction_policies_from_config(v, true)
+    add_compaction_policies_from_config(v, true)?;
+
+    // HACK.. we need to update the global config struct, which would normally happen in config_changed_event_handler,
+    // but we have no access to the ConfigurationContext to be able to read from COMPACTION_POLICY_STRING. We directly update the global config struct here,
+    // but this is not ideal.
+    // mutable reference to the ValkeyGILGuard, which we don't have.
+
+    let mut guard = SETTINGS.write().expect("write lock poisoned");
+    guard.compaction_policy = v.to_string();
+
+    Ok(())
 }
 
 fn update_num_threads(val: &str) -> ValkeyResult<()> {
@@ -510,6 +540,20 @@ fn on_chunk_size_config_set(
     Ok(())
 }
 
+fn on_bool_config_set(
+    config_ctx: &ConfigurationContext,
+    name: &str,
+    val: &'static AtomicBool,
+) -> Result<(), ValkeyError> {
+    let v = val.get(config_ctx);
+    if name.eq_ignore_ascii_case("debug-mode") {
+        log_notice(format!("Setting debug mode to {v}"));
+    } else {
+        log_notice(format!("Setting {name} to {v}"));
+    }
+    Ok(())
+}
+
 fn get_string_default<'a>(
     args: &'a [ValkeyString],
     name: &str,
@@ -664,6 +708,18 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         &CLUSTER_MAP_EXPIRATION_STRING,
         CLUSTER_MAP_EXPIRATION_DEFAULT_STRING,
     )?;
+
+    let debug_mode_default = get_bool_default_config_value(args, "debug-mode", false)?;
+
+    register_bool_configuration(
+        ctx,
+        "debug-mode",
+        &*IS_DEBUG_MODE,
+        debug_mode_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
 
     // Initialize config settings
     unsafe { RedisModule_LoadConfigs.unwrap()(ctx.ctx) };

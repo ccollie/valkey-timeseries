@@ -5,10 +5,30 @@ use crate::labels::Label;
 use crate::series::request_types::MRangeSeriesResult;
 use std::os::raw::{c_char, c_long};
 use std::{collections::BTreeSet, ffi::CString};
-use valkey_module::{Context, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, ValkeyValue, raw};
+use valkey_module::{
+    Context, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyModule_ReplySetArrayLength, ValkeyResult,
+    ValkeyValue, raw,
+};
 
-fn reply_with_array(ctx: &Context, len: usize) {
+pub(super) fn reply_with_array(ctx: &Context, len: usize) {
     raw::reply_with_array(ctx.ctx, len as c_long);
+}
+
+pub(super) fn reply_with_dynamic_array(ctx: &Context) {
+    raw::reply_with_array(ctx.ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long);
+}
+
+pub(super) fn reply_set_array_len(ctx: &Context, len: usize) {
+    unsafe {
+        ValkeyModule_ReplySetArrayLength.unwrap()(
+            ctx.ctx as *mut raw::ValkeyModuleCtx,
+            len as c_long,
+        );
+    }
+}
+
+pub(super) fn reply_with_null(ctx: &Context) {
+    raw::reply_with_null(ctx.ctx);
 }
 
 pub(super) fn reply_with_error(ctx: &Context, err: FanoutError) {
@@ -26,6 +46,14 @@ pub(super) fn reply_with_str(ctx: &Context, s: &str) {
 
 pub(super) fn reply_with_i64(ctx: &Context, v: i64) {
     raw::reply_with_long_long(ctx.ctx, v);
+}
+
+pub(super) fn reply_with_usize(ctx: &Context, v: usize) {
+    raw::reply_with_long_long(ctx.ctx, v as i64);
+}
+
+pub(super) fn reply_with_double(ctx: &Context, val: f64) {
+    raw::reply_with_double(ctx.ctx, val);
 }
 
 pub(super) fn reply_with_bulk_string(ctx: &Context, s: &str) {

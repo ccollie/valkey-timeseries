@@ -37,6 +37,7 @@
 
 use ahash::RandomState;
 use get_size2::GetSize;
+use min_max_heap::MinMaxHeap;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
@@ -116,11 +117,65 @@ impl Display for BucketStats {
     }
 }
 
+/// A snapshot of an interned string's metrics, used for top-K reporting.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TopKEntry {
+    /// The interned string value.
+    pub value: InternedString,
+    /// Number of external references (excludes the pool's own reference).
+    pub ref_count: usize,
+    /// Length of the string in bytes.
+    pub bytes: usize,
+    /// Total allocated memory for this string (Arc overhead + data).
+    pub allocated: usize,
+}
+
+/// Wrapper for max-heap ordering by `bytes` (used to maintain top-K by size).
+#[derive(Eq, PartialEq)]
+struct TopKBySize(TopKEntry);
+
+impl Ord for TopKBySize {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.bytes.cmp(&other.0.bytes)
+    }
+}
+
+impl PartialOrd for TopKBySize {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Wrapper for max-heap ordering by `ref_count` (used to maintain top-K by refs).
+#[derive(Eq, PartialEq)]
+struct TopKByRef(TopKEntry);
+
+impl Ord for TopKByRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.ref_count.cmp(&other.0.ref_count)
+    }
+}
+
+impl PartialOrd for TopKByRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Default)]
 pub struct Stats {
     pub by_ref_stats: BTreeMap<usize, BucketStats>,
     pub by_size_stats: BTreeMap<usize, BucketStats>,
     pub total_stats: BucketStats,
+    /// Top K interned strings by allocated size, sorted largest first.
+    pub top_k_by_size: Vec<TopKEntry>,
+    /// Top K interned strings by external reference count, sorted highest first.
+    pub top_k_by_ref: Vec<TopKEntry>,
+    /// Bytes saved by interning: sum of `allocated * (ref_count - 1)` over all pool entries.
+    pub memory_saved_bytes: usize,
+    /// Percentage of memory saved relative to the hypothetical uninterned cost.
+    /// `memory_saved_bytes / (memory_saved_bytes + total_stats.allocated) * 100`
+    pub memory_saved_pct: f64,
 }
 
 /// A pointer to an interned, reference-counted, and immutable string object.
@@ -222,9 +277,18 @@ impl InternedString {
         STRING_MEMORY_USED.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn get_stats() -> Stats {
+    /// Collect statistics about the interned string pool, including the top `k`
+    /// strings by allocated size and by external reference count.
+    ///
+    /// Passing `k = 0` skips the top-K collection entirely (both `top_k_by_size` and
+    /// `top_k_by_ref` will be empty).
+    pub fn get_stats_with_top_k(k: usize) -> Stats {
         let pool = STRING_POOL.read().unwrap();
         let mut stats = Stats::default();
+
+        // MinMaxHeap allows us to efficiently track top-K and extract the max values
+        let mut size_heap: MinMaxHeap<TopKBySize> = MinMaxHeap::new();
+        let mut ref_heap: MinMaxHeap<TopKByRef> = MinMaxHeap::new();
 
         for arc in pool.iter() {
             let ref_count = Arc::strong_count(arc) - 1; // exclude the pool's reference
@@ -244,9 +308,66 @@ impl InternedString {
             stats.total_stats.count += 1;
             stats.total_stats.bytes += bytes;
             stats.total_stats.allocated += allocated;
+
+            // Each duplicate reference that shares this allocation is a saved copy.
+            // ref_count includes the pool's own ref, so duplicates = ref_count - 1.
+            // (strings with ref_count == 1 have no duplicates → zero saving)
+            if ref_count > 1 {
+                stats.memory_saved_bytes += allocated * (ref_count - 1);
+            }
+
+            if k > 0 {
+                let value = InternedString {
+                    arc: Arc::clone(arc),
+                };
+                let entry = TopKEntry {
+                    value,
+                    ref_count,
+                    bytes,
+                    allocated,
+                };
+
+                size_heap.push(TopKBySize(entry.clone()));
+                if size_heap.len() > k {
+                    size_heap.pop_min(); // Remove the smallest to maintain top-K
+                }
+
+                ref_heap.push(TopKByRef(entry));
+                if ref_heap.len() > k {
+                    ref_heap.pop_min(); // Remove the smallest to maintain top-K
+                }
+            }
         }
 
+        if k > 0 {
+            // Extract the largest values from the heaps
+            let mut top_by_size: Vec<TopKEntry> = Vec::with_capacity(size_heap.len());
+            while let Some(item) = size_heap.pop_max() {
+                top_by_size.push(item.0);
+            }
+            stats.top_k_by_size = top_by_size;
+
+            let mut top_by_ref: Vec<TopKEntry> = Vec::with_capacity(ref_heap.len());
+            while let Some(item) = ref_heap.pop_max() {
+                top_by_ref.push(item.0);
+            }
+
+            stats.top_k_by_ref = top_by_ref;
+        }
+
+        // Hypothetical uninterned cost = what we hold now + what we saved
+        let total_uninterned = stats.total_stats.allocated + stats.memory_saved_bytes;
+        stats.memory_saved_pct = if total_uninterned == 0 {
+            0.0
+        } else {
+            stats.memory_saved_bytes as f64 / total_uninterned as f64 * 100.0
+        };
+
         stats
+    }
+
+    pub fn get_stats() -> Stats {
+        Self::get_stats_with_top_k(0)
     }
 }
 
@@ -291,7 +412,7 @@ impl Deref for InternedString {
 }
 
 impl Display for InternedString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let v: &str = self.deref();
         write!(f, "{v}")
     }
@@ -690,5 +811,396 @@ mod tests {
         assert_eq!(s1, s2);
         assert_eq!(s1.len(), 10000);
         assert_eq!(s1.ref_count(), 2);
+    }
+
+    // ── Basic top-K by size ──────────────────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_size_returns_k_entries() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("a");
+        let _s2 = InternedString::new("bbb");
+        let _s3 = InternedString::new("ccccc");
+        let _s4 = InternedString::new("ddddddd");
+        let _s5 = InternedString::new("eeeeeeeee");
+
+        let stats = InternedString::get_stats_with_top_k(3);
+        assert_eq!(stats.top_k_by_size.len(), 3);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_size_sorted_descending() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("z");
+        let _s2 = InternedString::new("yy");
+        let _s3 = InternedString::new("xxx");
+        let _s4 = InternedString::new("wwww");
+        let _s5 = InternedString::new("vvvvv");
+
+        let stats = InternedString::get_stats_with_top_k(4);
+        let sizes: Vec<usize> = stats.top_k_by_size.iter().map(|e| e.bytes).collect();
+        for window in sizes.windows(2) {
+            assert!(
+                window[0] >= window[1],
+                "top_k_by_size not sorted descending: {:?}",
+                sizes
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_size_contains_largest() {
+        reset_memory_tracking();
+
+        const LARGE_STRING: &str = "this_is_the_largest_string_in_pool";
+
+        let _s1 = InternedString::new("tiny");
+        let _s2 = InternedString::new("medium_string");
+        let _s3 = InternedString::new(LARGE_STRING);
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        assert_eq!(stats.top_k_by_size.len(), 1);
+        assert_eq!(&*stats.top_k_by_size[0].value, LARGE_STRING);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_size_excludes_smaller_strings() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("a");
+        let _s2 = InternedString::new("bb");
+        let _s3 = InternedString::new("ccc");
+        let _s4 = InternedString::new("dddd");
+        let _s5 = InternedString::new("eeeee");
+
+        let stats = InternedString::get_stats_with_top_k(2);
+        // Top 2 by size must be "eeeee" (5) and "dddd" (4)
+        let values: Vec<String> = stats
+            .top_k_by_size
+            .iter()
+            .map(|e| e.value.to_string())
+            .collect();
+        assert!(values.contains(&"eeeee".to_string()));
+        assert!(values.contains(&"dddd".to_string()));
+        assert!(!values.contains(&"a".to_string()));
+    }
+
+    // ── Basic top-K by ref ───────────────────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_ref_returns_k_entries() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("one");
+        let s2 = InternedString::new("two");
+        let _c1 = s2.clone();
+        let s3 = InternedString::new("three");
+        let _c2 = s3.clone();
+        let _c3 = s3.clone();
+
+        let stats = InternedString::get_stats_with_top_k(2);
+        assert_eq!(stats.top_k_by_ref.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_ref_sorted_descending() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("alpha");
+        let s2 = InternedString::new("beta");
+        let _b1 = s2.clone();
+        let s3 = InternedString::new("gamma");
+        let _g1 = s3.clone();
+        let _g2 = s3.clone();
+        let _g3 = s3.clone();
+
+        let stats = InternedString::get_stats_with_top_k(3);
+        let ref_counts: Vec<usize> = stats.top_k_by_ref.iter().map(|e| e.ref_count).collect();
+        for window in ref_counts.windows(2) {
+            assert!(
+                window[0] >= window[1],
+                "top_k_by_ref not sorted descending: {:?}",
+                ref_counts
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_ref_most_referenced_is_first() {
+        reset_memory_tracking();
+
+        let _s_low = InternedString::new("low_refs");
+        let s_high = InternedString::new("high_refs");
+        let _c1 = s_high.clone();
+        let _c2 = s_high.clone();
+        let _c3 = s_high.clone();
+        let _c4 = s_high.clone();
+
+        let stats = InternedString::get_stats_with_top_k(2);
+        assert_eq!(
+            stats.top_k_by_ref[0].value,
+            InternedString::new("high_refs")
+        );
+        assert!(stats.top_k_by_ref[0].ref_count > stats.top_k_by_ref[1].ref_count);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_ref_excludes_low_ref_strings() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("single");
+        let s2 = InternedString::new("double");
+        let _c2 = s2.clone();
+        let s3 = InternedString::new("triple");
+        let _c3a = s3.clone();
+        let _c3b = s3.clone();
+        let s4 = InternedString::new("quad");
+        let _c4a = s4.clone();
+        let _c4b = s4.clone();
+        let _c4c = s4.clone();
+
+        let stats = InternedString::get_stats_with_top_k(2);
+        let values: Vec<String> = stats
+            .top_k_by_ref
+            .iter()
+            .map(|e| e.value.to_string())
+            .collect();
+        assert!(values.contains(&"quad".to_string()));
+        assert!(values.contains(&"triple".to_string()));
+        assert!(!values.contains(&"single".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_entry_value_field() {
+        reset_memory_tracking();
+
+        let _s = InternedString::new("check_value");
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        assert_eq!(
+            stats.top_k_by_size[0].value,
+            InternedString::new("check_value")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_entry_bytes_field() {
+        reset_memory_tracking();
+
+        let _s = InternedString::new("hello");
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        assert_eq!(stats.top_k_by_size[0].bytes, "hello".len());
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_entry_ref_count_field() {
+        reset_memory_tracking();
+
+        let s = InternedString::new("ref_check");
+        let _c1 = s.clone();
+        let _c2 = s.clone();
+        // 3 external refs total
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        assert_eq!(stats.top_k_by_ref[0].ref_count, 3);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_entry_allocated_gte_bytes() {
+        reset_memory_tracking();
+
+        let _s = InternedString::new("allocation_check");
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        let entry = &stats.top_k_by_size[0];
+        assert!(
+            entry.allocated >= entry.bytes,
+            "allocated ({}) must be >= bytes ({})",
+            entry.allocated,
+            entry.bytes
+        );
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn test_top_k_zero_returns_empty_vecs() {
+        reset_memory_tracking();
+
+        let _s = InternedString::new("ignored");
+
+        let stats = InternedString::get_stats_with_top_k(0);
+        assert!(stats.top_k_by_size.is_empty());
+        assert!(stats.top_k_by_ref.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_zero_still_populates_aggregate_stats() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("aaa");
+        let _s2 = InternedString::new("bbbb");
+
+        let stats = InternedString::get_stats_with_top_k(0);
+        assert_eq!(stats.total_stats.count, 2);
+        assert!(stats.total_stats.bytes > 0);
+        assert!(!stats.by_size_stats.is_empty());
+        assert!(!stats.by_ref_stats.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_empty_pool() {
+        reset_memory_tracking();
+
+        let stats = InternedString::get_stats_with_top_k(5);
+        assert!(stats.top_k_by_size.is_empty());
+        assert!(stats.top_k_by_ref.is_empty());
+        assert_eq!(stats.total_stats.count, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_larger_than_pool_returns_all() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("x");
+        let _s2 = InternedString::new("yy");
+        let _s3 = InternedString::new("zzz");
+
+        // Request more than pool size
+        let stats = InternedString::get_stats_with_top_k(100);
+        assert_eq!(stats.top_k_by_size.len(), 3);
+        assert_eq!(stats.top_k_by_ref.len(), 3);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_equal_to_pool_size_returns_all() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("p");
+        let _s2 = InternedString::new("qq");
+        let _s3 = InternedString::new("rrr");
+
+        let stats = InternedString::get_stats_with_top_k(3);
+        assert_eq!(stats.top_k_by_size.len(), 3);
+        assert_eq!(stats.top_k_by_ref.len(), 3);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_single_string_in_pool() {
+        reset_memory_tracking();
+
+        let s = InternedString::new("only_one");
+        let _c = s.clone();
+
+        let stats = InternedString::get_stats_with_top_k(5);
+        assert_eq!(stats.top_k_by_size.len(), 1);
+        assert_eq!(stats.top_k_by_ref.len(), 1);
+        assert_eq!(
+            stats.top_k_by_size[0].value,
+            InternedString::new("only_one")
+        );
+        assert_eq!(stats.top_k_by_ref[0].ref_count, 2);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_k_equals_one() {
+        reset_memory_tracking();
+
+        let _s1 = InternedString::new("short");
+        let _s2 = InternedString::new("much_longer_string");
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        assert_eq!(stats.top_k_by_size.len(), 1);
+        assert_eq!(
+            stats.top_k_by_size[0].value,
+            InternedString::new("much_longer_string")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_stats_equivalent_to_top_k_zero() {
+        reset_memory_tracking();
+
+        let _s = InternedString::new("convenience");
+
+        let stats = InternedString::get_stats();
+        assert!(stats.top_k_by_size.is_empty());
+        assert!(stats.top_k_by_ref.is_empty());
+        assert_eq!(stats.total_stats.count, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_entries_ref_count_excludes_pool_ref() {
+        reset_memory_tracking();
+
+        // One external reference only
+        let _s = InternedString::new("solo");
+
+        let stats = InternedString::get_stats_with_top_k(1);
+        // Pool holds 1 ref, `_s` holds 1 ref → strong_count = 2 → external = 1
+        assert_eq!(stats.top_k_by_ref[0].ref_count, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_size_ties_all_included_when_k_gte_pool_size() {
+        reset_memory_tracking();
+
+        // Four strings of the same length
+        let _s1 = InternedString::new("aa");
+        let _s2 = InternedString::new("bb");
+        let _s3 = InternedString::new("cc");
+        let _s4 = InternedString::new("dd");
+
+        let stats = InternedString::get_stats_with_top_k(4);
+        assert_eq!(stats.top_k_by_size.len(), 4);
+        // All must have bytes == 2
+        for entry in &stats.top_k_by_size {
+            assert_eq!(entry.bytes, 2);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_top_k_by_ref_ties_all_included_when_k_gte_pool_size() {
+        reset_memory_tracking();
+
+        // Three strings each with 2 external refs
+        let s1 = InternedString::new("tie_a");
+        let _c1 = s1.clone();
+        let s2 = InternedString::new("tie_b");
+        let _c2 = s2.clone();
+        let s3 = InternedString::new("tie_c");
+        let _c3 = s3.clone();
+
+        let stats = InternedString::get_stats_with_top_k(3);
+        assert_eq!(stats.top_k_by_ref.len(), 3);
+        for entry in &stats.top_k_by_ref {
+            assert_eq!(entry.ref_count, 2);
+        }
     }
 }

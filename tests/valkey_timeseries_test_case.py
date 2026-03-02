@@ -171,6 +171,7 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
             name = name.replace(char, "_")
         return name
 
+
     def get_config_file_lines(self, testdir, port) -> List[str]:
         """A template method, must be implemented by subclasses
         See ValkeySearchTestCaseBase.get_config_file_lines & ValkeySearchClusterTestCase.get_config_file_lines
@@ -582,11 +583,22 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
 def EnableDebugMode(config: List[str]):
     # turn "loadmodule xx.so" into "loadmodule xx.so --debug-mode yes"
     load_module = f"loadmodule {os.getenv('MODULE_PATH')}"
-    return [x.replace(load_module, load_module + " --debug-mode yes") for x in config]
+    return [x.replace(load_module, load_module + " --ts.debug-mode yes") for x in config]
 
-class ValkeySearchClusterTestCaseDebugMode(ValkeyTimeSeriesClusterTestCase):
+
+class ValkeyTimeSeriesTestCaseDebugMode(ValkeyTimeSeriesTestCaseBase):
+    """
+    Same as ValkeySearchClusterTestCase, except that "debug-mode" is enabled.
+    """
+
+    def get_config_file_lines(self, test_dir, port) -> List[str]:
+        return EnableDebugMode(super(ValkeyTimeSeriesTestCaseDebugMode, self).get_config_file_lines(test_dir, port))
+
+
+class ValkeyTimeSeriesClusterTestCaseDebugMode(ValkeyTimeSeriesClusterTestCase):
     """
     Same as ValkeySearchClusterTestCase, except that "debug-mode" is enabled.
     """
     def get_config_file_lines(self, test_dir, port) -> List[str]:
-        return EnableDebugMode(super(ValkeySearchClusterTestCaseDebugMode, self).get_config_file_lines(test_dir, port))
+        return EnableDebugMode(
+            super(ValkeyTimeSeriesClusterTestCaseDebugMode, self).get_config_file_lines(test_dir, port))

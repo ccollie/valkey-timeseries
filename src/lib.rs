@@ -170,6 +170,7 @@ valkey_module! {
         ["TS.LABELSTATS", commands::label_stats, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CREATERULE", commands::create_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.DELETERULE", commands::delete_rule, "write deny-oom", 1, 1, 1, "write timeseries"],
+        ["TS._DEBUG", commands::debug_cmd, "readonly", 0, 0, 0, "read timeseries"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
