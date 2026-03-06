@@ -152,23 +152,25 @@ enum AggregationType {
   ANY = 1;
   AVG = 2;
   COUNT = 3;
-  COUNT_IF = 4;
-  FIRST = 5;
-  INCREASE = 6;
-  IRATE = 7;
-  LAST = 8;
-  MAX = 9;
-  MIN = 10;
-  NONE = 11;
-  SHARE_IF = 12;
-  SUM = 13;
-  SUM_IF = 14;
-  RANGE = 15;
-  RATE = 16;
-  STD_S = 17;
-  STD_P = 18;
-  VAR_S = 19;
-  VAR_P = 20;
+  COUNT_ALL = 4;
+  COUNT_IF = 5;
+  COUNT_NAN = 6;
+  FIRST = 7;
+  INCREASE = 8;
+  IRATE = 9;
+  LAST = 10;
+  MAX = 11;
+  MIN = 12;
+  NONE = 13;
+  SHARE_IF = 14;
+  SUM = 15;
+  SUM_IF = 16;
+  RANGE = 17;
+  RATE = 18;
+  STD_S = 19;
+  STD_P = 20;
+  VAR_S = 21;
+  VAR_P = 22;
 }
 
 enum ComparisonOperator {

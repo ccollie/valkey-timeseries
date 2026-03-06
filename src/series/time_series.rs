@@ -719,8 +719,18 @@ impl TimeSeries {
         timestamp: Option<Timestamp>,
         delta: f64,
     ) -> ValkeyResult<SampleAddResult> {
+        if delta.is_nan() {
+            return Err(ValkeyError::Str(
+                error_consts::CANNOT_INCREMENT_DECREMENT_NAN,
+            ));
+        }
         // if we have at least one sample, increment the last one
         let (timestamp, last_ts, value) = if let Some(sample) = self.last_sample {
+            if sample.value.is_nan() {
+                return Err(ValkeyError::Str(
+                    error_consts::CANNOT_INCREMENT_DECREMENT_NAN,
+                ));
+            }
             let last_ts = sample.timestamp;
             let ts = timestamp.unwrap_or(last_ts);
             let value = sample.value + delta;

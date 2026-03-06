@@ -222,17 +222,15 @@ pub fn parse_metric_name(arg: &str) -> ValkeyResult<Vec<Label>> {
 
 /// Parse a float value for use in a command argument, specifically ADD, MADD, and INCRBY/DECRBY.
 pub fn parse_value_arg(arg: &ValkeyString) -> ValkeyResult<f64> {
-    let value = arg
-        .try_as_str()
-        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))?
-        .parse::<f64>()
-        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))?;
-
-    if value.is_nan() || value.is_infinite() {
-        return Err(ValkeyError::Str(error_consts::INVALID_VALUE));
-    }
-
-    Ok(value)
+    hashify::fnc_map_ignore_case!(arg.as_slice(),
+        b"inf" => return Ok(f64::INFINITY),
+        b"-inf" => return Ok(f64::NEG_INFINITY),
+        b"nan" => return Ok(f64::NAN),
+        b"+nan" => return Ok(f64::NAN),
+        _ => {}
+    );
+    arg.parse_float()
+        .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))
 }
 
 pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {
@@ -343,6 +341,12 @@ pub fn parse_value_filter(args: &mut CommandArgIterator) -> ValkeyResult<ValueFi
         .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_MIN))?;
     let max = parse_number_with_unit(args.next_str()?)
         .map_err(|_| ValkeyError::Str(error_consts::CANNOT_PARSE_MAX))?;
+    if min.is_nan() {
+        return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_MIN));
+    }
+    if max.is_nan() {
+        return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_MAX));
+    }
     if max < min {
         return Err(ValkeyError::Str(
             "TSDB filter min parameter is greater than max",

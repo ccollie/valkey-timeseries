@@ -203,3 +203,24 @@ class TestTimeSeriesIncrby(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.GET', 'ts_get_test')
         assert len(result) == 2
         assert float(result[1]) == 15.0
+
+    def test_incrby_rejects_nan_delta(self):
+        """TS.INCRBY should reject NaN as the increment value"""
+        self.verify_error_response(
+            self.client, 'TS.INCRBY ts_nan_delta nan',
+            "TSDB: cannot increment/decrement a NaN value"
+        )
+
+    def test_incrby_rejects_when_last_sample_is_nan(self):
+        """TS.INCRBY should reject incrementing when the latest sample value is NaN"""
+        self.client.execute_command('TS.CREATE', 'ts_nan_sample')
+        self.client.execute_command('TS.ADD', 'ts_nan_sample', 1000, 'nan')
+
+        self.verify_error_response(
+            self.client, 'TS.INCRBY ts_nan_sample 1',
+            "TSDB: cannot increment/decrement a NaN value"
+        )
+
+        sample = self.client.execute_command('TS.GET', 'ts_nan_sample')
+        assert sample[0] == 1000
+        assert sample[1].lower() == b'nan'

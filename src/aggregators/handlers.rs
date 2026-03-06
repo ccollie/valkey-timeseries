@@ -29,6 +29,9 @@ pub trait AggregationHandler: RdbSerializable + Default + GetSize {
     fn empty_value(&self) -> Value {
         f64::NAN
     }
+    fn empty_bucket_value(&self) -> Value {
+        self.empty_value()
+    }
     fn finalize(&mut self) -> f64 {
         let result = if let Some(v) = self.current() {
             v
@@ -40,11 +43,13 @@ pub trait AggregationHandler: RdbSerializable + Default + GetSize {
     }
 }
 
+// -- First ----------------------------------------------------------------
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct FirstAggregator(Option<Value>);
 impl AggregationHandler for FirstAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        if self.0.is_none() {
+        if self.0.is_none() && !value.is_nan() {
             self.0 = Some(value)
         }
     }
@@ -74,11 +79,15 @@ impl Hash for FirstAggregator {
     }
 }
 
+// -- Last ----------------------------------------------------------------
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct LastAggregator(Option<Value>);
 impl AggregationHandler for LastAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.0 = Some(value)
+        if !value.is_nan() {
+            self.0 = Some(value);
+        }
     }
     fn reset(&mut self) {
         self.0 = None;
@@ -106,14 +115,17 @@ impl Hash for LastAggregator {
     }
 }
 
+// -- Min -----------------------------------------------------------------
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MinAggregator(Option<Value>);
 impl AggregationHandler for MinAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.0 = Some(match self.0 {
-            None => value,
-            Some(v) => v.min(value),
-        });
+        if !value.is_nan() {
+            self.0 = Some(match self.0 {
+                None => value,
+                Some(v) => v.min(value),
+            });
+        }
     }
     fn reset(&mut self) {
         self.0 = None;
@@ -141,10 +153,15 @@ impl Hash for MinAggregator {
     }
 }
 
+// -- Max ----------------------------------------------------------------
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MaxAggregator(Option<Value>);
 impl AggregationHandler for MaxAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        if value.is_nan() {
+            return;
+        }
         self.0 = Some(match self.0 {
             None => value,
             Some(v) => v.max(value),
@@ -177,6 +194,8 @@ impl Hash for MaxAggregator {
         hash_f64(self.0.unwrap_or(f64::NAN), state);
     }
 }
+
+// -- First ----------------------------------------------------------------
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct RangeAggregatorState {
@@ -223,6 +242,9 @@ impl RdbSerializable for RangeAggregatorState {
 
 impl RangeAggregatorState {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        if value.is_nan() {
+            return;
+        }
         if !self._init {
             self._init = true;
             self.min = value;
@@ -274,12 +296,16 @@ impl RdbSerializable for RangeAggregator {
     }
 }
 
+// -- Avg -----------------------------------------------------------------
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize, Hash)]
 pub struct AvgAggregator(KahanAvg);
 
 impl AggregationHandler for AvgAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.0 += value;
+        if !value.is_nan() {
+            self.0 += value;
+        }
     }
     fn reset(&mut self) {
         self.0.reset();
@@ -303,11 +329,15 @@ impl RdbSerializable for AvgAggregator {
     }
 }
 
+// -- Sum -----------------------------------------------------------------
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize, Hash)]
 pub struct SumAggregator(KahanSum);
 impl AggregationHandler for SumAggregator {
     fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.0 += value;
+        if !value.is_nan() {
+            self.0 += value;
+        }
     }
     fn reset(&mut self) {
         self.0.reset();
@@ -338,11 +368,15 @@ impl RdbSerializable for SumAggregator {
     }
 }
 
+// -- Count -----------------------------------------------------------------
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct CountAggregator(usize);
 impl AggregationHandler for CountAggregator {
-    fn update(&mut self, _timestamp: Timestamp, _value: Value) {
-        self.0 += 1;
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        if !value.is_nan() {
+            self.0 += 1;
+        }
     }
     fn reset(&mut self) {
         self.0 = 0;
@@ -377,6 +411,92 @@ impl Hash for CountAggregator {
     }
 }
 
+// -- CountNAN ----------------------------------------------------------------
+
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
+pub struct CountNanAggregator(usize);
+
+impl AggregationHandler for CountNanAggregator {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+        if value.is_nan() {
+            self.0 += 1;
+        }
+    }
+    fn reset(&mut self) {
+        self.0 = 0;
+    }
+    fn current(&self) -> Option<Value> {
+        if self.0 == 0 {
+            return None;
+        }
+        Some(self.0 as Value)
+    }
+    fn empty_value(&self) -> Value {
+        0.
+    }
+}
+
+impl RdbSerializable for CountNanAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_usize(rdb, self.0);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_usize(rdb).map(Self)
+    }
+}
+
+impl Hash for CountNanAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+// -- CountAll ----------------------------------------------------------------
+
+#[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
+pub struct CountAllAggregator(usize);
+
+impl AggregationHandler for CountAllAggregator {
+    fn update(&mut self, _timestamp: Timestamp, _value: Value) {
+        self.0 += 1;
+    }
+    fn reset(&mut self) {
+        self.0 = 0;
+    }
+    fn current(&self) -> Option<Value> {
+        if self.0 == 0 {
+            return None;
+        }
+        Some(self.0 as Value)
+    }
+    fn empty_value(&self) -> Value {
+        0.
+    }
+}
+
+impl RdbSerializable for CountAllAggregator {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        rdb_save_usize(rdb, self.0);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
+    where
+        Self: Sized,
+    {
+        rdb_load_usize(rdb).map(Self)
+    }
+}
+
+impl Hash for CountAllAggregator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct AggStd {
     sum: Value,
@@ -386,6 +506,9 @@ pub struct AggStd {
 
 impl AggStd {
     fn add(&mut self, value: Value) {
+        if value.is_nan() {
+            return;
+        }
         self.sum += value;
         self.sum_2 += value * value;
         self.count += 1;
@@ -457,6 +580,8 @@ impl RdbSerializable for OnlineAggregator {
     }
 }
 
+// -- VarP -----------------------------------------------------------------
+
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarPAggregator(OnlineAggregator);
 impl AggregationHandler for VarPAggregator {
@@ -487,6 +612,8 @@ impl RdbSerializable for VarPAggregator {
         OnlineAggregator::rdb_load(rdb).map(Self)
     }
 }
+
+// -- VarS -----------------------------------------------------------------
 
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarSAggregator(OnlineAggregator);
@@ -520,6 +647,8 @@ impl RdbSerializable for VarSAggregator {
         OnlineAggregator::rdb_load(rdb).map(Self)
     }
 }
+
+// -- StdP -----------------------------------------------------------------
 
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdPAggregator(OnlineAggregator);
@@ -623,6 +752,9 @@ impl RdbSerializable for CounterAggregatorState {
 
 impl CounterAggregatorState {
     pub fn update(&mut self, _t: Timestamp, v: f64) {
+        if v.is_nan() {
+            return;
+        }
         // Compute delta with reset handling.
         let delta = match self.last_value {
             None => 0.0, // first point: no prior delta
@@ -653,6 +785,8 @@ impl CounterAggregatorState {
         self.last_value = None;
     }
 }
+
+// -- Increase ---------------------------------------------------------------
 
 #[derive(Debug, Default, Clone, Hash, PartialEq, GetSize)]
 pub struct IncreaseAggregator(CounterAggregatorState);
@@ -780,6 +914,9 @@ impl Hash for IRateAggregatorState {
 
 impl IRateAggregatorState {
     fn update_irate(&mut self, timestamp: Timestamp, value: Value) {
+        if value.is_nan() {
+            return;
+        }
         let current = Sample { timestamp, value };
 
         if let Some(prev) = self.last_sample {
@@ -846,6 +983,8 @@ impl RdbSerializable for IRateAggregatorState {
     }
 }
 
+// -- IRate -----------------------------------------------------------------
+
 #[derive(Clone, Debug, Default, GetSize, Hash, PartialEq)]
 pub struct IRateAggregator(Box<IRateAggregatorState>);
 
@@ -892,7 +1031,9 @@ pub enum Aggregator {
     Any(AnyAggregator),
     Avg(AvgAggregator),
     Count(CountAggregator),
+    CountAll(CountAllAggregator),
     CountIf(CountIfAggregator),
+    CountNan(CountNanAggregator),
     First(FirstAggregator),
     Increase(IncreaseAggregator),
     IRate(IRateAggregator),
@@ -943,7 +1084,9 @@ impl From<AggregationType> for Aggregator {
             AggregationType::Any => Aggregator::Any(AnyAggregator::default()),
             AggregationType::Avg => Aggregator::Avg(AvgAggregator::default()),
             AggregationType::Count => Aggregator::Count(CountAggregator::default()),
+            AggregationType::CountAll => Aggregator::CountAll(CountAllAggregator::default()),
             AggregationType::CountIf => Aggregator::CountIf(CountIfAggregator::default()),
+            AggregationType::CountNan => Aggregator::CountNan(CountNanAggregator::default()),
             AggregationType::First => Aggregator::First(FirstAggregator::default()),
             AggregationType::Increase => Aggregator::Increase(IncreaseAggregator::default()),
             AggregationType::IRate => Aggregator::IRate(IRateAggregator::default()),
@@ -974,7 +1117,9 @@ impl RdbSerializable for Aggregator {
             Aggregator::Any(agg) => agg.rdb_save(rdb),
             Aggregator::Avg(agg) => agg.rdb_save(rdb),
             Aggregator::Count(agg) => agg.rdb_save(rdb),
+            Aggregator::CountAll(agg) => agg.rdb_save(rdb),
             Aggregator::CountIf(agg) => agg.rdb_save(rdb),
+            Aggregator::CountNan(agg) => agg.rdb_save(rdb),
             Aggregator::First(agg) => agg.rdb_save(rdb),
             Aggregator::Increase(agg) => agg.rdb_save(rdb),
             Aggregator::IRate(agg) => agg.rdb_save(rdb),
@@ -1006,7 +1151,13 @@ impl RdbSerializable for Aggregator {
             AggregationType::Any => AnyAggregator::rdb_load(rdb).map(Aggregator::Any),
             AggregationType::Avg => AvgAggregator::rdb_load(rdb).map(Aggregator::Avg),
             AggregationType::Count => CountAggregator::rdb_load(rdb).map(Aggregator::Count),
+            AggregationType::CountAll => {
+                CountAllAggregator::rdb_load(rdb).map(Aggregator::CountAll)
+            }
             AggregationType::CountIf => CountIfAggregator::rdb_load(rdb).map(Aggregator::CountIf),
+            AggregationType::CountNan => {
+                CountNanAggregator::rdb_load(rdb).map(Aggregator::CountNan)
+            }
             AggregationType::First => FirstAggregator::rdb_load(rdb).map(Aggregator::First),
             AggregationType::Increase => {
                 IncreaseAggregator::rdb_load(rdb).map(Aggregator::Increase)
@@ -1036,7 +1187,9 @@ impl Aggregator {
             Aggregator::Any(_) => AggregationType::Any,
             Aggregator::Avg(_) => AggregationType::Avg,
             Aggregator::Count(_) => AggregationType::Count,
+            Aggregator::CountAll(_) => AggregationType::CountAll,
             Aggregator::CountIf(_) => AggregationType::CountIf,
+            Aggregator::CountNan(_) => AggregationType::CountNan,
             Aggregator::First(_) => AggregationType::First,
             Aggregator::Increase(_) => AggregationType::Increase,
             Aggregator::IRate(_) => AggregationType::IRate,

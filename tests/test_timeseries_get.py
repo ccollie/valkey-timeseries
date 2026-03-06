@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
@@ -178,3 +180,13 @@ class TestTsGet(ValkeyTimeSeriesTestCaseBase):
         # Test with extra arguments
         self.verify_error_response(self.client, 'TS.GET ts_extra latest other',
                                    "wrong number of arguments for 'TS.GET' command")
+
+    def test_get_with_nan_value(self):
+        """Test TS.GET with a NaN value in the time series"""
+        # Create a time series and add a NaN sample
+        self.client.execute_command('TS.CREATE', 'ts_nan')
+        self.client.execute_command('TS.ADD', 'ts_nan', 1000, 'NaN')
+
+        # Get the latest sample
+        result = self.client.execute_command('TS.GET', 'ts_nan')
+        assert math.isnan(float(result[1]))

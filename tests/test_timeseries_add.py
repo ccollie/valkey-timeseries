@@ -1,4 +1,5 @@
 import pytest
+import math
 from valkey import ResponseError
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase, CompactionRule
 from valkeytestframework.conftest import resource_port_tracker
@@ -581,3 +582,124 @@ class TestTimeseriesAdd(ValkeyTimeSeriesTestCaseBase):
 
         # Verify the sum aggregation (10 + 20 + 30 = 60)
         assert dest_samples[0][1] == b'60', f"Expected sum of 60, got {dest_samples[0][1]}"
+
+    def test_add_nan_value(self):
+        """Test TS.ADD with NaN value - should be stored and retrieved"""
+        self.client.execute_command("TS.CREATE", "ts_nan")
+        timestamp = 160000
+
+        result = self.client.execute_command("TS.ADD", "ts_nan", timestamp, "nan")
+        assert result == timestamp
+
+        result = self.client.execute_command('TS.GET', 'ts_nan')
+        assert math.isnan(float(result[1]))
+
+    def test_add_positive_nan_value(self):
+        """Test TS.ADD with '+nan' value (explicit positive NaN)"""
+        self.client.execute_command("TS.CREATE", "ts_pos_nan")
+        timestamp = 160000
+
+        result = self.client.execute_command("TS.ADD", "ts_pos_nan", timestamp, "+nan")
+        assert result == timestamp
+
+        result = self.client.execute_command('TS.GET', 'ts_pos_nan')
+        assert math.isnan(float(result[1]))
+
+    def test_add_nan_case_insensitive(self):
+        """Test TS.ADD with NaN in various cases (NaN, NAN, nan, nAn)"""
+        self.client.execute_command("TS.CREATE", "ts_nan_case")
+        base_ts = 160000
+
+        for i, nan_str in enumerate(["nan", "NaN", "NAN", "nAn"]):
+            ts = base_ts + i * 1000
+            result = self.client.execute_command("TS.ADD", "ts_nan_case", ts, nan_str)
+            assert result == ts
+
+        samples = self.client.execute_command("TS.RANGE", "ts_nan_case", "-", "+")
+
+        assert len(samples) == 4
+        for sample in samples:
+            assert math.isnan(float(sample[1])), f"Expected NaN, got {sample[1]}"
+
+    def test_add_nan_duplicate_policy_first(self):
+        """Test NaN with FIRST duplicate policy: original value is preserved"""
+        self.client.execute_command(
+            "TS.CREATE", "ts_nan_dup_first", "DUPLICATE_POLICY", "first"
+        )
+        timestamp = 160000
+
+        self.client.execute_command("TS.ADD", "ts_nan_dup_first", timestamp, 42.0)
+        self.client.execute_command("TS.ADD", "ts_nan_dup_first", timestamp, "nan")
+
+        samples = self.client.execute_command("TS.RANGE", "ts_nan_dup_first", "-", "+")
+        assert len(samples) == 1
+        assert float(samples[0][1]) == 42.0, "FIRST policy should preserve original value"
+
+    def test_add_nan_duplicate_policy_last(self):
+        """Test NaN with LAST duplicate policy: non-NaN value is kept"""
+        self.client.execute_command(
+            "TS.CREATE", "ts_nan_dup_last", "DUPLICATE_POLICY", "last"
+        )
+        timestamp = 160000
+
+        self.client.execute_command("TS.ADD", "ts_nan_dup_last", timestamp, 42.0)
+        self.client.execute_command("TS.ADD", "ts_nan_dup_last", timestamp, "nan")
+
+        samples = self.client.execute_command("TS.RANGE", "ts_nan_dup_last", "-", "+")
+        assert len(samples) == 1
+
+        assert 42.0 == float(samples[0][1]), "LAST policy should keep the non-NaN value"
+
+    def test_add_nan_duplicate_first_replaces_nan(self):
+        """Test NaN first, then real value with LAST policy: real value replaces NaN"""
+        self.client.execute_command(
+            "TS.CREATE", "ts_nan_then_val", "DUPLICATE_POLICY", "last"
+        )
+        timestamp = 160000
+
+        self.client.execute_command("TS.ADD", "ts_nan_then_val", timestamp, "nan")
+        self.client.execute_command("TS.ADD", "ts_nan_then_val", timestamp, 99.0)
+
+        samples = self.client.execute_command("TS.RANGE", "ts_nan_then_val", "-", "+")
+        assert len(samples) == 1
+        assert float(samples[0][1]) == 99.0, "LAST policy should replace NaN with new value"
+
+    def test_add_nan_with_min_max_sum_duplicate_policy(self):
+        """Test NaN with MIN/MAX/SUM policies: NaN should be treated as a value that can be compared/summed"""
+        for policy in ["MIN", "MAX", "SUM"]:
+            key = f"ts_nan_{policy.lower()}"
+            self.client.execute_command(
+                "TS.CREATE", key, "DUPLICATE_POLICY", policy
+            )
+            timestamp = 160000
+
+            # Add NaN first
+            self.client.execute_command("TS.ADD", key, timestamp, "nan")
+            with pytest.raises(ResponseError):
+                self.client.execute_command('ts.add', key, timestamp, 25.0)
+
+    def test_add_nan_with_inf(self):
+        """Test TS.ADD accepts NaN alongside infinity values"""
+        self.client.execute_command("TS.CREATE", "ts_nan_inf")
+        base_ts = 160000
+
+        self.client.execute_command("TS.ADD", "ts_nan_inf", base_ts, "nan")
+        self.client.execute_command("TS.ADD", "ts_nan_inf", base_ts + 1000, "inf")
+        self.client.execute_command("TS.ADD", "ts_nan_inf", base_ts + 2000, "-inf")
+
+        samples = self.client.execute_command("TS.RANGE", "ts_nan_inf", "-", "+")
+        assert len(samples) == 3
+        assert math.isnan(float(samples[0][1]))
+        assert math.isinf(float(samples[1][1])) and float(samples[1][1]) > 0
+        assert math.isinf(float(samples[2][1])) and float(samples[2][1]) < 0
+
+    def test_add_invalid_nan_string(self):
+        """Test TS.ADD rejects malformed NaN-like strings"""
+        self.client.execute_command("TS.CREATE", "ts_invalid_nan")
+        timestamp = 160000
+
+        for bad_val in ["nann", "na", "notnan", "nan1"]:
+            with pytest.raises(ResponseError):
+                self.client.execute_command(
+                    "TS.ADD", "ts_invalid_nan", timestamp, bad_val
+                )

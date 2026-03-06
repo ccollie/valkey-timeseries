@@ -13,13 +13,32 @@ struct AggregationHelper {
     bucket_range_start: Timestamp,
     bucket_range_end: Timestamp,
     align_timestamp: Timestamp,
-    prev_sample: Sample,
-    all_nans: bool,
+    has_samples: bool,
     count: usize,
     report_empty: bool,
 }
 
 impl AggregationHelper {
+    fn with_parts(
+        aggregator: Aggregator,
+        bucket_duration: u64,
+        bucket_ts: BucketTimestamp,
+        align_timestamp: Timestamp,
+        report_empty: bool,
+    ) -> Self {
+        Self {
+            aggregator,
+            bucket_duration,
+            bucket_ts,
+            bucket_range_start: 0,
+            bucket_range_end: 0,
+            align_timestamp,
+            has_samples: false,
+            count: 0,
+            report_empty,
+        }
+    }
+
     pub(crate) fn new_from_aggregator(
         aggregator: Aggregator,
         bucket_duration: u64,
@@ -27,18 +46,13 @@ impl AggregationHelper {
         align_timestamp: Timestamp,
         report_empty: bool,
     ) -> Self {
-        AggregationHelper {
-            align_timestamp,
-            report_empty,
+        Self::with_parts(
             aggregator,
             bucket_duration,
             bucket_ts,
-            bucket_range_start: 0,
-            bucket_range_end: 0,
-            all_nans: true,
-            count: 0,
-            prev_sample: Sample::new(0, f64::NAN),
-        }
+            align_timestamp,
+            report_empty,
+        )
     }
 
     pub(crate) fn new(options: &AggregationOptions, align_timestamp: Timestamp) -> Self {
@@ -46,18 +60,14 @@ impl AggregationHelper {
         if let Aggregator::Rate(r) = &mut aggregator {
             r.set_window_ms(options.bucket_duration);
         }
-        AggregationHelper {
-            align_timestamp,
-            report_empty: options.report_empty,
+
+        Self::with_parts(
             aggregator,
-            bucket_duration: options.bucket_duration,
-            bucket_ts: options.timestamp_output,
-            bucket_range_start: 0,
-            bucket_range_end: 0,
-            all_nans: true,
-            count: 0,
-            prev_sample: Sample::new(0, f64::NAN),
-        }
+            options.bucket_duration,
+            options.timestamp_output,
+            align_timestamp,
+            options.report_empty,
+        )
     }
 
     fn add_empty_buckets(
@@ -66,17 +76,9 @@ impl AggregationHelper {
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
-        let value = match self.aggregator {
-            Aggregator::Sum(_) | Aggregator::Count(_) => 0.0,
-            Aggregator::Last(agg) => agg.current().unwrap_or(f64::NAN), // self.prev_sample.value,
-            _ => f64::NAN,
-        };
+        let value = self.aggregator.empty_bucket_value();
         let start = self.calc_bucket_start(first_bucket_ts);
         let end = self.calc_bucket_start(end_bucket_ts);
-
-        // if end < start {
-        //     return;
-        // }
 
         let count = ((end - start) / self.bucket_duration as i64) as usize;
         samples.reserve(count);
@@ -86,36 +88,28 @@ impl AggregationHelper {
         }
     }
 
-    fn buckets_in_range(&self, start_ts: Timestamp, end_ts: Timestamp) -> usize {
-        (((end_ts - start_ts) / self.bucket_duration as i64) + 1) as usize
-    }
-
-    fn calculate_bucket_start(&self) -> Timestamp {
+    fn output_timestamp(&self) -> Timestamp {
         self.bucket_ts
             .calculate(self.bucket_range_start, self.bucket_duration)
     }
 
-    fn finalize_internal(&mut self) -> Sample {
-        let value = if self.all_nans {
-            if self.count == 0 {
-                self.aggregator.empty_value()
-            } else {
-                f64::NAN
-            }
-        } else {
-            self.aggregator.finalize()
-        };
-        let timestamp = self.calculate_bucket_start();
-        self.all_nans = true;
-        Sample { timestamp, value }
-    }
-
-    fn finalize_bucket(
+    fn complete_bucket(
         &mut self,
         last_ts: Option<Timestamp>,
         empty_buckets: &mut VecDeque<Sample>,
     ) -> Sample {
-        let bucket = self.finalize_internal();
+        let bucket = {
+            let value = if self.has_samples {
+                self.aggregator.finalize()
+            } else if self.count == 0 {
+                self.aggregator.empty_value()
+            } else {
+                f64::NAN
+            };
+            let timestamp = self.output_timestamp();
+            Sample::new(timestamp, value)
+        };
+
         self.aggregator.reset();
         if self.report_empty
             && let Some(last_ts) = last_ts
@@ -125,23 +119,23 @@ impl AggregationHelper {
             self.add_empty_buckets(empty_buckets, start, last_ts);
         }
 
+        self.has_samples = false;
         self.count = 0;
         bucket
     }
 
     fn update(&mut self, sample: Sample) {
         let value = sample.value;
-        if !value.is_nan() {
-            self.aggregator.update(sample.timestamp, value);
-            self.all_nans = false;
+        if !self.has_samples {
+            self.has_samples = !value.is_nan();
         }
-        self.prev_sample = sample;
+        self.aggregator.update(sample.timestamp, value);
         self.count += 1;
     }
 
     #[inline]
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
-        timestamp > self.bucket_range_end - 1
+        timestamp >= self.bucket_range_end
     }
 
     fn update_bucket_timestamps(&mut self, timestamp: Timestamp) {
@@ -187,22 +181,68 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
         }
     }
 
+    #[inline]
     fn update(&mut self, sample: Sample) {
         self.aggregator.update(sample);
     }
 
+    #[inline]
     fn start_new_bucket(&mut self, sample: Sample) {
         self.aggregator.update_bucket_timestamps(sample.timestamp);
         self.update(sample);
     }
 
+    #[inline]
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
         self.aggregator.should_finalize_bucket(timestamp)
     }
 
     #[inline]
     fn finalize_bucket(&mut self, ts: Option<Timestamp>) -> Sample {
-        self.aggregator.finalize_bucket(ts, &mut self.empty_buckets)
+        self.aggregator.complete_bucket(ts, &mut self.empty_buckets)
+    }
+
+    #[inline]
+    fn pop_empty_bucket(&mut self) -> Option<Sample> {
+        self.empty_buckets.pop_front()
+    }
+
+    #[inline]
+    fn ensure_initialized(&mut self) -> bool {
+        if self.init {
+            return true;
+        }
+
+        self.init = true;
+        if let Some(sample) = self.inner.next() {
+            self.start_new_bucket(sample);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn process_bucket(&mut self) -> Option<Sample> {
+        while let Some(sample) = self.inner.next() {
+            if !self.aggregator.should_finalize_bucket(sample.timestamp) {
+                self.update(sample);
+                continue;
+            }
+
+            let bucket = self.finalize_bucket(Some(sample.timestamp));
+            self.start_new_bucket(sample);
+            return Some(bucket);
+        }
+
+        None
+    }
+
+    fn finalize_last_bucket_if_any(&mut self) -> Option<Sample> {
+        if self.aggregator.count > 0 {
+            return Some(self.finalize_bucket(None));
+        }
+
+        None
     }
 }
 
@@ -210,40 +250,19 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // First, return any empty buckets if available
-        if let Some(sample) = self.empty_buckets.pop_front() {
+        if let Some(sample) = self.pop_empty_bucket() {
             return Some(sample);
         }
 
-        // Handle lazy initialization with the first sample
-        if !self.init {
-            self.init = true;
-            if let Some(sample) = self.inner.next() {
-                self.start_new_bucket(sample);
-            } else {
-                return None; // Empty input stream
-            }
+        if !self.ensure_initialized() {
+            return None;
         }
 
-        // Process subsequent samples
-        while let Some(sample) = self.inner.next() {
-            if sample.timestamp < self.aggregator.bucket_range_end {
-                self.update(sample);
-                continue;
-            }
-            // Finalize the current bucket and start a new one
-            let bucket = self.finalize_bucket(Some(sample.timestamp));
-            self.start_new_bucket(sample);
+        if let Some(bucket) = self.process_bucket() {
             return Some(bucket);
         }
 
-        // Handle the final bucket if we haven't processed it yet
-        if self.aggregator.count > 0 {
-            // todo: handle empty buckets after the last sample if report_empty is true !!
-            return Some(self.finalize_bucket(None));
-        }
-
-        None
+        self.finalize_last_bucket_if_any()
     }
 }
 

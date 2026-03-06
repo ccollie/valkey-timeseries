@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(samples[1].timestamp, 3000);
         assert_eq!(samples[2].timestamp, 5000);
 
-        // Test with single timestamp in filter
+        // Test with a single timestamp in filter
         let options_single = RangeOptions {
             date_range: date_range(0, 10000),
             count: None,
@@ -310,6 +310,72 @@ mod tests {
 
         // With bucket duration of 2000ms, we should have fewer samples than the original
         assert!(samples.len() < 10);
+    }
+
+    #[test]
+    fn test_iteration_with_nan_values_and_different_aggregations() {
+        let mut series = TimeSeries::default();
+        series.add(0, 1.0, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(2000, f64::NAN, None);
+        series.add(3000, 7.0, None);
+
+        let cases = [
+            (AggregationType::Min, 1.0),
+            (AggregationType::Max, 3.0),
+            (AggregationType::Sum, 4.0),
+            (AggregationType::Avg, 2.0),
+            (AggregationType::First, 1.0),
+            (AggregationType::Last, 3.0),
+            (AggregationType::Range, 2.0),
+            (AggregationType::CountAll, 3.0),
+            (AggregationType::CountNan, 1.0),
+            (AggregationType::Count, 2.0),
+        ];
+
+        for (aggregation, expected_first_bucket_value) in cases {
+            let options = RangeOptions {
+                date_range: date_range(0, 4000),
+                count: None,
+                aggregation: Some(AggregationOptions {
+                    aggregation: aggregation.into(),
+                    bucket_duration: 2000,
+                    timestamp_output: Default::default(),
+                    alignment: Default::default(),
+                    ..Default::default()
+                }),
+                timestamp_filter: None,
+                value_filter: None,
+                latest: false,
+            };
+
+            let samples: Vec<Sample> =
+                TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+            assert_eq!(
+                samples.len(),
+                2,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+            assert_eq!(
+                samples[0].timestamp, 0,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+            assert_eq!(
+                samples[0].value, expected_first_bucket_value,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+
+            assert_eq!(
+                samples[1].timestamp, 2000,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+        }
     }
 
     #[test]
