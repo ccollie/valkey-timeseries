@@ -287,7 +287,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        with pytest.raises(ResponseError, match="invalid align timestamp"):
+        with pytest.raises(ResponseError, match="Couldn't parse alignTimestamp"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "AGGREGATION", "avg", "60000", "invalid_timestamp"

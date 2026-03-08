@@ -113,7 +113,7 @@ fn parse_args(args: &mut CommandArgIterator, dest_id: SeriesRef) -> ValkeyResult
         // possible align timestamp
         if let Ok(align_str) = args.next_str() {
             align_timestamp = parse_timestamp(align_str, false)
-                .map_err(|_| ValkeyError::Str("TSDB: invalid align timestamp"))?;
+                .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGNMENT_TIMESTAMP))?;
         }
         value_filter = parse_possible_filter_args(args)?;
     }

@@ -2,7 +2,6 @@ use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
 use std::collections::VecDeque;
-use std::iter::Peekable;
 
 /// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]
@@ -97,20 +96,23 @@ impl AggregationHelper {
         &mut self,
         last_ts: Option<Timestamp>,
         empty_buckets: &mut VecDeque<Sample>,
-    ) -> Sample {
-        let bucket = {
-            let value = if self.has_samples {
-                self.aggregator.finalize()
-            } else if self.count == 0 {
-                self.aggregator.empty_value()
-            } else {
-                f64::NAN
-            };
-            let timestamp = self.output_timestamp();
-            Sample::new(timestamp, value)
+    ) -> Option<Sample> {
+        let bucket = if self.has_samples {
+            Some(Sample::new(
+                self.output_timestamp(),
+                self.aggregator.finalize(),
+            ))
+        } else if self.report_empty {
+            Some(Sample::new(
+                self.output_timestamp(),
+                self.aggregator.empty_value(),
+            ))
+        } else {
+            None
         };
 
         self.aggregator.reset();
+
         if self.report_empty
             && let Some(last_ts) = last_ts
             && last_ts >= self.bucket_range_end
@@ -125,11 +127,9 @@ impl AggregationHelper {
     }
 
     fn update(&mut self, sample: Sample) {
-        let value = sample.value;
-        if !self.has_samples {
-            self.has_samples = !value.is_nan();
+        if self.aggregator.update(sample.timestamp, sample.value) {
+            self.has_samples = true;
         }
-        self.aggregator.update(sample.timestamp, value);
         self.count += 1;
     }
 
@@ -162,7 +162,7 @@ pub fn aggregate(
 }
 
 pub struct AggregateIterator<T: Iterator<Item = Sample>> {
-    inner: Peekable<T>,
+    inner: T,
     aggregator: AggregationHelper,
     empty_buckets: VecDeque<Sample>,
     prev_ts: Timestamp,
@@ -173,7 +173,7 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
     pub fn new(inner: T, options: &AggregationOptions, aligned_timestamp: Timestamp) -> Self {
         let aggregator = AggregationHelper::new(options, aligned_timestamp);
         Self {
-            inner: inner.peekable(),
+            inner,
             aggregator,
             empty_buckets: VecDeque::new(),
             prev_ts: 0,
@@ -198,7 +198,7 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
     }
 
     #[inline]
-    fn finalize_bucket(&mut self, ts: Option<Timestamp>) -> Sample {
+    fn finalize_bucket(&mut self, ts: Option<Timestamp>) -> Option<Sample> {
         self.aggregator.complete_bucket(ts, &mut self.empty_buckets)
     }
 
@@ -231,7 +231,12 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
 
             let bucket = self.finalize_bucket(Some(sample.timestamp));
             self.start_new_bucket(sample);
-            return Some(bucket);
+
+            if bucket.is_some() {
+                return bucket;
+            }
+            // All-NaN bucket was skipped; continue processing the next samples
+            // in the newly started bucket.
         }
 
         None
@@ -239,7 +244,7 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
 
     fn finalize_last_bucket_if_any(&mut self) -> Option<Sample> {
         if self.aggregator.count > 0 {
-            return Some(self.finalize_bucket(None));
+            return self.finalize_bucket(None);
         }
 
         None
@@ -316,6 +321,66 @@ mod tests {
         assert_eq!(result[4].value, 6.0);
         assert_eq!(result[5].timestamp, 60);
         assert_eq!(result[5].value, 7.0);
+    }
+
+    #[test]
+    fn test_sum_with_nans() {
+        use std::f64;
+
+        let samples = vec![
+            Sample::new(10, 1.0),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, 2.0),
+        ];
+
+        let options = create_options(AggregationType::Sum);
+
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        // NaN should be ignored, sum = 1.0
+        assert_eq!(result[0].value, 1.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 2.0);
+    }
+
+    #[test]
+    fn test_sum_all_nans() {
+        let samples = vec![
+            Sample::new(10, f64::NAN),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+        ];
+
+        let options = create_options(AggregationType::Sum);
+
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_sum_all_nans_report_empty() {
+        let samples = vec![
+            Sample::new(10, f64::NAN),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+        ];
+
+        let mut options = create_options(AggregationType::Sum);
+        options.report_empty = true;
+
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 0.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 0.0);
     }
 
     #[test]
