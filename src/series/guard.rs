@@ -81,3 +81,14 @@ impl DerefMut for SeriesGuardMut<'_> {
         self.series
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::series::SeriesGuardMut;
+
+    #[test]
+    fn series_guard_mut_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SeriesGuardMut<'static>>();
+    }
+}
