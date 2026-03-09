@@ -4,7 +4,6 @@ use super::utils::{
 };
 use crate::commands::CommandArgIterator;
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
-// use crate::config::get_config;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Dumps a bucket's statistics to the reply.
@@ -137,18 +136,6 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
 
 /// Main entry point for TS._DEBUG command.
 pub fn debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<()> {
-    // if !get_config().is_debug_mode_enabled {
-    //     // Pretend like we don't exist.
-    //     let mut msg = format!(
-    //         "ERR unknown command '{}', with args beginning with:",
-    //         args[0]
-    //     );
-    //     for arg in &args[1..] {
-    //         msg.push_str(&format!(" '{}'", arg));
-    //     }
-    //     ctx.reply_error_string(msg.as_str());
-    //     return Ok(());
-    // }
     // skip the command name and parse the subcommand keyword
     let mut itr = args.into_iter().skip(1).peekable();
 
