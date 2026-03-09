@@ -782,29 +782,9 @@ impl CounterAggregatorState {
         if v.is_nan() {
             return false;
         }
-        // Compute delta with reset handling.
-        let delta = match self.last_value {
-            None => 0.0, // first point: no prior delta
-            Some(last) => {
-                let d = v - last;
-                if d >= 0.0 {
-                    d
-                } else {
-                    // Counter reset or went backwards: treat as 0 increment.
-                    0.0
-                }
-            }
-        };
-
+        let delta = self.last_value.map_or(0.0, |last| (v - last).max(0.0));
         self.last_value = Some(v);
-
-        // Add the new delta to the window.
-        if delta > 0.0 {
-            self.sum_deltas += delta;
-        } else {
-            // Even if delta == 0, we may want to keep the timestamp to
-            // age out the window precisely. For simplicity here, we don't.
-        }
+        self.sum_deltas += delta;
         true
     }
 
