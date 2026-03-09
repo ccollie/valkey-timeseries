@@ -23,49 +23,63 @@ impl<'a> TimeSeriesRangeIterator<'a> {
         options: &RangeOptions,
         is_reverse: bool,
     ) -> Self {
-        let mut size_hint = (0usize, options.count);
-
-        let mut latest: Option<Sample> = None;
-
-        // Determine whether we need to fetch the latest compaction sample.
-        let needs_latest = options.latest && series.is_compaction();
-        if needs_latest {
-            let context = ctx.expect("Context is required when LATEST option is used");
-            let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
-
-            if !series.retention.is_zero() {
-                let min_ts = series.get_min_timestamp();
-                start_ts = start_ts.max(min_ts);
-                end_ts = start_ts.max(end_ts);
-            }
-            // a partial compaction sample, if it exists, is beyond the last stored sample
-            if end_ts > series.last_timestamp() {
-                latest = get_latest_compaction_sample(context, series)
-                    .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
-                    .filter(|sample| {
-                        // validate timestamp filter
-                        if let Some(ts_filter) = options.timestamp_filter.as_ref()
-                            && !ts_filter.contains(&sample.timestamp)
-                        {
-                            return false;
-                        }
-                        true
-                    });
-            }
-        }
-
-        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
-            let max_elems = ts_filter.len() + { if latest.is_some() { 1 } else { 0 } };
-            if let Some(count) = options.count {
-                size_hint = (0, Some(count.min(max_elems)));
-            } else {
-                size_hint = (0, Some(max_elems));
-            }
-        }
-
+        let latest = Self::get_latest_sample(ctx, series, options);
+        let size_hint = Self::calculate_size_hint(options, latest.is_some());
         let inner = create_range_iterator(series, options, &None, latest, is_reverse);
 
         Self { inner, size_hint }
+    }
+
+    /// Determines and retrieves the latest compaction sample if needed.
+    fn get_latest_sample(
+        ctx: Option<&'a Context>,
+        series: &'a TimeSeries,
+        options: &RangeOptions,
+    ) -> Option<Sample> {
+        let needs_latest = options.latest && series.is_compaction();
+        if !needs_latest {
+            return None;
+        }
+
+        let context = ctx.expect("Context is required when LATEST option is used");
+        let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
+
+        if !series.retention.is_zero() {
+            let min_ts = series.get_min_timestamp();
+            start_ts = start_ts.max(min_ts);
+            end_ts = start_ts.max(end_ts);
+        }
+
+        // a partial compaction sample, if it exists, is beyond the last stored sample
+        if end_ts > series.last_timestamp() {
+            get_latest_compaction_sample(context, series)
+                .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
+                .filter(|sample| {
+                    // validate timestamp filter
+                    if let Some(ts_filter) = options.timestamp_filter.as_ref()
+                        && !ts_filter.contains(&sample.timestamp)
+                    {
+                        return false;
+                    }
+                    true
+                })
+        } else {
+            None
+        }
+    }
+
+    /// Calculates the size hint based on options and whether a latest sample exists.
+    fn calculate_size_hint(options: &RangeOptions, has_latest: bool) -> (usize, Option<usize>) {
+        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
+            let max_elems = ts_filter.len() + if has_latest { 1 } else { 0 };
+            if let Some(count) = options.count {
+                (0, Some(count.min(max_elems)))
+            } else {
+                (0, Some(max_elems))
+            }
+        } else {
+            (0, options.count)
+        }
     }
 }
 
