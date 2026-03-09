@@ -134,6 +134,7 @@ fn parse_args(args: &mut CommandArgIterator, dest_id: SeriesRef) -> ValkeyResult
         bucket_duration,
         align_timestamp,
         bucket_start: None,
+        has_samples: false,
     })
 }
 

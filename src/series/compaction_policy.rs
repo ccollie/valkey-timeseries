@@ -214,6 +214,7 @@ impl PolicyConfig {
                 bucket_duration: policy.bucket_duration_ms,
                 align_timestamp: policy.bucket_alignment,
                 bucket_start: None, // End timestamp is not set initially
+                has_samples: false,
             };
             rules.insert(rule_key, (rule, policy.retention_ms));
         }

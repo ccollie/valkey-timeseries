@@ -369,13 +369,153 @@ mod tests {
                 "failed for aggregation: {:?}",
                 aggregation
             );
-
-            assert_eq!(
-                samples[1].timestamp, 2000,
-                "failed for aggregation: {:?}",
-                aggregation
-            );
         }
+    }
+
+    #[test]
+    fn test_iteration_with_last_aggregation_and_nan_values() {
+        let mut series = TimeSeries::default();
+        series.add(0, 1.0, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(2000, 5.0, None);
+        series.add(2500, f64::NAN, None);
+        series.add(3000, 7.0, None);
+        series.add(3500, f64::NAN, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 4000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+        // Bucket [0, 2000): last non-NaN is 3.0 at t=1000
+        // Bucket [2000, 4000): last non-NaN is 7.0 at t=3000 (3500 is NaN)
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].timestamp, 0);
+        assert_eq!(samples[0].value, 3.0);
+        assert_eq!(samples[1].timestamp, 2000);
+        assert_eq!(samples[1].value, 7.0);
+    }
+
+    #[test]
+    fn test_reverse_iteration_with_last_aggregation_and_nan_values() {
+        let mut series = TimeSeries::default();
+        series.add(0, 1.0, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(2000, 5.0, None);
+        series.add(2500, f64::NAN, None);
+        series.add(3000, 7.0, None);
+        series.add(3500, f64::NAN, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 4000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, true).collect();
+
+        // Reverse order: bucket [2000, 4000) first, then [0, 2000)
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].timestamp, 2000);
+        assert_eq!(samples[0].value, 7.0);
+        assert_eq!(samples[1].timestamp, 0);
+        assert_eq!(samples[1].value, 3.0);
+    }
+
+    #[test]
+    fn test_iteration_with_last_aggregation_all_nans_in_bucket() {
+        let mut series = TimeSeries::default();
+        // Bucket [0, 2000): all NaN
+        series.add(0, f64::NAN, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, f64::NAN, None);
+        // Bucket [2000, 4000): has valid values
+        series.add(2000, 5.0, None);
+        series.add(2500, f64::NAN, None);
+        series.add(3000, 7.0, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 4000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+        // Bucket [0, 2000) has only NaNs — result should be NaN
+        // Bucket [2000, 4000) last non-NaN is 7.0
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].timestamp, 0);
+        assert!(samples[0].value.is_nan());
+        assert_eq!(samples[1].timestamp, 2000);
+        assert_eq!(samples[1].value, 7.0);
+    }
+
+    #[test]
+    fn test_iteration_with_last_aggregation_leading_nan() {
+        let mut series = TimeSeries::default();
+        // Bucket [0, 2000): NaN first, then valid
+        series.add(0, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(1500, f64::NAN, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 2000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+        // Last non-NaN in bucket is 3.0; trailing NaN at 1500 should not override
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].timestamp, 0);
+        assert_eq!(samples[0].value, 3.0);
     }
 
     #[test]

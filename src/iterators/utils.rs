@@ -28,6 +28,7 @@ where
     let aligned_timestamp = aggregation
         .alignment
         .get_aligned_timestamp(start_ts, end_ts);
+
     AggregateIterator::new(iter, aggregation, aligned_timestamp)
 }
 

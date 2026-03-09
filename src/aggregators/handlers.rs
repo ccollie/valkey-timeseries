@@ -23,7 +23,7 @@ type Timestamp = i64;
 
 #[enum_dispatch]
 pub trait AggregationHandler: RdbSerializable + Default + GetSize {
-    fn update(&mut self, timestamp: Timestamp, value: Value);
+    fn update(&mut self, timestamp: Timestamp, value: Value) -> bool;
     fn reset(&mut self);
     fn current(&self) -> Option<Value>;
     fn empty_value(&self) -> Value {
@@ -48,10 +48,14 @@ pub trait AggregationHandler: RdbSerializable + Default + GetSize {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct FirstAggregator(Option<Value>);
 impl AggregationHandler for FirstAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        if self.0.is_none() && !value.is_nan() {
-            self.0 = Some(value)
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
+        if value.is_nan() {
+            return false;
         }
+        if self.0.is_none() {
+            self.0 = Some(value);
+        }
+        true
     }
     fn reset(&mut self) {
         self.0 = None;
@@ -82,16 +86,21 @@ impl Hash for FirstAggregator {
 // -- Last ----------------------------------------------------------------
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
-pub struct LastAggregator(Option<Value>);
+pub struct LastAggregator(Option<f64>);
+
 impl AggregationHandler for LastAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        if !value.is_nan() {
-            self.0 = Some(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        if value.is_nan() {
+            return false;
         }
+        self.0 = Some(value);
+        true
     }
+
     fn reset(&mut self) {
         self.0 = None;
     }
+
     fn current(&self) -> Option<Value> {
         self.0
     }
@@ -99,7 +108,7 @@ impl AggregationHandler for LastAggregator {
 
 impl RdbSerializable for LastAggregator {
     fn rdb_save(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.0)
+        rdb_save_optional_f64(rdb, self.0);
     }
     fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
@@ -119,12 +128,15 @@ impl Hash for LastAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MinAggregator(Option<Value>);
 impl AggregationHandler for MinAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         if !value.is_nan() {
             self.0 = Some(match self.0 {
                 None => value,
                 Some(v) => v.min(value),
             });
+            true
+        } else {
+            false
         }
     }
     fn reset(&mut self) {
@@ -158,14 +170,15 @@ impl Hash for MinAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct MaxAggregator(Option<Value>);
 impl AggregationHandler for MaxAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         if value.is_nan() {
-            return;
+            return false;
         }
         self.0 = Some(match self.0 {
             None => value,
             Some(v) => v.max(value),
         });
+        true
     }
     fn reset(&mut self) {
         self.0 = None;
@@ -241,9 +254,9 @@ impl RdbSerializable for RangeAggregatorState {
 }
 
 impl RangeAggregatorState {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         if value.is_nan() {
-            return;
+            return false;
         }
         if !self._init {
             self._init = true;
@@ -253,6 +266,7 @@ impl RangeAggregatorState {
             self.max = self.max.max(value);
             self.min = self.min.min(value);
         }
+        true
     }
 
     fn reset(&mut self) {
@@ -273,8 +287,8 @@ impl RangeAggregatorState {
 #[derive(Clone, Default, Debug, PartialEq, GetSize, Hash)]
 pub struct RangeAggregator(Box<RangeAggregatorState>);
 impl AggregationHandler for RangeAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        self.0.update(_timestamp, value);
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
+        self.0.update(_timestamp, value)
     }
 
     fn reset(&mut self) {
@@ -302,9 +316,12 @@ impl RdbSerializable for RangeAggregator {
 pub struct AvgAggregator(KahanAvg);
 
 impl AggregationHandler for AvgAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         if !value.is_nan() {
             self.0 += value;
+            true
+        } else {
+            false
         }
     }
     fn reset(&mut self) {
@@ -334,10 +351,12 @@ impl RdbSerializable for AvgAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize, Hash)]
 pub struct SumAggregator(KahanSum);
 impl AggregationHandler for SumAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
-        if !value.is_nan() {
-            self.0 += value;
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
+        if value.is_nan() {
+            return false;
         }
+        self.0 += value;
+        true
     }
     fn reset(&mut self) {
         self.0.reset();
@@ -373,9 +392,12 @@ impl RdbSerializable for SumAggregator {
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct CountAggregator(usize);
 impl AggregationHandler for CountAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         if !value.is_nan() {
             self.0 += 1;
+            true
+        } else {
+            false
         }
     }
     fn reset(&mut self) {
@@ -417,9 +439,12 @@ impl Hash for CountAggregator {
 pub struct CountNanAggregator(usize);
 
 impl AggregationHandler for CountNanAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         if value.is_nan() {
             self.0 += 1;
+            true
+        } else {
+            false
         }
     }
     fn reset(&mut self) {
@@ -461,8 +486,9 @@ impl Hash for CountNanAggregator {
 pub struct CountAllAggregator(usize);
 
 impl AggregationHandler for CountAllAggregator {
-    fn update(&mut self, _timestamp: Timestamp, _value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, _value: Value) -> bool {
         self.0 += 1;
+        true
     }
     fn reset(&mut self) {
         self.0 = 0;
@@ -505,13 +531,14 @@ pub struct AggStd {
 }
 
 impl AggStd {
-    fn add(&mut self, value: Value) {
+    fn add(&mut self, value: Value) -> bool {
         if value.is_nan() {
-            return;
+            return false;
         }
         self.sum += value;
         self.sum_2 += value * value;
         self.count += 1;
+        true
     }
     fn reset(&mut self) {
         self.sum = 0.;
@@ -585,7 +612,7 @@ impl RdbSerializable for OnlineAggregator {
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarPAggregator(OnlineAggregator);
 impl AggregationHandler for VarPAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -618,7 +645,7 @@ impl RdbSerializable for VarPAggregator {
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct VarSAggregator(OnlineAggregator);
 impl AggregationHandler for VarSAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -653,7 +680,7 @@ impl RdbSerializable for VarSAggregator {
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdPAggregator(OnlineAggregator);
 impl AggregationHandler for StdPAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -684,7 +711,7 @@ impl RdbSerializable for StdPAggregator {
 #[derive(Clone, Default, Debug, Hash, PartialEq, GetSize)]
 pub struct StdSAggregator(OnlineAggregator);
 impl AggregationHandler for StdSAggregator {
-    fn update(&mut self, _timestamp: Timestamp, value: Value) {
+    fn update(&mut self, _timestamp: Timestamp, value: Value) -> bool {
         self.0.add(value)
     }
     fn reset(&mut self) {
@@ -751,9 +778,9 @@ impl RdbSerializable for CounterAggregatorState {
 }
 
 impl CounterAggregatorState {
-    pub fn update(&mut self, _t: Timestamp, v: f64) {
+    fn update(&mut self, _t: Timestamp, v: f64) -> bool {
         if v.is_nan() {
-            return;
+            return false;
         }
         // Compute delta with reset handling.
         let delta = match self.last_value {
@@ -778,9 +805,10 @@ impl CounterAggregatorState {
             // Even if delta == 0, we may want to keep the timestamp to
             // age out the window precisely. For simplicity here, we don't.
         }
+        true
     }
 
-    pub fn clear(&mut self) {
+    fn clear(&mut self) {
         self.sum_deltas = 0.0;
         self.last_value = None;
     }
@@ -792,8 +820,8 @@ impl CounterAggregatorState {
 pub struct IncreaseAggregator(CounterAggregatorState);
 
 impl AggregationHandler for IncreaseAggregator {
-    fn update(&mut self, timestamp: Timestamp, value: Value) {
-        self.0.update(timestamp, value);
+    fn update(&mut self, timestamp: Timestamp, value: Value) -> bool {
+        self.0.update(timestamp, value)
     }
     fn reset(&mut self) {
         self.0.clear();
@@ -876,8 +904,8 @@ impl RdbSerializable for RateAggregator {
 }
 
 impl AggregationHandler for RateAggregator {
-    fn update(&mut self, timestamp: Timestamp, value: Value) {
-        self.0.counter.update(timestamp, value);
+    fn update(&mut self, timestamp: Timestamp, value: Value) -> bool {
+        self.0.counter.update(timestamp, value)
     }
     fn reset(&mut self) {
         self.clear();
@@ -894,7 +922,7 @@ impl AggregationHandler for RateAggregator {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, GetSize)]
-pub struct IRateAggregatorState {
+struct IRateAggregatorState {
     dt: i64,
     dv: f64,
     last_sample: Option<Sample>,
@@ -913,9 +941,9 @@ impl Hash for IRateAggregatorState {
 }
 
 impl IRateAggregatorState {
-    fn update_irate(&mut self, timestamp: Timestamp, value: Value) {
+    fn update_irate(&mut self, timestamp: Timestamp, value: Value) -> bool {
         if value.is_nan() {
-            return;
+            return false;
         }
         let current = Sample { timestamp, value };
 
@@ -926,6 +954,7 @@ impl IRateAggregatorState {
                 self.dv = 0.0;
                 self.dt = 0;
                 self.last_sample = Some(current);
+                return false;
             } else {
                 self.dt = current.timestamp - prev.timestamp;
                 if self.dt > 0 {
@@ -937,6 +966,7 @@ impl IRateAggregatorState {
             // First sample: just store it.
             self.last_sample = Some(current);
         }
+        true
     }
 
     fn reset(&mut self) {
@@ -1003,8 +1033,8 @@ impl RdbSerializable for IRateAggregator {
 }
 
 impl AggregationHandler for IRateAggregator {
-    fn update(&mut self, timestamp: Timestamp, value: Value) {
-        self.0.update_irate(timestamp, value);
+    fn update(&mut self, timestamp: Timestamp, value: Value) -> bool {
+        self.0.update_irate(timestamp, value)
     }
 
     fn reset(&mut self) {

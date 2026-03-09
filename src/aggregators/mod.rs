@@ -47,7 +47,9 @@ impl TryFrom<&str> for BucketTimestamp {
         };
         match ts {
             Some(ts) => Ok(ts),
-            None => Err(ValkeyError::Str("TSDB: invalid BUCKETTIMESTAMP value")),
+            None => Err(ValkeyError::Str(
+                error_consts::INVALID_BUCKET_TIMESTAMP_TYPE,
+            )),
         }
     }
 }

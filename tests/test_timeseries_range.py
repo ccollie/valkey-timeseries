@@ -1267,17 +1267,17 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
         assert float(result[0][1]) == pytest.approx(2.0)
 
     @pytest.mark.parametrize(
-        "agg_type, expected, expect_nan",
+        "agg_type, expected",
         [
-            ("COUNTALL", 5.0, False),
-            ("COUNTNAN", 3.0, False),
-            ("AVG", 15.0, False),
-            ("SUM", 30.0, False),
-            ("FIRST", 10.0, False),
-            ("LAST", 20.0, False),
+            ("COUNTALL", 5.0),
+            ("COUNTNAN", 3.0),
+            ("AVG", 15.0),
+            ("SUM", 30.0),
+            ("FIRST", 10.0),
+            ("LAST", 20.0),
         ],
     )
-    def test_range_nan_values_with_different_aggregations(self, agg_type, expected, expect_nan):
+    def test_nan_values_with_different_aggregations(self, agg_type, expected):
         """TS.RANGE aggregation should handle NaN samples consistently across aggregators."""
 
         self.client.execute_command('TS.CREATE', 'ts_nan_aggs')
@@ -1299,10 +1299,113 @@ class TestTimeSeriesRange(ValkeyTimeSeriesTestCaseBase):
         assert result[0][0] == 0
 
         actual = float(result[0][1])
-        if expect_nan:
-            assert math.isnan(actual), f"Expected NaN for {agg_type}, got {result[0][1]}"
+        assert actual == pytest.approx(expected), f"Unexpected value for {agg_type}"
+
+    @pytest.mark.parametrize(
+        "agg_type, expected",
+        [
+            ("COUNTALL", 3.0),
+            ("COUNTNAN", 3.0),
+            ("COUNT", 0.0),
+            ("SUM", 0.0),
+            ("AVG", None),
+            ("MIN", None),
+            ("MAX", None),
+            ("FIRST", None),
+            ("LAST", None),
+            ("STD.P", None),
+            ("STD.S", None),
+            ("VAR.P", None),
+            ("VAR.S", None),
+            ("INCREASE", None),
+            ("RATE", None),
+            ("IRATE", None),
+        ],
+    )
+    def test_all_nan_values(self, agg_type, expected):
+        """
+        Verify aggregations' behavior when all samples in the bucket are NaN.
+        Numeric aggregations that ignore NaNs should emit NaN when no non-NaN samples exist.
+        COUNTALL/COUNTNAN count NaNs appropriately; COUNT counts non-NaN values.
+        """
+        self.client.execute_command('TS.CREATE', 'ts_all_nan')
+
+        # Add only NaN samples
+        self.client.execute_command('TS.ADD', 'ts_all_nan', 1000, 'nan')
+        self.client.execute_command('TS.ADD', 'ts_all_nan', 2000, 'nan')
+        self.client.execute_command('TS.ADD', 'ts_all_nan', 3000, 'nan')
+
+        result = self.client.execute_command(
+            'TS.RANGE', 'ts_all_nan', 0, 4000,
+            'ALIGN', 0,
+            'AGGREGATION', agg_type, 4000,
+            'BUCKETTIMESTAMP', 'START'
+        )
+
+        assert len(result) == 1
+        assert result[0][0] == 0
+        actual = float(result[0][1])
+
+        if expected is None:
+            assert math.isnan(actual), f"Expected NaN for {agg_type}, got {actual}"
         else:
             assert actual == pytest.approx(expected), f"Unexpected value for {agg_type}"
+
+    @pytest.mark.parametrize(
+        "agg_type, expect_value",
+        [
+            ("COUNTALL", 1.0),
+            ("COUNTNAN", 1.0),
+            ("COUNT", 0.0),
+            ("SUM", 0.0),
+            ("AVG", math.nan),
+            ("MIN", math.nan),
+            ("MAX", math.nan),
+            ("FIRST", math.nan),
+            ("LAST", math.nan),
+            ("STD.P", math.nan),
+            ("STD.S", math.nan),
+            ("VAR.P", math.nan),
+            ("VAR.S", math.nan),
+            ("INCREASE", math.nan),
+            ("RATE", math.nan),
+            ("IRATE", math.nan),
+        ],
+    )
+    def test_all_nan_values_with_empty_option(self, agg_type, expect_value):
+        """
+        Verify aggregations' behavior when every bucket contains only NaN samples and
+        the EMPTY option is provided (buckets should be emitted).
+        """
+        self.client.execute_command('TS.CREATE', 'ts_all_nan_empty')
+
+        # Place one NaN sample in each 2s bucket: timestamps 1000, 3000, 5000
+        self.client.execute_command('TS.ADD', 'ts_all_nan_empty', 1000, 'nan')
+        self.client.execute_command('TS.ADD', 'ts_all_nan_empty', 3000, 'nan')
+        self.client.execute_command('TS.ADD', 'ts_all_nan_empty', 5000, 'nan')
+
+        # Range 0..6000 with bucket=2000 -> buckets start at 0,2000,4000 (three buckets)
+        result = self.client.execute_command(
+            'TS.RANGE', 'ts_all_nan_empty', 0, 6000,
+            'ALIGN', 0,
+            'AGGREGATION', agg_type, 2000,
+            'BUCKETTIMESTAMP', 'START',
+            'EMPTY'
+        )
+
+        # Expect three emitted buckets (one per 2s bucket)
+        assert len(result) == 3
+
+        # Validate each bucket according to aggregator semantics
+        for ts, val in result:
+            actual = float(val)
+            if math.isnan(expect_value):
+                # Expect NaN value
+                assert math.isnan(actual), f"Expected NaN for {agg_type}, got {actual}"
+            else:
+                # each bucket contains one sample (NaN) -> count all = 1, sum=0, count=0, etc.
+                assert actual == pytest.approx(expect_value), f"Unexpected value for {agg_type}"
+
 
     def test_range_edge_cases(self):
         """Test TS.RANGE with edge case timestamps"""

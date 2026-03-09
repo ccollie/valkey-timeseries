@@ -69,13 +69,48 @@ impl AggregationHelper {
         )
     }
 
+    fn add_empty_bucket_internal(
+        &self,
+        samples: &mut VecDeque<Sample>,
+        start_bucket: Timestamp,
+        end_bucket_exclusive: Timestamp,
+    ) {
+        if end_bucket_exclusive <= start_bucket {
+            return;
+        }
+
+        let value = AggregationHandler::empty_bucket_value(&self.aggregator);
+        let count = ((end_bucket_exclusive - start_bucket) / self.bucket_duration as i64) as usize;
+        samples.reserve(count);
+
+        for bucket_start in
+            (start_bucket..end_bucket_exclusive).step_by(self.bucket_duration as usize)
+        {
+            samples.push_back(Sample {
+                timestamp: self.bucket_ts.calculate(bucket_start, self.bucket_duration),
+                value,
+            });
+        }
+    }
+
+    fn add_empty_buckets_between_timestamps(
+        &self,
+        samples: &mut VecDeque<Sample>,
+        first_ts: Timestamp,
+        end_ts: Timestamp,
+    ) {
+        let start = self.calc_bucket_start(first_ts);
+        let end = self.calc_bucket_start(end_ts);
+        self.add_empty_bucket_internal(samples, start, end);
+    }
+
     fn add_empty_buckets(
         &self,
         samples: &mut VecDeque<Sample>,
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
-        let value = self.aggregator.empty_bucket_value();
+        let value = AggregationHandler::empty_bucket_value(&self.aggregator);
         let start = self.calc_bucket_start(first_bucket_ts);
         let end = self.calc_bucket_start(end_bucket_ts);
 
@@ -97,28 +132,28 @@ impl AggregationHelper {
         last_ts: Option<Timestamp>,
         empty_buckets: &mut VecDeque<Sample>,
     ) -> Option<Sample> {
-        let bucket = if self.has_samples {
+        let bucket = if self.count > 0 {
             Some(Sample::new(
                 self.output_timestamp(),
-                self.aggregator.finalize(),
+                AggregationHandler::finalize(&mut self.aggregator),
             ))
         } else if self.report_empty {
             Some(Sample::new(
                 self.output_timestamp(),
-                self.aggregator.empty_value(),
+                AggregationHandler::empty_value(&self.aggregator),
             ))
         } else {
             None
         };
 
-        self.aggregator.reset();
+        AggregationHandler::reset(&mut self.aggregator);
 
         if self.report_empty
             && let Some(last_ts) = last_ts
             && last_ts >= self.bucket_range_end
         {
             let start = self.bucket_range_end + 1;
-            self.add_empty_buckets(empty_buckets, start, last_ts);
+            self.add_empty_buckets_between_timestamps(empty_buckets, start, last_ts);
         }
 
         self.has_samples = false;
@@ -167,6 +202,7 @@ pub struct AggregateIterator<T: Iterator<Item = Sample>> {
     empty_buckets: VecDeque<Sample>,
     prev_ts: Timestamp,
     init: bool,
+    query_range: Option<(Timestamp, Timestamp)>,
 }
 
 impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
@@ -178,6 +214,24 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
             empty_buckets: VecDeque::new(),
             prev_ts: 0,
             init: false,
+            query_range: None,
+        }
+    }
+
+    pub fn with_range(
+        inner: T,
+        options: &AggregationOptions,
+        aligned_timestamp: Timestamp,
+        query_start: Timestamp,
+        query_end: Timestamp,
+    ) -> Self {
+        Self {
+            inner,
+            aggregator: AggregationHelper::new(options, aligned_timestamp),
+            empty_buckets: VecDeque::new(),
+            prev_ts: 0,
+            init: false,
+            query_range: Some((query_start, query_end)),
         }
     }
 
@@ -207,6 +261,41 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
         self.empty_buckets.pop_front()
     }
 
+    fn enqueue_leading_empty_buckets(&mut self, first_sample_ts: Timestamp) {
+        if !self.aggregator.report_empty {
+            return;
+        }
+
+        if let Some((query_start, _)) = self.query_range {
+            let requested_first_bucket = self.aggregator.calc_bucket_start(query_start);
+            let first_sample_bucket = self.aggregator.calc_bucket_start(first_sample_ts);
+            self.aggregator.add_empty_bucket_internal(
+                &mut self.empty_buckets,
+                requested_first_bucket,
+                first_sample_bucket,
+            );
+        }
+    }
+
+    fn enqueue_full_empty_range_if_needed(&mut self) {
+        if !self.aggregator.report_empty {
+            return;
+        }
+
+        if let Some((query_start, query_end)) = self.query_range {
+            let first_bucket = self.aggregator.calc_bucket_start(query_start);
+            let end_exclusive = self
+                .aggregator
+                .calc_bucket_start(query_end)
+                .saturating_add_unsigned(self.aggregator.bucket_duration);
+            self.aggregator.add_empty_bucket_internal(
+                &mut self.empty_buckets,
+                first_bucket,
+                end_exclusive,
+            );
+        }
+    }
+
     #[inline]
     fn ensure_initialized(&mut self) -> bool {
         if self.init {
@@ -215,9 +304,11 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
 
         self.init = true;
         if let Some(sample) = self.inner.next() {
+            self.enqueue_leading_empty_buckets(sample.timestamp);
             self.start_new_bucket(sample);
             true
         } else {
+            self.enqueue_full_empty_range_if_needed();
             false
         }
     }
@@ -243,11 +334,28 @@ impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
     }
 
     fn finalize_last_bucket_if_any(&mut self) -> Option<Sample> {
-        if self.aggregator.count > 0 {
-            return self.finalize_bucket(None);
+        if self.aggregator.count == 0 {
+            return None;
         }
 
-        None
+        let bucket = self.finalize_bucket(None);
+
+        if self.aggregator.report_empty
+            && let Some((_, query_end)) = self.query_range
+        {
+            let end_exclusive = self
+                .aggregator
+                .calc_bucket_start(query_end)
+                .saturating_add_unsigned(self.aggregator.bucket_duration);
+
+            self.aggregator.add_empty_bucket_internal(
+                &mut self.empty_buckets,
+                self.aggregator.bucket_range_end,
+                end_exclusive,
+            );
+        }
+
+        bucket
     }
 }
 
@@ -260,7 +368,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
         }
 
         if !self.ensure_initialized() {
-            return None;
+            return self.pop_empty_bucket();
         }
 
         if let Some(bucket) = self.process_bucket() {
@@ -268,6 +376,7 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
         }
 
         self.finalize_last_bucket_if_any()
+            .or_else(|| self.pop_empty_bucket())
     }
 }
 
@@ -359,7 +468,12 @@ mod tests {
         let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
         let result: Vec<Sample> = iterator.collect();
 
-        assert_eq!(result.len(), 0);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        // All NaNs should be ignored, sum = 0.0
+        assert_eq!(result[0].value, 0.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 0.0);
     }
 
     #[test]
@@ -439,6 +553,50 @@ mod tests {
         assert_eq!(result[0].value, 2.0); // count of values in the bucket
         assert_eq!(result[1].timestamp, 20);
         assert_eq!(result[1].value, 1.0);
+    }
+
+    #[test]
+    fn test_count_with_nans() {
+        let samples = vec![
+            Sample::new(10, 1.0),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+            Sample::new(25, 3.0),
+            Sample::new(30, f64::NAN),
+            Sample::new(35, f64::NAN),
+        ];
+
+        let options = create_options(AggregationType::Count);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 1.0); // only the non-NaN sample is counted
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 1.0); // NaN is ignored, valid sample still counts
+        assert_eq!(result[2].timestamp, 30);
+        assert_eq!(result[2].value, 0.0); // all-NaN bucket yields an empty count
+    }
+
+    #[test]
+    fn test_count_all_nans() {
+        let samples = vec![
+            Sample::new(10, f64::NAN),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+            Sample::new(25, f64::NAN),
+        ];
+
+        let options = create_options(AggregationType::Count);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 0.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 0.0);
     }
 
     #[test]
@@ -567,15 +725,15 @@ mod tests {
 
         assert_eq!(result.len(), 3);
 
-        // First bucket [10, 20): contains 1.0 and 5.0, range = 5.0 - 1.0 = 4.0
+        // The first bucket [10, 20): contains 1.0 and 5.0, range = 5.0 - 1.0 = 4.0
         assert_eq!(result[0].timestamp, 10);
         assert_eq!(result[0].value, 4.0);
 
-        // Second bucket [20, 30): contains 2.0 and 8.0, range = 8.0 - 2.0 = 6.0
+        // The second bucket [20, 30): contains 2.0 and 8.0, range = 8.0 - 2.0 = 6.0
         assert_eq!(result[1].timestamp, 20);
         assert_eq!(result[1].value, 6.0);
 
-        // Third bucket [30, 40): contains 3.0 and 7.0, range = 7.0 - 3.0 = 4.0
+        // The third bucket [30, 40): contains 3.0 and 7.0, range = 7.0 - 3.0 = 4.0
         assert_eq!(result[2].timestamp, 30);
         assert_eq!(result[2].value, 4.0);
     }
