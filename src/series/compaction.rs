@@ -1,4 +1,5 @@
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
+use crate::common::hash::NoHashHasher;
 use crate::common::logging::log_warning;
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_timestamp, rdb_save_bool, rdb_save_timestamp,
@@ -9,9 +10,11 @@ use crate::error_consts;
 use crate::series::index::{get_series_by_id, with_timeseries_postings};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries};
 use get_size2::GetSize;
-use orx_parallel::{ParIter, ParallelizableCollectionMut};
+use orx_parallel::{IterIntoParIter, ParIter};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use topo_sort::{SortResults, TopoSort};
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, raw};
 
@@ -125,6 +128,20 @@ impl<'a> CompactionContext<'a> {
     }
 }
 
+struct CompactionRulesOutput<'a> {
+    error: Option<TsdbError>,
+    destinations: SmallVec<SeriesGuardMut<'a>, TEMP_VEC_LEN>,
+}
+
+type SeriesGuardMap<'a> =
+    HashMap<SeriesRef, SeriesGuardMut<'a>, BuildHasherDefault<NoHashHasher<SeriesRef>>>;
+
+#[derive(Default)]
+struct RuleTreeNode {
+    parent: SeriesRef,
+    children: Box<SmallVec<RuleTreeNode, TEMP_VEC_LEN>>,
+}
+
 /// Single entry point for all compaction-related mutations.
 #[derive(Debug, Clone, Copy)]
 pub enum CompactionOp {
@@ -144,7 +161,164 @@ pub fn apply_compaction(
     if series.rules.is_empty() {
         return Ok(());
     }
-    process_series_with_compaction(ctx, series, op)
+    let mut series_map: SeriesGuardMap = HashMap::with_hasher(BuildHasherDefault::default());
+    let source_guard = SeriesGuardMut { series };
+    let root = build_rule_node_tree(ctx, source_guard, &mut series_map);
+    execute_compaction_tree(root, &mut series_map, op)
+}
+
+/// Recursively execute compactions for a tree of compaction rules
+/// with maximum concurrency.
+///
+/// Unlike the layer-by-layer BFS approach, this pipelines across independent
+/// branches: once a node's compaction rules are applied, its child subtrees
+/// are dispatched in parallel immediately, without waiting for any sibling
+/// branches to reach the same depth.
+///
+/// # Concurrency contract
+/// - A node is always processed **before** its children (data flows parent → child).
+/// - Sibling subtrees are **independent** — each `SeriesGuardMut` is exclusive to
+///   one subtree — so they can be processed concurrently without coordination.
+fn execute_compaction_tree<'a>(
+    root: RuleTreeNode,
+    series_map: &mut SeriesGuardMap<'a>,
+    op: CompactionOp,
+) -> TsdbResult<()> {
+    let children = *root.children; // unbox SmallVec<RuleTreeNode, TEMP_VEC_LEN>
+
+    if children.is_empty() {
+        return Ok(());
+    }
+
+    // Remove the source series from the shared map.
+    let Some(mut source) = series_map.remove(&root.parent) else {
+        return Ok(());
+    };
+
+    // Collect the direct-child guards (one per compaction rule on `source`).
+    let child_guards: SmallVec<SeriesGuardMut<'a>, TEMP_VEC_LEN> = children
+        .iter()
+        .filter_map(|child| series_map.remove(&child.parent))
+        .collect();
+
+    // Run this node's compaction rules — must happen before children proceed.
+    let CompactionRulesOutput {
+        error: source_error,
+        ..
+    } = execute_source_rules(&mut source, child_guards, op);
+
+    // Partition the remaining map into per-subtree slices.
+    // Because each series ID appears in exactly one subtree, the partitions are
+    // disjoint; we can hand them off to parallel workers without any sharing.
+    let subtasks: SmallVec<(RuleTreeNode, SeriesGuardMap<'a>), TEMP_VEC_LEN> = children
+        .into_iter()
+        .map(|child| {
+            let partition = extract_subtree_map(&child, series_map);
+            (child, partition)
+        })
+        .collect();
+
+    // Process all child subtrees in parallel.
+    let child_results: Vec<TsdbResult<()>> = subtasks
+        .into_iter()
+        .iter_into_par()
+        .map(|(child_node, mut child_map)| execute_compaction_tree(child_node, &mut child_map, op))
+        .collect();
+
+    // Merge errors — report the first one encountered.
+    let mut first_error = source_error;
+    for result in child_results {
+        if first_error.is_none() {
+            first_error = result.err();
+        }
+    }
+
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/// Walk `node`'s subtree and move every matching guard from `source_map`
+/// into a freshly-allocated map that is private to that subtree.
+fn extract_subtree_map<'a>(
+    node: &RuleTreeNode,
+    source_map: &mut SeriesGuardMap<'a>,
+) -> SeriesGuardMap<'a> {
+    let mut subtree_map: SeriesGuardMap<'a> = HashMap::with_hasher(BuildHasherDefault::default());
+    collect_subtree_into_map(node, source_map, &mut subtree_map);
+    subtree_map
+}
+
+fn collect_subtree_into_map<'a>(
+    node: &RuleTreeNode,
+    source: &mut SeriesGuardMap<'a>,
+    dest: &mut SeriesGuardMap<'a>,
+) {
+    if let Some(guard) = source.remove(&node.parent) {
+        dest.insert(node.parent, guard);
+    }
+    for child in node.children.iter() {
+        collect_subtree_into_map(child, source, dest);
+    }
+}
+
+/// Internal function that handles execution of compaction rules.
+fn execute_source_rules<'a>(
+    series: &'a mut TimeSeries,
+    child_series: SmallVec<SeriesGuardMut<'a>, TEMP_VEC_LEN>,
+    op: CompactionOp,
+) -> CompactionRulesOutput<'a> {
+    let mut destinations = SmallVec::<SeriesGuardMut<'a>, TEMP_VEC_LEN>::new();
+
+    if series.rules.is_empty() {
+        return CompactionRulesOutput {
+            error: None,
+            destinations,
+        };
+    }
+
+    let mut first_error: Option<TsdbError> = None;
+
+    let mut rules = std::mem::take(&mut series.rules);
+    let result = rules
+        .iter_mut()
+        .zip(child_series)
+        .iter_into_par()
+        .filter_map(|(rule, mut dest_guard)| {
+            let mut cctx = CompactionContext::new(series, &mut dest_guard, rule);
+            match apply_op(&mut cctx, op) {
+                Ok(()) => {
+                    if cctx.added {
+                        Some(Ok(dest_guard))
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => Some(Err(e)),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    series.rules = rules;
+
+    for res in result {
+        match res {
+            Ok(dest_guard) => destinations.push(dest_guard),
+            Err(err) => {
+                let msg = format!("Failed to apply compaction rule: {err}");
+                log_warning(msg);
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+    }
+
+    CompactionRulesOutput {
+        error: first_error,
+        destinations,
+    }
 }
 
 fn null_ts_filter(ts: Timestamp) -> bool {
@@ -380,108 +554,6 @@ fn adjust_current_bucket_after_removal(
 
         ctx.rule.aggregator = new_aggregator;
         ctx.rule.has_samples = has_samples;
-    }
-}
-
-/// Iterates through compaction rules (possibly in parallel) and applies the specified operation.
-fn process_series_with_compaction(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    op: CompactionOp,
-) -> TsdbResult<()> {
-    let mut added: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
-
-    let destinations = get_compaction_series(ctx, series);
-    if destinations.is_empty() {
-        return Ok(());
-    }
-    // Process current series compaction rules
-    apply_rules_on_destinations(series, destinations, op, &mut added)?;
-
-    // Collect child series (one level deep)
-    let child_series = series.rules.iter_mut().filter_map(|rule| {
-        let mut child = get_destination_series(ctx, rule.dest_id)?;
-        let destinations = get_compaction_series(ctx, &mut child);
-        if destinations.is_empty() {
-            None
-        } else {
-            Some((child, destinations))
-        }
-    });
-
-    // Process child series
-    for (mut child, destinations) in child_series {
-        apply_rules_on_destinations(&mut child, destinations, op, &mut added)?;
-    }
-
-    if !added.is_empty() {
-        notify_compaction(ctx, &added);
-    }
-
-    Ok(())
-}
-
-fn apply_rules_on_destinations(
-    series: &mut TimeSeries,
-    destinations: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
-    op: CompactionOp,
-    added: &mut SmallVec<SeriesRef, TEMP_VEC_LEN>,
-) -> TsdbResult<()> {
-    let mut rules = std::mem::take(&mut series.rules);
-    let result = apply_rules_internal(series, &mut rules, destinations, op, added);
-    series.rules = rules;
-    result
-}
-
-/// Internal function that handles execution of compaction rules.
-fn apply_rules_internal(
-    series: &TimeSeries,
-    rules: &mut [CompactionRule],
-    child_series: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
-    op: CompactionOp,
-    added: &mut SmallVec<SeriesRef, TEMP_VEC_LEN>,
-) -> TsdbResult<()> {
-    if rules.is_empty() {
-        return Ok(());
-    }
-
-    let len = rules.len();
-    let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
-    let results: Vec<Result<Option<SeriesRef>, TsdbError>> = destinations
-        .par_mut()
-        .num_threads(if len < PARALLEL_THRESHOLD { 1 } else { 0 }) // 0 is shorthand for Auto
-        .map(|(rule, dest_guard)| {
-            let mut cctx = CompactionContext::new(series, dest_guard, rule);
-            apply_op(&mut cctx, op).map(|_| {
-                if cctx.added {
-                    Some(dest_guard.id)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-
-    let mut first_error: Option<TsdbError> = None;
-
-    for r in results {
-        match r {
-            Ok(Some(id)) => added.push(id),
-            Ok(None) => {}
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error.clone());
-                }
-                let msg = format!("Failed to handle compaction rule for series: {error}");
-                log_warning(msg);
-            }
-        }
-    }
-
-    if let Some(err) = first_error {
-        Err(err)
-    } else {
-        Ok(())
     }
 }
 
@@ -732,4 +804,52 @@ fn build_dependency_graph_internal(
         build_dependency_graph_internal(ctx, dest, graph)?;
     }
     Ok(())
+}
+
+/// Builds a tree of compaction rules starting from a source series.
+fn build_rule_node_tree<'a>(
+    ctx: &'a Context,
+    source: SeriesGuardMut<'a>,
+    series_map: &mut SeriesGuardMap<'a>,
+) -> RuleTreeNode {
+    fn build_sub_tree<'a>(
+        ctx: &'a Context,
+        source: SeriesGuardMut<'a>,
+        series_map: &mut SeriesGuardMap<'a>,
+    ) -> RuleTreeNode {
+        let mut node = RuleTreeNode {
+            parent: source.id,
+            children: Box::new(SmallVec::new()),
+        };
+
+        if source.rules.is_empty() {
+            series_map.insert(source.id, source);
+            return node;
+        }
+
+        let mut missing: SmallVec<_, TEMP_VEC_LEN> = SmallVec::new();
+
+        for rule in source.rules.iter() {
+            if let Some(dest_series) = get_destination_series(ctx, rule.dest_id) {
+                let child_node = build_sub_tree(ctx, dest_series, series_map);
+                node.children.push(child_node);
+            } else {
+                // Destination series doesn't exist, mark rule for removal
+                missing.push(rule.dest_id);
+            }
+        }
+
+        // mixing concerns :-(
+        if !missing.is_empty() {
+            let mut source = source;
+            source.rules.retain(|r| !missing.contains(&r.dest_id));
+            series_map.insert(source.id, source);
+        } else {
+            series_map.insert(source.id, source);
+        }
+
+        node
+    }
+
+    build_sub_tree(ctx, source, series_map)
 }
