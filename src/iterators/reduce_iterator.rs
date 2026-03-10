@@ -67,7 +67,7 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
         let value = if has_samples {
             AggregationHandler::finalize(&mut self.aggregator)
         } else {
-            f64::NAN
+            AggregationHandler::empty_value(&self.aggregator)
         };
 
         Some(Sample {
