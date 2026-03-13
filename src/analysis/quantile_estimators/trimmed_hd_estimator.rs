@@ -1,6 +1,5 @@
 use crate::analysis::math::BetaDistribution;
 use crate::analysis::quantile_estimators::{QuantileEstimator, Samples};
-use core::f64;
 
 /// Trimmed Harrell-Davis quantile estimator based on the highest density
 /// interval of the given width.
