@@ -33,7 +33,7 @@ pub(super) fn get_anomaly_direction(
     }
 }
 
-/// Infer the period from datetime index
+/// Infer the period from timestamps by analyzing the distribution of time differences. Returns a meaningful default if inference fails.
 pub(crate) fn infer_period(timestamps: &[Timestamp]) -> TimeSeriesAnalysisResult<usize> {
     let n = timestamps.len();
     if n < 2 {

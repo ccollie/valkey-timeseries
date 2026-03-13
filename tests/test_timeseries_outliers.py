@@ -54,7 +54,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
     def test_outliers_nonexistent_key(self):
         """Test outlier detection on non-existent key."""
-        with pytest.raises(ResponseError, match="the key does not exist") as exc_info:
+        with pytest.raises(ResponseError, match="the key does not exist"):
             self.client.execute_command('TS.OUTLIERS', 'nonexistent', "-", "+", "method", "zscore")
 
     def test_method_spc_cusum_negative_spike(self):
@@ -580,7 +580,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
                 else:
                     value = 30.0 + 10.0 * math.sin(hour * math.pi / 12)
 
-                # Add spike on day 3, hour 14
+                # Add a spike on day 3, hour 14
                 if day == 3 and hour == 14:
                     value = 500.0
 
@@ -736,7 +736,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         """Test detection with daily seasonality and a moderate upward trend."""
         key = 'test:seasonality:daily:moderate_trend'
 
-        # Create a pattern with daily and weekly cycles, plus moderate upward trend
+        # Create a pattern with daily and weekly cycles, plus a moderate upward trend
         data = []
         for week in range(8):
             for day in range(7):

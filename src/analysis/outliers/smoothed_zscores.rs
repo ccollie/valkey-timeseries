@@ -180,7 +180,7 @@ impl SmoothedZScoreAnomalyDetector {
     ///
     /// The score is based on the current moving mean and standard deviation:
     /// `z = |value - prev_mean| / prev_std_dev`.
-    /// It is then mapped to [0, 1] via `z / (threshold + z)` so that:
+    /// It is then mapped to [0, 1) via `z / (threshold + z)` so that:
     /// - `0.0` when `value == prev_mean`
     /// - `0.5` when `z == threshold`
     /// - approaches `1.0` as `z` grows
