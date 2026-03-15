@@ -8,15 +8,17 @@ use crate::common::hash::BuildNoHashHasher;
 use crate::common::pool::get_pooled_buffer;
 use crate::common::threads::spawn_with_context;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
-use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId};
+use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddress};
 use crate::fanout::fanout_command::FanoutResponseCallback;
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
 use crate::fanout::serialization::Serializable;
 use crate::fanout::{FanoutResult, NodeInfo};
 use ahash::HashSet;
 use core::time::Duration;
+use logger_rust::log_debug;
 use papaya::HashMap;
 use std::hash::{BuildHasher, RandomState};
+use std::net::{IpAddr, Ipv4Addr};
 use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -67,6 +69,21 @@ impl InFlightRequest {
                 self.id, sender
             );
             ctx.log_warning(&msg);
+
+            let resp = Err(FanoutError::custom(msg));
+
+            let node_info = NodeInfo {
+                id: Default::default(),
+                shard_id: Default::default(),
+                socket_address: SocketAddress {
+                    port: 0,
+                    primary_endpoint: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+                },
+                role: NodeRole::Primary,
+                location: Default::default(),
+            };
+
+            (self.response_handler)(resp, &node_info);
             return;
         };
 
@@ -460,6 +477,8 @@ extern "C" fn on_response_received(
         ctx.log_warning("Failed to parse response message");
         return;
     };
+
+    log_debug!("Received response");
 
     with_inflight_request(&ctx, message.request_id, |ctx, request| {
         let _ = set_current_db(ctx, message.db);
