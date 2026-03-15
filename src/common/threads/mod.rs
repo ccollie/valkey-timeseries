@@ -1,3 +1,4 @@
+use crate::is_main_thread;
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
 use std::sync::LazyLock;
@@ -83,6 +84,7 @@ where
 /// Executes a given closure on the Valkey main thread. The provided closure will be executed as a one-shot operation.
 ///
 /// # Parameters
+/// - `force_async`: If true, the closure will be executed asynchronously even if it's already on the main thread.
 /// - `callback`: The closure to be executed on the main thread.
 ///
 /// # Example
@@ -94,10 +96,15 @@ where
 ///     println!("This is running on the main thread!");
 /// });
 /// ```
-pub fn run_on_main_thread<F>(callback: F)
+pub fn run_on_main_thread<F>(force_async: bool, callback: F)
 where
     F: FnOnce() + Send + 'static,
 {
+    if is_main_thread() && !force_async {
+        callback();
+        return;
+    }
+
     // Move the closure to the heap so it has a stable memory address
     let boxed_callback = Box::new(callback);
     let raw_data = Box::into_raw(boxed_callback) as *mut c_void;

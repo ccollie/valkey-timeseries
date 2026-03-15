@@ -16,12 +16,19 @@ pub trait FanoutOperation: FanoutCommand {
         // IMPORTANT: this callback calls thread_ctx.lock() (acquires the GIL).
         // It must never be invoked while the GIL is already held on the same
         // thread.
-        let handle_response = move |op: &mut Self, result: FanoutResult| {
-            run_on_main_thread(|| {
+        let handle_response = move |mut _op: Self, result: FanoutResult| {
+            println!(
+                "Handling response for fanout operation {}, result: {:?}, thread-id: {:?}",
+                Self::name(),
+                result,
+                std::thread::current().id()
+            );
+            run_on_main_thread(false, move || {
                 let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
                 match result {
                     Ok(_) => {
-                        op.reply(&thread_ctx);
+                        panic!("Here !!!!");
+                        //op.reply(&thread_ctx);
                     }
                     Err(err) => {
                         let _err: ValkeyError = err.into();

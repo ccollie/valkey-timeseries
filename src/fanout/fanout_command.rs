@@ -4,6 +4,7 @@ use crate::common::threads::spawn;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use ahash::HashSet;
+use logger_rust::log_debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, MODULE_CONTEXT, ValkeyResult};
@@ -42,7 +43,7 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// Execute the fanout operation across cluster nodes.
     fn exec_command<F>(self, ctx: &Context, f: F) -> FanoutResult
     where
-        F: FnOnce(&mut Self, FanoutCommandResult) + Send + 'static,
+        F: FnOnce(Self, FanoutCommandResult) + Send + 'static,
     {
         let timeout = self.get_timeout();
         let targets = self.get_targets(ctx);
@@ -84,7 +85,7 @@ pub fn exec_command<OP: FanoutCommand, F>(
     f: F,
 ) -> FanoutResult
 where
-    F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     let op = command;
 
@@ -113,7 +114,12 @@ where
         }
     }
 
+    let thread_id = std::thread::current().id();
+    log_debug!("outstanding nodes: {outstanding}. Current thread ID: {thread_id:?}");
+
     let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| {
+        let current_thread_id = std::thread::current().id();
+        log_debug!("outstanding response: {res:?}, current thread ID: {current_thread_id:?}");
         let Ok(buf) = res else {
             state.on_error(res.err().unwrap(), target);
             return;
@@ -144,7 +150,7 @@ where
 struct FanoutStateInner<OP, F>
 where
     OP: FanoutCommand + 'static,
-    F: FnOnce(&mut OP, FanoutCommandResult) + Send,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     operation: OP,
     outstanding: usize,
@@ -156,10 +162,11 @@ where
 impl<OP, F> FanoutStateInner<OP, F>
 where
     OP: FanoutCommand + 'static,
-    F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     fn rpc_done(&mut self) {
         self.outstanding = self.outstanding.saturating_sub(1);
+        log_debug!("rpc_done: outstanding: {}", self.outstanding);
         if self.outstanding == 0 {
             self.on_completion();
         }
@@ -195,26 +202,27 @@ where
             Ok(())
         };
 
-        callback(&mut self.operation, result);
+        let operation = std::mem::take(&mut self.operation);
+        callback(operation, result);
     }
 }
 
-// impl<OP, F> Drop for FanoutStateInner<OP, F>
-// where
-//     OP: FanoutCommand + 'static,
-//     F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
-// {
-//     fn drop(&mut self) {
-//         self.on_completion();
-//     }
-// }
+impl<OP, F> Drop for FanoutStateInner<OP, F>
+where
+    OP: FanoutCommand + 'static,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
+{
+    fn drop(&mut self) {
+        self.on_completion();
+    }
+}
 
 /// Internal structure to manage the state of an ongoing fanout operation.
 /// It tracks outstanding RPCs, errors, and coordinates the final reply generation.
 struct FanoutState<OP, F>
 where
     OP: FanoutCommand,
-    F: FnOnce(&mut OP, FanoutCommandResult) + Send,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     inner: Mutex<FanoutStateInner<OP, F>>,
 }
@@ -224,7 +232,7 @@ static MUTEX_POISONED_MSG: &str = "FanoutState mutex poisoned";
 impl<OP, F> FanoutState<OP, F>
 where
     OP: FanoutCommand + 'static,
-    F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     fn new(operation: OP, outstanding: usize, f: F) -> Self {
         Self {
@@ -262,7 +270,7 @@ where
     OP: FanoutCommand,
     OP::Request: Send + 'static,
     OP::Response: Send + 'static,
-    F: FnOnce(&mut OP, FanoutCommandResult) + Send + 'static,
+    F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     spawn(move || {
         // Minimize the scope of GIL locking, avoiding re-entering the GIL which is non-reentrant.
