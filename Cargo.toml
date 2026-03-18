@@ -20,6 +20,7 @@ enquote = "1.1.0"
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
 hashify = { version = "0.2" }
+itertools = "0.14"
 linkme = "0.3"
 logos = "0.16"
 orx-parallel = "3.4"
@@ -47,6 +48,7 @@ logger-rust = "0.2.12"
 simd-json = "0.17.0"
 log = "0.4"
 statrs = "0.18"
+welch-sde = "0.1.0"
 
 [dev-dependencies]
 test-case = "3.3"

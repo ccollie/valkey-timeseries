@@ -8,24 +8,25 @@ use super::{
     AnomalyMethod, AnomalyResult, MADAnomalyOptions,
     cusum_outlier_detector::detect_anomalies_spc_cusum,
     detect_anomalies_double_mad,
+    esd_outlier_detector::{ESDOutlierOptions, detect_anomalies_esd},
     ewma_outlier_detector::detect_anomalies_spc_ewma,
     iqr_outlier_detector::detect_anomalies_iqr,
     mad_outlier_detector::MadOutlierDetector,
     modified_zscore_outlier_detector::detect_anomalies_modified_zscore,
     rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf},
-    sesd_outlier_detector::{SESDOutlierOptions, detect_anomalies_sesd},
     smoothed_zscores::{SmoothedZScoreOptions, detect_anomalies_smoothed_zscore},
     zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore},
 };
+use crate::analysis::seasonality::PeriodogramDetector;
 use crate::analysis::{
     INSUFFICIENT_DATA_ERROR, TimeSeriesAnalysisError, TimeSeriesAnalysisResult,
     seasonality::{mstl::Mstl, stl::Stl},
 };
 
-#[derive(Debug, Clone)]
-pub struct SeasonalAdjustment {
-    /// Seasonal period for adjustment
-    pub seasonal_periods: Vec<usize>,
+#[derive(Clone, Debug)]
+pub enum Seasonality {
+    Auto,
+    Periods(Vec<usize>),
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +40,7 @@ pub enum AnomalyDetectionMethodOptions {
     Mad(MADAnomalyOptions),
     DoubleMAD(MADAnomalyOptions),
     Rcf(RCFOptions),
-    Sesd(Option<SESDOutlierOptions>),
+    Sesd(Option<ESDOutlierOptions>),
 }
 
 impl Default for AnomalyDetectionMethodOptions {
@@ -73,7 +74,7 @@ impl AnomalyDetectionMethodOptions {
 #[derive(Debug, Clone, Default)]
 pub struct AnomalyOptions {
     /// Seasonal adjustment options
-    pub seasonal_adjustment: Option<SeasonalAdjustment>,
+    pub seasonality: Option<Seasonality>,
     /// Anomaly detection method options
     pub options: AnomalyDetectionMethodOptions,
 }
@@ -84,9 +85,7 @@ impl AnomalyOptions {
     }
 
     pub fn set_seasonal_periods(&mut self, periods: Vec<usize>) {
-        self.seasonal_adjustment = Some(SeasonalAdjustment {
-            seasonal_periods: periods,
-        });
+        self.seasonality = Some(Seasonality::Periods(periods));
     }
 }
 
@@ -139,8 +138,8 @@ pub fn detect_anomalies(
     }
 
     // Apply seasonal adjustment if requested
-    if let Some(adjustment) = &options.seasonal_adjustment {
-        let adjusted = seasonality_adjust(ts, &adjustment.seasonal_periods)?;
+    if let Some(adjustment) = &options.seasonality {
+        let adjusted = seasonally_adjust(ts, &adjustment)?;
         let mut result = handle_dispatch(&adjusted, options)?;
         // we calculate anomalies on the seasonally adjusted data, but we want to report the original values in the result
         for anomaly in &mut result.anomalies {
@@ -171,7 +170,7 @@ fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisRes
             detect_anomalies_double_mad(ts, options)
         }
         AnomalyDetectionMethodOptions::Rcf(opts) => detect_anomalies_rcf(ts, opts),
-        AnomalyDetectionMethodOptions::Sesd(opts) => detect_anomalies_sesd(ts, opts),
+        AnomalyDetectionMethodOptions::Sesd(opts) => detect_anomalies_esd(ts, opts),
     }
 }
 
@@ -198,7 +197,16 @@ fn validate_insufficient_data<T: Default>(
 }
 
 /// Seasonal adjustment using (M)Stl decomposition
-fn seasonality_adjust(ts: &[f64], periods: &[usize]) -> TimeSeriesAnalysisResult<Vec<f64>> {
+fn seasonally_adjust(ts: &[f64], seasonality: &Seasonality) -> TimeSeriesAnalysisResult<Vec<f64>> {
+    let periods = match seasonality {
+        Seasonality::Periods(periods) => periods.clone(),
+        Seasonality::Auto => {
+            // use periodogram to detect periods
+            let detector = PeriodogramDetector::default();
+            detector.detect(ts).iter().map(|&x| x as usize).collect()
+        }
+    };
+
     if periods.is_empty() {
         return Ok(ts.to_vec());
     }

@@ -1,7 +1,7 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold, SESDOutlierOptions,
-    SmoothedZScoreOptions, detect_anomalies,
+    AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold,
+    Seasonality, SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::commands::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_duration_ms,
@@ -58,7 +58,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut anomaly_direction = AnomalyDirection::Both;
     let mut output_format = OutputFormat::Simple;
     let mut options: Option<AnomalyOptions> = None;
-    let mut seasonal_periods: Option<Vec<usize>> = None;
+    let mut seasonality: Option<Seasonality> = None;
 
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
@@ -72,25 +72,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 anomaly_direction = dir_str.parse()?;
             }
             CommandArgToken::Seasonality => {
-                let mut periods: Vec<usize> = Vec::with_capacity(4);
-                // loop while the next token is a number
-                while let Some(v) = args.peek() {
-                    if let Ok(value) = v.parse_unsigned_integer() {
-                        periods.push(value as usize);
-                        args.next();
-                        continue;
-                    }
-                    break;
-                }
-                if periods.is_empty() || periods.len() > MAX_SEASONALITY_PERIODS {
-                    return Err(ValkeyError::Str("TSDB: invalid SEASONALITY periods"));
-                }
-                // periods should be unique and sorted
-                periods.sort_unstable();
-                if !periods.windows(2).all(|w| w[0] != w[1]) {
-                    return Err(ValkeyError::Str("TSDB: SEASONALITY periods must be unique"));
-                }
-                seasonal_periods = Some(periods);
+                seasonality = Some(parse_seasonality(&mut args)?);
             }
             CommandArgToken::Method => {
                 if options.is_some() {
@@ -119,9 +101,7 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
     let mut options = options.unwrap_or_default();
-    if let Some(periods) = seasonal_periods {
-        options.set_seasonal_periods(periods);
-    }
+    options.seasonality = seasonality;
 
     // Perform analysis detection
     let result = detect_anomalies(&values, options)
@@ -153,6 +133,37 @@ fn parse_method_options(
         AnomalyMethod::RandomCutForest => parse_rcf_options(args),
         AnomalyMethod::Sesd => parse_sesd_options(args),
     }
+}
+
+fn parse_seasonality(args: &mut CommandArgIterator) -> ValkeyResult<Seasonality> {
+    if let Some(arg) = args.peek() {
+        // check for auto
+        if arg.as_slice().eq_ignore_ascii_case(b"auto") {
+            args.next(); // consume AUTO
+            return Ok(Seasonality::Auto);
+        }
+    }
+    let mut periods: Vec<usize> = Vec::with_capacity(4);
+
+    // loop while the next token is a number
+    while let Some(v) = args.peek() {
+        if let Ok(value) = v.parse_unsigned_integer() {
+            periods.push(value as usize);
+            args.next();
+            continue;
+        }
+        break;
+    }
+    if periods.is_empty() || periods.len() > MAX_SEASONALITY_PERIODS {
+        return Err(ValkeyError::Str("TSDB: invalid SEASONALITY periods"));
+    }
+    // periods should be unique and sorted
+    periods.sort_unstable();
+    if !periods.windows(2).all(|w| w[0] != w[1]) {
+        return Err(ValkeyError::Str("TSDB: SEASONALITY periods must be unique"));
+    }
+
+    Ok(Seasonality::Periods(periods))
 }
 
 fn parse_output_format(arg: &str) -> ValkeyResult<OutputFormat> {
@@ -464,7 +475,7 @@ fn parse_sesd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOpti
         ..Default::default()
     };
 
-    let mut sesd_options = SESDOutlierOptions::default();
+    let mut sesd_options = ESDOutlierOptions::default();
 
     while let Some(arg) = args.next() {
         let arg_slice = arg.as_slice();
