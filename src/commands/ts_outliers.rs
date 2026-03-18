@@ -1,15 +1,16 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, SESDOutlierOptions,
+    AnomalyResult, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold, SESDOutlierOptions,
     SmoothedZScoreOptions, detect_anomalies,
 };
-use crate::commands::{CommandArgIterator, parse_duration_ms, parse_timestamp_range};
+use crate::commands::{
+    CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_duration_ms,
+    parse_timestamp_range,
+};
 use crate::common::Sample;
 use crate::common::hash::IntSet;
 use crate::error_consts;
 use crate::series::get_timeseries;
-use crate::series::range_utils::get_range;
-use crate::series::request_types::RangeOptions;
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
@@ -18,17 +19,31 @@ use valkey_module::{
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
 
+static COMMAND_OPTIONS: [CommandArgToken; 4] = [
+    CommandArgToken::Direction,
+    CommandArgToken::Output,
+    CommandArgToken::Method,
+    CommandArgToken::Seasonality,
+];
+
 enum OutputFormat {
     Full,
     Simple,
     Cleaned,
 }
 
+#[derive(PartialEq, Eq)]
+enum ZScoreType {
+    Standard,
+    Modified,
+    Smoothed,
+}
+
 /// TS.OUTLIERS key fromTimestamp toTimestamp
-/// [FORMAT <full|simple|cleaned>]
+/// METHOD <method> [method-specific-options]
+/// [OUTPUT <full|simple|cleaned>]
 /// [DIRECTION <positive|negative|both>]
 /// [SEASONALITY <period1> [period2] ...]
-/// METHOD <method> [method-specific-options]
 pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 6 {
         return Err(ValkeyError::WrongArity);
@@ -46,16 +61,17 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut seasonal_periods: Option<Vec<usize>> = None;
 
     while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
-            "OUTPUT" => {
+        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+        match token {
+            CommandArgToken::Output => {
                 let format_str = args.next_str()?;
                 output_format = parse_output_format(format_str)?;
-            },
-            "DIRECTION" => {
+            }
+            CommandArgToken::Direction => {
                 let dir_str = args.next_str()?;
                 anomaly_direction = dir_str.parse()?;
-            },
-            "SEASONALITY" => {
+            }
+            CommandArgToken::Seasonality => {
                 let mut periods: Vec<usize> = Vec::with_capacity(4);
                 // loop while the next token is a number
                 while let Some(v) = args.peek() {
@@ -75,19 +91,21 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                     return Err(ValkeyError::Str("TSDB: SEASONALITY periods must be unique"));
                 }
                 seasonal_periods = Some(periods);
-            },
-            "METHOD" => {
+            }
+            CommandArgToken::Method => {
                 if options.is_some() {
                     return Err(ValkeyError::Str("TSDB: outliers METHOD already specified"));
                 }
 
                 let method: AnomalyMethod = args.next_str()?.parse()?;
                 options = Some(parse_method_options(method, &mut args)?);
-            },
-            _ => {
-                return Err(ValkeyError::String(format!("TSDB: unknown option OUTLIERS {arg}")));
             }
-        );
+            _ => {
+                return Err(ValkeyError::String(format!(
+                    "TSDB: unknown option OUTLIERS {arg}"
+                )));
+            }
+        }
     }
 
     let Some(series) = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)? else {
@@ -95,12 +113,9 @@ pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     };
 
     // Get the time series data for the specified range
-    let range_options = RangeOptions {
-        date_range,
-        ..Default::default()
-    };
+    let (start, end) = date_range.get_timestamps(None);
+    let samples = series.get_range(start, end);
 
-    let samples = get_range(Some(ctx), &series, &range_options);
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
     let mut options = options.unwrap_or_default();
@@ -205,11 +220,9 @@ fn parse_modified_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<
     Ok(options)
 }
 
-#[derive(PartialEq, Eq)]
-enum ZScoreType {
-    Standard,
-    Modified,
-    Smoothed,
+#[inline]
+fn is_command_option(arg: &[u8]) -> bool {
+    parse_command_arg_token(arg).is_some_and(|token| COMMAND_OPTIONS.contains(&token))
 }
 
 fn parse_zscore_options_ex(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
@@ -225,23 +238,25 @@ fn parse_zscore_options_ex(args: &mut CommandArgIterator) -> ValkeyResult<Anomal
             "SMOOTHED" => ZScoreType::Smoothed
         );
         if zscore_type.is_some() {
-            args.next(); // consume the zscore type argument
+            args.next();
         }
     }
 
-    while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
+    while let Some(arg) = args.peek() {
+        if is_command_option(arg.as_slice()) {
+            break;
+        }
+        let arg = args.next().unwrap();
+        let arg_slice = arg.as_slice();
+        hashify::fnc_map_ignore_case!(arg_slice,
             "THRESHOLD" => {
-                let value = parse_single_value(args, "THRESHOLD")?;
-                threshold = Some(value);
+                threshold = Some(parse_single_value(args, "THRESHOLD")?);
             },
             "INFLUENCE" => {
-                let value = parse_single_value(args, "INFLUENCE")?;
-                influence = Some(value);
+                influence = Some(parse_single_value(args, "INFLUENCE")?);
             },
             "LAG" => {
-                let value = parse_single_value(args, "LAG")? as usize;
-                lag = Some(value);
+                lag = Some(parse_single_value(args, "LAG")? as usize);
             },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: unknown zscore option {arg}")));
@@ -249,7 +264,6 @@ fn parse_zscore_options_ex(args: &mut CommandArgIterator) -> ValkeyResult<Anomal
         );
     }
 
-    // lag and influence only apply to smoothed z-score, so if a type is not specified, we treat it as smoothed z-score
     if lag.is_some() || influence.is_some() {
         if zscore_type.is_none() {
             zscore_type = Some(ZScoreType::Smoothed);
@@ -288,8 +302,13 @@ fn parse_zscore_options_ex(args: &mut CommandArgIterator) -> ValkeyResult<Anomal
 fn parse_smoothed_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut smoothed_options = SmoothedZScoreOptions::default();
 
-    while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
+    while let Some(arg) = args.peek() {
+        if is_command_option(arg.as_slice()) {
+            break;
+        }
+        let arg = args.next().unwrap();
+        let arg_slice = arg.as_slice();
+        hashify::fnc_map_ignore_case!(arg_slice,
             "THRESHOLD" => {
                 smoothed_options.threshold = parse_single_value(args, "THRESHOLD")?;
             },
@@ -305,19 +324,22 @@ fn parse_smoothed_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<
         );
     }
 
-    let options = AnomalyOptions {
+    Ok(AnomalyOptions {
         options: AnomalyDetectionMethodOptions::SmoothedZScore(smoothed_options),
         ..Default::default()
-    };
-
-    Ok(options)
+    })
 }
 
 // Mad [ESTIMATOR <mad-estimator>] [<value>], e.g. Mad ESTIMATOR HarrellDavis THRESHOLD 3.0
 fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut mad_options = MADAnomalyOptions::default();
-    while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
+    while let Some(arg) = args.peek() {
+        if is_command_option(arg.as_slice()) {
+            break;
+        }
+        let arg = args.next().unwrap();
+        let arg_slice = arg.as_slice();
+        hashify::fnc_map_ignore_case!(arg_slice,
             "ESTIMATOR" => {
                  let estimator_arg = args
                     .next_str()
@@ -343,19 +365,25 @@ fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 /// e.g. doubleMAD ESTIMATOR HarrellDavis THRESHOLD 3.0
 fn parse_double_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut double_mad_options = MADAnomalyOptions::default();
-    while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
+
+    while let Some(arg) = args.peek() {
+        if is_command_option(arg.as_slice()) {
+            break;
+        }
+        let arg = args.next().unwrap();
+        let arg_slice = arg.as_slice();
+        hashify::fnc_map_ignore_case!(arg_slice,
             "ESTIMATOR" => {
-                 let estimator_arg = args
+                let estimator_arg = args
                     .next_str()
                     .map_err(|_| ValkeyError::Str("TSDB: Missing Double Mad estimator type"))?;
-                 double_mad_options.estimator = estimator_arg.parse()?;
+                double_mad_options.estimator = estimator_arg.parse()?;
             },
             "THRESHOLD" => {
-                 double_mad_options.k = parse_single_value(args, "THRESHOLD")?;
+                double_mad_options.k = parse_single_value(args, "THRESHOLD")?;
             },
             _ => {
-                 return Err(ValkeyError::String(format!("TSDB: unknown Double Mad option {arg}")));
+                return Err(ValkeyError::String(format!("TSDB: unknown Double Mad option {arg}")));
             }
         );
     }
@@ -381,21 +409,41 @@ fn parse_iqr_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 }
 
 fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let mut options = AnomalyOptions {
-        ..Default::default()
-    };
-
     let mut rcf_options = RCFOptions::default();
-    while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
-           "NUM_TREES" => {
+
+    while let Some(arg) = args.peek() {
+        if is_command_option(arg.as_slice()) {
+            break;
+        }
+        let arg = args.next().unwrap();
+        let arg_slice = arg.as_slice();
+        hashify::fnc_map_ignore_case!(arg_slice,
+            "NUM_TREES" => {
                 rcf_options.num_trees = Some(parse_single_value(args, "NUM_TREES")? as usize);
             },
             "SAMPLE_SIZE" => {
                 rcf_options.sample_size = Some(parse_single_value(args, "SAMPLE_SIZE")? as usize);
             },
             "THRESHOLD" => {
-                rcf_options.threshold = parse_single_value(args, "THRESHOLD")?;
+                let val = parse_single_value(args, "THRESHOLD")?;
+                rcf_options.threshold = Some(
+                    RCFThreshold::std_dev(val)
+                        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
+                );
+            },
+            "THRESHOLD_DEVIATIONS" => {
+                let val = parse_single_value(args, "THRESHOLD_DEVIATIONS")?;
+                rcf_options.threshold = Some(
+                    RCFThreshold::std_dev(val)
+                        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
+                );
+            },
+            "CONTAMINATION" => {
+                let val = parse_single_value(args, "CONTAMINATION")?;
+                rcf_options.threshold = Some(
+                    RCFThreshold::contamination(val)
+                        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
+                );
             },
             "DECAY" => {
                 rcf_options.time_decay = Some(parse_single_value(args, "DECAY")?);
@@ -412,9 +460,10 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
         );
     }
 
-    options.options = AnomalyDetectionMethodOptions::Rcf(rcf_options);
-
-    Ok(options)
+    Ok(AnomalyOptions {
+        options: AnomalyDetectionMethodOptions::Rcf(rcf_options),
+        ..Default::default()
+    })
 }
 
 fn parse_sesd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
@@ -425,7 +474,8 @@ fn parse_sesd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOpti
     let mut sesd_options = SESDOutlierOptions::default();
 
     while let Some(arg) = args.next() {
-        hashify::fnc_map_ignore_case!(arg.as_slice(),
+        let arg_slice = arg.as_slice();
+        hashify::fnc_map_ignore_case!(arg_slice,
            "ALPHA" => {
                 sesd_options.alpha = parse_single_value(args, "ALPHA")?;
             },
@@ -553,6 +603,7 @@ fn format_cleaned_samples(
         .map(|(_, sample)| sample.into())
         .collect::<Vec<ValkeyValue>>()
 }
+
 /// Returns anomalies only as a list of tuples (timestamp, value, anomaly_direction, score)
 fn format_anomalies(
     result: &AnomalyResult,

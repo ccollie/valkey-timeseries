@@ -82,20 +82,13 @@ impl FromStr for AnomalyMethod {
             "ewma" => Ok(AnomalyMethod::Ewma),
             "cusum" => Ok(AnomalyMethod::Cusum),
             "zscore" => Ok(AnomalyMethod::ZScore),
-            "z-score" => Ok(AnomalyMethod::ZScore),
             "modified-zscore" => Ok(AnomalyMethod::ModifiedZScore),
-            "modifiedzscore" => Ok(AnomalyMethod::ModifiedZScore),
             "smoothed-zscore" => Ok(AnomalyMethod::SmoothedZScore),
-            "smoothedzscore" => Ok(AnomalyMethod::SmoothedZScore),
             "mad" => Ok(AnomalyMethod::Mad),
             "double-mad" => Ok(AnomalyMethod::DoubleMAD),
-            "doublemad" => Ok(AnomalyMethod::DoubleMAD),
-            "interquartile-range" => Ok(AnomalyMethod::InterquartileRange),
-            "interquartilerange" => Ok(AnomalyMethod::InterquartileRange),
             "iqr" => Ok(AnomalyMethod::InterquartileRange),
             "rcf" => Ok(AnomalyMethod::RandomCutForest),
-            "random-cut-forest" => Ok(AnomalyMethod::RandomCutForest),
-            "randomcutforest" => Ok(AnomalyMethod::RandomCutForest)
+            "randomcutforest" => Ok(AnomalyMethod::RandomCutForest),
         };
         res.unwrap_or(Err(ValkeyError::Str(
             "TSDB: unknown anomaly detection method",

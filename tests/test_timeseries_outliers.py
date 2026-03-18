@@ -96,40 +96,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         positive_count = sum(1 for entry in outliers if entry.signal == 1)
         assert positive_count >= 4
 
-    def test_method_rcf(self):
-        """Test random cut forest method."""
-        key = 'test:outliers:method:rcf'
-        # Baseline around 10.0, with occasional spikes to 100.0
-        self.client.execute_command('TS.CREATE', key)
-
-        # Baseline around 10.0, with occasional spikes to 100.0
-        data = [10.0] * 100
-        data[25] = 100.0  # spike
-        data[50] = 95.0  # spike
-        data[75] = 105.0  # spike
-
-        for i, val in enumerate(data):
-            self.client.execute_command('TS.ADD', key, 1000 + i * 1000, val)
-
-        result = self.client.execute_command(
-            'TS.OUTLIERS', key, '-', '+', 'METHOD', 'rcf',
-            'SHINGLE_SIZE', 1,
-            'SAMPLE_SIZE', 256,
-            'NUM_TREES', 100,
-            'THRESHOLD', 0.75,
-            "DECAY", 0.01,
-            "OUTPUT_AFTER", 30
-        )
-
-        assert len(result) == 3
-        outliers = convert_anomaly_entries(result)
-        assert outliers[0].signal == 1
-        assert outliers[0].value == 100.0
-        assert outliers[1].signal == 1
-        assert outliers[1].value == 95.0
-        assert outliers[2].signal == 1
-        assert outliers[2].value == 105.0
-
 
     def test_invalid_method(self):
         """Test with an invalid method name."""

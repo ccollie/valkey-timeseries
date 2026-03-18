@@ -6,10 +6,10 @@ Detect outliers in a time series.
 
 ```
 TS.OUTLIERS key fromTimestamp toTimestamp
+  METHOD method [method-options]
   [OUTPUT <FULL | SIMPLE | CLEANED>]
   [DIRECTION <POSITIVE | NEGATIVE | BOTH>]
   [SEASONALITY period1 [period2 [period3 [period4]]]]
-  METHOD method [method-options]
 ```
 
 [Examples](#examples)
@@ -210,18 +210,26 @@ Separately analyzes values above and below the median for better handling of ske
 Random Cut Forest algorithm (AWS implementation).
 
 ```
-METHOD RCF [NUM_TREES trees] [SAMPLE_SIZE size] [THRESHOLD threshold]
-           [SHINGLE_SIZE shingle] [OUTPUT_AFTER warmup] [DECAY decay]
+METHOD RCF [NUM_TREES trees]
+           [SAMPLE_SIZE size] 
+           [THRESHOLD|CONTAMINATION threshold]
+           [SHINGLE_SIZE shingle]
+           [OUTPUT_AFTER warmup] [DECAY decay]
 ```
 
 **Options:**
 
 * `NUM_TREES` - Number of trees in forest. Default: `100`
 * `SAMPLE_SIZE` - Sample size per tree. Default: `256`
-* `THRESHOLD` - Anomaly score threshold. Default: `1.0`
+* `THRESHOLD` - Anomaly score threshold in standard deviations. Default: `3.0`
+* `CONTAMINATION` - The amount of contamination in the data set, i.e., the proportion of outliers in the data set.
 * `SHINGLE_SIZE` - Sliding window size. Default: `1`. Use values > 1 for contextual anomalies.
 * `OUTPUT_AFTER` - Warmup period (samples). Default: `32`
 * `DECAY` - Time decay factor (0-1). Default: `0.1`. Controls how quickly old data is forgotten.
+
+Either `THRESHOLD` or `CONTAMINATION` must be specified to determine the cutoff for anomaly scores. `THRESHOLD` sets a
+fixed score
+threshold, while `CONTAMINATION` determines the threshold based on the expected proportion of anomalies in the data.
 
 </details>
 
@@ -385,7 +393,7 @@ Extract normal operating data and anomalies separately:
 Detect pattern-based anomalies using a sliding window:
 
 ```valkey-cli
-127.0.0.1:6379> TS.OUTLIERS metrics:response_time - + METHOD RCF NUM_TREES 150 SHINGLE_SIZE 8 THRESHOLD 1.2
+127.0.0.1:6379> TS.OUTLIERS metrics:response_time - + METHOD RCF NUM_TREES 150 SHINGLE_SIZE 8 THRESHOLD 3.0
 1) 1) (integer) 1641234567000
    2) "2547.3"
    3) (integer) 1

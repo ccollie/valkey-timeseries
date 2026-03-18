@@ -70,8 +70,8 @@ impl ZScoreOutlierDetector {
             let value = if v.is_nan() { 0.0 } else { v };
             let zscore = self.get_zscore(value);
             let z_abs = zscore.abs();
+            let score = normalize_unbounded_score(z_abs);
 
-            let score = self.get_anomaly_score(value);
             scores.push(score);
 
             let signal = if z_abs > threshold {
