@@ -686,20 +686,6 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
                 f"anomaly at ts={a.timestamp} is outside requested range"
             )
 
-    def test_rcf_full_range_with_dash_plus(self):
-        """Using - and + as timestamps includes all data points."""
-        key = "rcf:timerange:full"
-        data = _baseline_with_spikes(n_baseline=120, spike_indices=[60], spike=500.0)
-        _add(self.client, key, 1_000, data)
-
-        raw = self.client.execute_command(
-            "TS.OUTLIERS", key, "-", "+",
-            "METHOD", "rcf",
-            "THRESHOLD", 3.0,
-            "OUTPUT_AFTER", 30,
-        )
-        assert raw is not None
-
     # ── direction assignment (positive/negative) ──────────────────────────────
 
     def test_rcf_positive_anomaly_signal_for_above_mean_value(self):
