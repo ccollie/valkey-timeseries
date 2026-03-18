@@ -1,12 +1,11 @@
-use super::fanout::generated::{MGetValue, MultiGetRequest, MultiGetResponse};
-use super::utils::{reply_with_bulk_string, reply_with_fanout_labels, reply_with_fanout_sample};
+use super::fanout::generated::{Label, MGetValue, MultiGetRequest, MultiGetResponse, Sample};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
 use crate::error_consts;
 use crate::fanout::{NodeInfo, SimpleFanoutOperation};
 use crate::series::request_types::MGetRequest;
 use valkey_module::{
-    BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, reply_with_array,
+    BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
 };
 
 #[derive(Debug, Default)]
@@ -66,26 +65,43 @@ impl SimpleFanoutOperation for MGetFanoutOperation {
     }
 
     fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
-        let ctx = thread_ctx.lock();
-        let count = self.series.len();
-        let status = reply_with_array(ctx.ctx, count as i64);
-        if status != Status::Ok {
-            return status;
-        }
-        for response in self.series.iter() {
-            let status = reply_with_mget_value(&ctx, response);
-            if status != Status::Ok {
-                return status;
-            }
-        }
-        Status::Ok
+        let response = std::mem::take(&mut self.series)
+            .into_iter()
+            .map(mget_value_to_reply)
+            .collect::<Vec<_>>();
+        thread_ctx.reply(Ok(ValkeyValue::Array(response)))
     }
 }
 
-fn reply_with_mget_value(ctx: &Context, value: &MGetValue) -> Status {
-    reply_with_array(ctx.ctx, 3);
-    reply_with_bulk_string(ctx, value.key.as_str());
-    reply_with_fanout_labels(ctx, &value.labels);
-    reply_with_fanout_sample(ctx, &value.sample);
-    Status::Ok
+fn mget_value_to_reply(value: MGetValue) -> ValkeyValue {
+    ValkeyValue::Array(vec![
+        ValkeyValue::BulkString(value.key),
+        fanout_labels_to_reply(value.labels),
+        fanout_sample_to_reply(value.sample),
+    ])
+}
+
+fn fanout_labels_to_reply(labels: Vec<Label>) -> ValkeyValue {
+    ValkeyValue::Array(labels.into_iter().map(fanout_label_to_reply).collect())
+}
+
+fn fanout_label_to_reply(label: Label) -> ValkeyValue {
+    if label.name.is_empty() {
+        ValkeyValue::Null
+    } else {
+        ValkeyValue::Array(vec![
+            ValkeyValue::BulkString(label.name),
+            ValkeyValue::BulkString(label.value),
+        ])
+    }
+}
+
+fn fanout_sample_to_reply(sample: Option<Sample>) -> ValkeyValue {
+    match sample {
+        Some(sample) => ValkeyValue::Array(vec![
+            ValkeyValue::Integer(sample.timestamp),
+            ValkeyValue::Float(sample.value),
+        ]),
+        None => ValkeyValue::Null,
+    }
 }

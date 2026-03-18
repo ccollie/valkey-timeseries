@@ -15,7 +15,6 @@ use crate::fanout::serialization::Serializable;
 use crate::fanout::{FanoutResult, NodeInfo};
 use ahash::HashSet;
 use core::time::Duration;
-use logger_rust::log_debug;
 use papaya::HashMap;
 use std::hash::{BuildHasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr};
@@ -42,12 +41,11 @@ struct InFlightRequest {
 }
 
 impl InFlightRequest {
-    fn rpc_done(&self, ctx: &Context) {
-        if self.outstanding.fetch_sub(1, Ordering::Relaxed) == 1 {
-            // Last response received, clean up
-            self.cancel_timer(ctx);
-            let map = INFLIGHT_REQUESTS.pin();
-            map.remove(&self.id);
+    fn rpc_done(&self) {
+        let prev = self.outstanding.fetch_sub(1, Ordering::AcqRel);
+        if prev == 0 {
+            // Late/duplicate completion after timeout.
+            self.outstanding.store(0, Ordering::Release);
         }
     }
 
@@ -144,22 +142,35 @@ fn generate_id() -> u64 {
 }
 
 fn on_request_timeout(ctx: &Context, id: u64) {
-    // We only mark the request as timed out the first time through. The actual removal from the map
-    // happens when the last response arrives or when we hit the timeout again.
-
     let map = INFLIGHT_REQUESTS.pin();
     if let Some(request) = map.get(&id) {
-        if request.timed_out.load(Ordering::Relaxed) {
-            let _ = ctx.stop_timer::<u64>(request.timer_id);
-            // Already timed out, remove from the map
-            map.remove(&id);
+        // Timeout can race with responses; only one path should complete the request.
+        if request.timed_out.swap(true, Ordering::AcqRel) {
             return;
         }
-        request.timed_out.store(true, Ordering::Relaxed);
+
+        request.cancel_timer(ctx);
 
         let local_node_id = CURRENT_NODE_ID.raw_ptr();
-
         request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
+
+        map.remove(&id);
+    }
+}
+
+fn dispatch_send_failure(ctx: &Context, request_id: u64, target_node_id: *const c_char) {
+    with_inflight_request(ctx, request_id, |ctx, request| {
+        let err = FanoutError::custom("Failed to send fanout request to target node");
+        request.handle_response(ctx, Err(err), target_node_id);
+    });
+}
+
+fn finish_inflight_request(ctx: &Context, request: &InFlightRequest) {
+    request.rpc_done();
+    if request.outstanding.load(Ordering::Acquire) == 0 {
+        request.cancel_timer(ctx);
+        let map = INFLIGHT_REQUESTS.pin();
+        map.remove(&request.id);
     }
 }
 
@@ -209,30 +220,17 @@ pub(super) fn send_cluster_request(
     let mut buf = get_pooled_buffer(512);
     serialize_request_message(&mut buf, id, db, handler, request_buf);
 
-    let mut node_count = 0;
+    let remote_targets: Vec<NodeInfo> = targets
+        .iter()
+        .filter(|node| !node.is_local())
+        .copied()
+        .collect();
 
-    for node in targets.iter().filter(|&node| !node.is_local()) {
-        let target_id = node.id.raw_ptr();
-        let status = send_cluster_message(ctx, target_id, FANOUT_REQUEST_MESSAGE, buf.as_slice());
-        if status == Status::Err {
-            let msg = format!(
-                "Failed to send fanout request id {} (handler '{}', db {}) to node {} (target_id: {:p})",
-                id,
-                handler,
-                db,
-                node.address(),
-                target_id
-            );
-            ctx.log_warning(&msg);
-            continue;
-        }
-        node_count += 1;
-    }
-
-    if node_count == 0 {
+    if remote_targets.is_empty() {
         return Err(ValkeyError::Str(NO_CLUSTER_NODES_AVAILABLE));
     }
 
+    let node_count = remote_targets.len();
     let timeout = timeout.unwrap_or_else(get_cluster_command_timeout);
     let timer_id = ctx.create_timer(timeout, on_request_timeout, id);
 
@@ -245,8 +243,27 @@ pub(super) fn send_cluster_request(
         targets: targets.clone(),
     };
 
-    let map = INFLIGHT_REQUESTS.pin();
-    map.insert(id, request);
+    {
+        let map = INFLIGHT_REQUESTS.pin();
+        map.insert(id, request);
+    }
+
+    for node in remote_targets {
+        let target_id = node.id.raw_ptr();
+        let status = send_cluster_message(ctx, target_id, FANOUT_REQUEST_MESSAGE, buf.as_slice());
+        if status == Status::Err {
+            let msg = format!(
+                "Failed to send fanout request id {} (handler '{}', db {}) to node {} (target_id: {:p})",
+                id,
+                handler,
+                db,
+                node.address(),
+                target_id
+            );
+            ctx.log_warning(&msg);
+            dispatch_send_failure(ctx, id, target_id);
+        }
+    }
     Ok(())
 }
 
@@ -458,8 +475,8 @@ where
         return;
     };
 
-    request.rpc_done(ctx);
     f(ctx, request);
+    finish_inflight_request(ctx, request);
 }
 
 /// Handles responses from other nodes in the cluster. The receiver is the original sender of
@@ -477,8 +494,6 @@ extern "C" fn on_response_received(
         ctx.log_warning("Failed to parse response message");
         return;
     };
-
-    log_debug!("Received response");
 
     with_inflight_request(&ctx, message.request_id, |ctx, request| {
         let _ = set_current_db(ctx, message.db);

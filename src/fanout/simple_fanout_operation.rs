@@ -26,6 +26,7 @@ pub trait SimpleFanoutOperation: Default + Send + 'static {
 
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);
 
+    /// NOTE! For the moment, use ONLY thread_ctx.repy(), since calling lock() will deadlock
     fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status;
 }
 

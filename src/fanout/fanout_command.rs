@@ -4,7 +4,6 @@ use crate::common::threads::spawn;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use ahash::HashSet;
-use logger_rust::log_debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, MODULE_CONTEXT, ValkeyResult};
@@ -66,7 +65,7 @@ pub trait FanoutCommand: Default + Send + 'static {
         crate::common::logging::log_warning(&msg)
     }
 
-    /// Called once all responses have been received, without errors.
+    /// Called once all responses have been received, or on timeout.
     fn on_completion(&mut self) {}
 
     fn generate_error_reply(&self) -> FanoutError {
@@ -114,12 +113,7 @@ where
         }
     }
 
-    let thread_id = std::thread::current().id();
-    log_debug!("outstanding nodes: {outstanding}. Current thread ID: {thread_id:?}");
-
     let response_handler = move |res: Result<&[u8], FanoutError>, target: &NodeInfo| {
-        let current_thread_id = std::thread::current().id();
-        log_debug!("outstanding response: {res:?}, current thread ID: {current_thread_id:?}");
         let Ok(buf) = res else {
             state.on_error(res.err().unwrap(), target);
             return;
@@ -166,7 +160,6 @@ where
 {
     fn rpc_done(&mut self) {
         self.outstanding = self.outstanding.saturating_sub(1);
-        log_debug!("rpc_done: outstanding: {}", self.outstanding);
         if self.outstanding == 0 {
             self.on_completion();
         }
@@ -176,7 +169,11 @@ where
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
         self.error_count += 1;
-        self.timed_out |= error.kind == ErrorKind::Timeout;
+        if error.kind == ErrorKind::Timeout {
+            self.timed_out = true;
+            self.on_completion();
+            return;
+        }
         self.rpc_done();
     }
 
