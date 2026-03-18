@@ -431,13 +431,6 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
                         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
                 );
             },
-            "THRESHOLD_DEVIATIONS" => {
-                let val = parse_single_value(args, "THRESHOLD_DEVIATIONS")?;
-                rcf_options.threshold = Some(
-                    RCFThreshold::std_dev(val)
-                        .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?
-                );
-            },
             "CONTAMINATION" => {
                 let val = parse_single_value(args, "CONTAMINATION")?;
                 rcf_options.threshold = Some(

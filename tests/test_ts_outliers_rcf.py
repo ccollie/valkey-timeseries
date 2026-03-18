@@ -65,7 +65,7 @@ def _rcf_cmd(client, key: str, *extra_args):
         "METHOD", "rcf",
         "NUM_TREES", opts["num_trees"],
         "SAMPLE_SIZE", opts["sample_size"],
-        "THRESHOLD_DEVIATIONS", opts["threshold"],
+        "THRESHOLD", opts["threshold"],
         "DECAY", opts["decay"],
         "SHINGLE_SIZE", opts["shingle_size"],
         "OUTPUT_AFTER", opts["output_after"],
@@ -302,7 +302,7 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
                 "TS.OUTLIERS", key, "-", "+",
                 "OUTPUT", "full",
                 "METHOD", "rcf",
-                "THRESHOLD_DEVIATIONS", t,
+                "THRESHOLD", t,
                 "OUTPUT_AFTER", 20,
             )
             result = TSOutliersFullResult.parse(raw)
@@ -515,28 +515,6 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
                     "THRESHOLD", bad_threshold,
                     "OUTPUT_AFTER", 20,
                 )
-
-    def test_rcf_option_threshold_deviations_alias(self):
-        """THRESHOLD_DEVIATIONS is an alias for THRESHOLD."""
-        key = "rcf:options:threshold_alias"
-        data = _baseline_with_spikes(n_baseline=120, spike_indices=[60], spike=500.0)
-        _add(self.client, key, 1_000, data)
-
-        raw_thresh = self.client.execute_command(
-            "TS.OUTLIERS", key, "-", "+",
-            "METHOD", "rcf",
-            "THRESHOLD", 3.0,
-            "OUTPUT_AFTER", 20,
-        )
-        raw_alias = self.client.execute_command(
-            "TS.OUTLIERS", key, "-", "+",
-            "METHOD", "rcf",
-            "THRESHOLD_DEVIATIONS", 3.0,
-            "OUTPUT_AFTER", 20,
-        )
-        # Note: RCF is stochastic, so we can't always expect exact match,
-        # but the commands should both succeed and give similar results.
-        assert len(_parse_anomalies(raw_thresh)) == len(_parse_anomalies(raw_alias))
 
     def test_rcf_option_contamination(self):
         """CONTAMINATION option is accepted and produces detections."""
