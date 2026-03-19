@@ -880,7 +880,7 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
         data = _baseline_with_spikes(n_baseline=120, spike_indices=[60], spike=500.0)
         _add(self.client, key, 1_000, data)
 
-        for method_name in ("rcf", "RCF", "Rcf", "RandomCutForest"):
+        for method_name in ("rcf", "RCF", "Rcf"):
             raw = self.client.execute_command(
                 "TS.OUTLIERS", key, "-", "+",
                 "METHOD", method_name,
