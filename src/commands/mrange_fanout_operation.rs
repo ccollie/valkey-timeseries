@@ -1,6 +1,7 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
 use crate::common::Sample;
-use crate::fanout::{NodeInfo, SimpleFanoutOperation};
+use crate::fanout::FanoutContext;
+use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
 use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
@@ -12,7 +13,7 @@ use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
-use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
 pub struct MRangeFanoutOperation {
@@ -29,7 +30,7 @@ impl MRangeFanoutOperation {
     }
 }
 
-impl SimpleFanoutOperation for MRangeFanoutOperation {
+impl SimpleFanoutClientCommand for MRangeFanoutOperation {
     type Request = MultiRangeRequest;
     type Response = MultiRangeResponse;
 
@@ -68,7 +69,7 @@ impl SimpleFanoutOperation for MRangeFanoutOperation {
         self.series.append(&mut resp.series);
     }
 
-    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
         self.options.range.latest = false;
         self.options.range.timestamp_filter = None;
         self.options.range.value_filter = None;
@@ -86,12 +87,11 @@ impl SimpleFanoutOperation for MRangeFanoutOperation {
         match result {
             Ok(mut series) => {
                 sort_mrange_results(&mut series, is_grouped);
-                thread_ctx.reply(Ok(series.into()))
+                ctx.reply(Ok(series.into()))
             }
             Err(e) => {
                 let warning = format!("Error processing MRange responses: {e:?}");
-                thread_ctx.reply(Err(e));
-                let ctx = thread_ctx.lock();
+                ctx.reply(Err(e));
                 ctx.log_warning(&warning);
                 Status::Err
             }

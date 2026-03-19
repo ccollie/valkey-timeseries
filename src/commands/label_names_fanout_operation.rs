@@ -2,10 +2,11 @@ use super::fanout::deserialize_match_filter_options;
 use super::fanout::generated::{LabelNamesRequest, LabelNamesResponse};
 use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::commands::process_label_names_request;
-use crate::fanout::{NodeInfo, SimpleFanoutOperation};
+use crate::fanout::FanoutContext;
+use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{Context, Status, ThreadSafeContext, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Debug, Default)]
 pub struct LabelNamesFanoutOperation {
@@ -22,7 +23,7 @@ impl LabelNamesFanoutOperation {
     }
 }
 
-impl SimpleFanoutOperation for LabelNamesFanoutOperation {
+impl SimpleFanoutClientCommand for LabelNamesFanoutOperation {
     type Request = LabelNamesRequest;
     type Response = LabelNamesResponse;
 
@@ -54,14 +55,13 @@ impl SimpleFanoutOperation for LabelNamesFanoutOperation {
         }
     }
 
-    fn reply(&mut self, thread_ctx: &ThreadSafeContext<valkey_module::BlockedClient>) -> Status {
-        let count = self.options.limit.unwrap_or(self.names.len());
-        let results = std::mem::take(&mut self.names);
-        let arr = results
-            .into_iter()
-            .take(count)
-            .map(ValkeyValue::BulkString)
-            .collect::<Vec<ValkeyValue>>();
-        thread_ctx.reply(Ok(ValkeyValue::Array(arr)))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        let names_len = self.names.len();
+        let limit = self.options.limit.unwrap_or(names_len).min(names_len);
+        ctx.reply_with_array(limit);
+        for name in self.names.iter().take(limit) {
+            ctx.reply_with_bulk_string(name);
+        }
+        Status::Ok
     }
 }

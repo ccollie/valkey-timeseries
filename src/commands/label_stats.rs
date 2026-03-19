@@ -1,6 +1,6 @@
 use crate::commands::label_stats_fanout_operation::LabelStatsFanoutOperation;
 use crate::commands::parse_stats_command_args;
-use crate::fanout::{FanoutOperation, is_clustered};
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::get_timeseries_index;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 

@@ -20,7 +20,7 @@ impl IntoRawCtx for *mut raw::RedisModuleCtx {
     }
 }
 
-impl<'a> IntoRawCtx for &'a Context {
+impl IntoRawCtx for &Context {
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
         self.ctx
     }

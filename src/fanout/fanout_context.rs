@@ -104,12 +104,12 @@ impl FanoutContext {
     }
 
     /// Reply with a bulk string.
-    pub fn reply_bulk_string(&self, value: &str) -> Status {
+    pub fn reply_with_bulk_string(&self, value: &str) -> Status {
         reply_with_bulk_string(self.raw_ctx, value)
     }
 
     /// Reply with a NULL value.
-    pub fn reply_null(&self) -> Status {
+    pub fn reply_with_null(&self) -> Status {
         raw::reply_with_null(self.raw_ctx)
     }
 

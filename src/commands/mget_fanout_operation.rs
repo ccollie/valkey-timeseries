@@ -1,12 +1,12 @@
 use super::fanout::generated::{Label, MGetValue, MultiGetRequest, MultiGetResponse, Sample};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
+use crate::commands::utils::{reply_with_fanout_labels, reply_with_fanout_sample};
 use crate::error_consts;
-use crate::fanout::{NodeInfo, SimpleFanoutOperation};
+use crate::fanout::FanoutContext;
+use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{
-    BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
-};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutOperation {
@@ -23,7 +23,7 @@ impl MGetFanoutOperation {
     }
 }
 
-impl SimpleFanoutOperation for MGetFanoutOperation {
+impl SimpleFanoutClientCommand for MGetFanoutOperation {
     type Request = MultiGetRequest;
     type Response = MultiGetResponse;
 
@@ -64,12 +64,19 @@ impl SimpleFanoutOperation for MGetFanoutOperation {
         self.series.extend(resp.values);
     }
 
-    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
-        let response = std::mem::take(&mut self.series)
-            .into_iter()
-            .map(mget_value_to_reply)
-            .collect::<Vec<_>>();
-        thread_ctx.reply(Ok(ValkeyValue::Array(response)))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        let count = self.series.len();
+        let status = ctx.reply_with_array(count);
+        if status != Status::Ok {
+            return status;
+        }
+        for response in self.series.iter() {
+            let status = reply_with_mget_value(ctx, response);
+            if status != Status::Ok {
+                return status;
+            }
+        }
+        Status::Ok
     }
 }
 
@@ -104,4 +111,12 @@ fn fanout_sample_to_reply(sample: Option<Sample>) -> ValkeyValue {
         ]),
         None => ValkeyValue::Null,
     }
+}
+
+pub(super) fn reply_with_mget_value(ctx: &FanoutContext, value: &MGetValue) -> Status {
+    ctx.reply_with_array(3);
+    ctx.reply_with_bulk_string(value.key.as_str());
+    reply_with_fanout_labels(ctx, &value.labels);
+    reply_with_fanout_sample(ctx, &value.sample);
+    Status::Ok
 }

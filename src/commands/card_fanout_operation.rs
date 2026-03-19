@@ -1,9 +1,10 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::fanout::{NodeInfo, SimpleFanoutOperation};
+use crate::fanout::FanoutContext;
+use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
 use crate::series::index::count_matched_series;
 use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
-use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
 pub struct CardFanoutOperation {
@@ -17,7 +18,7 @@ impl CardFanoutOperation {
     }
 }
 
-impl SimpleFanoutOperation for CardFanoutOperation {
+impl SimpleFanoutClientCommand for CardFanoutOperation {
     type Request = CardinalityRequest;
     type Response = CardinalityResponse;
 
@@ -47,7 +48,7 @@ impl SimpleFanoutOperation for CardFanoutOperation {
         self.result += resp.cardinality as usize;
     }
 
-    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
-        thread_ctx.reply(Ok(ValkeyValue::Integer(self.result as i64)))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        ctx.reply_with_i64(self.result as i64)
     }
 }

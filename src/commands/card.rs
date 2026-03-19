@@ -1,6 +1,6 @@
 use super::card_fanout_operation::CardFanoutOperation;
 use crate::commands::command_args::parse_metadata_command_args;
-use crate::fanout::{FanoutOperation, is_clustered};
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::count_matched_series;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 

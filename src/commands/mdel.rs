@@ -4,7 +4,7 @@ use crate::commands::command_args::{
 };
 use crate::commands::mdel_fanout_operation::MDelFanoutOperation;
 use crate::error_consts;
-use crate::fanout::{FanoutOperation, is_clustered};
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::labels::filters::SeriesSelector;
 use crate::series::{TimestampRange, delete_series_by_selectors};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};

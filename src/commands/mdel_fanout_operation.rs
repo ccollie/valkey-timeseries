@@ -1,12 +1,11 @@
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::fanout::{DateRange, MDelRequest, MDelResponse};
 use crate::error_consts;
-use crate::fanout::{NodeInfo, SimpleFanoutOperation};
+use crate::fanout::FanoutContext;
+use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
 use crate::labels::filters::SeriesSelector;
 use crate::series::{TimestampRange, delete_series_by_selectors};
-use valkey_module::{
-    BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
-};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
 pub struct MDelFanoutOperation {
@@ -29,7 +28,7 @@ impl MDelFanoutOperation {
     }
 }
 
-impl SimpleFanoutOperation for MDelFanoutOperation {
+impl SimpleFanoutClientCommand for MDelFanoutOperation {
     type Request = MDelRequest;
     type Response = MDelResponse;
 
@@ -68,7 +67,7 @@ impl SimpleFanoutOperation for MDelFanoutOperation {
         self.total_deleted += resp.deleted_count as usize;
     }
 
-    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
-        thread_ctx.reply(Ok(ValkeyValue::Integer(self.total_deleted as i64)))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        ctx.reply(Ok(ValkeyValue::Integer(self.total_deleted as i64)))
     }
 }

@@ -1,10 +1,11 @@
 use super::fanout::filters::serialize_matchers_list;
 use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
-use crate::fanout::{NodeInfo, SimpleFanoutOperation};
+use crate::fanout::FanoutContext;
+use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
-use valkey_module::{BlockedClient, Context, Status, ThreadSafeContext, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Clone, Debug, Default)]
 pub struct QueryIndexFanoutOperation {
@@ -21,7 +22,7 @@ impl QueryIndexFanoutOperation {
     }
 }
 
-impl SimpleFanoutOperation for QueryIndexFanoutOperation {
+impl SimpleFanoutClientCommand for QueryIndexFanoutOperation {
     type Request = IndexQueryRequest;
     type Response = IndexQueryResponse;
 
@@ -52,11 +53,11 @@ impl SimpleFanoutOperation for QueryIndexFanoutOperation {
         }
     }
 
-    fn reply(&mut self, thread_ctx: &ThreadSafeContext<BlockedClient>) -> Status {
-        let result = std::mem::take(&mut self.keys)
-            .into_iter()
-            .map(ValkeyValue::BulkString)
-            .collect::<Vec<_>>();
-        thread_ctx.reply(Ok(ValkeyValue::Array(result)))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        ctx.reply_with_array(self.keys.len());
+        for key in self.keys.iter() {
+            ctx.reply_with_bulk_string(key);
+        }
+        Status::Ok
     }
 }
