@@ -7,18 +7,18 @@ use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
 use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
-pub struct CardFanoutOperation {
+pub struct CardFanoutCommand {
     options: MatchFilterOptions,
     result: usize,
 }
 
-impl CardFanoutOperation {
+impl CardFanoutCommand {
     pub fn new(options: MatchFilterOptions) -> Self {
         Self { options, result: 0 }
     }
 }
 
-impl FanoutClientCommand for CardFanoutOperation {
+impl FanoutClientCommand for CardFanoutCommand {
     type Request = CardinalityRequest;
     type Response = CardinalityResponse;
 

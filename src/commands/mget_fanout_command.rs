@@ -9,12 +9,12 @@ use crate::series::request_types::MGetRequest;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
 #[derive(Debug, Default)]
-pub struct MGetFanoutOperation {
+pub struct MGetFanoutCommand {
     options: MGetRequest,
     series: Vec<MGetValue>,
 }
 
-impl MGetFanoutOperation {
+impl MGetFanoutCommand {
     pub fn new(options: MGetRequest) -> Self {
         Self {
             options,
@@ -23,7 +23,7 @@ impl MGetFanoutOperation {
     }
 }
 
-impl FanoutClientCommand for MGetFanoutOperation {
+impl FanoutClientCommand for MGetFanoutCommand {
     type Request = MultiGetRequest;
     type Response = MultiGetResponse;
 

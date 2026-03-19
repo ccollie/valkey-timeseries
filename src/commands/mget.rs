@@ -1,4 +1,4 @@
-use super::mget_fanout_operation::MGetFanoutOperation;
+use super::mget_fanout_command::MGetFanoutCommand;
 use crate::commands::command_args::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
@@ -22,7 +22,7 @@ pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let options = parse_mget_options(args)?;
 
     if is_clustered(ctx) {
-        let operation = MGetFanoutOperation::new(options);
+        let operation = MGetFanoutCommand::new(options);
         return operation.exec(ctx);
     }
 

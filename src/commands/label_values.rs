@@ -1,4 +1,4 @@
-use super::label_values_fanout_operation::LabelValuesFanoutOperation;
+use super::label_values_fanout_command::LabelValuesFanoutCommand;
 use crate::commands::command_args::parse_metadata_command_args;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
@@ -26,7 +26,7 @@ pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
 
         // in cluster mode, we need to send the request to all nodes
-        let operation = LabelValuesFanoutOperation::new(label_name, label_args);
+        let operation = LabelValuesFanoutCommand::new(label_name, label_args);
         return operation.exec(ctx);
     }
 

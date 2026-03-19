@@ -8,19 +8,19 @@ use crate::series::{TimestampRange, delete_series_by_selectors};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
-pub struct MDelFanoutOperation {
+pub struct MDelFanoutCommand {
     selectors: Vec<SeriesSelector>,
     date_range: Option<DateRange>,
     total_deleted: usize,
 }
 
-impl MDelFanoutOperation {
+impl MDelFanoutCommand {
     pub fn new(selectors: Vec<SeriesSelector>, date_range: Option<TimestampRange>) -> Self {
         let date_range = date_range.map(|dr| {
             let (start, end) = dr.get_timestamps(None);
             DateRange { start, end }
         });
-        MDelFanoutOperation {
+        MDelFanoutCommand {
             selectors,
             date_range,
             total_deleted: 0,
@@ -28,7 +28,7 @@ impl MDelFanoutOperation {
     }
 }
 
-impl FanoutClientCommand for MDelFanoutOperation {
+impl FanoutClientCommand for MDelFanoutCommand {
     type Request = MDelRequest;
     type Response = MDelResponse;
 

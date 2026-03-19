@@ -1,4 +1,4 @@
-use super::label_names_fanout_operation::LabelNamesFanoutOperation;
+use super::label_names_fanout_command::LabelNamesFanoutCommand;
 use crate::commands::command_args::parse_metadata_command_args;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::with_matched_series;
@@ -19,7 +19,7 @@ pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             ));
         }
 
-        let operation = LabelNamesFanoutOperation::new(options);
+        let operation = LabelNamesFanoutCommand::new(options);
         return operation.exec(ctx);
     }
     let names = process_label_names_request(ctx, &options)?;

@@ -8,12 +8,12 @@ use std::collections::BTreeSet;
 use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Clone, Debug, Default)]
-pub struct QueryIndexFanoutOperation {
+pub struct QueryIndexFanoutCommand {
     options: MatchFilterOptions,
     keys: BTreeSet<String>,
 }
 
-impl QueryIndexFanoutOperation {
+impl QueryIndexFanoutCommand {
     pub fn new(options: MatchFilterOptions) -> Self {
         Self {
             options,
@@ -22,7 +22,7 @@ impl QueryIndexFanoutOperation {
     }
 }
 
-impl FanoutClientCommand for QueryIndexFanoutOperation {
+impl FanoutClientCommand for QueryIndexFanoutCommand {
     type Request = IndexQueryRequest;
     type Response = IndexQueryResponse;
 

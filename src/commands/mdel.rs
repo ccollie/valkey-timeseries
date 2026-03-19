@@ -2,7 +2,7 @@ use crate::commands::command_args::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_series_selector_list,
     parse_timestamp_range_value,
 };
-use crate::commands::mdel_fanout_operation::MDelFanoutOperation;
+use crate::commands::mdel_fanout_command::MDelFanoutCommand;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::labels::filters::SeriesSelector;
@@ -23,7 +23,7 @@ pub fn mdel(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let (date_range, filters) = parse_mdel_args(&mut args)?;
 
     if is_clustered(ctx) {
-        let operation = MDelFanoutOperation::new(filters, date_range);
+        let operation = MDelFanoutCommand::new(filters, date_range);
         return operation.exec(ctx);
     }
 

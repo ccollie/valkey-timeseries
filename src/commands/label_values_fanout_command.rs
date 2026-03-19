@@ -9,13 +9,13 @@ use std::collections::BTreeSet;
 use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
-pub struct LabelValuesFanoutOperation {
+pub struct LabelValuesFanoutCommand {
     pub label: String,
     pub options: MatchFilterOptions,
     results: BTreeSet<String>,
 }
 
-impl LabelValuesFanoutOperation {
+impl LabelValuesFanoutCommand {
     pub fn new(label: String, options: MatchFilterOptions) -> Self {
         Self {
             label,
@@ -25,7 +25,7 @@ impl LabelValuesFanoutOperation {
     }
 }
 
-impl FanoutClientCommand for LabelValuesFanoutOperation {
+impl FanoutClientCommand for LabelValuesFanoutCommand {
     type Request = LabelValuesRequest;
     type Response = LabelValuesResponse;
 

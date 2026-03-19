@@ -16,12 +16,12 @@ use std::collections::BTreeMap;
 use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
-pub struct MRangeFanoutOperation {
+pub struct MRangeFanoutCommand {
     options: MRangeOptions,
     series: Vec<SeriesRangeResponse>,
 }
 
-impl MRangeFanoutOperation {
+impl MRangeFanoutCommand {
     pub fn new(options: MRangeOptions) -> Self {
         Self {
             options,
@@ -30,7 +30,7 @@ impl MRangeFanoutOperation {
     }
 }
 
-impl FanoutClientCommand for MRangeFanoutOperation {
+impl FanoutClientCommand for MRangeFanoutCommand {
     type Request = MultiRangeRequest;
     type Response = MultiRangeResponse;
 
