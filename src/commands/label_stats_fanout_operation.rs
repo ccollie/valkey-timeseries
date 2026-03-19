@@ -1,7 +1,7 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::common::threads::join;
-use crate::fanout::{FanoutContext, NodeInfo, SimpleFanoutClientCommand};
+use crate::fanout::{FanoutClientCommand, FanoutContext, NodeInfo};
 use crate::series::index::{
     PostingStat, PostingsBitmap, PostingsStats, StatsMaxHeap, deserialize_bitmap,
     get_timeseries_index, serialize_bitmap,
@@ -50,7 +50,7 @@ impl Default for LabelStatsFanoutOperation {
     }
 }
 
-impl SimpleFanoutClientCommand for LabelStatsFanoutOperation {
+impl FanoutClientCommand for LabelStatsFanoutOperation {
     type Request = StatsRequest;
     type Response = StatsResponse;
 

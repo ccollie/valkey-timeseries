@@ -2,7 +2,7 @@ use super::fanout::generated::{LabelValuesRequest, LabelValuesResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
 use crate::fanout::FanoutContext;
-use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
 use std::collections::BTreeSet;
@@ -25,7 +25,7 @@ impl LabelValuesFanoutOperation {
     }
 }
 
-impl SimpleFanoutClientCommand for LabelValuesFanoutOperation {
+impl FanoutClientCommand for LabelValuesFanoutOperation {
     type Request = LabelValuesRequest;
     type Response = LabelValuesResponse;
 

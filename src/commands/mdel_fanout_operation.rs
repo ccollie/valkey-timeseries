@@ -2,7 +2,7 @@ use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matc
 use crate::commands::fanout::{DateRange, MDelRequest, MDelResponse};
 use crate::error_consts;
 use crate::fanout::FanoutContext;
-use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::series::{TimestampRange, delete_series_by_selectors};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
@@ -28,7 +28,7 @@ impl MDelFanoutOperation {
     }
 }
 
-impl SimpleFanoutClientCommand for MDelFanoutOperation {
+impl FanoutClientCommand for MDelFanoutOperation {
     type Request = MDelRequest;
     type Response = MDelResponse;
 

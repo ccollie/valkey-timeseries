@@ -3,7 +3,7 @@ use super::fanout::generated::{LabelNamesRequest, LabelNamesResponse};
 use crate::commands::fanout::filters::serialize_matchers_list;
 use crate::commands::process_label_names_request;
 use crate::fanout::FanoutContext;
-use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
 use valkey_module::{Context, Status, ValkeyResult};
@@ -23,7 +23,7 @@ impl LabelNamesFanoutOperation {
     }
 }
 
-impl SimpleFanoutClientCommand for LabelNamesFanoutOperation {
+impl FanoutClientCommand for LabelNamesFanoutOperation {
     type Request = LabelNamesRequest;
     type Response = LabelNamesResponse;
 

@@ -1,7 +1,7 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
 use crate::common::Sample;
 use crate::fanout::FanoutContext;
-use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
@@ -30,7 +30,7 @@ impl MRangeFanoutOperation {
     }
 }
 
-impl SimpleFanoutClientCommand for MRangeFanoutOperation {
+impl FanoutClientCommand for MRangeFanoutOperation {
     type Request = MultiRangeRequest;
     type Response = MultiRangeResponse;
 

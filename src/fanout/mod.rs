@@ -8,7 +8,6 @@ mod fanout_error;
 mod fanout_message;
 mod registry;
 pub mod serialization;
-mod simple_fanout_operation;
 mod utils;
 
 use ahash::HashSet;
@@ -21,7 +20,6 @@ pub use fanout_client_command::*;
 pub use fanout_command::*;
 pub use fanout_context::FanoutContext;
 pub use fanout_error::*;
-pub use simple_fanout_operation::*;
 pub use utils::*;
 
 pub use cluster_map::{ClusterMap, FanoutTargetMode, NodeInfo};

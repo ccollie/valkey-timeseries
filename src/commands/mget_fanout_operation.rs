@@ -4,7 +4,7 @@ use crate::commands::process_mget_request;
 use crate::commands::utils::{reply_with_fanout_labels, reply_with_fanout_sample};
 use crate::error_consts;
 use crate::fanout::FanoutContext;
-use crate::fanout::{NodeInfo, SimpleFanoutClientCommand};
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::series::request_types::MGetRequest;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
@@ -23,7 +23,7 @@ impl MGetFanoutOperation {
     }
 }
 
-impl SimpleFanoutClientCommand for MGetFanoutOperation {
+impl FanoutClientCommand for MGetFanoutOperation {
     type Request = MultiGetRequest;
     type Response = MultiGetResponse;
 
