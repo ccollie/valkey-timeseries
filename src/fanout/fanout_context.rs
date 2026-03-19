@@ -1,97 +1,51 @@
-use crate::common::context::{get_current_db, set_current_db};
+use crate::common::replies::{
+    reply, reply_error_string, reply_with_bulk_string, reply_with_key, reply_with_simple_string,
+};
 use crate::series::index::{TimeSeriesIndexGuard, get_db_index};
+use std::ops::Deref;
+use std::os::raw::c_long;
 use valkey_module::logging::ValkeyLogLevel;
-use valkey_module::{ContextGuard, DetachedFromClient, ThreadSafeContext};
+use valkey_module::redisvalue::ValkeyValueKey;
+use valkey_module::{
+    Context, RedisModule_GetSelectedDb, RedisModule_SelectDb, Status,
+    VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, raw,
+};
 
-/// A guard that wraps ContextGuard and manages database switching.
-/// Automatically switches to the target database on creation and restores
-/// the original database on drop.
-pub struct FanoutContextGuard {
-    guard: ContextGuard,
-    saved_db: i32,
-    target_db: i32,
-    switched_db: bool,
-}
-
-impl FanoutContextGuard {
-    /// Creates a new FanoutContextGuard, switching to the target database.
-    pub fn new(guard: ContextGuard, target_db: i32) -> Self {
-        let saved_db = get_current_db(&guard);
-        let mut switched_db = false;
-        if saved_db != target_db {
-            set_current_db(&guard, target_db);
-            switched_db = true;
-        }
-        Self {
-            guard,
-            saved_db,
-            target_db,
-            switched_db,
-        }
-    }
-
-    /// Returns a reference to the underlying ContextGuard.
-    pub fn inner(&self) -> &ContextGuard {
-        &self.guard
-    }
-
-    /// Returns the current target database index.
-    pub fn db(&self) -> i32 {
-        self.target_db
-    }
-}
-
-impl Drop for FanoutContextGuard {
-    fn drop(&mut self) {
-        if self.switched_db {
-            set_current_db(&self.guard, self.saved_db);
-        }
-    }
-}
-
-impl std::ops::Deref for FanoutContextGuard {
-    type Target = ContextGuard;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl std::ops::DerefMut for FanoutContextGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.guard
-    }
-}
-
-/// The context for fanout operations. We use this to facilitate fine-grained
-/// locking of Valkey when executing fanout operations. For example, the metadata query
-/// functions do not access Valkey, so they do not require locking. However, when
-/// executing other commands, we want to limit locks to only code that accesses Valkey global state.
+/// Fanout reply context
 ///
-/// It is a thin wrapper valkey_module::MODULE_CONTEXT, holding only the current database index.
-/// We automatically set the current database index when locking for command execution.
-/// In the future, we might want to extend this to hold other context information such as the authenticated
-/// user.
+/// A thin wrapper around the underlying `RedisModuleCtx` that provides convenience
+/// helpers for generating replies and managing the selected database while handling
+/// fanout responses.
+///
+/// This struct restores the original selected DB when dropped if it changed during
+/// the lifetime of the `FanoutContext`.
+///
+/// # Invariant
+/// The `FanoutContext` must ALWAYS be created and used from the Valkey main thread.
+/// In the codebase this is guaranteed because the only way to get a `FanoutContext`
+/// is from a callback invoked by `exec_command`, which executes on the main thread.
 pub struct FanoutContext {
     save_db: Option<i32>,
-    ctx: ThreadSafeContext<DetachedFromClient>,
-    pub db: i32,
+    ctx: Context,
+    pub(crate) raw_ctx: *mut raw::RedisModuleCtx,
 }
 
 impl FanoutContext {
-    pub fn new(db: i32) -> Self {
+    pub(crate) fn new(ctx: *mut raw::RedisModuleCtx) -> Self {
         Self {
             save_db: None,
-            ctx: ThreadSafeContext::new(),
-            db,
+            raw_ctx: ctx,
+            ctx: Context { ctx },
         }
     }
 
+    /// Log a message at the specified `level` using the underlying context.
     pub fn log(&self, level: ValkeyLogLevel, message: &str) {
-        let c = self.ctx.lock();
-        c.log(level, message);
+        let context = Context { ctx: self.raw_ctx };
+        context.log(level, message);
     }
 
+    /// Convenience logging helpers
     pub fn log_debug(&self, message: &str) {
         self.log(ValkeyLogLevel::Debug, message);
     }
@@ -108,15 +62,109 @@ impl FanoutContext {
         self.log(ValkeyLogLevel::Warning, message);
     }
 
-    pub fn lock(&mut self) -> FanoutContextGuard {
-        let guard = self.ctx.lock();
-        FanoutContextGuard::new(guard, self.db)
+    /// Switch the selected DB for this context. The original DB is saved on first
+    /// switch so it can be restored when the `FanoutContext` is dropped.
+    pub fn set_current_db(&mut self, db: i32) {
+        if self.save_db.is_none() {
+            self.save_db = Some(self.get_current_db());
+        }
+        unsafe {
+            RedisModule_SelectDb.unwrap()(self.raw_ctx, db);
+        }
     }
 
+    /// Return the currently selected DB index from the underlying context.
+    pub fn get_current_db(&self) -> i32 {
+        unsafe { RedisModule_GetSelectedDb.unwrap()(self.raw_ctx) }
+    }
+
+    /// Reply with a 64-bit integer value.
+    pub fn reply_with_i64(&self, value: i64) -> Status {
+        raw::reply_with_long_long(self.raw_ctx, value)
+    }
+
+    /// Reply with a double-precision floating point value.
+    pub fn reply_with_f64(&self, value: f64) -> Status {
+        raw::reply_with_double(self.raw_ctx, value)
+    }
+
+    /// Reply with a boolean value.
+    pub fn reply_with_bool(&self, value: bool) -> Status {
+        raw::reply_with_bool(self.raw_ctx, value.into())
+    }
+
+    /// Reply with a simple string.
+    pub fn reply_with_simple_string(&self, s: &str) -> Status {
+        reply_with_simple_string(self.raw_ctx, s)
+    }
+
+    /// Reply with an error string.
+    pub fn reply_error_string(&self, s: &str) -> Status {
+        reply_error_string(self.raw_ctx, s)
+    }
+
+    /// Reply with a bulk string.
+    pub fn reply_bulk_string(&self, value: &str) -> Status {
+        reply_with_bulk_string(self.raw_ctx, value)
+    }
+
+    /// Reply with a NULL value.
+    pub fn reply_null(&self) -> Status {
+        raw::reply_with_null(self.raw_ctx)
+    }
+
+    /// Start an array reply with the given length.
+    pub fn reply_with_array(&self, len: usize) -> Status {
+        raw::reply_with_array(self.raw_ctx, len as c_long)
+    }
+
+    /// Start a map reply with the given length.
+    pub fn reply_with_map(&self, len: usize) -> Status {
+        raw::reply_with_map(self.raw_ctx, len as c_long)
+    }
+
+    /// Start a postponed-length array reply.
+    pub fn reply_with_postponed_array(&self) -> Status {
+        raw::reply_with_array(self.raw_ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long)
+    }
+
+    /// Reply with a `ValkeyValueKey` (integer/string/bulk/etc.).
+    pub fn reply_with_key(&self, result: ValkeyValueKey) -> Status {
+        reply_with_key(self.raw_ctx, result)
+    }
+
+    /// Forward a `ValkeyResult` to the reply machinery.
+    #[allow(clippy::must_use_candidate)]
+    pub fn reply(&self, result: ValkeyResult) -> Status {
+        reply(self.raw_ctx, result)
+    }
+
+    /// Get the index guard for the currently selected DB.
     pub fn get_db_index(&self) -> TimeSeriesIndexGuard<'_> {
-        get_db_index(self.db)
+        let db = self.get_current_db();
+        get_db_index(db)
     }
 }
 
+impl Drop for FanoutContext {
+    fn drop(&mut self) {
+        if let Some(db) = self.save_db {
+            self.set_current_db(db);
+        }
+    }
+}
+
+impl Deref for FanoutContext {
+    type Target = Context;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ctx
+    }
+}
+
+// Safety: This struct is only `Send` and `Sync` because it is guaranteed to only be
+// used on the main thread and is never shared across threads. The call sites that
+// construct `FanoutContext` originate from main-thread callbacks invoked by the
+// fanout machinery, so these `unsafe impl`s are sound in that usage model.
 unsafe impl Send for FanoutContext {}
 unsafe impl Sync for FanoutContext {}

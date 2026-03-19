@@ -1,6 +1,7 @@
 use super::fanout_command::FanoutCommand;
 use crate::common::threads::run_on_main_thread;
 use crate::fanout::FanoutResult;
+use crate::fanout::fanout_context::FanoutContext;
 use valkey_module::{
     BlockedClient, Context, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
 };
@@ -12,6 +13,7 @@ pub trait FanoutOperation: FanoutCommand {
     /// Execute the fanout operation across cluster nodes.
     fn exec(self, ctx: &Context) -> ValkeyResult<ValkeyValue> {
         let blocked_client = ctx.block_client();
+        let fanout_context = FanoutContext::new(ctx.ctx);
 
         // IMPORTANT: this callback calls thread_ctx.lock() (acquires the GIL).
         // It must never be invoked while the GIL is already held on the same
