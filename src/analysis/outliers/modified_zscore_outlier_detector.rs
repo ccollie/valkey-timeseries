@@ -1,5 +1,6 @@
 use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
+use crate::analysis::math::calculate_median_sorted;
 use crate::analysis::outliers::{
     Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
 };
@@ -17,19 +18,10 @@ pub struct ModifiedZScoreOutlierDetector {
 
 impl ModifiedZScoreOutlierDetector {
     pub fn new(ts: &[f64], threshold: f64) -> Self {
-        let n = ts.len();
-
         // Calculate median
         let mut sorted_values: Vec<f64> = ts.iter().map(|&x| normalize_value(x)).collect();
         sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        let half = n / 2;
-
-        let median = if n.is_multiple_of(2) {
-            (sorted_values[half - 1] + sorted_values[half]) / 2.0
-        } else {
-            sorted_values[half]
-        };
+        let median = calculate_median_sorted(&sorted_values);
 
         // Calculate Mad (Median Absolute Deviation)
         let mut abs_deviations: Vec<f64> = ts
@@ -38,11 +30,8 @@ impl ModifiedZScoreOutlierDetector {
             .collect();
         abs_deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mad = if n.is_multiple_of(2) {
-            (abs_deviations[half - 1] + abs_deviations[half]) / 2.0
-        } else {
-            abs_deviations[half]
-        };
+        let mad = calculate_median_sorted(&abs_deviations);
+
         // Scale Mad for consistency with normal distribution
         let mad_scaled = mad / 0.6745;
 
@@ -76,6 +65,7 @@ impl ModifiedZScoreOutlierDetector {
         } else {
             0.0
         };
+
         let lower_fence = self.median - delta;
         let upper_fence = self.median + delta;
 

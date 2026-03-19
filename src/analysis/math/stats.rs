@@ -88,10 +88,21 @@ pub fn calculate_median(data: &[f64]) -> f64 {
     }
     let mut sorted_data = data.to_vec();
     sorted_data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    if n % 2 == 1 {
-        sorted_data[n / 2]
+    calculate_median_sorted(&sorted_data)
+}
+
+pub fn calculate_median_sorted(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
+        return 0.0;
+    }
+
+    let half = n / 2;
+
+    if n.is_multiple_of(2) {
+        (sorted[half - 1] + sorted[half]) / 2.0
     } else {
-        (sorted_data[n / 2 - 1] + sorted_data[n / 2]) / 2.0
+        sorted[half]
     }
 }
 
