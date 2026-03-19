@@ -131,7 +131,7 @@ fn parse_method_options(
         AnomalyMethod::DoubleMAD => parse_double_mad_options(args),
         AnomalyMethod::InterquartileRange => parse_iqr_options(args),
         AnomalyMethod::RandomCutForest => parse_rcf_options(args),
-        AnomalyMethod::Sesd => parse_sesd_options(args),
+        AnomalyMethod::Esd => parse_esd_options(args),
     }
 }
 
@@ -470,35 +470,32 @@ fn parse_rcf_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
     })
 }
 
-fn parse_sesd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
+fn parse_esd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut options = AnomalyOptions {
         ..Default::default()
     };
 
-    let mut sesd_options = ESDOutlierOptions::default();
+    let mut esd_options = ESDOutlierOptions::default();
 
     while let Some(arg) = args.next() {
         let arg_slice = arg.as_slice();
         hashify::fnc_map_ignore_case!(arg_slice,
            "ALPHA" => {
-                sesd_options.alpha = parse_single_value(args, "ALPHA")?;
+                esd_options.alpha = parse_single_value(args, "ALPHA")?;
             },
             "HYBRID" => {
-                sesd_options.hybrid = true;
-            },
-            "PERIOD" => {
-                sesd_options.period = Some(parse_single_value(args, "PERIOD")? as usize);
+                esd_options.hybrid = true;
             },
             "MAX_OUTLIERS" => {
-                sesd_options.max_outliers = Some(parse_single_value(args, "MAX_OUTLIERS")? as usize);
+                esd_options.max_outliers = Some(parse_single_value(args, "MAX_OUTLIERS")? as usize);
             },
             _ => {
-                return Err(ValkeyError::String(format!("TSDB: unknown SESD option {arg}")));
+                return Err(ValkeyError::String(format!("TSDB: unknown ESD option {arg}")));
             }
         );
     }
 
-    options.options = AnomalyDetectionMethodOptions::Sesd(Option::from(sesd_options));
+    options.options = AnomalyDetectionMethodOptions::Esd(Option::from(esd_options));
 
     Ok(options)
 }

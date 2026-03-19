@@ -40,7 +40,7 @@ pub enum AnomalyDetectionMethodOptions {
     Mad(MADAnomalyOptions),
     DoubleMAD(MADAnomalyOptions),
     Rcf(RCFOptions),
-    Sesd(Option<ESDOutlierOptions>),
+    Esd(Option<ESDOutlierOptions>),
 }
 
 impl Default for AnomalyDetectionMethodOptions {
@@ -61,7 +61,7 @@ impl AnomalyDetectionMethodOptions {
             Self::Mad(_) => AnomalyMethod::Mad,
             Self::DoubleMAD(_) => AnomalyMethod::DoubleMAD,
             Self::Rcf(_) => AnomalyMethod::RandomCutForest,
-            Self::Sesd(_) => AnomalyMethod::Sesd,
+            Self::Esd(_) => AnomalyMethod::Esd,
         }
     }
 
@@ -170,7 +170,7 @@ fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisRes
             detect_anomalies_double_mad(ts, options)
         }
         AnomalyDetectionMethodOptions::Rcf(opts) => detect_anomalies_rcf(ts, opts),
-        AnomalyDetectionMethodOptions::Sesd(opts) => detect_anomalies_esd(ts, opts),
+        AnomalyDetectionMethodOptions::Esd(opts) => detect_anomalies_esd(ts, opts),
     }
 }
 
@@ -197,7 +197,10 @@ fn validate_insufficient_data<T: Default>(
 }
 
 /// Seasonal adjustment using (M)Stl decomposition
-fn seasonally_adjust(ts: &[f64], seasonality: &Seasonality) -> TimeSeriesAnalysisResult<Vec<f64>> {
+pub fn seasonally_adjust(
+    ts: &[f64],
+    seasonality: &Seasonality,
+) -> TimeSeriesAnalysisResult<Vec<f64>> {
     let periods = match seasonality {
         Seasonality::Periods(periods) => periods.clone(),
         Seasonality::Auto => {

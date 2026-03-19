@@ -3,6 +3,7 @@ mod cusum_outlier_detector;
 mod double_mad_outlier_detector;
 #[cfg(test)]
 mod double_mad_outlier_detector_tests;
+mod esd_outlier_detector;
 mod ewma_outlier_detector;
 mod iqr_outlier_detector;
 pub mod mad_estimator;
@@ -13,15 +14,14 @@ mod modified_zscore_outlier_detector;
 #[cfg(test)]
 mod outlier_test_data;
 mod rcf_outlier_detector;
-mod sesd_outlier_detector;
 mod smoothed_zscores;
 mod utils;
 mod zscore_outlier_detector;
 
 pub use anomalies::*;
 pub use double_mad_outlier_detector::*;
+pub use esd_outlier_detector::ESDOutlierOptions;
 pub use rcf_outlier_detector::*;
-pub use sesd_outlier_detector::SESDOutlierOptions;
 pub use smoothed_zscores::*;
 use std::fmt::Display;
 
@@ -50,8 +50,8 @@ pub enum AnomalyMethod {
     InterquartileRange,
     /// Random Cut Forest (Rcf) method
     RandomCutForest,
-    /// Seasonal (H) ESD
-    Sesd,
+    /// ESD (Extreme Studentized Deviate) method
+    Esd,
 }
 
 impl AnomalyMethod {
@@ -63,11 +63,11 @@ impl AnomalyMethod {
             AnomalyMethod::ZScore => "Z-Score",
             AnomalyMethod::ModifiedZScore => "Modified Z-Score",
             AnomalyMethod::SmoothedZScore => "Smoothed Z-Score",
-            AnomalyMethod::Mad => "Median Absolute Deviation (Mad)",
-            AnomalyMethod::DoubleMAD => "Double Mad",
+            AnomalyMethod::Mad => "Median Absolute Deviation (MAD)",
+            AnomalyMethod::DoubleMAD => "Double MAD",
             AnomalyMethod::InterquartileRange => "Interquartile Range (IQR)",
             AnomalyMethod::RandomCutForest => "Random Cut Forest",
-            AnomalyMethod::Sesd => "Seasonal ESD",
+            AnomalyMethod::Esd => "Extreme Studentized Deviate (ESD)",
         }
     }
 }
@@ -78,7 +78,7 @@ impl FromStr for AnomalyMethod {
     fn from_str(s: &str) -> ValkeyResult<Self> {
         let res = hashify::tiny_map_ignore_case! {
             s.as_bytes(),
-            "esd" => Ok(AnomalyMethod::Sesd),
+            "esd" => Ok(AnomalyMethod::Esd),
             "ewma" => Ok(AnomalyMethod::Ewma),
             "cusum" => Ok(AnomalyMethod::Cusum),
             "zscore" => Ok(AnomalyMethod::ZScore),
@@ -88,7 +88,6 @@ impl FromStr for AnomalyMethod {
             "double-mad" => Ok(AnomalyMethod::DoubleMAD),
             "iqr" => Ok(AnomalyMethod::InterquartileRange),
             "rcf" => Ok(AnomalyMethod::RandomCutForest),
-            "randomcutforest" => Ok(AnomalyMethod::RandomCutForest),
         };
         res.unwrap_or(Err(ValkeyError::Str(
             "TSDB: unknown anomaly detection method",
