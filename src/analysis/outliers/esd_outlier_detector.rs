@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn test_calc_test_statistic_median_mad() {
         // simple data with an outlier at index 4
-        let data = vec![1.0, 1.1, 0.9, 1.05, 10.0];
+        let data = [1.0, 1.1, 0.9, 1.05, 10.0];
         let values = active_points(&data.iter().cloned().map(Some).collect::<Vec<_>>());
         let (stat, idx) = calc_test_statistic(&values, false);
         assert_eq!(idx, 4);
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_esd_rosner_data() {
-        /// Data from Rosner (1983)
+        // Data from Rosner (1983)
         let data = [
             -0.25, 0.68, 0.94, 1.15, 1.20, 1.26, 1.26, 1.34, 1.38, 1.43, 1.49, 1.49, 1.55, 1.56,
             1.58, 1.65, 1.69, 1.70, 1.76, 1.77, 1.81, 1.91, 1.94, 1.96, 1.99, 2.06, 2.09, 2.10,

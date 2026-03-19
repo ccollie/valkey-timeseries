@@ -216,7 +216,7 @@ impl Default for Detector {
 
 impl SeasonalityDetector for Detector {
     fn detect(&self, data: &[f64]) -> Vec<u32> {
-        self.detect(&data)
+        self.detect(data)
     }
 }
 

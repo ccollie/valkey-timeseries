@@ -3,9 +3,7 @@ mod periodogram;
 pub mod stl;
 mod test_data;
 
-pub use periodogram::{
-    Builder as PeriodogramDetectorBuilder, Detector as PeriodogramDetector, Periodogram,
-};
+pub use periodogram::Detector as PeriodogramDetector;
 
 /// A detector of periodic signals in a time series.
 pub trait SeasonalityDetector {
