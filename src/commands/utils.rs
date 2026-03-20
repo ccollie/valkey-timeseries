@@ -1,15 +1,10 @@
 use super::fanout::generated::{Label as FanoutLabel, Sample as FanoutSample};
 use crate::common::replies::{
-    reply_label_ex, reply_with_bulk_string, reply_with_labels, reply_with_sample_ex,
-    reply_with_samples,
+    reply_label_ex, reply_with_array, reply_with_bulk_string, reply_with_labels,
+    reply_with_sample_ex, reply_with_samples,
 };
 use crate::series::request_types::MRangeSeriesResult;
-use std::os::raw::c_long;
 use valkey_module::{Context, ValkeyResult, ValkeyValue, raw};
-
-fn reply_with_array(ctx: &Context, len: usize) {
-    raw::reply_with_array(ctx.ctx, len as c_long);
-}
 
 pub(super) fn reply_with_fanout_label(ctx: &Context, label: &FanoutLabel) {
     if label.name.is_empty() {

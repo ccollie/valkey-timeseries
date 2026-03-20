@@ -1,8 +1,6 @@
 use super::ts_debug_configs::list_configs_cmd;
-use super::utils::{
-    reply_with_array, reply_with_bulk_string, reply_with_double, reply_with_str, reply_with_usize,
-};
 use crate::commands::CommandArgIterator;
+use crate::common::replies::*;
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -17,7 +15,7 @@ fn dump_bucket(ctx: &Context, bucket: &BucketStats) {
     reply_with_usize(ctx, bucket.bytes);
 
     reply_with_str(ctx, "avgSize");
-    reply_with_double(ctx, bucket.get_avg_size());
+    reply_with_double(ctx.ctx, bucket.get_avg_size());
 
     reply_with_str(ctx, "allocated");
     reply_with_usize(ctx, bucket.allocated);
@@ -90,7 +88,7 @@ fn string_pool_stats(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResu
     reply_with_str(ctx, "memorySavedBytes");
     reply_with_usize(ctx, stats.memory_saved_bytes);
     reply_with_str(ctx, "memorySavedPct");
-    reply_with_double(ctx, stats.memory_saved_pct);
+    reply_with_double(ctx.ctx, stats.memory_saved_pct);
 
     if k > 0 {
         // Reply[4] -> TopK by RefCount

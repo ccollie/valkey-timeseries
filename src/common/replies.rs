@@ -26,13 +26,13 @@ impl IntoRawCtx for &Context {
     }
 }
 
-pub fn reply_with_str(ctx: &Context, s: &str) {
+pub fn reply_with_str(ctx: &Context, s: &str) -> Status {
     let msg = CString::new(s).unwrap_or_else(|_| {
         // Remove any interior NUL bytes to ensure CString::new cannot fail here.
         let sanitized: String = s.chars().filter(|c| *c != '\0').collect();
         CString::new(sanitized).unwrap()
     });
-    raw::reply_with_simple_string(ctx.ctx, msg.as_ptr());
+    raw::reply_with_simple_string(ctx.ctx, msg.as_ptr())
 }
 
 pub fn reply_with_bulk_string<C: IntoRawCtx>(ctx: C, s: &str) -> Status {
@@ -113,7 +113,17 @@ pub fn reply_with_i64<C: IntoRawCtx>(ctx: C, value: i64) -> Status {
     raw::reply_with_long_long(raw_ctx, value)
 }
 
+pub fn reply_with_usize<C: IntoRawCtx>(ctx: C, value: usize) -> Status {
+    let raw_ctx = ctx.into_raw();
+    raw::reply_with_long_long(raw_ctx, value as i64)
+}
+
 pub fn reply_with_f64<C: IntoRawCtx>(ctx: C, value: f64) -> Status {
+    let raw_ctx = ctx.into_raw();
+    raw::reply_with_double(raw_ctx, value)
+}
+
+pub fn reply_with_double<C: IntoRawCtx>(ctx: C, value: f64) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_double(raw_ctx, value)
 }
