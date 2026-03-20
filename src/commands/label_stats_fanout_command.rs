@@ -1,7 +1,7 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::common::threads::join;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::{FanoutClientCommand, FanoutContext, NodeInfo};
 use crate::series::index::{
     PostingStat, PostingsBitmap, PostingsStats, StatsMaxHeap, deserialize_bitmap,
     get_timeseries_index, serialize_bitmap,
@@ -22,13 +22,13 @@ struct StatsResults {
     label_value_pairs_bitmap: PostingsBitmap,
 }
 
-pub struct LabelStatsFanoutOperation {
+pub struct LabelStatsFanoutCommand {
     pub limit: usize,
     pub selected_label: Option<String>,
     state: StatsResults,
 }
 
-impl LabelStatsFanoutOperation {
+impl LabelStatsFanoutCommand {
     pub fn new(limit: usize, selected_label: Option<String>) -> Self {
         let limit = if limit == 0 {
             DEFAULT_STATS_RESULTS_LIMIT
@@ -44,13 +44,13 @@ impl LabelStatsFanoutOperation {
     }
 }
 
-impl Default for LabelStatsFanoutOperation {
+impl Default for LabelStatsFanoutCommand {
     fn default() -> Self {
         Self::new(DEFAULT_STATS_RESULTS_LIMIT, None)
     }
 }
 
-impl FanoutOperation for LabelStatsFanoutOperation {
+impl FanoutClientCommand for LabelStatsFanoutCommand {
     type Request = StatsRequest;
     type Response = StatsResponse;
 
@@ -105,7 +105,7 @@ impl FanoutOperation for LabelStatsFanoutOperation {
         );
     }
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
         let limit = self.limit;
         let state = std::mem::take(&mut self.state);
 

@@ -13,6 +13,7 @@ use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
 use logger_rust::{LogLevel, set_log_level};
 use std::sync::atomic::AtomicBool;
+use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
 
 pub mod aggregators;
@@ -39,9 +40,16 @@ pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
 static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static MAIN_THREAD_ID: std::sync::OnceLock<ThreadId> = std::sync::OnceLock::new();
 
 pub fn is_module_initialized() -> bool {
     IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn is_main_thread() -> bool {
+    MAIN_THREAD_ID
+        .get()
+        .is_some_and(|id| *id == std::thread::current().id())
 }
 
 pub fn valid_server_version(version: Version) -> bool {
@@ -105,6 +113,8 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         ctx.log_warning(&msg);
         return Status::Err;
     }
+
+    MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
 
     init_thread_pool();
     init_background_tasks(ctx);

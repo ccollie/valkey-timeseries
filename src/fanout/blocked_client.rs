@@ -1,10 +1,11 @@
-use crate::fanout::FanoutOperation;
+use crate::fanout::{FanoutClientCommand, FanoutContext, FanoutResult};
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use valkey_module::{
-    Context, Status, ValkeyModule_BlockClient, ValkeyModule_BlockedClientMeasureTimeEnd,
-    ValkeyModule_BlockedClientMeasureTimeStart, ValkeyModule_GetBlockedClientPrivateData,
-    ValkeyModule_UnblockClient, ValkeyModuleCtx, ValkeyModuleString, raw,
+    Context, Status, ValkeyError, ValkeyModule_BlockClient,
+    ValkeyModule_BlockedClientMeasureTimeEnd, ValkeyModule_BlockedClientMeasureTimeStart,
+    ValkeyModule_GetBlockedClientPrivateData, ValkeyModule_UnblockClient, ValkeyModuleCtx,
+    ValkeyModuleString, raw,
 };
 
 const NO_TIMEOUT: i64 = 60000; // 60 seconds
@@ -12,48 +13,48 @@ const NO_TIMEOUT: i64 = 60000; // 60 seconds
 #[repr(C)]
 pub(super) struct BlockedClientPrivateData<OP>
 where
-    OP: FanoutOperation,
+    OP: FanoutClientCommand,
 {
-    operation: OP,
-    timed_out: bool,
-    error_count: usize,
+    op: OP,
+    result: FanoutResult,
 }
 
 impl<OP> BlockedClientPrivateData<OP>
 where
-    OP: FanoutOperation,
+    OP: FanoutClientCommand,
 {
-    pub(super) fn new(operation: OP, timed_out: bool, error_count: usize) -> Self {
+    pub(super) fn new(operation: OP, result: FanoutResult) -> Self {
         Self {
-            operation,
-            timed_out,
-            error_count,
+            op: operation,
+            result,
         }
     }
-    fn reply(&mut self, ctx: &Context) -> Status {
-        if self.timed_out {
-            self.operation.generate_timeout_reply(ctx)
-        } else if self.error_count > 0 {
-            self.operation.generate_error_reply(ctx)
-        } else {
-            self.operation.generate_reply(ctx)
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        match self.result.as_ref() {
+            Ok(_) => self.op.reply(ctx),
+            Err(err) => {
+                let _err: ValkeyError = err.into();
+                // Forward the error using the fanout reply helpers
+                ctx.reply(Err(_err))
+            }
         }
     }
 }
 
 /// High-level wrapper for a blocked client.
-pub(super) struct FanoutBlockedClient<T: FanoutOperation> {
+pub(super) struct FanoutBlockedClient<T: FanoutClientCommand> {
     inner: *mut raw::ValkeyModuleBlockedClient,
     data: Option<Box<BlockedClientPrivateData<T>>>,
     time_measurement_ongoing: bool,
+    is_blocked: bool,
 }
 
 // We need to be able to send the inner pointer to another thread
-unsafe impl<T: FanoutOperation> Send for FanoutBlockedClient<T> {}
+unsafe impl<T: FanoutClientCommand> Send for FanoutBlockedClient<T> {}
 
 impl<T> FanoutBlockedClient<T>
 where
-    T: FanoutOperation,
+    T: FanoutClientCommand,
 {
     pub fn new(ctx: &Context) -> Self {
         let bc_ptr = unsafe {
@@ -72,15 +73,21 @@ where
             inner: bc_ptr,
             time_measurement_ongoing: false,
             data: None,
+            is_blocked: true,
         }
     }
 
-    /// Set the private data that will be passed back on unblock.
-    pub fn set_reply_private_data(&mut self, private_data: BlockedClientPrivateData<T>) {
-        self.data = Some(Box::new(private_data));
+    pub(super) fn set_private_data(&mut self, op: T, result: FanoutResult) {
+        let private_data = Box::new(BlockedClientPrivateData::new(op, result));
+        self.data = Some(private_data);
     }
 
     fn unblock(&mut self) {
+        if !self.is_blocked {
+            return;
+        }
+        self.is_blocked = false;
+
         // Ensure any ongoing measurement is ended.
         self.measure_time_end();
 
@@ -114,7 +121,10 @@ where
     }
 }
 
-impl<T: FanoutOperation> Drop for FanoutBlockedClient<T> {
+impl<T> Drop for FanoutBlockedClient<T>
+where
+    T: FanoutClientCommand,
+{
     fn drop(&mut self) {
         self.unblock();
     }
@@ -131,14 +141,15 @@ fn take_data<T>(data: *mut c_void) -> T {
     *data
 }
 
-extern "C" fn reply_callback<T: FanoutOperation>(
+extern "C" fn reply_callback<T: FanoutClientCommand>(
     ctx: *mut ValkeyModuleCtx,
     _argv: *mut *mut ValkeyModuleString,
     _argc: c_int,
 ) -> c_int {
     let op_ptr = unsafe { ValkeyModule_GetBlockedClientPrivateData.unwrap()(ctx) };
-    let ctx = Context::new(ctx as *mut raw::RedisModuleCtx);
+    let ctx = FanoutContext::new(ctx as *mut raw::RedisModuleCtx);
     if op_ptr.is_null() {
+        // this means that there was an error in setting up RPC, so we should reply with an error.
         ctx.reply_error_string("No reply data") as c_int
     } else {
         // Cast to the correct type and then dereference once to get &mut ResponseContext<T>
@@ -147,7 +158,7 @@ extern "C" fn reply_callback<T: FanoutOperation>(
     }
 }
 
-extern "C" fn free_callback<T: FanoutOperation>(
+extern "C" fn free_callback<T: FanoutClientCommand>(
     _ctx: *mut ValkeyModuleCtx,
     private_data: *mut c_void,
 ) {

@@ -47,7 +47,7 @@ pub(super) const KEY_PERMISSIONS_ERROR: &str = "User does not have access to one
 pub(super) const UNKNOWN_MESSAGE_TYPE_ERROR: &str = "Unknown message type.";
 pub(super) const SERIALIZATION_ERROR: &str = "Serialization error";
 pub(super) const BAD_REQUEST_ID_ERROR: &str = "Bad request id";
-pub(super) const TIMEOUT_ERROR: &str = "Fanout command timed out";
+pub(super) const TIMEOUT_ERROR: &str = "A multi-shard command failed because at least one shard did not reply within the given timeframe.";
 pub(super) const NODE_UNREACHABLE_ERROR: &str = "Cluster node unreachable";
 pub(super) const NO_CLUSTER_NODES_AVAILABLE: &str = "No cluster nodes available";
 pub(super) const INTERNAL_ERROR: &str = "Internal error";
@@ -285,7 +285,7 @@ mod tests {
     fn test_fanout_error_error_trait() {
         // Test with an empty message
         let error = FanoutError::timeout();
-        assert_eq!(error.to_string(), "Fanout command timed out");
+        assert_eq!(error.to_string(), TIMEOUT_ERROR);
     }
 
     #[test]

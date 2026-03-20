@@ -1,6 +1,6 @@
 use crate::commands::command_args::parse_query_index_command_args;
-use crate::commands::query_index_fanout_operation::QueryIndexFanoutOperation;
-use crate::fanout::{FanoutOperation, is_clustered};
+use crate::commands::query_index_fanout_command::QueryIndexFanoutCommand;
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::series_keys_by_selectors;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
@@ -15,7 +15,7 @@ pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     if is_clustered(ctx) {
         // in cluster mode, we need to send the request to all nodes
-        let operation = QueryIndexFanoutOperation::new(options);
+        let operation = QueryIndexFanoutCommand::new(options);
         return operation.exec(ctx);
     }
 

@@ -151,15 +151,21 @@ class ReplicationGroup:
         if not rg:
             return
 
-        if rg.primary:
-            os.kill(rg.primary.server.pid(), 9)
+        def kill_node(node):
+            if not node or not node.server or not getattr(node.server, "server", None):
+                return
+            try:
+                os.kill(node.server.pid(), 9)
+            except (AttributeError, ProcessLookupError):
+                pass
+
+        kill_node(rg.primary)
 
         if not rg.replicas:
             return
 
         for replica in rg.replicas:
-            if replica.server:
-                os.kill(replica.server.pid(), 9)
+            kill_node(replica)
 
 class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
     """Common base class for the various Search test cases"""

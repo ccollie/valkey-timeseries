@@ -1,7 +1,9 @@
+use crate::is_main_thread;
 use rayon_core::{Scope, ThreadPoolBuilder};
+use std::os::raw::c_void;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicUsize;
-use valkey_module::{Context, MODULE_CONTEXT};
+use valkey_module::{Context, MODULE_CONTEXT, raw};
 
 pub const DEFAULT_NUM_CPUS: usize = 4;
 
@@ -69,4 +71,47 @@ where
 {
     // does this make sense?
     spawn_scoped(|s| rayon_core::join(|| oper_a(s), || oper_b(s)))
+}
+
+extern "C" fn event_loop_callback_wrapper<F>(data: *mut c_void)
+where
+    F: FnOnce() + 'static,
+{
+    let callback: Box<F> = unsafe { Box::from_raw(data as *mut F) };
+    callback();
+}
+
+/// Executes a given closure on the Valkey main thread. The provided closure will be executed as a one-shot operation.
+///
+/// # Parameters
+/// - `force_async`: If true, the closure will be executed asynchronously even if it's already on the main thread.
+/// - `callback`: The closure to be executed on the main thread.
+///
+/// # Example
+/// ```rust
+/// use your_crate::run_on_main_thread;
+///
+/// // A simple closure to be executed on the main thread
+/// run_on_main_thread(false, || {
+///     println!("This is running on the main thread!");
+/// });
+/// ```
+pub fn run_on_main_thread<F>(force_async: bool, callback: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    if is_main_thread() && !force_async {
+        callback();
+        return;
+    }
+
+    // Move the closure to the heap so it has a stable memory address
+    let boxed_callback = Box::new(callback);
+    let raw_data = Box::into_raw(boxed_callback) as *mut c_void;
+
+    let event_loop_callback = event_loop_callback_wrapper::<F>;
+
+    unsafe {
+        raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
+    }
 }
