@@ -29,6 +29,8 @@ mod mrange_fanout_command;
 mod query_index;
 mod query_index_fanout_command;
 mod range;
+mod ts_debug;
+mod ts_debug_configs;
 mod utils;
 
 pub use command_args::*;
@@ -54,6 +56,7 @@ pub use mget::*;
 pub use mrange::*;
 pub use query_index::*;
 pub use range::*;
+pub use ts_debug::*;
 use valkey_module::ValkeyResult;
 
 use crate::fanout::register_fanout_operation;

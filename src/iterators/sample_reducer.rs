@@ -9,6 +9,7 @@ where
     inner: I,
     buffer: Option<Sample>,
     aggregator: Aggregator,
+    has_samples: bool,
     done: bool,
 }
 
@@ -21,19 +22,22 @@ where
             inner: iter,
             buffer: None,
             done: false,
+            has_samples: false,
             aggregator,
         }
     }
 
-    fn finalize_group(&mut self, timestamp: i64, all_nans: bool) -> Sample {
-        let value = if all_nans {
-            // Reset aggregator state when the group is all NaNs
-            AggregationHandler::reset(&mut self.aggregator);
-            f64::NAN
-        } else {
+    fn finalize_group(&mut self, timestamp: i64) -> Sample {
+        let value = if self.has_samples {
             // Finalize aggregator to get the aggregated value
             AggregationHandler::finalize(&mut self.aggregator)
+        } else {
+            // No samples were aggregated (should not happen since we always include the first sample), return NaN
+            f64::NAN
         };
+
+        self.has_samples = false;
+
         Sample { timestamp, value }
     }
 }
@@ -65,10 +69,8 @@ where
 
         // Start a new group: reset the aggregator and include the first sample if it's not NaN.
         AggregationHandler::reset(&mut self.aggregator);
-        let mut all_nans = current_value.is_nan();
-        if !all_nans {
+        self.has_samples =
             AggregationHandler::update(&mut self.aggregator, current_timestamp, current_value);
-        }
 
         // Continue consuming samples with the same timestamp
         loop {
@@ -77,16 +79,13 @@ where
 
             match next_sample {
                 Some(sample) if sample.timestamp == current_timestamp => {
-                    let is_nan = sample.value.is_nan();
-                    all_nans = all_nans && is_nan;
-
                     // Only aggregate non-NaN samples; still track "all_nans" for the group.
-                    if !is_nan {
-                        AggregationHandler::update(
-                            &mut self.aggregator,
-                            sample.timestamp,
-                            sample.value,
-                        );
+                    if AggregationHandler::update(
+                        &mut self.aggregator,
+                        sample.timestamp,
+                        sample.value,
+                    ) {
+                        self.has_samples = true;
                     }
                     // Update the buffer with this sample
                     self.buffer = Some(sample);
@@ -96,14 +95,14 @@ where
                     self.buffer = Some(sample);
 
                     // Emit current group
-                    let result = self.finalize_group(current_timestamp, all_nans);
+                    let result = self.finalize_group(current_timestamp);
                     return Some(result);
                 }
                 None => {
                     // No more samples, emit the current group and finish
                     self.buffer = None;
                     self.done = true;
-                    let result = self.finalize_group(current_timestamp, all_nans);
+                    let result = self.finalize_group(current_timestamp);
                     return Some(result);
                 }
             }

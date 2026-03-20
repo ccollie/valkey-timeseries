@@ -35,8 +35,9 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
     def get_user_client(self, username: str, password: str):
         """Get a client authenticated as a specific user"""
-        self.client.execute_command('AUTH', username, password)
-        return self.client
+        client = self.server.get_new_client()
+        client.execute_command('AUTH', username, password)
+        return client
 
     def test_ts_add_acl_permissions(self):
         """Test TS.ADD command with various ACL permissions"""
@@ -156,7 +157,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
         # Setup users with specific roles
         self.create_test_user('data_producer', 'password123', [
-            '+ts.add', '+ts.create', '+@timeseries', '+@write', '~ts:acl:workflow*'
+            '+ts.add', '+ts.create', '~ts:acl:workflow*'
         ])
 
         self.create_test_user('rule_manager', 'password123', [
@@ -164,7 +165,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         ])
 
         self.create_test_user('data_consumer', 'password123', [
-            '+@read', '+ts.range', '+@timeseries', '~ts:acl:workflow*'
+            '+@read', '+ts.range', '~ts:acl:workflow*'
         ])
 
         # Producer creates series and adds data
@@ -193,7 +194,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
         # Verify role separation - producer can't create rules
         producer = self.get_user_client('data_producer', 'password123')
-        with pytest.raises(Exception, match="No permissions to access a key"):
+        with pytest.raises(Exception, match="User data_producer has no permissions to run the 'TS.CREATERULE' command"):
             producer.execute_command(
                 'TS.CREATERULE', 'ts:acl:workflow:source', 'ts:acl:workflow:dest2',
                 'AGGREGATION', 'sum', 5000
@@ -201,18 +202,18 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
         # Consumer can't delete rules
         consumer = self.get_user_client('data_consumer', 'password123')
-        with pytest.raises(Exception, match="No permissions to access a key"):
+        with pytest.raises(Exception, match="User data_consumer has no permissions to run the 'TS.DELETERULE' command"):
             consumer.execute_command('TS.DELETERULE', 'ts:acl:workflow:source', 'ts:acl:workflow:dest')
 
     def test_acl_command_category_restrictions(self):
         """Test ACL restrictions using command categories"""
-        # Setup test data as admin first
+        # Set up test data as admin first
         self.client.execute_command('TS.CREATE', 'ts:acl:categories')
         self.client.execute_command('TS.ADD', 'ts:acl:categories', '1000', 42.0)
 
         # User with only read category
         self.create_test_user('read_only', 'password123', [
-            '+@read', '-@write', '+@timeseries', '+ts.range', '~*'
+            '+@read', '-@write', '+ts.range', '~*'
         ])
 
         self.create_test_user('ts_safe', 'password123', [
@@ -224,7 +225,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         result = read_only_client.execute_command('TS.RANGE', 'ts:acl:categories', '-', '+')
         assert len(result) > 0
 
-        with pytest.raises(Exception, match="No permissions to access a key"):
+        with pytest.raises(Exception, match="User read_only has no permissions to run the 'TS.ADD' command"):
             read_only_client.execute_command('TS.ADD', 'ts:acl:categories', '2000', 100.0)
 
         # TS safe user can use timeseries commands
@@ -289,7 +290,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
     def test_acl_queryindex_permissions(self):
         """Test TS.QUERYINDEX command with ACL permissions"""
-        # Setup test data with labels
+        # Set up test data with labels
         self.client.execute_command('TS.CREATE', 'ts:acl:sensor1',
                                     'LABELS', 'type', 'temperature', 'location', 'room1')
         self.client.execute_command('TS.CREATE', 'ts:acl:sensor2',
@@ -342,7 +343,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
             ('TS.CREATERULE', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
             ('TS.DELETERULE', [b'write', b'denyoom', b'module'], [b'@write', b'@timeseries']),
             ('TS.QUERYINDEX', [b'readonly', b'module'], [b'@read', b'@timeseries']),
-            ('TS.STATS', [b'readonly',  b'module'], [b'@read', b'@timeseries']),
+            ('TS.LABELSTATS', [b'readonly', b'module'], [b'@read', b'@timeseries']),
             ('TS.JOIN', [b'readonly',  b'module'], [b'@read', b'@timeseries']),
             ('TS.MGET', [b'readonly',  b'module', b'fast'], [b'@read', b'@timeseries']),
             ('TS.LABELNAMES', [b'readonly',  b'module'], [b'@read', b'@timeseries']),

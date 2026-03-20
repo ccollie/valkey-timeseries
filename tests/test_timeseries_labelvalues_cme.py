@@ -2,7 +2,7 @@ import pytest
 from valkey import ValkeyCluster
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
-from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase, ValkeySearchClusterTestCaseDebugMode
+from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 
 TS1 = 'ts1:{1}'
 TS2 = 'ts2:{2}'
@@ -14,7 +14,8 @@ TS7 = 'ts7:{1}'
 TS8 = 'ts8:{2}'
 TS9 = 'ts9:{3}'
 
-class TestTimeSeriesLabelValues(ValkeySearchClusterTestCaseDebugMode):
+
+class TestTimeSeriesLabelValues(ValkeyTimeSeriesClusterTestCase):
 
     @staticmethod
     def setup_test_data(client):

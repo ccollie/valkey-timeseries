@@ -1,6 +1,8 @@
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
 use crate::common::logging::log_warning;
-use crate::common::rdb::{RdbSerializable, rdb_load_timestamp, rdb_save_timestamp};
+use crate::common::rdb::{
+    RdbSerializable, rdb_load_bool, rdb_load_timestamp, rdb_save_bool, rdb_save_timestamp,
+};
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
@@ -23,6 +25,7 @@ pub struct CompactionRule {
     pub bucket_duration: u64,
     pub align_timestamp: Timestamp,
     pub bucket_start: Option<Timestamp>,
+    pub has_samples: bool,
 }
 
 impl GetSize for CompactionRule {
@@ -32,6 +35,7 @@ impl GetSize for CompactionRule {
             + size_of::<u64>() // bucket_duration
             + size_of::<Timestamp>() // align_timestamp
             + size_of::<Option<Timestamp>>() // bucket_start
+            + size_of::<bool>() // has_samples
     }
 }
 
@@ -47,8 +51,15 @@ impl CompactionRule {
     }
 
     pub(super) fn reset(&mut self) {
-        self.aggregator.reset();
+        AggregationHandler::reset(&mut self.aggregator);
         self.bucket_start = None;
+        self.has_samples = false;
+    }
+
+    pub(super) fn update(&mut self, ts: Timestamp, value: f64) {
+        if AggregationHandler::update(&mut self.aggregator, ts, value) {
+            self.has_samples = true;
+        }
     }
 }
 
@@ -59,6 +70,7 @@ impl RdbSerializable for CompactionRule {
         raw::save_unsigned(rdb, self.bucket_duration);
         rdb_save_timestamp(rdb, self.align_timestamp);
         rdb_save_timestamp(rdb, self.bucket_start.unwrap_or(-1));
+        rdb_save_bool(rdb, self.has_samples);
     }
 
     fn rdb_load(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
@@ -67,6 +79,7 @@ impl RdbSerializable for CompactionRule {
         let bucket_duration = raw::load_unsigned(rdb)?;
         let align_timestamp = rdb_load_timestamp(rdb)?;
         let start_ts = rdb_load_timestamp(rdb)?;
+        let has_samples = rdb_load_bool(rdb)?;
         let bucket_start = if start_ts == -1 { None } else { Some(start_ts) };
 
         Ok(CompactionRule {
@@ -75,6 +88,7 @@ impl RdbSerializable for CompactionRule {
             bucket_duration,
             align_timestamp,
             bucket_start,
+            has_samples,
         })
     }
 }
@@ -94,6 +108,20 @@ impl<'a> CompactionContext<'a> {
             rule,
             added: false,
         }
+    }
+
+    fn update(&mut self, ts: Timestamp, value: f64) {
+        self.rule.update(ts, value);
+    }
+
+    fn start_bucket(&mut self, bucket_start: Timestamp, sample: Sample) {
+        self.rule.bucket_start = Some(bucket_start);
+        // Start a new bucket with the new sample
+        self.update(sample.timestamp, sample.value);
+    }
+
+    fn has_samples(&self) -> bool {
+        self.rule.has_samples
     }
 }
 
@@ -140,15 +168,14 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
 
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // First sample for this rule - initialize the aggregation
-        ctx.rule.bucket_start = Some(sample_bucket_start);
-        ctx.rule.aggregator.update(sample.timestamp, sample.value);
+        ctx.start_bucket(sample_bucket_start, sample);
         return Ok(());
     };
 
     match sample_bucket_start.cmp(&current_bucket_start) {
         Ordering::Equal => {
             // Sample belongs to the current aggregation bucket
-            ctx.rule.aggregator.update(sample.timestamp, sample.value);
+            ctx.update(sample.timestamp, sample.value);
         }
         Ordering::Greater => {
             // Sample starts a new bucket - finalize the current bucket first
@@ -170,19 +197,19 @@ fn finalize_current_bucket(
     new_sample: Sample,
     new_bucket_start: Timestamp,
 ) -> TsdbResult<()> {
-    // Finalize the current bucket
-    let aggregated_value = ctx.rule.aggregator.finalize();
-    let current_bucket_start = ctx.rule.bucket_start.expect(
-        "finalize_current_bucket should be called when current bucket start is already set",
-    );
+    if ctx.has_samples() {
+        // Finalize the current bucket
+        let aggregated_value = AggregationHandler::finalize(&mut ctx.rule.aggregator);
+        let current_bucket_start = ctx.rule.bucket_start.expect(
+            "finalize_current_bucket should be called when current bucket start is already set",
+        );
 
-    add_dest_bucket(ctx, current_bucket_start, aggregated_value)?;
+        add_dest_bucket(ctx, current_bucket_start, aggregated_value)?;
+    }
+    ctx.rule.reset();
 
     // Start a new bucket with the new sample
-    ctx.rule
-        .aggregator
-        .update(new_sample.timestamp, new_sample.value);
-    ctx.rule.bucket_start = Some(new_bucket_start);
+    ctx.start_bucket(new_bucket_start, new_sample);
 
     Ok(())
 }
@@ -196,8 +223,7 @@ fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     // Check if this affects the current ongoing aggregation bucket
     let Some(current_bucket_start) = ctx.rule.bucket_start else {
         // No current bucket, this is the first sample for this rule
-        ctx.rule.bucket_start = Some(bucket_start);
-        ctx.rule.aggregator.update(sample.timestamp, sample.value);
+        ctx.start_bucket(bucket_start, sample);
         return Ok(());
     };
 
@@ -222,13 +248,15 @@ fn recalculate_current_bucket(
     bucket_end: Timestamp,
 ) -> TsdbResult<()> {
     // Reset the aggregator and recalculate from all samples in the bucket
-    calculate_range(
+    let has_samples = calculate_range(
         ctx.parent,
         &mut ctx.rule.aggregator,
         bucket_start,
         bucket_end - 1,
         null_ts_filter,
     );
+
+    ctx.rule.has_samples = has_samples;
 
     // reset would have cleared the bucket_start, so we need to set it again
     ctx.rule.bucket_start = Some(bucket_start);
@@ -248,7 +276,7 @@ where
 {
     // Create a new aggregator for this bucket
     let mut bucket_aggregator = ctx.rule.aggregator.clone();
-    bucket_aggregator.reset();
+    AggregationHandler::reset(&mut bucket_aggregator);
 
     // Aggregate all samples in this bucket
     let has_samples = calculate_range(
@@ -260,7 +288,7 @@ where
     );
 
     if has_samples {
-        let aggregated_value = bucket_aggregator.finalize();
+        let aggregated_value = AggregationHandler::finalize(&mut bucket_aggregator);
         add_dest_bucket(ctx, bucket_start, aggregated_value)?;
     } else {
         // No samples in this bucket anymore, remove it from destination
@@ -335,7 +363,7 @@ fn adjust_current_bucket_after_removal(
     // Check if the removal affects the current aggregation bucket
     if removal_start < current_bucket_end && removal_end > current_bucket_start {
         let mut new_aggregator = ctx.rule.aggregator.clone();
-        new_aggregator.reset();
+        AggregationHandler::reset(&mut new_aggregator);
 
         // Re-aggregate samples that are not in the removal range
         let bucket_samples = ctx
@@ -343,11 +371,15 @@ fn adjust_current_bucket_after_removal(
             .range_iter(current_bucket_start, current_bucket_end)
             .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
 
+        let mut has_samples = false;
         for sample in bucket_samples {
-            new_aggregator.update(sample.timestamp, sample.value);
+            if AggregationHandler::update(&mut new_aggregator, sample.timestamp, sample.value) {
+                has_samples = true;
+            }
         }
 
         ctx.rule.aggregator = new_aggregator;
+        ctx.rule.has_samples = has_samples;
     }
 }
 
@@ -357,85 +389,79 @@ fn process_series_with_compaction(
     series: &mut TimeSeries,
     op: CompactionOp,
 ) -> TsdbResult<()> {
+    let mut added: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
+
+    let destinations = get_compaction_series(ctx, series);
+    if destinations.is_empty() {
+        return Ok(());
+    }
     // Process current series compaction rules
-    apply_rules_on_series(ctx, series, op)?;
+    apply_rules_on_destinations(series, destinations, op, &mut added)?;
 
     // Collect child series (one level deep)
-    let child_series = series
-        .rules
-        .iter()
-        .filter_map(|rule| get_destination_series(ctx, rule.dest_id));
+    let child_series = series.rules.iter_mut().filter_map(|rule| {
+        let mut child = get_destination_series(ctx, rule.dest_id)?;
+        let destinations = get_compaction_series(ctx, &mut child);
+        if destinations.is_empty() {
+            None
+        } else {
+            Some((child, destinations))
+        }
+    });
 
     // Process child series
-    for mut child in child_series {
-        apply_rules_on_series(ctx, &mut child, op)?;
+    for (mut child, destinations) in child_series {
+        apply_rules_on_destinations(&mut child, destinations, op, &mut added)?;
+    }
+
+    if !added.is_empty() {
+        notify_compaction(ctx, &added);
     }
 
     Ok(())
 }
 
-fn apply_rules_on_series(
-    ctx: &Context,
+fn apply_rules_on_destinations(
     series: &mut TimeSeries,
+    destinations: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
     op: CompactionOp,
+    added: &mut SmallVec<SeriesRef, TEMP_VEC_LEN>,
 ) -> TsdbResult<()> {
-    let destinations = get_compaction_series(ctx, series);
-    if destinations.is_empty() || series.rules.is_empty() {
-        return Ok(());
-    }
-
     let mut rules = std::mem::take(&mut series.rules);
-    let result = apply_rules_parallel_or_seq(ctx, series, &mut rules, destinations, op);
+    let result = apply_rules_internal(series, &mut rules, destinations, op, added);
     series.rules = rules;
     result
 }
 
-/// Internal function that handles parallel/sequential execution of compaction rules.
-fn apply_rules_parallel_or_seq(
-    ctx: &Context,
+/// Internal function that handles execution of compaction rules.
+fn apply_rules_internal(
     series: &TimeSeries,
     rules: &mut [CompactionRule],
     child_series: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
     op: CompactionOp,
+    added: &mut SmallVec<SeriesRef, TEMP_VEC_LEN>,
 ) -> TsdbResult<()> {
     if rules.is_empty() {
         return Ok(());
     }
 
+    let len = rules.len();
     let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
+    let results: Vec<Result<Option<SeriesRef>, TsdbError>> = destinations
+        .par_mut()
+        .num_threads(if len < PARALLEL_THRESHOLD { 1 } else { 0 }) // 0 is shorthand for Auto
+        .map(|(rule, dest_guard)| {
+            let mut cctx = CompactionContext::new(series, dest_guard, rule);
+            apply_op(&mut cctx, op).map(|_| {
+                if cctx.added {
+                    Some(dest_guard.id)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
 
-    let results: Vec<Result<Option<SeriesRef>, TsdbError>> =
-        if destinations.len() >= PARALLEL_THRESHOLD {
-            destinations
-                .par_mut()
-                .map(|(rule, dest_guard)| {
-                    let mut cctx = CompactionContext::new(series, dest_guard, rule);
-                    apply_op(&mut cctx, op).map(|_| {
-                        if cctx.added {
-                            Some(dest_guard.id)
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect()
-        } else {
-            destinations
-                .iter_mut()
-                .map(|(rule, dest_guard)| {
-                    let mut cctx = CompactionContext::new(series, dest_guard, rule);
-                    apply_op(&mut cctx, op).map(|_| {
-                        if cctx.added {
-                            Some(dest_guard.id)
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect()
-        };
-
-    let mut added: Vec<SeriesRef> = Vec::new();
     let mut first_error: Option<TsdbError> = None;
 
     for r in results {
@@ -450,10 +476,6 @@ fn apply_rules_parallel_or_seq(
                 log_warning(msg);
             }
         }
-    }
-
-    if !added.is_empty() {
-        notify_compaction(ctx, &added);
     }
 
     if let Some(err) = first_error {
@@ -557,8 +579,9 @@ where
         .range_iter(start, end)
         .filter(|sample| filter(sample.timestamp))
     {
-        aggregator.update(sample.timestamp, sample.value);
-        has_samples = true;
+        if aggregator.update(sample.timestamp, sample.value) {
+            has_samples = true;
+        }
     }
     has_samples
 }
@@ -633,7 +656,7 @@ pub(crate) fn get_latest_compaction_sample(ctx: &Context, series: &TimeSeries) -
     let start = rule.bucket_start?;
 
     let mut agg = rule.aggregator.clone();
-    let value = agg.finalize();
+    let value = AggregationHandler::finalize(&mut agg);
 
     let sample = Sample::new(start, value);
     Some(sample)

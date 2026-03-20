@@ -47,7 +47,9 @@ impl TryFrom<&str> for BucketTimestamp {
         };
         match ts {
             Some(ts) => Ok(ts),
-            None => Err(ValkeyError::Str("TSDB: invalid BUCKETTIMESTAMP value")),
+            None => Err(ValkeyError::Str(
+                error_consts::INVALID_BUCKET_TIMESTAMP_TYPE,
+            )),
         }
     }
 }
@@ -121,7 +123,9 @@ pub enum AggregationType {
     Any,
     Avg,
     Count,
+    CountAll,
     CountIf,
+    CountNan,
     First,
     Increase,
     IRate,
@@ -147,7 +151,9 @@ impl AggregationType {
             AggregationType::Any => "any",
             AggregationType::Avg => "avg",
             AggregationType::Count => "count",
+            AggregationType::CountAll => "countall",
             AggregationType::CountIf => "countif",
+            AggregationType::CountNan => "countnan",
             AggregationType::First => "first",
             AggregationType::Increase => "increase",
             AggregationType::IRate => "irate",
@@ -218,7 +224,9 @@ impl TryFrom<&str> for AggregationType {
             "any" => AggregationType::Any,
             "avg" => AggregationType::Avg,
             "count" => AggregationType::Count,
+            "countall" => AggregationType::CountAll,
             "countif" => AggregationType::CountIf,
+            "countnan" => AggregationType::CountNan,
             "first" => AggregationType::First,
             "increase" => AggregationType::Increase,
             "irate" => AggregationType::IRate,
@@ -261,23 +269,25 @@ impl TryFrom<u8> for AggregationType {
             1 => Ok(AggregationType::Any),
             2 => Ok(AggregationType::Avg),
             3 => Ok(AggregationType::Count),
-            4 => Ok(AggregationType::CountIf),
-            5 => Ok(AggregationType::First),
-            6 => Ok(AggregationType::Increase),
-            7 => Ok(AggregationType::IRate),
-            8 => Ok(AggregationType::Last),
-            9 => Ok(AggregationType::Max),
-            10 => Ok(AggregationType::Min),
-            11 => Ok(AggregationType::None),
-            12 => Ok(AggregationType::Range),
-            13 => Ok(AggregationType::Rate),
-            14 => Ok(AggregationType::Share),
-            15 => Ok(AggregationType::StdP),
-            16 => Ok(AggregationType::StdS),
-            17 => Ok(AggregationType::Sum),
-            18 => Ok(AggregationType::SumIf),
-            19 => Ok(AggregationType::VarP),
-            20 => Ok(AggregationType::VarS),
+            4 => Ok(AggregationType::CountAll),
+            5 => Ok(AggregationType::CountIf),
+            6 => Ok(AggregationType::CountNan),
+            7 => Ok(AggregationType::First),
+            8 => Ok(AggregationType::Increase),
+            9 => Ok(AggregationType::IRate),
+            10 => Ok(AggregationType::Last),
+            11 => Ok(AggregationType::Max),
+            12 => Ok(AggregationType::Min),
+            13 => Ok(AggregationType::None),
+            14 => Ok(AggregationType::Range),
+            15 => Ok(AggregationType::Rate),
+            16 => Ok(AggregationType::Share),
+            17 => Ok(AggregationType::StdP),
+            18 => Ok(AggregationType::StdS),
+            19 => Ok(AggregationType::Sum),
+            20 => Ok(AggregationType::SumIf),
+            21 => Ok(AggregationType::VarP),
+            22 => Ok(AggregationType::VarS),
             _ => Err(ValkeyError::Str("TSDB: invalid AGGREGATION value")),
         }
     }
@@ -290,23 +300,25 @@ impl From<AggregationType> for u8 {
             AggregationType::Any => 1,
             AggregationType::Avg => 2,
             AggregationType::Count => 3,
-            AggregationType::CountIf => 4,
-            AggregationType::First => 5,
-            AggregationType::Increase => 6,
-            AggregationType::IRate => 7,
-            AggregationType::Last => 8,
-            AggregationType::Max => 9,
-            AggregationType::Min => 10,
-            AggregationType::None => 11,
-            AggregationType::Range => 12,
-            AggregationType::Rate => 13,
-            AggregationType::Share => 14,
-            AggregationType::Sum => 15,
-            AggregationType::SumIf => 16,
-            AggregationType::StdP => 17,
-            AggregationType::StdS => 18,
-            AggregationType::VarP => 19,
-            AggregationType::VarS => 20,
+            AggregationType::CountAll => 4,
+            AggregationType::CountIf => 5,
+            AggregationType::CountNan => 6,
+            AggregationType::First => 7,
+            AggregationType::Increase => 8,
+            AggregationType::IRate => 9,
+            AggregationType::Last => 10,
+            AggregationType::Max => 11,
+            AggregationType::Min => 12,
+            AggregationType::None => 13,
+            AggregationType::Range => 14,
+            AggregationType::Rate => 15,
+            AggregationType::Share => 16,
+            AggregationType::Sum => 17,
+            AggregationType::SumIf => 18,
+            AggregationType::StdP => 19,
+            AggregationType::StdS => 20,
+            AggregationType::VarP => 21,
+            AggregationType::VarS => 22,
         }
     }
 }
@@ -441,7 +453,9 @@ mod tests {
         assert_eq!(AggregationType::Any.name(), "any");
         assert_eq!(AggregationType::Avg.name(), "avg");
         assert_eq!(AggregationType::Count.name(), "count");
+        assert_eq!(AggregationType::CountAll.name(), "countall");
         assert_eq!(AggregationType::CountIf.name(), "countif");
+        assert_eq!(AggregationType::CountNan.name(), "countnan");
         assert_eq!(AggregationType::First.name(), "first");
         assert_eq!(AggregationType::Increase.name(), "increase");
         assert_eq!(AggregationType::Last.name(), "last");
@@ -480,6 +494,14 @@ mod tests {
         assert_eq!(
             AggregationType::try_from("CountIf").unwrap(),
             AggregationType::CountIf
+        );
+        assert_eq!(
+            AggregationType::try_from("CountAll").unwrap(),
+            AggregationType::CountAll
+        );
+        assert_eq!(
+            AggregationType::try_from("CountNAN").unwrap(),
+            AggregationType::CountNan
         );
         assert_eq!(
             AggregationType::try_from("first").unwrap(),
@@ -558,23 +580,25 @@ mod tests {
         assert_eq!(u8::from(AggregationType::Any), 1);
         assert_eq!(u8::from(AggregationType::Avg), 2);
         assert_eq!(u8::from(AggregationType::Count), 3);
-        assert_eq!(u8::from(AggregationType::CountIf), 4);
-        assert_eq!(u8::from(AggregationType::First), 5);
-        assert_eq!(u8::from(AggregationType::Increase), 6);
-        assert_eq!(u8::from(AggregationType::IRate), 7);
-        assert_eq!(u8::from(AggregationType::Last), 8);
-        assert_eq!(u8::from(AggregationType::Max), 9);
-        assert_eq!(u8::from(AggregationType::Min), 10);
-        assert_eq!(u8::from(AggregationType::None), 11);
-        assert_eq!(u8::from(AggregationType::Range), 12);
-        assert_eq!(u8::from(AggregationType::Rate), 13);
-        assert_eq!(u8::from(AggregationType::Share), 14);
-        assert_eq!(u8::from(AggregationType::Sum), 15);
-        assert_eq!(u8::from(AggregationType::SumIf), 16);
-        assert_eq!(u8::from(AggregationType::StdP), 17);
-        assert_eq!(u8::from(AggregationType::StdS), 18);
-        assert_eq!(u8::from(AggregationType::VarP), 19);
-        assert_eq!(u8::from(AggregationType::VarS), 20);
+        assert_eq!(u8::from(AggregationType::CountAll), 4);
+        assert_eq!(u8::from(AggregationType::CountIf), 5);
+        assert_eq!(u8::from(AggregationType::CountNan), 6);
+        assert_eq!(u8::from(AggregationType::First), 7);
+        assert_eq!(u8::from(AggregationType::Increase), 8);
+        assert_eq!(u8::from(AggregationType::IRate), 9);
+        assert_eq!(u8::from(AggregationType::Last), 10);
+        assert_eq!(u8::from(AggregationType::Max), 11);
+        assert_eq!(u8::from(AggregationType::Min), 12);
+        assert_eq!(u8::from(AggregationType::None), 13);
+        assert_eq!(u8::from(AggregationType::Range), 14);
+        assert_eq!(u8::from(AggregationType::Rate), 15);
+        assert_eq!(u8::from(AggregationType::Share), 16);
+        assert_eq!(u8::from(AggregationType::Sum), 17);
+        assert_eq!(u8::from(AggregationType::SumIf), 18);
+        assert_eq!(u8::from(AggregationType::StdP), 19);
+        assert_eq!(u8::from(AggregationType::StdS), 20);
+        assert_eq!(u8::from(AggregationType::VarP), 21);
+        assert_eq!(u8::from(AggregationType::VarS), 22);
     }
 
     #[test]
@@ -597,70 +621,78 @@ mod tests {
         );
         assert_eq!(
             AggregationType::try_from(4u8).unwrap(),
-            AggregationType::CountIf
+            AggregationType::CountAll
         );
         assert_eq!(
             AggregationType::try_from(5u8).unwrap(),
-            AggregationType::First
+            AggregationType::CountIf
         );
         assert_eq!(
             AggregationType::try_from(6u8).unwrap(),
-            AggregationType::Increase
+            AggregationType::CountNan
         );
         assert_eq!(
             AggregationType::try_from(7u8).unwrap(),
-            AggregationType::IRate
+            AggregationType::First
         );
         assert_eq!(
             AggregationType::try_from(8u8).unwrap(),
-            AggregationType::Last
+            AggregationType::Increase
         );
         assert_eq!(
             AggregationType::try_from(9u8).unwrap(),
-            AggregationType::Max
+            AggregationType::IRate
         );
         assert_eq!(
             AggregationType::try_from(10u8).unwrap(),
-            AggregationType::Min
+            AggregationType::Last
         );
         assert_eq!(
             AggregationType::try_from(11u8).unwrap(),
-            AggregationType::None
+            AggregationType::Max
         );
         assert_eq!(
             AggregationType::try_from(12u8).unwrap(),
-            AggregationType::Range
+            AggregationType::Min
         );
         assert_eq!(
             AggregationType::try_from(13u8).unwrap(),
-            AggregationType::Rate
+            AggregationType::None
         );
         assert_eq!(
             AggregationType::try_from(14u8).unwrap(),
-            AggregationType::Share
+            AggregationType::Range
         );
         assert_eq!(
             AggregationType::try_from(15u8).unwrap(),
-            AggregationType::StdP
+            AggregationType::Rate
         );
         assert_eq!(
             AggregationType::try_from(16u8).unwrap(),
-            AggregationType::StdS
+            AggregationType::Share
         );
         assert_eq!(
             AggregationType::try_from(17u8).unwrap(),
-            AggregationType::Sum
+            AggregationType::StdP
         );
         assert_eq!(
             AggregationType::try_from(18u8).unwrap(),
-            AggregationType::SumIf
+            AggregationType::StdS
         );
         assert_eq!(
             AggregationType::try_from(19u8).unwrap(),
-            AggregationType::VarP
+            AggregationType::Sum
         );
         assert_eq!(
             AggregationType::try_from(20u8).unwrap(),
+            AggregationType::SumIf
+        );
+        assert_eq!(
+            AggregationType::try_from(21u8).unwrap(),
+            AggregationType::VarP
+        );
+        assert_eq!(
+            AggregationType::try_from(22u8).unwrap(),
             AggregationType::VarS
         );
     }

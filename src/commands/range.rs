@@ -1,7 +1,9 @@
 use crate::commands::command_args::parse_range_options;
 use crate::iterators::TimeSeriesRangeIterator;
-use crate::series::with_timeseries;
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::series::get_timeseries;
+use valkey_module::{
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 /// TS.RANGE key fromTimestamp toTimestamp
 //   [LATEST]
@@ -34,13 +36,15 @@ fn range_internal(ctx: &Context, args: Vec<ValkeyString>, is_reverse: bool) -> V
 
     args.done()?;
 
-    with_timeseries(ctx, &key, true, |series| {
-        let iter = TimeSeriesRangeIterator::new(Some(ctx), series, &options, is_reverse);
-        let samples = iter
-            .into_iter()
-            .map(|x| x.into())
-            .collect::<Vec<ValkeyValue>>();
+    // In both cases we pass true for must_exist, meaning that if the series does not exist, we will
+    // propagate an error. Because of this, unwrap is safe to use here.
+    let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)?.unwrap();
+    let iter = TimeSeriesRangeIterator::new(Some(ctx), &series, &options, is_reverse);
 
-        Ok(ValkeyValue::from(samples))
-    })
+    let samples = iter
+        .into_iter()
+        .map(|x| x.into())
+        .collect::<Vec<ValkeyValue>>();
+
+    Ok(ValkeyValue::from(samples))
 }

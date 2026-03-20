@@ -1,8 +1,7 @@
 use crate::aggregators::{AggregationHandler, Aggregator};
 use crate::common::Sample;
 
-/// Perform the GROUP BY REDUCE operation on the samples. Specifically, it
-/// aggregates non-NAN samples based on the specified aggregation options.
+/// Perform the GROUP BY REDUCE operation on the samples.
 pub fn group_reduce(samples: impl Iterator<Item = Sample>, aggregation: Aggregator) -> Vec<Sample> {
     ReduceIterator::new(samples, aggregation).collect()
 }
@@ -37,29 +36,22 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
             self.iter.next()?
         };
 
-        let mut all_nans = current.value.is_nan();
-
-        if !all_nans {
-            self.aggregator.update(current.timestamp, current.value);
-        }
+        let mut has_samples = self.aggregator.update(current.timestamp, current.value);
 
         for next in self.iter.by_ref() {
             if next.timestamp == current.timestamp {
-                let is_nan = next.value.is_nan();
-                all_nans = all_nans && is_nan;
-
-                // Only aggregate non-NaN samples; still track "all_nans" for the group.
-                if !is_nan {
-                    self.aggregator.update(next.timestamp, next.value);
+                if self.aggregator.update(next.timestamp, next.value) {
+                    has_samples = true;
                 }
             } else {
                 // Finalize the current group
-                let value = if all_nans {
-                    f64::NAN
+                let value = if has_samples {
+                    AggregationHandler::finalize(&mut self.aggregator)
                 } else {
-                    self.aggregator.finalize()
+                    f64::NAN
                 };
-                self.aggregator.reset();
+
+                AggregationHandler::reset(&mut self.aggregator);
                 let result = Sample {
                     timestamp: current.timestamp,
                     value,
@@ -72,11 +64,10 @@ impl<I: Iterator<Item = Sample>> Iterator for ReduceIterator<I> {
         }
 
         // Finalize the last group when the inner iterator is exhausted
-        let value = if all_nans {
-            self.aggregator.reset();
-            f64::NAN
+        let value = if has_samples {
+            AggregationHandler::finalize(&mut self.aggregator)
         } else {
-            self.aggregator.finalize()
+            AggregationHandler::empty_value(&self.aggregator)
         };
 
         Some(Sample {

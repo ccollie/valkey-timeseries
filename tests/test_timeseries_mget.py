@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from valkey import ResponseError
 from valkeytestframework.util.waiters import *
@@ -219,3 +221,25 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         assert result[0][0] == b'ts7'
         assert result[0][2][0] == 3000  # latest timestamp
         assert result[0][2][1] == b'80' # latest value
+
+    def test_mget_with_nan_samples(self):
+        """Test TS.MGET behavior when some series have NaN samples"""
+        self.setup_test_data(self.client)
+
+        # Add NaN samples
+        self.client.execute_command('TS.ADD', 'ts3', 4000, 'NaN')
+        self.client.execute_command('TS.ADD', 'ts4', 2000, 'naN')
+
+        # Get all memory metrics
+        result = self.client.execute_command('TS.MGET', 'FILTER', 'name=memory')
+        print(result)
+
+        # Verify that the NaN sample is returned correctly
+        assert len(result) == 2
+        assert result[0][0] == b'ts3'
+        assert result[0][2][0] == 4000  # timestamp of NaN sample
+        assert math.isnan(float(result[0][2][1]))  # value is NaN
+
+        assert result[1][0] == b'ts4'
+        assert result[1][2][0] == 2000  # latest timestamp for ts4
+        assert math.isnan(float(result[1][2][1]))  # latest value for ts4

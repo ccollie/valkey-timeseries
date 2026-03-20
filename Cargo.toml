@@ -37,11 +37,11 @@ thiserror = "2.0"
 topo_sort = "0.4.0"
 valkey-module = "0.1"
 valkey-module-macros = "0.1"
-range-set-blaze = "0.4"
+range-set-blaze = "0.5"
 rayon-core = "1.13"
 regex = "1"
-strum = { version = "0.28", features = ["derive"] }
-strum_macros = "0.28"
+strum = { version = "0.28.0", features = ["derive"] }
+strum_macros = "0.28.0"
 logger-rust = "0.2.12"
 simd-json = "0.17.0"
 

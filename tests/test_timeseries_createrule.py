@@ -287,7 +287,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
         self.create_test_series(source_key)
         self.create_test_series(dest_key)
 
-        with pytest.raises(ResponseError, match="invalid align timestamp"):
+        with pytest.raises(ResponseError, match="Couldn't parse alignTimestamp"):
             self.client.execute_command(
                 "TS.CREATERULE", source_key, dest_key,
                 "AGGREGATION", "avg", "60000", "invalid_timestamp"
@@ -629,7 +629,8 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
                 "TS.CREATERULE", source2_key, dest_key,
                 "AGGREGATION", "sum", "60000"
             )
-    def test_functional_multilevel_compaction(self):
+
+    def test_multilevel_compaction(self):
         """Test that multi-level compactions actually work functionally"""
         raw_key = "test:func_raw"
         minute_key = "test:func_minute"

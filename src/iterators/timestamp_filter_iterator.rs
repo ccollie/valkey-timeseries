@@ -48,7 +48,10 @@ impl<'a> TimestampFilterIterator<'a> {
     /// - `timestamps` is the list of timestamps to look up.
     /// - `is_reverse` controls whether iteration goes from the end of `timestamps` to the start.
     pub fn new(series: &'a TimeSeries, timestamps: &[Timestamp], is_reverse: bool) -> Self {
-        let timestamps: SmallVec<Timestamp, 16> = SmallVec::from(timestamps);
+        let mut timestamps: SmallVec<Timestamp, 16> = SmallVec::from(timestamps);
+        timestamps.sort_unstable();
+        timestamps.dedup();
+
         let chunk_idx = if series.is_empty() {
             -1
         } else if is_reverse {

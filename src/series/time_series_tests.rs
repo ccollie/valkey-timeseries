@@ -1756,4 +1756,24 @@ mod tests {
         let result = ts.increment_sample_value(Some(50), 50.0);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_increment_sample_value_with_existing_sample_and_nan_increment() {
+        let mut ts = TimeSeries::new();
+        ts.add(100, 200.0, None);
+
+        let result = ts.increment_sample_value(Some(100), f64::NAN);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_increment_sample_value_on_nan_raises_error() {
+        let mut ts = TimeSeries::new();
+
+        let result = ts.increment_sample_value(Some(100), f64::NAN);
+        assert!(result.is_err());
+
+        let result = ts.increment_sample_value(Some(100), 50.0);
+        assert!(result.is_ok());
+    }
 }

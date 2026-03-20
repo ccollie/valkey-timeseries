@@ -23,49 +23,63 @@ impl<'a> TimeSeriesRangeIterator<'a> {
         options: &RangeOptions,
         is_reverse: bool,
     ) -> Self {
-        let mut size_hint = (0usize, options.count);
-
-        let mut latest: Option<Sample> = None;
-
-        // Determine whether we need to fetch the latest compaction sample.
-        let needs_latest = options.latest && series.is_compaction();
-        if needs_latest {
-            let context = ctx.expect("Context is required when LATEST option is used");
-            let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
-
-            if !series.retention.is_zero() {
-                let min_ts = series.get_min_timestamp();
-                start_ts = start_ts.max(min_ts);
-                end_ts = start_ts.max(end_ts);
-            }
-            // a partial compaction sample, if it exists, is beyond the last stored sample
-            if end_ts > series.last_timestamp() {
-                latest = get_latest_compaction_sample(context, series)
-                    .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
-                    .filter(|sample| {
-                        // validate timestamp filter
-                        if let Some(ts_filter) = options.timestamp_filter.as_ref()
-                            && !ts_filter.contains(&sample.timestamp)
-                        {
-                            return false;
-                        }
-                        true
-                    });
-            }
-        }
-
-        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
-            let max_elems = ts_filter.len() + { if latest.is_some() { 1 } else { 0 } };
-            if let Some(count) = options.count {
-                size_hint = (0, Some(count.min(max_elems)));
-            } else {
-                size_hint = (0, Some(max_elems));
-            }
-        }
-
+        let latest = Self::get_latest_sample(ctx, series, options);
+        let size_hint = Self::calculate_size_hint(options, latest.is_some());
         let inner = create_range_iterator(series, options, &None, latest, is_reverse);
 
         Self { inner, size_hint }
+    }
+
+    /// Determines and retrieves the latest compaction sample if needed.
+    fn get_latest_sample(
+        ctx: Option<&'a Context>,
+        series: &'a TimeSeries,
+        options: &RangeOptions,
+    ) -> Option<Sample> {
+        let needs_latest = options.latest && series.is_compaction();
+        if !needs_latest {
+            return None;
+        }
+
+        let context = ctx.expect("Context is required when LATEST option is used");
+        let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
+
+        if !series.retention.is_zero() {
+            let min_ts = series.get_min_timestamp();
+            start_ts = start_ts.max(min_ts);
+            end_ts = start_ts.max(end_ts);
+        }
+
+        // a partial compaction sample, if it exists, is beyond the last stored sample
+        if end_ts > series.last_timestamp() {
+            get_latest_compaction_sample(context, series)
+                .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
+                .filter(|sample| {
+                    // validate timestamp filter
+                    if let Some(ts_filter) = options.timestamp_filter.as_ref()
+                        && !ts_filter.contains(&sample.timestamp)
+                    {
+                        return false;
+                    }
+                    true
+                })
+        } else {
+            None
+        }
+    }
+
+    /// Calculates the size hint based on options and whether a latest sample exists.
+    fn calculate_size_hint(options: &RangeOptions, has_latest: bool) -> (usize, Option<usize>) {
+        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
+            let max_elems = ts_filter.len() + if has_latest { 1 } else { 0 };
+            if let Some(count) = options.count {
+                (0, Some(count.min(max_elems)))
+            } else {
+                (0, Some(max_elems))
+            }
+        } else {
+            (0, options.count)
+        }
     }
 }
 
@@ -262,7 +276,7 @@ mod tests {
         assert_eq!(samples[1].timestamp, 3000);
         assert_eq!(samples[2].timestamp, 5000);
 
-        // Test with single timestamp in filter
+        // Test with a single timestamp in filter
         let options_single = RangeOptions {
             date_range: date_range(0, 10000),
             count: None,
@@ -310,6 +324,212 @@ mod tests {
 
         // With bucket duration of 2000ms, we should have fewer samples than the original
         assert!(samples.len() < 10);
+    }
+
+    #[test]
+    fn test_iteration_with_nan_values_and_different_aggregations() {
+        let mut series = TimeSeries::default();
+        series.add(0, 1.0, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(2000, f64::NAN, None);
+        series.add(3000, 7.0, None);
+
+        let cases = [
+            (AggregationType::Min, 1.0),
+            (AggregationType::Max, 3.0),
+            (AggregationType::Sum, 4.0),
+            (AggregationType::Avg, 2.0),
+            (AggregationType::First, 1.0),
+            (AggregationType::Last, 3.0),
+            (AggregationType::Range, 2.0),
+            (AggregationType::CountAll, 3.0),
+            (AggregationType::CountNan, 1.0),
+            (AggregationType::Count, 2.0),
+        ];
+
+        for (aggregation, expected_first_bucket_value) in cases {
+            let options = RangeOptions {
+                date_range: date_range(0, 4000),
+                count: None,
+                aggregation: Some(AggregationOptions {
+                    aggregation: aggregation.into(),
+                    bucket_duration: 2000,
+                    timestamp_output: Default::default(),
+                    alignment: Default::default(),
+                    ..Default::default()
+                }),
+                timestamp_filter: None,
+                value_filter: None,
+                latest: false,
+            };
+
+            let samples: Vec<Sample> =
+                TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+            assert_eq!(
+                samples.len(),
+                2,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+            assert_eq!(
+                samples[0].timestamp, 0,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+            assert_eq!(
+                samples[0].value, expected_first_bucket_value,
+                "failed for aggregation: {:?}",
+                aggregation
+            );
+        }
+    }
+
+    #[test]
+    fn test_iteration_with_last_aggregation_and_nan_values() {
+        let mut series = TimeSeries::default();
+        series.add(0, 1.0, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(2000, 5.0, None);
+        series.add(2500, f64::NAN, None);
+        series.add(3000, 7.0, None);
+        series.add(3500, f64::NAN, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 4000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+        // Bucket [0, 2000): last non-NaN is 3.0 at t=1000
+        // Bucket [2000, 4000): last non-NaN is 7.0 at t=3000 (3500 is NaN)
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].timestamp, 0);
+        assert_eq!(samples[0].value, 3.0);
+        assert_eq!(samples[1].timestamp, 2000);
+        assert_eq!(samples[1].value, 7.0);
+    }
+
+    #[test]
+    fn test_reverse_iteration_with_last_aggregation_and_nan_values() {
+        let mut series = TimeSeries::default();
+        series.add(0, 1.0, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(2000, 5.0, None);
+        series.add(2500, f64::NAN, None);
+        series.add(3000, 7.0, None);
+        series.add(3500, f64::NAN, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 4000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, true).collect();
+
+        // Reverse order: bucket [2000, 4000) first, then [0, 2000)
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].timestamp, 2000);
+        assert_eq!(samples[0].value, 7.0);
+        assert_eq!(samples[1].timestamp, 0);
+        assert_eq!(samples[1].value, 3.0);
+    }
+
+    #[test]
+    fn test_iteration_with_last_aggregation_all_nans_in_bucket() {
+        let mut series = TimeSeries::default();
+        // Bucket [0, 2000): all NaN
+        series.add(0, f64::NAN, None);
+        series.add(500, f64::NAN, None);
+        series.add(1000, f64::NAN, None);
+        // Bucket [2000, 4000): has valid values
+        series.add(2000, 5.0, None);
+        series.add(2500, f64::NAN, None);
+        series.add(3000, 7.0, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 4000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+        // Bucket [0, 2000) has only NaNs — result should be NaN
+        // Bucket [2000, 4000) last non-NaN is 7.0
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].timestamp, 0);
+        assert!(samples[0].value.is_nan());
+        assert_eq!(samples[1].timestamp, 2000);
+        assert_eq!(samples[1].value, 7.0);
+    }
+
+    #[test]
+    fn test_iteration_with_last_aggregation_leading_nan() {
+        let mut series = TimeSeries::default();
+        // Bucket [0, 2000): NaN first, then valid
+        series.add(0, f64::NAN, None);
+        series.add(1000, 3.0, None);
+        series.add(1500, f64::NAN, None);
+
+        let options = RangeOptions {
+            date_range: date_range(0, 2000),
+            count: None,
+            aggregation: Some(AggregationOptions {
+                aggregation: AggregationType::Last.into(),
+                bucket_duration: 2000,
+                timestamp_output: Default::default(),
+                alignment: Default::default(),
+                ..Default::default()
+            }),
+            timestamp_filter: None,
+            value_filter: None,
+            latest: false,
+        };
+
+        let samples: Vec<Sample> =
+            TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
+
+        // Last non-NaN in bucket is 3.0; trailing NaN at 1500 should not override
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].timestamp, 0);
+        assert_eq!(samples[0].value, 3.0);
     }
 
     #[test]

@@ -61,18 +61,20 @@ impl ConditionalCountState {
         self.has_samples = false;
     }
 
-    pub fn update_sum(&mut self, value: f64) {
+    fn update_sum(&mut self, value: f64) -> bool {
         if self.filter.compare(value) {
             self.has_samples = true;
             self.sum += value;
         }
+        true
     }
 
-    pub fn update_count(&mut self, value: f64) {
+    fn update_count(&mut self, value: f64) -> bool {
         if self.filter.compare(value) {
             self.has_samples = true;
             self.sum += 1.0;
         }
+        true
     }
 
     pub fn get_value(&self) -> f64 {
@@ -106,8 +108,8 @@ impl ConditionalCountState {
 pub struct CountIfAggregator(Box<ConditionalCountState>);
 
 impl AggregationHandler for CountIfAggregator {
-    fn update(&mut self, _timestamp: i64, value: f64) {
-        self.0.update_count(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        self.0.update_count(value)
     }
 
     fn reset(&mut self) {
@@ -159,8 +161,8 @@ impl RdbSerializable for SumIfAggregator {
 }
 
 impl AggregationHandler for SumIfAggregator {
-    fn update(&mut self, _timestamp: i64, value: f64) {
-        self.0.update_sum(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        self.0.update_sum(value)
     }
 
     fn reset(&mut self) {
@@ -206,11 +208,12 @@ impl ShareAggregatorState {
         (self.match_count as f64) / (self.count as f64)
     }
 
-    pub fn update(&mut self, value: f64) {
+    pub fn update(&mut self, value: f64) -> bool {
         self.count = self.count.saturating_add(1);
         if self.filter.compare(value) {
             self.match_count = self.match_count.saturating_add(1);
         }
+        true
     }
 }
 
@@ -271,8 +274,8 @@ impl RdbSerializable for ShareAggregator {
 }
 
 impl AggregationHandler for ShareAggregator {
-    fn update(&mut self, _timestamp: i64, value: f64) {
-        self.0.update(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        self.0.update(value)
     }
 
     fn reset(&mut self) {
@@ -290,13 +293,13 @@ impl AggregationHandler for ShareAggregator {
 
 // Support for ALL and NONE
 #[derive(Debug, Default, Clone, Copy, Hash, PartialEq, GetSize)]
-pub struct AllNoneAggregatorState {
-    pub matches: Option<bool>,
+struct AllNoneAggregatorState {
+    matches: Option<bool>,
     filter: ValueComparisonFilter,
 }
 
 impl AllNoneAggregatorState {
-    fn update_all(&mut self, value: f64) {
+    fn update_all(&mut self, value: f64) -> bool {
         match self.matches {
             Some(false) => { // already failed
             }
@@ -305,24 +308,27 @@ impl AllNoneAggregatorState {
                 self.matches = Some(matched);
             }
         }
+        true
     }
 
-    fn update_none(&mut self, value: f64) {
+    fn update_none(&mut self, value: f64) -> bool {
         match self.matches {
             Some(false) => (), // already false
             _ => {
                 self.matches = Some(!self.compare(value));
             }
         }
+        true
     }
 
-    fn update_any(&mut self, value: f64) {
+    fn update_any(&mut self, value: f64) -> bool {
         match self.matches {
             Some(true) => (), // already matched
             _ => {
                 self.matches = Some(self.compare(value));
             }
         }
+        true
     }
 
     pub fn new(operator: ComparisonOperator, value: f64) -> Self {
@@ -377,8 +383,8 @@ impl RdbSerializable for AllAggregator {
 }
 
 impl AggregationHandler for AllAggregator {
-    fn update(&mut self, _timestamp: i64, value: f64) {
-        self.0.update_all(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        self.0.update_all(value)
     }
 
     fn reset(&mut self) {
@@ -395,8 +401,8 @@ impl AggregationHandler for AllAggregator {
 pub struct NoneAggregator(Box<AllNoneAggregatorState>);
 
 impl AggregationHandler for NoneAggregator {
-    fn update(&mut self, _timestamp: i64, value: f64) {
-        self.0.update_none(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        self.0.update_none(value)
     }
 
     fn reset(&mut self) {
@@ -423,8 +429,8 @@ impl RdbSerializable for NoneAggregator {
 #[derive(Debug, Default, Clone, Hash, PartialEq, GetSize)]
 pub struct AnyAggregator(Box<AllNoneAggregatorState>);
 impl AggregationHandler for AnyAggregator {
-    fn update(&mut self, _timestamp: i64, value: f64) {
-        self.0.update_any(value);
+    fn update(&mut self, _timestamp: i64, value: f64) -> bool {
+        self.0.update_any(value)
     }
 
     fn reset(&mut self) {

@@ -11,7 +11,9 @@ use crate::series::chunks::{Chunk, TimeSeriesChunk};
 use crate::series::compaction::get_destination_series;
 use crate::series::index::with_timeseries_postings;
 use crate::series::{CompactionRule, DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
-use orx_parallel::{IterIntoParIter, ParIter, ParallelizableCollection};
+use orx_parallel::{
+    IterIntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut,
+};
 use range_set_blaze::RangeSetBlaze;
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
@@ -439,11 +441,10 @@ pub fn run_compactions(
     let mut rules = std::mem::take(&mut series.rules);
 
     // get all compactions per rule in parallel
-    let mut rule_compactions = Vec::new();
-    for rule in rules.iter_mut() {
-        let compacted = get_compacted_samples(series, rule, samples);
-        rule_compactions.push(compacted);
-    }
+    let rule_compactions = rules
+        .par_mut()
+        .map(|rule| get_compacted_samples(series, rule, samples))
+        .collect::<Vec<_>>();
 
     // restore rules
     series.rules = rules;
@@ -550,11 +551,12 @@ fn aggregate_compaction_range(
 
     let mut aggr = rule.aggregator.clone();
     if !range_starts_in_open_bucket {
-        aggr.reset();
+        AggregationHandler::reset(&mut aggr);
     }
 
     let mut samples_out = Vec::new();
     let mut current_bucket_start: Option<Timestamp> = None;
+    let mut has_samples = false;
 
     for sample in source.range_iter(start, end) {
         let bucket_start = rule.calc_bucket_start(sample.timestamp);
@@ -565,16 +567,20 @@ fn aggregate_compaction_range(
         {
             let is_open = rule.bucket_start == Some(prev_bucket);
             if !is_open {
-                samples_out.push(Sample::new(prev_bucket, aggr.finalize()));
-                aggr.reset();
+                if has_samples {
+                    let value = AggregationHandler::finalize(&mut aggr);
+                    samples_out.push(Sample::new(prev_bucket, value));
+                }
+                AggregationHandler::reset(&mut aggr);
             }
         }
 
         current_bucket_start = Some(bucket_start);
         aggr.update(sample.timestamp, sample.value);
+        has_samples = true;
     }
 
-    // Handle final bucket
+    // Handle final (open)  bucket
     if let Some(bucket) = current_bucket_start {
         let is_still_open = rule
             .bucket_start
@@ -584,7 +590,11 @@ fn aggregate_compaction_range(
         if is_still_open {
             return (samples_out, Some(aggr));
         }
-        samples_out.push(Sample::new(bucket, aggr.finalize()));
+
+        if has_samples {
+            let value = AggregationHandler::finalize(&mut aggr);
+            samples_out.push(Sample::new(bucket, value));
+        }
     }
 
     (samples_out, None)

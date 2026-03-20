@@ -2,7 +2,6 @@ use crate::aggregators::{AggregationHandler, Aggregator, BucketTimestamp};
 use crate::common::{Sample, Timestamp};
 use crate::series::request_types::AggregationOptions;
 use std::collections::VecDeque;
-use std::iter::Peekable;
 
 /// Helper class for minimizing monomorphization overhead for AggregationIterator
 #[derive(Debug)]
@@ -13,13 +12,32 @@ struct AggregationHelper {
     bucket_range_start: Timestamp,
     bucket_range_end: Timestamp,
     align_timestamp: Timestamp,
-    prev_sample: Sample,
-    all_nans: bool,
+    has_samples: bool,
     count: usize,
     report_empty: bool,
 }
 
 impl AggregationHelper {
+    fn with_parts(
+        aggregator: Aggregator,
+        bucket_duration: u64,
+        bucket_ts: BucketTimestamp,
+        align_timestamp: Timestamp,
+        report_empty: bool,
+    ) -> Self {
+        Self {
+            aggregator,
+            bucket_duration,
+            bucket_ts,
+            bucket_range_start: 0,
+            bucket_range_end: 0,
+            align_timestamp,
+            has_samples: false,
+            count: 0,
+            report_empty,
+        }
+    }
+
     pub(crate) fn new_from_aggregator(
         aggregator: Aggregator,
         bucket_duration: u64,
@@ -27,18 +45,13 @@ impl AggregationHelper {
         align_timestamp: Timestamp,
         report_empty: bool,
     ) -> Self {
-        AggregationHelper {
-            align_timestamp,
-            report_empty,
+        Self::with_parts(
             aggregator,
             bucket_duration,
             bucket_ts,
-            bucket_range_start: 0,
-            bucket_range_end: 0,
-            all_nans: true,
-            count: 0,
-            prev_sample: Sample::new(0, f64::NAN),
-        }
+            align_timestamp,
+            report_empty,
+        )
     }
 
     pub(crate) fn new(options: &AggregationOptions, align_timestamp: Timestamp) -> Self {
@@ -46,18 +59,49 @@ impl AggregationHelper {
         if let Aggregator::Rate(r) = &mut aggregator {
             r.set_window_ms(options.bucket_duration);
         }
-        AggregationHelper {
-            align_timestamp,
-            report_empty: options.report_empty,
+
+        Self::with_parts(
             aggregator,
-            bucket_duration: options.bucket_duration,
-            bucket_ts: options.timestamp_output,
-            bucket_range_start: 0,
-            bucket_range_end: 0,
-            all_nans: true,
-            count: 0,
-            prev_sample: Sample::new(0, f64::NAN),
+            options.bucket_duration,
+            options.timestamp_output,
+            align_timestamp,
+            options.report_empty,
+        )
+    }
+
+    fn add_empty_bucket_internal(
+        &self,
+        samples: &mut VecDeque<Sample>,
+        start_bucket: Timestamp,
+        end_bucket_exclusive: Timestamp,
+    ) {
+        if end_bucket_exclusive <= start_bucket {
+            return;
         }
+
+        let value = AggregationHandler::empty_bucket_value(&self.aggregator);
+        let count = ((end_bucket_exclusive - start_bucket) / self.bucket_duration as i64) as usize;
+        samples.reserve(count);
+
+        for bucket_start in
+            (start_bucket..end_bucket_exclusive).step_by(self.bucket_duration as usize)
+        {
+            samples.push_back(Sample {
+                timestamp: self.bucket_ts.calculate(bucket_start, self.bucket_duration),
+                value,
+            });
+        }
+    }
+
+    fn add_empty_buckets_between_timestamps(
+        &self,
+        samples: &mut VecDeque<Sample>,
+        first_ts: Timestamp,
+        end_ts: Timestamp,
+    ) {
+        let start = self.calc_bucket_start(first_ts);
+        let end = self.calc_bucket_start(end_ts);
+        self.add_empty_bucket_internal(samples, start, end);
     }
 
     fn add_empty_buckets(
@@ -66,17 +110,9 @@ impl AggregationHelper {
         first_bucket_ts: Timestamp,
         end_bucket_ts: Timestamp,
     ) {
-        let value = match self.aggregator {
-            Aggregator::Sum(_) | Aggregator::Count(_) => 0.0,
-            Aggregator::Last(agg) => agg.current().unwrap_or(f64::NAN), // self.prev_sample.value,
-            _ => f64::NAN,
-        };
+        let value = AggregationHandler::empty_bucket_value(&self.aggregator);
         let start = self.calc_bucket_start(first_bucket_ts);
         let end = self.calc_bucket_start(end_bucket_ts);
-
-        // if end < start {
-        //     return;
-        // }
 
         let count = ((end - start) / self.bucket_duration as i64) as usize;
         samples.reserve(count);
@@ -86,62 +122,55 @@ impl AggregationHelper {
         }
     }
 
-    fn buckets_in_range(&self, start_ts: Timestamp, end_ts: Timestamp) -> usize {
-        (((end_ts - start_ts) / self.bucket_duration as i64) + 1) as usize
-    }
-
-    fn calculate_bucket_start(&self) -> Timestamp {
+    fn output_timestamp(&self) -> Timestamp {
         self.bucket_ts
             .calculate(self.bucket_range_start, self.bucket_duration)
     }
 
-    fn finalize_internal(&mut self) -> Sample {
-        let value = if self.all_nans {
-            if self.count == 0 {
-                self.aggregator.empty_value()
-            } else {
-                f64::NAN
-            }
-        } else {
-            self.aggregator.finalize()
-        };
-        let timestamp = self.calculate_bucket_start();
-        self.all_nans = true;
-        Sample { timestamp, value }
-    }
-
-    fn finalize_bucket(
+    fn complete_bucket(
         &mut self,
         last_ts: Option<Timestamp>,
         empty_buckets: &mut VecDeque<Sample>,
-    ) -> Sample {
-        let bucket = self.finalize_internal();
-        self.aggregator.reset();
+    ) -> Option<Sample> {
+        let bucket = if self.count > 0 {
+            Some(Sample::new(
+                self.output_timestamp(),
+                AggregationHandler::finalize(&mut self.aggregator),
+            ))
+        } else if self.report_empty {
+            Some(Sample::new(
+                self.output_timestamp(),
+                AggregationHandler::empty_value(&self.aggregator),
+            ))
+        } else {
+            None
+        };
+
+        AggregationHandler::reset(&mut self.aggregator);
+
         if self.report_empty
             && let Some(last_ts) = last_ts
             && last_ts >= self.bucket_range_end
         {
             let start = self.bucket_range_end + 1;
-            self.add_empty_buckets(empty_buckets, start, last_ts);
+            self.add_empty_buckets_between_timestamps(empty_buckets, start, last_ts);
         }
 
+        self.has_samples = false;
         self.count = 0;
         bucket
     }
 
     fn update(&mut self, sample: Sample) {
-        let value = sample.value;
-        if !value.is_nan() {
-            self.aggregator.update(sample.timestamp, value);
-            self.all_nans = false;
+        if self.aggregator.update(sample.timestamp, sample.value) {
+            self.has_samples = true;
         }
-        self.prev_sample = sample;
         self.count += 1;
     }
 
     #[inline]
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
-        timestamp > self.bucket_range_end - 1
+        timestamp >= self.bucket_range_end
     }
 
     fn update_bucket_timestamps(&mut self, timestamp: Timestamp) {
@@ -168,41 +197,165 @@ pub fn aggregate(
 }
 
 pub struct AggregateIterator<T: Iterator<Item = Sample>> {
-    inner: Peekable<T>,
+    inner: T,
     aggregator: AggregationHelper,
     empty_buckets: VecDeque<Sample>,
     prev_ts: Timestamp,
     init: bool,
+    query_range: Option<(Timestamp, Timestamp)>,
 }
 
 impl<T: Iterator<Item = Sample>> AggregateIterator<T> {
     pub fn new(inner: T, options: &AggregationOptions, aligned_timestamp: Timestamp) -> Self {
         let aggregator = AggregationHelper::new(options, aligned_timestamp);
         Self {
-            inner: inner.peekable(),
+            inner,
             aggregator,
             empty_buckets: VecDeque::new(),
             prev_ts: 0,
             init: false,
+            query_range: None,
         }
     }
 
+    pub fn with_range(
+        inner: T,
+        options: &AggregationOptions,
+        aligned_timestamp: Timestamp,
+        query_start: Timestamp,
+        query_end: Timestamp,
+    ) -> Self {
+        Self {
+            inner,
+            aggregator: AggregationHelper::new(options, aligned_timestamp),
+            empty_buckets: VecDeque::new(),
+            prev_ts: 0,
+            init: false,
+            query_range: Some((query_start, query_end)),
+        }
+    }
+
+    #[inline]
     fn update(&mut self, sample: Sample) {
         self.aggregator.update(sample);
     }
 
+    #[inline]
     fn start_new_bucket(&mut self, sample: Sample) {
         self.aggregator.update_bucket_timestamps(sample.timestamp);
         self.update(sample);
     }
 
+    #[inline]
     fn should_finalize_bucket(&self, timestamp: Timestamp) -> bool {
         self.aggregator.should_finalize_bucket(timestamp)
     }
 
     #[inline]
-    fn finalize_bucket(&mut self, ts: Option<Timestamp>) -> Sample {
-        self.aggregator.finalize_bucket(ts, &mut self.empty_buckets)
+    fn finalize_bucket(&mut self, ts: Option<Timestamp>) -> Option<Sample> {
+        self.aggregator.complete_bucket(ts, &mut self.empty_buckets)
+    }
+
+    #[inline]
+    fn pop_empty_bucket(&mut self) -> Option<Sample> {
+        self.empty_buckets.pop_front()
+    }
+
+    fn enqueue_leading_empty_buckets(&mut self, first_sample_ts: Timestamp) {
+        if !self.aggregator.report_empty {
+            return;
+        }
+
+        if let Some((query_start, _)) = self.query_range {
+            let requested_first_bucket = self.aggregator.calc_bucket_start(query_start);
+            let first_sample_bucket = self.aggregator.calc_bucket_start(first_sample_ts);
+            self.aggregator.add_empty_bucket_internal(
+                &mut self.empty_buckets,
+                requested_first_bucket,
+                first_sample_bucket,
+            );
+        }
+    }
+
+    fn enqueue_full_empty_range_if_needed(&mut self) {
+        if !self.aggregator.report_empty {
+            return;
+        }
+
+        if let Some((query_start, query_end)) = self.query_range {
+            let first_bucket = self.aggregator.calc_bucket_start(query_start);
+            let end_exclusive = self
+                .aggregator
+                .calc_bucket_start(query_end)
+                .saturating_add_unsigned(self.aggregator.bucket_duration);
+            self.aggregator.add_empty_bucket_internal(
+                &mut self.empty_buckets,
+                first_bucket,
+                end_exclusive,
+            );
+        }
+    }
+
+    #[inline]
+    fn ensure_initialized(&mut self) -> bool {
+        if self.init {
+            return true;
+        }
+
+        self.init = true;
+        if let Some(sample) = self.inner.next() {
+            self.enqueue_leading_empty_buckets(sample.timestamp);
+            self.start_new_bucket(sample);
+            true
+        } else {
+            self.enqueue_full_empty_range_if_needed();
+            false
+        }
+    }
+
+    fn process_bucket(&mut self) -> Option<Sample> {
+        while let Some(sample) = self.inner.next() {
+            if !self.aggregator.should_finalize_bucket(sample.timestamp) {
+                self.update(sample);
+                continue;
+            }
+
+            let bucket = self.finalize_bucket(Some(sample.timestamp));
+            self.start_new_bucket(sample);
+
+            if bucket.is_some() {
+                return bucket;
+            }
+            // All-NaN bucket was skipped; continue processing the next samples
+            // in the newly started bucket.
+        }
+
+        None
+    }
+
+    fn finalize_last_bucket_if_any(&mut self) -> Option<Sample> {
+        if self.aggregator.count == 0 {
+            return None;
+        }
+
+        let bucket = self.finalize_bucket(None);
+
+        if self.aggregator.report_empty
+            && let Some((_, query_end)) = self.query_range
+        {
+            let end_exclusive = self
+                .aggregator
+                .calc_bucket_start(query_end)
+                .saturating_add_unsigned(self.aggregator.bucket_duration);
+
+            self.aggregator.add_empty_bucket_internal(
+                &mut self.empty_buckets,
+                self.aggregator.bucket_range_end,
+                end_exclusive,
+            );
+        }
+
+        bucket
     }
 }
 
@@ -210,40 +363,20 @@ impl<T: Iterator<Item = Sample>> Iterator for AggregateIterator<T> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // First, return any empty buckets if available
-        if let Some(sample) = self.empty_buckets.pop_front() {
+        if let Some(sample) = self.pop_empty_bucket() {
             return Some(sample);
         }
 
-        // Handle lazy initialization with the first sample
-        if !self.init {
-            self.init = true;
-            if let Some(sample) = self.inner.next() {
-                self.start_new_bucket(sample);
-            } else {
-                return None; // Empty input stream
-            }
+        if !self.ensure_initialized() {
+            return self.pop_empty_bucket();
         }
 
-        // Process subsequent samples
-        while let Some(sample) = self.inner.next() {
-            if sample.timestamp < self.aggregator.bucket_range_end {
-                self.update(sample);
-                continue;
-            }
-            // Finalize the current bucket and start a new one
-            let bucket = self.finalize_bucket(Some(sample.timestamp));
-            self.start_new_bucket(sample);
+        if let Some(bucket) = self.process_bucket() {
             return Some(bucket);
         }
 
-        // Handle the final bucket if we haven't processed it yet
-        if self.aggregator.count > 0 {
-            // todo: handle empty buckets after the last sample if report_empty is true !!
-            return Some(self.finalize_bucket(None));
-        }
-
-        None
+        self.finalize_last_bucket_if_any()
+            .or_else(|| self.pop_empty_bucket())
     }
 }
 
@@ -297,6 +430,71 @@ mod tests {
         assert_eq!(result[4].value, 6.0);
         assert_eq!(result[5].timestamp, 60);
         assert_eq!(result[5].value, 7.0);
+    }
+
+    #[test]
+    fn test_sum_with_nans() {
+        use std::f64;
+
+        let samples = vec![
+            Sample::new(10, 1.0),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, 2.0),
+        ];
+
+        let options = create_options(AggregationType::Sum);
+
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        // NaN should be ignored, sum = 1.0
+        assert_eq!(result[0].value, 1.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 2.0);
+    }
+
+    #[test]
+    fn test_sum_all_nans() {
+        let samples = vec![
+            Sample::new(10, f64::NAN),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+        ];
+
+        let options = create_options(AggregationType::Sum);
+
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        // All NaNs should be ignored, sum = 0.0
+        assert_eq!(result[0].value, 0.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 0.0);
+    }
+
+    #[test]
+    fn test_sum_all_nans_report_empty() {
+        let samples = vec![
+            Sample::new(10, f64::NAN),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+        ];
+
+        let mut options = create_options(AggregationType::Sum);
+        options.report_empty = true;
+
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 0.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 0.0);
     }
 
     #[test]
@@ -355,6 +553,50 @@ mod tests {
         assert_eq!(result[0].value, 2.0); // count of values in the bucket
         assert_eq!(result[1].timestamp, 20);
         assert_eq!(result[1].value, 1.0);
+    }
+
+    #[test]
+    fn test_count_with_nans() {
+        let samples = vec![
+            Sample::new(10, 1.0),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+            Sample::new(25, 3.0),
+            Sample::new(30, f64::NAN),
+            Sample::new(35, f64::NAN),
+        ];
+
+        let options = create_options(AggregationType::Count);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 1.0); // only the non-NaN sample is counted
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 1.0); // NaN is ignored, valid sample still counts
+        assert_eq!(result[2].timestamp, 30);
+        assert_eq!(result[2].value, 0.0); // all-NaN bucket yields an empty count
+    }
+
+    #[test]
+    fn test_count_all_nans() {
+        let samples = vec![
+            Sample::new(10, f64::NAN),
+            Sample::new(15, f64::NAN),
+            Sample::new(20, f64::NAN),
+            Sample::new(25, f64::NAN),
+        ];
+
+        let options = create_options(AggregationType::Count);
+        let iterator = AggregateIterator::new(samples.into_iter(), &options, 0);
+        let result: Vec<Sample> = iterator.collect();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].timestamp, 10);
+        assert_eq!(result[0].value, 0.0);
+        assert_eq!(result[1].timestamp, 20);
+        assert_eq!(result[1].value, 0.0);
     }
 
     #[test]
@@ -483,15 +725,15 @@ mod tests {
 
         assert_eq!(result.len(), 3);
 
-        // First bucket [10, 20): contains 1.0 and 5.0, range = 5.0 - 1.0 = 4.0
+        // The first bucket [10, 20): contains 1.0 and 5.0, range = 5.0 - 1.0 = 4.0
         assert_eq!(result[0].timestamp, 10);
         assert_eq!(result[0].value, 4.0);
 
-        // Second bucket [20, 30): contains 2.0 and 8.0, range = 8.0 - 2.0 = 6.0
+        // The second bucket [20, 30): contains 2.0 and 8.0, range = 8.0 - 2.0 = 6.0
         assert_eq!(result[1].timestamp, 20);
         assert_eq!(result[1].value, 6.0);
 
-        // Third bucket [30, 40): contains 3.0 and 7.0, range = 7.0 - 3.0 = 4.0
+        // The third bucket [30, 40): contains 3.0 and 7.0, range = 7.0 - 3.0 = 4.0
         assert_eq!(result[2].timestamp, 30);
         assert_eq!(result[2].value, 4.0);
     }

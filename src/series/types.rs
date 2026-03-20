@@ -106,13 +106,37 @@ impl DuplicatePolicy {
     ///     Err(err) => eprintln!("Error: {}", err),
     /// }
     /// ```
-    pub fn duplicate_value(self, ts: Timestamp, old: f64, new: f64) -> TsdbResult<f64> {
+    pub fn duplicate_value(self, _ts: Timestamp, old: f64, new: f64) -> TsdbResult<f64> {
         use DuplicatePolicy::*;
-        if (old.is_nan() || new.is_nan()) && self != Block {
-            return Ok(if new.is_nan() { old } else { new });
+        let old_nan = old.is_nan();
+        let new_nan = new.is_nan();
+
+        fn raise_error(err: &str) -> TsdbResult<f64> {
+            Err(TsdbError::DuplicateSample(err.to_string()))
         }
+
+        fn raise_block_error() -> TsdbResult<f64> {
+            raise_error(
+                "TSDB: Error at upsert, update is not supported when DUPLICATE_POLICY is set to BLOCK mode",
+            )
+        }
+
+        if old_nan || new_nan {
+            return if self == Block {
+                raise_block_error()
+            } else if old_nan != new_nan && matches!(self, Max | Min | Sum) {
+                raise_error(
+                    "TSDB: Error at upsert, NaN values are not supported for MAX, MIN, and SUM duplicate policies",
+                )
+            } else if new_nan {
+                Ok(old)
+            } else {
+                Ok(new)
+            };
+        }
+
         match self {
-            Block => Err(TsdbError::DuplicateSample(format!("{new} @ {ts}"))),
+            Block => raise_block_error(),
             KeepFirst => Ok(old),
             KeepLast => Ok(new),
             Min => Ok(old.min(new)),
@@ -193,13 +217,19 @@ impl SampleDuplicatePolicy {
         last_sample: &Sample,
         override_policy: Option<DuplicatePolicy>,
     ) -> bool {
-        let policy = self.resolve_policy(override_policy);
-        let last_ts = last_sample.timestamp;
+        let time_delta = current_sample.timestamp - last_sample.timestamp;
+        if time_delta >= 0 && time_delta <= self.max_time_delta as i64 {
+            if self.resolve_policy(override_policy) != DuplicatePolicy::KeepLast {
+                return false;
+            }
+            // NaN values are never considered duplicates
+            if current_sample.value.is_nan() || last_sample.value.is_nan() {
+                return false;
+            }
+            return (last_sample.value - current_sample.value).abs() <= self.max_value_delta;
+        }
 
-        current_sample.timestamp >= last_ts
-            && policy == DuplicatePolicy::KeepLast
-            && (current_sample.timestamp - last_ts).abs() <= self.max_time_delta as i64
-            && (last_sample.value - current_sample.value).abs() <= self.max_value_delta
+        false
     }
 
     pub fn resolve_policy(&self, override_policy: Option<DuplicatePolicy>) -> DuplicatePolicy {
@@ -511,10 +541,26 @@ mod tests {
             Err(TsdbError::DuplicateSample(_))
         ));
 
-        let policies = [KeepFirst, KeepLast, Min, Max, Sum];
-        for policy in policies {
+        let valid_policies = [KeepFirst, KeepLast];
+        for policy in valid_policies {
             assert_eq!(policy.duplicate_value(ts, 10.0, f64::NAN).unwrap(), 10.0);
             assert_eq!(policy.duplicate_value(ts, f64::NAN, 8.0).unwrap(), 8.0);
+        }
+
+        // If one value is NaN and the other isn't, it should return an error
+        // since NaN values are not supported for Min, Max, and Sum policies
+        let invalid_policies = [Min, Max, Sum];
+        for policy in invalid_policies {
+            assert!(matches!(
+                dp.duplicate_value(ts, f64::NAN, 8.0),
+                Err(TsdbError::DuplicateSample(_))
+            ));
+            assert!(matches!(
+                dp.duplicate_value(ts, 8.0, f64::NAN),
+                Err(TsdbError::DuplicateSample(_))
+            ));
+            let actual = policy.duplicate_value(ts, f64::NAN, f64::NAN).unwrap();
+            assert!(actual.is_nan());
         }
     }
 
@@ -634,5 +680,40 @@ mod tests {
             value: 10.00001,
         };
         assert!(!policy.is_duplicate(&current_sample, &last_sample, None));
+    }
+
+    #[test]
+    fn test_sample_duplicate_policy_is_duplicate_nan_values() {
+        let policy = SampleDuplicatePolicy {
+            policy: Some(DuplicatePolicy::KeepLast),
+            max_time_delta: 100,
+            max_value_delta: f64::MAX, // permissive delta so only NaN check matters
+        };
+
+        let last_sample = Sample {
+            timestamp: 100,
+            value: 10.0,
+        };
+
+        // current value is NaN — never a duplicate
+        let current_nan = Sample {
+            timestamp: 105,
+            value: f64::NAN,
+        };
+        assert!(!policy.is_duplicate(&current_nan, &last_sample, None));
+
+        // last value is NaN — never a duplicate
+        let last_nan = Sample {
+            timestamp: 100,
+            value: f64::NAN,
+        };
+        let current_sample = Sample {
+            timestamp: 105,
+            value: 10.0,
+        };
+        assert!(!policy.is_duplicate(&current_sample, &last_nan, None));
+
+        // both NaN — never a duplicate
+        assert!(!policy.is_duplicate(&current_nan, &last_nan, None));
     }
 }
