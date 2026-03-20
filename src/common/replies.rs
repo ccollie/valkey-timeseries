@@ -27,7 +27,11 @@ impl IntoRawCtx for &Context {
 }
 
 pub fn reply_with_str(ctx: &Context, s: &str) {
-    let msg = CString::new(s).unwrap();
+    let msg = CString::new(s).unwrap_or_else(|_| {
+        // Remove any interior NUL bytes to ensure CString::new cannot fail here.
+        let sanitized: String = s.chars().filter(|c| *c != '\0').collect();
+        CString::new(sanitized).unwrap()
+    });
     raw::reply_with_simple_string(ctx.ctx, msg.as_ptr());
 }
 

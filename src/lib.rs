@@ -40,7 +40,7 @@ pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
 static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static MAIN_THREAD_ID: OnceLock<ThreadId> = OnceLock::new();
+static MAIN_THREAD_ID: std::sync::OnceLock<ThreadId> = std::sync::OnceLock::new();
 
 pub fn is_module_initialized() -> bool {
     IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
