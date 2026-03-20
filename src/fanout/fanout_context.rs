@@ -27,15 +27,15 @@ use valkey_module::{
 pub struct FanoutContext {
     save_db: Option<i32>,
     ctx: Context,
-    pub(crate) raw_ctx: *mut raw::RedisModuleCtx,
+    raw_ctx: *mut raw::RedisModuleCtx,
 }
 
 impl FanoutContext {
     pub(crate) fn new(ctx: *mut raw::RedisModuleCtx) -> Self {
         Self {
             save_db: None,
-            raw_ctx: ctx,
             ctx: Context { ctx },
+            raw_ctx: ctx,
         }
     }
 
@@ -161,10 +161,3 @@ impl Deref for FanoutContext {
         &self.ctx
     }
 }
-
-// Safety: This struct is only `Send` and `Sync` because it is guaranteed to only be
-// used on the main thread and is never shared across threads. The call sites that
-// construct `FanoutContext` originate from main-thread callbacks invoked by the
-// fanout machinery, so these `unsafe impl`s are sound in that usage model.
-unsafe impl Send for FanoutContext {}
-unsafe impl Sync for FanoutContext {}
