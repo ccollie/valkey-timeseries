@@ -4,7 +4,7 @@ use crate::fanout::serialization::Serializable;
 use crate::fanout::{FanoutCommand, FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use ahash::HashSet;
 use std::sync::{Arc, Mutex};
-use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
 /// A trait for cluster-mode commands which send results back to clients after receiving responses from other nodes.
 /// This is a higher-level abstraction over `FanoutCommand` that includes client response handling logic.
@@ -57,19 +57,18 @@ pub trait FanoutClientCommand: Default + Send + 'static {
                 Ok(ValkeyValue::NoReply)
             }
             Err(err) => {
-                // RPC setup failed before any response could be issued.
-                // By this point FanoutState has already been dropped (is_init=false
-                // ⇒ callback never called), so bc_for_closure is gone and
-                // blocked_client is the sole remaining Arc.
                 // Set an error payload so the reply_callback sends back the
                 // proper error message instead of "No reply data".
                 let op = Self::default();
-                let fanout_result: FanoutResult = Err(err.clone());
+                let fanout_result: FanoutResult = Err(err);
                 if let Ok(mut bc) = blocked_client.lock() {
                     bc.set_private_data(op, fanout_result);
                 }
+
+                // Dropping the last Arc triggers unblock(), and the reply_callback
+                // will send the error reply based on the stored fanout_result.
                 drop(blocked_client); // refcount 1 → 0, triggers unblock()
-                Err(ValkeyError::String(err.to_string()))
+                Ok(ValkeyValue::NoReply)
             }
         }
     }
