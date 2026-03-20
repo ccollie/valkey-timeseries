@@ -167,7 +167,7 @@ fn dispatch_send_failure(ctx: &Context, request_id: u64, target_node_id: *const 
 
 fn finish_inflight_request(ctx: &Context, request: &InFlightRequest) {
     if let Ok(v) = request.rpc_done()
-        && v == 0
+        && v == 1
     {
         request.cancel_timer(ctx);
         let map = INFLIGHT_REQUESTS.pin();
