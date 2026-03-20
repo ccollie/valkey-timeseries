@@ -1,9 +1,6 @@
 use crate::commands::CommandArgIterator;
-use crate::commands::utils::reply_with_double;
-use crate::commands::utils::{
-    reply_with_array, reply_with_bulk_string, reply_with_i64, reply_with_str,
-};
 use crate::common::humanize::{humanize_bytes, humanize_duration};
+use crate::common::replies::*;
 use crate::common::rounding::RoundingStrategy;
 use crate::config::{
     CHUNK_ENCODING_DEFAULT_STRING, CHUNK_SIZE_MAX, CHUNK_SIZE_MIN, CLUSTER_MAP_EXPIRATION_MAX_MS,
@@ -18,7 +15,7 @@ use crate::config::{
 use std::convert::Into;
 use std::fmt::Display;
 use std::time::Duration;
-use valkey_module::{Context, ValkeyError, ValkeyResult};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
 
 /// The type of value a config holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,13 +54,13 @@ impl ConfigValue {
     }
 
     fn reply(&self, ctx: &Context) {
-        match self {
+        let _ = match self {
             ConfigValue::Integer(v) => reply_with_i64(ctx, *v),
             ConfigValue::Float(v) => reply_with_double(ctx, *v),
             ConfigValue::String(s) => reply_with_bulk_string(ctx, s),
             ConfigValue::Duration(d) => reply_with_duration(ctx, *d),
             ConfigValue::Enum(s) => reply_with_bulk_string(ctx, s),
-        }
+        };
     }
 }
 
@@ -250,67 +247,63 @@ fn get_registry() -> Vec<ConfigMeta> {
     ]
 }
 
-fn reply_with_duration(ctx: &Context, duration: Duration) {
+fn reply_with_duration(ctx: &Context, duration: Duration) -> Status {
     let value = humanize_duration(&duration);
-    reply_with_str(ctx, &value);
+    reply_with_str(ctx, &value)
 }
 
-fn reply_with_duration_ms(ctx: &Context, duration_ms: u64) {
+fn reply_with_duration_ms(ctx: &Context, duration_ms: u64) -> Status {
     let duration = Duration::from_millis(duration_ms);
-    reply_with_duration(ctx, duration);
+    reply_with_duration(ctx, duration)
 }
 
-fn reply_with_size(ctx: &Context, size: usize) {
+fn reply_with_size(ctx: &Context, size: usize) -> Status {
     let value = humanize_bytes(size as f64);
-    reply_with_str(ctx, &value);
-}
-
-fn reply_with_usize(ctx: &Context, value: usize) {
-    reply_with_i64(ctx, value as i64);
+    reply_with_str(ctx, &value)
 }
 
 fn reply_with_config_value(ctx: &Context, cfg: &ConfigMeta, settings: &ConfigSettings) {
     hashify::fnc_map_ignore_case!(cfg.name.as_bytes(),
-        "ts-chunk-size" => reply_with_usize(ctx, settings.chunk_size_bytes),
-        "ts-encoding" => reply_with_bulk_string(ctx, settings.chunk_encoding.name()),
+        "ts-chunk-size" => { let _ = reply_with_usize(ctx, settings.chunk_size_bytes); },
+        "ts-encoding" => { let _ = reply_with_bulk_string(ctx, settings.chunk_encoding.name()); },
         "ts-duplicate-policy" => {
             let policy = settings.duplicate_policy.policy.unwrap_or_default();
-            reply_with_str(ctx, policy.as_str());
+            let _ = reply_with_str(ctx, policy.as_str());
         },
         "ts-retention-policy" => {
             if let Some(retention) = settings.retention_period {
-                reply_with_duration(ctx, retention);
+                let _ = reply_with_duration(ctx, retention);
             } else {
-                reply_with_bulk_string(ctx, "none");
+                let _ = reply_with_bulk_string(ctx, "none");
             }
         },
-        "ts-compaction-policy" => reply_with_bulk_string(ctx, &settings.compaction_policy),
+        "ts-compaction-policy" => { let _ = reply_with_bulk_string(ctx, &settings.compaction_policy); },
         "ts-decimal-digits" => {
             if let Some(RoundingStrategy::DecimalDigits(digits)) = settings.rounding {
-                reply_with_i64(ctx, digits as i64);
+                let _ = reply_with_i64(ctx, digits as i64);
             } else {
-                reply_with_str(ctx, "none");
+                let _ = reply_with_str(ctx, "none");
             }
         },
         "ts-significant-digits" => {
             if let Some(RoundingStrategy::SignificantDigits(digits)) = settings.rounding {
-                reply_with_i64(ctx, digits as i64);
+                let _ = reply_with_i64(ctx, digits as i64);
             } else {
-                reply_with_str(ctx, "none");
+                let _ = reply_with_str(ctx, "none");
             }
         },
         "ts-ignore-max-time-diff" => {
             let max_diff = settings.duplicate_policy.max_time_delta;
-            reply_with_duration_ms(ctx, max_diff);
+            let _ = reply_with_duration_ms(ctx, max_diff);
         },
         "ts-ignore-max-value-diff" => {
             let max_value = settings.duplicate_policy.max_value_delta;
-            reply_with_double(ctx, max_value);
+            let _ = reply_with_double(ctx, max_value);
         },
-        "ts-num-threads" => reply_with_usize(ctx, settings.num_threads),
-        "ts-fanout-command-timeout" => reply_with_duration(ctx, settings.fanout_command_timeout),
-        "ts-cluster-map-expiration-ms" => reply_with_duration(ctx, settings.cluster_map_expiration),
-         _ => reply_with_str(ctx, "<unknown>")
+        "ts-num-threads" => { let _ = reply_with_usize(ctx, settings.num_threads); },
+        "ts-fanout-command-timeout" => { let _ = reply_with_duration(ctx, settings.fanout_command_timeout); },
+        "ts-cluster-map-expiration-ms" => { let _ = reply_with_duration(ctx, settings.cluster_map_expiration); },
+         _ => { let _ = reply_with_str(ctx, "<unknown>"); }
     );
 }
 
@@ -336,13 +329,17 @@ fn reply_config_verbose(ctx: &Context, cfg: &ConfigMeta, settings: &ConfigSettin
     reply_with_str(ctx, "min");
     match &cfg.min {
         Some(v) => v.reply(ctx),
-        None => reply_with_str(ctx, "none"),
+        None => {
+            let _ = reply_with_str(ctx, "none");
+        }
     }
 
     reply_with_str(ctx, "max");
     match &cfg.max {
         Some(v) => v.reply(ctx),
-        None => reply_with_str(ctx, "none"),
+        None => {
+            let _ = reply_with_str(ctx, "none");
+        }
     }
 
     // value

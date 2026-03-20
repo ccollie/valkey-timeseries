@@ -1,20 +1,21 @@
 use super::fanout::generated::{LabelValuesRequest, LabelValuesResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_label_values_request;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::FanoutContext;
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
 use std::collections::BTreeSet;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
-pub struct LabelValuesFanoutOperation {
+pub struct LabelValuesFanoutCommand {
     pub label: String,
     pub options: MatchFilterOptions,
     results: BTreeSet<String>,
 }
 
-impl LabelValuesFanoutOperation {
+impl LabelValuesFanoutCommand {
     pub fn new(label: String, options: MatchFilterOptions) -> Self {
         Self {
             label,
@@ -24,7 +25,7 @@ impl LabelValuesFanoutOperation {
     }
 }
 
-impl FanoutOperation for LabelValuesFanoutOperation {
+impl FanoutClientCommand for LabelValuesFanoutCommand {
     type Request = LabelValuesRequest;
     type Response = LabelValuesResponse;
 
@@ -64,15 +65,18 @@ impl FanoutOperation for LabelValuesFanoutOperation {
         }
     }
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
-        let count = self.options.limit.unwrap_or(self.results.len());
-        let results = std::mem::take(&mut self.results);
-        let values = results
-            .into_iter()
-            .take(count)
-            .map(ValkeyValue::BulkString)
-            .collect::<Vec<ValkeyValue>>();
-        let res = ValkeyValue::Array(values);
-        ctx.reply(Ok(res))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        let limit = self
+            .options
+            .limit
+            .unwrap_or(self.results.len())
+            .min(self.results.len());
+
+        ctx.reply_with_array(limit);
+        for value in self.results.iter().take(limit) {
+            ctx.reply_with_bulk_string(value);
+        }
+
+        Status::Ok
     }
 }

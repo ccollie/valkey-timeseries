@@ -1,13 +1,13 @@
-mod buffered_read;
-mod buffered_writer;
+pub(crate) mod buffered_read;
+pub(crate) mod buffered_writer;
 #[cfg(test)]
 mod encoder_tests;
 mod gorilla_chunk;
 mod gorilla_encoder;
 mod gorilla_iterator;
 mod serialization;
-mod traits;
-mod utils;
+pub(crate) mod traits;
+pub(crate) mod utils;
 mod varbit;
 mod varbit_xor;
 

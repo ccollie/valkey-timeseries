@@ -8,6 +8,7 @@ pub mod humanize;
 pub mod logging;
 pub mod pool;
 pub mod rdb;
+pub mod replies;
 pub mod rounding;
 pub mod string_interner;
 pub mod threads;

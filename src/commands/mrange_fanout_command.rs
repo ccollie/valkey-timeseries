@@ -1,7 +1,7 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
 use crate::common::Sample;
-use crate::fanout::FanoutOperation;
-use crate::fanout::NodeInfo;
+use crate::fanout::FanoutContext;
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
@@ -16,12 +16,12 @@ use std::collections::BTreeMap;
 use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
-pub struct MRangeFanoutOperation {
+pub struct MRangeFanoutCommand {
     options: MRangeOptions,
     series: Vec<SeriesRangeResponse>,
 }
 
-impl MRangeFanoutOperation {
+impl MRangeFanoutCommand {
     pub fn new(options: MRangeOptions) -> Self {
         Self {
             options,
@@ -30,7 +30,7 @@ impl MRangeFanoutOperation {
     }
 }
 
-impl FanoutOperation for MRangeFanoutOperation {
+impl FanoutClientCommand for MRangeFanoutCommand {
     type Request = MultiRangeRequest;
     type Response = MultiRangeResponse;
 
@@ -69,7 +69,7 @@ impl FanoutOperation for MRangeFanoutOperation {
         self.series.append(&mut resp.series);
     }
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
         self.options.range.latest = false;
         self.options.range.timestamp_filter = None;
         self.options.range.value_filter = None;
@@ -90,8 +90,9 @@ impl FanoutOperation for MRangeFanoutOperation {
                 ctx.reply(Ok(series.into()))
             }
             Err(e) => {
-                ctx.log_warning(&format!("Error processing series responses: {e}"));
-                ctx.reply_error_string("Internal error processing grouped series");
+                let warning = format!("Error processing MRange responses: {e:?}");
+                ctx.reply(Err(e));
+                ctx.log_warning(&warning);
                 Status::Err
             }
         }

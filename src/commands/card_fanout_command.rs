@@ -1,28 +1,29 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::FanoutContext;
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::series::index::count_matched_series;
 use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
-pub struct CardFanoutOperation {
+pub struct CardFanoutCommand {
     options: MatchFilterOptions,
     result: usize,
 }
 
-impl CardFanoutOperation {
+impl CardFanoutCommand {
     pub fn new(options: MatchFilterOptions) -> Self {
         Self { options, result: 0 }
     }
 }
 
-impl FanoutOperation for CardFanoutOperation {
+impl FanoutClientCommand for CardFanoutCommand {
     type Request = CardinalityRequest;
     type Response = CardinalityResponse;
 
     fn name() -> &'static str {
-        "cardinality"
+        "card"
     }
 
     fn get_local_response(
@@ -47,7 +48,7 @@ impl FanoutOperation for CardFanoutOperation {
         self.result += resp.cardinality as usize;
     }
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
-        ctx.reply(Ok(ValkeyValue::Integer(self.result as i64)))
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        ctx.reply_with_i64(self.result as i64)
     }
 }

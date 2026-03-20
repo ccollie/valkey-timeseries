@@ -1,25 +1,26 @@
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::fanout::{DateRange, MDelRequest, MDelResponse};
 use crate::error_consts;
-use crate::fanout::{FanoutOperation, NodeInfo};
+use crate::fanout::FanoutContext;
+use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::labels::filters::SeriesSelector;
 use crate::series::{TimestampRange, delete_series_by_selectors};
-use valkey_module::{Context, Status, ValkeyError, ValkeyResult, raw};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
 #[derive(Default)]
-pub struct MDelFanoutOperation {
+pub struct MDelFanoutCommand {
     selectors: Vec<SeriesSelector>,
     date_range: Option<DateRange>,
     total_deleted: usize,
 }
 
-impl MDelFanoutOperation {
+impl MDelFanoutCommand {
     pub fn new(selectors: Vec<SeriesSelector>, date_range: Option<TimestampRange>) -> Self {
         let date_range = date_range.map(|dr| {
             let (start, end) = dr.get_timestamps(None);
             DateRange { start, end }
         });
-        MDelFanoutOperation {
+        MDelFanoutCommand {
             selectors,
             date_range,
             total_deleted: 0,
@@ -27,7 +28,7 @@ impl MDelFanoutOperation {
     }
 }
 
-impl FanoutOperation for MDelFanoutOperation {
+impl FanoutClientCommand for MDelFanoutCommand {
     type Request = MDelRequest;
     type Response = MDelResponse;
 
@@ -66,7 +67,7 @@ impl FanoutOperation for MDelFanoutOperation {
         self.total_deleted += resp.deleted_count as usize;
     }
 
-    fn generate_reply(&mut self, ctx: &Context) -> Status {
-        raw::reply_with_long_long(ctx.ctx, self.total_deleted as i64)
+    fn reply(&mut self, ctx: &FanoutContext) -> Status {
+        ctx.reply(Ok(ValkeyValue::Integer(self.total_deleted as i64)))
     }
 }

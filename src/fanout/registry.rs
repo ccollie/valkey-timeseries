@@ -1,4 +1,4 @@
-use super::fanout_operation::FanoutOperation;
+use super::fanout_command::FanoutCommand;
 use super::serialization::{Deserialized, Serializable, Serialized};
 use crate::fanout::{FanoutError, FanoutResult};
 use ahash::RandomState;
@@ -11,7 +11,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult};
 pub(super) type RequestHandlerCallback = fn(&Context, &[u8], &mut Vec<u8>) -> FanoutResult;
 
 /// A registry for fanout operations that allows type-erased storage and retrieval
-/// of [`FanoutOperation`] implementations.
+/// of [`FanoutCommand`] implementations.
 pub struct FanoutOperationRegistry {
     operations: papaya::HashMap<&'static str, RequestHandlerCallback, RandomState>,
 }
@@ -30,7 +30,7 @@ impl FanoutOperationRegistry {
     /// - `OP`: The operation type implementing FanoutOperation
     pub fn register<OP>(&self) -> ValkeyResult<()>
     where
-        OP: FanoutOperation,
+        OP: FanoutCommand,
         OP::Request: Serializable,
         OP::Response: Serializable,
     {
@@ -38,7 +38,7 @@ impl FanoutOperationRegistry {
 
         fn request_handler<OP>(ctx: &Context, req_buf: &[u8], dest: &mut Vec<u8>) -> FanoutResult
         where
-            OP: FanoutOperation,
+            OP: FanoutCommand,
             OP::Request: Serializable,
             OP::Response: Serializable,
         {
@@ -119,7 +119,7 @@ static FANOUT_REGISTRY: LazyLock<FanoutOperationRegistry> =
 /// - `OP`: The operation type implementing FanoutOperation
 pub fn register_fanout_operation<OP>() -> ValkeyResult<()>
 where
-    OP: FanoutOperation,
+    OP: FanoutCommand,
     OP::Request: Serializable,
     OP::Response: Serializable,
 {

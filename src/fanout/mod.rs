@@ -1,9 +1,11 @@
 mod blocked_client;
 mod cluster_map;
 mod cluster_rpc;
+mod fanout_client_command;
+mod fanout_command;
+mod fanout_context;
 mod fanout_error;
 mod fanout_message;
-mod fanout_operation;
 mod registry;
 pub mod serialization;
 mod utils;
@@ -14,8 +16,10 @@ use std::sync::{Arc, LazyLock};
 use valkey_module::Context;
 
 use super::fanout::cluster_rpc::register_cluster_message_handlers;
+pub use fanout_client_command::*;
+pub use fanout_command::*;
+pub use fanout_context::FanoutContext;
 pub use fanout_error::*;
-pub use fanout_operation::*;
 pub use utils::*;
 
 pub use cluster_map::{ClusterMap, FanoutTargetMode, NodeInfo};

@@ -8,6 +8,9 @@ mod timeseries_chunk;
 mod timeseries_chunk_tests;
 mod uncompressed;
 pub(crate) mod utils;
+mod tsxor;
+
+pub use tsxor::*;
 
 pub use chunk::*;
 pub use gorilla::*;

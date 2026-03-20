@@ -1,6 +1,6 @@
-use crate::commands::label_stats_fanout_operation::LabelStatsFanoutOperation;
+use crate::commands::label_stats_fanout_command::LabelStatsFanoutCommand;
 use crate::commands::parse_stats_command_args;
-use crate::fanout::{FanoutOperation, is_clustered};
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::get_timeseries_index;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -14,7 +14,7 @@ pub fn label_stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let (label, limit) = parse_stats_command_args(&mut args)?;
 
     if is_clustered(ctx) {
-        let operation = LabelStatsFanoutOperation::new(limit, label);
+        let operation = LabelStatsFanoutCommand::new(limit, label);
         return operation.exec(ctx);
     }
 

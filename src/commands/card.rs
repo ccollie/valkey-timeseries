@@ -1,6 +1,6 @@
-use super::card_fanout_operation::CardFanoutOperation;
+use super::card_fanout_command::CardFanoutCommand;
 use crate::commands::command_args::parse_metadata_command_args;
-use crate::fanout::{FanoutOperation, is_clustered};
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::count_matched_series;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -18,7 +18,7 @@ pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 "TS.CARD in cluster mode requires at least one matcher",
             ));
         }
-        let operation = CardFanoutOperation::new(options);
+        let operation = CardFanoutCommand::new(options);
         return operation.exec(ctx);
     }
 
