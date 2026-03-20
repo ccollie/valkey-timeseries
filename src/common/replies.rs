@@ -120,15 +120,13 @@ pub fn reply_with_bool<C: IntoRawCtx>(ctx: C, value: bool) -> Status {
 }
 
 fn str_as_legal_resp_string(s: &str) -> CString {
-    CString::new(
-        s.chars()
-            .map(|c| match c {
-                '\r' | '\n' | '\0' => b' ',
-                _ => c as u8,
-            })
-            .collect::<Vec<_>>(),
-    )
-    .unwrap()
+    let mut bytes = s.as_bytes().to_owned();
+    for b in &mut bytes {
+        if *b == b'\r' || *b == b'\n' || *b == b'\0' {
+            *b = b' ';
+        }
+    }
+    CString::new(bytes).unwrap()
 }
 
 pub fn reply_with_simple_string<C: IntoRawCtx>(ctx: C, s: &str) -> Status {

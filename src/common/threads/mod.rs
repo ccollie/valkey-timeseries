@@ -92,7 +92,7 @@ where
 /// use your_crate::run_on_main_thread;
 ///
 /// // A simple closure to be executed on the main thread
-/// run_on_main_thread(|| {
+/// run_on_main_thread(false, || {
 ///     println!("This is running on the main thread!");
 /// });
 /// ```

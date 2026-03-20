@@ -41,12 +41,12 @@ struct InFlightRequest {
 }
 
 impl InFlightRequest {
-    fn rpc_done(&self) {
-        let prev = self.outstanding.fetch_sub(1, Ordering::AcqRel);
-        if prev == 0 {
-            // Late/duplicate completion after timeout.
-            self.outstanding.store(0, Ordering::Release);
-        }
+    fn rpc_done(&self) -> Result<u64, u64> {
+        // Decrement outstanding only when it's greater than 0 to avoid underflow.
+        self.outstanding
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |curr| {
+                if curr > 0 { Some(curr - 1) } else { None }
+            })
     }
 
     fn cancel_timer(&self, ctx: &Context) {
@@ -166,8 +166,9 @@ fn dispatch_send_failure(ctx: &Context, request_id: u64, target_node_id: *const 
 }
 
 fn finish_inflight_request(ctx: &Context, request: &InFlightRequest) {
-    request.rpc_done();
-    if request.outstanding.load(Ordering::Acquire) == 0 {
+    if let Ok(v) = request.rpc_done()
+        && v == 0
+    {
         request.cancel_timer(ctx);
         let map = INFLIGHT_REQUESTS.pin();
         map.remove(&request.id);

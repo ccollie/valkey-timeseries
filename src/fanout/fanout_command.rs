@@ -128,14 +128,17 @@ where
         }
     };
 
-    invoke_rpc(
+    if let Err(e) = invoke_rpc(
         ctx,
         OP::name(),
         req,
         targets,
         Box::new(response_handler),
         timeout,
-    )?;
+    ) {
+        // RPC invocation failed before the fanout could be set up.
+        return Err(FanoutError::from(e));
+    }
 
     Ok(())
 }
@@ -147,6 +150,9 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     operation: OP,
+    /// set tp true if at least one of the on_* callbacks have been invoked. This is to prevent
+    /// on_complete to be called on Drop if there was an error during setup.
+    is_init: bool,
     outstanding: usize,
     timed_out: bool,
     error_count: usize,
@@ -166,6 +172,7 @@ where
     }
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
+        self.is_init = true;
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
         self.error_count += 1;
@@ -178,6 +185,7 @@ where
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
+        self.is_init = true;
         if !self.timed_out {
             self.operation.on_response(resp, target);
         }
@@ -210,7 +218,9 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     fn drop(&mut self) {
-        self.on_completion();
+        if self.is_init {
+            self.on_completion();
+        }
     }
 }
 
@@ -236,6 +246,7 @@ where
             inner: Mutex::new(FanoutStateInner {
                 operation,
                 outstanding,
+                is_init: false,
                 error_count: 0,
                 timed_out: false,
                 callback: Some(f),
