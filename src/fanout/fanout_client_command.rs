@@ -3,8 +3,8 @@ use crate::fanout::blocked_client::FanoutBlockedClient;
 use crate::fanout::serialization::Serializable;
 use crate::fanout::{FanoutCommand, FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
 use ahash::HashSet;
-use std::sync::Arc;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+use std::sync::{Arc, Mutex};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
 /// A trait for cluster-mode commands which send results back to clients after receiving responses from other nodes.
 /// This is a higher-level abstraction over `FanoutCommand` that includes client response handling logic.
@@ -36,12 +36,42 @@ pub trait FanoutClientCommand: Default + Send + 'static {
     where
         Self: FanoutCommand,
     {
-        let mut blocked_client = FanoutBlockedClient::<Self>::new(ctx);
+        let blocked_client = Arc::new(Mutex::new(FanoutBlockedClient::<Self>::new(ctx)));
+        let bc_for_closure = Arc::clone(&blocked_client);
+
         let handle_response = move |op: Self, result: FanoutResult| {
-            blocked_client.unblock(op, result);
+            // Runs on a background thread once all shard responses arrive.
+            if let Ok(mut bc) = bc_for_closure.lock() {
+                bc.set_private_data(op, result);
+            }
+            // bc_for_closure drops here; if this is the last Arc the
+            // FanoutBlockedClient::drop impl fires and calls unblock().
         };
-        Self::exec_command(self, ctx, handle_response)?;
-        Ok(ValkeyValue::NoReply)
+
+        let exec_result = Self::exec_command(self, ctx, handle_response);
+        match exec_result {
+            Ok(()) => {
+                // blocked_client drops here (refcount 2 → 1).
+                // bc_for_closure is still alive inside FanoutState;
+                // unblocking happens asynchronously when the closure runs.
+                Ok(ValkeyValue::NoReply)
+            }
+            Err(err) => {
+                // RPC setup failed before any response could be issued.
+                // By this point FanoutState has already been dropped (is_init=false
+                // ⇒ callback never called), so bc_for_closure is gone and
+                // blocked_client is the sole remaining Arc.
+                // Set an error payload so the reply_callback sends back the
+                // proper error message instead of "No reply data".
+                let op = Self::default();
+                let fanout_result: FanoutResult = Err(err.clone());
+                if let Ok(mut bc) = blocked_client.lock() {
+                    bc.set_private_data(op, fanout_result);
+                }
+                drop(blocked_client); // refcount 1 → 0, triggers unblock()
+                Err(ValkeyError::String(err.to_string()))
+            }
+        }
     }
 }
 

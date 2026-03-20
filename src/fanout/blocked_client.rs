@@ -46,6 +46,7 @@ pub(super) struct FanoutBlockedClient<T: FanoutClientCommand> {
     inner: *mut raw::ValkeyModuleBlockedClient,
     data: Option<Box<BlockedClientPrivateData<T>>>,
     time_measurement_ongoing: bool,
+    is_blocked: bool,
 }
 
 // We need to be able to send the inner pointer to another thread
@@ -72,17 +73,28 @@ where
             inner: bc_ptr,
             time_measurement_ongoing: false,
             data: None,
+            is_blocked: true,
         }
     }
 
-    pub fn unblock(&mut self, op: T, result: FanoutResult) {
+    pub(super) fn set_private_data(&mut self, op: T, result: FanoutResult) {
+        let private_data = Box::new(BlockedClientPrivateData::new(op, result));
+        self.data = Some(private_data);
+    }
+
+    fn unblock(&mut self) {
+        if !self.is_blocked {
+            return;
+        }
+        self.is_blocked = false;
+
         // Ensure any ongoing measurement is ended.
         self.measure_time_end();
 
-        let private_data = Box::new(BlockedClientPrivateData::new(op, result));
-
         // Take private_data for local use.
-        let private_data_ptr = Box::into_raw(private_data) as *mut c_void;
+        let private_data_ptr = self.data.take().map_or(std::ptr::null_mut(), |boxed| {
+            Box::into_raw(boxed) as *mut c_void
+        });
 
         // Call out to the C API to actually unblock.
         unsafe {
@@ -109,6 +121,15 @@ where
     }
 }
 
+impl<T> Drop for FanoutBlockedClient<T>
+where
+    T: FanoutClientCommand,
+{
+    fn drop(&mut self) {
+        self.unblock();
+    }
+}
+
 fn take_data<T>(data: *mut c_void) -> T {
     // Cast the *mut c_void supplied by the Valkey API to a raw pointer of our custom type.
     let data = data.cast::<T>();
@@ -128,6 +149,7 @@ extern "C" fn reply_callback<T: FanoutClientCommand>(
     let op_ptr = unsafe { ValkeyModule_GetBlockedClientPrivateData.unwrap()(ctx) };
     let ctx = FanoutContext::new(ctx as *mut raw::RedisModuleCtx);
     if op_ptr.is_null() {
+        // this means that there was an error in setting up RPC, so we should reply with an error.
         ctx.reply_error_string("No reply data") as c_int
     } else {
         // Cast to the correct type and then dereference once to get &mut ResponseContext<T>
