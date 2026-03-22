@@ -2,45 +2,37 @@ use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_median_sorted;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
 };
 
 pub const MODIFIED_ZSCORE_DEFAULT_THRESHOLD: f64 = 3.5;
 
 /// Modified Z-score outlier detector
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ModifiedZScoreOutlierDetector {
     median: f64,
     mad: f64,
     mad_scaled: f64,
     threshold: f64,
+    is_trained: bool,
 }
 
-impl ModifiedZScoreOutlierDetector {
-    pub fn new(ts: &[f64], threshold: f64) -> Self {
-        // Calculate median
-        let mut sorted_values: Vec<f64> = ts.iter().map(|&x| normalize_value(x)).collect();
-        sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = calculate_median_sorted(&sorted_values);
-
-        // Calculate Mad (Median Absolute Deviation)
-        let mut abs_deviations: Vec<f64> = ts
-            .iter()
-            .map(|&x| (normalize_value(x) - median).abs())
-            .collect();
-        abs_deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        let mad = calculate_median_sorted(&abs_deviations);
-
-        // Scale Mad for consistency with normal distribution
-        let mad_scaled = mad / 0.6745;
-
+impl Default for ModifiedZScoreOutlierDetector {
+    fn default() -> Self {
         ModifiedZScoreOutlierDetector {
-            median,
-            mad,
-            mad_scaled,
-            threshold,
+            median: 0.0,
+            mad: 0.0,
+            mad_scaled: 0.0,
+            threshold: MODIFIED_ZSCORE_DEFAULT_THRESHOLD,
+            is_trained: false,
         }
+    }
+}
+impl ModifiedZScoreOutlierDetector {
+    pub fn new(threshold: f64) -> Self {
+        let mut detector = ModifiedZScoreOutlierDetector::default();
+        detector.threshold = threshold;
+        detector
     }
 
     #[inline]
@@ -98,7 +90,39 @@ impl ModifiedZScoreOutlierDetector {
         })
     }
 }
-impl OutlierDetector for ModifiedZScoreOutlierDetector {
+impl BatchOutlierDetector for ModifiedZScoreOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::ModifiedZScore
+    }
+
+    fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
+        // Calculate median
+        let mut sorted_values: Vec<f64> = data.iter().map(|&x| normalize_value(x)).collect();
+        sorted_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = calculate_median_sorted(&sorted_values);
+
+        // Calculate Mad (Median Absolute Deviation)
+        let mut abs_deviations: Vec<f64> = data
+            .iter()
+            .map(|&x| (normalize_value(x) - median).abs())
+            .collect();
+        abs_deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mad = calculate_median_sorted(&abs_deviations);
+
+        // Scale Mad for consistency with normal distribution
+        let mad_scaled = mad / 0.6745;
+        self.mad_scaled = mad_scaled;
+        self.median = median;
+        self.mad = mad;
+        self.is_trained = true;
+        Ok(())
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        ModifiedZScoreOutlierDetector::detect(self, ts)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64 {
         let modified_zscore = self.get_modified_zscore(value).abs();
         normalize_unbounded_score(modified_zscore)
@@ -120,12 +144,13 @@ impl OutlierDetector for ModifiedZScoreOutlierDetector {
 }
 
 /// Modified Z-score using median absolute deviation
-pub(super) fn detect_anomalies_modified_zscore(
+fn detect_anomalies_modified_zscore(
     ts: &[f64],
     threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let threshold = threshold.unwrap_or(MODIFIED_ZSCORE_DEFAULT_THRESHOLD);
-    let detector = ModifiedZScoreOutlierDetector::new(ts, threshold);
+    let mut detector = ModifiedZScoreOutlierDetector::new(threshold);
+    detector.train(ts)?;
     detector.detect(ts)
 }
 

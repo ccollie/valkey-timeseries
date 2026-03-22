@@ -1,19 +1,21 @@
-use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::mad_estimator::{
     HarrellDavisNormalizedEstimator, InvariantMADEstimator, MedianAbsoluteDeviationEstimator,
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
-    MethodInfo, OutlierDetector,
+    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal,
+    MethodInfo, BatchOutlierDetector,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
+use crate::analysis::TimeSeriesAnalysisResult;
 
 /// Outlier detector based on the median absolute deviation.
 /// Considers all values outside [median - k * Mad, median + k * Mad] as outliers.
 #[derive(Debug)]
 pub struct MadOutlierDetector {
+    is_trained: bool,
+    estimator: AnomalyMADEstimator,
     lower_fence: f64,
     upper_fence: f64,
     mad: f64,
@@ -21,60 +23,33 @@ pub struct MadOutlierDetector {
     k: f64,
 }
 
-impl MadOutlierDetector {
-    const DEFAULT_K: f64 = 3.0;
-
-    /// Create a new Mad outlier detector for a slice of f64, given k.
-    fn create(data: &[f64], k: f64, estimator: &impl MedianAbsoluteDeviationEstimator) -> Self {
-        debug_assert!(!data.is_empty(), "Sample cannot be empty");
-        let samples = Samples::from(data.to_vec());
-        let median = estimator.quantile_estimator().median(&samples);
-        let mad = estimator.mad(&samples);
-        let lower_fence = median - k * mad;
-        let upper_fence = median + k * mad;
+impl Default for MadOutlierDetector {
+    fn default() -> Self {
         MadOutlierDetector {
+            is_trained: false,
+            estimator: AnomalyMADEstimator::Simple,
+            lower_fence: f64::NAN,
+            upper_fence: f64::NAN,
+            mad: f64::NAN,
+            median: f64::NAN,
+            k: Self::DEFAULT_K,
+        }
+    }
+}
+
+impl MadOutlierDetector {
+    pub const DEFAULT_K: f64 = 3.0;
+
+    pub fn new(k: f64, estimator: AnomalyMADEstimator) -> Self {
+        Self {
             k,
-            lower_fence,
-            upper_fence,
-            median,
-            mad,
+            estimator,
+            ..Default::default()
         }
     }
 
-    pub fn create_with_options(data: &[f64], options: MADAnomalyOptions) -> Self {
-        let k = options.k;
-        match options.estimator {
-            AnomalyMADEstimator::Simple => MadOutlierDetector::with_k_and_estimator(
-                data,
-                k,
-                &SimpleNormalizedEstimator::default(),
-            ),
-            AnomalyMADEstimator::HarrellDavis => {
-                MadOutlierDetector::with_k_and_estimator(data, k, &HarrellDavisNormalizedEstimator)
-            }
-            AnomalyMADEstimator::Invariant => {
-                MadOutlierDetector::with_k_and_estimator(data, k, &InvariantMADEstimator::default())
-            }
-        }
-    }
-
-    /// Create a new Mad outlier detector for a slice of f64, given k.
-    pub fn with_k_and_estimator(
-        data: &[f64],
-        k: f64,
-        estimator: &impl MedianAbsoluteDeviationEstimator,
-    ) -> Self {
-        Self::create(data, k, estimator)
-    }
-
-    pub fn with_estimator(data: &[f64], estimator: &impl MedianAbsoluteDeviationEstimator) -> Self {
-        Self::create(data, Self::DEFAULT_K, estimator)
-    }
-
-    /// Create a new Mad outlier detector with default k.
-    pub fn new(data: &[f64]) -> Self {
-        let estimator = SimpleNormalizedEstimator::new();
-        Self::create(data, Self::DEFAULT_K, &estimator)
+    pub fn with_estimator(estimator: AnomalyMADEstimator) -> Self {
+        Self::new(Self::DEFAULT_K, estimator)
     }
 
     /// Returns whether a value is an outlier, according to the detector.
@@ -157,9 +132,50 @@ impl MadOutlierDetector {
     }
 }
 
-impl OutlierDetector for MadOutlierDetector {
+impl BatchOutlierDetector for MadOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::Mad
+    }
+
+    fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
+        debug_assert!(!data.is_empty(), "Sample cannot be empty");
+        fn get_mad_median(data: &[f64], estimator: impl MedianAbsoluteDeviationEstimator) -> (f64, f64) {
+            let samples = Samples::from(data.to_vec());
+            let median = estimator.quantile_estimator().median(&samples);
+            let mad = estimator.mad(&samples);
+            (median, mad)
+        }
+
+        let (median, mad) = match self.estimator {
+            AnomalyMADEstimator::Simple => {
+                let estimator = SimpleNormalizedEstimator::new();
+                get_mad_median(data, estimator)
+            }
+            AnomalyMADEstimator::Invariant => {
+                let estimator = InvariantMADEstimator::new();
+                get_mad_median(data, estimator)
+            }
+            AnomalyMADEstimator::HarrellDavis => {
+                let estimator = HarrellDavisNormalizedEstimator;
+                get_mad_median(data, estimator)
+            }
+        };
+
+        let k = self.k;
+        self.median = median;
+        self.mad = mad;
+        self.lower_fence = median - k * mad;
+        self.upper_fence = median + k * mad;
+        self.is_trained = true;
+        Ok(())
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        MadOutlierDetector::detect(self, ts)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64 {
-        self.get_anomaly_score(value)
+        MadOutlierDetector::get_anomaly_score(self, value)
     }
 
     fn classify(&self, x: f64) -> AnomalySignal {
@@ -180,7 +196,9 @@ mod tests {
     #[test]
     fn test_mad_outlier_detector() {
         let data = [1.0, 2.0, 2.0, 2.0, 3.0, 14.0];
-        let detector = MadOutlierDetector::new(&data);
+        let mut detector = MadOutlierDetector::default();
+        detector.train(&data).unwrap();
+
         // 14.0 is an outlier
         assert!(detector.is_outlier(14.0));
         // 1.0 is not an outlier for k=3
@@ -192,7 +210,8 @@ mod tests {
     #[test]
     fn test_get_anomaly_score_is_normalized() {
         let data = [1.0, 2.0, 2.0, 2.0, 3.0, 14.0];
-        let detector = MadOutlierDetector::new(&data);
+        let mut detector = MadOutlierDetector::default();
+        detector.train(&data).unwrap();
 
         let score_at_median = detector.get_anomaly_score(2.0);
         assert_eq!(score_at_median, 0.0);

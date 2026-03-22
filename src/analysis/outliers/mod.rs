@@ -19,10 +19,11 @@ mod utils;
 mod zscore_outlier_detector;
 
 pub use anomalies::*;
-pub use double_mad_outlier_detector::*;
-pub use esd_outlier_detector::ESDOutlierOptions;
 pub use rcf_outlier_detector::*;
 pub use smoothed_zscores::*;
+pub use esd_outlier_detector::*;
+
+use crate::analysis::TimeSeriesAnalysisResult;
 use std::fmt::Display;
 
 use std::ops::Deref;
@@ -349,17 +350,56 @@ impl Default for MADAnomalyOptions {
     }
 }
 
+
 /// Trait for outlier detection
-pub trait OutlierDetector {
+pub trait BatchOutlierDetector {
+    /// The detector family/method.
+    fn method(&self) -> AnomalyMethod;
+
+    fn train(&mut self, _data: &[f64]) -> TimeSeriesAnalysisResult<()> {
+        Ok(())
+    }
+
+    /// Batch detection entrypoint.
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        let mut result = AnomalyResult::with_capacity(ts.len());
+        result.method = self.method();
+
+        for (index, &value) in ts.iter().enumerate() {
+            let signal = self.classify(value);
+            let score = self.get_anomaly_score(value);
+            result.scores.push(score);
+
+            if signal.is_anomaly() {
+                result.anomalies.push(Anomaly {
+                    signal,
+                    value,
+                    score,
+                    index,
+                });
+            }
+        }
+
+        Ok(result)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64;
 
     fn classify(&self, x: f64) -> AnomalySignal;
 }
 
-impl<T> OutlierDetector for Box<T>
+impl<T> BatchOutlierDetector for Box<T>
 where
-    T: OutlierDetector,
+    T: BatchOutlierDetector,
 {
+    fn method(&self) -> AnomalyMethod {
+        self.deref().method()
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        self.as_mut().detect(ts)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64 {
         self.deref().get_anomaly_score(value)
     }

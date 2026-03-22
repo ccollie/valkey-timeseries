@@ -1,5 +1,5 @@
 use crate::analysis::math::calculate_median_sorted;
-use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal};
+use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
@@ -7,11 +7,11 @@ use statrs::distribution::{ContinuousCDF, StudentsT};
 /// https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h3.htm
 #[derive(Clone, Debug)]
 pub struct ESDOutlierOptions {
-    /// Significance level for the statistical test
+    /// Significance level for the statistical test (e.g., 0.05)
     pub alpha: f64,
-    /// Whether to use the hybrid ESD test
+    /// Whether to use the hybrid ESD test (mean/std if true; median/MAD if false)
     pub hybrid: bool,
-    /// Maximum number of outliers to detect
+    /// Maximum number of outliers to detect. Must be < n/2.
     pub max_outliers: Option<usize>,
 }
 
@@ -25,15 +25,69 @@ impl Default for ESDOutlierOptions {
     }
 }
 
-pub(super) fn detect_anomalies_esd(
+
+/// Outlier detector based on the Extreme Studentized Deviate (ESD) test. Used to detect one or more outliers in a
+/// univariate data set that follows an approximately normal distribution
+///
+/// Rosner, Bernard (May 1983), Percentage Points for a Generalized ESD Many-Outlier Procedure, Technometrics, 25(2), pp. 165-172.
+/// https://www.itl.nist.gov/div898/handbook/eda/section3/eda35h3.htm
+pub struct ESDOutlierDetector {
+    /// Significance level for a hypothesis test. Lower alpha means more conservative (fewer outliers).
+    alpha: f64,
+    /// if true, use mean/std; if false, use median/MAD
+    hybrid: bool,
+    /// Maximum number of outliers to detect. Must be < n/2. If None, uses len(data)/2.
+    max_outliers: Option<usize>,
+}
+
+impl Default for ESDOutlierDetector {
+    fn default() -> Self {
+        ESDOutlierDetector {
+            alpha: 0.05,
+            hybrid: false,
+            max_outliers: None,
+        }
+    }
+}
+
+impl ESDOutlierDetector {
+    pub fn new(alpha: f64, hybrid: bool, max_outliers: Option<usize>) -> Self {
+        ESDOutlierDetector {
+            alpha,
+            hybrid,
+            max_outliers,
+        }
+    }
+}
+
+impl BatchOutlierDetector for ESDOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::Esd
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        detect_anomalies_esd(ts, self.alpha, self.hybrid, self.max_outliers)
+    }
+
+    fn get_anomaly_score(&self, _value: f64) -> f64 {
+        todo!()
+    }
+
+    fn classify(&self, _x: f64) -> AnomalySignal {
+        todo!()
+    }
+}
+
+fn detect_anomalies_esd(
     data: &[f64],
-    options: Option<ESDOutlierOptions>,
+    alpha: f64,
+    hybrid: bool,
+    max_outliers: Option<usize>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let opts = options.unwrap_or_default();
     let n = data.len();
 
     // Parameter check: max_outliers
-    let max_outliers = match opts.max_outliers {
+    let max_outliers = match max_outliers {
         Some(m) if m >= n / 2 => {
             let message = format!(
                 "max_outliers must be less than n/2. Got max_outliers = {} and n = {}",
@@ -50,7 +104,7 @@ pub(super) fn detect_anomalies_esd(
     };
 
     // Perform ESD test
-    let (anomalies, scores) = esd_test(data, opts.alpha, opts.hybrid, max_outliers)?;
+    let (anomalies, scores) = esd_test(data, alpha, hybrid, max_outliers)?;
 
     Ok(AnomalyResult {
         anomalies,
@@ -133,8 +187,9 @@ fn esd_test(
         })?;
         let t_value = student_t.inverse_cdf(prob);
 
-        let denom = ((n - 2.0).powi(2) + (n - 2.0) * t_value.powi(2)).sqrt();
-        let critical_value = ((n - 1.0) * t_value) / denom;
+        let n_sq = n * n;
+        let t_sq = t_value * t_value;
+        let critical_value = ((n - 1.0) * t_value) / (n_sq - 2.0 * n + n * t_sq).sqrt();
 
         // remember latest lambda
         last_lambda = Some(critical_value);
@@ -145,27 +200,33 @@ fn esd_test(
             scores[test_idx] = score;
         }
 
-        if test_stat > critical_value {
-            let value = data[test_idx];
-            let signal = if value > loc {
-                AnomalySignal::Positive
-            } else {
-                AnomalySignal::Negative
-            };
-
-            anomalies.push(Anomaly {
-                signal,
-                value,
-                score,
-                index: test_idx,
-            });
-
-            // mask that index (in original indexing)
-            masked[test_idx] = None;
+        let value = data[test_idx];
+        let signal = if value > loc {
+            AnomalySignal::Positive
         } else {
-            break;
+            AnomalySignal::Negative
+        };
+
+        anomalies.push(Anomaly {
+            signal,
+            value,
+            score,
+            index: test_idx,
+        });
+
+        // mask that index (in original indexing)
+        masked[test_idx] = None;
+    }
+
+    // Standard ESD: find the largest k such that R_i > lambda_i for all i <= k
+    let mut k = 0;
+    for (i, anomaly) in anomalies.iter().enumerate() {
+        if anomaly.score > 0.5 {
+            // score > 0.5 means test_stat > critical_value
+            k = i + 1;
         }
     }
+    anomalies.truncate(k);
 
     // After loop, score any remaining unmasked observations using the last lambda if available.
     score_active_points(
@@ -228,11 +289,13 @@ fn loc_and_scale(values: &[(usize, f64)], hybrid: bool) -> Option<(f64, f64)> {
     };
 
     let scale = if hybrid {
-        std_pop_values(values, loc)
+        std_sample_values(values, loc)
     } else {
         let mut abs_devs: Vec<f64> = values.iter().map(|(_, x)| (x - loc).abs()).collect();
         abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        calculate_median_sorted(&abs_devs)
+        let mad = calculate_median_sorted(&abs_devs);
+        // MAD * 1.4826 is a consistent estimator for the standard deviation of a normal distribution
+        mad * 1.4826
     };
 
     Some((loc, scale))
@@ -261,10 +324,14 @@ fn mean_values(values: &[(usize, f64)]) -> f64 {
     sum / (values.len() as f64)
 }
 
-/// Helper: population std dev (ddof=0)
-fn std_pop_values(values: &[(usize, f64)], mean: f64) -> f64 {
+/// Helper: sample std dev (ddof=1)
+fn std_sample_values(values: &[(usize, f64)], mean: f64) -> f64 {
+    let n = values.len();
+    if n < 2 {
+        return 0.0;
+    }
     let sum_sq = values.iter().map(|(_, v)| (v - mean).powi(2)).sum::<f64>();
-    (sum_sq / (values.len() as f64)).sqrt()
+    (sum_sq / (n as f64 - 1.0)).sqrt()
 }
 
 /// Helper: median for unsorted values (Vec<(idx,f64)>)
@@ -290,14 +357,18 @@ mod tests {
 
     #[test]
     fn test_esd_detects_outlier() {
-        // index 4 (value 10.0) is a positive outlier; index 0 (value -10.0) is a negative outlier
+        // index 4 (value 10.0) is a positive outlier
         let data = vec![1.0, 1.1, 0.9, 1.05, 10.0];
-        let (anomalies, scores) = esd_test(&data, 0.05, false, data.len() / 2).unwrap();
+        // For n=5, alpha=0.05, max_outliers=2
+        // Mean = 2.81, Std = 4.02, max_dev = (10-2.81) = 7.19, R = 1.78
+        // t_crit (df=3, p=0.005) = 4.54, Lambda = (4*4.54)/sqrt(25-10+5*20.6) = 1.71
+        // Since R > Lambda, index 4 is an outlier.
+        let (anomalies, scores) = esd_test(&data, 0.05, true, 2).unwrap();
 
         // outlier at index 4 should be detected
         assert!(anomalies.iter().any(|a| a.index == 4));
 
-        // value 10.0 is above the median, so signal must be Positive
+        // value 10.0 is above the median, so the signal must be Positive
         let outlier = anomalies.iter().find(|a| a.index == 4).unwrap();
         assert!(matches!(outlier.signal, AnomalySignal::Positive));
         assert_eq!(outlier.value, 10.0);
@@ -311,7 +382,7 @@ mod tests {
             assert!((0.0..=1.0).contains(&s));
         }
 
-        // outlier index has the highest score
+        // the outlier index has the highest score
         let max_idx = scores
             .iter()
             .enumerate()
@@ -344,13 +415,12 @@ mod tests {
             2.92, 2.93, 3.21, 3.26, 3.30, 3.59, 3.68, 4.30, 4.64, 5.34, 5.42, 6.01,
         ];
 
-        let options = ESDOutlierOptions {
-            alpha: 0.05,
-            max_outliers: Some(10),
-            hybrid: false,
-        };
-
-        let result = detect_anomalies_esd(&data, Some(options)).unwrap();
-        assert!(result.anomalies.len() > 5);
+        let result = detect_anomalies_esd(&data, 0.05, true, Some(10)).unwrap();
+        // Rosner's test on this data (with alpha=0.05) detects 3 outliers: 6.01, 5.42, 5.34
+        assert_eq!(result.anomalies.len(), 3);
+        let indices: Vec<usize> = result.anomalies.iter().map(|a| a.index).collect();
+        assert!(indices.contains(&53)); // 6.01
+        assert!(indices.contains(&52)); // 5.42
+        assert!(indices.contains(&51)); // 5.34
     }
 }

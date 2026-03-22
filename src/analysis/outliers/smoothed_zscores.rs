@@ -4,7 +4,7 @@
 /// Port of the golang implementation here:
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
-use super::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal};
+use super::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
 struct MovingMeanStdDev {
@@ -47,7 +47,9 @@ impl MovingMeanStdDev {
         }
 
         self.prev_mean = mean;
-        self.prev_variance = sum_of_squares / cache_len as f64;
+        // Numerical errors can cause a tiny negative M2; clamp to zero to
+        // avoid sqrt of negative which results in NaN.
+        self.prev_variance = (sum_of_squares / cache_len as f64).max(0.0);
 
         (mean, self.prev_variance.sqrt())
     }
@@ -66,6 +68,12 @@ impl MovingMeanStdDev {
         self.prev_variance += (value - new_mean + out_of_window - self.prev_mean)
             * (value - out_of_window)
             / cache_len;
+        // Guard against tiny negative variances introduced by floating point
+        // rounding errors.
+        if !self.prev_variance.is_finite() || self.prev_variance < 0.0 {
+            self.prev_variance = 0.0;
+        }
+
         self.prev_mean = new_mean;
 
         (self.prev_mean, self.prev_variance.sqrt())
@@ -103,7 +111,8 @@ pub struct SmoothedZScoreAnomalyDetector {
     prev_mean: f64,
     prev_std_dev: f64,
     prev_value: f64,
-    pub(super) prev_score: f64,
+    prev_score: f64,
+    is_trained: bool,
 }
 
 impl SmoothedZScoreAnomalyDetector {
@@ -111,39 +120,32 @@ impl SmoothedZScoreAnomalyDetector {
     pub fn new(
         influence: f64,
         threshold: f64,
-        initial_values: &[f64],
+        lag: usize,
     ) -> Result<Self, TimeSeriesAnalysisError> {
-        let lag = initial_values.len();
-
-        let mut res = Self {
-            index: 0,
-            influence,
-            threshold,
-            lag,
-            moving_stats: MovingMeanStdDev::new(),
-            prev_mean: 0.0,
-            prev_std_dev: 0.0,
-            prev_value: 0.0,
-            prev_score: f64::NAN,
-        };
-
         if lag == 0 {
             return Err(TimeSeriesAnalysisError::InvalidInput(
                 "the length of the initial values is zero, the length is used as the lag for the algorithm".to_string()
             ));
         }
 
-        let (mean, std_dev) = res.moving_stats.initialize(initial_values);
+        let mut res = Self {
+            index: 0,
+            influence,
+            threshold,
+            lag,
+            ..Default::default()
+        };
 
-        res.prev_mean = mean;
-        res.prev_std_dev = std_dev;
-        res.prev_value = initial_values[res.lag - 1];
+        res.is_trained = false;
 
         Ok(res)
     }
 
     /// Next processes the next value and determines its signal.
-    pub fn next(&mut self, value: f64) -> AnomalySignal {
+    pub fn next(&mut self, value: f64) -> TimeSeriesAnalysisResult<AnomalySignal> {
+        if !self.is_trained {
+            return Err(TimeSeriesAnalysisError::NotTrained);
+        }
         self.index = (self.index + 1) % self.lag;
         let score = (value - self.prev_mean).abs();
 
@@ -169,11 +171,13 @@ impl SmoothedZScoreAnomalyDetector {
         self.prev_value = adjusted_value;
         self.prev_score = score;
 
-        signal
+        Ok(signal)
     }
 
-    pub fn next_batch(&mut self, values: Vec<f64>) -> Vec<AnomalySignal> {
-        values.into_iter().map(|v| self.next(v)).collect()
+    pub fn next_batch(&mut self, values: &[f64]) -> TimeSeriesAnalysisResult<Vec<AnomalySignal>> {
+        values.iter()
+            .map(|&v| self.next(v))
+            .collect::<TimeSeriesAnalysisResult<Vec<_>>>()
     }
 
     /// Calculates a normalized anomaly score in [0, 1] for `value`.
@@ -204,19 +208,26 @@ impl SmoothedZScoreAnomalyDetector {
     }
 
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        let n = ts.len();
+        // Use the smaller of the timeseries length and lag to form the initial window.
+        // Previously max() was used which caused the initial window to be the entire
+        // timeseries when ts.len() >= lag, leaving nothing to process in `rest`.
+        let n = ts.len().min(self.lag);
+        let (_initial, rest) = ts.split_at(n);
+        if !self.is_trained {
+            self.train(ts)?;
+        }
 
         // Keep output lengths equal to the input length (pad the initial window).
-        let mut scores: Vec<f64> = Vec::with_capacity(n);
+        let mut scores: Vec<f64> = vec![0.0; self.lag];
         let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
-        for (index, &value) in ts.iter().enumerate() {
+        for (index, &value) in rest.iter().enumerate() {
             let score = self.get_anomaly_score(value);
 
-            let signal = self.next(value);
+            let signal = self.next(value)?;
             if signal != AnomalySignal::None {
                 anomalies.push(Anomaly {
-                    index,
+                    index: index + self.lag,
                     signal,
                     value,
                     score,
@@ -247,6 +258,50 @@ impl Default for SmoothedZScoreAnomalyDetector {
             prev_value: 0.0,
             threshold: 0.0,
             prev_score: f64::NAN,
+            is_trained: false,
+        }
+    }
+}
+
+impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::SmoothedZScore
+    }
+
+    fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
+        // Use the smaller of the input data length and the configured lag for
+        // initializing the moving statistics. Using max() was incorrect and
+        // resulted in the entire data being used as the initial window.
+        let n = data.len().min(self.lag);
+        let (initial, _rest) = data.split_at(n);
+        let (mean, std_dev) = self.moving_stats.initialize(initial);
+
+        self.prev_mean = mean;
+        self.prev_std_dev = std_dev;
+        self.prev_value = initial[self.lag - 1];
+        // Mark the detector as trained so `next()` can be called safely.
+        self.is_trained = true;
+        Ok(())
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        SmoothedZScoreAnomalyDetector::detect(self, ts)
+    }
+
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        SmoothedZScoreAnomalyDetector::get_anomaly_score(self, value)
+    }
+
+    fn classify(&self, x: f64) -> AnomalySignal {
+        let score = (x - self.prev_mean).abs();
+        if score > self.threshold * self.prev_std_dev {
+            if x > self.prev_mean {
+                AnomalySignal::Positive
+            } else {
+                AnomalySignal::Negative
+            }
+        } else {
+            AnomalySignal::None
         }
     }
 }
@@ -325,13 +380,6 @@ pub(super) fn detect_anomalies_smoothed_zscore(
         threshold,
     } = options;
 
-    if lag == 0 {
-        return Err(TimeSeriesAnalysisError::InvalidInput(
-            "the length of the initial values is zero, the length is used as the lag for the algorithm"
-                .to_string(),
-        ));
-    }
-
     let n = ts.len();
     if n < lag {
         return Err(TimeSeriesAnalysisError::InsufficientData {
@@ -341,22 +389,9 @@ pub(super) fn detect_anomalies_smoothed_zscore(
         });
     }
 
-    let (initial, rest) = ts.split_at(lag);
-
-    let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, initial)?;
-    let mut res = detector.detect(rest)?;
-
-    // Keep output lengths equal to the input length (pad the initial window).
-    let mut scores: Vec<f64> = vec![0.0; lag];
-
-    scores.append(&mut res.scores);
-    // if we have anomalies, the index must account for the initial lag
-    for anomaly in &mut res.anomalies {
-        anomaly.index += lag;
-    }
-    res.scores = scores;
-
-    Ok(res)
+    let mut detector = SmoothedZScoreAnomalyDetector::new(influence, threshold, lag)?;
+    detector.train(ts)?;
+    detector.detect(ts)
 }
 
 #[cfg(test)]
@@ -365,17 +400,13 @@ mod tests {
 
     #[test]
     fn test_peak_detector_initialization() {
-        let initial_values = vec![1.0, 2.0, 3.0, 2.0, 1.0];
-
-        let result = SmoothedZScoreAnomalyDetector::new(0.1, 2.0, &initial_values);
+        let result = SmoothedZScoreAnomalyDetector::new(0.1, 2.0, 5);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_peak_detector_empty_initial_values() {
-        let initial_values = vec![];
-
-        let result = SmoothedZScoreAnomalyDetector::new(0.1, 2.0, &initial_values);
+        let result = SmoothedZScoreAnomalyDetector::new(0.1, 2.0, 0);
         assert!(result.is_err());
     }
 
@@ -386,18 +417,22 @@ mod tests {
             1.1, 1.0, 1.0,
         ];
 
-        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+        let lag = initial_values.len();
+        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
+        // Train the detector using the provided initial values so the moving
+        // statistics reflect the sample baseline expected by this test.
+        detector.train(&initial_values).unwrap();
 
         // Test with a clear positive peak
-        let signal = detector.next(5.0);
+        let signal = detector.next(5.0).unwrap();
         assert_eq!(signal, AnomalySignal::Positive);
 
         // Test with normal values
-        let signal = detector.next(1.0);
+        let signal = detector.next(1.0).unwrap();
         assert_eq!(signal, AnomalySignal::None);
 
         // Test with a clear negative peak
-        let signal = detector.next(-3.0);
+        let signal = detector.next(-3.0).unwrap();
         assert_eq!(signal, AnomalySignal::Negative);
     }
 
@@ -405,10 +440,12 @@ mod tests {
     fn test_batch_processing() {
         let initial_values = vec![1.0; 10];
 
-        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+        let lag = initial_values.len();
+        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
+        detector.train(&initial_values).unwrap();
 
         let test_values = vec![1.0, 5.0, 1.0, -3.0, 1.0];
-        let signals = detector.next_batch(test_values);
+        let signals = detector.next_batch(&test_values).unwrap();
 
         assert_eq!(signals.len(), 5);
         // The exact signals depend on the algorithm's internal state,
@@ -418,11 +455,14 @@ mod tests {
     #[test]
     fn test_get_anomaly_score_is_normalized_and_roughly_monotonic() {
         let initial_values = vec![1.0, 2.0, 3.0, 2.0, 1.0];
-        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+
+        let lag = initial_values.len();
+        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
+        detector.train(&initial_values).unwrap();
 
         // At the mean => 0.0
         let s0 = detector.get_anomaly_score(detector.prev_mean);
-        assert!((s0 - 0.0).abs() < 1e-12);
+        assert!(s0.abs() < 1e-12);
 
         // At z == threshold => 0.5
         // value = mean + threshold * std_dev
@@ -440,7 +480,9 @@ mod tests {
     #[test]
     fn test_get_anomaly_score_clamps_to_unit_interval() {
         let initial_values = vec![1.0, 2.0, 3.0, 2.0, 1.0];
-        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+
+        let lag = initial_values.len();
+        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
 
         let s = detector.get_anomaly_score(detector.prev_mean + 1e308);
         assert!((0.0..=1.0).contains(&s));
@@ -450,12 +492,16 @@ mod tests {
     fn test_get_anomaly_score_handles_degenerate_std_dev() {
         // All equal => std_dev == 0.0 after initialization.
         let initial_values = vec![1.0; 10];
-        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, &initial_values).unwrap();
+        let lag = initial_values.len();
+
+        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
+        detector.train(&initial_values).unwrap();
+
         assert!(detector.prev_std_dev <= 0.0);
 
         // No deviation => 0.0
         let s0 = detector.get_anomaly_score(1.0);
-        assert!((s0 - 0.0).abs() < 1e-12);
+        assert!(s0.abs() < 1e-12);
 
         // Any deviation => 1.0
         let s1 = detector.get_anomaly_score(2.0);

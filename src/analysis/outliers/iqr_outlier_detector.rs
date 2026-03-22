@@ -1,7 +1,7 @@
 use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
 };
 
 pub const IQR_DEFAULT_THRESHOLD: f64 = 1.5;
@@ -75,7 +75,15 @@ impl IQROutlierDetector {
     }
 }
 
-impl OutlierDetector for IQROutlierDetector {
+impl BatchOutlierDetector for IQROutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::InterquartileRange
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        IQROutlierDetector::detect(self, ts)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64 {
         // Guard against degenerate IQR to avoid division by zero / NaN.
         if !self.iqr.is_finite() || self.iqr <= f64::EPSILON {

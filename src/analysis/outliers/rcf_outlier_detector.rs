@@ -1,7 +1,7 @@
 use super::utils::normalize_unbounded_score;
 use crate::analysis::math::{calculate_mean, calculate_mean_std_dev, quantile};
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector,
 };
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use crate::common::threads::NUM_THREADS;
@@ -425,7 +425,7 @@ impl RcfOutlierDetector {
             return AnomalyResult {
                 scores,
                 anomalies: Vec::new(),
-                threshold: contamination, // effectively unreachable during warmup-only result
+                threshold: contamination, // effectively unreachable during a warmup-only result
                 method: AnomalyMethod::RandomCutForest,
                 method_info: None,
             };
@@ -476,14 +476,43 @@ impl RcfOutlierDetector {
     }
 }
 
-impl OutlierDetector for RcfOutlierDetector {
+impl BatchOutlierDetector for RcfOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::RandomCutForest
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        RcfOutlierDetector::detect(self, ts)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64 {
         let raw_score = self.score(value);
         normalize_rcf_score(raw_score)
     }
 
-    fn classify(&self, _x: f64) -> AnomalySignal {
-        todo!()
+    fn classify(&self, x: f64) -> AnomalySignal {
+        let raw_score = self.score(x);
+        if !raw_score.is_finite() {
+            return AnomalySignal::None;
+        }
+
+        let is_anomaly = match self.threshold.unwrap_or_default() {
+            RCFThreshold::StdDev(threshold) => raw_score > threshold,
+            RCFThreshold::Contamination(contamination) => {
+                let cutoff = 1.0 - contamination.clamp(f64::EPSILON, 1.0 - f64::EPSILON);
+                normalize_rcf_score(raw_score) > cutoff
+            }
+        };
+
+        if !is_anomaly {
+            return AnomalySignal::None;
+        }
+
+        if x >= 0.0 {
+            AnomalySignal::Positive
+        } else {
+            AnomalySignal::Negative
+        }
     }
 }
 
@@ -507,18 +536,6 @@ pub fn normalize_rcf_score(raw_score: f64) -> f64 {
         return 0.0;
     }
     1.0 - (-raw_score).exp()
-}
-
-/// Detect anomalies in a univariate time series using a Random Cut Forest.
-pub(super) fn detect_anomalies_rcf(
-    ts: &[f64],
-    options: RCFOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    // `detect` uses an online score-then-update loop.  Callers who want to suppress
-    // early-warmup scores should set `output_after` explicitly in `RCFOptions`.
-    let mut detector = RcfOutlierDetector::new(options)
-        .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{:?}", e)))?;
-    detector.detect(ts)
 }
 
 #[cfg(test)]

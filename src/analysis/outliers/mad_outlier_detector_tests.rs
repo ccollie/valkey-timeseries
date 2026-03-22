@@ -1,9 +1,9 @@
 use super::mad_outlier_detector::MadOutlierDetector;
 use super::outlier_test_data::{
-    EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, modified_beta_data_set, real_data_set,
-    yang_data_set,
+    beta_data_set, modified_beta_data_set, real_data_set, yang_data_set, TestData, EMPTY_DATASET,
+    SAME_DATASET,
 };
-use crate::analysis::outliers::{AnomalySignal, OutlierDetector};
+use crate::analysis::outliers::{AnomalySignal, BatchOutlierDetector};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -231,7 +231,7 @@ static HD_QE_TEST_DATA_MAP: LazyLock<HashMap<&'static str, TestData>> = LazyLock
 
 pub fn check<F>(test_data: &TestData, create_detector: F)
 where
-    F: FnOnce(&[f64]) -> Box<dyn OutlierDetector>,
+    F: FnOnce(&[f64]) -> Box<dyn BatchOutlierDetector>,
 {
     let detector = create_detector(test_data.values);
     let actual_outliers = test_data
@@ -261,10 +261,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::outliers::mad_estimator::{
-        HarrellDavisNormalizedEstimator, SimpleNormalizedEstimator,
-    };
     use crate::analysis::outliers::outlier_test_data::check_outliers;
+    use crate::analysis::outliers::AnomalyMADEstimator;
 
     #[test]
     fn mad_outlier_detector_simple_qe_tests() {
@@ -276,10 +274,7 @@ mod tests {
 
             if test_data.values.is_empty() {
                 let result = std::panic::catch_unwind(|| {
-                    MadOutlierDetector::with_estimator(
-                        test_data.values,
-                        &SimpleNormalizedEstimator::default(),
-                    )
+                    MadOutlierDetector::with_estimator(AnomalyMADEstimator::Simple)
                 });
                 assert!(
                     result.is_err(),
@@ -287,11 +282,8 @@ mod tests {
                     test_data_key
                 );
             } else {
-                check_outliers(test_data_key, test_data, |values| {
-                    MadOutlierDetector::with_estimator(
-                        values,
-                        &SimpleNormalizedEstimator::default(),
-                    )
+                check_outliers(test_data_key, test_data, |_values| {
+                    MadOutlierDetector::with_estimator(AnomalyMADEstimator::Simple)
                 });
             }
         }
@@ -306,10 +298,7 @@ mod tests {
             let test_data = &HD_QE_TEST_DATA_MAP[test_data_key];
             if test_data.values.is_empty() {
                 let result = std::panic::catch_unwind(|| {
-                    MadOutlierDetector::with_estimator(
-                        test_data.values,
-                        &HarrellDavisNormalizedEstimator,
-                    )
+                    MadOutlierDetector::with_estimator(AnomalyMADEstimator::HarrellDavis)
                 });
                 assert!(
                     result.is_err(),
@@ -317,8 +306,8 @@ mod tests {
                     test_data_key
                 );
             } else {
-                check_outliers(test_data_key, test_data, |values| {
-                    MadOutlierDetector::with_estimator(values, &HarrellDavisNormalizedEstimator)
+                check_outliers(test_data_key, test_data, |_values| {
+                    MadOutlierDetector::with_estimator(AnomalyMADEstimator::HarrellDavis)
                 });
             }
         }

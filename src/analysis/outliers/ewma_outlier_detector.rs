@@ -1,7 +1,9 @@
 use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
-use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
+use crate::analysis::outliers::{
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+};
 
 /// Default alpha for Ewma SPC
 pub const EWMA_DEFAULT_ALPHA: f64 = 0.3;
@@ -115,6 +117,30 @@ pub(super) fn detect_anomalies_spc_ewma(
     let alpha = alpha.unwrap_or(EWMA_DEFAULT_ALPHA);
     let detector = EwmaOutlierDetector::from_series(ts, alpha);
     detector.detect(ts)
+}
+
+impl BatchOutlierDetector for EwmaOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::Ewma
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        EwmaOutlierDetector::detect(self, ts)
+    }
+
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        if !self.sigma.is_finite() || self.sigma <= f64::EPSILON {
+            return 0.0;
+        }
+
+        let z_abs = (value - self.target).abs() / self.sigma;
+        normalize_unbounded_score(z_abs)
+    }
+
+    fn classify(&self, x: f64) -> AnomalySignal {
+        let distance = self.multiplier * self.sigma;
+        get_anomaly_direction(self.target - distance, self.target + distance, x)
+    }
 }
 
 #[cfg(test)]

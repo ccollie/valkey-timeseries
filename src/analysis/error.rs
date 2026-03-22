@@ -103,7 +103,10 @@ pub enum TimeSeriesAnalysisError {
     /// Core error
     #[error("Core error: {0}")]
     CoreError(#[from] TsdbError),
+
+    #[error("Model not trained")]
+    NotTrained,
 }
 
 /// Result type for time series operations
-pub type TimeSeriesAnalysisResult<T> = Result<T, TimeSeriesAnalysisError>;
+pub type TimeSeriesAnalysisResult<T = ()> = Result<T, TimeSeriesAnalysisError>;

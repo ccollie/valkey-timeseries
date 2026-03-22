@@ -1,9 +1,9 @@
-use crate::analysis::TimeSeriesAnalysisResult;
-use crate::analysis::math::{calculate_mean, calculate_std_dev};
+use crate::analysis::math::calculate_mean_std_dev;
 use crate::analysis::outliers::utils::normalize_unbounded_score;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, OutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
 };
+use crate::analysis::TimeSeriesAnalysisResult;
 
 /// Outlier detector based on the Z-Score method.
 /// Considers all values outside [mean - k * std_dev, mean + k * std_dev] as outliers.
@@ -14,30 +14,29 @@ pub struct ZScoreOutlierDetector {
     std_dev: f64,
     lower_fence: f64,
     upper_fence: f64,
+    is_trained: bool,
+}
+
+impl Default for ZScoreOutlierDetector {
+    fn default() -> Self {
+        ZScoreOutlierDetector {
+            threshold: Self::DEFAULT_THRESHOLD,
+            mean: 0.0,
+            std_dev: 0.0,
+            lower_fence: f64::NAN,
+            upper_fence: f64::NAN,
+            is_trained: false,
+        }
+    }
 }
 
 impl ZScoreOutlierDetector {
     pub const DEFAULT_THRESHOLD: f64 = 3.0;
 
-    pub fn new(samples: &[f64]) -> Self {
-        Self::with_threshold(samples, Self::DEFAULT_THRESHOLD)
-    }
-
-    pub fn with_threshold(samples: &[f64], threshold: f64) -> Self {
-        // maybe use welford here ?
-        let mean = calculate_mean(samples);
-        let std_dev = calculate_std_dev(samples);
-
-        let lower_fence = mean - threshold * std_dev;
-        let upper_fence = mean + threshold * std_dev;
-
-        ZScoreOutlierDetector {
-            mean,
-            std_dev,
-            threshold,
-            lower_fence,
-            upper_fence,
-        }
+    pub fn new(threshold: f64) -> Self {
+        let mut detector = ZScoreOutlierDetector::default();
+        detector.threshold = threshold;
+        detector
     }
 
     #[inline]
@@ -51,6 +50,10 @@ impl ZScoreOutlierDetector {
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
         let threshold = self.threshold;
+
+        if !self.is_trained {
+            self.train(ts)?;
+        }
 
         if self.std_dev < f64::EPSILON {
             // All values are identical; no anomalies can be detected
@@ -109,7 +112,29 @@ impl ZScoreOutlierDetector {
     }
 }
 
-impl OutlierDetector for ZScoreOutlierDetector {
+impl BatchOutlierDetector for ZScoreOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::ZScore
+    }
+
+    fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
+        // maybe use welford here ?
+        let (mean, std_dev) = calculate_mean_std_dev(data);
+
+        // store computed stats
+        self.mean = mean;
+        self.std_dev = std_dev;
+
+        self.lower_fence = mean - self.threshold * std_dev;
+        self.upper_fence = mean + self.threshold * std_dev;
+        self.is_trained = true;
+        Ok(())
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        ZScoreOutlierDetector::detect(self, ts)
+    }
+
     fn get_anomaly_score(&self, value: f64) -> f64 {
         let z_abs = self.get_zscore(value).abs();
         normalize_unbounded_score(z_abs)
@@ -135,16 +160,17 @@ pub(super) fn detect_anomalies_zscore(
     ts: &[f64],
     threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = ZScoreOutlierDetector::with_threshold(
-        ts,
+    let mut detector = ZScoreOutlierDetector::new(
         threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
     );
+    detector.train(ts)?;
     detector.detect(ts)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::outliers::{detect_anomalies, AnomalyOptions};
 
     #[test]
     fn test_zscore_anomaly_detection() {
@@ -328,6 +354,27 @@ mod tests {
             result.scores[5] > 0.6,
             "Expected high score at index 5, got {}",
             result.scores[5]
+        );
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Test with a very short time series
+        let ts = vec![1.0, 2.0];
+        let options = AnomalyOptions::default();
+
+        let result = detect_anomalies(&ts, options);
+        assert!(result.is_err());
+
+        // Test with constant time series
+        let ts = vec![1.0; 50];
+
+        let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
+        // Should detect no anomalies in constant series
+        let anomaly_count = result.anomalies.iter().filter(|x| x.is_anomaly()).count();
+        assert_eq!(
+            anomaly_count, 0,
+            "Should detect no anomalies in constant series"
         );
     }
 }

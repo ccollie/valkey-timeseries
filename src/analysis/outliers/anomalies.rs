@@ -5,29 +5,23 @@
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
 use super::{
-    AnomalyMethod, AnomalyResult, MADAnomalyOptions,
-    cusum_outlier_detector::detect_anomalies_spc_cusum,
-    detect_anomalies_double_mad,
-    esd_outlier_detector::{ESDOutlierOptions, detect_anomalies_esd},
-    ewma_outlier_detector::detect_anomalies_spc_ewma,
-    iqr_outlier_detector::detect_anomalies_iqr,
+    AnomalyMethod, AnomalyResult, MADAnomalyOptions, BatchOutlierDetector,
+    SmoothedZScoreAnomalyDetector,
+    cusum_outlier_detector::CusumOutlierDetector,
+    double_mad_outlier_detector::DoubleMadOutlierDetector,
+    ewma_outlier_detector::{EWMA_DEFAULT_ALPHA, EwmaOutlierDetector},
+    iqr_outlier_detector::{IQR_DEFAULT_THRESHOLD, IQROutlierDetector},
     mad_outlier_detector::MadOutlierDetector,
-    modified_zscore_outlier_detector::detect_anomalies_modified_zscore,
-    rcf_outlier_detector::{RCFOptions, detect_anomalies_rcf},
-    smoothed_zscores::{SmoothedZScoreOptions, detect_anomalies_smoothed_zscore},
-    zscore_outlier_detector::{ZScoreOutlierDetector, detect_anomalies_zscore},
+    modified_zscore_outlier_detector::{
+        MODIFIED_ZSCORE_DEFAULT_THRESHOLD, ModifiedZScoreOutlierDetector,
+    },
+    rcf_outlier_detector::{RCFOptions, RcfOutlierDetector},
+    smoothed_zscores::SmoothedZScoreOptions,
+    zscore_outlier_detector::ZScoreOutlierDetector,
 };
-use crate::analysis::seasonality::PeriodogramDetector;
-use crate::analysis::{
-    INSUFFICIENT_DATA_ERROR, TimeSeriesAnalysisError, TimeSeriesAnalysisResult,
-    seasonality::{mstl::Mstl, stl::Stl},
-};
-
-#[derive(Clone, Debug)]
-pub enum Seasonality {
-    Auto,
-    Periods(Vec<usize>),
-}
+use crate::analysis::outliers::esd_outlier_detector::{ESDOutlierDetector, ESDOutlierOptions};
+use crate::analysis::seasonality::{seasonally_adjust, Seasonality};
+use crate::analysis::{INSUFFICIENT_DATA_ERROR, TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
 #[derive(Debug, Clone)]
 pub enum AnomalyDetectionMethodOptions {
@@ -152,117 +146,60 @@ pub fn detect_anomalies(
 }
 
 fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    match options.options {
-        AnomalyDetectionMethodOptions::Cusum => detect_anomalies_spc_cusum(ts),
-        AnomalyDetectionMethodOptions::Ewma(alpha) => detect_anomalies_spc_ewma(ts, alpha),
-        AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => {
-            detect_anomalies_iqr(ts, threshold)
-        }
-        AnomalyDetectionMethodOptions::ZScore(threshold) => detect_anomalies_zscore(ts, threshold),
-        AnomalyDetectionMethodOptions::SmoothedZScore(opts) => {
-            detect_anomalies_smoothed_zscore(ts, opts)
-        }
-        AnomalyDetectionMethodOptions::ModifiedZScore(threshold) => {
-            detect_anomalies_modified_zscore(ts, threshold)
-        }
-        AnomalyDetectionMethodOptions::Mad(options) => detect_anomalies_mad(ts, options),
-        AnomalyDetectionMethodOptions::DoubleMAD(options) => {
-            detect_anomalies_double_mad(ts, options)
-        }
-        AnomalyDetectionMethodOptions::Rcf(opts) => detect_anomalies_rcf(ts, opts),
-        AnomalyDetectionMethodOptions::Esd(opts) => detect_anomalies_esd(ts, opts),
-    }
-}
-
-fn detect_anomalies_mad(
-    ts: &[f64],
-    options: MADAnomalyOptions,
-) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = MadOutlierDetector::create_with_options(ts, options);
+    let mut detector = build_detector(ts, options.options)?;
+    detector.train(ts)?;
     detector.detect(ts)
 }
 
-fn validate_insufficient_data<T: Default>(
-    required: usize,
-    actual: usize,
-) -> TimeSeriesAnalysisResult<T> {
-    if actual >= required {
-        return Ok(T::default());
-    }
-    Err(TimeSeriesAnalysisError::InsufficientData {
-        message: "TSDB: insufficient samples for anomaly detection".to_string(),
-        required,
-        actual,
-    })
-}
-
-/// Seasonal adjustment using (M)Stl decomposition
-pub fn seasonally_adjust(
+fn build_detector(
     ts: &[f64],
-    seasonality: &Seasonality,
-) -> TimeSeriesAnalysisResult<Vec<f64>> {
-    let periods = match seasonality {
-        Seasonality::Periods(periods) => periods.clone(),
-        Seasonality::Auto => {
-            // use periodogram to detect periods
-            let detector = PeriodogramDetector::default();
-            detector.detect(ts).iter().map(|&x| x as usize).collect()
+    method_options: AnomalyDetectionMethodOptions,
+) -> TimeSeriesAnalysisResult<Box<dyn BatchOutlierDetector>> {
+    let detector: Box<dyn BatchOutlierDetector> = match method_options {
+        AnomalyDetectionMethodOptions::Cusum => Box::new(CusumOutlierDetector::default()),
+        AnomalyDetectionMethodOptions::Ewma(alpha) => Box::new(EwmaOutlierDetector::from_series(
+            ts,
+            alpha.unwrap_or(EWMA_DEFAULT_ALPHA),
+        )),
+        AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => Box::new(
+            IQROutlierDetector::new(ts, threshold.unwrap_or(IQR_DEFAULT_THRESHOLD)),
+        ),
+        AnomalyDetectionMethodOptions::ZScore(threshold) => Box::new(ZScoreOutlierDetector::new(
+            threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
+        )),
+        AnomalyDetectionMethodOptions::SmoothedZScore(options) => {
+            let detector = SmoothedZScoreAnomalyDetector::new(
+                options.influence,
+                options.threshold,
+                options.lag,
+            )?;
+            Box::new(detector)
+        }
+        AnomalyDetectionMethodOptions::ModifiedZScore(threshold) => {
+            Box::new(ModifiedZScoreOutlierDetector::new(
+                threshold.unwrap_or(MODIFIED_ZSCORE_DEFAULT_THRESHOLD),
+            ))
+        }
+        AnomalyDetectionMethodOptions::Mad(options) => {
+            Box::new(MadOutlierDetector::new(options.k, options.estimator))
+        }
+        AnomalyDetectionMethodOptions::DoubleMAD(options) => {
+            Box::new(DoubleMadOutlierDetector::with_options(options))
+        }
+        AnomalyDetectionMethodOptions::Rcf(opts) => {
+            let detector = RcfOutlierDetector::new(opts)
+                .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{e:?}")))?;
+            Box::new(detector)
+        }
+        AnomalyDetectionMethodOptions::Esd(options) => {
+            let detector = if let Some(opts) = options {
+                ESDOutlierDetector::new(opts.alpha, opts.hybrid, opts.max_outliers)
+            } else {
+                ESDOutlierDetector::default()
+            };
+            Box::new(detector)
         }
     };
 
-    if periods.is_empty() {
-        return Ok(ts.to_vec());
-    }
-
-    let n = ts.len();
-    if periods.len() == 1 {
-        let required = 2 * periods[0];
-        validate_insufficient_data::<Vec<f64>>(required, n)?;
-
-        Stl::new(periods[0])
-            .robust()
-            .decompose(ts)
-            .map(|res| res.remainder)
-            .ok_or_else(|| {
-                TimeSeriesAnalysisError::DecompositionError("STL decomposition failed".to_string())
-            })
-    } else {
-        let max_period = periods[periods.len() - 1];
-        let required = 2 * max_period;
-        validate_insufficient_data::<Vec<f64>>(required, n)?;
-
-        Mstl::new(periods.to_vec())
-            .robust()
-            .decompose(ts)
-            .map(|res| res.remainder)
-            .ok_or_else(|| {
-                TimeSeriesAnalysisError::DecompositionError("MSTL decomposition failed".to_string())
-            })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_edge_cases() {
-        // Test with a very short time series
-        let ts = vec![1.0, 2.0];
-        let options = AnomalyOptions::default();
-
-        let result = detect_anomalies(&ts, options);
-        assert!(result.is_err());
-
-        // Test with constant time series
-        let ts = vec![1.0; 50];
-
-        let result = detect_anomalies_zscore(&ts, Some(3.0)).unwrap();
-        // Should detect no anomalies in constant series
-        let anomaly_count = result.anomalies.iter().filter(|&&x| x.is_anomaly()).count();
-        assert_eq!(
-            anomaly_count, 0,
-            "Should detect no anomalies in constant series"
-        );
-    }
+    Ok(detector)
 }

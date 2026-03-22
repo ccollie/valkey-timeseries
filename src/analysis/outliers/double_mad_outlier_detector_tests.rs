@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use crate::analysis::outliers::DoubleMadOutlierDetector;
     use crate::analysis::outliers::mad_estimator::{
         HarrellDavisNormalizedEstimator, SimpleNormalizedEstimator,
     };
@@ -10,6 +9,7 @@ mod tests {
     };
     use crate::analysis::quantile_estimators::Samples;
     use std::collections::HashMap;
+    use crate::analysis::outliers::double_mad_outlier_detector::DoubleMadOutlierDetector;
 
     /// Data cases for SimpleQuantileEstimator
     fn simple_qe_test_data_map() -> HashMap<&'static str, TestData<'static>> {

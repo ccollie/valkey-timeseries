@@ -2,7 +2,7 @@
 // It assumes the existence of an OutlierDetector trait and some test output helper.
 // The actual detector implementations and test harness setup are not included.
 
-use crate::analysis::outliers::{AnomalySignal, OutlierDetector};
+use crate::analysis::outliers::BatchOutlierDetector;
 use std::fmt::Debug;
 
 /// Data set based on Table 1 "Outlier Score Cases" from the referenced paper
@@ -255,18 +255,21 @@ impl<'b> TestData<'b> {
 pub const EMPTY_DATASET: [f64; 1] = [0.0];
 pub const SAME_DATASET: [f64; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
 
-pub(super) fn check_outliers<D: OutlierDetector + Debug, F: Fn(&[f64]) -> D>(
+pub(super) fn check_outliers<D: BatchOutlierDetector + Debug, F: Fn(&[f64]) -> D>(
     dataset_name: &str,
     test_data: &TestData,
     create_detector: F,
 ) {
     let values = test_data.values;
     let expected = test_data.expected_outliers;
-    let detector = create_detector(values);
-    let actual = values
+    let mut detector = create_detector(values);
+    detector.train(values).unwrap();
+
+    let result = detector.detect(values).unwrap();
+    let actual = result
+        .anomalies
         .iter()
-        .filter(|&&x| detector.classify(x) != AnomalySignal::None)
-        .cloned()
+        .map(|&x| x.value)
         .collect::<Vec<f64>>();
 
     let dump = |name: &str, data: &[f64]| {

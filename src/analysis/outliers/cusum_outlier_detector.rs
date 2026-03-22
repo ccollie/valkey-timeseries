@@ -1,7 +1,9 @@
 use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
-use crate::analysis::math::{calculate_mean, calculate_std_dev};
-use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo};
+use crate::analysis::math::{calculate_mean, calculate_mean_std_dev, calculate_std_dev};
+use crate::analysis::outliers::{
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+};
 
 /// Statistical Process Control (Spc) cusum anomaly detection
 pub struct CusumOutlierDetector {
@@ -9,10 +11,23 @@ pub struct CusumOutlierDetector {
     std_dev: f64,
     k: f64,
     h: f64,
+    is_trained: bool,
+}
+
+impl Default for CusumOutlierDetector {
+    fn default() -> Self {
+        CusumOutlierDetector {
+            target: 0.0,
+            std_dev: 1.0,
+            k: 0.5,
+            h: 5.0,
+            is_trained: false,
+        }
+    }
 }
 
 impl CusumOutlierDetector {
-    pub fn new(mean: f64, std_dev: f64) -> Self {
+    pub fn with_params(mean: f64, std_dev: f64) -> Self {
         let k = 0.5 * std_dev; // Reference value
         let h = 5.0 * std_dev; // Decision interval
 
@@ -21,6 +36,7 @@ impl CusumOutlierDetector {
             k,
             h,
             std_dev,
+            is_trained: true,
         }
     }
 
@@ -31,7 +47,7 @@ impl CusumOutlierDetector {
         let target = calculate_mean(training_data);
         let std_dev = calculate_std_dev(training_data);
 
-        Self::new(target, std_dev)
+        Self::with_params(target, std_dev)
     }
 
     pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
@@ -94,8 +110,46 @@ impl CusumOutlierDetector {
 
 /// Statistical Process Control (Spc) cusum anomaly detection
 pub(super) fn detect_anomalies_spc_cusum(ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let detector = CusumOutlierDetector::from_series(ts);
+    let mut detector = CusumOutlierDetector::from_series(ts);
+    detector.train(ts)?;
     detector.detect(ts)
+}
+
+impl BatchOutlierDetector for CusumOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::Cusum
+    }
+
+    fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
+        let training_size = (data.len() as f64 * 0.5).min(100.0) as usize;
+        let training_data = &data[0..training_size];
+        let (mean, std_dev) = calculate_mean_std_dev(training_data);
+        self.target = mean;
+        self.std_dev = std_dev;
+        Ok(())
+    }
+
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+        CusumOutlierDetector::detect(self, ts)
+    }
+
+    fn get_anomaly_score(&self, value: f64) -> f64 {
+        if !self.std_dev.is_finite() || self.std_dev <= f64::EPSILON {
+            return 0.0;
+        }
+        let z_abs = (value - self.target).abs() / self.std_dev;
+        normalize_unbounded_score(z_abs)
+    }
+
+    fn classify(&self, x: f64) -> AnomalySignal {
+        if x > self.target + self.h {
+            AnomalySignal::Positive
+        } else if x < self.target - self.h {
+            AnomalySignal::Negative
+        } else {
+            AnomalySignal::None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -104,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_detect_empty_series() {
-        let detector = CusumOutlierDetector::new(0.0, 1.0);
+        let detector = CusumOutlierDetector::with_params(0.0, 1.0);
         let anomaly_result = detector.detect(&[]).unwrap();
 
         assert!(anomaly_result.scores.is_empty());
@@ -130,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_detect_positive_shift() {
-        let detector = CusumOutlierDetector::new(0.0, 1.0);
+        let detector = CusumOutlierDetector::with_params(0.0, 1.0);
         let mut ts = vec![0.0; 10];
         ts.extend(vec![10.0; 10]); // Positive shift
 
@@ -148,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_detect_negative_shift() {
-        let detector = CusumOutlierDetector::new(0.0, 1.0);
+        let detector = CusumOutlierDetector::with_params(0.0, 1.0);
         let mut ts = vec![0.0; 10];
         ts.extend(vec![-10.0; 10]); // Negative shift
 
@@ -165,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_anomalies_spc_cusum_with_positive_spike() {
+    fn test_detect_anomalies_cusum_with_positive_spike() {
         // Add variance to baseline to get valid std dev
         let mut ts = vec![10.0, 9.0, 11.0, 10.5, 9.5];
         ts.extend(vec![10.0, 9.0, 11.0, 10.5, 9.5, 9.0]);
@@ -191,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_anomalies_spc_cusum_with_negative_spike() {
+    fn test_detect_anomalies_cusum_with_negative_spike() {
         // Add variance to baseline
         let mut ts = vec![10.0, 9.0, 11.0, 10.5, 9.5];
         ts.extend(vec![10.0, 9.0, 11.0, 10.5, 9.5, 9.0]);
@@ -228,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_detect_with_nan_values() {
-        let detector = CusumOutlierDetector::new(0.0, 1.0);
+        let detector = CusumOutlierDetector::with_params(0.0, 1.0);
         let ts = vec![0.0, f64::NAN, 0.0];
 
         let anomaly_result = detector.detect(&ts).unwrap();
@@ -239,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_detect_scores_normalized() {
-        let detector = CusumOutlierDetector::new(0.0, 1.0);
+        let detector = CusumOutlierDetector::with_params(0.0, 1.0);
         let ts = vec![0.0, 5.0, 10.0, 15.0, 20.0];
 
         let anomaly_result = detector.detect(&ts).unwrap();
@@ -252,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_detect_method_metadata() {
-        let detector = CusumOutlierDetector::new(10.0, 2.0);
+        let detector = CusumOutlierDetector::with_params(10.0, 2.0);
         let ts = vec![10.0; 5];
 
         let anomaly_result = detector.detect(&ts).unwrap();
@@ -276,7 +330,7 @@ mod tests {
     #[test]
     fn test_detect_threshold_calculation() {
         let std_dev = 2.0;
-        let detector = CusumOutlierDetector::new(0.0, std_dev);
+        let detector = CusumOutlierDetector::with_params(0.0, std_dev);
         let ts = vec![0.0; 5];
 
         let result = detector.detect(&ts);
@@ -288,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_anomalies_spc_cusum_with_gradual_shift() {
+    fn test_detect_anomalies_cusum_with_gradual_shift() {
         let mut ts: Vec<f64> = (0..50).map(|i| i as f64).collect();
         ts.extend((50..100).map(|i| (i + 50) as f64)); // Gradual upward shift
 
@@ -306,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_anomalies_spc_cusum_normal_distribution() {
+    fn test_detect_anomalies_cusum_normal_distribution() {
         // Test with normally distributed data
         let ts = vec![
             100.0, 102.0, 98.0, 101.0, 99.0, 100.0, 103.0, 97.0, 100.0, 101.0, 99.0, 100.0, 102.0,
@@ -323,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_anomalies_spc_cusum_method_info() {
+    fn test_detect_anomalies_cusum_method_info() {
         let ts = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
         let anomaly_result = detect_anomalies_spc_cusum(&ts).unwrap();

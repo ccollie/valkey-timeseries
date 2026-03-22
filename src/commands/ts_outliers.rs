@@ -1,7 +1,7 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
     AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold,
-    Seasonality, SmoothedZScoreOptions, detect_anomalies,
+    SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::commands::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_duration_ms,
@@ -16,6 +16,7 @@ use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
+use crate::analysis::seasonality::Seasonality;
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
 
