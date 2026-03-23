@@ -5,8 +5,8 @@ use crate::analysis::outliers::mad_estimator::{
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MADAnomalyOptions,
-    MethodInfo, BatchOutlierDetector,
+    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal,
+    BatchOutlierDetector, MADAnomalyOptions, MethodInfo,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
@@ -28,31 +28,28 @@ pub struct DoubleMadOutlierDetector {
     midpoint: Option<f64>,
     /// Half range between fences (optional until trained)
     half_range: Option<f64>,
-    /// Options describing estimator and k (kept so the detector can be trained later)
-    options: MADAnomalyOptions,
+    /// Options describing estimator (kept so the detector can be trained later)
+    estimator: AnomalyMADEstimator,
 }
 
 impl DoubleMadOutlierDetector {
-    const DEFAULT_K: f64 = 3.0;
+    pub(crate) const DEFAULT_K: f64 = 3.0;
 
-    pub fn new(samples: &Samples) -> Self {
-        // Create detector from sample using default options
-        let mut det = Self::with_options(MADAnomalyOptions::default());
-        det.train_from_samples(samples, Self::DEFAULT_K, Some(SimpleNormalizedEstimator::new()));
-        det
+    pub fn new(threshold: f64, estimator: AnomalyMADEstimator) -> Self {
+        DoubleMadOutlierDetector {
+            lower_fence: None,
+            upper_fence: None,
+            threshold,
+            midpoint: None,
+            half_range: None,
+            estimator,
+        }
     }
 
     /// Construct an untrained detector with the provided options.
     /// Fences will be computed when `train` is called (or on-demand in `detect`).
     pub fn with_options(options: MADAnomalyOptions) -> Self {
-        DoubleMadOutlierDetector {
-            lower_fence: None,
-            upper_fence: None,
-            threshold: options.k,
-            midpoint: None,
-            half_range: None,
-            options,
-        }
+        Self::new(options.k, options.estimator)
     }
 
     /// Returns true when the detector has been trained and fences have been computed.
@@ -62,35 +59,6 @@ impl DoubleMadOutlierDetector {
             && self.upper_fence.is_some()
             && self.midpoint.is_some()
             && self.half_range.is_some()
-    }
-
-    pub fn with_data_and_options(data: &[f64], options: MADAnomalyOptions) -> Self {
-        let threshold = options.k;
-        let sample: Samples = Samples::new_unweighted(data.to_vec());
-        let mut det = Self::with_options(options);
-        // compute fences immediately using provided data
-        det.train_from_samples(&sample, threshold, None::<SimpleNormalizedEstimator>);
-        det
-    }
-
-    pub fn with_estimator(
-        samples: &Samples,
-        estimator: impl MedianAbsoluteDeviationEstimator,
-    ) -> Self {
-        let mut det = Self::with_options(MADAnomalyOptions::default());
-        det.train_from_samples(samples, Self::DEFAULT_K, Some(estimator));
-        det
-    }
-
-    pub fn with_k_and_estimator(
-        sample: &Samples,
-        k: f64,
-        estimator: Option<impl MedianAbsoluteDeviationEstimator>,
-    ) -> Self {
-        let mut det = Self::with_options(MADAnomalyOptions { k, estimator: AnomalyMADEstimator::Invariant });
-        // Use provided estimator or default to Simple
-        det.train_from_samples(sample, k, estimator);
-        det
     }
 
     fn compute_fences(
@@ -109,7 +77,12 @@ impl DoubleMadOutlierDetector {
     }
 
     /// Train the detector using explicit Samples and optional estimator.
-    fn train_from_samples<E: MedianAbsoluteDeviationEstimator>(&mut self, samples: &Samples, k: f64, estimator: Option<E>) {
+    fn train_from_samples<E: MedianAbsoluteDeviationEstimator>(
+        &mut self,
+        samples: &Samples,
+        k: f64,
+        estimator: Option<E>,
+    ) {
         let mut apply_fences = |(l, u, m, h): (f64, f64, f64, f64)| {
             self.lower_fence = Some(l);
             self.upper_fence = Some(u);
@@ -122,22 +95,20 @@ impl DoubleMadOutlierDetector {
             Some(est) => {
                 apply_fences(Self::compute_fences(est, samples, k));
             }
-            None => {
-                match self.options.estimator {
-                    AnomalyMADEstimator::Simple => {
-                        let est = SimpleNormalizedEstimator::default();
-                        apply_fences(Self::compute_fences(est, samples, k));
-                    }
-                    AnomalyMADEstimator::HarrellDavis => {
-                        let est = HarrellDavisNormalizedEstimator;
-                        apply_fences(Self::compute_fences(est, samples, k));
-                    }
-                    AnomalyMADEstimator::Invariant => {
-                        let est = InvariantMADEstimator::default();
-                        apply_fences(Self::compute_fences(est, samples, k));
-                    }
+            None => match self.estimator {
+                AnomalyMADEstimator::Simple => {
+                    let est = SimpleNormalizedEstimator::default();
+                    apply_fences(Self::compute_fences(est, samples, k));
                 }
-            }
+                AnomalyMADEstimator::HarrellDavis => {
+                    let est = HarrellDavisNormalizedEstimator;
+                    apply_fences(Self::compute_fences(est, samples, k));
+                }
+                AnomalyMADEstimator::Invariant => {
+                    let est = InvariantMADEstimator::default();
+                    apply_fences(Self::compute_fences(est, samples, k));
+                }
+            },
         }
     }
 
@@ -148,7 +119,7 @@ impl DoubleMadOutlierDetector {
     /// - Values within fences return scores < 0.5, values outside return scores >= 0.5.
     pub fn get_anomaly_score(&self, value: f64) -> f64 {
         // If not trained (no fences), we cannot compute a meaningful score.
-        // Caller should ensure `train` is called prior to scoring. As a
+        // Caller should ensure `train` is called before scoring. As a
         // fallback, treat everything as non-anomalous (score 0.0).
         let midpoint = match self.midpoint {
             Some(m) => m,
@@ -191,7 +162,7 @@ impl DoubleMadOutlierDetector {
         if !self.is_trained() {
             // build Samples and train using stored options
             let samples = Samples::new_unweighted(ts.to_vec());
-            self.train_from_samples(&samples, self.options.k, None::<SimpleNormalizedEstimator>);
+            self.train_from_samples(&samples, self.threshold, None::<SimpleNormalizedEstimator>);
         }
 
         let n = ts.len();
@@ -237,7 +208,7 @@ impl BatchOutlierDetector for DoubleMadOutlierDetector {
             return Ok(());
         }
         let samples = Samples::new_unweighted(ts.to_vec());
-        self.train_from_samples(&samples, self.options.k, None::<SimpleNormalizedEstimator>);
+        self.train_from_samples(&samples, self.threshold, None::<SimpleNormalizedEstimator>);
         Ok(())
     }
 

@@ -1,15 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use crate::analysis::outliers::mad_estimator::{
-        HarrellDavisNormalizedEstimator, SimpleNormalizedEstimator,
-    };
+    use crate::analysis::outliers::AnomalyMADEstimator;
+    use crate::analysis::outliers::double_mad_outlier_detector::DoubleMadOutlierDetector;
     use crate::analysis::outliers::outlier_test_data::{
         EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, check_outliers,
         modified_beta_data_set, real_data_set,
     };
-    use crate::analysis::quantile_estimators::Samples;
     use std::collections::HashMap;
-    use crate::analysis::outliers::double_mad_outlier_detector::DoubleMadOutlierDetector;
 
     /// Data cases for SimpleQuantileEstimator
     fn simple_qe_test_data_map() -> HashMap<&'static str, TestData<'static>> {
@@ -172,12 +169,9 @@ mod tests {
 
         for (test_data_key, test_data) in test_data_map.iter() {
             let action = || {
-                check_outliers(test_data_key, test_data, |values| {
-                    let samples = Samples::from(values);
-                    DoubleMadOutlierDetector::with_estimator(
-                        &samples,
-                        SimpleNormalizedEstimator::default(),
-                    )
+                let threshold = DoubleMadOutlierDetector::DEFAULT_K;
+                check_outliers(test_data_key, test_data, |_values| {
+                    DoubleMadOutlierDetector::new(threshold, AnomalyMADEstimator::Simple)
                 })
             };
 
@@ -197,14 +191,11 @@ mod tests {
     fn double_mad_outlier_detector_hd_qe_test() {
         let test_data_map = hd_qe_test_data_map();
 
-        for (test_data_key, test_data) in test_data_map.iter() {
+        for (&test_data_key, test_data) in test_data_map.iter() {
             let action = || {
-                check_outliers(test_data_key, test_data, |values| {
-                    let samples = Samples::from(values);
-                    DoubleMadOutlierDetector::with_estimator(
-                        &samples,
-                        HarrellDavisNormalizedEstimator,
-                    )
+                let threshold = DoubleMadOutlierDetector::DEFAULT_K;
+                check_outliers(test_data_key, test_data, |_values| {
+                    DoubleMadOutlierDetector::new(threshold, AnomalyMADEstimator::HarrellDavis)
                 })
             };
 
