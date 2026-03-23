@@ -1,14 +1,14 @@
+use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::mad_estimator::{
     HarrellDavisNormalizedEstimator, InvariantMADEstimator, MedianAbsoluteDeviationEstimator,
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
     Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal,
-    MethodInfo, BatchOutlierDetector,
+    BatchOutlierDetector, MethodInfo,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
-use crate::analysis::TimeSeriesAnalysisResult;
 
 /// Outlier detector based on the median absolute deviation.
 /// Considers all values outside [median - k * Mad, median + k * Mad] as outliers.
@@ -139,7 +139,10 @@ impl BatchOutlierDetector for MadOutlierDetector {
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
         debug_assert!(!data.is_empty(), "Sample cannot be empty");
-        fn get_mad_median(data: &[f64], estimator: impl MedianAbsoluteDeviationEstimator) -> (f64, f64) {
+        fn get_mad_median(
+            data: &[f64],
+            estimator: impl MedianAbsoluteDeviationEstimator,
+        ) -> (f64, f64) {
             let samples = Samples::from(data.to_vec());
             let median = estimator.quantile_estimator().median(&samples);
             let mad = estimator.mad(&samples);

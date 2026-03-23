@@ -175,7 +175,8 @@ impl SmoothedZScoreAnomalyDetector {
     }
 
     pub fn next_batch(&mut self, values: &[f64]) -> TimeSeriesAnalysisResult<Vec<AnomalySignal>> {
-        values.iter()
+        values
+            .iter()
             .map(|&v| self.next(v))
             .collect::<TimeSeriesAnalysisResult<Vec<_>>>()
     }
@@ -478,10 +479,11 @@ mod tests {
 
     #[test]
     fn test_get_anomaly_score_clamps_to_unit_interval() {
-        let initial_values = vec![1.0, 2.0, 3.0, 2.0, 1.0];
+        let initial_values = [1.0, 2.0, 3.0, 2.0, 1.0];
 
         let lag = initial_values.len();
-        let detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
+        let mut detector = SmoothedZScoreAnomalyDetector::new(0.0, 2.0, lag).unwrap();
+        detector.train(&initial_values).unwrap();
 
         let s = detector.get_anomaly_score(detector.prev_mean + 1e308);
         assert!((0.0..=1.0).contains(&s));

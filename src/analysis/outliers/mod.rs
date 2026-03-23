@@ -19,9 +19,9 @@ mod utils;
 mod zscore_outlier_detector;
 
 pub use anomalies::*;
+pub use esd_outlier_detector::*;
 pub use rcf_outlier_detector::*;
 pub use smoothed_zscores::*;
-pub use esd_outlier_detector::*;
 
 use crate::analysis::TimeSeriesAnalysisResult;
 use std::fmt::Display;
@@ -349,7 +349,6 @@ impl Default for MADAnomalyOptions {
         }
     }
 }
-
 
 /// Trait for outlier detection
 pub trait BatchOutlierDetector {

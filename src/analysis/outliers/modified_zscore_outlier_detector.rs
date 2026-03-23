@@ -2,7 +2,7 @@ use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_median_sorted;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
 };
 
 pub const MODIFIED_ZSCORE_DEFAULT_THRESHOLD: f64 = 3.5;
@@ -30,9 +30,10 @@ impl Default for ModifiedZScoreOutlierDetector {
 }
 impl ModifiedZScoreOutlierDetector {
     pub fn new(threshold: f64) -> Self {
-        let mut detector = ModifiedZScoreOutlierDetector::default();
-        detector.threshold = threshold;
-        detector
+        ModifiedZScoreOutlierDetector {
+            threshold,
+            ..Default::default()
+        }
     }
 
     #[inline]

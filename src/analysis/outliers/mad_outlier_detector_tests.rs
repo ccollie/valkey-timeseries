@@ -1,7 +1,7 @@
 use super::mad_outlier_detector::MadOutlierDetector;
 use super::outlier_test_data::{
-    beta_data_set, modified_beta_data_set, real_data_set, yang_data_set, TestData, EMPTY_DATASET,
-    SAME_DATASET,
+    EMPTY_DATASET, SAME_DATASET, TestData, beta_data_set, modified_beta_data_set, real_data_set,
+    yang_data_set,
 };
 use crate::analysis::outliers::{AnomalySignal, BatchOutlierDetector};
 use std::collections::HashMap;
@@ -261,8 +261,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::outliers::outlier_test_data::check_outliers;
     use crate::analysis::outliers::AnomalyMADEstimator;
+    use crate::analysis::outliers::outlier_test_data::check_outliers;
 
     #[test]
     fn mad_outlier_detector_simple_qe_tests() {

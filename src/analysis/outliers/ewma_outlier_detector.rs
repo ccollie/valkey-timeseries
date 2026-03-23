@@ -2,7 +2,7 @@ use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_v
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
 };
 
 /// Default alpha for Ewma SPC

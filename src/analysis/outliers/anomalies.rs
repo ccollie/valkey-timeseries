@@ -5,7 +5,7 @@
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
 use super::{
-    AnomalyMethod, AnomalyResult, MADAnomalyOptions, BatchOutlierDetector,
+    AnomalyMethod, AnomalyResult, BatchOutlierDetector, MADAnomalyOptions,
     SmoothedZScoreAnomalyDetector,
     cusum_outlier_detector::CusumOutlierDetector,
     double_mad_outlier_detector::DoubleMadOutlierDetector,
@@ -20,7 +20,7 @@ use super::{
     zscore_outlier_detector::ZScoreOutlierDetector,
 };
 use crate::analysis::outliers::esd_outlier_detector::{ESDOutlierDetector, ESDOutlierOptions};
-use crate::analysis::seasonality::{seasonally_adjust, Seasonality};
+use crate::analysis::seasonality::{Seasonality, seasonally_adjust};
 use crate::analysis::{INSUFFICIENT_DATA_ERROR, TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
 #[derive(Debug, Clone)]

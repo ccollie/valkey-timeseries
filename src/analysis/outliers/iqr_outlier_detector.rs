@@ -1,7 +1,7 @@
 use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
 };
 
 pub const IQR_DEFAULT_THRESHOLD: f64 = 1.5;

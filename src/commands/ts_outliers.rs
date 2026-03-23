@@ -3,6 +3,7 @@ use crate::analysis::outliers::{
     AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold,
     SmoothedZScoreOptions, detect_anomalies,
 };
+use crate::analysis::seasonality::Seasonality;
 use crate::commands::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_duration_ms,
     parse_timestamp_range,
@@ -16,7 +17,6 @@ use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
-use crate::analysis::seasonality::Seasonality;
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
 
@@ -41,10 +41,10 @@ enum ZScoreType {
 }
 
 /// TS.OUTLIERS key fromTimestamp toTimestamp
-/// METHOD <method> [method-specific-options]
-/// [OUTPUT <full|simple|cleaned>]
-/// [DIRECTION <positive|negative|both>]
-/// [SEASONALITY <period1> [period2] ...]
+///     METHOD <method> [method-specific-options]
+///     [OUTPUT <full|simple|cleaned>]
+///     [DIRECTION <positive|negative|both>]
+///     [SEASONALITY <period1> [period2] ...]
 pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 6 {
         return Err(ValkeyError::WrongArity);

@@ -2,7 +2,7 @@ use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_mean_std_dev, calculate_std_dev};
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
 };
 
 /// Statistical Process Control (Spc) cusum anomaly detection

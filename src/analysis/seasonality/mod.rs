@@ -3,10 +3,10 @@ mod periodogram;
 pub mod stl;
 mod test_data;
 
-pub use periodogram::Detector as PeriodogramDetector;
+use crate::analysis::seasonality::mstl::Mstl;
 use crate::analysis::seasonality::stl::Stl;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
-use crate::analysis::seasonality::mstl::Mstl;
+pub use periodogram::Detector as PeriodogramDetector;
 
 /// A detector of periodic signals in a time series.
 pub trait SeasonalityDetector {

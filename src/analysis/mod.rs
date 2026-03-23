@@ -5,4 +5,3 @@ pub mod quantile_estimators;
 pub mod seasonality;
 
 pub use error::*;
-

@@ -1,9 +1,9 @@
+use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_mean_std_dev;
 use crate::analysis::outliers::utils::normalize_unbounded_score;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, BatchOutlierDetector,
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
 };
-use crate::analysis::TimeSeriesAnalysisResult;
 
 /// Outlier detector based on the Z-Score method.
 /// Considers all values outside [mean - k * std_dev, mean + k * std_dev] as outliers.
@@ -34,9 +34,10 @@ impl ZScoreOutlierDetector {
     pub const DEFAULT_THRESHOLD: f64 = 3.0;
 
     pub fn new(threshold: f64) -> Self {
-        let mut detector = ZScoreOutlierDetector::default();
-        detector.threshold = threshold;
-        detector
+        ZScoreOutlierDetector {
+            threshold,
+            ..Default::default()
+        }
     }
 
     #[inline]
@@ -160,9 +161,8 @@ pub(super) fn detect_anomalies_zscore(
     ts: &[f64],
     threshold: Option<f64>,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = ZScoreOutlierDetector::new(
-        threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
-    );
+    let mut detector =
+        ZScoreOutlierDetector::new(threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD));
     detector.train(ts)?;
     detector.detect(ts)
 }
@@ -170,7 +170,7 @@ pub(super) fn detect_anomalies_zscore(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::outliers::{detect_anomalies, AnomalyOptions};
+    use crate::analysis::outliers::{AnomalyOptions, detect_anomalies};
 
     #[test]
     fn test_zscore_anomaly_detection() {

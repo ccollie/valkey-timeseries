@@ -1,5 +1,7 @@
 use crate::analysis::math::calculate_median_sorted;
-use crate::analysis::outliers::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector};
+use crate::analysis::outliers::{
+    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector,
+};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use statrs::distribution::{ContinuousCDF, StudentsT};
 
@@ -24,7 +26,6 @@ impl Default for ESDOutlierOptions {
         }
     }
 }
-
 
 /// Outlier detector based on the Extreme Studentized Deviate (ESD) test. Used to detect one or more outliers in a
 /// univariate data set that follows an approximately normal distribution
