@@ -270,8 +270,7 @@ impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
         // Use the smaller of the input data length and the configured lag for
-        // initializing the moving statistics. Using max() was incorrect and
-        // resulted in the entire data being used as the initial window.
+        // initializing the moving statistics.
         let n = data.len().min(self.lag);
         let (initial, _rest) = data.split_at(n);
         let (mean, std_dev) = self.moving_stats.initialize(initial);
