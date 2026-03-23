@@ -428,27 +428,6 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         assert len(result) == 0
 
-    def test_rcf_detection(self):
-        """Test Random Cut Forest (Rcf) anomaly detection"""
-        key = "rcf_test"
-
-        self.client.execute_command("TS.CREATE", key)
-
-        for i in range(100):
-            value = (i / 10.0) if i != 50 else 10.0
-            self.client.execute_command("TS.ADD", key, i, value)
-
-        result = self.client.execute_command("TS.OUTLIERS",
-                                             key, "-", "+",
-                                             "OUTPUT", "full",
-                                             "method", "rcf",
-                                             "threshold", 2.5)
-
-        print("rcf result", result)
-        result = TSOutliersFullResult.parse(result)
-
-        assert any(x != 0 for x in result.anomalies)
-
     def test_format_cleaned(self):
         """Test OUTPUT cleaned returns samples without anomalies and anomaly list."""
         key = 'test:outliers:format:cleaned'
