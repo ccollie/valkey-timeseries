@@ -1,4 +1,4 @@
-use crate::commands::command_args::{parse_join_args, parse_timestamp_range};
+use crate::commands::command_parser::{parse_join_args, parse_timestamp_range};
 use crate::error_consts;
 use crate::join::{JoinOptions, process_join};
 use crate::series::get_timeseries;
@@ -11,7 +11,7 @@ use valkey_module::{AclPermissions, Context, NextArg, ValkeyError, ValkeyResult,
 ///   [COUNT count]
 ///   [REDUCE op]
 ///   [AGGREGATION aggregator bucket_duration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
-pub fn join(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_join_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 
     let left_key = args.next_arg()?;

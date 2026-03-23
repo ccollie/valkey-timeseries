@@ -1,4 +1,4 @@
-use crate::commands::command_args::{
+use crate::commands::command_parser::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_series_selector_list,
     parse_timestamp_range_value,
 };
@@ -16,7 +16,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 ///    - Removes samples in [fromTimestamp, toTimestamp] for matching series
 /// 2. Series deletion: TS.MDEL FILTER label=value
 ///    - Removes entire time series matching the filter
-pub fn mdel(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_mdel_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 
     // Check if we have a timestamp range or just FILTER

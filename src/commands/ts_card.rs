@@ -1,5 +1,5 @@
 use super::card_fanout_command::CardFanoutCommand;
-use crate::commands::command_args::parse_metadata_command_args;
+use crate::commands::command_parser::parse_metadata_command_args;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::count_matched_series;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -8,7 +8,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 /// TS.CARD [FILTER_BY_RANGE fromTimestamp toTimestamp] [FILTER filter...]
 ///
 /// returns the number of unique time series that match a certain label set.
-pub fn cardinality(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_card_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, false)?;
 

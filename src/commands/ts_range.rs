@@ -1,4 +1,4 @@
-use crate::commands::command_args::parse_range_options;
+use crate::commands::command_parser::parse_range_options;
 use crate::iterators::TimeSeriesRangeIterator;
 use crate::series::get_timeseries;
 use valkey_module::{
@@ -11,7 +11,7 @@ use valkey_module::{
 //   [FILTER_BY_VALUE min max]
 //   [COUNT count]
 //   [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
-pub fn range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_range_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     range_internal(ctx, args, false)
 }
 
@@ -21,7 +21,7 @@ pub fn range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 //   [FILTER_BY_VALUE min max]
 //   [COUNT count]
 //   [[ALIGN align] AGGREGATION aggregator bucket_duration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
-pub fn rev_range(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_revrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     range_internal(ctx, args, true)
 }
 

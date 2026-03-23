@@ -14,11 +14,11 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 //   [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
 //   FILTER filterExpr...
 //   [GROUPBY label REDUCE reducer]
-pub fn mrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_mrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     mrange_internal(ctx, args, false)
 }
 
-pub fn mrevrange(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_mrevrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     mrange_internal(ctx, args, true)
 }
 

@@ -16,7 +16,7 @@ use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString, ValkeyV
 ///     [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///
-pub fn add_bulk(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_addbulk_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 3 {
         return Err(valkey_module::ValkeyError::WrongArity);
     }

@@ -1,4 +1,4 @@
-use crate::commands::command_args::parse_timestamp_range;
+use crate::commands::command_parser::parse_timestamp_range;
 use crate::series::with_timeseries_mut;
 use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
@@ -8,7 +8,7 @@ use valkey_module::{
 ///
 /// TS.DEL key fromTimestamp toTimestamp
 ///
-pub fn del(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_del_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let key = args.next_arg()?;
 

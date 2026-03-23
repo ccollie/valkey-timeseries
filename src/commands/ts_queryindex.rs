@@ -1,11 +1,11 @@
-use crate::commands::command_args::parse_query_index_command_args;
+use crate::commands::command_parser::parse_query_index_command_args;
 use crate::commands::query_index_fanout_command::QueryIndexFanoutCommand;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::series_keys_by_selectors;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
-pub fn query_index(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_queryindex_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(WrongArity);
     }

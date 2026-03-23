@@ -3,7 +3,7 @@ use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.GET key [LATEST]
-pub fn get(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_get_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 || args.len() > 3 {
         return Err(WrongArity);
     }

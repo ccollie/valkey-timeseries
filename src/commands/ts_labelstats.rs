@@ -5,7 +5,7 @@ use crate::series::index::get_timeseries_index;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#tsdb-stats
-pub fn label_stats(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_labelstats_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() > 5 {
         return Err(ValkeyError::WrongArity);
     }

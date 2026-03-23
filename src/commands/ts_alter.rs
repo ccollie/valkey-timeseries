@@ -1,4 +1,4 @@
-use crate::commands::command_args::CommandArgToken;
+use crate::commands::command_parser::CommandArgToken;
 use crate::commands::parse_series_options;
 use crate::labels::MetricName;
 use crate::series::index::get_timeseries_index;
@@ -16,7 +16,7 @@ use valkey_module::{
 ///   [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///   [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///   [LABELS label1=value1 label2=value2 ...]
-pub fn alter_series(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_alter_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(ValkeyError::WrongArity);
     }

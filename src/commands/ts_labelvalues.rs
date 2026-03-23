@@ -1,5 +1,5 @@
 use super::label_values_fanout_command::LabelValuesFanoutCommand;
-use crate::commands::command_args::parse_metadata_command_args;
+use crate::commands::command_parser::parse_metadata_command_args;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::with_matched_series;
@@ -10,7 +10,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 
 // TS.LABELVALUES label [FILTER_BY_RANGE fromTimestamp  fromTimestamp] [LIMIT limit] FILTER seriesMatcher...
 // https://prometheus.io/docs/prometheus/latest/querying/api/#querying-label-values
-pub fn label_values(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_labelvalues_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 3 {
         return Err(WrongArity);
     }

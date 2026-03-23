@@ -1,4 +1,4 @@
-use crate::commands::command_args::{parse_timestamp, parse_value_arg};
+use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
@@ -39,7 +39,7 @@ struct SeriesSamples<'a> {
 /// allows us to add multiple samples at once per series, while parallelizing across series blocks.
 /// Because of that there is extra bookkeeping to do, including mapping results back to the
 /// original input and returning results in input order.
-pub fn madd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_madd_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let arg_count = args.len() - 1;
 
     if arg_count < 3 || !arg_count.is_multiple_of(3) {

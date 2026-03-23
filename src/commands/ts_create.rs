@@ -1,4 +1,4 @@
-use crate::commands::command_args::{
+use crate::commands::command_parser::{
     CommandArgToken, parse_chunk_compression, parse_chunk_size, parse_command_arg_token,
     parse_decimal_digit_rounding, parse_duplicate_policy, parse_ignore_options, parse_metric_name,
     parse_retention, parse_significant_digit_rounding,
@@ -19,7 +19,7 @@ use valkey_module::{Context, NextArg, VALKEY_OK, ValkeyError, ValkeyResult, Valk
 ///   [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///   [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///   [LABELS label1=value1 label2=value2 ...]
-pub fn create(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_create_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let (parsed_key, options) = parse_create_options(args)?;
 
     let _ = create_and_store_series(ctx, &parsed_key, options, true, false)?;

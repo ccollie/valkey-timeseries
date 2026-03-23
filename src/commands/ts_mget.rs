@@ -1,5 +1,5 @@
 use super::mget_fanout_command::MGetFanoutCommand;
-use crate::commands::command_args::CommandArgToken;
+use crate::commands::command_parser::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
@@ -13,7 +13,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 ///   [LATEST]
 ///   [WITHLABELS | SELECTED_LABELS label...]
 ///   [FILTER filterExpr...]
-pub fn mget(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_mget_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(ValkeyError::WrongArity);
     }

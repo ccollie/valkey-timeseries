@@ -12,7 +12,7 @@ use valkey_module::{
 /// The rule is removed from the sourceKey, and the src_series field in destKey is cleared, but
 /// the destination series is not deleted.
 ///
-pub fn delete_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_deleterule_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Check for minimum number of arguments: command, sourceKey, destKey
     if args.len() != 3 {
         return Err(ValkeyError::WrongArity);

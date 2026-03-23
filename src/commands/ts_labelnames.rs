@@ -1,5 +1,5 @@
 use super::label_names_fanout_command::LabelNamesFanoutCommand;
-use crate::commands::command_args::parse_metadata_command_args;
+use crate::commands::command_parser::parse_metadata_command_args;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::with_matched_series;
 use crate::series::request_types::MatchFilterOptions;
@@ -8,7 +8,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
 /// TS.LABELNAMES [FILTER_BY_RANGE fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
-pub fn label_names(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_labelnames_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, true)?;
 

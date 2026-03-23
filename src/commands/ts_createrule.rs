@@ -1,5 +1,5 @@
 use crate::aggregators::{AggregationType, Aggregator};
-use crate::commands::command_args::parse_aggregator_value_filter;
+use crate::commands::command_parser::parse_aggregator_value_filter;
 use crate::commands::{CommandArgIterator, CommandArgToken, parse_duration};
 use crate::error_consts;
 use crate::parser::timestamp::parse_timestamp;
@@ -18,7 +18,7 @@ use valkey_module::{
 /// Creates a compaction rule from sourceKey to destKey with a specific aggregator and bucket duration.
 /// sourceKey must be different from destKey, and the user must be authorized to read from sourceKey and write to destKey.
 ///
-pub fn create_rule(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_createrule_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Check for minimum number of arguments: command, sourceKey, destKey, AGGREGATION, aggregator, bucketDuration
     if args.len() < 6 {
         return Err(ValkeyError::WrongArity);

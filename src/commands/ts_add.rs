@@ -1,4 +1,4 @@
-use crate::commands::command_args::{parse_timestamp, parse_value_arg};
+use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
 use crate::commands::parse_series_options;
 use crate::common::{Sample, Timestamp};
 use crate::series::{SampleAddResult, TimeSeries, create_and_store_series, get_timeseries_mut};
@@ -18,7 +18,7 @@ use valkey_module::{
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///     [LABELS label1=value1 label2=value2 ...]
 ///
-pub fn add(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_add_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 4 {
         return Err(ValkeyError::WrongArity);
     }

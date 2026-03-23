@@ -1,4 +1,4 @@
-use crate::commands::command_args::{parse_timestamp, parse_value_arg};
+use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
 use crate::commands::{CommandArgToken, parse_series_options};
 use crate::common::Timestamp;
 use crate::error_consts;
@@ -7,11 +7,11 @@ use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
-pub fn incrby(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_incrby_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     incr_decr(ctx, args, true)
 }
 
-pub fn decrby(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_decrby_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     incr_decr(ctx, args, false)
 }
 
