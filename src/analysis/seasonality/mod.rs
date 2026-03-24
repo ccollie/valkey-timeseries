@@ -82,8 +82,8 @@ fn validate_insufficient_data<T: Default>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::seasonality::test_data::SEASON_SEVEN;
     use crate::analysis::TimeSeriesAnalysisError;
+    use crate::analysis::seasonality::test_data::SEASON_SEVEN;
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -131,8 +131,7 @@ mod tests {
         let period = 7_usize;
         // n < 2 * period → error
         let data: Vec<f64> = vec![1.0; period * 2 - 1];
-        let err = seasonally_adjust(&data, &Seasonality::Periods(vec![period]))
-            .unwrap_err();
+        let err = seasonally_adjust(&data, &Seasonality::Periods(vec![period])).unwrap_err();
         assert_insufficient_data(&err, 2 * period, data.len());
     }
 
@@ -218,7 +217,9 @@ mod tests {
         // vec and seasonally_adjust returns the original slice unchanged.
         let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 4.0, 3.0, 2.0, 1.0, 2.0];
         let result = seasonally_adjust(&data, &Seasonality::Auto).unwrap();
-        assert_eq!(result, data, "with no detectable period the input must be returned unchanged");
+        assert_eq!(
+            result, data,
+            "with no detectable period the input must be returned unchanged"
+        );
     }
 }
-

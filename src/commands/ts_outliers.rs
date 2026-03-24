@@ -45,7 +45,7 @@ enum ZScoreType {
 ///     [OUTPUT <full|simple|cleaned>]
 ///     [DIRECTION <positive|negative|both>]
 ///     [SEASONALITY <period1> [period2] ...]
-pub fn outliers(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 6 {
         return Err(ValkeyError::WrongArity);
     }
