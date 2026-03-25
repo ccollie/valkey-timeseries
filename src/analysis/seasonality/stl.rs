@@ -151,7 +151,7 @@ impl Stl {
             1
         };
 
-        for _ in 0..outer_iters {
+        for o in 0..outer_iters {
             // Inner loop
             for _ in 0..self.inner_iterations {
                 // Step 1: Detrending
@@ -184,7 +184,7 @@ impl Stl {
             }
 
             // Update robustness weights
-            if self.robust {
+            if self.robust && o < outer_iters - 1 {
                 let remainder: Vec<f64> = series
                     .iter()
                     .zip(seasonal.iter())
@@ -336,13 +336,16 @@ impl Stl {
             let start = i.saturating_sub(half_span);
             let end = (i + half_span + 1).min(n);
 
-            // Compute weighted local regression (simplified to weighted mean)
-            let mut sum_weights = 0.0;
-            let mut sum_values = 0.0;
+            // Compute weighted local linear regression
+            let mut sw = 0.0;
+            let mut swx = 0.0;
+            let mut swx2 = 0.0;
+            let mut swy = 0.0;
+            let mut swxy = 0.0;
 
             for j in start..end {
                 let dist = (i as f64 - j as f64).abs();
-                let max_dist = half_span as f64 + 1.0;
+                let max_dist = (half_span as f64 + 1.0).max(dist);
                 let u = dist / max_dist;
                 let tricube = if u < 1.0 {
                     (1.0 - u.powi(3)).powi(3)
@@ -350,15 +353,30 @@ impl Stl {
                     0.0
                 };
                 let w = tricube * weights[j];
-                sum_weights += w;
-                sum_values += w * values[j];
+                let x = j as f64;
+                let y = values[j];
+
+                sw += w;
+                swx += w * x;
+                swx2 += w * x * x;
+                swy += w * y;
+                swxy += w * x * y;
             }
 
-            result[i] = if sum_weights > 0.0 {
-                sum_values / sum_weights
+            if sw <= 1e-10 {
+                result[i] = values[i];
+                continue;
+            }
+
+            let denom = sw * swx2 - swx * swx;
+            if denom.abs() < 1e-10 {
+                // If the denominator is zero, fall back to weighted mean
+                result[i] = swy / sw;
             } else {
-                values[i]
-            };
+                let a = (swy * swx2 - swx * swxy) / denom;
+                let b = (sw * swxy - swx * swy) / denom;
+                result[i] = a + b * (i as f64);
+            }
         }
 
         result
