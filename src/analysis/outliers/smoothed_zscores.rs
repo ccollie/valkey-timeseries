@@ -219,7 +219,7 @@ impl SmoothedZScoreAnomalyDetector {
         }
 
         // Keep output lengths equal to the input length (pad the initial window).
-        let mut scores: Vec<f64> = vec![0.0; self.lag];
+        let mut scores: Vec<f64> = vec![0.0; n];
         let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
         for (index, &value) in rest.iter().enumerate() {
@@ -228,7 +228,7 @@ impl SmoothedZScoreAnomalyDetector {
             let signal = self.next(value)?;
             if signal != AnomalySignal::None {
                 anomalies.push(Anomaly {
-                    index: index + self.lag,
+                    index: index + n,
                     signal,
                     value,
                     score,
@@ -272,13 +272,27 @@ impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
         // Use the smaller of the input data length and the configured lag for
         // initializing the moving statistics.
-        let n = data.len().min(self.lag);
+        let mut n = self.lag;
+        if n >= data.len() {
+            n = if !data.is_empty() { data.len() - 1 } else { 0 };
+        }
+        if n == 0 && !data.is_empty() {
+            // If lag is 0 or data.len() is 1, use the first element
+            n = 1;
+        }
+        if n == 0 {
+            return Err(TimeSeriesAnalysisError::InsufficientData {
+                message: "insufficient data to train smoothed z-score".to_string(),
+                required: 1,
+                actual: 0,
+            });
+        }
         let (initial, _rest) = data.split_at(n);
         let (mean, std_dev) = self.moving_stats.initialize(initial);
 
         self.prev_mean = mean;
         self.prev_std_dev = std_dev;
-        self.prev_value = initial[self.lag - 1];
+        self.prev_value = initial[n - 1];
         // Mark the detector as trained so `next()` can be called safely.
         self.is_trained = true;
         Ok(())
@@ -293,8 +307,8 @@ impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
     }
 
     fn classify(&self, x: f64) -> AnomalySignal {
-        let score = (x - self.prev_mean).abs();
-        if score > self.threshold * self.prev_std_dev {
+        let deviation = (x - self.prev_mean).abs();
+        if deviation > self.threshold * self.prev_std_dev {
             if x > self.prev_mean {
                 AnomalySignal::Positive
             } else {
@@ -364,7 +378,7 @@ impl Default for SmoothedZScoreOptions {
         Self {
             threshold: 3.5,
             influence: 0.0,
-            lag: 0,
+            lag: 10,
         }
     }
 }
