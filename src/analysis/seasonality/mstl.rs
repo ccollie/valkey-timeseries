@@ -56,7 +56,8 @@ impl MSTLResult {
             return Some(0.0);
         }
 
-        Some((1.0 - var_remainder / var_sr).clamp(0.0, 1.0))
+        let strength = 1.0 - var_remainder / var_sr;
+        Some(strength.clamp(0.0, 1.0))
     }
 
     /// Get trend strength.
@@ -74,7 +75,8 @@ impl MSTLResult {
             return 0.0;
         }
 
-        (1.0 - var_remainder / var_tr).clamp(0.0, 1.0)
+        let strength = 1.0 - var_remainder / var_tr;
+        strength.clamp(0.0, 1.0)
     }
 }
 
@@ -99,7 +101,7 @@ impl Mstl {
         Self {
             seasonal_periods: periods,
             iterations: 2,
-            robust: false,
+            robust: true, // Enable robustness by default
         }
     }
 
@@ -149,11 +151,14 @@ impl Mstl {
             }
 
             // Extract trend using Stl with the longest period
-            let stl_trend = if self.robust {
-                Stl::new(max_period).robust()
+            let mut stl_trend = if self.robust {
+                Stl::new(max_period).robust().with_outer_iterations(5)
             } else {
                 Stl::new(max_period)
             };
+
+            // Ensure trend is smooth and does not absorb spikes
+            stl_trend = stl_trend.with_trend_smoothness(n | 1);
 
             if let Some(trend_result) = stl_trend.decompose(&deseasonalized) {
                 trend = trend_result.trend;
@@ -161,23 +166,30 @@ impl Mstl {
 
             // Extract each seasonal component
             for (s_idx, &period) in self.seasonal_periods.iter().enumerate() {
-                // Remove trend and other seasonal components
+                // Remove other seasonal components from the series
                 let mut adjusted: Vec<f64> = series.to_vec();
-                for i in 0..n {
-                    adjusted[i] -= trend[i];
-                    for (other_idx, other_seasonal) in seasonal_components.iter().enumerate() {
-                        if other_idx != s_idx {
+                for (other_idx, other_seasonal) in seasonal_components.iter().enumerate() {
+                    if other_idx != s_idx {
+                        for i in 0..n {
                             adjusted[i] -= other_seasonal[i];
                         }
                     }
                 }
+                // Also remove trend
+                for i in 0..n {
+                    adjusted[i] -= trend[i];
+                }
 
                 // Extract this seasonal component using Stl
-                let stl_seasonal = if self.robust {
-                    Stl::new(period).robust()
+                let mut stl_seasonal = if self.robust {
+                    Stl::new(period).robust().with_outer_iterations(5) // Reduced from 10 to 5 for efficiency
                 } else {
                     Stl::new(period)
                 };
+
+                // Ensure seasonal components are smooth
+                // For daily/weekly patterns, we want enough smoothness to not follow noise/spikes
+                stl_seasonal = stl_seasonal.with_seasonal_smoothness((period * 10 + 1).min(n | 1));
 
                 if let Some(seasonal_result) = stl_seasonal.decompose(&adjusted) {
                     seasonal_components[s_idx] = seasonal_result.seasonal;
