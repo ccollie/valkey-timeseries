@@ -96,7 +96,7 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     };
 
     // Get the time series data for the specified range
-    let (start, end) = date_range.get_timestamps(None);
+    let (start, end) = date_range.get_series_range(&series, None, false);
     let samples = series.get_range(start, end);
 
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
