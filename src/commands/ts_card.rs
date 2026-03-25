@@ -1,4 +1,4 @@
-use super::card_fanout_command::CardFanoutCommand;
+use super::ts_card_fanout_command::CardFanoutCommand;
 use crate::commands::command_parser::parse_metadata_command_args;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::count_matched_series;

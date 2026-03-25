@@ -1,4 +1,4 @@
-use super::mget_fanout_command::MGetFanoutCommand;
+use super::ts_mget_fanout_command::MGetFanoutCommand;
 use crate::commands::command_parser::CommandArgToken;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;

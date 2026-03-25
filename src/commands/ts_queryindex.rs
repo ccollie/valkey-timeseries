@@ -1,5 +1,5 @@
 use crate::commands::command_parser::parse_query_index_command_args;
-use crate::commands::query_index_fanout_command::QueryIndexFanoutCommand;
+use crate::commands::ts_queryindex_fanout_command::QueryIndexFanoutCommand;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::series_keys_by_selectors;
 use valkey_module::ValkeyError::WrongArity;

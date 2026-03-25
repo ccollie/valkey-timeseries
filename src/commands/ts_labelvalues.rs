@@ -1,4 +1,4 @@
-use super::label_values_fanout_command::LabelValuesFanoutCommand;
+use super::ts_labelvalues_fanout_command::LabelValuesFanoutCommand;
 use crate::commands::command_parser::parse_metadata_command_args;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};

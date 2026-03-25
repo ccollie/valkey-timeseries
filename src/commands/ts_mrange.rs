@@ -1,5 +1,5 @@
-use crate::commands::mrange_fanout_command::MRangeFanoutCommand;
 use crate::commands::parse_mrange_options;
+use crate::commands::ts_mrange_fanout_command::MRangeFanoutCommand;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::mrange::process_mrange_query;

@@ -1,4 +1,4 @@
-use super::label_names_fanout_command::LabelNamesFanoutCommand;
+use super::ts_labelnames_fanout_command::LabelNamesFanoutCommand;
 use crate::commands::command_parser::parse_metadata_command_args;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::with_matched_series;

@@ -2,7 +2,7 @@ use crate::commands::command_parser::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_series_selector_list,
     parse_timestamp_range_value,
 };
-use crate::commands::mdel_fanout_command::MDelFanoutCommand;
+use crate::commands::ts_mdel_fanout_command::MDelFanoutCommand;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::labels::filters::SeriesSelector;
