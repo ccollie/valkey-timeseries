@@ -110,7 +110,7 @@ METHOD EWMA [ALPHA alpha]
 
 **Options:**
 
-* `ALPHA` - Smoothing factor (0 < alpha ≤ 1). Default: `0.2`. Higher values give more weight to recent observations.
+* `ALPHA` - Smoothing factor (0 < alpha ≤ 1). Default: `0.3`. Higher values give more weight to recent observations.
 
 ---
 
@@ -187,7 +187,7 @@ METHOD MAD [ESTIMATOR estimator] [THRESHOLD k]
 
 **Options:**
 
-* `ESTIMATOR` - MAD calculation method: `SIMPLE`, `HARRELL-DAVIS`, or `QUANTILE`. Default: `SIMPLE`
+* `ESTIMATOR` - MAD calculation method: `SIMPLE`, `HARRELL-DAVIS`, or `INVARIANT`. Default: `INVARIANT`
 * `THRESHOLD` - MAD multiplier. Default: `3.0`
 
 ---
@@ -202,7 +202,7 @@ METHOD DOUBLE-MAD [ESTIMATOR estimator] [THRESHOLD k]
 
 **Options:**
 
-* `ESTIMATOR` - MAD calculation method: `SIMPLE`, `HARRELL-DAVIS`, or `QUANTILE`. Default: `SIMPLE`
+* `ESTIMATOR` - MAD calculation method: `SIMPLE`, `HARRELL-DAVIS`, or `INVARIANT`. Default: `INVARIANT`
 * `THRESHOLD` - MAD multiplier. Default: `3.0`
 
 Separately analyzes values above and below the median for better handling of skewed data.
