@@ -58,6 +58,10 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.
 * `TS.LABELSTATS`: Get statistics about label usage in the index.
 
+### Anomaly Detection
+
+* `TS.OUTLIERS`: Identify outliers in a series based on a specified algorithm and parameters.
+
 ## Indexes
 
 Valkey TimeSeries uses a label-based indexing system separate from the key space.
@@ -70,11 +74,10 @@ Valkey TimeSeries uses a label-based indexing system separate from the key space
   usage and query efficiency.
 
 `valkey-timeseries` maintains a per-node, per-database inverted index to map labels to series.
-Indexes exist separate from the Valkey database itself. Updates of the database trigger updates the index which
-are done by background threads. Query operations are also performed by background threads optionally switching to the
-main thread to access the Valkey database. The consistency model between these two domains is further described below.
-Applications don't directly put data into an index, rather mutation operations on keys within the declared keyspace of
-an index automatically update the index with the labels of that key.
+The indexes themselves exist separate from the Valkey database itself. Applications don't directly modify an index,
+rather
+mutation operations on keys within the declared keyspace of an index automatically update the index with the labels of
+that key.
 
 # Index Replication
 
@@ -99,9 +102,10 @@ Timeseries fully supports cluster mode and uses Valkey's cluster bus and protobu
 
 In cluster mode, Valkey distributes keys according to the hash algorithm of the keyname. This placement of data is not
 affected by the presence of the timeseries module or any timeseries indexes. Since timeseries commands operate at the
-index level -- not the key level -- timeseries is responsible for dealing with the distribution of data, performing
-intra-cluster RPC to execute commands as needed. Thus, the application interface to valkey-timeseries operates the same
-in cluster and non-cluster mode.
+index level -- not the key level -- valkey-timeseries is responsible for the distribution of data, performing
+intra-cluster RPC
+to execute commands as needed. Thus, the application interface to valkey-timeseries operates the same in cluster and
+non-cluster mode.
 
 Timeseries uses a simple architecture where index definitions are replicated on every node, but the corresponding index
 only contains the data which is co-resident on that node. Index update operations remain wholly local to a node and will
