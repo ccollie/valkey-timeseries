@@ -25,7 +25,7 @@ pub fn seasonally_adjust(
     ts: &[f64],
     seasonality: &Seasonality,
 ) -> TimeSeriesAnalysisResult<Vec<f64>> {
-    let periods = match seasonality {
+    let mut periods = match seasonality {
         Seasonality::Periods(periods) => periods.clone(),
         Seasonality::Auto => {
             // use periodogram to detect periods
@@ -37,6 +37,8 @@ pub fn seasonally_adjust(
     if periods.is_empty() {
         return Ok(ts.to_vec());
     }
+
+    periods.sort_unstable();
 
     let n = ts.len();
     if periods.len() == 1 {
