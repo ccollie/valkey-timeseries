@@ -81,8 +81,8 @@ class TestServerEvents(ValkeyTimeSeriesTestCaseBase):
         # Set the key to expire in 1 second
         self.client.expire(key, 1)
 
-        # Wait for the key to expire
-        time.sleep(2)
+        # Wait for the key to expire using the test framework waiter instead of sleep
+        wait_for_true(lambda: not self.client.exists(key), timeout=TEST_MAX_WAIT_TIME_SECONDS)
 
         # The key should be gone
         assert not self.client.exists(key)
