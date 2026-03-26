@@ -36,14 +36,15 @@ def maybe_map_from_kv_array(value: Any) -> Any:
 
 
 class AnomalyMethod(Enum):
-    STATISTICAL_PROCESS_CONTROL = "StatisticalProcessControl"
-    Z_SCORE = "ZScore"
-    MODIFIED_Z_SCORE = "ModifiedZScore"
-    SMOOTHED_Z_SCORE = "SmoothedZScore"
+    EWMA = "EWMA"
+    CUSUM = "CUSUM"
+    ESD = "ESD"
+    ZSCORE = "ZScore"
+    MODIFIED_ZSCORE = "ModifiedZScore"
+    SMOOTHED_ZSCORE = "SmoothedZScore"
     MAD = "Mad"
     DOUBLE_MAD = "DoubleMAD"
-    INTERQUARTILE_RANGE = "InterquartileRange"
-    ISOLATION_FOREST = "IsolationForest"
+    IQR = "InterquartileRange"
     RANDOM_CUT_FOREST = "RandomCutForest"
 
     @staticmethod
@@ -52,22 +53,28 @@ class AnomalyMethod(Enum):
 
         normalized = raw.strip()
         aliases: dict[str, AnomalyMethod] = {
-            "StatisticalProcessControl": AnomalyMethod.STATISTICAL_PROCESS_CONTROL,
-            "SPC": AnomalyMethod.STATISTICAL_PROCESS_CONTROL,
-            "ZScore": AnomalyMethod.Z_SCORE,
-            "ModifiedZScore": AnomalyMethod.MODIFIED_Z_SCORE,
-            "SmoothedZScore": AnomalyMethod.SMOOTHED_Z_SCORE,
-            "Mad": AnomalyMethod.MAD,
-            "DoubleMAD": AnomalyMethod.DOUBLE_MAD,
-            "InterquartileRange": AnomalyMethod.INTERQUARTILE_RANGE,
-            "IQR": AnomalyMethod.INTERQUARTILE_RANGE,
-            "IsolationForest": AnomalyMethod.ISOLATION_FOREST,
-            "RandomCutForest": AnomalyMethod.RANDOM_CUT_FOREST,
-            "RCF": AnomalyMethod.RANDOM_CUT_FOREST,
+            "ewma": AnomalyMethod.EWMA,
+            "esd": AnomalyMethod.ESD,
+            "cusum": AnomalyMethod.CUSUM,
+            "zscore": AnomalyMethod.ZSCORE,
+            "modified-zscore": AnomalyMethod.MODIFIED_ZSCORE,
+            "modifiedzscore": AnomalyMethod.MODIFIED_ZSCORE,
+            "smoothed-zscore": AnomalyMethod.SMOOTHED_ZSCORE,
+            "smoothedzscore": AnomalyMethod.SMOOTHED_ZSCORE,
+            "mad": AnomalyMethod.MAD,
+            "doublemad": AnomalyMethod.DOUBLE_MAD,
+            "interquartilerange": AnomalyMethod.IQR,
+            "iqr": AnomalyMethod.IQR,
+            "randomcutforest": AnomalyMethod.RANDOM_CUT_FOREST,
+            "rcf": AnomalyMethod.RANDOM_CUT_FOREST,
         }
 
         if normalized in aliases:
             return aliases[normalized]
+
+        lower = normalized.lower()
+        if lower in aliases:
+            return aliases[lower]
 
         for m in AnomalyMethod:
             if m.value == normalized:
@@ -85,7 +92,7 @@ class Sample:
     @staticmethod
     def parse(value: Any) -> "Sample":
         if not isinstance(value, Sequence) or (len(value) != 2 and len(value) != 3):
-            raise TypeError("Sample must be a 2-item array: [timestamp, value]")
+            raise TypeError("Sample must be a 2- or 3-item array: [timestamp, value, score?]")
         timestamp = to_int(value[0])
         val = to_float(value[1])
         score = None
@@ -180,11 +187,10 @@ class TSOutliersFullResult:
         threshold = to_float(value.get("threshold"))
 
         raw_samples = value.get("samples") or []
-        samples: List[Sample] = [
-            Sample(to_int(pair[0]), to_float(pair[1])) for pair in raw_samples
-        ]
+        samples: List[Sample] = [Sample.parse(pair) for pair in raw_samples]
 
-        anomalies_raw = value.get("outliers") or []
+        # Accept either 'outliers' or legacy 'anomalies' key for anomaly entries
+        anomalies_raw = value.get("outliers") or value.get("anomalies") or []
         anomalies: List[AnomalyEntry] = []
         for raw_anomaly in anomalies_raw:
             anomaly = AnomalyEntry.parse(raw_anomaly)
@@ -218,28 +224,7 @@ class TSOutliersFullResult:
         )
 
     def anomaly_count(self) -> int:
-        return sum(1 for signal in self.anomalies if signal != 0)
-
-
-@dataclass(frozen=True, slots=True)
-class TSOutliersCleanedResult:
-    samples: List[Sample]
-    anomalies: List[AnomalyEntry]
-
-    @staticmethod
-    def parse(value: Any) -> "TSOutliersCleanedResult":
-        value = maybe_map_from_kv_array(value)
-
-        if not isinstance(value, Mapping):
-            raise TypeError("FORMAT cleaned result must be a map with keys: samples, anomalies")
-
-        raw_samples = value.get("samples") or []
-        raw_anomalies = value.get("anomalies") or []
-
-        samples = [Sample.parse(item) for item in raw_samples]
-        anomalies = [AnomalyEntry.parse(item) for item in raw_anomalies]
-
-        return TSOutliersCleanedResult(samples=samples, anomalies=anomalies)
+        return len(self.anomalies)
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,14 +240,18 @@ class TSOutliersCleanedResult:
 
     @staticmethod
     def parse(value: Any) -> "TSOutliersCleanedResult":
-        """Parse the raw Valkey response into a TSOutliersCleanedResult."""
+        """Parse the raw Valkey response into a TSOutliersCleanedResult.
+
+        Accepts responses shaped either with an 'outliers' key (preferred) or
+        a legacy 'anomalies' key for the list of anomaly entries.
+        """
         value = maybe_map_from_kv_array(value)
 
         if not isinstance(value, Mapping):
-            raise TypeError("FORMAT cleaned result must be a map with keys: samples, outliers")
+            raise TypeError("FORMAT cleaned result must be a map with keys: samples and outliers/anomalies")
 
         raw_samples = value.get("samples") or []
-        raw_anomalies = value.get("outliers") or []
+        raw_anomalies = value.get("outliers") or value.get("anomalies") or []
 
         samples = [Sample.parse(item) for item in raw_samples]
         anomalies = [AnomalyEntry.parse(item) for item in raw_anomalies]
