@@ -21,7 +21,7 @@ pub trait QuantileEstimator {
     /// # Returns
     ///
     /// Quantile estimation for the given sample.
-    fn quantile(&self, sample: &Samples, probability: Probability) -> f64;
+    fn quantile(&self, sample: &Samples, probability: f64) -> f64;
 
     fn quantiles(&self, sample: &Samples, probabilities: &[f64]) -> Vec<f64> {
         probabilities
