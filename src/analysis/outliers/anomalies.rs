@@ -100,21 +100,22 @@ impl AnomalyOptions {
 /// # Example
 ///
 /// ```
-/// use std::collections::Vec;
-/// use super::{detect_anomalies, AnomalyOptions, AnomalyMethod};
+/// use crate::analysis::outliers::anomalies::{detect_anomalies, AnomalyOptions, AnomalyDetectionMethodOptions};
 ///
 /// // Create a time series with some anomalies
-/// let mut ts = Vec::from_vec((0..100).map(|i| (i as f64 / 10.0).sin()).collect());
+/// let mut ts = vec![0.0; 100];
+/// for i in 0..100 {
+///     ts[i] = (i as f64 / 10.0).sin();
+/// }
 /// ts[25] = 5.0; // Anomaly
 /// ts[75] = -5.0; // Anomaly
 ///
 /// let options = AnomalyOptions {
-///     method: AnomalyMethod::ZScore,
-///     threshold: Some(3.0),
+///     options: AnomalyDetectionMethodOptions::ZScore(Some(3.0)),
 ///     ..Default::default()
 /// };
 ///
-/// let result = detect_anomalies(&ts, &options).unwrap();
+/// let result = detect_anomalies(&ts, options).unwrap();
 /// println!("Anomalies detected: {}", result.anomalies.len());
 /// ```
 pub fn detect_anomalies(
