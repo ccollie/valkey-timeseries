@@ -56,10 +56,6 @@ impl StudentDistribution {
     }
 }
 
-fn regularized_incomplete_beta_inv(a: f64, b: f64, p: f64) -> f64 {
-    beta_regularized_incomplete_value(a, b, p)
-}
-
 #[inline]
 fn sqr(x: f64) -> f64 {
     x * x
