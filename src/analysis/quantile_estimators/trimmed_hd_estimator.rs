@@ -183,6 +183,7 @@ mod tests {
 
     const EPSILON: f64 = 1e-6;
 
+    #[test]
     pub fn test_beta_hdi() {
         let cases = [
             [10.0, 0.0, 0.3, 0.7, 1.0],
