@@ -237,7 +237,9 @@ impl HyndmanFanQuantileEstimator {
 
 impl QuantileEstimator for HyndmanFanQuantileEstimator {
     fn quantile(&self, samples: &Samples, probability: Probability) -> f64 {
-        self.quantile(samples, probability)
+        // Call the inherent method explicitly via the type to avoid recursively
+        // calling this trait method implementation.
+        HyndmanFanQuantileEstimator::quantile(self, samples, probability)
     }
 
     fn supports_weighted_samples(&self) -> bool {
