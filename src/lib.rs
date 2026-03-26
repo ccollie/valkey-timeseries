@@ -17,6 +17,7 @@ use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
 
 pub mod aggregators;
+mod analysis;
 pub(crate) mod commands;
 pub mod common;
 pub mod config;
@@ -180,7 +181,8 @@ valkey_module! {
         ["TS.LABELSTATS", commands::ts_labelstats_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CREATERULE", commands::ts_createrule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.DELETERULE", commands::ts_deleterule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS._DEBUG", commands::debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
+        ["TS.OUTLIERS", commands::ts_outliers_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
+        ["TS._DEBUG", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]

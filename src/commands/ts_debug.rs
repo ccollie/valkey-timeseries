@@ -133,7 +133,7 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
 }
 
 /// Main entry point for TS._DEBUG command.
-pub fn debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<()> {
+pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<()> {
     // skip the command name and parse the subcommand keyword
     let mut itr = args.into_iter().skip(1).peekable();
 
