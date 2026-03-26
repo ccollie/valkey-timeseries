@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
+"""Helpers to parse TS.OUTLIERS test responses.
+
+This module provides small helper functions and lightweight dataclasses
+used by the test-suite to interpret raw Valkey/Redis-style reply shapes
+for the TS.OUTLIERS command in its different FORMAT modes (full/cleaned).
+"""
+
 AnomalySignal = Literal[-1, 0, 1]
 
 
@@ -26,7 +33,12 @@ def to_str(value: Any) -> str:
 
 
 def maybe_map_from_kv_array(value: Any) -> Any:
-    # Some clients return MAP as a flat list: [k1, v1, k2, v2, ...]
+    """Convert a flat key/value array into a dict when needed.
+
+    Some clients return MAP responses as a flat list: [k1, v1, k2, v2, ...].
+    When that shape is detected we convert it into a dict {k1: v1, k2: v2,...}.
+    Non-list inputs are returned unchanged.
+    """
 
     if isinstance(value, list):
         out: dict[str, Any] = {}
@@ -52,6 +64,12 @@ class AnomalyMethod(Enum):
 
     @staticmethod
     def parse(value: Any) -> "AnomalyMethod":
+        """Parse a method name (string/bytes) into an AnomalyMethod enum.
+
+        Accepts a variety of aliases and is case-insensitive for common
+        method names.
+        """
+
         raw = to_str(value)
 
         normalized = raw.strip()
@@ -88,6 +106,13 @@ class AnomalyMethod(Enum):
 
 @dataclass(frozen=True, slots=True)
 class Sample:
+    """A single time-series sample.
+
+    Represented as a tuple/array in replies: [timestamp, value] or
+    [timestamp, value, score]. The optional `score` holds an anomaly
+    score when present.
+    """
+
     timestamp: int
     value: float
     score: Optional[float] = None
@@ -107,6 +132,13 @@ class Sample:
 
 @dataclass(frozen=True, slots=True)
 class AnomalyEntry:
+    """A detected anomaly entry.
+
+    Represented as a 4-item array in replies: [timestamp, value, signal, score].
+    `signal` is -1/0/1 indicating negative/none/positive signal, and
+    `score` is a numeric anomaly score.
+    """
+
     timestamp: int
     value: float
     signal: AnomalySignal
@@ -167,21 +199,22 @@ class TSOutliersFullResult:
     samples: List[Sample]
     anomalies: List[AnomalyEntry]
     method_info: Optional[MethodInfo] = None
-
-    """
-    Parse a Valkey client response for `TS.OUTLIERS ... FORMAT full`.
-
-    Expected shape (as Python types):
-    - dict with keys: method, threshold, samples, scores, anomalies, optional method_info
-    - samples: list of [timestamp, value, Score?]
-    - anomalies: list of ints (-1, 0, 1)
-    - method_info: dict with one of:
-        * {lower_fence, upper_fence}
-        * {control_limits: [low, high], center_line}
-        * {average_path_length}
-    """
     @staticmethod
     def parse(value: Any) -> TSOutliersFullResult:
+        """
+        Parse a Valkey client response for `TS.OUTLIERS ... FORMAT full`.
+
+        Expected shape (as Python types):
+        - dict with keys: method, threshold, samples, outliers (or legacy 'anomalies'), optional method_info
+        - samples: list of [timestamp, value, score?]
+        - outliers / anomalies: list of [timestamp, value, signal, score]
+          where `signal` is one of -1, 0, 1
+        - method_info: dict with one of:
+            * {lower_fence, upper_fence}
+            * {control_limits: [low, high], center_line}
+            * {average_path_length}
+        """
+
         value = maybe_map_from_kv_array(value)
 
         if not isinstance(value, dict):
