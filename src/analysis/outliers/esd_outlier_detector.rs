@@ -70,12 +70,17 @@ impl BatchOutlierDetector for ESDOutlierDetector {
         detect_anomalies_esd(ts, self.alpha, self.hybrid, self.max_outliers)
     }
 
+    // ESD is a batch detector and does not currently expose per-point scores.
+    // Return a neutral score instead of panicking.
     fn get_anomaly_score(&self, _value: f64) -> f64 {
-        todo!()
+        0.0
     }
 
+    // ESD does not classify individual points in isolation. Return a default
+    // signal instead of panicking, to avoid runtime crashes when this method
+    // is called via a trait object or generic bound.
     fn classify(&self, _x: f64) -> AnomalySignal {
-        todo!()
+        AnomalySignal::None
     }
 }
 
@@ -101,7 +106,7 @@ fn detect_anomalies_esd(
             return Err(err);
         }
         Some(m) => m,
-        None => 1,
+        None => n / 2,
     };
 
     // Perform ESD test
