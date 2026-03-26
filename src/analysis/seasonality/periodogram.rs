@@ -163,7 +163,7 @@ impl Detector {
         let max_period = self.max_period.unwrap_or_else(|| default_max_period(data));
         let frequency = 1.0;
         let data_len = data.len();
-        let n_per_segment = (max_period * 2).min(data_len as u32 / 2);
+        let n_per_segment = (max_period * 2).min(data_len as u32 / 2).max(1);
         let max_fft_size = (n_per_segment as f64).log2().floor() as usize;
         let n_segments = (data_len as f64 / n_per_segment as f64).ceil() as usize;
 
