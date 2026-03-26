@@ -49,10 +49,13 @@ impl RunningStats {
 }
 
 fn sum_and_count_finite(data: &[f64]) -> (f64, usize) {
-    data.iter()
-        .fold((0.0f64, 0usize), |(s, c), &x| {
-            if x.is_finite() { (s + x, c + 1) } else { (s, c) }
-        })
+    data.iter().fold((0.0f64, 0usize), |(s, c), &x| {
+        if x.is_finite() {
+            (s + x, c + 1)
+        } else {
+            (s, c)
+        }
+    })
 }
 
 /// Utility function to calculate mean and standard deviation of a slice of f64 values.
@@ -75,14 +78,20 @@ pub fn calculate_std_dev(data: &[f64]) -> f64 {
 
 pub fn calculate_mean(data: &[f64]) -> f64 {
     let (sum, count) = sum_and_count_finite(data);
-    if count == 0 { 0.0 } else { sum / (count as f64) }
+    if count == 0 {
+        0.0
+    } else {
+        sum / (count as f64)
+    }
 }
 
 /// Compute variance.
 pub fn calculate_variance(values: &[f64]) -> f64 {
     let finite: Vec<f64> = values.iter().copied().filter(|x| x.is_finite()).collect();
     let n = finite.len();
-    if n < 2 { return 0.0; }
+    if n < 2 {
+        return 0.0;
+    }
     let mean = finite.iter().sum::<f64>() / (n as f64);
     finite.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / ((n - 1) as f64)
 }
@@ -203,4 +212,3 @@ mod tests {
         assert_eq!(calculate_variance(&v), 1.0);
     }
 }
-
