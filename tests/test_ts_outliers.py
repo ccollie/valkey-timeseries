@@ -143,8 +143,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         result = self.client.execute_command(
             "TS.OUTLIERS", key, "-", "+",
-            "method", "modified-zscore",
-            "threshold", 3.5
+            "method", "modified-zscore", "threshold", 3.5
         )
 
         outliers = convert_anomaly_entries(result)

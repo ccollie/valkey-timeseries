@@ -186,13 +186,18 @@ fn parse_output_format(arg: &str) -> ValkeyResult<OutputFormat> {
 }
 
 fn parse_ewma_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let alpha = if args.peek().is_some() {
-        args.next(); // consume ALPHA
-        Some(parse_single_value(args, "ALPHA")?)
+    // EWMA [ALPHA <value>]
+    let alpha = if let Some(arg) = args.peek() {
+        let slice = arg.as_slice();
+        if slice.len() == 5 && slice.eq_ignore_ascii_case(b"alpha") {
+            args.next(); // consume ALPHA
+            Some(parse_single_value(args, "ALPHA")?)
+        } else {
+            None
+        }
     } else {
         None
     };
-    args.done()?;
 
     let mut options = AnomalyOptions {
         ..Default::default()
@@ -204,12 +209,7 @@ fn parse_ewma_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOpti
 }
 
 fn parse_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let threshold = if args.peek().is_some() {
-        // Expect: THRESHOLD <value>
-        parse_single_option_value(args, "THRESHOLD").map(Some)?
-    } else {
-        None
-    };
+    let threshold = parse_optional_threshold_option(args)?;
     Ok(AnomalyOptions {
         options: AnomalyDetectionMethodOptions::ZScore(threshold),
         ..Default::default()
@@ -217,12 +217,7 @@ fn parse_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOp
 }
 
 fn parse_modified_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let threshold = if args.peek().is_some() {
-        // Expect: THRESHOLD <value>
-        parse_single_option_value(args, "THRESHOLD").map(Some)?
-    } else {
-        None
-    };
+    let threshold = parse_optional_threshold_option(args)?;
 
     let options = AnomalyOptions {
         options: AnomalyDetectionMethodOptions::ModifiedZScore(threshold),
@@ -407,12 +402,7 @@ fn parse_double_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<Anoma
 }
 
 fn parse_iqr_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let threshold = if args.peek().is_some() {
-        // Expect: THRESHOLD <value>
-        Some(parse_single_option_value(args, "THRESHOLD")?)
-    } else {
-        None
-    };
+    let threshold = parse_optional_threshold_option(args)?;
 
     Ok(AnomalyOptions {
         options: AnomalyDetectionMethodOptions::InterQuartileRange(threshold),
@@ -480,6 +470,11 @@ fn parse_esd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 
     while let Some(arg) = args.next() {
         let arg_slice = arg.as_slice();
+
+        if is_command_option(arg_slice) {
+            break;
+        }
+
         hashify::fnc_map_ignore_case!(arg_slice,
            "ALPHA" => {
                 esd_options.alpha = parse_single_value(args, "ALPHA")?;
@@ -500,6 +495,18 @@ fn parse_esd_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 
     Ok(options)
 }
+
+fn parse_optional_threshold_option(args: &mut CommandArgIterator) -> ValkeyResult<Option<f64>> {
+    if let Some(arg) = args.peek()
+        && arg.eq_ignore_ascii_case(b"threshold")
+    {
+        let _ = args.next();
+        Ok(Some(parse_single_value(args, "THRESHOLD")?))
+    } else {
+        Ok(None)
+    }
+}
+
 fn parse_single_option_value(
     iter: &mut CommandArgIterator,
     option_name: &str,
