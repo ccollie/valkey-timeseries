@@ -70,8 +70,7 @@ impl ZScoreOutlierDetector {
         let mut scores = Vec::with_capacity(n);
         let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
-        for (index, &v) in ts.iter().enumerate() {
-            let value = if v.is_nan() { 0.0 } else { v };
+        for (index, &value) in ts.iter().enumerate() {
             let zscore = self.get_zscore(value);
             let z_abs = zscore.abs();
             let score = normalize_unbounded_score(z_abs);
@@ -92,7 +91,7 @@ impl ZScoreOutlierDetector {
                 let outlier = Anomaly {
                     index,
                     signal,
-                    value: v,
+                    value,
                     score,
                 };
                 anomalies.push(outlier);
