@@ -27,8 +27,11 @@ def to_str(value: Any) -> str:
 
 def maybe_map_from_kv_array(value: Any) -> Any:
     # Some clients return MAP as a flat list: [k1, v1, k2, v2, ...]
+
     if isinstance(value, list):
         out: dict[str, Any] = {}
+        if len(value) % 2 != 0:
+            raise ValueError("Invalid key-value array length")
         for i in range(0, len(value), 2):
             out[to_str(value[i])] = value[i + 1]
         return out
@@ -165,21 +168,22 @@ class TSOutliersFullResult:
     anomalies: List[AnomalyEntry]
     method_info: Optional[MethodInfo] = None
 
+    """
+    Parse a Valkey client response for `TS.OUTLIERS ... FORMAT full`.
+
+    Expected shape (as Python types):
+    - dict with keys: method, threshold, samples, scores, anomalies, optional method_info
+    - samples: list of [timestamp, value, Score?]
+    - anomalies: list of ints (-1, 0, 1)
+    - method_info: dict with one of:
+        * {lower_fence, upper_fence}
+        * {control_limits: [low, high], center_line}
+        * {average_path_length}
+    """
     @staticmethod
     def parse(value: Any) -> TSOutliersFullResult:
         value = maybe_map_from_kv_array(value)
-        """
-        Parse a Valkey client response for `TS.OUTLIERS ... FORMAT full`.
 
-        Expected shape (as Python types):
-        - dict with keys: method, threshold, samples, scores, anomalies, optional method_info
-        - samples: list of [timestamp, value, Score?]
-        - anomalies: list of ints (-1, 0, 1)
-        - method_info: dict with one of:
-            * {lower_fence, upper_fence}
-            * {control_limits: [low, high], center_line}
-            * {average_path_length}
-        """
         if not isinstance(value, dict):
             raise TypeError(f"Expected dict for FORMAT full result, got {type(value)!r}")
 
