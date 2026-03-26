@@ -91,7 +91,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         # Should only have the second bucket's compacted value
         latest = self.client.execute_command('TS.GET', dest_key, 'LATEST')
         samples = self.client.execute_command('TS.RANGE', dest_key, 0, '+')
-        print(f"Compacted samples after deletion: {samples}")
+
         assert int(latest[1]) == 21  # Average of 21.0
 
     def test_del_multiple_buckets_partial(self):
@@ -283,7 +283,7 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         assert isinstance(compacted, list)
         assert isinstance(source_samples, list)
 
-    @pytest.mark.skipif(reason="Ignored until server events issue is resolved")
+    @pytest.mark.skip(reason="Ignored until server events issue is resolved")
     def test_del_multiple_compaction_rules(self):
         """Test deletion with multiple compaction rules on the same source"""
         source_key = 'source:multi_rules'
