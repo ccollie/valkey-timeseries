@@ -221,7 +221,7 @@ impl HyndmanFanQuantileEstimator {
         let n = sample.len();
 
         let get_value = |index: usize| -> f64 {
-            let idx = index - 1; // Adapt one-based formula to zero-based index
+            let idx = index.saturating_sub(1); // Adapt one-based formula to zero-based index
             if idx == 0 {
                 sorted_values[0]
             } else if idx >= n {
