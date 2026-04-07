@@ -84,6 +84,7 @@ command_arg_tokens! {
     Condition => "CONDITION",
     Count => "COUNT",
     DecimalDigits => "DECIMAL_DIGITS",
+    Direction => "DIRECTION",
     DuplicatePolicy => "DUPLICATE_POLICY",
     Empty => "EMPTY",
     Encoding => "ENCODING",
@@ -104,17 +105,20 @@ command_arg_tokens! {
     Limit => "LIMIT",
     Match => "MATCH",
     Metric => "METRIC",
+    Method => "METHOD",
     Name => "NAME",
     Nearest => "NEAREST",
     Next => "NEXT",
     Not => "NOT",
     OnDuplicate => "ON_DUPLICATE",
+    Output => "OUTPUT",
     Previous => "PREVIOUS",
     Prior => "PRIOR",
     Reduce => "REDUCE",
     Retention => "RETENTION",
     Right => "RIGHT",
     Rounding => "ROUNDING",
+    Seasonality => "SEASONALITY",
     SelectedLabels => "SELECTED_LABELS",
     Semi => "SEMI",
     SignificantDigits => "SIGNIFICANT_DIGITS",
@@ -439,7 +443,7 @@ fn next_token(args: &mut CommandArgIterator) -> ValkeyResult<Option<CommandArgTo
     Ok(parse_command_arg_token(arg.as_bytes()))
 }
 
-fn parse_optional_token_block(
+pub(super) fn parse_optional_token_block(
     args: &mut CommandArgIterator,
     valid_tokens: &[CommandArgToken],
     max_tokens: usize,

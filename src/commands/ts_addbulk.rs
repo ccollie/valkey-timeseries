@@ -1,4 +1,4 @@
-use crate::commands::parse_series_options;
+use crate::commands::ts_create::parse_series_options;
 use crate::common::Sample;
 use crate::series::{
     IngestedSamples, TimeSeries, bulk_insert_samples, create_and_store_series, get_timeseries_mut,

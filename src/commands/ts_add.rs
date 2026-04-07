@@ -1,5 +1,5 @@
 use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
-use crate::commands::parse_series_options;
+use crate::commands::ts_create::parse_series_options;
 use crate::common::{Sample, Timestamp};
 use crate::series::{SampleAddResult, TimeSeries, create_and_store_series, get_timeseries_mut};
 use valkey_module::{

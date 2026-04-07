@@ -1,5 +1,5 @@
 use crate::commands::command_parser::CommandArgToken;
-use crate::commands::parse_series_options;
+use crate::commands::ts_create::parse_series_options;
 use crate::labels::MetricName;
 use crate::series::index::get_timeseries_index;
 use crate::series::{SampleDuplicatePolicy, TimeSeries, TimeSeriesOptions, with_timeseries_mut};
