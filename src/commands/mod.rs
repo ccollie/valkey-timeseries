@@ -30,12 +30,12 @@ mod ts_mget_fanout_command;
 mod ts_mrange;
 mod ts_mrange_fanout_command;
 mod ts_outliers;
+mod ts_query;
 mod ts_queryindex;
 mod ts_queryindex_fanout_command;
+mod ts_queryrange;
 mod ts_range;
 mod utils;
-mod ts_queryrange;
-mod ts_query;
 
 pub use command_parser::*;
 pub use ts_add::*;

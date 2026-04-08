@@ -16,6 +16,7 @@ use std::sync::{Arc, LazyLock};
 use valkey_module::Context;
 
 use super::fanout::cluster_rpc::register_cluster_message_handlers;
+pub use cluster_rpc::get_cluster_command_timeout;
 pub use fanout_client_command::*;
 pub use fanout_command::*;
 pub use fanout_context::FanoutContext;
