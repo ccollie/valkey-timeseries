@@ -1,5 +1,6 @@
 pub mod command_parser;
 mod fanout;
+mod promql_utils;
 mod ts_add;
 mod ts_addbulk;
 mod ts_alter;
@@ -33,6 +34,8 @@ mod ts_queryindex;
 mod ts_queryindex_fanout_command;
 mod ts_range;
 mod utils;
+mod ts_queryrange;
+mod ts_query;
 
 pub use command_parser::*;
 pub use ts_add::*;
@@ -56,9 +59,11 @@ pub use ts_mdel::*;
 pub use ts_mget::*;
 pub use ts_mrange::*;
 pub use ts_outliers::*;
+pub use ts_query::*;
 pub use ts_queryindex::*;
 pub use ts_queryrange::*;
 pub use ts_range::*;
+
 use valkey_module::ValkeyResult;
 
 use crate::fanout::register_fanout_operation;
