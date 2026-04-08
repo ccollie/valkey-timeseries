@@ -18,6 +18,8 @@ cfg-if = "1.0.4"
 chrono = { version = "0.4" }
 croaring = "2.6"
 enquote = "1.1.0"
+promql-parser = { version = "0.8", default-features = false, features = ["ser", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.7", features = ["derive"] }
 halfbrown = { version = "0.4", features = ["arraybackend"] }
@@ -52,6 +54,10 @@ simd-json = "0.17.0"
 log = "0.4"
 statrs = "0.18"
 welch-sde = "0.1.0"
+regex-syntax = "0.8.10"
+proptest = "1.11.0"
+tracing = "0.1.44"
+blake3 = "1.8.4"
 
 [dev-dependencies]
 rstest = "0.26.1"
