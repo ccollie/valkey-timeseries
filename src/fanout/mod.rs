@@ -22,6 +22,7 @@ use valkey_module::logging::{log_notice, log_warning};
 
 use super::fanout::cluster_rpc::register_cluster_message_handlers;
 pub use acl::*;
+pub use cluster_rpc::get_cluster_command_timeout;
 pub use fanout_client_command::*;
 pub use fanout_command::*;
 pub use fanout_context::FanoutContext;
