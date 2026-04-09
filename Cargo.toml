@@ -57,7 +57,7 @@ welch-sde = "0.1.0"
 regex-syntax = "0.8.10"
 proptest = "1.11.0"
 tracing = "0.1.44"
-blake3 = "1.8.4"
+twox-hash = { version = "2.1", features = ["std", "xxhash3_128"] }
 
 [dev-dependencies]
 rstest = "0.26.1"
