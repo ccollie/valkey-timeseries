@@ -10,12 +10,14 @@ use crate::commands::{
 };
 use crate::common::Sample;
 use crate::common::hash::IntSet;
+use crate::common::threads::spawn;
 use crate::error_consts;
-use crate::series::get_timeseries;
+use crate::series::{TimestampRange, get_timeseries};
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
-    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+    AclPermissions, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
+    ValkeyValue,
 };
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
@@ -91,25 +93,68 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
     }
 
-    let Some(series) = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)? else {
-        return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));
-    };
-
-    // Get the time series data for the specified range
-    let (start, end) = date_range.get_series_range(&series, None, false);
-    let samples = series.get_range(start, end);
-
-    let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
-
     let mut options = options.unwrap_or_default();
     options.seasonality = seasonality;
 
-    // Perform analysis detection
-    let result = detect_anomalies(&values, options)
-        .map_err(|e| ValkeyError::String(format!("TSDB: outlier detection failed: {e}")))?;
+    process_request(
+        ctx,
+        key.to_vec(),
+        date_range,
+        options,
+        anomaly_direction,
+        output_format,
+    )
+}
 
-    // Format result based on the requested format
-    format_output(result, samples, anomaly_direction, output_format)
+fn process_request(
+    ctx: &Context,
+    key: Vec<u8>,
+    date_range: TimestampRange,
+    options: AnomalyOptions,
+    anomaly_direction: AnomalyDirection,
+    output_format: OutputFormat,
+) -> ValkeyResult {
+    let blocked_client = ctx.block_client();
+    spawn(move || {
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+
+        let samples_res = {
+            let ctx = thread_ctx.lock();
+            let key = ctx.create_string(key);
+            match get_timeseries(&ctx, &key, Some(AclPermissions::ACCESS), false) {
+                Ok(Some(series)) => {
+                    let (start, end) = date_range.get_series_range(&series, None, false);
+                    Ok(series.get_range(start, end))
+                }
+                Ok(None) => Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
+                Err(e) => Err(e),
+            }
+        };
+
+        match samples_res {
+            Err(e) => {
+                thread_ctx.reply(Err(e));
+            }
+            Ok(samples) => {
+                let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
+                match detect_anomalies(&values, options) {
+                    Err(err) => {
+                        thread_ctx.reply(Err(ValkeyError::String(format!(
+                            "TSDB: outlier detection failed: {err}"
+                        ))));
+                    }
+                    Ok(result) => {
+                        let reply =
+                            format_output(result, samples, anomaly_direction, output_format);
+                        thread_ctx.reply(reply);
+                    }
+                }
+            }
+        }
+    });
+
+    // Reply will be sent from the background thread
+    Ok(ValkeyValue::NoReply)
 }
 
 fn parse_method_options(
