@@ -16,8 +16,8 @@ use crate::series::{TimestampRange, get_timeseries};
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
-    AclPermissions, Context, MODULE_CONTEXT, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult,
-    ValkeyString, ValkeyValue,
+    AclPermissions, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
+    ValkeyValue,
 };
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
@@ -54,7 +54,7 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let mut args = args.into_iter().skip(1).peekable();
 
-    let key = args.next_string()?;
+    let key = args.next_arg()?;
     // Parse timestamps
     let date_range = parse_timestamp_range(&mut args)?;
 
@@ -98,7 +98,7 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     process_request(
         ctx,
-        key,
+        key.to_vec(),
         date_range,
         options,
         anomaly_direction,
@@ -108,7 +108,7 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
 fn process_request(
     ctx: &Context,
-    key: String,
+    key: Vec<u8>,
     date_range: TimestampRange,
     options: AnomalyOptions,
     anomaly_direction: AnomalyDirection,
@@ -118,11 +118,9 @@ fn process_request(
     spawn(move || {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
 
-        // Acquire module context and fetch samples inside a small scope so we don't hold the lock
-        // longer than necessary.
         let samples_res = {
-            let ctx = MODULE_CONTEXT.lock();
-            let key = ctx.create_string(key.as_bytes());
+            let ctx = thread_ctx.lock();
+            let key = ctx.create_string(key);
             match get_timeseries(&ctx, &key, Some(AclPermissions::ACCESS), false) {
                 Ok(Some(series)) => {
                     let (start, end) = date_range.get_series_range(&series, None, false);
