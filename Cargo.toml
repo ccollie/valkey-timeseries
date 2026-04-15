@@ -60,6 +60,7 @@ tracing = "0.1.44"
 twox-hash = { version = "2.1", features = ["std", "xxhash3_128"] }
 
 [dev-dependencies]
+criterion = "0.5"
 rstest = "0.26.1"
 test-case = "3.3"
 
