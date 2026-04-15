@@ -60,6 +60,7 @@ tracing = "0.1.44"
 twox-hash = { version = "2.1", features = ["std", "xxhash3_128"] }
 
 [dev-dependencies]
+criterion = "0.5"
 rstest = "0.26.1"
 test-case = "3.3"
 serial_test = { version = "3.3", default-features = false }
@@ -69,7 +70,12 @@ prost-build = "0.14"
 
 [lib]
 name="valkey_timeseries"
-crate-type=["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bench]]
+name = "promql_engine"
+harness = false
+required-features = ["enable-system-alloc"]
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]
