@@ -401,7 +401,7 @@ fn optimize_indices(_ctx: &ThreadSafeContext<DetachedFromClient>) {
 }
 
 fn trim_unused_dbs(_ctx: &ThreadSafeContext<DetachedFromClient>) {
-    let mut index = TIMESERIES_INDEX.pin();
+    let index = TIMESERIES_INDEX.pin();
     index.retain(|db, ts_index| {
         if ts_index.is_empty() {
             log_debug(format!("Removing unused db {db} from index"));
