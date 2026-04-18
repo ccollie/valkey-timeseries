@@ -53,7 +53,12 @@ pub trait FanoutCommand: Default + Send + 'static {
     fn generate_request(&self) -> Self::Request;
 
     /// Called once per successful response from a target node.
-    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);
+    ///
+    /// This handler is now fallible; returning `Err(FanoutError)` will be treated as a
+    /// per-shard failure (it increments the aggregated error count and will cause the
+    /// overall fanout to reply with an error at completion). Implementations should
+    /// return `Ok(())` on success.
+    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult;
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         // Log the error with context
@@ -67,6 +72,13 @@ pub trait FanoutCommand: Default + Send + 'static {
 
     /// Called once all responses have been received, or on timeout.
     fn on_completion(&mut self) {}
+
+    /// If true, the fanout operation should abort immediately on the first
+    /// failing `on_response`. Default is `false` to preserve existing
+    /// per-shard error aggregation behavior.
+    fn fail_fast(&self) -> bool {
+        false
+    }
 
     fn generate_error_reply(&self) -> FanoutError {
         let message = "Internal error found.";
@@ -186,10 +198,32 @@ where
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
         self.is_init = true;
-        if !self.timed_out {
-            self.operation.on_response(resp, target);
+        if self.timed_out {
+            // We already timed out; ignore responses but mark RPC as done.
+            self.rpc_done();
+            return;
         }
-        self.rpc_done()
+
+        // Call the operation's on_response and treat any error as a per-shard error, maintaining
+        // consistent bookkeeping (error_count, timed_out handling, logging).
+        match self.operation.on_response(resp, target) {
+            Ok(()) => self.rpc_done(),
+            Err(err) => {
+                // If the operation requests fail-fast behavior, abort the fanout
+                // immediately after invoking the command's on_error hook and
+                // incrementing the error count. Otherwise, treat it as a normal
+                // per-shard error and continue.
+                if self.operation.fail_fast() {
+                    // Allow the operation to run its error handler for diagnostics
+                    self.operation.on_error(err.clone(), target);
+                    self.error_count += 1;
+                    // Immediately complete the fanout (do not wait for other shards)
+                    self.on_completion();
+                } else {
+                    self.on_error(err, target);
+                }
+            }
+        }
     }
 
     fn on_completion(&mut self) {

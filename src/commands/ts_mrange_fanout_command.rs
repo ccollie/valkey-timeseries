@@ -1,7 +1,7 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
 use crate::common::Sample;
-use crate::fanout::FanoutContext;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
+use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
@@ -64,9 +64,10 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         serialize_request(&self.options)
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         let mut resp = resp;
         self.series.append(&mut resp.series);
+        Ok(())
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {

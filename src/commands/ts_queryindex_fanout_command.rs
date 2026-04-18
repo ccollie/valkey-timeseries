@@ -1,7 +1,7 @@
 use super::fanout::filters::serialize_matchers_list;
 use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
-use crate::fanout::FanoutContext;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
+use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::BTreeSet;
@@ -47,10 +47,11 @@ impl FanoutClientCommand for QueryIndexFanoutCommand {
         IndexQueryRequest { range, filters }
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         for key in resp.keys {
             self.keys.insert(key);
         }
+        Ok(())
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {

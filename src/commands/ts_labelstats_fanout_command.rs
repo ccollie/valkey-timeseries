@@ -1,7 +1,7 @@
 use super::fanout::generated::{PostingStat as MPostingStat, StatsRequest, StatsResponse};
 use crate::commands::DEFAULT_STATS_RESULTS_LIMIT;
 use crate::common::threads::join;
-use crate::fanout::{FanoutClientCommand, FanoutContext, NodeInfo};
+use crate::fanout::{FanoutClientCommand, FanoutCommandResult, FanoutContext, NodeInfo};
 use crate::series::index::{
     PostingStat, PostingsBitmap, PostingsStats, StatsMaxHeap, deserialize_bitmap,
     get_timeseries_index, serialize_bitmap,
@@ -80,7 +80,7 @@ impl FanoutClientCommand for LabelStatsFanoutCommand {
         }
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         // Handle the response from a remote target
         self.state.series_count += resp.series_count as usize;
 
@@ -103,6 +103,7 @@ impl FanoutClientCommand for LabelStatsFanoutCommand {
             &mut self.state.series_count_by_focus_label_value,
             &resp.series_count_by_focus_label_value,
         );
+        Ok(())
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
