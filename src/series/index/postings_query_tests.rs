@@ -908,6 +908,36 @@ mod tests {
     }
 
     #[test]
+    fn test_debug_or_host_regex() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        fn parse_metric(metric_name: &str) -> MetricName {
+            metric_name.parse().unwrap()
+        }
+
+        let series_data = HashMap::from([
+            (5, parse_metric(r#"cpu_usage{host="server1", env="prod"}"#)),
+            (6, parse_metric(r#"cpu_usage{host="server2", env="prod"}"#)),
+        ]);
+
+        for (&series_ref, metric) in series_data.iter() {
+            let labels = metric.to_label_vec();
+            add_series(&mut ix, &mut labels_map, series_ref, &labels);
+        }
+
+        let or_matchers = vec![vec![LabelFilter::create(RegexEqual, "host", "^server[12]$").unwrap()]];
+        let filter: SeriesSelector = or_matchers.into();
+        let actual = ix.postings_for_selector(&filter).unwrap();
+        // removed debug prints
+        let _guard = ix.get_postings();
+        assert!(actual.contains(5));
+        assert!(actual.contains(6));
+    }
+
+    #[test]
     fn test_querying_after_reindex() {
         let index = TimeSeriesIndex::new();
 
@@ -1015,6 +1045,7 @@ mod tests {
         let regex_filter = SeriesSelector::with_filters(regex_matchers);
 
         let regex_query_result = index.postings_for_selector(&regex_filter).unwrap();
+
         assert!(
             regex_query_result.contains(ts.id),
             "Query should still work after rename"

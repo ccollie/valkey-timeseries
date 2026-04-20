@@ -200,12 +200,12 @@ impl Postings {
 
     pub fn get_label_names(&self) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = BTreeSet::new();
-        for (k, map) in self.label_index.iter() {
-            if let Some((key, _)) = k.split()
-                && !map.is_empty()
-                && !names.contains(key)
-            {
-                names.insert(key.to_string());
+        for (key, map) in self.label_index.iter() {
+            if map.is_empty() {
+                continue;
+            }
+            if let Some((name, _)) = key.split() {
+                names.insert(name.to_string());
             }
         }
         names
@@ -235,7 +235,7 @@ impl Postings {
         result
     }
 
-    /// `postings_for_label_values` returns the postings list iterator for the label pairs.
+    /// `postings_for_label_values` returns the posting list iterator for the label pairs.
     /// The postings here contain the ids to the series inside the index.
     pub fn postings_for_label_values(&self, name: &str, values: &[String]) -> PostingsBitmap {
         let mut result = PostingsBitmap::new();
@@ -304,6 +304,55 @@ impl Postings {
         acc
     }
 
+
+    /// Retrieves a `PostingsBitmap` containing postings that match the specified label and prefix.
+    ///
+    /// This function searches for postings in the internal `label_index` where the keys start with
+    /// a combination of the provided `label` and `prefix`. For each match, the function accumulates
+    /// the corresponding postings into a `PostingsBitmap`. After the accumulation, it ensures
+    /// that stale entries (if any) are removed from the resulting bitmap.
+    ///
+    /// # Parameters
+    /// - `label`: A string slice representing the label to search for in the index.
+    /// - `prefix`: A string slice representing the prefix to match against the label values in the index.
+    ///
+    /// # Returns
+    /// A `PostingsBitmap` that contains the union of all postings that match the given label and prefix.
+    ///
+    /// # Examples
+    /// ```rust
+    /// let postings = index.postings_by_prefix("status", "error");
+    /// ```
+    pub fn postings_by_prefix(&self, label: &str, prefix: &str) -> PostingsBitmap {
+        let search_prefix = KeyBuffer::for_label_value_prefix(label, prefix);
+
+        let mut result = PostingsBitmap::new();
+        for (_key, map) in self.label_index.prefix(&search_prefix) {
+            result |= map;
+        }
+        self.remove_stale_if_needed(&mut result);
+        result
+    }
+
+    pub fn postings_by_prefix_and_predicate<F>(&self, label: &str, prefix: &str, predicate: F) -> PostingsBitmap
+    where
+        F: Fn(&str) -> bool,
+    {
+        let search_prefix = KeyBuffer::for_label_value_prefix(label, prefix);
+
+        let mut result = PostingsBitmap::new();
+        let start_pos = label.len() + 1;
+        for (key, map) in self.label_index.prefix(&search_prefix) {
+            let value = key.sub_string(start_pos);
+            if predicate(value) {
+                result |= map;
+            }
+        }
+        self.remove_stale_if_needed(&mut result);
+
+        result
+    }
+
     /// Get the unique series id for the given set of labels if it exists.
     ///
     /// This exists primarily to ensure that we disallow duplicate metric names
@@ -359,6 +408,8 @@ impl Postings {
             }
             PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter),
             PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter),
+            PredicateMatch::StartsWith(ref prefix) => handle_starts_with(self, &filter.label, prefix),
+            PredicateMatch::NotStartsWith(ref prefix) => handle_not_starts_with(self, &filter.label, prefix),
         }
     }
 
@@ -372,6 +423,14 @@ impl Postings {
             // If the matcher being inverted is =~"", we just want all the values.
             PredicateMatch::RegexEqual(re) if matches!(re.regex.as_str(), "" | ".*") => {
                 Cow::Owned(self.postings_for_all_label_values(&filter.label))
+            }
+            PredicateMatch::StartsWith(prefix) => {
+                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| !v.starts_with(prefix));
+                Cow::Owned(postings)
+            }
+            PredicateMatch::NotStartsWith(prefix) => {
+                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| v.starts_with(prefix));
+                Cow::Owned(postings)
             }
             _ => {
                 let mut state = filter;
@@ -538,9 +597,11 @@ impl Postings {
 
         // optimization: if we have a single iterator and no not_its, return it directly, saving a clone.
         if its.len() == 1 && not_its.is_empty() {
-            return Ok(its
+            let single = its
                 .pop()
-                .expect("unexpected out of bounds error running matchers"));
+                .expect("unexpected out of bounds error running matchers");
+
+            return Ok(single);
         }
 
         let mut result = if its.is_empty() {
@@ -795,8 +856,38 @@ fn handle_equal_match<'a>(
         }
         PredicateValue::List(val) => match val.len() {
             0 => ix.postings_without_label(label),
-            1 => ix.postings_for_label_value(label, &val[0]),
-            _ => Cow::Owned(ix.postings_for_label_values(label, val)),
+            1 => {
+                if val[0].is_empty() {
+                    ix.postings_without_label(label)
+                } else {
+                    ix.postings_for_label_value(label, &val[0])
+                }
+            }
+            _ => {
+                // If the list contains an explicit empty alternative, include series
+                // without the label as well.
+                let contains_empty = val.iter().any(|s| s.is_empty());
+
+                let non_empty_values: Vec<String> = val
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .collect();
+
+                if non_empty_values.is_empty() {
+                    // only empty alternative -> postings without label
+                    return ix.postings_without_label(label);
+                }
+
+                let mut result = ix.postings_for_label_values(label, &non_empty_values);
+                // include series that don't have the label only if the original
+                // alternatives contained an empty branch.
+                if contains_empty {
+                    let without = ix.postings_without_label(label).into_owned();
+                    result |= without;
+                }
+                Cow::Owned(result)
+            }
         },
         PredicateValue::Empty => ix.postings_without_label(label),
     }
@@ -862,7 +953,20 @@ fn handle_regex_equal_match<'a>(
     if filter.matches_empty() {
         return postings.postings_without_label(&filter.label);
     }
-    Cow::Owned(postings_matching_filter(postings, filter))
+    let PredicateMatch::RegexEqual(re) = &filter.matcher else {
+        panic!("unexpected matcher type in handle_regex_not_equal_match");
+    };
+    let res = if let Some(prefix) = &re.prefix {
+        postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
+            re.is_match(v)
+        })
+    } else {
+        let mut state = ();
+        postings.postings_for_label_matching(&filter.label, &mut state, |value, _| {
+            re.is_match(value)
+        })
+    };
+    Cow::Owned(res)
 }
 
 fn handle_regex_not_equal_match<'a>(
@@ -872,7 +976,33 @@ fn handle_regex_not_equal_match<'a>(
     if filter.matches_empty() {
         return with_label(postings, &filter.label);
     }
-    Cow::Owned(postings_matching_filter(postings, filter))
+    let PredicateMatch::RegexNotEqual(re) = &filter.matcher else {
+        panic!("unexpected matcher type in handle_regex_not_equal_match");
+    };
+    let res = if let Some(prefix) = &re.prefix {
+        let prefix_len = prefix.len();
+        postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
+            let remainder = &v[prefix_len..];
+            !re.regex.is_match(remainder)
+        })
+    } else {
+        let mut state = ();
+        postings.postings_for_label_matching(&filter.label, &mut state, |value, _| {
+            !re.is_match(value)
+        })
+    };
+    Cow::Owned(res)
+}
+
+fn handle_starts_with<'a>(postings: &'a Postings, label: &str, prefix: &str) -> Cow<'a, PostingsBitmap> {
+    Cow::Owned(postings.postings_by_prefix(label, prefix))
+}
+
+fn handle_not_starts_with<'a>(postings: &'a Postings, label: &str, prefix: &str) -> Cow<'a, PostingsBitmap> {
+    let res = postings.postings_by_prefix_and_predicate(label, prefix, |v| {
+        !v.starts_with(prefix)
+    });
+    Cow::Owned(res)
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
@@ -986,6 +1116,32 @@ mod tests {
         assert!(result.contains(1));
         assert!(result.contains(2));
         assert!(result.contains(3));
+    }
+
+    #[test]
+    fn test_equal_list_includes_empty_alternative() {
+        // Ensure that an equality list containing an explicit empty alternative
+        // includes series that do not have the label (postings_without_label).
+        let mut postings = Postings::default();
+
+        // Series 1 has label "i" with value "x"
+        postings.add_posting_for_label_value(1, "i", "x");
+
+        // Series 2 exists in all_postings but does not have label "i"
+        postings.all_postings.add(2);
+
+        // Create a LabelFilter for i in ("x", "")
+        let lf = LabelFilter {
+            label: "i".to_string(),
+            matcher: PredicateMatch::Equal(PredicateValue::from(vec!["x".to_string(), "".to_string()])),
+        };
+
+        let res = postings.postings_for_label_filters(&[lf]).unwrap();
+        let res = res.into_owned();
+
+        // Both series 1 (has value x) and 2 (no label) should be present.
+        assert!(res.contains(1));
+        assert!(res.contains(2));
     }
 
     #[test]
@@ -1212,5 +1368,40 @@ mod tests {
 
         assert_eq!(result.cardinality(), 1);
         assert!(result.contains(1));
+    }
+
+    #[test]
+    fn test_decompose_vs_fullmatch_server_wildcard() {
+        // Test to verify that decomposed regex matching for "server.*" works correctly
+        use regex::Regex;
+
+        // Pattern: "server.*" decomposes to prefix "server" + remainder ".*" (compiled as ^.*$)
+        let re_decomposed = Regex::new("^.*$").unwrap();
+
+        // Full pattern: "server.*" (for reference)
+        let re_full = Regex::new("^server.*$").unwrap();
+
+        let test_values = vec!["server1", "server", "serverx", "serverabc"];
+
+        for val in test_values {
+            // Check full regex
+            let full_match = re_full.is_match(val);
+
+            // Check decomposed: if starts with "server", check if remainder matches ^.*$
+            let decomposed_match = if val.starts_with("server") {
+                let remainder = &val["server".len()..];
+                re_decomposed.is_match(remainder)
+            } else {
+                false
+            };
+
+            assert_eq!(
+                full_match, decomposed_match,
+                "Mismatch for value '{}': full={}, decomposed={}",
+                val, full_match, decomposed_match
+            );
+
+            // debug printing removed
+        }
     }
 }

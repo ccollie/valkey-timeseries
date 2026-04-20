@@ -47,6 +47,14 @@ impl From<&LabelFilter> for FanoutFilter {
                 let value = Value::Single(regex.value.clone());
                 (value, MatcherOpType::RegexNotEqual)
             }
+            PredicateMatch::NotStartsWith(prefix) => {
+                let value = Value::Single(prefix.clone());
+                (value, MatcherOpType::NotStartsWith)
+            }
+            PredicateMatch::StartsWith(prefix) => {
+                let value = Value::Single(prefix.clone());
+                (value, MatcherOpType::StartsWith)
+            }
         };
 
         FanoutFilter {
@@ -155,6 +163,22 @@ pub(crate) fn deserialize_matchers_list(
     }
 }
 
+fn extract_string_value(value: &Option<Value>) -> ValkeyResult<String> {
+    if let Some(v) = value {
+        match v {
+            Value::Single(s) => Ok(s.clone()),
+            Value::List(items) if items.values.len() == 1 => Ok(items.values[0].clone()),
+            _ => {
+                Err(ValkeyError::Str(
+                    "TSDB: invalid value for starts_with matcher, expected single string",
+                ))
+            }
+        }
+    } else {
+        Err(ValkeyError::Str("TSDB: missing value for starts_with matcher"))
+    }
+}
+
 impl TryFrom<&FanoutFilter> for LabelFilter {
     type Error = ValkeyError;
 
@@ -174,6 +198,9 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
                         }
                         PredicateValue::List(items)
                     }
+                },
+                Some(Value::Regex(_re)) => {
+                    unreachable!("regex value should be handled separately and not converted to predicate value")
                 },
             }
         }
@@ -210,6 +237,14 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
             }
             MatcherOpType::RegexEqual => PredicateMatch::RegexEqual(get_regex_value(value)?),
             MatcherOpType::RegexNotEqual => PredicateMatch::RegexNotEqual(get_regex_value(value)?),
+            MatcherOpType::StartsWith => {
+                let prefix = extract_string_value(&value.value)?;
+                PredicateMatch::StartsWith(prefix)
+            },
+            MatcherOpType::NotStartsWith => {
+                let prefix = extract_string_value(&value.value)?;
+                PredicateMatch::NotStartsWith(prefix)
+            },
         };
 
         if value.label.is_empty() {
