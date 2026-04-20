@@ -298,7 +298,7 @@ mod tests {
         // 1001 1100 1100
         b.write_bits(12, 2508).unwrap();
 
-        println!("{:?}", b.buf);
+        // debug print removed
 
         // 1111
         for _ in 0..4 {
@@ -307,7 +307,7 @@ mod tests {
 
         assert_eq!(b.buf.len(), 4);
 
-        println!("{:?}", b.buf);
+        // debug print removed
 
         assert_eq!(b.buf[0], 170); // 0b10101010 = 170
         assert_eq!(b.buf[1], 9); // 0b00001001 = 9

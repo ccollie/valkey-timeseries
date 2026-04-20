@@ -364,7 +364,8 @@ impl Chunk for GorillaChunk {
 #[inline]
 fn push_sample(encoder: &mut GorillaEncoder, sample: &Sample) -> TsdbResult {
     encoder.add_sample(sample).map_err(|e| {
-        eprintln!("Error adding sample: {e:?}");
+        // replace debug stderr output with structured logging
+        log_warning(format!("Error adding sample: {e:?}"));
         TsdbError::CannotAddSample(*sample)
     })
 }
@@ -397,7 +398,8 @@ impl<'a> GorillaChunkIterator<'a> {
             }
             #[cfg(debug_assertions)]
             Some(Err(err)) => {
-                eprintln!("Error decoding sample: {err:?}");
+                // use structured logging instead of printing to stderr in debug builds
+                log_warning(format!("Error decoding sample: {err:?}"));
                 None
             }
             #[cfg(not(debug_assertions))]

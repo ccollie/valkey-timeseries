@@ -148,7 +148,8 @@ impl<'a> PcoSampleIterator<'a> {
             Ok(Some(v)) => Some(v),
             Ok(None) => None,
             Err(err) => {
-                eprintln!("Error {err:?}");
+                // replace debug stderr output with structured logging
+                log_warning(format!("Error {err:?}"));
                 None
             }
         }
