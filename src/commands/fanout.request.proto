@@ -53,8 +53,9 @@ message FilterListValue {
 
 message FilterPredicateValue {
   oneof label_value {
-    string value = 1;
-    FilterListValue values = 2;
+    bool empty = 1;
+    string single = 2;
+    FilterListValue list = 3;
   }
 }
 
@@ -66,11 +67,10 @@ message RegexFilterValue {
 message LabelFilter {
   string label = 1;
   MatcherOpType op = 2;
-  oneof value {
-    bool empty = 3;
-    string single = 4;
-    FilterListValue list = 5;
-    RegexFilterValue regex = 6;
+  oneof matcher {
+    FilterPredicateValue predicate = 3;
+    RegexFilterValue regex = 4;
+    string prefix = 5;
   }
 }
 
