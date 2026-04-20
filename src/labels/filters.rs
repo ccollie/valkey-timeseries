@@ -503,11 +503,11 @@ impl Display for LabelFilter {
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
                 write!(f, "{}", enquote('"', &re.value))
             }
-            PredicateMatch::StartsWith(re) => {
-                write!(f, "^={re}")
-            }
-            PredicateMatch::NotStartsWith(re) => {
-                write!(f, "^~{re}")
+            PredicateMatch::StartsWith(_) | PredicateMatch::NotStartsWith(_) => {
+                match self.text() {
+                    Some(text) => write!(f, "{}", enquote('"', text)),
+                    None => Err(fmt::Error),
+                }
             }
         }
     }
