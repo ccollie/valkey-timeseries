@@ -3,6 +3,7 @@
 //! decomposed into a set of literal alternatives. More complex patterns that cannot be simplified will be
 //! returned as-is for full regex matching.
 use crate::labels::filters::{PredicateMatch, PredicateValue, RegexMatcher};
+use crate::labels::regex::try_escape_for_repeat_re;
 use crate::parser::{ParseError, ParseResult};
 use regex::Error as RegexError;
 use regex::Regex;
@@ -10,7 +11,6 @@ use regex::RegexBuilder;
 use regex_syntax::hir::Class::{Bytes, Unicode};
 use regex_syntax::hir::{Class, Hir, HirKind};
 use regex_syntax::parse as parse_regex;
-use crate::labels::regex::try_escape_for_repeat_re;
 
 // Beyond this, it's better to use regexp.
 const MAX_OR_VALUES: usize = 16;
@@ -22,7 +22,11 @@ pub(super) fn parse_regex_matcher(expr: &str, is_equal: bool) -> ParseResult<Pre
 
     match decomposed {
         RegexDecomposition::PrefixWithRegex(prefix, remainder) => {
-            let matcher = RegexMatcher { prefix: Some(prefix), regex: remainder, value: expr.to_string() };
+            let matcher = RegexMatcher {
+                prefix: Some(prefix),
+                regex: remainder,
+                value: expr.to_string(),
+            };
             Ok(if is_equal {
                 PredicateMatch::RegexEqual(matcher)
             } else {
@@ -30,20 +34,22 @@ pub(super) fn parse_regex_matcher(expr: &str, is_equal: bool) -> ParseResult<Pre
             })
         }
         RegexDecomposition::Regex(regex) => {
-            let matcher = RegexMatcher { prefix: None, regex, value: expr.to_string() };
+            let matcher = RegexMatcher {
+                prefix: None,
+                regex,
+                value: expr.to_string(),
+            };
             Ok(if is_equal {
                 PredicateMatch::RegexEqual(matcher)
             } else {
                 PredicateMatch::RegexNotEqual(matcher)
             })
         }
-        RegexDecomposition::Prefix(prefix) => {
-            Ok(if is_equal {
-                PredicateMatch::StartsWith(prefix)
-            } else {
-                PredicateMatch::NotStartsWith(prefix)
-            })
-        }
+        RegexDecomposition::Prefix(prefix) => Ok(if is_equal {
+            PredicateMatch::StartsWith(prefix)
+        } else {
+            PredicateMatch::NotStartsWith(prefix)
+        }),
         RegexDecomposition::Literals(mut lits) => {
             if lits.len() == 1 {
                 let literal = lits.pop().unwrap();
@@ -355,7 +361,8 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
         // Concat whose first element is a repetition.
         if let HirKind::Concat(subs) = inner.kind()
             && let Some(rep) = subs.first().and_then(|s| get_repetition(s))
-            && let Some((prefix, mut rem)) = repetition_to_prefix_rem(rep) {
+            && let Some((prefix, mut rem)) = repetition_to_prefix_rem(rep)
+        {
             if subs.len() > 1 {
                 rem.push_str(&hir_to_string(&Hir::concat(Vec::from(&subs[1..]))));
             }
@@ -373,6 +380,18 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
             && !prefix.is_empty()
         {
             if let Some(remainder) = maybe_remainder {
+                // If the remainder can be expanded into a small set of literal
+                // alternatives (e.g., a character class), enumerate them and
+                // return a flat literal list prefixed with `prefix`.
+                let mut or_values = Vec::new();
+                if get_or_values(&remainder, &mut or_values) && !or_values.is_empty() {
+                    let lits = or_values
+                        .into_iter()
+                        .map(|s| format!("{}{}", prefix, s))
+                        .collect();
+                    return Ok(RegexDecomposition::Literals(lits));
+                }
+
                 let pattern = hir_to_string(&remainder);
                 // Build the compiled remainder with the same flags as used elsewhere
                 // (dot matches new line, size limit) to preserve Prometheus-compatible
@@ -382,7 +401,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
                 }
                 // Fall back to compiling the full expr with the same options
                 // and the same anchoring wrapper used elsewhere.
-                return compile_regex(expr)
+                return compile_regex(expr);
             }
             return Ok(RegexDecomposition::Prefix(prefix));
         }
@@ -391,7 +410,8 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
     // Concat with a leading literal prefix followed by an optional (`?`) or,
     // for anchored patterns, a wildcard (`.*` / `.+`) then further content.
     if let HirKind::Concat(subs) = inner.kind()
-        && subs.len() >= 2 {
+        && subs.len() >= 2
+    {
         let mut prefix = String::new();
         let mut idx = 0;
         for (i, sub) in subs.iter().enumerate() {
@@ -404,8 +424,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
         }
         if !prefix.is_empty() && idx < subs.len() {
             let next = &subs[idx];
-            let is_optional =
-                get_repetition(next).is_some_and(|r| r.min == 0 && r.max == Some(1));
+            let is_optional = get_repetition(next).is_some_and(|r| r.min == 0 && r.max == Some(1));
             let is_wildcard = anchor_start && (is_dot_star(next) || is_dot_plus(next));
             if is_optional || is_wildcard {
                 let tail = Hir::concat(Vec::from(&subs[idx..]));
@@ -494,12 +513,14 @@ fn strip_anchors_hir(sre: &Hir) -> (Hir, bool, bool) {
         let mut start = false;
         let mut end = false;
         if !slice.is_empty()
-            && let HirKind::Look(_) = slice[0].kind() {
+            && let HirKind::Look(_) = slice[0].kind()
+        {
             slice = &slice[1..];
             start = true;
         }
         if !slice.is_empty()
-            && let HirKind::Look(_) = slice[slice.len() - 1].kind() {
+            && let HirKind::Look(_) = slice[slice.len() - 1].kind()
+        {
             slice = &slice[..slice.len() - 1];
             end = true;
         }
@@ -563,7 +584,7 @@ fn extract_anchored_prefix_or_remainder(sre: &Hir) -> Option<(String, Option<Hir
 
 #[cfg(test)]
 mod test {
-    use super::{decompose_regex, remove_start_end_anchors, RegexDecomposition};
+    use super::{RegexDecomposition, decompose_regex, remove_start_end_anchors};
 
     #[test]
     fn test_is_dot_star() {
@@ -651,11 +672,7 @@ mod test {
     fn test_decompose_regex_literals() {
         assert_eq!(
             decompose_regex("foo|bar|baz").unwrap(),
-            RegexDecomposition::Literals(vec![
-                "foo".into(),
-                "bar".into(),
-                "baz".into()
-            ])
+            RegexDecomposition::Literals(vec!["foo".into(), "bar".into(), "baz".into()])
         );
     }
 
@@ -726,30 +743,49 @@ mod test {
 
     #[test]
     fn test_decompose_regex_prefix_with_regex() {
+        // Pattern with simple alternation (foo|bar) should expand to literals
         let got = decompose_regex("^prod(foo|bar)").unwrap();
         match got {
-            RegexDecomposition::PrefixWithRegex(pref, re) => {
-                assert_eq!(pref, "prod");
-                // The compiled remainder should match `foo` and `bar` but not `baz`.
-                assert!(re.is_match("foo"));
-                assert!(re.is_match("bar"));
-                assert!(!re.is_match("baz"));
+            RegexDecomposition::Literals(lits) => {
+                assert_eq!(lits.len(), 2);
+                assert!(lits.contains(&"prodfoo".to_string()));
+                assert!(lits.contains(&"prodbar".to_string()));
             }
-            other => panic!("unexpected decomposition: {:?}", other),
+            _ => panic!(
+                "pattern ^prod(foo|bar) should expand to Literals, got {:?}",
+                got
+            ),
+        }
+    }
+
+    #[test]
+    fn test_decompose_regex_prefix_with_alternation_expands_to_literals() {
+        // Pattern with simple alternation (foo|bar) should expand to literals
+        let got = decompose_regex("^prod(foo|bar)").unwrap();
+        match got {
+            RegexDecomposition::Literals(lits) => {
+                assert_eq!(lits.len(), 2);
+                assert!(lits.contains(&"prodfoo".to_string()));
+                assert!(lits.contains(&"prodbar".to_string()));
+            }
+            _ => panic!("pattern ^prod(foo|bar) should expand to Literals"),
         }
     }
 
     #[test]
     fn test_decompose_regex_prefix_with_non_capturing_group() {
+        // Non-capturing group with alternation should also expand to literals
         let got = decompose_regex("^prod(?:foo|bar)").unwrap();
         match got {
-            RegexDecomposition::PrefixWithRegex(pref, re) => {
-                assert_eq!(pref, "prod");
-                assert!(re.is_match("foo"));
-                assert!(re.is_match("bar"));
-                assert!(!re.is_match("baz"));
+            RegexDecomposition::Literals(lits) => {
+                assert_eq!(lits.len(), 2);
+                assert!(lits.contains(&"prodfoo".to_string()));
+                assert!(lits.contains(&"prodbar".to_string()));
             }
-            other => panic!("unexpected decomposition: {:?}", other),
+            _ => panic!(
+                "pattern ^prod(?:foo|bar) should expand to Literals, got {:?}",
+                got
+            ),
         }
     }
 
@@ -769,16 +805,18 @@ mod test {
 
     #[test]
     fn test_decompose_regex_prefix_with_trailing_literal() {
+        // Pattern with alternation and trailing literal should expand to all combinations
         let got = decompose_regex("^prod(foo|bar)baz").unwrap();
         match got {
-            RegexDecomposition::PrefixWithRegex(pref, re) => {
-                assert_eq!(pref, "prod");
-                assert!(re.is_match("foobaz"));
-                assert!(re.is_match("barbaz"));
-                // Should not match when the required trailing literal is missing.
-                assert!(!re.is_match("fooba"));
+            RegexDecomposition::Literals(lits) => {
+                assert_eq!(lits.len(), 2);
+                assert!(lits.contains(&"prodfoobaz".to_string()));
+                assert!(lits.contains(&"prodbarbaz".to_string()));
             }
-            other => panic!("unexpected decomposition: {:?}", other),
+            _ => panic!(
+                "pattern ^prod(foo|bar)baz should expand to Literals, got {:?}",
+                got
+            ),
         }
     }
 
@@ -832,11 +870,7 @@ mod test {
     fn test_decompose_regex_empty_alternate() {
         assert_eq!(
             decompose_regex("c||d").unwrap(),
-            RegexDecomposition::Literals(vec![
-                "c".into(),
-                "".into(),
-                "d".into()
-            ])
+            RegexDecomposition::Literals(vec!["c".into(), "".into(), "d".into()])
         );
     }
 
@@ -1016,6 +1050,20 @@ mod test {
             let dec = decompose_regex(p);
             println!("decompose_regex('{}') -> {:?}", p, dec);
         }
+    }
+
+    #[test]
+    fn test_parse_regex_matcher_charclass_node12() {
+        use crate::labels::filters::{PredicateMatch, PredicateValue};
+
+        let got = super::parse_regex_matcher("node[12]", true).unwrap();
+
+        let expected = PredicateMatch::Equal(PredicateValue::from(vec![
+            "node1".to_string(),
+            "node2".to_string(),
+        ]));
+
+        assert_eq!(got, expected);
     }
 
     #[test]

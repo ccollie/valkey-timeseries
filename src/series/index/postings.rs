@@ -304,7 +304,6 @@ impl Postings {
         acc
     }
 
-
     /// Retrieves a `PostingsBitmap` containing postings that match the specified label and prefix.
     ///
     /// This function searches for postings in the internal `label_index` where the keys start with
@@ -334,7 +333,12 @@ impl Postings {
         result
     }
 
-    pub fn postings_by_prefix_and_predicate<F>(&self, label: &str, prefix: &str, predicate: F) -> PostingsBitmap
+    pub fn postings_by_prefix_and_predicate<F>(
+        &self,
+        label: &str,
+        prefix: &str,
+        predicate: F,
+    ) -> PostingsBitmap
     where
         F: Fn(&str) -> bool,
     {
@@ -408,8 +412,12 @@ impl Postings {
             }
             PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter),
             PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter),
-            PredicateMatch::StartsWith(ref prefix) => handle_starts_with(self, &filter.label, prefix),
-            PredicateMatch::NotStartsWith(ref prefix) => handle_not_starts_with(self, &filter.label, prefix),
+            PredicateMatch::StartsWith(ref prefix) => {
+                handle_starts_with(self, &filter.label, prefix)
+            }
+            PredicateMatch::NotStartsWith(ref prefix) => {
+                handle_not_starts_with(self, &filter.label, prefix)
+            }
         }
     }
 
@@ -425,11 +433,15 @@ impl Postings {
                 Cow::Owned(self.postings_for_all_label_values(&filter.label))
             }
             PredicateMatch::StartsWith(prefix) => {
-                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| !v.starts_with(prefix));
+                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
+                    !v.starts_with(prefix)
+                });
                 Cow::Owned(postings)
             }
             PredicateMatch::NotStartsWith(prefix) => {
-                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| v.starts_with(prefix));
+                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
+                    v.starts_with(prefix)
+                });
                 Cow::Owned(postings)
             }
             _ => {
@@ -868,11 +880,8 @@ fn handle_equal_match<'a>(
                 // without the label as well.
                 let contains_empty = val.iter().any(|s| s.is_empty());
 
-                let non_empty_values: Vec<String> = val
-                    .iter()
-                    .filter(|s| !s.is_empty())
-                    .cloned()
-                    .collect();
+                let non_empty_values: Vec<String> =
+                    val.iter().filter(|s| !s.is_empty()).cloned().collect();
 
                 if non_empty_values.is_empty() {
                     // only empty alternative -> postings without label
@@ -957,14 +966,11 @@ fn handle_regex_equal_match<'a>(
         panic!("unexpected matcher type in handle_regex_not_equal_match");
     };
     let res = if let Some(prefix) = &re.prefix {
-        postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
-            re.is_match(v)
-        })
+        postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| re.is_match(v))
     } else {
         let mut state = ();
-        postings.postings_for_label_matching(&filter.label, &mut state, |value, _| {
-            re.is_match(value)
-        })
+        postings
+            .postings_for_label_matching(&filter.label, &mut state, |value, _| re.is_match(value))
     };
     Cow::Owned(res)
 }
@@ -987,21 +993,26 @@ fn handle_regex_not_equal_match<'a>(
         })
     } else {
         let mut state = ();
-        postings.postings_for_label_matching(&filter.label, &mut state, |value, _| {
-            !re.is_match(value)
-        })
+        postings
+            .postings_for_label_matching(&filter.label, &mut state, |value, _| !re.is_match(value))
     };
     Cow::Owned(res)
 }
 
-fn handle_starts_with<'a>(postings: &'a Postings, label: &str, prefix: &str) -> Cow<'a, PostingsBitmap> {
+fn handle_starts_with<'a>(
+    postings: &'a Postings,
+    label: &str,
+    prefix: &str,
+) -> Cow<'a, PostingsBitmap> {
     Cow::Owned(postings.postings_by_prefix(label, prefix))
 }
 
-fn handle_not_starts_with<'a>(postings: &'a Postings, label: &str, prefix: &str) -> Cow<'a, PostingsBitmap> {
-    let res = postings.postings_by_prefix_and_predicate(label, prefix, |v| {
-        !v.starts_with(prefix)
-    });
+fn handle_not_starts_with<'a>(
+    postings: &'a Postings,
+    label: &str,
+    prefix: &str,
+) -> Cow<'a, PostingsBitmap> {
+    let res = postings.postings_by_prefix_and_predicate(label, prefix, |v| !v.starts_with(prefix));
     Cow::Owned(res)
 }
 
@@ -1133,7 +1144,10 @@ mod tests {
         // Create a LabelFilter for i in ("x", "")
         let lf = LabelFilter {
             label: "i".to_string(),
-            matcher: PredicateMatch::Equal(PredicateValue::from(vec!["x".to_string(), "".to_string()])),
+            matcher: PredicateMatch::Equal(PredicateValue::from(vec![
+                "x".to_string(),
+                "".to_string(),
+            ])),
         };
 
         let res = postings.postings_for_label_filters(&[lf]).unwrap();
@@ -1221,6 +1235,39 @@ mod tests {
         assert!(result.contains(1));
         assert!(result.contains(2));
         assert!(result.contains(3));
+    }
+
+    #[test]
+    fn test_postings_equal_list_matcher() {
+        // Test case for decomposed regex node[12] -> Equal(List(["node1", "node2"]))
+        let mut postings = Postings::default();
+
+        // Add test series with various node labels
+        postings.add_posting_for_label_value(1, "node", "node1");
+        postings.add_posting_for_label_value(2, "node", "node2");
+        postings.add_posting_for_label_value(3, "node", "node3");
+        postings.add_posting_for_label_value(4, "node", "node1");
+
+        // Create a label filter for node = ("node1", "node2")
+        // This is what parse_regex_matcher("node[12]", true) should now produce
+        let lf = LabelFilter {
+            label: "node".to_string(),
+            matcher: PredicateMatch::Equal(PredicateValue::from(vec![
+                "node1".to_string(),
+                "node2".to_string(),
+            ])),
+        };
+
+        // Query using this filter
+        let result = postings.postings_for_label_filters(&[lf]).unwrap();
+        let result = result.into_owned();
+
+        // Should match series 1, 2, and 4 (all with node1 or node2)
+        assert_eq!(result.cardinality(), 3);
+        assert!(result.contains(1));
+        assert!(result.contains(2));
+        assert!(result.contains(4));
+        assert!(!result.contains(3)); // node3 should not be matched
     }
 
     #[test]
@@ -1388,8 +1435,7 @@ mod tests {
             let full_match = re_full.is_match(val);
 
             // Check decomposed: if starts with "server", check if remainder matches ^.*$
-            let decomposed_match = if val.starts_with("server") {
-                let remainder = &val["server".len()..];
+            let decomposed_match = if let Some(remainder) = val.strip_prefix("server") {
                 re_decomposed.is_match(remainder)
             } else {
                 false

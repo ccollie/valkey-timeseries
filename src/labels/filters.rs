@@ -1,6 +1,7 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::parse_series_selector;
 use crate::labels::regex::parse_regex_anchored;
+use crate::labels::regex_utils::parse_regex_matcher;
 use crate::parser::ParseError;
 use crate::parser::lex::Token;
 use enquote::enquote;
@@ -12,7 +13,6 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
-use crate::labels::regex_utils::parse_regex_matcher;
 
 const EMPTY_TEXT: &str = "";
 
@@ -407,17 +407,11 @@ impl LabelFilter {
             MatchOp::NotEqual => Ok(Self::not_equals(label, &value)),
             MatchOp::RegexEqual => {
                 let matcher = parse_regex_matcher(&value, true)?;
-                Ok(Self {
-                    label,
-                    matcher,
-                })
+                Ok(Self { label, matcher })
             }
             MatchOp::RegexNotEqual => {
                 let matcher = parse_regex_matcher(&value, false)?;
-                Ok(Self {
-                    label,
-                    matcher,
-                })
+                Ok(Self { label, matcher })
             }
             MatchOp::StartsWith => Ok(Self {
                 label,
@@ -475,7 +469,10 @@ impl LabelFilter {
 
     #[inline]
     pub fn is_negative_matcher(&self) -> bool {
-        matches!(self.op(), MatchOp::NotEqual | MatchOp::RegexNotEqual | MatchOp::NotStartsWith)
+        matches!(
+            self.op(),
+            MatchOp::NotEqual | MatchOp::RegexNotEqual | MatchOp::NotStartsWith
+        )
     }
 
     #[inline]

@@ -928,7 +928,9 @@ mod tests {
             add_series(&mut ix, &mut labels_map, series_ref, &labels);
         }
 
-        let or_matchers = vec![vec![LabelFilter::create(RegexEqual, "host", "^server[12]$").unwrap()]];
+        let or_matchers = vec![vec![
+            LabelFilter::create(RegexEqual, "host", "^server[12]$").unwrap(),
+        ]];
         let filter: SeriesSelector = or_matchers.into();
         let actual = ix.postings_for_selector(&filter).unwrap();
         // removed debug prints
@@ -1060,5 +1062,41 @@ mod tests {
                 "Series ID should map to new key"
             );
         });
+    }
+
+    #[test]
+    fn test_regex_charclass_node12() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        let series_data = HashMap::from([
+            (1, labels_from_strings(&["node", "node1"])),
+            (2, labels_from_strings(&["node", "node2"])),
+            (3, labels_from_strings(&["node", "node3"])),
+        ]);
+
+        for (series_ref, labels) in series_data.iter() {
+            add_series(&mut ix, &mut labels_map, *series_ref, labels);
+        }
+
+        // Create a regex matcher using a character class and ensure it matches node1 and node2
+        let lf = LabelFilter::create(RegexEqual, "node", "node[12]").unwrap();
+        let actual = get_labels_by_filters(&ix, &[lf], &labels_map);
+
+        // Extract the matched node values and assert the right ones matched
+        let mut matched: Vec<String> = actual
+            .iter()
+            .map(|lbls| {
+                lbls.iter()
+                    .find(|l| l.name == "node")
+                    .unwrap()
+                    .value
+                    .clone()
+            })
+            .collect();
+        matched.sort();
+        assert_eq!(matched, vec!["node1".to_string(), "node2".to_string()]);
     }
 }

@@ -1,16 +1,17 @@
 use super::generated::{
-    filter_predicate_value::LabelValue, label_filter::Matcher, FilterList as FanoutFilterList,
-    FilterListValue, FilterPredicateValue as FanoutPredicateValue, LabelFilter as FanoutFilter,
-    MatcherOpType, MetaDateRangeFilter as FanoutMetaDateRangeFilter, OrMatcherList,
-    RegexFilterValue as FanoutRegexFilterValue, SeriesSelector as FanoutSeriesSelector,
+    FilterList as FanoutFilterList, FilterListValue, FilterPredicateValue as FanoutPredicateValue,
+    LabelFilter as FanoutFilter, MatcherOpType, MetaDateRangeFilter as FanoutMetaDateRangeFilter,
+    OrMatcherList, RegexFilterValue as FanoutRegexFilterValue,
+    SeriesSelector as FanoutSeriesSelector, filter_predicate_value::LabelValue,
+    label_filter::Matcher,
 };
 use crate::commands::fanout::series_selector::Filters;
 use crate::labels::filters::{
     FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
     SeriesSelector, ValueList,
 };
-use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::DateRange;
+use crate::series::request_types::MetaDateRangeFilter;
 use valkey_module::{ValkeyError, ValkeyResult};
 
 fn predicate_value_to_fanout(value: &PredicateValue) -> FanoutPredicateValue {
@@ -238,6 +239,37 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
     }
 }
 
+impl From<MetaDateRangeFilter> for FanoutMetaDateRangeFilter {
+    fn from(value: MetaDateRangeFilter) -> Self {
+        match value {
+            MetaDateRangeFilter::Includes(r) => FanoutMetaDateRangeFilter {
+                start: r.start,
+                end: r.end,
+                exclude: false,
+            },
+            MetaDateRangeFilter::Excludes(r) => FanoutMetaDateRangeFilter {
+                start: r.start,
+                end: r.end,
+                exclude: true,
+            },
+        }
+    }
+}
+
+impl From<FanoutMetaDateRangeFilter> for MetaDateRangeFilter {
+    fn from(value: FanoutMetaDateRangeFilter) -> Self {
+        let range = DateRange {
+            start: value.start,
+            end: value.end,
+        };
+        if value.exclude {
+            MetaDateRangeFilter::Excludes(range)
+        } else {
+            MetaDateRangeFilter::Includes(range)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +332,35 @@ mod tests {
     }
 
     #[test]
+    fn test_series_selector_round_trip_with_list_equality() {
+        // Build a selector with an equality matcher that contains a list of values
+        let lf = LabelFilter {
+            label: "node".into(),
+            matcher: PredicateMatch::Equal(PredicateValue::List(
+                vec!["node1".to_string(), "node2".to_string()].into(),
+            )),
+        };
+
+        let selector = SeriesSelector::with_filters(vec![lf.clone()]);
+
+        let selector_clone = selector.clone();
+
+        // Serialize to fanout representation
+        let fanout = serialize_matchers_list(&[selector_clone]).expect("serialize failed");
+
+        // Deserialize back
+        let decoded = deserialize_matchers_list(Some(fanout)).expect("deserialize failed");
+
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0], selector);
+
+        // Also validate LabelFilter round-trip directly
+        let fanout_filter: FanoutFilter = (&lf).into();
+        let decoded_lf = LabelFilter::try_from(&fanout_filter).expect("label filter decode failed");
+        assert_eq!(decoded_lf, lf);
+    }
+
+    #[test]
     fn test_label_filter_rejects_mismatched_op_and_payload() {
         let fanout = FanoutFilter {
             label: "instance".into(),
@@ -315,37 +376,6 @@ mod tests {
                 assert!(msg.contains("operation does not match matcher payload"));
             }
             other => panic!("unexpected error: {other:?}"),
-        }
-    }
-}
-
-impl From<MetaDateRangeFilter> for FanoutMetaDateRangeFilter {
-    fn from(value: MetaDateRangeFilter) -> Self {
-        match value {
-            MetaDateRangeFilter::Includes(r) => FanoutMetaDateRangeFilter {
-                start: r.start,
-                end: r.end,
-                exclude: false,
-            },
-            MetaDateRangeFilter::Excludes(r) => FanoutMetaDateRangeFilter {
-                start: r.start,
-                end: r.end,
-                exclude: true,
-            },
-        }
-    }
-}
-
-impl From<FanoutMetaDateRangeFilter> for MetaDateRangeFilter {
-    fn from(value: FanoutMetaDateRangeFilter) -> Self {
-        let range = DateRange {
-            start: value.start,
-            end: value.end,
-        };
-        if value.exclude {
-            MetaDateRangeFilter::Excludes(range)
-        } else {
-            MetaDateRangeFilter::Includes(range)
         }
     }
 }
