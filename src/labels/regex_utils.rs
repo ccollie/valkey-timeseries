@@ -10,6 +10,7 @@ use regex::RegexBuilder;
 use regex_syntax::hir::Class::{Bytes, Unicode};
 use regex_syntax::hir::{Class, Hir, HirKind};
 use regex_syntax::parse as parse_regex;
+use crate::labels::regex::try_escape_for_repeat_re;
 
 // Beyond this, it's better to use regexp.
 const MAX_OR_VALUES: usize = 16;
@@ -18,7 +19,6 @@ pub(super) fn parse_regex_matcher(expr: &str, is_equal: bool) -> ParseResult<Pre
     let Ok(decomposed) = decompose_regex(expr) else {
         return Err(ParseError::InvalidRegex(expr.to_string()));
     };
-    // (No test-only debug printing here.)
 
     match decomposed {
         RegexDecomposition::PrefixWithRegex(prefix, remainder) => {
@@ -76,7 +76,7 @@ fn remove_start_end_anchors(expr: &str) -> &str {
     cursor
 }
 
-fn get_or_values_ext(sre: &Hir, dest: &mut Vec<String>) -> bool {
+fn get_or_values(sre: &Hir, dest: &mut Vec<String>) -> bool {
     use HirKind::*;
     match sre.kind() {
         Class(clazz) => {
@@ -115,7 +115,7 @@ fn get_or_values_ext(sre: &Hir, dest: &mut Vec<String>) -> bool {
             dest.push("".to_string());
             true
         }
-        Capture(cap) => get_or_values_ext(cap.sub.as_ref(), dest),
+        Capture(cap) => get_or_values(cap.sub.as_ref(), dest),
         Literal(literal) => {
             if let Ok(s) = String::from_utf8(literal.0.to_vec()) {
                 dest.push(s);
@@ -130,7 +130,7 @@ fn get_or_values_ext(sre: &Hir, dest: &mut Vec<String>) -> bool {
                 let start_count = dest.len();
                 if let Some(literal) = get_literal(sub) {
                     dest.push(literal);
-                } else if !get_or_values_ext(sub, dest) {
+                } else if !get_or_values(sub, dest) {
                     return false;
                 }
                 if dest.len() - start_count > MAX_OR_VALUES {
@@ -141,13 +141,13 @@ fn get_or_values_ext(sre: &Hir, dest: &mut Vec<String>) -> bool {
         }
         Concat(concat) => {
             let mut prefixes = Vec::with_capacity(MAX_OR_VALUES);
-            if !get_or_values_ext(&concat[0], &mut prefixes) {
+            if !get_or_values(&concat[0], &mut prefixes) {
                 return false;
             }
             let subs = Vec::from(&concat[1..]);
             let concat = Hir::concat(subs);
             let prefix_count = prefixes.len();
-            if !get_or_values_ext(&concat, &mut prefixes) {
+            if !get_or_values(&concat, &mut prefixes) {
                 return false;
             }
             let suffix_count = prefixes.len() - prefix_count;
@@ -343,7 +343,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
 
     let sre = build_hir(expr)?;
     // (No test-only debug printing here.)
-    // For Prometheus-compatible filters we assume matchers are anchored.
+    // For Prometheus-compatible filters, we assume matchers are anchored.
     // Treat the parsed HIR as if it had start/end anchors, so decomposition
     // can be more aggressive about extracting prefixes.
     let (inner, _orig_anchor_start, _orig_anchor_end) = strip_anchors_hir(&sre);
@@ -377,26 +377,12 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
                 // Build the compiled remainder with the same flags as used elsewhere
                 // (dot matches new line, size limit) to preserve Prometheus-compatible
                 // regex semantics (dot matches newlines).
-                if let Ok(compiled) = RegexBuilder::new(&format!("^{pattern}$"))
-                    .size_limit(16 * 1024)
-                    .dot_matches_new_line(true)
-                    .build()
-                    .or_else(|_| {
-                        // Fall back to a looser compilation that escapes repeat
-                        // constructs when the size-limited compilation fails.
-                        Regex::new(&crate::labels::regex::try_escape_for_repeat_re(&format!("^{pattern}$")))
-                    })
-                {
-                    return Ok(RegexDecomposition::PrefixWithRegex(prefix, compiled));
+                if let Ok(compiled) = compile_prefixed_regex(&pattern, prefix) {
+                    return Ok(compiled);
                 }
                 // Fall back to compiling the full expr with the same options
                 // and the same anchoring wrapper used elsewhere.
-                return Ok(RegexDecomposition::Regex(
-                    RegexBuilder::new(&format!("^(?:{}{})$", "", expr))
-                        .size_limit(16 * 1024)
-                        .dot_matches_new_line(true)
-                        .build()?,
-                ));
+                return compile_regex(expr)
             }
             return Ok(RegexDecomposition::Prefix(prefix));
         }
@@ -424,31 +410,47 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
             if is_optional || is_wildcard {
                 let tail = Hir::concat(Vec::from(&subs[idx..]));
                 let pattern = hir_to_string(&tail);
-                let compiled = RegexBuilder::new(&format!("^{pattern}$"))
-                    .size_limit(16 * 1024)
-                    .dot_matches_new_line(true)
-                    .build()
-                    .or_else(|_| {
-                        Regex::new(&crate::labels::regex::try_escape_for_repeat_re(&format!("^{pattern}$")))
-                    })?;
-                return Ok(RegexDecomposition::PrefixWithRegex(prefix, compiled));
+                return compile_prefixed_regex(&pattern, prefix);
             }
         }
     }
 
     // Flat list of literal alternatives.
     let mut or_values = Vec::new();
-    if get_or_values_ext(&inner, &mut or_values) && !or_values.is_empty() {
+    if get_or_values(&inner, &mut or_values) && !or_values.is_empty() {
         return Ok(RegexDecomposition::Literals(or_values));
     }
 
+    compile_regex(expr)
+}
+
+fn compile_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
+    let anchored = format!("^(?:{}{})$", "", expr);
     Ok(RegexDecomposition::Regex(
-        RegexBuilder::new(&format!("^(?:{}{})$", "", expr))
+        RegexBuilder::new(&anchored)
             .size_limit(16 * 1024)
             .dot_matches_new_line(true)
             .build()
-            .or_else(|_| Regex::new(&crate::labels::regex::try_escape_for_repeat_re(&format!("^(?:{}{})$", "", expr))))?,
+            .or_else(|_| Regex::new(&try_escape_for_repeat_re(&anchored)))?,
     ))
+}
+
+fn compile_prefixed_regex(pattern: &str, prefix: String) -> Result<RegexDecomposition, RegexError> {
+    // Build the compiled remainder with the same flags as used elsewhere
+    // (dot matches new line, size limit) to preserve Prometheus-compatible
+    // regex semantics (dot matches newlines).
+    let anchored = format!("^{pattern}$");
+    let compiled = RegexBuilder::new(&anchored)
+        .size_limit(16 * 1024)
+        .dot_matches_new_line(true)
+        .build()
+        .or_else(|_| {
+            // Fall back to a looser compilation that escapes repeat
+            // constructs when the size-limited compilation fails.
+            Regex::new(&try_escape_for_repeat_re(&anchored))
+        })?;
+
+    Ok(RegexDecomposition::PrefixWithRegex(prefix, compiled))
 }
 
 /// Build a `(prefix, remainder_pattern)` pair from a literal-repetition node with `min >= 1`.
@@ -480,11 +482,7 @@ fn finish_prefix_rem(prefix: String, rem: String) -> Result<RegexDecomposition, 
     if rem.is_empty() {
         Ok(RegexDecomposition::Prefix(prefix))
     } else {
-        let compiled = RegexBuilder::new(&format!("^{rem}$"))
-            .size_limit(16 * 1024)
-            .dot_matches_new_line(true)
-            .build()?;
-        Ok(RegexDecomposition::PrefixWithRegex(prefix, compiled))
+        compile_prefixed_regex(&rem, prefix)
     }
 }
 
@@ -786,10 +784,10 @@ mod test {
 
     #[test]
     fn test_decompose_regex_negative_cases() {
-        // Patterns that are too complex for decomposition should return None.
+        // Patterns that are too complex for decomposition should return RegexDecomposition::Regex.
         // With Prometheus-compatible anchored matching, repetition
         // prefixes like `a{2,3}` may be treated as a fixed prefix and thus
-        // decomposed. We still expect other complex constructs to return None.
+        // decomposed. We still expect other complex constructs to return RegexDecomposition::Regex.
         let cases = vec!["\\w+", "(?=foo)bar"];
         for c in cases {
             // If the pattern fails to parse, decompose_regex should return Err.
