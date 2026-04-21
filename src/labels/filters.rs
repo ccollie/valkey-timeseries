@@ -242,6 +242,8 @@ impl Eq for RegexMatcher {}
 impl PartialEq for RegexMatcher {
     fn eq(&self, other: &Self) -> bool {
         self.regex.as_str() == other.regex.as_str()
+            && self.prefix == other.prefix
+            && self.value == other.value
     }
 }
 
@@ -871,5 +873,26 @@ mod tests {
         assert!(matcher.is_match("staging"));
         assert!(matcher.is_match("prod"));
         assert!(!matcher.is_match("dev"));
+    }
+
+    #[test]
+    fn test_regex_matcher_equality_includes_prefix_and_value() {
+        let mut left = RegexMatcher::create("server.*").unwrap();
+        left.prefix = Some("server".to_string());
+
+        let mut equal = RegexMatcher::create("server.*").unwrap();
+        equal.prefix = Some("server".to_string());
+        assert_eq!(left, equal);
+
+        let mut right = RegexMatcher::create("server.*").unwrap();
+        right.prefix = Some("client".to_string());
+
+        assert_ne!(left, right);
+
+        let mut right = RegexMatcher::create("server.*").unwrap();
+        right.prefix = Some("server".to_string());
+        right.value = "server.+".to_string();
+
+        assert_ne!(left, right);
     }
 }
