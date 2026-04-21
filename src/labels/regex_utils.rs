@@ -1043,16 +1043,6 @@ mod test {
     }
 
     #[test]
-    fn test_debug_decompose_complex() {
-        // Debug-only test to inspect decomposition of a couple of complex patterns.
-        let pats = vec!["^server[12]$", "^[24]\\d{2}$"];
-        for p in pats {
-            let dec = decompose_regex(p);
-            println!("decompose_regex('{}') -> {:?}", p, dec);
-        }
-    }
-
-    #[test]
     fn test_parse_regex_matcher_charclass_node12() {
         use crate::labels::filters::{PredicateMatch, PredicateValue};
 
