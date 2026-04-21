@@ -985,17 +985,9 @@ fn handle_regex_not_equal_match<'a>(
     let PredicateMatch::RegexNotEqual(re) = &filter.matcher else {
         panic!("unexpected matcher type in handle_regex_not_equal_match");
     };
-    let res = if let Some(prefix) = &re.prefix {
-        let prefix_len = prefix.len();
-        postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
-            let remainder = &v[prefix_len..];
-            !re.regex.is_match(remainder)
-        })
-    } else {
-        let mut state = ();
-        postings
-            .postings_for_label_matching(&filter.label, &mut state, |value, _| !re.is_match(value))
-    };
+    let mut state = ();
+    let res = postings
+        .postings_for_label_matching(&filter.label, &mut state, |value, _| !re.is_match(value));
     Cow::Owned(res)
 }
 
