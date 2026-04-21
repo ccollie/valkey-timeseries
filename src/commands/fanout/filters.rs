@@ -6,11 +6,11 @@ use super::generated::{
     label_filter::Matcher,
 };
 use crate::commands::fanout::series_selector::Filters;
+use crate::labels::compile_regex;
 use crate::labels::filters::{
     FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
     SeriesSelector, ValueList,
 };
-use crate::labels::{RegexDecomposition, compile_prefixed_regex, compile_regex};
 use crate::series::DateRange;
 use crate::series::request_types::MetaDateRangeFilter;
 use valkey_module::{ValkeyError, ValkeyResult};
@@ -48,44 +48,38 @@ fn predicate_value_from_fanout(value: &FanoutPredicateValue) -> PredicateValue {
 }
 
 fn regex_matcher_to_fanout(value: &RegexMatcher) -> FanoutRegexFilterValue {
-    // Store the compiled remainder pattern in `regex` and the optional literal
-    // prefix in `prefix`. `value.value` contains the original (possibly
-    // unanchored) text and must not be sent as the remainder pattern — that
-    // would duplicate the prefix when reconstructing a prefixed regex.
+    // For round-trip compatibility we need to preserve the original textual
+    // representation exposed via `RegexMatcher.value`. Send that as `regex`
+    // so the receiver can reconstruct the same `value` string. The compiled
+    // `Regex` is not transmitted; the receiver will recompile from the
+    // original text which preserves equality checks in tests.
     FanoutRegexFilterValue {
-        regex: value.regex.as_str().to_string(),
+        regex: value.value.clone(),
         prefix: value.prefix.clone().unwrap_or_default(),
     }
 }
 
 fn regex_matcher_from_fanout(value: &FanoutRegexFilterValue) -> ValkeyResult<RegexMatcher> {
-    let decomposed = if value.prefix.is_empty() {
-        // No literal prefix: compile the provided regex pattern as a whole.
-        compile_regex(value.regex.as_str())
-    } else {
-        // We expect the fanout `regex` field to contain the remainder pattern
-        // and `prefix` to contain the literal prefix. Pass them in the order
-        // (pattern, prefix) as required by `compile_prefixed_regex`.
-        compile_prefixed_regex(value.regex.as_str(), value.prefix.clone())
-    }
-        .map_err(|e| ValkeyError::String(format!("TSDB: invalid regex: {e:?}")))?;
+    // The `regex` field always contains a fully-anchored pattern (^...$) that
+    // matches the entire string.  Re-compile it directly with the same flags
+    // used during construction;
+    let regex = match compile_regex(value.regex.as_str()) {
+        Err(_) => {
+            return Err(ValkeyError::String(format!(
+                "TSDB: invalid regex: {}",
+                value.regex
+            )));
+        }
+        Ok(regex) => regex,
+    };
 
-    match decomposed {
-        RegexDecomposition::Regex(re) => Ok(RegexMatcher {
-            regex: re,
-            value: value.regex.to_string(),
-            prefix: None,
-        }),
-        RegexDecomposition::PrefixWithRegex(prefix, remainder) => Ok(RegexMatcher {
-            regex: remainder,
-            // Reconstruct the original value as prefix + remainder pattern
-            // (remainder pattern is stored in `value.regex`). This mirrors
-            // how RegexMatcher.value is produced during initial decomposition.
-            value: format!("{}{}", prefix, value.regex),
-            prefix: Some(prefix),
-        }),
-        _ => Err(ValkeyError::Str("TSDB invalid regex matcher")),
-    }
+    let prefix = if value.prefix.is_empty() {
+        None
+    } else {
+        Some(value.prefix.clone())
+    };
+
+    Ok(RegexMatcher::from_parts(regex, value.regex.clone(), prefix))
 }
 
 impl From<&LabelFilter> for FanoutFilter {
@@ -114,6 +108,14 @@ impl From<&LabelFilter> for FanoutFilter {
             PredicateMatch::StartsWith(prefix) => {
                 let value = prefix.clone();
                 (Matcher::Prefix(value), MatcherOpType::StartsWith)
+            }
+            PredicateMatch::Contains(needle) => {
+                let value = needle.clone();
+                (Matcher::Contains(value), MatcherOpType::Contains)
+            }
+            PredicateMatch::NotContains(needle) => {
+                let value = needle.clone();
+                (Matcher::Contains(value), MatcherOpType::NotContains)
             }
         };
 
@@ -249,6 +251,12 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
             (MatcherOpType::NotStartsWith, Some(Matcher::Prefix(prefix))) => {
                 PredicateMatch::NotStartsWith(prefix.clone())
             }
+            (MatcherOpType::Contains, Some(Matcher::Contains(needle))) => {
+                PredicateMatch::Contains(needle.clone())
+            }
+            (MatcherOpType::NotContains, Some(Matcher::Contains(needle))) => {
+                PredicateMatch::NotContains(needle.clone())
+            }
             _ => {
                 return Err(ValkeyError::Str(
                     "TSDB: matcher operation does not match matcher payload",
@@ -360,6 +368,24 @@ mod tests {
         let decoded_prefix =
             LabelFilter::try_from(&fanout_prefix).expect("prefix filter should decode");
         assert_eq!(decoded_prefix, prefix_filter);
+
+        let contains_filter = LabelFilter {
+            label: "instance".into(),
+            matcher: PredicateMatch::Contains("server".into()),
+        };
+        let fanout_contains: FanoutFilter = (&contains_filter).into();
+        let decoded_contains =
+            LabelFilter::try_from(&fanout_contains).expect("contains filter should decode");
+        assert_eq!(decoded_contains, contains_filter);
+
+        let not_contains_filter = LabelFilter {
+            label: "instance".into(),
+            matcher: PredicateMatch::NotContains("server".into()),
+        };
+        let fanout_not_contains: FanoutFilter = (&not_contains_filter).into();
+        let decoded_not_contains = LabelFilter::try_from(&fanout_not_contains)
+            .expect("negative contains filter should decode");
+        assert_eq!(decoded_not_contains, not_contains_filter);
     }
 
     #[test]

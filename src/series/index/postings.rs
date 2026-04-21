@@ -422,6 +422,8 @@ impl Postings {
             PredicateMatch::NotStartsWith(ref prefix) => {
                 handle_not_starts_with(self, &filter.label, prefix)
             }
+            PredicateMatch::Contains(ref needle) => handle_contains(self, &filter.label, needle),
+            PredicateMatch::NotContains(_) => handle_not_contains(self, filter),
         }
     }
 
@@ -443,6 +445,14 @@ impl Postings {
             }
             PredicateMatch::NotStartsWith(prefix) => {
                 Cow::Owned(self.postings_by_prefix(&filter.label, prefix))
+            }
+            PredicateMatch::Contains(needle) => {
+                let all = self.postings_for_all_label_values(&filter.label);
+                let matching = handle_contains(self, &filter.label, needle).into_owned();
+                Cow::Owned(all.andnot(&matching))
+            }
+            PredicateMatch::NotContains(needle) => {
+                Cow::Owned(handle_contains(self, &filter.label, needle).into_owned())
             }
             _ => {
                 let mut state = filter;
@@ -562,7 +572,10 @@ impl Postings {
                 // Optimization for a case like {l=~".", l!="1"}.
                 _ if !matches_empty => {
                     // If this matcher must be non-empty, we can be smarter.
-                    let is_not = matches!(typ, MatchOp::NotEqual | MatchOp::RegexNotEqual);
+                    let is_not = matches!(
+                        typ,
+                        MatchOp::NotEqual | MatchOp::RegexNotEqual | MatchOp::NotContains
+                    );
                     match (is_not, matches_empty) {
                         // l!="foo"
                         (true, true) => {
@@ -1015,6 +1028,34 @@ fn handle_not_starts_with<'a>(
     Cow::Owned(res)
 }
 
+fn handle_contains<'a>(
+    postings: &'a Postings,
+    label: &str,
+    needle: &str,
+) -> Cow<'a, PostingsBitmap> {
+    let mut state = needle;
+    let res = postings
+        .postings_for_label_matching(label, &mut state, |value, needle| value.contains(*needle));
+    Cow::Owned(res)
+}
+
+fn handle_not_contains<'a>(
+    postings: &'a Postings,
+    filter: &LabelFilter,
+) -> Cow<'a, PostingsBitmap> {
+    if filter.matches_empty() {
+        return with_label(postings, &filter.label);
+    }
+    let PredicateMatch::NotContains(needle) = &filter.matcher else {
+        panic!("unexpected matcher type in handle_not_contains");
+    };
+    let mut state = needle.as_str();
+    let res = postings.postings_for_label_matching(&filter.label, &mut state, |value, needle| {
+        !value.contains(*needle)
+    });
+    Cow::Owned(res)
+}
+
 fn intersection<'a, I>(its: I) -> PostingsBitmap
 where
     I: IntoIterator<Item = Cow<'a, PostingsBitmap>>,
@@ -1310,6 +1351,52 @@ mod tests {
         assert!(!result.contains(1));
         assert!(!result.contains(2));
         assert!(!result.contains(4));
+    }
+
+    #[test]
+    fn test_contains_filter_returns_matching_label_values() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "web-server-2");
+        postings.add_posting_for_label_value(4, "other", "value");
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::Contains("server".to_string()),
+        };
+
+        let result = postings.postings_for_filter(&filter);
+
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(1));
+        assert!(result.contains(3));
+        assert!(!result.contains(2));
+        assert!(!result.contains(4));
+    }
+
+    #[test]
+    fn test_not_contains_filter_returns_non_matching_and_missing_labels() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "web-server-2");
+        postings.add_posting_for_label_value(4, "other", "value");
+        postings.all_postings.add(4);
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::NotContains("server".to_string()),
+        };
+
+        let result = postings.postings_for_label_filters(&[filter]).unwrap();
+        let result = result.into_owned();
+
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(2));
+        assert!(result.contains(4));
+        assert!(!result.contains(1));
+        assert!(!result.contains(3));
     }
 
     #[test]

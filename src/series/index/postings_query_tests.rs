@@ -1098,4 +1098,51 @@ mod tests {
         matched.sort();
         assert_eq!(matched, vec!["node1".to_string(), "node2".to_string()]);
     }
+
+    #[test]
+    fn test_regex_matchers_with_ordered_literal_hints() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        let series_data = HashMap::from([
+            (
+                1,
+                labels_from_strings(&["instance", "server-east-db-primary-prod"]),
+            ),
+            (
+                2,
+                labels_from_strings(&["instance", "server-east-prod-primary-db"]),
+            ),
+            (3, labels_from_strings(&["instance", "foo-123-bar"])),
+            (4, labels_from_strings(&["instance", "bar-123-foo"])),
+        ]);
+
+        for (series_ref, labels) in series_data.iter() {
+            add_series(&mut ix, &mut labels_map, *series_ref, labels);
+        }
+
+        let prefixed = LabelFilter::create(RegexEqual, "instance", "^server.*db.*prod$").unwrap();
+        let actual = get_labels_by_filters(&ix, &[prefixed], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("server-east-db-primary-prod")
+        );
+
+        let generic = LabelFilter::create(RegexEqual, "instance", ".*foo.*bar.*").unwrap();
+        let actual = get_labels_by_filters(&ix, &[generic], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("foo-123-bar")
+        );
+    }
 }

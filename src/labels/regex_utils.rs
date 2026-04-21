@@ -20,21 +20,21 @@ pub(crate) fn parse_regex_matcher(expr: &str, is_equal: bool) -> ParseResult<Pre
         return Err(ParseError::InvalidRegex(expr.to_string()));
     };
 
-    Ok(decomposed_regex_to_predicate_match(decomposed, is_equal))
+    Ok(decomposed_regex_to_predicate_match(
+        expr, decomposed, is_equal,
+    ))
 }
 
-pub(crate) fn decomposed_regex_to_predicate_match(
+fn decomposed_regex_to_predicate_match(
+    expr: &str,
     decomposed: RegexDecomposition,
     is_equal: bool,
 ) -> PredicateMatch {
     match decomposed {
         RegexDecomposition::PrefixWithRegex(prefix, remainder) => {
-            let value = format!("{}{}", prefix, remainder.as_str());
-            let matcher = RegexMatcher {
-                prefix: Some(prefix),
-                regex: remainder,
-                value,
-            };
+            // `remainder` now matches the entire string (prefix included).
+            // Store the compiled pattern string as `value` for display/serialization.
+            let matcher = RegexMatcher::from_parts(remainder, expr.to_string(), Some(prefix));
             if is_equal {
                 PredicateMatch::RegexEqual(matcher)
             } else {
@@ -42,12 +42,7 @@ pub(crate) fn decomposed_regex_to_predicate_match(
             }
         }
         RegexDecomposition::Regex(regex) => {
-            let value = regex.to_string();
-            let matcher = RegexMatcher {
-                prefix: None,
-                regex,
-                value,
-            };
+            let matcher = RegexMatcher::from_parts(regex, expr.to_string(), None);
             if is_equal {
                 PredicateMatch::RegexEqual(matcher)
             } else {
@@ -59,6 +54,13 @@ pub(crate) fn decomposed_regex_to_predicate_match(
                 PredicateMatch::StartsWith(prefix)
             } else {
                 PredicateMatch::NotStartsWith(prefix)
+            }
+        }
+        RegexDecomposition::Contains(needle) => {
+            if is_equal {
+                PredicateMatch::Contains(needle)
+            } else {
+                PredicateMatch::NotContains(needle)
             }
         }
         RegexDecomposition::Literals(mut lits) => {
@@ -316,6 +318,8 @@ pub enum RegexDecomposition {
     Literals(Vec<String>),
     /// The regex is an anchored prefix followed by a wildcard, e.g. `^prod.*`.
     Prefix(String),
+    /// The regex is exactly `.*literal.*` after anchor normalization.
+    Contains(String),
     /// The regex is an anchored literal prefix followed by a (non-.*) remainder.
     PrefixWithRegex(String, Regex),
     /// The regex could not be simplified
@@ -328,6 +332,7 @@ impl PartialEq for RegexDecomposition {
         match (self, other) {
             (Literals(a), Literals(b)) => a == b,
             (Prefix(a), Prefix(b)) => a == b,
+            (Contains(a), Contains(b)) => a == b,
             (PrefixWithRegex(a_pref, a_re), PrefixWithRegex(b_pref, b_re)) => {
                 a_pref == b_pref && a_re.as_str() == b_re.as_str()
             }
@@ -348,8 +353,9 @@ impl Eq for RegexDecomposition {}
 /// Recognized patterns:
 /// - **Simple alternations** (`foo|bar|baz`) → `RegexDecomposition::Literals`
 /// - **Anchored prefix** (`^prod.*` / `^prod.+`) → `RegexDecomposition::Prefix`
+/// - **Exact contains** (`.*foo.*`) → `RegexDecomposition::Contains`
 /// - **Plain literal** (`prod`) → `RegexDecomposition::Literals` (single element)
-/// - **Anchored prefix with a non-wildcard remainder** (`^foo.+bar`, `^foo.*bar`, `^foo.?bar`, `^foo.bar`) → `RegexDecomposition::PrefixWithRegex(prefix, remainder_regex)` where `remainder_regex` is the compiled regex for the remainder (e.g. `.+bar`).
+/// - **Anchored prefix with a non-wildcard remainder** (`^foo.+bar`, `^foo.*bar`, `^foo.?bar`, `^foo.bar`) → `RegexDecomposition::PrefixWithRegex(prefix, regex)` where `regex` is the compiled regex for the string.
 ///
 /// Returns `None` for anything more complex.
 pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
@@ -392,7 +398,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
         {
             if let Some(remainder) = maybe_remainder {
                 // If the remainder can be expanded into a small set of literal
-                // alternatives (e.g., a character class), enumerate them and
+                // alternatives (e.g., a character class), list them and
                 // return a flat literal list prefixed with `prefix`.
                 let mut or_values = Vec::new();
                 if get_or_values(&remainder, &mut or_values) && !or_values.is_empty() {
@@ -403,16 +409,20 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
                     return Ok(RegexDecomposition::Literals(lits));
                 }
 
-                let pattern = hir_to_string(&remainder);
-                // Build the compiled remainder with the same flags as used elsewhere
-                // (dot matches new line, size limit) to preserve Prometheus-compatible
-                // regex semantics (dot matches newlines).
-                if let Ok(compiled) = compile_prefixed_regex(&pattern, prefix) {
+                // Compile a regex that matches the full string by combining the
+                // literal `prefix` with the remainder HIR converted to a
+                // pattern string. Passing `expr` here would recompile the
+                // original expression (which already contains the prefix) and
+                // cause duplication when `compile_prefixed_regex` combines the
+                // prefix again. Convert the `remainder` HIR to a pattern and
+                // compile that instead so the resulting compiled regex
+                // represents `prefix + remainder` as intended.
+                if let Ok(compiled) = compile_prefixed_regex(&hir_to_string(&remainder), prefix) {
                     return Ok(compiled);
                 }
                 // Fall back to compiling the full expr with the same options
                 // and the same anchoring wrapper used elsewhere.
-                return compile_regex(expr);
+                return Ok(RegexDecomposition::Regex(compile_regex(expr)?));
             }
             return Ok(RegexDecomposition::Prefix(prefix));
         }
@@ -438,11 +448,14 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
             let is_optional = get_repetition(next).is_some_and(|r| r.min == 0 && r.max == Some(1));
             let is_wildcard = anchor_start && (is_dot_star(next) || is_dot_plus(next));
             if is_optional || is_wildcard {
-                let tail = Hir::concat(Vec::from(&subs[idx..]));
-                let pattern = hir_to_string(&tail);
-                return compile_prefixed_regex(&pattern, prefix);
+                let regex = compile_regex(expr)?;
+                return Ok(RegexDecomposition::PrefixWithRegex(prefix, regex));
             }
         }
+    }
+
+    if let Some(needle) = extract_contains_literal(&inner) {
+        return Ok(RegexDecomposition::Contains(needle));
     }
 
     // Flat list of literal alternatives.
@@ -451,38 +464,28 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
         return Ok(RegexDecomposition::Literals(or_values));
     }
 
-    compile_regex(expr)
+    Ok(RegexDecomposition::Regex(compile_regex(expr)?))
 }
 
-pub(crate) fn compile_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
-    let anchored = format!("^(?:{}{})$", "", expr);
-    Ok(RegexDecomposition::Regex(
-        RegexBuilder::new(&anchored)
-            .size_limit(16 * 1024)
-            .dot_matches_new_line(true)
-            .build()
-            .or_else(|_| Regex::new(&try_escape_for_repeat_re(&anchored)))?,
-    ))
+pub(crate) fn compile_regex(expr: &str) -> Result<Regex, RegexError> {
+    let anchored = format!("^(?:{})$", expr);
+    RegexBuilder::new(&anchored)
+        .size_limit(16 * 1024)
+        .dot_matches_new_line(true)
+        .build()
+        .or_else(|_| Regex::new(&try_escape_for_repeat_re(&anchored)))
 }
 
 pub(crate) fn compile_prefixed_regex(
     pattern: &str,
     prefix: String,
 ) -> Result<RegexDecomposition, RegexError> {
-    // Build the compiled remainder with the same flags as used elsewhere
-    // (dot matches new line, size limit) to preserve Prometheus-compatible
-    // regex semantics (dot matches newlines).
-    let anchored = format!("^{pattern}$");
-    let compiled = RegexBuilder::new(&anchored)
-        .size_limit(16 * 1024)
-        .dot_matches_new_line(true)
-        .build()
-        .or_else(|_| {
-            // Fall back to a looser compilation that escapes repeat
-            // constructs when the size-limited compilation fails.
-            Regex::new(&try_escape_for_repeat_re(&anchored))
-        })?;
-
+    // The `pattern` argument represents the remainder of the regex after the
+    // literal `prefix`. To produce a Regex that matches the full string
+    // (including the prefix), prefix the (escaped) literal prefix to the
+    // remainder pattern and compile the resulting expression.
+    let combined = format!("{}{}", regex::escape(&prefix), pattern);
+    let compiled = compile_regex(&combined)?;
     Ok(RegexDecomposition::PrefixWithRegex(prefix, compiled))
 }
 
@@ -598,6 +601,134 @@ fn extract_anchored_prefix_or_remainder(sre: &Hir) -> Option<(String, Option<Hir
     }
 }
 
+pub(crate) fn extract_ordered_required_literals(expr: &str, prefix: Option<&str>) -> Vec<String> {
+    let Ok(sre) = build_hir(expr) else {
+        return Vec::new();
+    };
+
+    let (inner, _, _) = strip_anchors_hir(&sre);
+    match prefix {
+        Some(prefix) => {
+            let Some((actual_prefix, maybe_remainder)) =
+                extract_anchored_prefix_or_remainder(&inner)
+            else {
+                return Vec::new();
+            };
+            if actual_prefix != prefix {
+                return Vec::new();
+            }
+            maybe_remainder
+                .and_then(|remainder| extract_literal_sequence(&remainder))
+                .unwrap_or_default()
+        }
+        None => extract_literal_sequence(&inner).unwrap_or_default(),
+    }
+}
+
+pub(crate) fn extract_stable_suffix_hint(expr: &str, prefix: Option<&str>) -> Option<String> {
+    let Ok(sre) = build_hir(expr) else {
+        return None;
+    };
+
+    let (inner, _, _) = strip_anchors_hir(&sre);
+    match prefix {
+        Some(prefix) => {
+            let Some((actual_prefix, maybe_remainder)) =
+                extract_anchored_prefix_or_remainder(&inner)
+            else {
+                return None;
+            };
+            if actual_prefix != prefix {
+                return None;
+            }
+            maybe_remainder.and_then(|remainder| extract_trailing_literal_sequence(&remainder))
+        }
+        None => extract_trailing_literal_sequence(&inner),
+    }
+}
+
+fn extract_contains_literal(sre: &Hir) -> Option<String> {
+    let HirKind::Concat(subs) = sre.kind() else {
+        return None;
+    };
+
+    if subs.len() < 3 || !is_dot_star(&subs[0]) || !is_dot_star(subs.last()?) {
+        return None;
+    }
+
+    let mut needle = String::new();
+    for sub in &subs[1..subs.len() - 1] {
+        needle.push_str(&get_literal(sub)?);
+    }
+
+    if needle.is_empty() {
+        return None;
+    }
+
+    Some(needle)
+}
+
+fn extract_literal_sequence(sre: &Hir) -> Option<Vec<String>> {
+    if let Some(literal) = get_literal(sre) {
+        return Some(vec![literal]);
+    }
+    if is_dot_star(sre) || is_dot_plus(sre) {
+        return Some(Vec::new());
+    }
+
+    let HirKind::Concat(subs) = sre.kind() else {
+        return None;
+    };
+
+    let mut literals = Vec::new();
+    let mut current = String::new();
+    for sub in subs {
+        if let Some(literal) = get_literal(sub) {
+            current.push_str(&literal);
+            continue;
+        }
+        if is_dot_star(sub) || is_dot_plus(sub) {
+            if !current.is_empty() {
+                literals.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        return None;
+    }
+    if !current.is_empty() {
+        literals.push(current);
+    }
+    Some(literals)
+}
+
+fn extract_trailing_literal_sequence(sre: &Hir) -> Option<String> {
+    if let Some(literal) = get_literal(sre) {
+        return (!literal.is_empty()).then_some(literal);
+    }
+
+    let HirKind::Concat(subs) = sre.kind() else {
+        return None;
+    };
+
+    let mut suffix_parts = Vec::new();
+    for sub in subs.iter().rev() {
+        let Some(literal) = get_literal(sub) else {
+            break;
+        };
+        if literal.is_empty() {
+            continue;
+        }
+        suffix_parts.push(literal);
+    }
+
+    if suffix_parts.is_empty() {
+        return None;
+    }
+
+    suffix_parts.reverse();
+    Some(suffix_parts.concat())
+}
+
 #[cfg(test)]
 mod test {
     use super::{RegexDecomposition, decompose_regex, remove_start_end_anchors};
@@ -644,13 +775,6 @@ mod test {
         check(".*", false);
         check(".+", true);
         check("foo.*", false);
-        check(".*foo", false);
-        check("foo.*bar", false);
-        check(".*foo.*", false);
-        check(".*foo.*bar", false);
-        check(".*foo.*bar.*", false);
-        check(".*foo.*bar.*baz.*qux", false);
-        check(".*foo.*bar.*baz.*qux.*", false);
         check(".*foo.*bar.*baz.*qux.*quux.*quuz.*corge.*grault", false);
         check(".*foo.*bar.*baz.*qux.*quux.*quuz.*corge.*grault.*", false);
     }
@@ -724,10 +848,10 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "prod");
-                // remainder should require at least one char
-                assert!(re.is_match("x"));
-                assert!(re.is_match("xy"));
-                assert!(!re.is_match(""));
+                // regex matches the full string; at least one char after prefix is required
+                assert!(re.is_match("prodx"));
+                assert!(re.is_match("prodxy"));
+                assert!(!re.is_match("prod")); // .+ requires at least one char after prefix
             }
             other => panic!("unexpected decomposition: {:?}", other),
         }
@@ -737,16 +861,81 @@ mod test {
     fn test_decompose_regex_complex_returns_regex() {
         // Patterns that cannot be decomposed should return RegexDecompostion::Regex.
         // Note: `foo.*bar` is now decomposable as PrefixWithRegex(foo, .*bar)
-        let got1 = decompose_regex(".*foo.*").unwrap();
+        let got1 = decompose_regex("[a-z]+").unwrap();
         match got1 {
-            RegexDecomposition::Regex(_re) => {}
-            other => panic!("pattern '.*foo.*' unexpectedly decomposed: {:?}", other),
-        }
-        let got2 = decompose_regex("[a-z]+").unwrap();
-        match got2 {
             RegexDecomposition::Regex(_re) => {}
             other => panic!("pattern '[a-z]+' unexpectedly decomposed: {:?}", other),
         }
+        let got2 = decompose_regex(".*foo.*bar.*").unwrap();
+        match got2 {
+            RegexDecomposition::Regex(_re) => {}
+            other => panic!(
+                "pattern '.*foo.*bar.*' unexpectedly decomposed: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_decompose_regex_contains() {
+        assert_eq!(
+            decompose_regex(".*foo.*").unwrap(),
+            RegexDecomposition::Contains("foo".into())
+        );
+        assert_eq!(
+            decompose_regex("^.*foo.*$").unwrap(),
+            RegexDecomposition::Contains("foo".into())
+        );
+    }
+
+    #[test]
+    fn test_decompose_regex_contains_with_captured_literal() {
+        assert_eq!(
+            decompose_regex(".*foo(bar)baz.*").unwrap(),
+            RegexDecomposition::Contains("foobarbaz".into())
+        );
+    }
+
+    #[test]
+    fn test_parse_regex_matcher_contains() {
+        use crate::labels::filters::PredicateMatch;
+
+        let got = super::parse_regex_matcher(".*server.*", true).unwrap();
+        assert_eq!(got, PredicateMatch::Contains("server".to_string()));
+
+        let got = super::parse_regex_matcher(".*server.*", false).unwrap();
+        assert_eq!(got, PredicateMatch::NotContains("server".to_string()));
+    }
+
+    #[test]
+    fn test_extract_ordered_required_literals_prefixed_regex() {
+        let literals =
+            super::extract_ordered_required_literals("^server.*db.*prod$", Some("server"));
+        assert_eq!(literals, vec!["db".to_string(), "prod".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_ordered_required_literals_generic_regex() {
+        let literals = super::extract_ordered_required_literals(".*foo.*bar.*", None);
+        assert_eq!(literals, vec!["foo".to_string(), "bar".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_stable_suffix_hint_prefixed_regex() {
+        let suffix = super::extract_stable_suffix_hint("^server.*db.*prod$", Some("server"));
+        assert_eq!(suffix.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn test_extract_stable_suffix_hint_without_prefix() {
+        let suffix = super::extract_stable_suffix_hint("^.*bar$", None);
+        assert_eq!(suffix.as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn test_extract_stable_suffix_hint_ignores_wildcard_only_tail() {
+        let suffix = super::extract_stable_suffix_hint("^server.*$", Some("server"));
+        assert_eq!(suffix, None);
     }
 
     #[test]
@@ -794,9 +983,9 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "prod");
-                assert!(re.is_match("a"));
-                assert!(re.is_match("abc"));
-                assert!(!re.is_match(""));
+                assert!(re.is_match("proda"));
+                assert!(re.is_match("prodabc"));
+                assert!(!re.is_match("prod"));
             }
             other => panic!("unexpected decomposition: {:?}", other),
         }
@@ -857,9 +1046,10 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "a");
-                assert!(re.is_match("c"));
-                assert!(re.is_match("bc"));
-                assert!(!re.is_match("xc"));
+                // regex matches the full string including the prefix
+                assert!(re.is_match("ac"));
+                assert!(re.is_match("abc"));
+                assert!(!re.is_match("axc"));
             }
             other => panic!("unexpected decomposition: {:?}", other),
         }
@@ -880,9 +1070,9 @@ mod test {
         match p {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "aa");
-                // remainder can be empty or a single 'a'
-                assert!(re.is_match(""));
-                assert!(re.is_match("a"));
+                // regex matches full string; "aa" or "aaa" are valid
+                assert!(re.is_match("aa"));
+                assert!(re.is_match("aaa"));
             }
             other => panic!("unexpected decomposition: {:?}", other),
         }
@@ -891,11 +1081,12 @@ mod test {
         match p2 {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "aa");
-                // remainder should match "b" and "ab" (one optional 'a' then 'b')
-                assert!(re.is_match("b"));
-                assert!(re.is_match("ab"));
-                assert!(!re.is_match(""));
-                assert!(!re.is_match("a"));
+                // regex matches full string; "aab" (prefix + zero optional 'a' + 'b')
+                // or "aaab" (prefix + one optional 'a' + 'b')
+                assert!(re.is_match("aab"));
+                assert!(re.is_match("aaab"));
+                assert!(!re.is_match("aa")); // missing 'b'
+                assert!(!re.is_match("aaa")); // missing 'b'
             }
             other => panic!("unexpected decomposition: {:?}", other),
         }
@@ -908,10 +1099,11 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "ab");
-                assert!(re.is_match("cd"));
-                assert!(re.is_match("d"));
-                assert!(!re.is_match("acd"));
-                assert!(!re.is_match("ad"));
+                // regex matches full string including prefix
+                assert!(re.is_match("abcd"));
+                assert!(re.is_match("abd"));
+                assert!(!re.is_match("abacd"));
+                assert!(!re.is_match("abad"));
             }
             other => panic!("unexpected decomposition for 'abc?d': {:?}", other),
         }
@@ -924,13 +1116,13 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "ab");
-                // Remainder matches c?d?e
-                assert!(re.is_match("cde"));
-                assert!(re.is_match("de"));
-                assert!(re.is_match("ce"));
-                assert!(re.is_match("e"));
-                assert!(!re.is_match("cd"));
-                assert!(!re.is_match("abc"));
+                // regex matches full string including prefix
+                assert!(re.is_match("abcde"));
+                assert!(re.is_match("abde"));
+                assert!(re.is_match("abce"));
+                assert!(re.is_match("abe"));
+                assert!(!re.is_match("abcd")); // missing 'e'
+                assert!(!re.is_match("ababc")); // wrong pattern
             }
             other => panic!("unexpected decomposition for 'abc?d?e': {:?}", other),
         }
@@ -943,10 +1135,11 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "abc");
-                assert!(re.is_match("def"));
-                assert!(re.is_match("ef"));
-                assert!(!re.is_match("e"));
-                assert!(!re.is_match("df"));
+                // regex matches full string including prefix
+                assert!(re.is_match("abcdef"));
+                assert!(re.is_match("abcef"));
+                assert!(!re.is_match("abce")); // missing 'f'
+                assert!(!re.is_match("abcdf")); // missing 'e'
             }
             other => panic!("unexpected decomposition for 'abcd?ef': {:?}", other),
         }
@@ -976,11 +1169,11 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "foo");
-                // Remainder should match anything with .* followed by 'bar'
-                assert!(re.is_match("bar"));
-                assert!(re.is_match("xbar"));
-                assert!(re.is_match("xybar"));
-                assert!(!re.is_match("baz"));
+                // regex matches full string including prefix
+                assert!(re.is_match("foobar"));
+                assert!(re.is_match("fooxbar"));
+                assert!(re.is_match("fooxybar"));
+                assert!(!re.is_match("foobaz"));
             }
             other => panic!("unexpected decomposition for '^foo.*bar$': {:?}", other),
         }
@@ -993,11 +1186,11 @@ mod test {
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "foo");
-                // Remainder should match at least one char before 'bar'
-                assert!(re.is_match("xbar"));
-                assert!(re.is_match("xybar"));
-                assert!(!re.is_match("bar")); // .+ requires at least one char
-                assert!(!re.is_match("baz"));
+                // regex matches full string including prefix
+                assert!(re.is_match("fooxbar"));
+                assert!(re.is_match("fooxybar"));
+                assert!(!re.is_match("foobar")); // .+ requires at least one char between prefix and "bar"
+                assert!(!re.is_match("foobaz"));
             }
             other => panic!("unexpected decomposition for '^foo.+bar$': {:?}", other),
         }
@@ -1006,17 +1199,16 @@ mod test {
     #[test]
     fn test_decompose_regex_prefix_dotstar_complex_suffix() {
         // Pattern: `^prod.*[0-9]+$` -> prefix `prod`, remainder `.*[0-9]+`
-        // (Only anchored patterns are decomposed for safety)
         let got = decompose_regex("^prod.*[0-9]+$").unwrap();
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "prod");
-                // Remainder matches .* followed by one or more digits
-                assert!(re.is_match("123"));
-                assert!(re.is_match("x123"));
-                assert!(re.is_match("xyz789"));
-                assert!(!re.is_match("x"));
-                assert!(!re.is_match("xyz"));
+                // regex matches full string including prefix
+                assert!(re.is_match("prod123"));
+                assert!(re.is_match("prodx123"));
+                assert!(re.is_match("prodxyz789"));
+                assert!(!re.is_match("prodx"));
+                assert!(!re.is_match("prodxyz"));
             }
             other => panic!("unexpected decomposition for '^prod.*[0-9]+$': {:?}", other),
         }
@@ -1025,14 +1217,14 @@ mod test {
     #[test]
     fn test_decompose_regex_multichar_prefix_wildcard_suffix() {
         // Pattern: `^production.+metrics$` -> prefix `production`, remainder `.+metrics`
-        // (Only anchored patterns are decomposed for safety)
         let got = decompose_regex("^production.+metrics$").unwrap();
         match got {
             RegexDecomposition::PrefixWithRegex(pref, re) => {
                 assert_eq!(pref, "production");
-                assert!(re.is_match("xmetrics"));
-                assert!(re.is_match("_metrics"));
-                assert!(!re.is_match("metrics"));
+                // regex matches full string including prefix
+                assert!(re.is_match("productionxmetrics"));
+                assert!(re.is_match("production_metrics"));
+                assert!(!re.is_match("productionmetrics")); // .+ requires at least one char
             }
             other => panic!(
                 "unexpected decomposition for 'production.+metrics': {:?}",

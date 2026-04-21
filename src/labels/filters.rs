@@ -1,7 +1,9 @@
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::labels::parse_series_selector;
 use crate::labels::regex::parse_regex_anchored;
-use crate::labels::regex_utils::parse_regex_matcher;
+use crate::labels::regex_utils::{
+    extract_ordered_required_literals, extract_stable_suffix_hint, parse_regex_matcher,
+};
 use crate::parser::ParseError;
 use crate::parser::lex::Token;
 use enquote::enquote;
@@ -16,7 +18,7 @@ use std::ops::{Deref, DerefMut};
 
 const EMPTY_TEXT: &str = "";
 
-#[derive(Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum MatchOp {
     Equal,
     NotEqual,
@@ -24,6 +26,8 @@ pub enum MatchOp {
     RegexNotEqual,
     StartsWith, // ^= operator for prefix matching
     NotStartsWith,
+    Contains,
+    NotContains,
 }
 
 impl MatchOp {
@@ -41,6 +45,8 @@ impl Display for MatchOp {
             MatchOp::RegexNotEqual => write!(f, "!~"),
             MatchOp::StartsWith => write!(f, "^="),
             MatchOp::NotStartsWith => write!(f, "^~"),
+            MatchOp::Contains => write!(f, "*="),
+            MatchOp::NotContains => write!(f, "!*="),
         }
     }
 }
@@ -182,6 +188,8 @@ impl Hash for PredicateValue {
 pub struct RegexMatcher {
     pub regex: Regex,
     pub prefix: Option<String>,
+    pub suffix: Option<String>,
+    pub required_literals: SmallVec<String, 2>,
     pub value: String, // original (possibly unanchored) string
 }
 
@@ -189,16 +197,26 @@ impl Hash for RegexMatcher {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.regex.as_str().hash(state);
         self.prefix.hash(state);
+        self.suffix.hash(state);
+        self.required_literals.hash(state);
         self.value.hash(state);
     }
 }
 
 impl RegexMatcher {
     fn new(regex: Regex, value: String) -> Self {
+        Self::from_parts(regex, value, None)
+    }
+
+    pub(crate) fn from_parts(regex: Regex, value: String, prefix: Option<String>) -> Self {
+        let required_literals = extract_ordered_required_literals(&value, prefix.as_deref()).into();
+        let suffix = extract_stable_suffix_hint(&value, prefix.as_deref());
         Self {
             regex,
             value,
-            prefix: None,
+            prefix,
+            suffix,
+            required_literals,
         }
     }
 
@@ -207,19 +225,67 @@ impl RegexMatcher {
         Ok(Self::new(regex, unanchored.to_string()))
     }
 
-    pub fn is_match(&self, mut other: &str) -> bool {
-        if let Some(prefix) = &self.prefix {
-            if !other.starts_with(prefix) {
+    pub fn is_match(&self, other: &str) -> bool {
+        if other.is_empty() {
+            if self
+                .prefix
+                .as_ref()
+                .is_some_and(|prefix| !prefix.is_empty())
+            {
                 return false;
             }
-            // Strip the prefix unconditionally so the remainder (possibly empty)
-            // is passed to the compiled remainder regex.
-            other = &other[prefix.len()..];
-        }
-        if other.is_empty() {
             return is_empty_regex_matcher(&self.regex);
         }
+        // Fast-path: if a literal prefix is known, reject immediately without
+        // running the full regex engine. The compiled regex already encodes the
+        // prefix, so we pass the full string to it unchanged.
+        if let Some(prefix) = &self.prefix
+            && !other.starts_with(prefix.as_str())
+        {
+            return false;
+        }
+        let remainder = self
+            .prefix
+            .as_ref()
+            .and_then(|prefix| other.strip_prefix(prefix))
+            .unwrap_or(other);
+        if let Some(suffix) = &self.suffix
+            && !remainder.ends_with(suffix)
+        {
+            return false;
+        }
+        if !self.matches_required_literals(remainder) {
+            return false;
+        }
         self.regex.is_match(other)
+    }
+
+    pub(crate) fn cost(&self) -> usize {
+        match (
+            self.prefix.is_some(),
+            self.suffix.is_some(),
+            self.required_literals.is_empty(),
+        ) {
+            (true, true, false) => 12,
+            (true, true, true) => 14,
+            (true, false, false) | (false, true, false) => 16,
+            (true, false, true) | (false, true, true) => 18,
+            (false, false, false) => 30,
+            (false, false, true) => 50,
+        }
+    }
+
+    fn matches_required_literals(&self, mut haystack: &str) -> bool {
+        for literal in &self.required_literals {
+            if literal.is_empty() {
+                continue;
+            }
+            let Some(idx) = haystack.find(literal.as_str()) else {
+                return false;
+            };
+            haystack = &haystack[idx + literal.len()..];
+        }
+        true
     }
 }
 
@@ -243,6 +309,8 @@ impl PartialEq for RegexMatcher {
     fn eq(&self, other: &Self) -> bool {
         self.regex.as_str() == other.regex.as_str()
             && self.prefix == other.prefix
+            && self.suffix == other.suffix
+            && self.required_literals == other.required_literals
             && self.value == other.value
     }
 }
@@ -255,6 +323,8 @@ pub enum PredicateMatch {
     RegexNotEqual(RegexMatcher),
     StartsWith(String),
     NotStartsWith(String),
+    Contains(String),
+    NotContains(String),
 }
 
 impl PredicateMatch {
@@ -266,6 +336,8 @@ impl PredicateMatch {
             PredicateMatch::RegexNotEqual(_) => MatchOp::RegexNotEqual,
             PredicateMatch::StartsWith(_) => MatchOp::StartsWith,
             PredicateMatch::NotStartsWith(_) => MatchOp::NotStartsWith,
+            PredicateMatch::Contains(_) => MatchOp::Contains,
+            PredicateMatch::NotContains(_) => MatchOp::NotContains,
         }
     }
 
@@ -277,6 +349,8 @@ impl PredicateMatch {
             }
             PredicateMatch::StartsWith(p) => p.is_empty(),
             PredicateMatch::NotStartsWith(p) => p.is_empty(),
+            PredicateMatch::Contains(p) => p.is_empty(),
+            PredicateMatch::NotContains(p) => p.is_empty(),
         }
     }
 
@@ -292,6 +366,8 @@ impl PredicateMatch {
             PredicateMatch::RegexNotEqual(re) => !re.is_match(other),
             PredicateMatch::StartsWith(p) => other.starts_with(p),
             PredicateMatch::NotStartsWith(p) => !other.starts_with(p),
+            PredicateMatch::Contains(p) => other.contains(p),
+            PredicateMatch::NotContains(p) => !other.contains(p),
         }
     }
 
@@ -303,6 +379,8 @@ impl PredicateMatch {
             PredicateMatch::RegexNotEqual(re) => PredicateMatch::RegexEqual(re),
             PredicateMatch::StartsWith(p) => PredicateMatch::NotStartsWith(p),
             PredicateMatch::NotStartsWith(p) => PredicateMatch::StartsWith(p),
+            PredicateMatch::Contains(p) => PredicateMatch::NotContains(p),
+            PredicateMatch::NotContains(p) => PredicateMatch::Contains(p),
         }
     }
 
@@ -310,10 +388,12 @@ impl PredicateMatch {
         match &self {
             PredicateMatch::Equal(value) => value.cost(),
             PredicateMatch::NotEqual(value) => value.cost(),
-            PredicateMatch::RegexEqual(_) => 50,
-            PredicateMatch::RegexNotEqual(_) => 55,
+            PredicateMatch::RegexEqual(re) => re.cost(),
+            PredicateMatch::RegexNotEqual(re) => re.cost() + 5,
             PredicateMatch::StartsWith(_) => 10,
             PredicateMatch::NotStartsWith(_) => 10,
+            PredicateMatch::Contains(_) => 20,
+            PredicateMatch::NotContains(_) => 25,
         }
     }
 
@@ -323,6 +403,8 @@ impl PredicateMatch {
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(&re.value),
             PredicateMatch::StartsWith(p) => Some(p.as_str()),
             PredicateMatch::NotStartsWith(p) => Some(p.as_str()),
+            PredicateMatch::Contains(p) => Some(p.as_str()),
+            PredicateMatch::NotContains(p) => Some(p.as_str()),
         }
     }
 }
@@ -336,6 +418,8 @@ impl Display for PredicateMatch {
             }
             PredicateMatch::StartsWith(p) => p as &dyn Display,
             PredicateMatch::NotStartsWith(p) => p as &dyn Display,
+            PredicateMatch::Contains(p) => p as &dyn Display,
+            PredicateMatch::NotContains(p) => p as &dyn Display,
         };
 
         write!(f, "{value}")
@@ -369,6 +453,14 @@ impl Hash for PredicateMatch {
                 state.write_u8(6);
                 p.hash(state);
             }
+            PredicateMatch::Contains(p) => {
+                state.write_u8(7);
+                p.hash(state);
+            }
+            PredicateMatch::NotContains(p) => {
+                state.write_u8(8);
+                p.hash(state);
+            }
         }
     }
 }
@@ -384,6 +476,8 @@ impl PartialEq for PredicateMatch {
             (PredicateMatch::RegexNotEqual(re1), PredicateMatch::RegexNotEqual(re2)) => re1 == re2,
             (PredicateMatch::StartsWith(p1), PredicateMatch::StartsWith(p2)) => p1 == p2,
             (PredicateMatch::NotStartsWith(p1), PredicateMatch::NotStartsWith(p2)) => p1 == p2,
+            (PredicateMatch::Contains(p1), PredicateMatch::Contains(p2)) => p1 == p2,
+            (PredicateMatch::NotContains(p1), PredicateMatch::NotContains(p2)) => p1 == p2,
             _ => false,
         }
     }
@@ -422,6 +516,14 @@ impl LabelFilter {
             MatchOp::NotStartsWith => Ok(Self {
                 label,
                 matcher: PredicateMatch::NotStartsWith(value),
+            }),
+            MatchOp::Contains => Ok(Self {
+                label,
+                matcher: PredicateMatch::Contains(value),
+            }),
+            MatchOp::NotContains => Ok(Self {
+                label,
+                matcher: PredicateMatch::NotContains(value),
             }),
         }
     }
@@ -473,7 +575,10 @@ impl LabelFilter {
     pub fn is_negative_matcher(&self) -> bool {
         matches!(
             self.op(),
-            MatchOp::NotEqual | MatchOp::RegexNotEqual | MatchOp::NotStartsWith
+            MatchOp::NotEqual
+                | MatchOp::RegexNotEqual
+                | MatchOp::NotStartsWith
+                | MatchOp::NotContains
         )
     }
 
@@ -505,7 +610,10 @@ impl Display for LabelFilter {
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
                 write!(f, "{}", enquote('"', &re.value))
             }
-            PredicateMatch::StartsWith(_) | PredicateMatch::NotStartsWith(_) => match self.text() {
+            PredicateMatch::StartsWith(_)
+            | PredicateMatch::NotStartsWith(_)
+            | PredicateMatch::Contains(_)
+            | PredicateMatch::NotContains(_) => match self.text() {
                 Some(text) => write!(f, "{}", enquote('"', text)),
                 None => Err(fmt::Error),
             },
@@ -813,7 +921,7 @@ fn find_metric_name_matcher(filters: &[LabelFilter]) -> Option<(usize, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::labels::filters::RegexMatcher;
+    use crate::labels::filters::{LabelFilter, MatchOp, PredicateMatch, RegexMatcher};
 
     #[test]
     fn test_match_anchoring() {
@@ -904,5 +1012,86 @@ mod tests {
         right.value = "server.+".to_string();
 
         assert_ne!(left, right);
+    }
+
+    #[test]
+    fn test_regex_matcher_prefilters_ordered_literals_after_prefix() {
+        let filter =
+            LabelFilter::create(MatchOp::RegexEqual, "instance", "^server.*db.*prod$").unwrap();
+
+        let PredicateMatch::RegexEqual(matcher) = filter.matcher else {
+            panic!("expected regex matcher");
+        };
+
+        assert_eq!(matcher.prefix.as_deref(), Some("server"));
+        assert_eq!(matcher.suffix.as_deref(), Some("prod"));
+        assert_eq!(matcher.required_literals.as_slice(), ["db", "prod"]);
+        assert!(matcher.is_match("server-east-db-primary-prod"));
+        assert!(!matcher.is_match("server-east-prod-primary-db"));
+    }
+
+    #[test]
+    fn test_regex_matcher_prefilters_ordered_literals_without_prefix() {
+        let matcher = RegexMatcher::create(".*foo.*bar.*").unwrap();
+
+        assert_eq!(matcher.suffix, None);
+        assert_eq!(matcher.required_literals.as_slice(), ["foo", "bar"]);
+        assert!(matcher.is_match("aaafoo123barzzz"));
+        assert!(!matcher.is_match("aaabar123foozzz"));
+    }
+
+    #[test]
+    fn test_regex_matcher_prefilters_anchored_suffix() {
+        let filter = LabelFilter::create(MatchOp::RegexEqual, "instance", "^.*bar$").unwrap();
+
+        let PredicateMatch::RegexEqual(matcher) = filter.matcher else {
+            panic!("expected regex matcher");
+        };
+
+        assert_eq!(matcher.prefix, None);
+        assert_eq!(matcher.suffix.as_deref(), Some("bar"));
+        assert!(matcher.is_match("foo-bar"));
+        assert!(!matcher.is_match("bar-foo"));
+    }
+
+    #[test]
+    fn test_regex_matcher_prefilters_suffix_with_dot_plus_middle() {
+        let filter = LabelFilter::create(MatchOp::RegexEqual, "instance", "^server.+db$").unwrap();
+
+        let PredicateMatch::RegexEqual(matcher) = filter.matcher else {
+            panic!("expected regex matcher");
+        };
+
+        assert_eq!(matcher.prefix.as_deref(), Some("server"));
+        assert_eq!(matcher.suffix.as_deref(), Some("db"));
+        assert!(matcher.is_match("server-east-db"));
+        assert!(!matcher.is_match("serverdb"));
+        assert!(!matcher.is_match("server-east-cache"));
+    }
+
+    #[test]
+    fn test_contains_matcher_matches_substrings() {
+        let matcher = PredicateMatch::Contains("erv".to_string());
+
+        assert!(matcher.matches("server-1"));
+        assert!(!matcher.matches("client-1"));
+    }
+
+    #[test]
+    fn test_contains_matcher_inverse_round_trip() {
+        let matcher = PredicateMatch::Contains("prod".to_string());
+        let inverted = matcher.clone().inverse();
+
+        assert_eq!(inverted, PredicateMatch::NotContains("prod".to_string()));
+        assert_eq!(inverted.inverse(), matcher);
+    }
+
+    #[test]
+    fn test_label_filter_create_contains() {
+        let filter = LabelFilter::create(MatchOp::Contains, "instance", "server").unwrap();
+
+        assert_eq!(filter.op(), MatchOp::Contains);
+        assert!(filter.matches("server-1"));
+        assert!(!filter.matches("client-1"));
     }
 }
