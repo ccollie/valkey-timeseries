@@ -320,7 +320,11 @@ impl Postings {
     ///
     /// # Examples
     /// ```rust
-    /// let postings = index.postings_by_prefix("status", "error");
+    /// use valkey_timeseries::series::index::postings::Postings;
+    ///
+    /// let postings = Postings::default();
+    /// let by_prefix = postings.postings_by_prefix("status", "error");
+    /// assert!(by_prefix.is_empty());
     /// ```
     pub fn postings_by_prefix(&self, label: &str, prefix: &str) -> PostingsBitmap {
         let search_prefix = KeyBuffer::for_label_value_prefix(label, prefix);
@@ -433,16 +437,12 @@ impl Postings {
                 Cow::Owned(self.postings_for_all_label_values(&filter.label))
             }
             PredicateMatch::StartsWith(prefix) => {
-                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
-                    !v.starts_with(prefix)
-                });
-                Cow::Owned(postings)
+                let all = self.postings_for_all_label_values(&filter.label);
+                let matching_prefix = self.postings_by_prefix(&filter.label, prefix);
+                Cow::Owned(all.andnot(&matching_prefix))
             }
             PredicateMatch::NotStartsWith(prefix) => {
-                let postings = self.postings_by_prefix_and_predicate(&filter.label, prefix, |v| {
-                    v.starts_with(prefix)
-                });
-                Cow::Owned(postings)
+                Cow::Owned(self.postings_by_prefix(&filter.label, prefix))
             }
             _ => {
                 let mut state = filter;
@@ -963,7 +963,7 @@ fn handle_regex_equal_match<'a>(
         return postings.postings_without_label(&filter.label);
     }
     let PredicateMatch::RegexEqual(re) = &filter.matcher else {
-        panic!("unexpected matcher type in handle_regex_not_equal_match");
+        panic!("unexpected matcher type in handle_regex_equal_match");
     };
     let res = if let Some(prefix) = &re.prefix {
         postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| re.is_match(v))
@@ -1012,8 +1012,9 @@ fn handle_not_starts_with<'a>(
     label: &str,
     prefix: &str,
 ) -> Cow<'a, PostingsBitmap> {
-    let res = postings.postings_by_prefix_and_predicate(label, prefix, |v| !v.starts_with(prefix));
-    Cow::Owned(res)
+    let all = postings.postings_for_all_label_values(label);
+    let matching_prefix = postings.postings_by_prefix(label, prefix);
+    Cow::Owned(all.andnot(&matching_prefix))
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
@@ -1268,6 +1269,27 @@ mod tests {
         assert!(result.contains(2));
         assert!(result.contains(4));
         assert!(!result.contains(3)); // node3 should not be matched
+    }
+
+    #[test]
+    fn test_not_starts_with_filter_returns_non_matching_label_values() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "server-2");
+        postings.add_posting_for_label_value(4, "other", "value");
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::NotStartsWith("server".to_string()),
+        };
+
+        let result = postings.postings_for_filter(&filter);
+        assert_eq!(result.cardinality(), 1);
+        assert!(result.contains(2));
+        assert!(!result.contains(1));
+        assert!(!result.contains(3));
+        assert!(!result.contains(4));
     }
 
     #[test]

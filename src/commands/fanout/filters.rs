@@ -7,7 +7,7 @@ use super::generated::{
 };
 use crate::commands::fanout::series_selector::Filters;
 use crate::labels::filters::{
-    FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
+    FilterList, LabelFilter, MatchOp, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
     SeriesSelector, ValueList,
 };
 use crate::series::DateRange;
@@ -53,10 +53,30 @@ fn regex_matcher_to_fanout(value: &RegexMatcher) -> FanoutRegexFilterValue {
     }
 }
 
-fn regex_matcher_from_fanout(value: &FanoutRegexFilterValue) -> ValkeyResult<RegexMatcher> {
-    let mut matcher = RegexMatcher::create(value.regex.as_str())
-        .map_err(|e| ValkeyError::String(format!("TSDB: regex value error: {e:?}")))?;
-    matcher.prefix = (!value.prefix.is_empty()).then(|| value.prefix.clone());
+fn regex_matcher_from_fanout(
+    value: &FanoutRegexFilterValue,
+    op: MatchOp,
+) -> ValkeyResult<RegexMatcher> {
+    let matcher = LabelFilter::create(op, "__fanout_regex__", value.regex.as_str())
+        .map_err(|e| ValkeyError::String(format!("TSDB: regex value error: {e:?}")))?
+        .matcher;
+
+    let matcher = match matcher {
+        PredicateMatch::RegexEqual(matcher) | PredicateMatch::RegexNotEqual(matcher) => matcher,
+        _ => {
+            return Err(ValkeyError::String(
+                "TSDB: regex value error: expected regex matcher".to_string(),
+            ));
+        }
+    };
+
+    if !value.prefix.is_empty() && matcher.prefix.as_deref() != Some(value.prefix.as_str()) {
+        return Err(ValkeyError::String(format!(
+            "TSDB: regex value error: invalid prefix '{}'",
+            value.prefix
+        )));
+    }
+
     Ok(matcher)
 }
 
@@ -210,10 +230,13 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
                 PredicateMatch::NotEqual(predicate_value_from_fanout(predicate))
             }
             (MatcherOpType::RegexEqual, Some(Matcher::Regex(regex))) => {
-                PredicateMatch::RegexEqual(regex_matcher_from_fanout(regex)?)
+                PredicateMatch::RegexEqual(regex_matcher_from_fanout(regex, MatchOp::RegexEqual)?)
             }
             (MatcherOpType::RegexNotEqual, Some(Matcher::Regex(regex))) => {
-                PredicateMatch::RegexNotEqual(regex_matcher_from_fanout(regex)?)
+                PredicateMatch::RegexNotEqual(regex_matcher_from_fanout(
+                    regex,
+                    MatchOp::RegexNotEqual,
+                )?)
             }
             (MatcherOpType::StartsWith, Some(Matcher::Prefix(prefix))) => {
                 PredicateMatch::StartsWith(prefix.clone())
@@ -302,23 +325,25 @@ mod tests {
 
     #[test]
     fn test_label_filter_round_trip_for_regex_and_prefix_variants() {
-        let mut regex = RegexMatcher::create("server.*").expect("regex should compile");
-        regex.prefix = Some("server".into());
-
-        let regex_filter = LabelFilter {
-            label: "instance".into(),
-            matcher: PredicateMatch::RegexEqual(regex.clone()),
-        };
+        let regex_filter = LabelFilter::create(
+            MatchOp::RegexEqual,
+            "instance",
+            "server[0-9]+\\.(prod|staging)",
+        )
+        .expect("regex filter should compile");
         let fanout_regex: FanoutFilter = (&regex_filter).into();
         let decoded_regex =
             LabelFilter::try_from(&fanout_regex).expect("regex filter should decode");
 
-        match decoded_regex.matcher {
-            PredicateMatch::RegexEqual(decoded) => {
-                assert_eq!(decoded.value, regex.value);
-                assert_eq!(decoded.prefix, regex.prefix);
+        match (&regex_filter.matcher, &decoded_regex.matcher) {
+            (PredicateMatch::RegexEqual(expected), PredicateMatch::RegexEqual(decoded)) => {
+                assert_eq!(decoded.value, expected.value);
+                assert_eq!(decoded.prefix, expected.prefix);
+                for value in ["server123.prod", "server42.staging", "serverabc.prod"] {
+                    assert_eq!(decoded.is_match(value), expected.is_match(value));
+                }
             }
-            other => panic!("expected regex matcher, got {other:?}"),
+            (_, other) => panic!("expected regex matcher, got {other:?}"),
         }
 
         let prefix_filter = LabelFilter {

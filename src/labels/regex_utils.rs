@@ -9,7 +9,7 @@ use regex::Error as RegexError;
 use regex::Regex;
 use regex::RegexBuilder;
 use regex_syntax::hir::Class::{Bytes, Unicode};
-use regex_syntax::hir::{Class, Hir, HirKind};
+use regex_syntax::hir::{Class, Hir, HirKind, Look};
 use regex_syntax::parse as parse_regex;
 
 // Beyond this, it's better to use regexp.
@@ -513,13 +513,15 @@ fn strip_anchors_hir(sre: &Hir) -> (Hir, bool, bool) {
         let mut start = false;
         let mut end = false;
         if !slice.is_empty()
-            && let HirKind::Look(_) = slice[0].kind()
+            && let HirKind::Look(look) = slice[0].kind()
+            && matches!(look, Look::Start | Look::StartLF | Look::StartCRLF)
         {
             slice = &slice[1..];
             start = true;
         }
         if !slice.is_empty()
-            && let HirKind::Look(_) = slice[slice.len() - 1].kind()
+            && let HirKind::Look(look) = slice[slice.len() - 1].kind()
+            && matches!(look, Look::End | Look::EndLF | Look::EndCRLF)
         {
             slice = &slice[..slice.len() - 1];
             end = true;
