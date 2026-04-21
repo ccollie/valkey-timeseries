@@ -15,56 +15,67 @@ use regex_syntax::parse as parse_regex;
 // Beyond this, it's better to use regexp.
 const MAX_OR_VALUES: usize = 16;
 
-pub(super) fn parse_regex_matcher(expr: &str, is_equal: bool) -> ParseResult<PredicateMatch> {
+pub(crate) fn parse_regex_matcher(expr: &str, is_equal: bool) -> ParseResult<PredicateMatch> {
     let Ok(decomposed) = decompose_regex(expr) else {
         return Err(ParseError::InvalidRegex(expr.to_string()));
     };
 
+    Ok(decomposed_regex_to_predicate_match(decomposed, is_equal))
+}
+
+pub(crate) fn decomposed_regex_to_predicate_match(
+    decomposed: RegexDecomposition,
+    is_equal: bool,
+) -> PredicateMatch {
     match decomposed {
         RegexDecomposition::PrefixWithRegex(prefix, remainder) => {
+            let value = format!("{}{}", prefix, remainder.as_str());
             let matcher = RegexMatcher {
                 prefix: Some(prefix),
                 regex: remainder,
-                value: expr.to_string(),
+                value,
             };
-            Ok(if is_equal {
+            if is_equal {
                 PredicateMatch::RegexEqual(matcher)
             } else {
                 PredicateMatch::RegexNotEqual(matcher)
-            })
+            }
         }
         RegexDecomposition::Regex(regex) => {
+            let value = regex.to_string();
             let matcher = RegexMatcher {
                 prefix: None,
                 regex,
-                value: expr.to_string(),
+                value,
             };
-            Ok(if is_equal {
+            if is_equal {
                 PredicateMatch::RegexEqual(matcher)
             } else {
                 PredicateMatch::RegexNotEqual(matcher)
-            })
+            }
         }
-        RegexDecomposition::Prefix(prefix) => Ok(if is_equal {
-            PredicateMatch::StartsWith(prefix)
-        } else {
-            PredicateMatch::NotStartsWith(prefix)
-        }),
+        RegexDecomposition::Prefix(prefix) => {
+            if is_equal {
+                PredicateMatch::StartsWith(prefix)
+            } else {
+                PredicateMatch::NotStartsWith(prefix)
+            }
+        }
         RegexDecomposition::Literals(mut lits) => {
             if lits.len() == 1 {
                 let literal = lits.pop().unwrap();
-                Ok(if is_equal {
+                if is_equal {
                     PredicateMatch::Equal(PredicateValue::String(literal))
                 } else {
                     PredicateMatch::NotEqual(PredicateValue::String(literal))
-                })
+                }
             } else {
                 let value = PredicateValue::from(lits);
-                Ok(if is_equal {
+                if is_equal {
                     PredicateMatch::Equal(value)
                 } else {
                     PredicateMatch::NotEqual(value)
-                })
+                }
             }
         }
     }
@@ -443,7 +454,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
     compile_regex(expr)
 }
 
-fn compile_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
+pub(crate) fn compile_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
     let anchored = format!("^(?:{}{})$", "", expr);
     Ok(RegexDecomposition::Regex(
         RegexBuilder::new(&anchored)
@@ -454,7 +465,10 @@ fn compile_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
     ))
 }
 
-fn compile_prefixed_regex(pattern: &str, prefix: String) -> Result<RegexDecomposition, RegexError> {
+pub(crate) fn compile_prefixed_regex(
+    pattern: &str,
+    prefix: String,
+) -> Result<RegexDecomposition, RegexError> {
     // Build the compiled remainder with the same flags as used elsewhere
     // (dot matches new line, size limit) to preserve Prometheus-compatible
     // regex semantics (dot matches newlines).
@@ -765,10 +779,10 @@ mod test {
         // Pattern with simple alternation (foo|bar) should expand to literals
         let got = decompose_regex("^prod(foo|bar)").unwrap();
         match got {
-            RegexDecomposition::Literals(lits) => {
-                assert_eq!(lits.len(), 2);
-                assert!(lits.contains(&"prodfoo".to_string()));
-                assert!(lits.contains(&"prodbar".to_string()));
+            RegexDecomposition::Literals(literals) => {
+                assert_eq!(literals.len(), 2);
+                assert!(literals.contains(&"prodfoo".to_string()));
+                assert!(literals.contains(&"prodbar".to_string()));
             }
             _ => panic!("pattern ^prod(foo|bar) should expand to Literals"),
         }
@@ -779,10 +793,10 @@ mod test {
         // Non-capturing group with alternation should also expand to literals
         let got = decompose_regex("^prod(?:foo|bar)").unwrap();
         match got {
-            RegexDecomposition::Literals(lits) => {
-                assert_eq!(lits.len(), 2);
-                assert!(lits.contains(&"prodfoo".to_string()));
-                assert!(lits.contains(&"prodbar".to_string()));
+            RegexDecomposition::Literals(literals) => {
+                assert_eq!(literals.len(), 2);
+                assert!(literals.contains(&"prodfoo".to_string()));
+                assert!(literals.contains(&"prodbar".to_string()));
             }
             _ => panic!(
                 "pattern ^prod(?:foo|bar) should expand to Literals, got {:?}",
@@ -810,10 +824,10 @@ mod test {
         // Pattern with alternation and trailing literal should expand to all combinations
         let got = decompose_regex("^prod(foo|bar)baz").unwrap();
         match got {
-            RegexDecomposition::Literals(lits) => {
-                assert_eq!(lits.len(), 2);
-                assert!(lits.contains(&"prodfoobaz".to_string()));
-                assert!(lits.contains(&"prodbarbaz".to_string()));
+            RegexDecomposition::Literals(literals) => {
+                assert_eq!(literals.len(), 2);
+                assert!(literals.contains(&"prodfoobaz".to_string()));
+                assert!(literals.contains(&"prodbarbaz".to_string()));
             }
             _ => panic!(
                 "pattern ^prod(foo|bar)baz should expand to Literals, got {:?}",

@@ -7,9 +7,10 @@ use super::generated::{
 };
 use crate::commands::fanout::series_selector::Filters;
 use crate::labels::filters::{
-    FilterList, LabelFilter, MatchOp, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
+    FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
     SeriesSelector, ValueList,
 };
+use crate::labels::{RegexDecomposition, compile_prefixed_regex, compile_regex};
 use crate::series::DateRange;
 use crate::series::request_types::MetaDateRangeFilter;
 use valkey_module::{ValkeyError, ValkeyResult};
@@ -47,30 +48,44 @@ fn predicate_value_from_fanout(value: &FanoutPredicateValue) -> PredicateValue {
 }
 
 fn regex_matcher_to_fanout(value: &RegexMatcher) -> FanoutRegexFilterValue {
+    // Store the compiled remainder pattern in `regex` and the optional literal
+    // prefix in `prefix`. `value.value` contains the original (possibly
+    // unanchored) text and must not be sent as the remainder pattern — that
+    // would duplicate the prefix when reconstructing a prefixed regex.
     FanoutRegexFilterValue {
-        regex: value.value.clone(),
+        regex: value.regex.as_str().to_string(),
         prefix: value.prefix.clone().unwrap_or_default(),
     }
 }
 
-fn regex_matcher_from_fanout(
-    value: &FanoutRegexFilterValue,
-    op: MatchOp,
-) -> ValkeyResult<RegexMatcher> {
-    let matcher = LabelFilter::create(op, "__fanout_regex__", value.regex.as_str())
-        .map_err(|e| ValkeyError::String(format!("TSDB: regex value error: {e:?}")))?
-        .matcher;
+fn regex_matcher_from_fanout(value: &FanoutRegexFilterValue) -> ValkeyResult<RegexMatcher> {
+    let decomposed = if value.prefix.is_empty() {
+        // No literal prefix: compile the provided regex pattern as a whole.
+        compile_regex(value.regex.as_str())
+    } else {
+        // We expect the fanout `regex` field to contain the remainder pattern
+        // and `prefix` to contain the literal prefix. Pass them in the order
+        // (pattern, prefix) as required by `compile_prefixed_regex`.
+        compile_prefixed_regex(value.regex.as_str(), value.prefix.clone())
+    }
+        .map_err(|e| ValkeyError::String(format!("TSDB: invalid regex: {e:?}")))?;
 
-    let matcher = match matcher {
-        PredicateMatch::RegexEqual(matcher) | PredicateMatch::RegexNotEqual(matcher) => matcher,
-        _ => {
-            return Err(ValkeyError::String(
-                "TSDB: regex value error: expected regex matcher".to_string(),
-            ));
-        }
-    };
-
-    Ok(matcher)
+    match decomposed {
+        RegexDecomposition::Regex(re) => Ok(RegexMatcher {
+            regex: re,
+            value: value.regex.to_string(),
+            prefix: None,
+        }),
+        RegexDecomposition::PrefixWithRegex(prefix, remainder) => Ok(RegexMatcher {
+            regex: remainder,
+            // Reconstruct the original value as prefix + remainder pattern
+            // (remainder pattern is stored in `value.regex`). This mirrors
+            // how RegexMatcher.value is produced during initial decomposition.
+            value: format!("{}{}", prefix, value.regex),
+            prefix: Some(prefix),
+        }),
+        _ => Err(ValkeyError::Str("TSDB invalid regex matcher")),
+    }
 }
 
 impl From<&LabelFilter> for FanoutFilter {
@@ -223,13 +238,10 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
                 PredicateMatch::NotEqual(predicate_value_from_fanout(predicate))
             }
             (MatcherOpType::RegexEqual, Some(Matcher::Regex(regex))) => {
-                PredicateMatch::RegexEqual(regex_matcher_from_fanout(regex, MatchOp::RegexEqual)?)
+                PredicateMatch::RegexEqual(regex_matcher_from_fanout(regex)?)
             }
             (MatcherOpType::RegexNotEqual, Some(Matcher::Regex(regex))) => {
-                PredicateMatch::RegexNotEqual(regex_matcher_from_fanout(
-                    regex,
-                    MatchOp::RegexNotEqual,
-                )?)
+                PredicateMatch::RegexNotEqual(regex_matcher_from_fanout(regex)?)
             }
             (MatcherOpType::StartsWith, Some(Matcher::Prefix(prefix))) => {
                 PredicateMatch::StartsWith(prefix.clone())
@@ -289,6 +301,7 @@ impl From<FanoutMetaDateRangeFilter> for MetaDateRangeFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labels::filters::MatchOp;
 
     #[test]
     fn test_label_filter_round_trip_for_equality_variants() {

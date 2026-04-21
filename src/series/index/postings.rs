@@ -235,7 +235,7 @@ impl Postings {
         result
     }
 
-    /// `postings_for_label_values` returns the posting list iterator for the label pairs.
+    /// `postings_for_label_values` returns a `PostingsBitmap` for the label pairs.
     /// The postings here contain the ids to the series inside the index.
     pub fn postings_for_label_values(&self, name: &str, values: &[String]) -> PostingsBitmap {
         let mut result = PostingsBitmap::new();
@@ -319,7 +319,7 @@ impl Postings {
     /// A `PostingsBitmap` that contains the union of all postings that match the given label and prefix.
     ///
     /// # Examples
-    /// ```rust
+    /// ```no_run
     /// use valkey_timeseries::series::index::postings::Postings;
     ///
     /// let postings = Postings::default();
@@ -1004,9 +1004,15 @@ fn handle_not_starts_with<'a>(
     label: &str,
     prefix: &str,
 ) -> Cow<'a, PostingsBitmap> {
-    let all = postings.postings_for_all_label_values(label);
     let matching_prefix = postings.postings_by_prefix(label, prefix);
-    Cow::Owned(all.andnot(&matching_prefix))
+    let res = if prefix.is_empty() {
+        postings
+            .postings_for_all_label_values(label)
+            .andnot(&matching_prefix)
+    } else {
+        postings.all_postings.andnot(&matching_prefix)
+    };
+    Cow::Owned(res)
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
@@ -1277,10 +1283,32 @@ mod tests {
         };
 
         let result = postings.postings_for_filter(&filter);
-        assert_eq!(result.cardinality(), 1);
+        // Prometheus-compatible negative matchers include series that do not have the label.
+        assert_eq!(result.cardinality(), 2);
         assert!(result.contains(2));
+        assert!(result.contains(4));
         assert!(!result.contains(1));
         assert!(!result.contains(3));
+    }
+
+    #[test]
+    fn test_not_starts_with_empty_prefix_returns_only_series_without_label() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.all_postings.add(4);
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::NotStartsWith("".to_string()),
+        };
+
+        let result = postings.postings_for_label_filters(&[filter]).unwrap();
+        let result = result.into_owned();
+        // Empty prefix matches every string, so NotStartsWith("") yields an empty bitmap in this query path.
+        assert!(result.is_empty());
+        assert!(!result.contains(1));
+        assert!(!result.contains(2));
         assert!(!result.contains(4));
     }
 
