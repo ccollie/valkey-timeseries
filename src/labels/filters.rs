@@ -208,9 +208,6 @@ impl RegexMatcher {
     }
 
     pub fn is_match(&self, mut other: &str) -> bool {
-        if other.is_empty() {
-            return is_empty_regex_matcher(&self.regex);
-        }
         if let Some(prefix) = &self.prefix {
             if !other.starts_with(prefix) {
                 return false;
@@ -218,6 +215,9 @@ impl RegexMatcher {
             // Strip the prefix unconditionally so the remainder (possibly empty)
             // is passed to the compiled remainder regex.
             other = &other[prefix.len()..];
+        }
+        if other.is_empty() {
+            return is_empty_regex_matcher(&self.regex);
         }
         self.regex.is_match(other)
     }
@@ -873,6 +873,16 @@ mod tests {
         assert!(matcher.is_match("staging"));
         assert!(matcher.is_match("prod"));
         assert!(!matcher.is_match("dev"));
+    }
+
+    #[test]
+    fn test_regex_matcher_with_prefix_does_not_match_empty_input() {
+        let mut matcher = RegexMatcher::create(".*").unwrap();
+        matcher.prefix = Some("server".to_string());
+
+        assert!(!matcher.is_match(""));
+        assert!(matcher.is_match("server"));
+        assert!(matcher.is_match("server-1"));
     }
 
     #[test]
