@@ -933,8 +933,7 @@ mod tests {
         ]];
         let filter: SeriesSelector = or_matchers.into();
         let actual = ix.postings_for_selector(&filter).unwrap();
-        // removed debug prints
-        let _guard = ix.get_postings();
+
         assert!(actual.contains(5));
         assert!(actual.contains(6));
     }
