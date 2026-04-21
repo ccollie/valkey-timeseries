@@ -17,7 +17,7 @@ pub(crate) enum KeyBuffer {
 }
 
 impl KeyBuffer {
-    pub(crate) fn for_prefix(data: &str) -> Self {
+    pub(super) fn for_prefix(data: &str) -> Self {
         let len = data.len();
         if len + 1 < STACK_SIZE {
             let mut buf = [0u8; STACK_SIZE];
@@ -25,12 +25,35 @@ impl KeyBuffer {
             buf[len] = b'=';
             KeyBuffer::Stack(buf, len + 1)
         } else {
-            let v = data.as_bytes().to_vec();
+            let mut v = Vec::with_capacity(len + 1);
+            v.extend_from_slice(data.as_bytes());
+            v.push(b'=');
             KeyBuffer::Heap(v.into_boxed_slice())
         }
     }
 
-    pub(crate) fn for_label_value(label_name: &str, value: &str) -> Self {
+    pub(super) fn for_label_value_prefix(label: &str, value_prefix: &str) -> Self {
+        let label_len = label.len();
+        let prefix_len = value_prefix.len();
+        let len = label_len + prefix_len;
+        if len + 1 < STACK_SIZE {
+            let mut buf = [0u8; STACK_SIZE];
+            buf[..label_len].copy_from_slice(label.as_bytes());
+            buf[label_len] = b'=';
+            let ofs = label_len + 1;
+            // value_prefix should be copied after the '=' byte at index `label_len + 1`.
+            buf[ofs..ofs + prefix_len].copy_from_slice(value_prefix.as_bytes());
+            KeyBuffer::Stack(buf, len + 1)
+        } else {
+            let mut v = Vec::with_capacity(len + 1);
+            v.extend_from_slice(label.as_bytes());
+            v.push(b'=');
+            v.extend_from_slice(value_prefix.as_bytes());
+            KeyBuffer::Heap(v.into_boxed_slice())
+        }
+    }
+
+    pub(super) fn for_label_value(label_name: &str, value: &str) -> Self {
         let label_len = label_name.len();
         let total_len = label_len + 1 + value.len();
         if total_len < STACK_SIZE {
@@ -38,6 +61,9 @@ impl KeyBuffer {
             buf[..label_len].copy_from_slice(label_name.as_bytes());
             buf[label_len] = b'=';
             buf[label_len + 1..total_len].copy_from_slice(value.as_bytes());
+            // Ensure the stack buffer includes the terminating NUL byte to match
+            // the heap path (which pushes a trailing '\0').
+            buf[total_len] = b'\0';
             KeyBuffer::Stack(buf, total_len + 1)
         } else {
             let mut v = Vec::with_capacity(total_len);
