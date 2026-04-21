@@ -758,23 +758,6 @@ mod test {
     }
 
     #[test]
-    fn test_decompose_regex_prefix_with_regex() {
-        // Pattern with simple alternation (foo|bar) should expand to literals
-        let got = decompose_regex("^prod(foo|bar)").unwrap();
-        match got {
-            RegexDecomposition::Literals(lits) => {
-                assert_eq!(lits.len(), 2);
-                assert!(lits.contains(&"prodfoo".to_string()));
-                assert!(lits.contains(&"prodbar".to_string()));
-            }
-            _ => panic!(
-                "pattern ^prod(foo|bar) should expand to Literals, got {:?}",
-                got
-            ),
-        }
-    }
-
-    #[test]
     fn test_decompose_regex_prefix_with_alternation_expands_to_literals() {
         // Pattern with simple alternation (foo|bar) should expand to literals
         let got = decompose_regex("^prod(foo|bar)").unwrap();
