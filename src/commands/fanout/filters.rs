@@ -70,13 +70,6 @@ fn regex_matcher_from_fanout(
         }
     };
 
-    if !value.prefix.is_empty() && matcher.prefix.as_deref() != Some(value.prefix.as_str()) {
-        return Err(ValkeyError::String(format!(
-            "TSDB: regex value error: invalid prefix '{}'",
-            value.prefix
-        )));
-    }
-
     Ok(matcher)
 }
 
