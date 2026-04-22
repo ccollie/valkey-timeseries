@@ -18,10 +18,10 @@ cfg-if = "1.0.4"
 chrono = { version = "0.4" }
 croaring = "2.6"
 enquote = "1.1.0"
-promql-parser = { version = "0.8", default-features = false, features = ["ser", "serde"] }
+promql-parser = { git = "https://github.com/GreptimeTeam/promql-parser.git", branch = "main", default-features = false, features = ["ser", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 enum_dispatch = "0.3.13"
-get-size2 = { version = "0.7", features = ["derive"] }
+get-size2 = { version = "0.8.0", features = ["derive"] }
 halfbrown = { version = "0.4", features = ["arraybackend"] }
 hashify = { version = "0.2" }
 itertools = "0.14"
@@ -83,3 +83,4 @@ enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
 valkey_8_0 = []  # Valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1, and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
 use-redismodule-api = [] # We don't support this feature flag which is why it is empty.
+bench = []
