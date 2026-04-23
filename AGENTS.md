@@ -18,16 +18,21 @@ Quick start (commands you can run)
 Key ENV and behavior (from `./build.sh`)
 
 - `SERVER_VERSION` (required): controls which valkey-server is cloned/built and stored at
-  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `unstable` if not set, which tracks the latest main or branch.
+  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Valid values are `unstable`, `8.0`, and `8.1`; defaults to
+  `unstable` if not set, which tracks the latest main branch.
 - `ASAN_BUILD`: when set runs tests with LeakSanitizer checks and fails on leaks.
 - `TEST_PATTERN`: passed to pytest `-k` to select tests.
 - `MODULE_PATH` exported after build: `target/release/libvalkey_timeseries{.so,.dylib}` depending on OS.
 
 Setup & Environment Notes
 
-- Rust version: The project requires a minimum Rust version of `1.92`.
-- Python tests: Integration tests use Python. Dependencies are in `requirements.txt` (or via `uv sync`). The `build.sh`
-  script handles this, but if running `pytest` manually, ensure packages are installed.
+- Rust version: The project requires a minimum Rust version of `1.88`.
+- Python tests: Integration tests use Python. Dependencies are managed in `pyproject.toml`, locked in `uv.lock`, and
+  mirrored in `requirements.txt` (or installed via `uv sync`). The `build.sh` script handles this, but if running
+  `pytest` manually, ensure packages are installed.
+- Protobuf generation: `build.rs` compiles `src/commands/fanout.request.proto`, `src/commands/fanout.response.proto`,
+  and `src/promql/types.proto`. If you change those files, rerun a build so the generated code under `OUT_DIR` is
+  refreshed.
 - Running manually: To manually start a server with the module loaded, run
   `valkey-server --loadmodule ./target/release/libvalkey_timeseries.so` (requires building the module first).
 
@@ -40,23 +45,16 @@ High-level architecture (big picture)
     - `["TS.ADD", commands::ts_add_cmd, "write deny-oom", 1, 1, 1, "write timeseries"]`
 - Time-series core lives under `src/series` (storage, encoding, background tasks, indexes). Index/init helpers:
   `init_croaring_allocator()` and `init_background_tasks()` are invoked from `src/lib.rs`.
-  - `src/series/chunks/` implements five encoding formats: **Gorilla** (default), **PCO**, **TsXOR**, **Uncompressed**,
-    **XOR2**. The default is controlled by `DEFAULT_CHUNK_ENCODING` in `src/config.rs`.
-  - ACL filtering per series: `src/series/acl.rs`.
+- PromQL lives under `src/promql/` (parser/engine/types, generated bindings, and `promqltest` fixtures); it is
+  registered from `src/lib.rs` via `register_promql()` when clustered.
+- Statistical/anomaly analysis helpers live under `src/analysis/`.
+- Server keyspace event handling lives in `src/server_events.rs`; it keeps indexes in sync for `FLUSHDB`, `SWAPDB`,
+  `RENAME`, `RESTORE`, and module load events.
 - Cross-node fanout / clustering patterns: `src/fanout` and `src/commands/*_fanout_command.rs` use protobuf (
   `src/commands/fanout.*.proto`) and explicit fanout registration (`register_fanout_operations`) to implement
   cluster-wide queries.
-- Outlier detection: `src/analysis/outliers/` — multiple algorithms (ESD, CUSUM, EWMA, IQR, MAD, modified z-score, RCF
-  variants) exposed via the `TS.OUTLIERS` command.
-- Aggregation: `src/aggregators/` — aggregation handlers and iterators used by range queries.
-- Supporting subsystems (all referenced from `src/lib.rs`):
-  - `src/common/` — shared utilities: encoding, logging, thread pool, RDB helpers, string interning.
-  - `src/labels/` — `Label` type, label filter evaluation, regex helpers.
-  - `src/parser/` — Prometheus-compatible filter syntax, metric name, timestamp, and duration parsing.
-  - `src/iterators/` — sample and row iterators consumed by range and multi-range queries.
-  - `src/join/` — ASOF join logic backing `TS.JOIN`.
 
-Project-specific conventions and patterns
+Project-specific conventions & patterns
 
 - All Valkey commands are declared in the `valkey_module!` macro in `src/lib.rs`; change there to add/remove commands.
 - Command files follow `ts_<command>.rs` naming and export `ts_<command>_cmd` functions (see `src/commands/mod.rs`).
@@ -80,6 +78,8 @@ Cargo features
 - `default` = `min-valkey-compatibility-version-8-0` + `croaring/alloc`.
 - `enable-system-alloc` — see the allocator note above; required for tests, benches and `tools/` binaries.
 - `min-valkey-compatibility-version-8-0` — forwarded to `valkey-module`.
+- `valkey_8_0` — controls compatibility with Valkey 8.0 (build with `--features valkey_8_0` or set
+  `SERVER_VERSION=8.0` in `./build.sh`).
 - `use-redismodule-api` — empty on purpose; the Redis module API is not supported.
 - `test-utils` — compiles `src/tests/` (data generators, chunk helpers) into the library so benches and
   `tools/` binaries can use the same fixtures as unit tests. It is enabled automatically for dev targets by a
@@ -108,6 +108,10 @@ Testing & debugging notes
   copy the server binary to `tests/build/binaries/`.
 - Leak detection: when `ASAN_BUILD` is set, the build script scans pytest output for LeakSanitizer output and fails if
   leaks are detected.
+- PromQL benchmarks: `cargo bench --bench promql_engine --features enable-system-alloc` runs the Criterion suite in
+  `benches/promql_engine.rs`; set `BENCH_PROFILE=ci` for the shorter CI-style profile.
+- PromQL tests are generated by `build.rs` from `src/promql/promqltest/testdata/*.test` into
+  `OUT_DIR/promql_tests_generated.rs`, so rerun a build after editing those fixtures.
 
 Benchmarks
 
@@ -158,8 +162,10 @@ Where to look first (key files & directories)
 - `src/lib.rs` — module entrypoint, command registration, lifecycle (preload/init/deinit).
 - `src/commands/` — implementations and command parsing utilities (`command_parser.rs`).
 - `src/series/` — core storage, encodings, indexes, background tasks.
+- `src/promql/` — PromQL parser, execution engine, generated bindings, and test fixtures.
+- `src/analysis/` — anomaly-detection and statistical analysis helpers.
+- `src/server_events.rs` — keyspace event subscriptions and index maintenance.
 - `src/fanout/` — cluster communication primitives.
-- `src/analysis/` — outlier detection algorithms (`src/analysis/outliers/`).
 - `src/aggregators/` — aggregation handlers for range queries.
 - `src/common/` — shared utilities (encoding, logging, thread pool, RDB, string interning).
 - `src/labels/` — label types and filter evaluation.
@@ -174,23 +180,22 @@ Where to look first (key files & directories)
     - `chunk_utils.rs` — `build_chunk`, `build_chunk_until_full`, `filled_prefix(_len)`, `CHUNK_SIZE_*`.
 - `benches/` — criterion benchmarks; `benches/support/mod.rs` just re-exports `src/tests/` so benches, unit tests and
   `compression_report` share one implementation.
+- `benches/promql_engine.rs` — Criterion benchmarks for PromQL evaluation and joins.
 - `tools/compression_report.rs` — the `compression_report` binary; encoding size/ratio matrix with baseline checking.
   `tools/compression_report.sh` is the wrapper that builds and runs it with the right features.
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
-- `README.md` and `docs/commands/` — human-facing command descriptions and examples.
-- `docs/topics/` — deep-dive topics: `filter-syntax.md`, `label-discovery.md`, `filter-dos-audit.md`.
+- `README.md`, `docs/COMMANDS.md`, and `docs/commands/` — human-facing command descriptions and examples.
 
 Quick tips for code changes
 
 - Add new commands: create `src/commands/ts_<name>.rs`, add function `ts_<name>_cmd`, then register in `valkey_module!`
-  in `src/lib.rs`. Currently registered commands: TS.CREATE, TS.ALTER, TS.ADD, TS.ADDBULK, TS.GET, TS.MGET, TS.MADD,
-  TS.DEL, TS.DECRBY, TS.INCRBY, TS.JOIN, TS.MDEL, TS.MRANGE, TS.MREVRANGE, TS.RANGE, TS.REVRANGE, TS.INFO,
-  TS.QUERYINDEX, TS.CARD, TS.LABELNAMES, TS.LABELVALUES, TS.METRICNAMES, TS.LABELSTATS, TS.CREATERULE,
-  TS.DELETERULE, TS.OUTLIERS, TS._DEBUG (hidden admin command, no user-facing docs needed).
-- Documentation: When adding or modifying commands, remember to update the human-facing docs in `docs/commands/` and the
-  supported list in `README.md`. TS._DEBUG is intentionally undocumented.
+  in `src/lib.rs`.
+- Documentation: When adding or modifying commands, remember to update the human-facing docs in `docs/COMMANDS.md`,
+  `docs/commands/`, `docs/overview.md`, and the supported list in `README.md`.
 - When making cluster changes, search for `*_fanout_command.rs` to copy the fanout pattern and add protobuf messages in
   `src/commands/fanout.*.proto`.
+- When changing `src/commands/fanout.*.proto`, `src/promql/types.proto`, or `src/promql/promqltest/testdata/*.test`,
+  rerun `cargo test` or `./build.sh` so `build.rs` regenerates the derived Rust files.
 
 Limitations of this document
 
@@ -199,4 +204,4 @@ Limitations of this document
 
 If you need more context, inspect:
 
-- `build.sh`, `Cargo.toml`, `src/lib.rs`, `src/commands/*`, `src/series/*`, `src/analysis/*`, and `tests/`.
+- `build.sh`, `Cargo.toml`, `src/lib.rs`, `src/commands/*`, `src/series/*`, and `tests/`.
