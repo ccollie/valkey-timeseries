@@ -1144,5 +1144,49 @@ mod tests {
                 .map(|label| label.value.as_str()),
             Some("foo-123-bar")
         );
+
+        let prefixed_suffix = LabelFilter::create(RegexEqual, "instance", "^server.+db$").unwrap();
+        let actual = get_labels_by_filters(&ix, &[prefixed_suffix], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("server-east-prod-primary-db")
+        );
+
+        let suffix_only = LabelFilter::create(RegexEqual, "instance", "^.*bar$").unwrap();
+        let actual = get_labels_by_filters(&ix, &[suffix_only], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("foo-123-bar")
+        );
+
+        let contains_list =
+            LabelFilter::create(RegexEqual, "instance", ".*(server|client).*").unwrap();
+        let actual = get_labels_by_filters(&ix, &[contains_list], &labels_map);
+        assert_eq!(actual.len(), 2);
+        let mut matched: Vec<_> = actual
+            .iter()
+            .filter_map(|labels| {
+                labels
+                    .iter()
+                    .find(|label| label.name == "instance")
+                    .map(|label| label.value.clone())
+            })
+            .collect();
+        matched.sort();
+        assert_eq!(
+            matched,
+            vec![
+                "server-east-db-primary-prod".to_string(),
+                "server-east-prod-primary-db".to_string(),
+            ]
+        );
     }
 }

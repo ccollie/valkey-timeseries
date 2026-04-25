@@ -42,6 +42,8 @@ enum MatcherOpType {
   NOT_STARTS_WITH = 5;
   CONTAINS = 6;
   NOT_CONTAINS = 7;
+  MATCH_ALL = 8;
+  MATCH_NONE = 9;
 }
 
 enum MatchersConnector  {
@@ -64,6 +66,7 @@ message FilterPredicateValue {
 message RegexFilterValue {
   string regex = 1;
   string prefix = 2;
+  string suffix = 3;
 }
 
 message LabelFilter {

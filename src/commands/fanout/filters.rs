@@ -6,11 +6,11 @@ use super::generated::{
     label_filter::Matcher,
 };
 use crate::commands::fanout::series_selector::Filters;
-use crate::labels::compile_regex;
 use crate::labels::filters::{
     FilterList, LabelFilter, OrFiltersList, PredicateMatch, PredicateValue, RegexMatcher,
-    SeriesSelector, ValueList,
+    SeriesSelector, ValueList, validate_contains_value, validate_starts_with_value,
 };
+use crate::labels::{compile_regex, is_match_all_regex_pattern};
 use crate::series::DateRange;
 use crate::series::request_types::MetaDateRangeFilter;
 use valkey_module::{ValkeyError, ValkeyResult};
@@ -56,6 +56,7 @@ fn regex_matcher_to_fanout(value: &RegexMatcher) -> FanoutRegexFilterValue {
     FanoutRegexFilterValue {
         regex: value.value.clone(),
         prefix: value.prefix.clone().unwrap_or_default(),
+        suffix: value.suffix.clone().unwrap_or_default(),
     }
 }
 
@@ -93,6 +94,20 @@ impl From<&LabelFilter> for FanoutFilter {
                 let value = predicate_value_to_fanout(value);
                 (Matcher::Predicate(value), MatcherOpType::NotEqual)
             }
+            PredicateMatch::MatchAll => {
+                return FanoutFilter {
+                    label: source.label.clone(),
+                    matcher: None,
+                    op: MatcherOpType::MatchAll.into(),
+                };
+            }
+            PredicateMatch::MatchNone => {
+                return FanoutFilter {
+                    label: source.label.clone(),
+                    matcher: None,
+                    op: MatcherOpType::MatchNone.into(),
+                };
+            }
             PredicateMatch::RegexEqual(regex) => {
                 let value = regex_matcher_to_fanout(regex);
                 (Matcher::Regex(value), MatcherOpType::RegexEqual)
@@ -102,20 +117,20 @@ impl From<&LabelFilter> for FanoutFilter {
                 (Matcher::Regex(value), MatcherOpType::RegexNotEqual)
             }
             PredicateMatch::NotStartsWith(prefix) => {
-                let value = prefix.clone();
-                (Matcher::Prefix(value), MatcherOpType::NotStartsWith)
+                let value = predicate_value_to_fanout(prefix);
+                (Matcher::Predicate(value), MatcherOpType::NotStartsWith)
             }
             PredicateMatch::StartsWith(prefix) => {
-                let value = prefix.clone();
-                (Matcher::Prefix(value), MatcherOpType::StartsWith)
+                let value = predicate_value_to_fanout(prefix);
+                (Matcher::Predicate(value), MatcherOpType::StartsWith)
             }
-            PredicateMatch::Contains(needle) => {
-                let value = needle.clone();
-                (Matcher::Contains(value), MatcherOpType::Contains)
+            PredicateMatch::Contains(value) => {
+                let value = predicate_value_to_fanout(value);
+                (Matcher::Predicate(value), MatcherOpType::Contains)
             }
-            PredicateMatch::NotContains(needle) => {
-                let value = needle.clone();
-                (Matcher::Contains(value), MatcherOpType::NotContains)
+            PredicateMatch::NotContains(value) => {
+                let value = predicate_value_to_fanout(value);
+                (Matcher::Predicate(value), MatcherOpType::NotContains)
             }
         };
 
@@ -239,23 +254,47 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
             (MatcherOpType::NotEqual, Some(Matcher::Predicate(predicate))) => {
                 PredicateMatch::NotEqual(predicate_value_from_fanout(predicate))
             }
+            (MatcherOpType::MatchAll, None) => PredicateMatch::MatchAll,
+            (MatcherOpType::MatchNone, None) => PredicateMatch::MatchNone,
+            (MatcherOpType::RegexEqual, Some(Matcher::Regex(regex)))
+            if is_match_all_regex_pattern(regex.regex.as_str()) =>
+                {
+                    PredicateMatch::MatchAll
+                }
+            (MatcherOpType::RegexNotEqual, Some(Matcher::Regex(regex)))
+            if is_match_all_regex_pattern(regex.regex.as_str()) =>
+                {
+                    PredicateMatch::MatchNone
+                }
             (MatcherOpType::RegexEqual, Some(Matcher::Regex(regex))) => {
                 PredicateMatch::RegexEqual(regex_matcher_from_fanout(regex)?)
             }
             (MatcherOpType::RegexNotEqual, Some(Matcher::Regex(regex))) => {
                 PredicateMatch::RegexNotEqual(regex_matcher_from_fanout(regex)?)
             }
+            (MatcherOpType::StartsWith, Some(Matcher::Predicate(predicate))) => {
+                PredicateMatch::StartsWith(predicate_value_from_fanout(predicate))
+            }
+            (MatcherOpType::NotStartsWith, Some(Matcher::Predicate(predicate))) => {
+                PredicateMatch::NotStartsWith(predicate_value_from_fanout(predicate))
+            }
             (MatcherOpType::StartsWith, Some(Matcher::Prefix(prefix))) => {
-                PredicateMatch::StartsWith(prefix.clone())
+                PredicateMatch::StartsWith(PredicateValue::String(prefix.clone()))
             }
             (MatcherOpType::NotStartsWith, Some(Matcher::Prefix(prefix))) => {
-                PredicateMatch::NotStartsWith(prefix.clone())
+                PredicateMatch::NotStartsWith(PredicateValue::String(prefix.clone()))
+            }
+            (MatcherOpType::Contains, Some(Matcher::Predicate(predicate))) => {
+                PredicateMatch::Contains(predicate_value_from_fanout(predicate))
+            }
+            (MatcherOpType::NotContains, Some(Matcher::Predicate(predicate))) => {
+                PredicateMatch::NotContains(predicate_value_from_fanout(predicate))
             }
             (MatcherOpType::Contains, Some(Matcher::Contains(needle))) => {
-                PredicateMatch::Contains(needle.clone())
+                PredicateMatch::Contains(PredicateValue::String(needle.clone()))
             }
             (MatcherOpType::NotContains, Some(Matcher::Contains(needle))) => {
-                PredicateMatch::NotContains(needle.clone())
+                PredicateMatch::NotContains(PredicateValue::String(needle.clone()))
             }
             _ => {
                 return Err(ValkeyError::Str(
@@ -263,6 +302,23 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
                 ));
             }
         };
+
+        if matches!(op, MatcherOpType::Contains | MatcherOpType::NotContains) {
+            let value = match &matcher {
+                PredicateMatch::Contains(value) | PredicateMatch::NotContains(value) => value,
+                _ => unreachable!("contains op must decode to contains matcher"),
+            };
+            validate_contains_value(value).map_err(|err| ValkeyError::String(err.to_string()))?;
+        }
+
+        if matches!(op, MatcherOpType::StartsWith | MatcherOpType::NotStartsWith) {
+            let value = match &matcher {
+                PredicateMatch::StartsWith(value) | PredicateMatch::NotStartsWith(value) => value,
+                _ => unreachable!("starts-with op must decode to starts-with matcher"),
+            };
+            validate_starts_with_value(value)
+                .map_err(|err| ValkeyError::String(err.to_string()))?;
+        }
 
         if value.label.is_empty() {
             return Err(ValkeyError::Str("TSDB: matcher label cannot be empty"));
@@ -362,7 +418,7 @@ mod tests {
 
         let prefix_filter = LabelFilter {
             label: "instance".into(),
-            matcher: PredicateMatch::NotStartsWith("server".into()),
+            matcher: PredicateMatch::NotStartsWith(PredicateValue::String("server".into())),
         };
         let fanout_prefix: FanoutFilter = (&prefix_filter).into();
         let decoded_prefix =
@@ -371,7 +427,7 @@ mod tests {
 
         let contains_filter = LabelFilter {
             label: "instance".into(),
-            matcher: PredicateMatch::Contains("server".into()),
+            matcher: PredicateMatch::Contains(PredicateValue::String("server".into())),
         };
         let fanout_contains: FanoutFilter = (&contains_filter).into();
         let decoded_contains =
@@ -380,12 +436,88 @@ mod tests {
 
         let not_contains_filter = LabelFilter {
             label: "instance".into(),
-            matcher: PredicateMatch::NotContains("server".into()),
+            matcher: PredicateMatch::NotContains(PredicateValue::String("server".into())),
         };
         let fanout_not_contains: FanoutFilter = (&not_contains_filter).into();
         let decoded_not_contains = LabelFilter::try_from(&fanout_not_contains)
             .expect("negative contains filter should decode");
         assert_eq!(decoded_not_contains, not_contains_filter);
+
+        let contains_list_filter = LabelFilter {
+            label: "instance".into(),
+            matcher: PredicateMatch::Contains(PredicateValue::from(vec![
+                "server".to_string(),
+                "client".to_string(),
+            ])),
+        };
+        let fanout_contains_list: FanoutFilter = (&contains_list_filter).into();
+        let decoded_contains_list = LabelFilter::try_from(&fanout_contains_list)
+            .expect("contains list filter should decode");
+        assert_eq!(decoded_contains_list, contains_list_filter);
+
+        let prefix_list_filter = LabelFilter {
+            label: "instance".into(),
+            matcher: PredicateMatch::StartsWith(PredicateValue::from(vec![
+                "server".to_string(),
+                "client".to_string(),
+            ])),
+        };
+        let fanout_prefix_list: FanoutFilter = (&prefix_list_filter).into();
+        let decoded_prefix_list =
+            LabelFilter::try_from(&fanout_prefix_list).expect("prefix list filter should decode");
+        assert_eq!(decoded_prefix_list, prefix_list_filter);
+
+        let match_all_filter = LabelFilter {
+            label: "instance".into(),
+            matcher: PredicateMatch::MatchAll,
+        };
+        let fanout_match_all: FanoutFilter = (&match_all_filter).into();
+        let decoded_match_all =
+            LabelFilter::try_from(&fanout_match_all).expect("match-all filter should decode");
+        assert_eq!(decoded_match_all, match_all_filter);
+
+        let match_none_filter = LabelFilter {
+            label: "instance".into(),
+            matcher: PredicateMatch::MatchNone,
+        };
+        let fanout_match_none: FanoutFilter = (&match_none_filter).into();
+        let decoded_match_none =
+            LabelFilter::try_from(&fanout_match_none).expect("match-none filter should decode");
+        assert_eq!(decoded_match_none, match_none_filter);
+    }
+
+    #[test]
+    fn test_legacy_regex_not_equal_match_all_decodes_to_match_none() {
+        let fanout = FanoutFilter {
+            label: "instance".into(),
+            op: MatcherOpType::RegexNotEqual as i32,
+            matcher: Some(Matcher::Regex(FanoutRegexFilterValue {
+                regex: ".*".into(),
+                prefix: String::new(),
+                suffix: String::new(),
+            })),
+        };
+
+        let decoded = LabelFilter::try_from(&fanout).expect("legacy regex payload should decode");
+        assert_eq!(decoded.matcher, PredicateMatch::MatchNone);
+    }
+
+    #[test]
+    fn test_legacy_string_prefix_payload_still_decodes() {
+        let fanout = FanoutFilter {
+            label: "instance".into(),
+            op: MatcherOpType::StartsWith as i32,
+            matcher: Some(Matcher::Prefix("server".into())),
+        };
+
+        let decoded = LabelFilter::try_from(&fanout).expect("legacy prefix payload should decode");
+        assert_eq!(
+            decoded,
+            LabelFilter {
+                label: "instance".into(),
+                matcher: PredicateMatch::StartsWith(PredicateValue::String("server".into())),
+            }
+        );
     }
 
     #[test]

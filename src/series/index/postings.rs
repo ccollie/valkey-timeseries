@@ -414,6 +414,8 @@ impl Postings {
             PredicateMatch::NotEqual(ref value) => {
                 handle_not_equal_match(self, &filter.label, value)
             }
+            PredicateMatch::MatchAll => Cow::Borrowed(&self.all_postings),
+            PredicateMatch::MatchNone => Cow::Borrowed(&*EMPTY_BITMAP),
             PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter),
             PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter),
             PredicateMatch::StartsWith(ref prefix) => {
@@ -434,17 +436,19 @@ impl Postings {
             PredicateMatch::Equal(PredicateValue::String(s)) if s.is_empty() => {
                 Cow::Owned(self.postings_for_all_label_values(&filter.label))
             }
+            PredicateMatch::MatchAll => Cow::Borrowed(&*EMPTY_BITMAP),
+            PredicateMatch::MatchNone => Cow::Borrowed(&self.all_postings),
             // If the matcher being inverted is =~"", we just want all the values.
             PredicateMatch::RegexEqual(re) if matches!(re.regex.as_str(), "" | ".*") => {
                 Cow::Owned(self.postings_for_all_label_values(&filter.label))
             }
             PredicateMatch::StartsWith(prefix) => {
                 let all = self.postings_for_all_label_values(&filter.label);
-                let matching_prefix = self.postings_by_prefix(&filter.label, prefix);
+                let matching_prefix = postings_by_prefix_value(self, &filter.label, prefix);
                 Cow::Owned(all.andnot(&matching_prefix))
             }
             PredicateMatch::NotStartsWith(prefix) => {
-                Cow::Owned(self.postings_by_prefix(&filter.label, prefix))
+                Cow::Owned(postings_by_prefix_value(self, &filter.label, prefix))
             }
             PredicateMatch::Contains(needle) => {
                 let all = self.postings_for_all_label_values(&filter.label);
@@ -544,6 +548,14 @@ impl Postings {
                 return Err(ValkeyError::Str(MISSING_FILTER));
             }
 
+            if matches!(filter.matcher, PredicateMatch::MatchAll) {
+                continue;
+            }
+
+            if matches!(filter.matcher, PredicateMatch::MatchNone) {
+                return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+            }
+
             let typ = filter.op();
             let regex_value = filter.regex_text().unwrap_or("");
 
@@ -574,7 +586,10 @@ impl Postings {
                     // If this matcher must be non-empty, we can be smarter.
                     let is_not = matches!(
                         typ,
-                        MatchOp::NotEqual | MatchOp::RegexNotEqual | MatchOp::NotContains
+                        MatchOp::NotEqual
+                            | MatchOp::RegexNotEqual
+                            | MatchOp::NotContains
+                            | MatchOp::NotStartsWith
                     );
                     match (is_not, matches_empty) {
                         // l!="foo"
@@ -1007,35 +1022,47 @@ fn handle_regex_not_equal_match<'a>(
 fn handle_starts_with<'a>(
     postings: &'a Postings,
     label: &str,
-    prefix: &str,
+    prefix: &PredicateValue,
 ) -> Cow<'a, PostingsBitmap> {
-    Cow::Owned(postings.postings_by_prefix(label, prefix))
+    Cow::Owned(postings_by_prefix_value(postings, label, prefix))
 }
 
 fn handle_not_starts_with<'a>(
     postings: &'a Postings,
     label: &str,
-    prefix: &str,
+    prefix: &PredicateValue,
 ) -> Cow<'a, PostingsBitmap> {
-    let matching_prefix = postings.postings_by_prefix(label, prefix);
-    let res = if prefix.is_empty() {
-        postings
-            .postings_for_all_label_values(label)
-            .andnot(&matching_prefix)
-    } else {
-        postings.all_postings.andnot(&matching_prefix)
-    };
-    Cow::Owned(res)
+    let matching_prefix = postings_by_prefix_value(postings, label, prefix);
+    Cow::Owned(postings.all_postings.andnot(&matching_prefix))
+}
+
+fn postings_by_prefix_value(
+    postings: &Postings,
+    label: &str,
+    value: &PredicateValue,
+) -> PostingsBitmap {
+    match value {
+        PredicateValue::Empty => PostingsBitmap::new(),
+        PredicateValue::String(prefix) => postings.postings_by_prefix(label, prefix),
+        PredicateValue::List(prefixes) => {
+            let mut result = PostingsBitmap::new();
+            for prefix in prefixes {
+                result.or_inplace(&postings.postings_by_prefix(label, prefix));
+            }
+            result
+        }
+    }
 }
 
 fn handle_contains<'a>(
     postings: &'a Postings,
     label: &str,
-    needle: &str,
+    value: &PredicateValue,
 ) -> Cow<'a, PostingsBitmap> {
-    let mut state = needle;
-    let res = postings
-        .postings_for_label_matching(label, &mut state, |value, needle| value.contains(*needle));
+    let mut state = value;
+    let res = postings.postings_for_label_matching(label, &mut state, |candidate, value| {
+        value.matches_contains_any(candidate)
+    });
     Cow::Owned(res)
 }
 
@@ -1046,13 +1073,14 @@ fn handle_not_contains<'a>(
     if filter.matches_empty() {
         return with_label(postings, &filter.label);
     }
-    let PredicateMatch::NotContains(needle) = &filter.matcher else {
+    let PredicateMatch::NotContains(value) = &filter.matcher else {
         panic!("unexpected matcher type in handle_not_contains");
     };
-    let mut state = needle.as_str();
-    let res = postings.postings_for_label_matching(&filter.label, &mut state, |value, needle| {
-        !value.contains(*needle)
-    });
+    let mut state = value;
+    let res =
+        postings.postings_for_label_matching(&filter.label, &mut state, |candidate, value| {
+            value.matches_not_contains_all(candidate)
+        });
     Cow::Owned(res)
 }
 
@@ -1311,6 +1339,21 @@ mod tests {
     }
 
     #[test]
+    fn test_match_none_filter_returns_empty_postings() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::MatchNone,
+        };
+
+        let result = postings.postings_for_label_filters(&[filter]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn test_not_starts_with_filter_returns_non_matching_label_values() {
         let mut postings = Postings::default();
         postings.add_posting_for_label_value(1, "instance", "server-1");
@@ -1320,7 +1363,7 @@ mod tests {
 
         let filter = LabelFilter {
             label: "instance".to_string(),
-            matcher: PredicateMatch::NotStartsWith("server".to_string()),
+            matcher: PredicateMatch::NotStartsWith(PredicateValue::String("server".to_string())),
         };
 
         let result = postings.postings_for_filter(&filter);
@@ -1339,18 +1382,59 @@ mod tests {
         postings.add_posting_for_label_value(2, "instance", "client-1");
         postings.all_postings.add(4);
 
+        let err = LabelFilter::create(MatchOp::NotStartsWith, "instance", "")
+            .expect_err("empty prefixes should be rejected");
+        assert!(
+            err.to_string()
+                .contains("starts with matcher does not allow empty values")
+        );
+    }
+
+    #[test]
+    fn test_starts_with_filter_with_value_list_uses_any_match_semantics() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "proxy-1");
+
         let filter = LabelFilter {
             label: "instance".to_string(),
-            matcher: PredicateMatch::NotStartsWith("".to_string()),
+            matcher: PredicateMatch::StartsWith(PredicateValue::from(vec![
+                "server".to_string(),
+                "client".to_string(),
+            ])),
+        };
+
+        let result = postings.postings_for_filter(&filter);
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(1));
+        assert!(result.contains(2));
+        assert!(!result.contains(3));
+    }
+
+    #[test]
+    fn test_not_starts_with_filter_with_value_list_requires_all_absent() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "proxy-1");
+        postings.all_postings.add(4);
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::NotStartsWith(PredicateValue::from(vec![
+                "server".to_string(),
+                "client".to_string(),
+            ])),
         };
 
         let result = postings.postings_for_label_filters(&[filter]).unwrap();
         let result = result.into_owned();
-        // Empty prefix matches every string, so NotStartsWith("") yields an empty bitmap in this query path.
-        assert!(result.is_empty());
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(3));
+        assert!(result.contains(4));
         assert!(!result.contains(1));
         assert!(!result.contains(2));
-        assert!(!result.contains(4));
     }
 
     #[test]
@@ -1363,7 +1447,7 @@ mod tests {
 
         let filter = LabelFilter {
             label: "instance".to_string(),
-            matcher: PredicateMatch::Contains("server".to_string()),
+            matcher: PredicateMatch::Contains(PredicateValue::String("server".to_string())),
         };
 
         let result = postings.postings_for_filter(&filter);
@@ -1386,7 +1470,7 @@ mod tests {
 
         let filter = LabelFilter {
             label: "instance".to_string(),
-            matcher: PredicateMatch::NotContains("server".to_string()),
+            matcher: PredicateMatch::NotContains(PredicateValue::String("server".to_string())),
         };
 
         let result = postings.postings_for_label_filters(&[filter]).unwrap();
@@ -1397,6 +1481,53 @@ mod tests {
         assert!(result.contains(4));
         assert!(!result.contains(1));
         assert!(!result.contains(3));
+    }
+
+    #[test]
+    fn test_contains_filter_with_value_list_uses_any_match_semantics() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "proxy-1");
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::Contains(PredicateValue::from(vec![
+                "server".to_string(),
+                "client".to_string(),
+            ])),
+        };
+
+        let result = postings.postings_for_filter(&filter);
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(1));
+        assert!(result.contains(2));
+        assert!(!result.contains(3));
+    }
+
+    #[test]
+    fn test_not_contains_filter_with_value_list_requires_all_absent() {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "instance", "server-1");
+        postings.add_posting_for_label_value(2, "instance", "client-1");
+        postings.add_posting_for_label_value(3, "instance", "proxy-1");
+        postings.all_postings.add(4);
+
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::NotContains(PredicateValue::from(vec![
+                "server".to_string(),
+                "client".to_string(),
+            ])),
+        };
+
+        let result = postings.postings_for_label_filters(&[filter]).unwrap();
+        let result = result.into_owned();
+        assert_eq!(result.cardinality(), 2);
+        assert!(result.contains(3));
+        assert!(result.contains(4));
+        assert!(!result.contains(1));
+        assert!(!result.contains(2));
     }
 
     #[test]

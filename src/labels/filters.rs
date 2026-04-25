@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
 const EMPTY_TEXT: &str = "";
+const MATCH_ALL_REGEX_TEXT: &str = ".*";
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum MatchOp {
@@ -28,6 +29,8 @@ pub enum MatchOp {
     NotStartsWith,
     Contains,
     NotContains,
+    MatchAll,
+    MatchNone,
 }
 
 impl MatchOp {
@@ -47,6 +50,8 @@ impl Display for MatchOp {
             MatchOp::NotStartsWith => write!(f, "^~"),
             MatchOp::Contains => write!(f, "*="),
             MatchOp::NotContains => write!(f, "!*="),
+            MatchOp::MatchAll => write!(f, "*="),
+            MatchOp::MatchNone => write!(f, "!~"), // TODO
         }
     }
 }
@@ -60,6 +65,8 @@ impl TryFrom<Token> for MatchOp {
             Token::OpNotEqual => Ok(MatchOp::NotEqual),
             Token::RegexEqual => Ok(MatchOp::RegexEqual),
             Token::RegexNotEqual => Ok(MatchOp::RegexNotEqual),
+            Token::StartsWith => Ok(MatchOp::StartsWith),
+            Token::NotStartsWith => Ok(MatchOp::NotStartsWith),
             _ => Err(ParseError::InvalidMatchOperator(value.to_string())),
         }
     }
@@ -128,12 +135,98 @@ impl PredicateValue {
         }
     }
 
+    pub fn matches_contains_any(&self, value: &str) -> bool {
+        match self {
+            PredicateValue::Empty => false,
+            PredicateValue::String(s) => !s.is_empty() && value.contains(s),
+            PredicateValue::List(list) => {
+                !list.is_empty()
+                    && list.iter().all(|needle| !needle.is_empty())
+                    && list.iter().any(|needle| value.contains(needle.as_str()))
+            }
+        }
+    }
+
+    pub fn matches_not_contains_all(&self, value: &str) -> bool {
+        match self {
+            PredicateValue::Empty => false,
+            PredicateValue::String(s) => !s.is_empty() && !value.contains(s),
+            PredicateValue::List(list) => {
+                !list.is_empty()
+                    && list.iter().all(|needle| !needle.is_empty())
+                    && list.iter().all(|needle| !value.contains(needle.as_str()))
+            }
+        }
+    }
+
+    pub fn matches_starts_with_any(&self, value: &str) -> bool {
+        match self {
+            PredicateValue::Empty => false,
+            PredicateValue::String(prefix) => !prefix.is_empty() && value.starts_with(prefix),
+            PredicateValue::List(list) => {
+                !list.is_empty()
+                    && list.iter().all(|prefix| !prefix.is_empty())
+                    && list.iter().any(|prefix| value.starts_with(prefix.as_str()))
+            }
+        }
+    }
+
+    pub fn matches_not_starts_with_all(&self, value: &str) -> bool {
+        match self {
+            PredicateValue::Empty => false,
+            PredicateValue::String(prefix) => !prefix.is_empty() && !value.starts_with(prefix),
+            PredicateValue::List(list) => {
+                !list.is_empty()
+                    && list.iter().all(|prefix| !prefix.is_empty())
+                    && list
+                    .iter()
+                    .all(|prefix| !value.starts_with(prefix.as_str()))
+            }
+        }
+    }
+
     fn cost(&self) -> usize {
         match self {
             PredicateValue::Empty => 0,
             PredicateValue::String(_) => 1,
             PredicateValue::List(list) => list.len(),
         }
+    }
+}
+
+pub(crate) fn validate_contains_value(value: &PredicateValue) -> Result<(), ParseError> {
+    let is_valid = match value {
+        PredicateValue::Empty => false,
+        PredicateValue::String(s) => !s.is_empty(),
+        PredicateValue::List(list) => {
+            !list.is_empty() && list.iter().all(|needle| !needle.is_empty())
+        }
+    };
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(ParseError::General(
+            "contains matcher does not allow empty values".to_string(),
+        ))
+    }
+}
+
+pub(crate) fn validate_starts_with_value(value: &PredicateValue) -> Result<(), ParseError> {
+    let is_valid = match value {
+        PredicateValue::Empty => false,
+        PredicateValue::String(prefix) => !prefix.is_empty(),
+        PredicateValue::List(list) => {
+            !list.is_empty() && list.iter().all(|prefix| !prefix.is_empty())
+        }
+    };
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(ParseError::General(
+            "starts with matcher does not allow empty values".to_string(),
+        ))
     }
 }
 
@@ -319,12 +412,14 @@ impl PartialEq for RegexMatcher {
 pub enum PredicateMatch {
     Equal(PredicateValue),
     NotEqual(PredicateValue),
+    MatchAll,
+    MatchNone,
     RegexEqual(RegexMatcher),
     RegexNotEqual(RegexMatcher),
-    StartsWith(String),
-    NotStartsWith(String),
-    Contains(String),
-    NotContains(String),
+    StartsWith(PredicateValue),
+    NotStartsWith(PredicateValue),
+    Contains(PredicateValue),
+    NotContains(PredicateValue),
 }
 
 impl PredicateMatch {
@@ -332,6 +427,8 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(_) => MatchOp::Equal,
             PredicateMatch::NotEqual(_) => MatchOp::NotEqual,
+            PredicateMatch::MatchAll => MatchOp::RegexEqual,
+            PredicateMatch::MatchNone => MatchOp::MatchNone,
             PredicateMatch::RegexEqual(_) => MatchOp::RegexEqual,
             PredicateMatch::RegexNotEqual(_) => MatchOp::RegexNotEqual,
             PredicateMatch::StartsWith(_) => MatchOp::StartsWith,
@@ -344,13 +441,15 @@ impl PredicateMatch {
     pub fn is_empty(&self) -> bool {
         match self {
             PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => value.is_empty(),
+            PredicateMatch::MatchAll => false,
+            PredicateMatch::MatchNone => false,
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
                 re.regex.as_str().is_empty()
             }
-            PredicateMatch::StartsWith(p) => p.is_empty(),
-            PredicateMatch::NotStartsWith(p) => p.is_empty(),
-            PredicateMatch::Contains(p) => p.is_empty(),
-            PredicateMatch::NotContains(p) => p.is_empty(),
+            PredicateMatch::StartsWith(value) => value.is_empty(),
+            PredicateMatch::NotStartsWith(value) => value.is_empty(),
+            PredicateMatch::Contains(value) => value.is_empty(),
+            PredicateMatch::NotContains(value) => value.is_empty(),
         }
     }
 
@@ -362,12 +461,14 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(value) => value.matches(other),
             PredicateMatch::NotEqual(value) => !value.matches(other),
+            PredicateMatch::MatchAll => true,
+            PredicateMatch::MatchNone => false,
             PredicateMatch::RegexEqual(re) => re.is_match(other),
             PredicateMatch::RegexNotEqual(re) => !re.is_match(other),
-            PredicateMatch::StartsWith(p) => other.starts_with(p),
-            PredicateMatch::NotStartsWith(p) => !other.starts_with(p),
-            PredicateMatch::Contains(p) => other.contains(p),
-            PredicateMatch::NotContains(p) => !other.contains(p),
+            PredicateMatch::StartsWith(value) => value.matches_starts_with_any(other),
+            PredicateMatch::NotStartsWith(value) => value.matches_not_starts_with_all(other),
+            PredicateMatch::Contains(value) => value.matches_contains_any(other),
+            PredicateMatch::NotContains(value) => value.matches_not_contains_all(other),
         }
     }
 
@@ -375,6 +476,8 @@ impl PredicateMatch {
         match self {
             PredicateMatch::Equal(value) => PredicateMatch::NotEqual(value),
             PredicateMatch::NotEqual(value) => PredicateMatch::Equal(value),
+            PredicateMatch::MatchAll => PredicateMatch::MatchNone,
+            PredicateMatch::MatchNone => PredicateMatch::MatchAll,
             PredicateMatch::RegexEqual(re) => PredicateMatch::RegexNotEqual(re),
             PredicateMatch::RegexNotEqual(re) => PredicateMatch::RegexEqual(re),
             PredicateMatch::StartsWith(p) => PredicateMatch::NotStartsWith(p),
@@ -388,23 +491,27 @@ impl PredicateMatch {
         match &self {
             PredicateMatch::Equal(value) => value.cost(),
             PredicateMatch::NotEqual(value) => value.cost(),
+            PredicateMatch::MatchAll => 0,
+            PredicateMatch::MatchNone => 0,
             PredicateMatch::RegexEqual(re) => re.cost(),
             PredicateMatch::RegexNotEqual(re) => re.cost() + 5,
-            PredicateMatch::StartsWith(_) => 10,
-            PredicateMatch::NotStartsWith(_) => 10,
-            PredicateMatch::Contains(_) => 20,
-            PredicateMatch::NotContains(_) => 25,
+            PredicateMatch::StartsWith(value) => 10 + value.cost(),
+            PredicateMatch::NotStartsWith(value) => 10 + value.cost(),
+            PredicateMatch::Contains(value) => 20 + value.cost(),
+            PredicateMatch::NotContains(value) => 25 + value.cost(),
         }
     }
 
     fn text(&self) -> Option<&str> {
         match self {
             PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => value.text(),
+            PredicateMatch::MatchAll => Some(MATCH_ALL_REGEX_TEXT),
+            PredicateMatch::MatchNone => Some(MATCH_ALL_REGEX_TEXT),
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(&re.value),
-            PredicateMatch::StartsWith(p) => Some(p.as_str()),
-            PredicateMatch::NotStartsWith(p) => Some(p.as_str()),
-            PredicateMatch::Contains(p) => Some(p.as_str()),
-            PredicateMatch::NotContains(p) => Some(p.as_str()),
+            PredicateMatch::StartsWith(value) => value.text(),
+            PredicateMatch::NotStartsWith(value) => value.text(),
+            PredicateMatch::Contains(value) => value.text(),
+            PredicateMatch::NotContains(value) => value.text(),
         }
     }
 }
@@ -413,13 +520,17 @@ impl Display for PredicateMatch {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let value = match self {
             PredicateMatch::Equal(v) | PredicateMatch::NotEqual(v) => v as &dyn Display,
+            PredicateMatch::MatchAll => &MATCH_ALL_REGEX_TEXT as &dyn Display,
+            PredicateMatch::MatchNone => {
+                return write!(f, "!{MATCH_ALL_REGEX_TEXT}");
+            }
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
                 re as &dyn Display
             }
-            PredicateMatch::StartsWith(p) => p as &dyn Display,
-            PredicateMatch::NotStartsWith(p) => p as &dyn Display,
-            PredicateMatch::Contains(p) => p as &dyn Display,
-            PredicateMatch::NotContains(p) => p as &dyn Display,
+            PredicateMatch::StartsWith(value) => value as &dyn Display,
+            PredicateMatch::NotStartsWith(value) => value as &dyn Display,
+            PredicateMatch::Contains(value) => value as &dyn Display,
+            PredicateMatch::NotContains(value) => value as &dyn Display,
         };
 
         write!(f, "{value}")
@@ -437,29 +548,35 @@ impl Hash for PredicateMatch {
                 state.write_u8(2);
                 value.hash(state);
             }
-            PredicateMatch::RegexEqual(re) => {
+            PredicateMatch::MatchAll => {
                 state.write_u8(3);
-                re.hash(state);
             }
-            PredicateMatch::RegexNotEqual(re) => {
+            PredicateMatch::MatchNone => {
+                state.write_u8(10);
+            }
+            PredicateMatch::RegexEqual(re) => {
                 state.write_u8(4);
                 re.hash(state);
             }
-            PredicateMatch::StartsWith(p) => {
+            PredicateMatch::RegexNotEqual(re) => {
                 state.write_u8(5);
-                p.hash(state);
+                re.hash(state);
             }
-            PredicateMatch::NotStartsWith(p) => {
+            PredicateMatch::StartsWith(p) => {
                 state.write_u8(6);
                 p.hash(state);
             }
-            PredicateMatch::Contains(p) => {
+            PredicateMatch::NotStartsWith(p) => {
                 state.write_u8(7);
                 p.hash(state);
             }
-            PredicateMatch::NotContains(p) => {
+            PredicateMatch::Contains(value) => {
                 state.write_u8(8);
-                p.hash(state);
+                value.hash(state);
+            }
+            PredicateMatch::NotContains(value) => {
+                state.write_u8(9);
+                value.hash(state);
             }
         }
     }
@@ -472,12 +589,14 @@ impl PartialEq for PredicateMatch {
         match (self, other) {
             (PredicateMatch::Equal(v1), PredicateMatch::Equal(v2)) => v1 == v2,
             (PredicateMatch::NotEqual(v1), PredicateMatch::NotEqual(v2)) => v1 == v2,
+            (PredicateMatch::MatchAll, PredicateMatch::MatchAll) => true,
+            (PredicateMatch::MatchNone, PredicateMatch::MatchNone) => true,
             (PredicateMatch::RegexEqual(re1), PredicateMatch::RegexEqual(re2)) => re1 == re2,
             (PredicateMatch::RegexNotEqual(re1), PredicateMatch::RegexNotEqual(re2)) => re1 == re2,
             (PredicateMatch::StartsWith(p1), PredicateMatch::StartsWith(p2)) => p1 == p2,
             (PredicateMatch::NotStartsWith(p1), PredicateMatch::NotStartsWith(p2)) => p1 == p2,
-            (PredicateMatch::Contains(p1), PredicateMatch::Contains(p2)) => p1 == p2,
-            (PredicateMatch::NotContains(p1), PredicateMatch::NotContains(p2)) => p1 == p2,
+            (PredicateMatch::Contains(v1), PredicateMatch::Contains(v2)) => v1 == v2,
+            (PredicateMatch::NotContains(v1), PredicateMatch::NotContains(v2)) => v1 == v2,
             _ => false,
         }
     }
@@ -495,35 +614,81 @@ impl LabelFilter {
         N: Into<String>,
         V: Into<String>,
     {
+        Self::create_with_value(match_op, label, PredicateValue::String(value.into()))
+    }
+
+    pub fn create_with_value<N>(
+        match_op: MatchOp,
+        label: N,
+        value: PredicateValue,
+    ) -> Result<Self, ParseError>
+    where
+        N: Into<String>,
+    {
         let label = label.into();
-        let value = value.into();
 
         match match_op {
-            MatchOp::Equal => Ok(Self::equals(label, &value)),
-            MatchOp::NotEqual => Ok(Self::not_equals(label, &value)),
+            MatchOp::Equal => Ok(Self {
+                label,
+                matcher: PredicateMatch::Equal(value),
+            }),
+            MatchOp::NotEqual => Ok(Self {
+                label,
+                matcher: PredicateMatch::NotEqual(value),
+            }),
             MatchOp::RegexEqual => {
-                let matcher = parse_regex_matcher(&value, true)?;
+                let Some(value) = value.text() else {
+                    return Err(ParseError::General(
+                        "regex matcher requires a single value".to_string(),
+                    ));
+                };
+                let matcher = parse_regex_matcher(value, true)?;
                 Ok(Self { label, matcher })
             }
             MatchOp::RegexNotEqual => {
-                let matcher = parse_regex_matcher(&value, false)?;
+                let Some(value) = value.text() else {
+                    return Err(ParseError::General(
+                        "regex matcher requires a single value".to_string(),
+                    ));
+                };
+                let matcher = parse_regex_matcher(value, false)?;
                 Ok(Self { label, matcher })
             }
-            MatchOp::StartsWith => Ok(Self {
+            MatchOp::StartsWith => {
+                validate_starts_with_value(&value)?;
+                Ok(Self {
+                    label,
+                    matcher: PredicateMatch::StartsWith(value),
+                })
+            }
+            MatchOp::NotStartsWith => {
+                validate_starts_with_value(&value)?;
+                Ok(Self {
+                    label,
+                    matcher: PredicateMatch::NotStartsWith(value),
+                })
+            }
+            MatchOp::Contains => {
+                validate_contains_value(&value)?;
+                Ok(Self {
+                    label,
+                    matcher: PredicateMatch::Contains(value),
+                })
+            }
+            MatchOp::NotContains => {
+                validate_contains_value(&value)?;
+                Ok(Self {
+                    label,
+                    matcher: PredicateMatch::NotContains(value),
+                })
+            }
+            MatchOp::MatchAll => Ok(Self {
                 label,
-                matcher: PredicateMatch::StartsWith(value),
+                matcher: PredicateMatch::MatchAll,
             }),
-            MatchOp::NotStartsWith => Ok(Self {
+            MatchOp::MatchNone => Ok(Self {
                 label,
-                matcher: PredicateMatch::NotStartsWith(value),
-            }),
-            MatchOp::Contains => Ok(Self {
-                label,
-                matcher: PredicateMatch::Contains(value),
-            }),
-            MatchOp::NotContains => Ok(Self {
-                label,
-                matcher: PredicateMatch::NotContains(value),
+                matcher: PredicateMatch::MatchNone,
             }),
         }
     }
@@ -538,7 +703,7 @@ impl LabelFilter {
     pub fn prefix(label: String, value: String) -> Self {
         Self {
             label,
-            matcher: PredicateMatch::StartsWith(value),
+            matcher: PredicateMatch::StartsWith(PredicateValue::String(value)),
         }
     }
 
@@ -563,6 +728,8 @@ impl LabelFilter {
     pub fn regex_text(&self) -> Option<&str> {
         match &self.matcher {
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => Some(&re.value),
+            PredicateMatch::MatchAll => Some(MATCH_ALL_REGEX_TEXT),
+            PredicateMatch::MatchNone => Some(MATCH_ALL_REGEX_TEXT),
             _ => None,
         }
     }
@@ -607,16 +774,17 @@ impl Display for LabelFilter {
             PredicateMatch::Equal(value) | PredicateMatch::NotEqual(value) => {
                 write!(f, "{value}")
             }
+            PredicateMatch::MatchAll => write!(f, "{}", enquote('"', MATCH_ALL_REGEX_TEXT)),
+            PredicateMatch::MatchNone => write!(f, "{}", enquote('"', MATCH_ALL_REGEX_TEXT)),
             PredicateMatch::RegexEqual(re) | PredicateMatch::RegexNotEqual(re) => {
                 write!(f, "{}", enquote('"', &re.value))
             }
-            PredicateMatch::StartsWith(_)
-            | PredicateMatch::NotStartsWith(_)
-            | PredicateMatch::Contains(_)
-            | PredicateMatch::NotContains(_) => match self.text() {
-                Some(text) => write!(f, "{}", enquote('"', text)),
-                None => Err(fmt::Error),
-            },
+            PredicateMatch::StartsWith(value) | PredicateMatch::NotStartsWith(value) => {
+                write!(f, "{value}")
+            }
+            PredicateMatch::Contains(value) | PredicateMatch::NotContains(value) => {
+                write!(f, "{value}")
+            }
         }
     }
 }
@@ -921,7 +1089,10 @@ fn find_metric_name_matcher(filters: &[LabelFilter]) -> Option<(usize, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::labels::filters::{LabelFilter, MatchOp, PredicateMatch, RegexMatcher};
+    use crate::labels::filters::{
+        LabelFilter, MatchOp, PredicateMatch, PredicateValue, RegexMatcher,
+        validate_contains_value, validate_starts_with_value,
+    };
 
     #[test]
     fn test_match_anchoring() {
@@ -1071,18 +1242,33 @@ mod tests {
 
     #[test]
     fn test_contains_matcher_matches_substrings() {
-        let matcher = PredicateMatch::Contains("erv".to_string());
+        let matcher = PredicateMatch::Contains(PredicateValue::String("erv".to_string()));
 
         assert!(matcher.matches("server-1"));
         assert!(!matcher.matches("client-1"));
     }
 
     #[test]
+    fn test_contains_matcher_matches_any_value_from_list() {
+        let matcher = PredicateMatch::Contains(PredicateValue::from(vec![
+            "erv".to_string(),
+            "cli".to_string(),
+        ]));
+
+        assert!(matcher.matches("server-1"));
+        assert!(matcher.matches("client-1"));
+        assert!(!matcher.matches("proxy-1"));
+    }
+
+    #[test]
     fn test_contains_matcher_inverse_round_trip() {
-        let matcher = PredicateMatch::Contains("prod".to_string());
+        let matcher = PredicateMatch::Contains(PredicateValue::String("prod".to_string()));
         let inverted = matcher.clone().inverse();
 
-        assert_eq!(inverted, PredicateMatch::NotContains("prod".to_string()));
+        assert_eq!(
+            inverted,
+            PredicateMatch::NotContains(PredicateValue::String("prod".to_string()))
+        );
         assert_eq!(inverted.inverse(), matcher);
     }
 
@@ -1093,5 +1279,116 @@ mod tests {
         assert_eq!(filter.op(), MatchOp::Contains);
         assert!(filter.matches("server-1"));
         assert!(!filter.matches("client-1"));
+    }
+
+    #[test]
+    fn test_contains_matcher_rejects_empty_values() {
+        assert!(LabelFilter::create(MatchOp::Contains, "instance", "").is_err());
+        assert!(validate_contains_value(&PredicateValue::Empty).is_err());
+        assert!(validate_contains_value(&PredicateValue::from(vec!["".to_string()])).is_err());
+    }
+
+    #[test]
+    fn test_match_all_matches_any_input() {
+        let matcher = PredicateMatch::MatchAll;
+
+        assert!(matcher.matches(""));
+        assert!(matcher.matches("server-1"));
+        assert!(matcher.matches("client-1"));
+        assert!(matcher.matches_empty());
+    }
+
+    #[test]
+    fn test_match_all_inverse_rejects_everything() {
+        let inverted = PredicateMatch::MatchAll.inverse();
+
+        assert!(matches!(inverted, PredicateMatch::MatchNone));
+
+        assert!(!inverted.matches(""));
+        assert!(!inverted.matches("server-1"));
+        assert!(!inverted.matches("client-1"));
+    }
+
+    #[test]
+    fn test_match_none_inverse_matches_everything() {
+        let inverted = PredicateMatch::MatchNone.inverse();
+
+        assert!(matches!(inverted, PredicateMatch::MatchAll));
+        assert!(inverted.matches(""));
+        assert!(inverted.matches("server-1"));
+        assert!(inverted.matches("client-1"));
+    }
+
+    #[test]
+    fn test_label_filter_display_for_match_all() {
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::MatchAll,
+        };
+
+        assert_eq!(filter.to_string(), r#"instance=~".*""#);
+    }
+
+    #[test]
+    fn test_label_filter_display_for_match_none() {
+        let filter = LabelFilter {
+            label: "instance".to_string(),
+            matcher: PredicateMatch::MatchNone,
+        };
+
+        assert_eq!(filter.to_string(), r#"instance!~".*""#);
+    }
+
+    #[test]
+    fn test_starts_with_matcher_matches_any_prefix_from_list() {
+        let matcher = PredicateMatch::StartsWith(PredicateValue::from(vec![
+            "server".to_string(),
+            "client".to_string(),
+        ]));
+
+        assert!(matcher.matches("server-1"));
+        assert!(matcher.matches("client-1"));
+        assert!(!matcher.matches("proxy-1"));
+    }
+
+    #[test]
+    fn test_not_starts_with_matcher_requires_all_prefixes_absent() {
+        let matcher = PredicateMatch::NotStartsWith(PredicateValue::from(vec![
+            "server".to_string(),
+            "client".to_string(),
+        ]));
+
+        assert!(!matcher.matches("server-1"));
+        assert!(!matcher.matches("client-1"));
+        assert!(matcher.matches("proxy-1"));
+    }
+
+    #[test]
+    fn test_label_filter_create_starts_with_list() {
+        let filter = LabelFilter::create_with_value(
+            MatchOp::StartsWith,
+            "instance",
+            PredicateValue::from(vec!["server".to_string(), "client".to_string()]),
+        )
+            .unwrap();
+
+        assert_eq!(filter.op(), MatchOp::StartsWith);
+        assert!(filter.matches("server-1"));
+        assert!(filter.matches("client-1"));
+        assert!(!filter.matches("proxy-1"));
+    }
+
+    #[test]
+    fn test_starts_with_matcher_rejects_empty_values() {
+        assert!(LabelFilter::create(MatchOp::StartsWith, "instance", "").is_err());
+        assert!(validate_starts_with_value(&PredicateValue::Empty).is_err());
+        assert!(validate_starts_with_value(&PredicateValue::from(vec!["".to_string()])).is_err());
+        assert!(
+            validate_starts_with_value(&PredicateValue::from(vec![
+                "server".to_string(),
+                "".to_string(),
+            ]))
+                .is_err()
+        );
     }
 }
