@@ -161,7 +161,7 @@ pub trait KahanSummator {
     /// # Example
     ///
     /// ```
-    /// # use kahan::*;
+    /// use crate::aggregators::kahan::*;
     /// let summands = [10000.0f32, 3.14159, 2.71828];
     /// let kahan_sum = summands.iter().kahan_sum();
     /// assert_eq!(10005.86f32, kahan_sum.sum());

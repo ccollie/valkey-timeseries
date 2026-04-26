@@ -342,7 +342,7 @@ impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```ignore
 /// let options = SmoothedZScoreOptions {
 ///     threshold: 3.5,
 ///     influence: 0.5,

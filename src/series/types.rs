@@ -100,6 +100,9 @@ impl DuplicatePolicy {
     ///
     /// # Example
     /// ```rust
+    /// use crate::series::types::DuplicatePolicy;
+    /// use crate::common::Timestamp;
+    ///
     /// let result = duplicate_policy.duplicate_value(ts, 42.0, 43.0);
     /// match result {
     ///     Ok(value) => println!("Resolved value: {}", value),
