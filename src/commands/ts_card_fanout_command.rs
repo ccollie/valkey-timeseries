@@ -1,7 +1,7 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::fanout::FanoutContext;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
+use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::count_matched_series;
 use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
 use valkey_module::{Context, Status, ValkeyResult};
@@ -44,8 +44,9 @@ impl FanoutClientCommand for CardFanoutCommand {
         }
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         self.result += resp.cardinality as usize;
+        Ok(())
     }
 
     fn get_response(self) -> Self::Response {

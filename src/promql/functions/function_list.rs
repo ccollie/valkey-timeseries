@@ -1,6 +1,3 @@
-//! Single-source-of-truth macro prototype for PromQL function mappings.
-//! This module defines the `PromqlFunctionKind` enum and the `PromQLFunctionImpl` dispatch enum, both
-//!
 use crate::promql::functions::date_functions::{
     DayOfMonthFunction, DayOfWeekFunction, DayOfYearFunction, DaysInMonthFunction, HourFunction,
     MinuteFunction, MonthFunction, TimeFunction, TimestampFunction, YearFunction,
@@ -8,6 +5,7 @@ use crate::promql::functions::date_functions::{
 use crate::promql::functions::deriv::DerivFunction;
 use crate::promql::functions::histogram::{HistogramFractionFunctions, HistogramQuantileFunction};
 use crate::promql::functions::holt_winters::DoubleExponentialSmoothingFunction;
+use crate::promql::functions::idelta::IDeltaFunction;
 use crate::promql::functions::irate::IRateFunction;
 use crate::promql::functions::labels::{LabelJoinFunction, LabelReplaceFunction};
 use crate::promql::functions::math_functions::{
@@ -18,14 +16,15 @@ use crate::promql::functions::math_functions::{
     TanFunction, TanhFunction,
 };
 use crate::promql::functions::predict_linear::PredictLinearFunction;
-use crate::promql::functions::range_vector_functions::{
-    AbsentOverTimeFunction, AvgOverTimeFunction, ChangesFunction, CountOverTimeFunction,
-    FirstOverTimeFunction, LastOverTimeFunction, MadOverTimeFunction, MaxOverTimeFunction,
-    MinOverTimeFunction, PresentOverTimeFunction, QuantileOverTimeFunction, ResetsFunction,
-    StddevOverTimeFunction, StdvarOverTimeFunction, SumOverTimeFunction, TSFirstOverTimeFunction,
-    TSLastOverTimeFunction, TSOfMaxOverTimeFunction, TSOfMinOverTimeFunction,
+use crate::promql::functions::range_vector_functions::{ChangesFunction, ResetsFunction};
+use crate::promql::functions::rate::{DeltaFunction, IncreaseFunction, RateFunction};
+use crate::promql::functions::rollup_functions::{
+    AbsentOverTimeFunction, AvgOverTimeFunction, CountOverTimeFunction, FirstOverTimeFunction,
+    LastOverTimeFunction, MadOverTimeFunction, MaxOverTimeFunction, MinOverTimeFunction,
+    PresentOverTimeFunction, QuantileOverTimeFunction, StddevOverTimeFunction,
+    StdvarOverTimeFunction, SumOverTimeFunction, TsOfFirstOverTimeFunction,
+    TsOfLastOverTimeFunction, TsOfMaxOverTimeFunction, TsOfMinOverTimeFunction,
 };
-use crate::promql::functions::rate::{DeltaFunction, RateFunction};
 use crate::promql::functions::sort::{
     SortByLabelDescFunction, SortByLabelFunction, SortDescFunction, SortFunction,
 };
@@ -66,7 +65,7 @@ macro_rules! impl_promql_function_kind {
             type Error = ValkeyError;
 
             fn try_from(value: &str) -> Result<Self, Self::Error> {
-                let v = hashify::tiny_map_ignore_case! {
+                let v = hashify::tiny_map! {
                     value.as_bytes(),
                     $( $name => PromqlFunctionKind::$Variant, )*
                 };
@@ -88,6 +87,7 @@ macro_rules! impl_promql_function_impl {
         use $crate::promql::functions::types::PromQLArg;
         use $crate::promql::{EvalResult, ExprResult};
         use $crate::promql::functions::types::PromQLFunction;
+        use $crate::promql::model::EvalContext;
 
         #[allow(clippy::large_enum_variant)]
         #[derive(Copy, Clone)]
@@ -103,26 +103,46 @@ macro_rules! impl_promql_function_impl {
                 }
             }
 
-            #[inline]
-            pub(crate) fn from_kind(kind: PromqlFunctionKind) -> Option<Self> {
-                use PromqlFunctionKind::*;
-                Some(match kind {
-                    $( $Variant => Self::$Variant($Ty), )*
-                })
-            }
-
             pub(crate) fn kind(&self) -> PromqlFunctionKind {
                 match self {
                     $( Self::$Variant(_) => PromqlFunctionKind::$Variant, )*
                 }
             }
 
-            pub(crate) fn from_name(name: &str) -> Option<Self> {
-               let Ok(kind) = PromqlFunctionKind::try_from(name) else {
-                   return None;
-               };
+            pub(in crate::promql) fn is_rollup(&self) -> bool {
+                matches!(self.kind(), PromqlFunctionKind::AbsentOverTime
+                    | PromqlFunctionKind::AvgOverTime
+                    | PromqlFunctionKind::CountOverTime
+                    | PromqlFunctionKind::FirstOverTime
+                    | PromqlFunctionKind::LastOverTime
+                    | PromqlFunctionKind::MadOverTime
+                    | PromqlFunctionKind::MaxOverTime
+                    | PromqlFunctionKind::MinOverTime
+                    | PromqlFunctionKind::PresentOverTime
+                    | PromqlFunctionKind::QuantileOverTime
+                    | PromqlFunctionKind::StddevOverTime
+                    | PromqlFunctionKind::StdvarOverTime
+                    | PromqlFunctionKind::SumOverTime
+                    | PromqlFunctionKind::TsOfFirstOverTime
+                    | PromqlFunctionKind::TsOfLastOverTime
+                    | PromqlFunctionKind::TsOfMaxOverTime
+                    | PromqlFunctionKind::TsOfMinOverTime)
+            }
+        }
 
-               Self::from_kind(kind)
+        impl TryFrom<&str> for PromQLFunctionImpl {
+            type Error = ValkeyError;
+
+            fn try_from(value: &str) -> Result<Self, Self::Error> {
+                let v = hashify::tiny_map! {
+                    value.as_bytes(),
+                    $( $name => Self::$Variant($Ty), )*
+                };
+
+                match v {
+                    Some(f) => Ok(f),
+                    None => Err(ValkeyError::Str("PromQL: unknown function")),
+                }
             }
         }
 
@@ -140,38 +160,29 @@ macro_rules! impl_promql_function_impl {
         }
 
         impl PromQLFunction for PromQLFunctionImpl {
-            #[inline]
             fn apply(&self, arg: PromQLArg, eval_timestamp_ms: i64) -> EvalResult<ExprResult> {
                 match self {
-                    $( PromQLFunctionImpl::$Variant(f) => f.apply(arg, eval_timestamp_ms), )*
+                    $( Self::$Variant(f) => f.apply(arg, eval_timestamp_ms), )*
                 }
             }
 
-            #[inline]
             fn apply_args(&self, args: Vec<PromQLArg>, eval_timestamp_ms: i64) -> EvalResult<ExprResult> {
                 match self {
-                    $( PromQLFunctionImpl::$Variant(f) => f.apply_args(args, eval_timestamp_ms), )*
+                    $( Self::$Variant(f) => f.apply_args(args, eval_timestamp_ms), )*
                 }
             }
 
-            #[inline]
-            fn apply_call(&self, evaluated_args: Vec<PromQLArg>, ctx: &$crate::promql::functions::types::FunctionCallContext<'_>) -> EvalResult<ExprResult> {
+            fn apply_call(&self, evaluated_args: Vec<PromQLArg>, ctx: &EvalContext) -> EvalResult<ExprResult> {
                 match self {
-                    $( PromQLFunctionImpl::$Variant(f) => f.apply_call(evaluated_args, ctx), )*
-                }
-            }
-
-            #[inline]
-            fn is_experimental(&self) -> bool {
-                match self {
-                    $( PromQLFunctionImpl::$Variant(f) => f.is_experimental(), )*
+                    $( Self::$Variant(f) => f.apply_call(evaluated_args, ctx), )*
                 }
             }
         }
     };
 }
 // ─────────────────────────────────────────────────────────────────────────────
-// Single canonical list.
+// Single canonical list of promql functions. Generate the enum variants, the static dispatch arms, and the
+// registry table from this list.
 //
 // ADD NEW FUNCTIONS HERE.  Each entry:
 //   (MyFunction, "my_function", MyFunction)
@@ -262,8 +273,13 @@ macro_rules! promql_function_list {
                 DoubleExponentialSmoothingFunction
             ),
             (FirstOverTime, "first_over_time", FirstOverTimeFunction),
-            (HoltWinters, "holt_winters", DoubleExponentialSmoothingFunction),
+            (
+                HoltWinters,
+                "holt_winters",
+                DoubleExponentialSmoothingFunction
+            ),
             (IRate, "irate", IRateFunction),
+            (IDelta, "idelta", IDeltaFunction),
             (LastOverTime, "last_over_time", LastOverTimeFunction),
             (MadOverTime, "mad_over_time", MadOverTimeFunction),
             (MaxOverTime, "max_over_time", MaxOverTimeFunction),
@@ -280,6 +296,7 @@ macro_rules! promql_function_list {
                 QuantileOverTimeFunction
             ),
             (Rate, "rate", RateFunction),
+            (Increase, "increase", IncreaseFunction),
             (Resets, "resets", ResetsFunction),
             (StddevOverTime, "stddev_over_time", StddevOverTimeFunction),
             (StdvarOverTime, "stdvar_over_time", StdvarOverTimeFunction),
@@ -287,22 +304,22 @@ macro_rules! promql_function_list {
             (
                 TsOfMaxOverTime,
                 "ts_of_max_over_time",
-                TSOfMaxOverTimeFunction
+                TsOfMaxOverTimeFunction
             ),
             (
                 TsOfMinOverTime,
                 "ts_of_min_over_time",
-                TSOfMinOverTimeFunction
+                TsOfMinOverTimeFunction
             ),
             (
-                TLastOverTime,
+                TsOfLastOverTime,
                 "ts_of_last_over_time",
-                TSLastOverTimeFunction
+                TsOfLastOverTimeFunction
             ),
             (
-                TFirstOverTime,
+                TsOfFirstOverTime,
                 "ts_of_first_over_time",
-                TSFirstOverTimeFunction
+                TsOfFirstOverTimeFunction
             ),
             // ── Label helpers ─────────────────────────────────────────────
             (LabelJoin, "label_join", LabelJoinFunction),
@@ -320,7 +337,6 @@ macro_rules! promql_function_list {
     };
 }
 
-// Expand the canonical list into this module. This will generate the
-// `PromqlFunctionKind` enum and the helper impls for `PromQLFunctionImpl`.
+// This will generate the `PromqlFunctionKind` enum and the helper impls for `PromQLFunctionImpl`.
 promql_function_list!(impl_promql_function_kind);
 promql_function_list!(impl_promql_function_impl);

@@ -143,16 +143,32 @@ impl QueryReader for MockSeriesQuerier {
         // Mock querier ignores the deadline for now (cooperative cancellation could be
         // implemented in tests by checking `_deadline`), and behaves like the
         // original implementation.
+        // Implement lookback semantics: return the latest sample with
+        // timestamp <= `timestamp` and timestamp > (timestamp - lookback_delta).
+        // `QueryOptions::lookback_delta` is provided in `_options`.
+        let lookback_ms = _options.lookback_delta.as_millis() as i64;
+        let start_inclusive = timestamp.saturating_sub(lookback_ms).saturating_add(1);
+
         self.select_series(selector, |ts| {
             let labels: Vec<Label> = metric_name_to_labels(&ts.labels);
-            let Some(sample) = ts.get_sample(timestamp)? else {
+
+            // Fetch samples in the inclusive range [start_inclusive, timestamp].
+            let samples = ts.get_range(start_inclusive, timestamp);
+            if samples.is_empty() {
                 return Ok(None);
-            };
-            Ok(Some(InstantSample {
-                labels: Labels::new(labels),
-                value: sample.value,
-                timestamp_ms: timestamp,
-            }))
+            }
+
+            // `get_range` returns samples sorted ascending; take the last (latest)
+            // sample that is <= timestamp and > (timestamp - lookback_delta).
+            if let Some(s) = samples.last() {
+                return Ok(Some(InstantSample {
+                    labels: Labels::new(labels),
+                    value: s.value,
+                    timestamp_ms: s.timestamp,
+                }));
+            }
+
+            Ok(None)
         })
     }
 
@@ -166,7 +182,7 @@ impl QueryReader for MockSeriesQuerier {
         // As with `query`, this mock ignores the deadline and returns the full range.
         self.select_series(selector, |ts| {
             let labels: Labels = (&ts.labels).into();
-            let samples = ts
+            let samples: Vec<Sample> = ts
                 .get_range(start_ms, end_ms)
                 .into_iter()
                 .map(|s| Sample {
@@ -174,6 +190,11 @@ impl QueryReader for MockSeriesQuerier {
                     value: s.value,
                 })
                 .collect();
+
+            if samples.is_empty() {
+                return Ok(None);
+            }
+
             Ok(Some(RangeSample { labels, samples }))
         })
     }

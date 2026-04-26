@@ -267,13 +267,12 @@ impl Tsdb {
     }
 
     pub fn eval(&self, stmt: EvalStmt) -> QueryResult<ExprResult> {
-        let evaluator = Evaluator::new(
-            &self.querier,
-            QueryOptions {
-                timeout: None,
-                ..QueryOptions::default()
-            },
-        );
+        let opts = QueryOptions {
+            timeout: None,
+            lookback_delta: stmt.lookback_delta,
+            ..QueryOptions::default()
+        };
+        let evaluator = Evaluator::new(&self.querier, opts);
         evaluator
             .evaluate(stmt)
             .map_err(|e| QueryError::Execution(e.to_string()))
@@ -299,11 +298,13 @@ impl Tsdb {
             lookback_delta,
         };
 
+        // Use the caller-supplied `opts` so caller-provided lookback_delta is respected,
+        // but disable the evaluator timeout here.
         let evaluator = Evaluator::new(
             &self.querier,
             QueryOptions {
                 timeout: None,
-                ..QueryOptions::default()
+                ..*opts
             },
         );
         let result = evaluator.evaluate(stmt)?;

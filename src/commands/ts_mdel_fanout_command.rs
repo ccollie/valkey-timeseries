@@ -1,8 +1,8 @@
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::fanout::{DateRange, MDelRequest, MDelResponse};
 use crate::error_consts;
-use crate::fanout::FanoutContext;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
+use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::labels::filters::SeriesSelector;
 use crate::series::{TimestampRange, delete_series_by_selectors};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
@@ -63,8 +63,9 @@ impl FanoutClientCommand for MDelFanoutCommand {
         }
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         self.total_deleted += resp.deleted_count as usize;
+        Ok(())
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {

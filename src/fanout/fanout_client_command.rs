@@ -1,7 +1,7 @@
-use crate::fanout::FanoutContext;
 use crate::fanout::blocked_client::FanoutBlockedClient;
 use crate::fanout::serialization::Serializable;
 use crate::fanout::{FanoutCommand, FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
+use crate::fanout::{FanoutCommandResult, FanoutContext};
 use ahash::HashSet;
 use std::sync::{Arc, Mutex};
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
@@ -24,7 +24,7 @@ pub trait FanoutClientCommand: Default + Send + 'static {
 
     fn generate_request(&self) -> Self::Request;
 
-    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);
+    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult;
 
     /// Return the final response after the fanout operation is complete.
     /// By default, it returns a default instance of the response type.
@@ -105,7 +105,11 @@ impl<T: FanoutClientCommand> FanoutCommand for T {
         FanoutClientCommand::generate_request(self)
     }
 
-    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) {
+    fn on_response(
+        &mut self,
+        resp: Self::Response,
+        target: &NodeInfo,
+    ) -> crate::fanout::FanoutCommandResult {
         FanoutClientCommand::on_response(self, resp, target)
     }
 

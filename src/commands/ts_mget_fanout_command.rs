@@ -3,8 +3,8 @@ use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matc
 use crate::commands::process_mget_request;
 use crate::commands::utils::{reply_with_fanout_labels, reply_with_fanout_sample};
 use crate::error_consts;
-use crate::fanout::FanoutContext;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
+use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::request_types::MGetRequest;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
 
@@ -60,8 +60,9 @@ impl FanoutClientCommand for MGetFanoutCommand {
         }
     }
 
-    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) {
+    fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         self.series.extend(resp.values);
+        Ok(())
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {

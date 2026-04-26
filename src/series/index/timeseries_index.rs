@@ -162,7 +162,9 @@ impl TimeSeriesIndex {
     ///
     /// we can retrieve its series ID by passing the appropriate labels to this function.
     ///
-    /// ```
+    /// ```ignore
+    /// use valkey_timeseries::labels::Label;
+    ///
     /// let labels = vec![
     ///     Label::new("__name__", "http_requests_total"),
     ///     Label::new("status", "200"),

@@ -3,10 +3,11 @@ mod tests {
     use crate::common::Sample;
     use crate::common::math::kahan_inc;
     use crate::promql::functions::PromQLFunctionImpl;
-    use crate::promql::functions::types::FunctionCallContext;
     use crate::promql::functions::utils::variance_kahan;
     use crate::promql::functions::{PromQLArg, PromQLFunction, resolve_function};
-    use crate::promql::{EvalResult, EvalSample, EvalSamples, ExprResult, Labels, is_stale_nan};
+    use crate::promql::{
+        EvalContext, EvalResult, EvalSample, EvalSamples, ExprResult, Labels, is_stale_nan,
+    };
     use ahash::AHashMap as HashMap;
     use promql_parser::label::METRIC_NAME;
     use promql_parser::parser::{Expr, ParenExpr, StringLiteral};
@@ -37,11 +38,50 @@ mod tests {
             range: Duration,
         ) -> EvalResult<ExprResult> {
             let range_ms = range.as_millis() as i64;
+            let query_start_ms = eval_timestamp_ms - range_ms;
+            let query_end_ms = eval_timestamp_ms;
+
+            let ctx = EvalContext {
+                query_start: query_start_ms,
+                query_end: query_end_ms,
+                evaluation_ts: eval_timestamp_ms,
+                step_ms: 0,
+                lookback_delta_ms: 0,
+            };
+            let range_ms = range.as_millis() as i64;
             for s in &mut samples {
                 s.range_ms = range_ms;
                 s.range_end_ms = eval_timestamp_ms;
             }
-            self.apply(samples, eval_timestamp_ms)
+            let arg = PromQLArg::RangeVector(samples);
+            self.inner.apply_call(vec![arg], &ctx)
+        }
+
+        pub(crate) fn apply_rollup(
+            &self,
+            mut samples: Vec<EvalSamples>,
+            eval_timestamp_ms: i64,
+            range: Duration,
+            step: i64,
+        ) -> EvalResult<ExprResult> {
+            let range_ms = range.as_millis() as i64;
+            let query_start_ms = eval_timestamp_ms - range_ms;
+            let query_end_ms = eval_timestamp_ms;
+
+            let ctx = EvalContext {
+                query_start: query_start_ms,
+                query_end: query_end_ms,
+                evaluation_ts: eval_timestamp_ms,
+                step_ms: step,
+                lookback_delta_ms: 0,
+            };
+            let range_ms = range.as_millis() as i64;
+            for s in &mut samples {
+                s.range_ms = range_ms;
+                s.range_end_ms = eval_timestamp_ms;
+            }
+            let arg = PromQLArg::RangeVector(samples);
+            self.inner.apply_call(vec![arg], &ctx)
         }
     }
 
@@ -190,10 +230,40 @@ mod tests {
         samples
     }
 
+    fn call_rollup_function(
+        name: &str,
+        samples: Vec<EvalSamples>,
+        eval_timestamp_ms: i64,
+        _step: i64,
+    ) -> Vec<EvalSample> {
+        let func = get_range_function(name).unwrap();
+
+        // Compute a range that covers all samples in an instant evaluation.
+        // The rollup window is (t_end - range_ms, t_end], so adding 1 ms
+        // ensures the earliest sample (first.timestamp) falls inside the window.
+        // When samples are empty we still forward the call so empty-series
+        // filtering inside the function is exercised.
+        let range = match samples.first().and_then(|s| s.first_sample()) {
+            None => Duration::from_millis(1),
+            Some(first) => {
+                let span = (eval_timestamp_ms - first.timestamp).max(0) as u64;
+                Duration::from_millis(span + 1)
+            }
+        };
+
+        let result = func
+            .apply_with_range(samples, eval_timestamp_ms, range)
+            .unwrap();
+        let ExprResult::InstantVector(samples) = result else {
+            panic!("expected instant vector result");
+        };
+        samples
+    }
+
     fn create_vector_arg(_values: Vec<f64>) -> PromQLArg {
         PromQLArg::InstantVector(vec![create_sample_with_labels(
             1.0,
-            &[(METRIC_NAME, "testmetric"), ("src", "source\nvalue-10")],
+            &[(METRIC_NAME, "test_metric"), ("src", "source\nvalue-10")],
         )])
     }
 
@@ -303,15 +373,9 @@ mod tests {
     fn should_apply_label_replace_with_full_string_match() {
         let func = resolve_function("label_replace").unwrap();
 
-        let raw_args = box_exprs(label_replace_raw_args(
-            "dst",
-            "destination-value-$1",
-            "src",
-            "source-value-(.*)",
-        ));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let result = func
@@ -320,11 +384,11 @@ mod tests {
                     PromQLArg::InstantVector(vec![
                         create_sample_with_labels(
                             1.0,
-                            &[(METRIC_NAME, "testmetric"), ("src", "source-value-10")],
+                            &[(METRIC_NAME, "test_metric"), ("src", "source-value-10")],
                         ),
                         create_sample_with_labels(
                             2.0,
-                            &[(METRIC_NAME, "testmetric"), ("src", "source-value-20")],
+                            &[(METRIC_NAME, "test_metric"), ("src", "source-value-20")],
                         ),
                     ]),
                     "dst".into(),
@@ -348,19 +412,13 @@ mod tests {
     #[test]
     fn should_apply_label_replace_with_dotall_regex() {
         let _func = resolve_function("label_replace").unwrap();
-        let _raw_args = box_exprs(label_replace_raw_args(
-            "dst",
-            "matched",
-            "src",
-            "source.*10",
-        ));
 
         let result = call_apply_args(
             "label_replace",
             vec![
                 PromQLArg::InstantVector(vec![create_sample_with_labels(
                     1.0,
-                    &[(METRIC_NAME, "testmetric"), ("src", "source\nvalue-10")],
+                    &[(METRIC_NAME, "test_metric"), ("src", "source\nvalue-10")],
                 )]),
                 "dst".into(),
                 "matched".into(),
@@ -376,15 +434,10 @@ mod tests {
     #[test]
     fn should_not_apply_label_replace_on_substring_match() {
         let func = resolve_function("label_replace").unwrap();
-        let raw_args = box_exprs(label_replace_raw_args(
-            "dst",
-            "value-$1",
-            "src",
-            "value-(.*)",
-        ));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let result = func
@@ -393,7 +446,7 @@ mod tests {
                     PromQLArg::InstantVector(vec![create_sample_with_labels(
                         1.0,
                         &[
-                            (METRIC_NAME, "testmetric"),
+                            (METRIC_NAME, "test_metric"),
                             ("src", "source-value-10"),
                             ("dst", "original-destination-value"),
                         ],
@@ -420,10 +473,10 @@ mod tests {
     #[test]
     fn should_drop_destination_label_when_label_replace_replacement_is_empty() {
         let func = resolve_function("label_replace").unwrap();
-        let raw_args = box_exprs(label_replace_raw_args("dst", "", "dst", ".*"));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let result = func
@@ -432,7 +485,7 @@ mod tests {
                     PromQLArg::InstantVector(vec![create_sample_with_labels(
                         1.0,
                         &[
-                            (METRIC_NAME, "testmetric"),
+                            (METRIC_NAME, "test_metric"),
                             ("src", "source-value-10"),
                             ("dst", "original-destination-value"),
                         ],
@@ -456,15 +509,10 @@ mod tests {
     #[test]
     fn should_apply_label_replace_with_utf8_destination_label_name() {
         let func = resolve_function("label_replace").unwrap();
-        let raw_args = box_exprs(label_replace_raw_args(
-            "\u{00ff}",
-            "value-$1",
-            "src",
-            "source-value-(.*)",
-        ));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let result = func
@@ -472,7 +520,7 @@ mod tests {
                 vec![
                     PromQLArg::InstantVector(vec![create_sample_with_labels(
                         1.0,
-                        &[(METRIC_NAME, "testmetric"), ("src", "source-value-10")],
+                        &[(METRIC_NAME, "test_metric"), ("src", "source-value-10")],
                     )]),
                     "\u{00ff}".into(),
                     "value-$1".into(),
@@ -493,10 +541,10 @@ mod tests {
     #[test]
     fn should_error_when_label_replace_destination_label_is_empty() {
         let func = resolve_function("label_replace").unwrap();
-        let raw_args = box_exprs(label_replace_raw_args("", "", "src", "(.*)"));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let err = func
@@ -504,7 +552,7 @@ mod tests {
                 vec![
                     PromQLArg::InstantVector(vec![create_sample_with_labels(
                         1.0,
-                        &[(METRIC_NAME, "testmetric"), ("src", "source-value-10")],
+                        &[(METRIC_NAME, "test_metric"), ("src", "source-value-10")],
                     )]),
                     "".into(),
                     "".into(),
@@ -525,10 +573,10 @@ mod tests {
     #[test]
     fn should_error_when_label_replace_produces_duplicate_output_labelsets() {
         let func = resolve_function("label_replace").unwrap();
-        let raw_args = box_exprs(label_replace_raw_args("src", "", "", ""));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let err = func
@@ -537,11 +585,11 @@ mod tests {
                     PromQLArg::InstantVector(vec![
                         create_sample_with_labels(
                             1.0,
-                            &[(METRIC_NAME, "testmetric"), ("src", "source-value-10")],
+                            &[(METRIC_NAME, "test_metric"), ("src", "source-value-10")],
                         ),
                         create_sample_with_labels(
                             2.0,
-                            &[(METRIC_NAME, "testmetric"), ("src", "source-value-20")],
+                            &[(METRIC_NAME, "test_metric"), ("src", "source-value-20")],
                         ),
                     ]),
                     "src".into(),
@@ -564,10 +612,10 @@ mod tests {
     #[test]
     fn should_apply_label_join_with_source_labels_in_order() {
         let func = resolve_function("label_join").unwrap();
-        let raw_args = box_exprs(label_join_raw_args("dst", "-", &["src", "src1", "src2"]));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let result = func
@@ -577,7 +625,7 @@ mod tests {
                         create_sample_with_labels(
                             1.0,
                             &[
-                                (METRIC_NAME, "testmetric"),
+                                (METRIC_NAME, "test_metric"),
                                 ("src", "a"),
                                 ("src1", "b"),
                                 ("src2", "c"),
@@ -586,18 +634,18 @@ mod tests {
                         create_sample_with_labels(
                             2.0,
                             &[
-                                (METRIC_NAME, "testmetric"),
+                                (METRIC_NAME, "test_metric"),
                                 ("src", "d"),
                                 ("src1", "e"),
                                 ("src2", "f"),
                             ],
                         ),
                     ]),
-                    "".into(),
-                    "".into(),
-                    "".into(),
-                    "".into(),
-                    "".into(),
+                    "dst".into(),
+                    "-".into(),
+                    "src".into(),
+                    "src1".into(),
+                    "src2".into(),
                 ],
                 &ctx,
             )
@@ -614,10 +662,10 @@ mod tests {
     #[test]
     fn should_apply_label_join_without_source_labels() {
         let func = resolve_function("label_join").unwrap();
-        let raw_args = box_exprs(label_join_raw_args("dst", ", ", &[]));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
 
         let result = func
@@ -626,7 +674,7 @@ mod tests {
                     PromQLArg::InstantVector(vec![create_sample_with_labels(
                         1.0,
                         &[
-                            (METRIC_NAME, "testmetric"),
+                            (METRIC_NAME, "test_metric"),
                             ("src", "a"),
                             ("src1", "b"),
                             ("dst", "original-destination-value"),
@@ -661,7 +709,7 @@ mod tests {
     //             vec![
     //                 PromQLArg::InstantVector(vec![create_sample_with_labels(
     //                     1.0,
-    //                     &[(METRIC_NAME, "testmetric"), ("src", "a")],
+    //                     &[(METRIC_NAME, "test_metric"), ("src", "a")],
     //                 )]),
     //                 None,
     //                 None,
@@ -720,13 +768,12 @@ mod tests {
     #[test]
     fn should_preserve_metric_name_when_label_replace_writes_name_label() {
         let func = resolve_function("label_replace").unwrap();
-        let raw_args = box_exprs(label_replace_raw_args(
-            "__name__", "rate_$1", "__name__", "(.+)",
-        ));
-        let ctx = FunctionCallContext {
-            eval_timestamp_ms: 1000,
-            raw_args: &raw_args,
+
+        let ctx = EvalContext {
+            evaluation_ts: 1000,
+            ..Default::default()
         };
+
         let mut sample =
             create_sample_with_labels(1.0, &[(METRIC_NAME, "metric_total"), ("env", "1")]);
         sample.drop_name = true;
@@ -735,10 +782,10 @@ mod tests {
             .apply_call(
                 vec![
                     PromQLArg::InstantVector(vec![sample]),
-                    "".into(),
-                    "".into(),
-                    "".into(),
-                    "".into(),
+                    "__name__".into(),
+                    "rate_$1".into(),
+                    "__name__".into(),
+                    "(.+)".into(),
                 ],
                 &ctx,
             )
@@ -1270,109 +1317,120 @@ mod tests {
 
     #[test]
     fn should_apply_sum_over_time_function() {
-        // given
+        // sum_over_time(metric[3s]) at t=3s: window (0, 3000] includes all 3 samples → sum=6
         let samples = vec![create_eval_samples(
             vec![(1000, 1.0), (2000, 2.0), (3000, 3.0)],
             Labels::default(),
         )];
-
-        // when
-        let result = call_range_function("sum_over_time", samples, 2000);
-
-        // then
+        let func = get_range_function("sum_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 3000, Duration::from_millis(3000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 6.0); // 1 + 2 + 3
     }
 
     #[test]
     fn should_apply_avg_over_time_function() {
-        // given
+        // avg_over_time(metric[3s]) at t=3s: window (0, 3000] → avg = (10+20+30)/3 = 20
         let samples = vec![create_eval_samples(
             vec![(1000, 10.0), (2000, 20.0), (3000, 30.0)],
             Labels::default(),
         )];
-
-        // when
-        let result = call_range_function("avg_over_time", samples, 3000);
-
-        // then
+        let func = get_range_function("avg_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 3000, Duration::from_millis(3000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 20.0); // (10 + 20 + 30) / 3
     }
 
     #[test]
     fn should_apply_min_over_time_function() {
-        // given
+        // min_over_time(metric[3s]) at t=3s: window (0, 3000] → min = 5
         let samples = vec![create_eval_samples(
             vec![(1000, 10.0), (2000, 5.0), (3000, 30.0)],
             Labels::default(),
         )];
-
-        // when
-        let result = call_range_function("min_over_time", samples, 3000);
-
-        // then
+        let func = get_range_function("min_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 3000, Duration::from_millis(3000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 5.0);
     }
 
     #[test]
     fn should_apply_max_over_time_function() {
-        // given
+        // max_over_time(metric[3s]) at t=3s: window (0, 3000] → max = 50
         let samples = vec![create_eval_samples(
             vec![(1000, 10.0), (2000, 50.0), (3000, 30.0)],
             Labels::default(),
         )];
-
-        // when
-        let result = call_range_function("max_over_time", samples, 3000);
-
-        // then
+        let func = get_range_function("max_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 3000, Duration::from_millis(3000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 50.0);
     }
 
     #[test]
     fn should_apply_count_over_time_function() {
-        // given
+        // count_over_time(metric[4s]) at t=4s: window (0, 4000] → count = 4
         let samples = vec![create_eval_samples(
             vec![(1000, 10.0), (2000, 20.0), (3000, 30.0), (4000, 40.0)],
             Labels::default(),
         )];
-
-        // when
-        let result = call_range_function("count_over_time", samples, 4000);
-
-        // then
+        let func = get_range_function("count_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 4000, Duration::from_millis(4000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 4.0);
     }
 
     #[test]
     fn should_apply_stddev_over_time_function() {
-        // given
-
         // Values: [10, 20, 30, 40]
-        // Mean: 25
-        // Variance: ((10-25)^2 + (20-25)^2 + (30-25)^2 + (40-25)^2) / 4 = (225 + 25 + 25 + 225) / 4 = 125
-        // Stddev: sqrt(125) ≈ 11.180339887498949
+        // Mean: 25; Variance: ((10-25)²+(20-25)²+(30-25)²+(40-25)²)/4 = 125; Stddev ≈ 11.18
+        // window (0, 4000] includes all 4 samples
         let samples = vec![create_eval_samples(
             vec![(1000, 10.0), (2000, 20.0), (3000, 30.0), (4000, 40.0)],
             Labels::default(),
         )];
-
-        // when
-        let result = call_range_function("stddev_over_time", samples, 4000);
-
-        // then
+        let func = get_range_function("stddev_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 4000, Duration::from_millis(4000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
         assert_eq!(result.len(), 1);
         assert!((result[0].value - 11.180339887498949).abs() < 1e-10);
     }
 
     #[test]
     fn should_apply_stdvar_over_time_function() {
-        // given
+        // Values: [10, 20, 30, 40]; Variance = 125
+        let samples = vec![create_eval_samples(
+            vec![(1000, 10.0), (2000, 20.0), (3000, 30.0), (4000, 40.0)],
+            Labels::default(),
+        )];
+        let func = get_range_function("stdvar_over_time").unwrap();
+        let result = func
+            .apply_with_range(samples, 4000, Duration::from_millis(4000))
+            .unwrap()
+            .expect_instant_vector("expected instant vector result");
+        assert_eq!(result.len(), 1);
+        assert!((result[0].value - 125.0).abs() < 1e-10);
+    }
 
+    #[test]
+    fn should_return_correct_stdvar_for_multiple_values() {
         // Values: [10, 20, 30, 40]
         // Mean: 25
         // Variance: 125
@@ -1382,7 +1440,7 @@ mod tests {
         )];
 
         // when
-        let result = call_range_function("stdvar_over_time", samples, 4000);
+        let result = call_rollup_function("stdvar_over_time", samples, 4000, 1000);
 
         // then
         assert_eq!(result.len(), 1);
@@ -1395,7 +1453,7 @@ mod tests {
         let samples = vec![create_eval_samples(vec![(1000, 42.0)], Labels::default())];
 
         // when
-        let result = call_range_function("stddev_over_time", samples, 1000);
+        let result = call_rollup_function("stddev_over_time", samples, 1000, 1000);
 
         // then
         assert_eq!(result.len(), 1);
@@ -1409,7 +1467,7 @@ mod tests {
         let samples = vec![create_eval_samples(vec![], Labels::default())];
 
         // when
-        let result = call_range_function("stddev_over_time", samples, 1000);
+        let result = call_rollup_function("stddev_over_time", samples, 1000, 1000);
 
         // then
         // Empty series are skipped (Prometheus behavior)
@@ -1422,7 +1480,7 @@ mod tests {
         let samples = vec![create_eval_samples(vec![], Labels::default())];
 
         // when
-        let result = call_range_function("stdvar_over_time", samples, 1000);
+        let result = call_rollup_function("stdvar_over_time", samples, 1000, 1000);
 
         // then
         // Empty series are skipped (Prometheus behavior)
@@ -1500,15 +1558,13 @@ mod tests {
     #[test]
     fn should_handle_constant_values_in_stddev() {
         // given
-        let _func = get_range_function("stddev_over_time").unwrap();
-
         let samples = vec![create_eval_samples(
             vec![(1000, 5.0), (2000, 5.0), (3000, 5.0), (4000, 5.0)],
             Labels::default(),
         )];
 
         // when
-        let result = call_range_function("stddev_over_time", samples, 4000);
+        let result = call_rollup_function("stddev_over_time", samples, 4000, 1000);
 
         // then
         assert_eq!(result.len(), 1);
@@ -1537,7 +1593,7 @@ mod tests {
         )];
 
         // when
-        let result = call_range_function("stddev_over_time", samples, 4000);
+        let result = call_rollup_function("stddev_over_time", samples, 4000, 1000);
 
         // then
         assert_eq!(result.len(), 1);
@@ -1562,7 +1618,7 @@ mod tests {
         )];
 
         // when
-        let result = call_range_function("stddev_over_time", samples, 3000);
+        let result = call_rollup_function("stddev_over_time", samples, 3000, 1000);
 
         // then
         assert_eq!(result.len(), 1);
@@ -1581,7 +1637,7 @@ mod tests {
         )];
 
         // when
-        let result = call_range_function("stdvar_over_time", samples, 3000);
+        let result = call_rollup_function("stdvar_over_time", samples, 3000, 1000);
 
         // then
         assert_eq!(result.len(), 1);
@@ -1938,7 +1994,7 @@ mod tests {
             Labels::default(),
         )];
 
-        let result = call_range_function("max_over_time", samples, 2000);
+        let result = call_rollup_function("max_over_time", samples, 2000, 1000);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 5.0, "NaN should be replaced by 5.0");
@@ -1953,7 +2009,7 @@ mod tests {
             Labels::default(),
         )];
 
-        let result = call_range_function("min_over_time", samples, 2000);
+        let result = call_rollup_function("min_over_time", samples, 2000, 1000);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].value, 5.0, "NaN should be replaced by 5.0");
@@ -1968,7 +2024,7 @@ mod tests {
             Labels::default(),
         )];
 
-        let result = call_range_function("max_over_time", samples, 2000);
+        let result = call_rollup_function("max_over_time", samples, 2000, 1000);
 
         assert_eq!(result.len(), 1);
         assert!(
@@ -1986,7 +2042,7 @@ mod tests {
             Labels::default(),
         )];
 
-        let result = call_range_function("min_over_time", samples, 2000);
+        let result = call_rollup_function("min_over_time", samples, 2000, 1000);
 
         assert_eq!(result.len(), 1);
         assert!(
@@ -2069,12 +2125,13 @@ mod tests {
             fn min_over_time_returns_minimum(
                 values in prop::collection::vec(finite_f64(), 1..100)
             ) {
+                let last_ts = (values.len() as i64 - 1) * 1000;
                 let samples = vec![create_eval_samples(
                     values.iter().enumerate().map(|(i, &v)| ((i as i64) * 1000, v)).collect(),
                     Labels::default(),
                 )];
 
-                let result = call_range_function("min_over_time", samples, 0);
+                let result = call_rollup_function("min_over_time", samples, last_ts, 1000);
 
                 let computed_min = result[0].value;
                 let expected_min = values.iter().copied().fold(f64::INFINITY, f64::min);
@@ -2087,12 +2144,13 @@ mod tests {
             fn max_over_time_returns_maximum(
                 values in prop::collection::vec(finite_f64(), 1..100)
             ) {
+                let last_ts = (values.len() as i64 - 1) * 1000;
                 let samples = vec![create_eval_samples(
                     values.iter().enumerate().map(|(i, &v)| ((i as i64) * 1000, v)).collect(),
                     Labels::default(),
                 )];
 
-                let result = call_range_function("max_over_time", samples, 0);
+                let result = call_rollup_function("max_over_time", samples, last_ts, 1000);
 
                 let computed_max = result[0].value;
                 let expected_max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -2105,13 +2163,14 @@ mod tests {
             fn count_over_time_returns_count(
                 values in prop::collection::vec(finite_f64(), 1..100)
             ) {
+                let last_ts = (values.len() as i64 - 1) * 1000;
                 let samples = vec![create_eval_samples(
                     values.iter().enumerate().map(|(i, &v)| ((i as i64) * 1000, v)).collect(),
                     Labels::default(),
                 )];
 
 
-                let result = call_range_function("count_over_time", samples, 0);
+                let result = call_rollup_function("count_over_time", samples, last_ts, 1000);
 
                 let computed_count = result[0].value;
                 let expected_count = values.len() as f64;
@@ -2124,12 +2183,13 @@ mod tests {
             fn stddev_over_time_computes_correctly(
                 values in prop::collection::vec(finite_f64(), 2..100)
             ) {
+                let last_ts = (values.len() as i64 - 1) * 1000;
                 let eval_samples = vec![create_eval_samples(
                     values.iter().enumerate().map(|(i, &v)| ((i as i64) * 1000, v)).collect(),
                     Labels::default(),
                 )];
 
-                let result = call_range_function("stddev_over_time", eval_samples, 0);
+                let result = call_rollup_function("stddev_over_time", eval_samples, last_ts, 1000);
                 let computed_stddev = result[0].value;
 
                 // Independent two-pass algorithm (stable baseline)
@@ -2156,12 +2216,13 @@ mod tests {
             fn stdvar_over_time_computes_correctly(
                 values in prop::collection::vec(finite_f64(), 2..100)
             ) {
+                let last_ts = (values.len() as i64 - 1) * 1000;
                 let eval_samples = vec![create_eval_samples(
                     values.iter().enumerate().map(|(i, &v)| ((i as i64) * 1000, v)).collect(),
                     Labels::default(),
                 )];
 
-                let result = call_range_function("stdvar_over_time", eval_samples, 0);
+                let result = call_rollup_function("stdvar_over_time", eval_samples, last_ts, 1000);
                 let computed_variance = result[0].value;
 
                 // Independent two-pass algorithm (stable baseline)
@@ -2191,13 +2252,14 @@ mod tests {
             ) {
                 // Create values: base + delta for each delta
                 let values: Vec<f64> = small_deltas.iter().map(|&d| base + d).collect();
+                let last_ts = (values.len() as i64 - 1) * 1000;
 
                 let samples = vec![create_eval_samples(
                     values.iter().enumerate().map(|(i, &v)| ((i as i64) * 1000, v)).collect(),
                     Labels::default(),
                 )];
 
-                let result = call_range_function("stddev_over_time", samples, 0);
+                let result = call_rollup_function("stddev_over_time", samples, last_ts, 1000);
 
                 let computed_stddev = result[0].value;
 

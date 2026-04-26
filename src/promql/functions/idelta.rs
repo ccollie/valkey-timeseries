@@ -3,26 +3,20 @@ use crate::promql::functions::{PromQLArg, PromQLFunction};
 use crate::promql::{EvalResult, ExprResult};
 
 #[derive(Clone, Copy, Debug)]
-pub(in crate::promql) struct IRateFunction;
-
-impl PromQLFunction for IRateFunction {
+pub(in crate::promql) struct IDeltaFunction;
+impl PromQLFunction for IDeltaFunction {
     fn apply(&self, arg: PromQLArg, eval_timestamp_ms: i64) -> EvalResult<ExprResult> {
         let samples = arg.into_range_vector()?;
         Ok(eval_range(samples, eval_timestamp_ms, |samples| {
             if samples.len() < 2 {
                 return None;
             }
-            let a = &samples[samples.len() - 2];
-            let b = &samples[samples.len() - 1];
-            let dt = b.timestamp.saturating_sub(a.timestamp);
-            if dt <= 0 {
+            let first = &samples[0];
+            let last = &samples[samples.len() - 1];
+            if first.timestamp == last.timestamp {
                 return None;
             }
-            let mut dv = b.value - a.value;
-            if dv < 0.0 {
-                dv = b.value;
-            }
-            Some(dv / (dt as f64 / 1000f64))
+            Some(last.value - first.value)
         }))
     }
 }
