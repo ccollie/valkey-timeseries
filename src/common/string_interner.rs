@@ -689,8 +689,8 @@ pub fn saved_pct(saved: usize, held: usize) -> f64 {
 /// from the name length the header records.
 ///
 /// # Example
-/// ```ignore
-/// use valkey_timeseries::common::string_interner::InternedString;
+/// ```rust
+/// use crate::common::string_interner::InternedString;
 ///
 /// let env = InternedString::new_pair("env", "prod");
 /// assert_eq!(env, InternedString::new_pair("env", "prod"));
