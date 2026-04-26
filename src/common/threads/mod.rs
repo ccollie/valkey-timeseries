@@ -89,7 +89,7 @@ where
 ///
 /// # Example
 /// ```rust
-/// use your_crate::run_on_main_thread;
+/// use crate::common::threads::run_on_main_thread;
 ///
 /// // A simple closure to be executed on the main thread
 /// run_on_main_thread(false, || {
