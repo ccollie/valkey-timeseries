@@ -690,7 +690,7 @@ pub fn saved_pct(saved: usize, held: usize) -> f64 {
 ///
 /// # Example
 /// ```rust
-/// use valkey_timeseries::common::string_interner::InternedString;
+/// use crate::common::string_interner::InternedString;
 ///
 /// let env = InternedString::new_pair("env", "prod");
 /// assert_eq!(env, InternedString::new_pair("env", "prod"));
