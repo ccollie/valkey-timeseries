@@ -10,7 +10,7 @@ mod uncompressed;
 pub(crate) mod utils;
 mod tsxor;
 
-pub use tsxor::*;
+pub(crate) use tsxor::*;
 
 pub use chunk::*;
 pub use gorilla::*;

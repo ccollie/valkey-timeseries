@@ -21,7 +21,7 @@ use valkey_module::{RedisModuleIO, ValkeyResult};
 pub enum TimeSeriesChunk {
     Uncompressed(UncompressedChunk),
     Gorilla(GorillaChunk),
-    Tsxor(crate::series::chunks::tsxor::TsXorChunk),
+    Tsxor(TsXorChunk),
     Pco(PcoChunk),
 }
 
@@ -38,7 +38,7 @@ impl TimeSeriesChunk {
                 Gorilla(chunk)
             }
             ChunkEncoding::Tsxor => {
-                let chunk = crate::series::chunks::tsxor::TsXorChunk::with_max_size(chunk_size);
+                let chunk = TsXorChunk::with_max_size(chunk_size);
                 Tsxor(chunk)
             }
             ChunkEncoding::Pco => Pco(PcoChunk::with_max_size(chunk_size)),
@@ -137,7 +137,12 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => Box::new(chunk.iter()),
             Gorilla(chunk) => Box::new(chunk.iter()),
-            Tsxor(chunk) => Box::new(crate::series::chunks::TsXorChunkIterator::new(chunk.buf(), i64::MIN, i64::MAX)),
+            Tsxor(chunk) => Box::new(crate::series::chunks::TsXorChunkIterator::new(
+                chunk.buf(),
+                chunk.len(),
+                i64::MIN,
+                i64::MAX,
+            )),
             Pco(chunk) => Box::new(chunk.iter()),
         }
     }
@@ -147,7 +152,12 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.range_iter(start, end),
             Gorilla(chunk) => chunk.range_iter(start, end),
-            Tsxor(chunk) => SampleIter::from(crate::series::chunks::TsXorChunkIterator::new(chunk.buf(), start, end)),
+            Tsxor(chunk) => SampleIter::from(crate::series::chunks::TsXorChunkIterator::new(
+                chunk.buf(),
+                chunk.len(),
+                start,
+                end,
+            )),
             Pco(chunk) => chunk.range_iter(start, end),
         }
     }
