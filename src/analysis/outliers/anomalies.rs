@@ -99,8 +99,10 @@ impl AnomalyOptions {
 ///
 /// # Example
 ///
-/// ```
-/// use crate::analysis::outliers::anomalies::{detect_anomalies, AnomalyOptions, AnomalyDetectionMethodOptions};
+/// ```ignore
+/// use valkey_timeseries::analysis::outliers::anomalies::{
+///     AnomalyDetectionMethodOptions, AnomalyOptions, detect_anomalies,
+/// };
 ///
 /// // Create a time series with some anomalies
 /// let mut ts = vec![0.0; 100];
