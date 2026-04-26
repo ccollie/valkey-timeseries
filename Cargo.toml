@@ -64,6 +64,7 @@ proptest = "1.11.0"
 rstest = "0.26"
 serial_test = { version = "3.4", default-features = false }
 test-case = "3.3"
+valkey-module = { version = "0.1", features = ["enable-system-alloc"] }
 
 [build-dependencies]
 prost-build = "0.14"
