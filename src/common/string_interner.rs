@@ -34,8 +34,8 @@
 //!   O(1) slices, so a label needs no side structure to be split.
 //!
 //! # Example
-//! ```ignore
-//! use valkey_timeseries::common::string_interner::InternedString;
+//! ```rust
+//! use crate::common::string_interner::InternedString;
 //! let x = InternedString::new("hello");
 //! let y: InternedString = "world".into();
 //! assert_ne!(x, y);
@@ -505,8 +505,8 @@ pub struct Stats {
 /// header records at intern time.
 ///
 /// # Example
-/// ```ignore
-/// use valkey_timeseries::common::string_interner::InternedString;
+/// ```rust
+/// use crate::common::string_interner::InternedString;
 ///
 /// let x = InternedString::new("hello");
 /// let y: InternedString = "world".into();
