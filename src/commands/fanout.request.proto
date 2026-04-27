@@ -108,6 +108,12 @@ message IndexQueryRequest {
   repeated SeriesSelector filters = 2;
 }
 
+enum LabelSearchType {
+  NAME = 0;
+  VALUE = 1;
+  METRIC_NAME = 2;
+}
+
 message LabelNamesRequest {
   MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;
@@ -119,13 +125,16 @@ message LabelValuesRequest {
   repeated SeriesSelector filters = 3;
 }
 
-message LabelNameSearchRequest {
-  repeated string search_terms = 1;
-  double fuzz_threshold = 2;
-  string fuzz_alg = 3;
-  bool ignore_case = 4;
-  MetaDateRangeFilter range = 5;
-  repeated SeriesSelector filters = 6;
+message LabelSearchRequest {
+  LabelSearchType request_type = 1;
+  string label = 2;
+  repeated string search_terms = 3;
+  double fuzz_threshold = 4;
+  string fuzz_alg = 5;
+  bool ignore_case = 6;
+  bool include_metadata = 8;
+  MetaDateRangeFilter range = 9;
+  repeated SeriesSelector filters = 10;
 }
 
 message CardinalityRequest {

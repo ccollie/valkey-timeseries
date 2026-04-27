@@ -29,7 +29,10 @@ mod label_search;
 mod postings_query_tests;
 #[cfg(test)]
 mod timeseries_index_tests;
+mod label_filter;
+
 pub use label_search::*;
+pub(crate) use label_filter::*;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
