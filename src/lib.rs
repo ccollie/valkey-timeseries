@@ -177,6 +177,7 @@ valkey_module! {
         ["TS.QUERYINDEX", commands::ts_queryindex_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CARD", commands::ts_card_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELNAMES", commands::ts_labelnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
+        ["TS.LABELNAMESEARCH", commands::ts_labelnamesearch_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELVALUES", commands::ts_labelvalues_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELSTATS", commands::ts_labelstats_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CREATERULE", commands::ts_createrule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],

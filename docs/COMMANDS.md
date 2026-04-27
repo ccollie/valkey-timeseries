@@ -14,6 +14,7 @@
 - [`TS.INFO`](commands/ts.info.md)
 - [`TS.JOIN`](commands/ts.join.md)
 - [`TS.LABELNAMES`](commands/ts.labelnames.md)
+- [`TS.LABELNAMESEARCH`](commands/ts.labelnamesearch.md)
 - [`TS.LABELSTATS`](commands/ts.labelstats.md)
 - [`TS.LABELVALUES`](commands/ts.labelvalues.md)
 - [`TS.MADD`](commands/ts.madd.md)

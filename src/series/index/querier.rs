@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::postings::{KeyType, Postings};
-use super::{get_db_index, get_timeseries_index};
+use super::postings::{EMPTY_BITMAP, KeyType, Postings};
+use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
 use crate::common::context::get_current_db;
 use crate::common::hash::IntMap;
@@ -24,6 +24,7 @@ use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{SeriesGuard, SeriesRef, TimeSeries, get_timeseries};
 use blart::AsBytes;
 use orx_parallel::{IterIntoParIter, ParIter};
+use std::borrow::Cow;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub fn series_by_selectors<'a>(

@@ -119,6 +119,15 @@ message LabelValuesRequest {
   repeated SeriesSelector filters = 3;
 }
 
+message LabelNameSearchRequest {
+  repeated string search_terms = 1;
+  double fuzz_threshold = 2;
+  string fuzz_alg = 3;
+  bool ignore_case = 4;
+  MetaDateRangeFilter range = 5;
+  repeated SeriesSelector filters = 6;
+}
+
 message CardinalityRequest {
   MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;

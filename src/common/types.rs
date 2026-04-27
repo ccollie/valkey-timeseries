@@ -93,3 +93,37 @@ impl From<&Sample> for ValkeyValue {
         ValkeyValue::from(row)
     }
 }
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SortDir {
+    Asc,
+    Desc,
+}
+
+impl Display for SortDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asc => write!(f, "asc"),
+            Self::Desc => write!(f, "desc"),
+        }
+    }
+}
+
+impl Default for SortDir {
+    fn default() -> Self {
+        SortDir::Asc
+    }
+}
+
+impl TryFrom<&str> for SortDir {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.len() {
+            3 if value.eq_ignore_ascii_case("asc") => Ok(Self::Asc),
+            4 if value.eq_ignore_ascii_case("desc") => Ok(Self::Desc),
+            _ => Err(format!("invalid sort direction: {value}")),
+        }
+    }
+}

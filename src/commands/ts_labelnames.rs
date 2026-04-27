@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
-/// TS.LABELNAMES [FILTER_BY_RANGE fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
+/// TS.LABELNAMES [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
 pub fn ts_labelnames_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, true)?;
