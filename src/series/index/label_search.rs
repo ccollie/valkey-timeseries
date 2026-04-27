@@ -11,34 +11,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{get_timeseries_index, series_by_selectors};
+use super::{get_timeseries_index, FuzzyFilter, IndexKey, PostingsBitmap, SimilarityFilter};
 use crate::common::logging::log_warning;
-use crate::common::strings::JaroWinklerMatcher;
-use crate::common::strings::SubsequenceMatcher;
 use crate::labels::filters::SeriesSelector;
-use std::collections::BTreeSet;
+use crate::series::index::key_buffer::KeyBuffer;
+use crate::series::index::postings::Postings;
+use std::borrow::Cow;
 use std::fmt::Display;
-use thiserror::Error;
 use valkey_module::{Context, ValkeyError};
 
-// The errors exposed.
-#[derive(Error, Debug, PartialEq)]
-pub enum StorageError {
-    #[error("not found")]
-    NotFound,
-
-    #[error("out of order sample")]
-    OutOfOrderSample,
-
-    #[error("out of bounds")]
-    OutOfBounds,
-
-    #[error("too old sample")]
-    TooOldSample,
-
-    #[error("start timestamp out of order, ignoring")]
-    OutOfOrderST,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SortBy {
@@ -73,6 +54,18 @@ impl TryFrom<&str> for SortBy {
     }
 }
 
+/// Ordering is a closed set of result orderings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchResultOrdering {
+    /// Orders results ascending by Value.
+    #[default]
+    OrderByValueAsc,
+    /// Orders results descending by Value.
+    OrderByValueDesc,
+    /// Orders results descending by Score, breaking ties ascending by Value.
+    OrderByScoreDesc,
+}
+
 pub struct LabelHints {
     pub start: i64,
     pub end: i64,
@@ -96,151 +89,13 @@ pub struct SelectHints {
     pub case_insensitive: bool,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum FuzzyAlgorithm {
-    #[default]
-    JaroWinkler,
-    Subsequence,
-}
-
-impl TryFrom<&str> for FuzzyAlgorithm {
-    type Error = String;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_lowercase().as_str() {
-            "jarowinkler" => Ok(FuzzyAlgorithm::JaroWinkler),
-            "subsequence" => Ok(FuzzyAlgorithm::Subsequence),
-            _ => Err(format!("Unknown fuzzy algorithm: {}", value)),
-        }
-    }
-}
-
-impl Display for FuzzyAlgorithm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FuzzyAlgorithm::JaroWinkler => write!(f, "jarowinkler"),
-            FuzzyAlgorithm::Subsequence => write!(f, "subsequence"),
-        }
-    }
-}
-
-/// Filter determines whether a value should be included in results.
-pub trait Filter {
-    /// Returns (accepted, score) where score is used for relevance ranking.
-    /// Score should be in range [0.0, 1.0] where 1.0 is perfect match.
-    fn accept(&self, value: &str) -> (bool, f64);
-}
-
-pub struct NoOpSearchFilter;
-
-impl Filter for NoOpSearchFilter {
-    fn accept(&self, _value: &str) -> (bool, f64) {
-        (true, 1.0)
-    }
-}
-
-pub enum SimilarityMatcher {
-    JaroWinkler(JaroWinklerMatcher),
-    Subsequence(SubsequenceMatcher),
-}
-
-impl SimilarityMatcher {
-    pub fn new(pattern: &str, algorithm: FuzzyAlgorithm) -> Self {
-        match algorithm {
-            FuzzyAlgorithm::JaroWinkler => {
-                SimilarityMatcher::JaroWinkler(JaroWinklerMatcher::new(pattern.to_string()))
-            }
-            FuzzyAlgorithm::Subsequence => {
-                SimilarityMatcher::Subsequence(SubsequenceMatcher::new(pattern))
-            }
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            SimilarityMatcher::JaroWinkler(_) => "jarowinkler",
-            SimilarityMatcher::Subsequence(_) => "subsequence",
-        }
-    }
-
-    pub fn algorithm(&self) -> FuzzyAlgorithm {
-        match self {
-            SimilarityMatcher::JaroWinkler(_) => FuzzyAlgorithm::JaroWinkler,
-            SimilarityMatcher::Subsequence(_) => FuzzyAlgorithm::Subsequence,
-        }
-    }
-
-    pub fn score(&self, value: &str) -> f64 {
-        match self {
-            SimilarityMatcher::JaroWinkler(m) => m.score(value),
-            SimilarityMatcher::Subsequence(m) => m.score(value),
-        }
-    }
-}
-
-pub struct SimilarityFilter {
-    matcher: SimilarityMatcher,
-    threshold: f64,
-    case_sensitive: bool,
-}
-
-impl SimilarityFilter {
-    pub fn new(pattern: &str, algorithm: FuzzyAlgorithm, threshold: f64) -> Self {
-        Self::new_with_case_sensitivity(pattern, algorithm, threshold, true)
-    }
-
-    pub fn new_with_case_sensitivity(
-        pattern: &str,
-        algorithm: FuzzyAlgorithm,
-        threshold: f64,
-        case_sensitive: bool,
-    ) -> Self {
-        let normalized_pattern = if case_sensitive {
-            pattern.to_string()
-        } else {
-            pattern.to_lowercase()
-        };
-
-        Self {
-            matcher: SimilarityMatcher::new(&normalized_pattern, algorithm),
-            threshold,
-            case_sensitive,
-        }
-    }
-}
-
-impl Filter for SimilarityFilter {
-    fn accept(&self, value: &str) -> (bool, f64) {
-        let normalized_value;
-        let candidate = if self.case_sensitive {
-            value
-        } else {
-            normalized_value = value.to_lowercase();
-            &normalized_value
-        };
-
-        let score = self.matcher.score(candidate);
-        (score >= self.threshold, score)
-    }
-}
-
-/// Ordering is a closed set of result orderings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SearchResultOrdering {
-    /// Orders results ascending by Value.
-    #[default]
-    OrderByValueAsc,
-    /// Orders results descending by Value.
-    OrderByValueDesc,
-    /// Orders results descending by Score, breaking ties ascending by Value.
-    OrderByScoreDesc,
-}
 
 pub const SEARCH_RESULT_DEFAULT_LIMIT: usize = 100;
 
 /// SearchHints configures search operations with filtering and scoring.
 pub struct SearchHints<'a> {
     /// Filter determines which values to include and their relevance scores.
-    pub filter: Option<Box<dyn Filter + 'a>>,
+    pub filter: Option<Box<dyn FuzzyFilter + 'a>>,
 
     /// Maximum number of results to return.
     pub limit: usize,
@@ -294,48 +149,13 @@ pub trait LabelSearcher {
     ) -> impl Iterator<Item=SearchResult>;
 }
 
-// apply_search_hints filters, sorts, and limits a slice of string values according to hints,
-// returning scored SearchResult entries. A None hints value is treated as the zero value.
-// The input values slice is assumed to be ordered ascending by value; the function only
-// performs extra work for orderings that differ from this.
-pub(super) fn apply_search_hints(
-    values: Vec<String>,
-    hints: Option<&SearchHints>,
-) -> Vec<SearchResult> {
-    let default_hints = SearchHints::default();
-    let hints = hints.unwrap_or(&default_hints);
-    let no_op = NoOpSearchFilter;
-    let filter: &dyn Filter = hints.filter.as_deref().unwrap_or(&no_op);
-
-    let mut results = Vec::with_capacity(values.len());
-    for v in values {
-        let (accepted, score) = filter.accept(&v);
-        if accepted {
-            results.push(SearchResult { value: v, score })
-        }
-    }
-    match hints.order_by {
-        SearchResultOrdering::OrderByValueAsc => {
-            /* No additional work needed; input is already in the correct order. */
-        }
-        SearchResultOrdering::OrderByValueDesc => results.reverse(),
-        SearchResultOrdering::OrderByScoreDesc => results.sort_by(compare_search_results(
-            SearchResultOrdering::OrderByScoreDesc,
-        )),
-    }
-    if hints.limit > 0 && results.len() > hints.limit {
-        results.truncate(hints.limit);
-    }
-    results
-}
-
 /// `compare_search_results` returns the total-order comparison function for the
 /// given Ordering. For `OrderByValueAsc` and `OrderByValueDesc` the order is on
 /// value alone. For `OrderByScoreDesc` the order is (score desc, value asc),
 /// which is a total order and defines the position at which a duplicate value
 /// is first emitted by the streaming merge.
 fn compare_search_results(
-    o: SearchResultOrdering,
+    order: SearchResultOrdering,
 ) -> impl Fn(&SearchResult, &SearchResult) -> std::cmp::Ordering {
     fn value_asc(a: &SearchResult, b: &SearchResult) -> std::cmp::Ordering {
         a.value.cmp(&b.value)
@@ -367,51 +187,110 @@ fn compare_search_results(
         }
     }
 
-    match o {
+    match order {
         SearchResultOrdering::OrderByValueDesc => value_desc,
         SearchResultOrdering::OrderByScoreDesc => score_desc,
         SearchResultOrdering::OrderByValueAsc => value_asc,
     }
 }
 
-#[derive(Default)]
-pub struct BaseLabelQuerier {
-    threshold: f64,
-    algorithm: FuzzyAlgorithm,
+/// `merge_search_results` returns the total-order comparison function for merging two SearchResult streams ordered by
+/// the same
+pub(crate) fn merge_search_results(
+    a: impl Iterator<Item=SearchResult>,
+    b: impl Iterator<Item=SearchResult>,
+    ordering: SearchResultOrdering,
+) -> impl Iterator<Item=SearchResult> {
+    use itertools::Itertools;
+    use itertools::EitherOrBoth::{Both, Left, Right};
+
+    let comparator = compare_search_results(ordering);
+
+    a.merge_join_by(b, comparator).map(|either| match either {
+        Both(a, _) => a,
+        Left(a) => a,
+        Right(b) => b,
+    })
 }
 
-impl BaseLabelQuerier {
-    pub fn new() -> Self {
-        Self {
-            threshold: 0.0,
-            algorithm: FuzzyAlgorithm::JaroWinkler,
+#[derive(Clone, Copy)]
+enum LabelFilterType {
+    Name,
+    Value,
+}
+
+#[derive(Default)]
+pub struct LabelQuerier {
+    filter: SimilarityFilter,
+}
+
+impl LabelQuerier {
+    pub fn new(filter: SimilarityFilter) -> Self {
+        Self { filter }
+    }
+
+    fn handle_filter_internal(&self, filter_type: LabelFilterType, index_key: &IndexKey, map: &PostingsBitmap, series_ids: Option<&PostingsBitmap>) -> Option<SearchResult> {
+        if map.is_empty() {
+            return None;
+        }
+        if let Some(series_ids) = series_ids && !map.intersect(series_ids) {
+            return None;
+        }
+        let Some((key, value)) = index_key.split() else {
+            return None;
+        };
+        let target = match filter_type {
+            LabelFilterType::Name => key,
+            LabelFilterType::Value => value,
+        };
+        let (accepted, score) = self.filter.accept(target);
+        if accepted {
+            Some(SearchResult { value: target.to_string(), score })
+        } else {
+            None
         }
     }
 
-    fn collect_label_names(&self, ctx: &Context, selectors: &[SeriesSelector]) -> Vec<String> {
+    fn get_filtered_label_values(
+        &self,
+        postings: &Postings,
+        label_name: &str,
+        series_ids: Option<&PostingsBitmap>) -> Vec<SearchResult> {
+        let prefix = KeyBuffer::for_prefix(label_name);
+        postings.label_index.prefix(prefix.as_bytes())
+            .filter_map(|(k, map)| {
+                self.handle_filter_internal(LabelFilterType::Value, k, map, series_ids)
+            }).collect()
+    }
+
+    pub(super) fn get_filtered_label_names(&self, postings: &Postings, series_ids: Option<&PostingsBitmap>) -> Vec<SearchResult> {
+        postings.label_index.iter()
+            .filter_map(|(k, map)| {
+                self.handle_filter_internal(LabelFilterType::Value, k, map, series_ids)
+            }).collect()
+    }
+
+    fn get_series_postings_for_selectors<'a>(&self, postings: &'a Postings, selectors: &[SeriesSelector]) -> Option<Cow<'a, PostingsBitmap>> {
         if selectors.is_empty() {
-            let index = get_timeseries_index(ctx);
-            let mut state = ();
-            return index.with_postings(&mut state, |postings, _| {
-                postings.get_label_names().into_iter().collect::<Vec<_>>()
-            });
+            return None;
         }
 
-        match series_by_selectors(ctx, selectors, None) {
-            Ok(series) => {
-                let mut out = BTreeSet::new();
-                for (guard, _) in series {
-                    for label in guard.as_ref().labels.iter() {
-                        out.insert(label.name.to_string());
-                    }
-                }
-                out.into_iter().collect()
-            }
+        // todo: propagate the error instead of silently returning no results on failure, which could be caused by malformed selectors or other issues.
+        match postings.postings_for_selectors(selectors) {
+            Ok(series_refs) => Some(series_refs),
             Err(err) => {
-                log_warning(format!("failed to collect label names for search: {err}"));
-                Vec::new()
+                log_warning(format!("failed to get series postings for selectors: {err}"));
+                None
             }
         }
+    }
+
+    fn collect_label_names(&self, ctx: &Context, selectors: &[SeriesSelector]) -> Vec<SearchResult> {
+        let index = get_timeseries_index(ctx);
+        let postings = index.get_postings();
+
+        let series_postings = self.get_series_postings_for_selectors(&postings, selectors);
+        self.get_filtered_label_names(&postings, series_postings.as_ref().map(|p| p.as_ref()))
     }
 
     fn collect_label_values(
@@ -419,38 +298,39 @@ impl BaseLabelQuerier {
         ctx: &Context,
         name: &str,
         selectors: &[SeriesSelector],
-    ) -> Vec<String> {
+    ) -> Vec<SearchResult> {
         if name.is_empty() {
             return Vec::new();
         }
+        let index = get_timeseries_index(ctx);
+        let postings = index.get_postings();
+        let series_postings = self.get_series_postings_for_selectors(&postings, selectors);
+        self.get_filtered_label_values(&postings, name, series_postings.as_ref().map(|p| p.as_ref()))
+    }
 
-        if selectors.is_empty() {
-            let index = get_timeseries_index(ctx);
-            let mut state = ();
-            return index.with_postings(&mut state, |postings, _| postings.get_label_values(name));
+    // apply_search_hints filters, sorts, and limits a slice of values according to hints,
+    // returning scored SearchResult entries. A None hints value is treated as the zero value.
+    // The input values slice is assumed to be ordered ascending by value; the function only
+    // performs extra work for orderings that differ from this.
+    fn apply_search_hints(mut values: Vec<SearchResult>, hints: Option<&SearchHints>) -> Vec<SearchResult> {
+        let mut limit: usize = 0;
+
+        if let Some(hints) = hints {
+            if hints.order_by != SearchResultOrdering::OrderByValueAsc {
+                let comparator = compare_search_results(hints.order_by);
+                values.sort_by(comparator);
+            }
+            limit = hints.limit;
         }
 
-        match series_by_selectors(ctx, selectors, None) {
-            Ok(series) => {
-                let mut out = BTreeSet::new();
-                for (guard, _) in series {
-                    if let Some(label) = guard.as_ref().get_label(name) {
-                        out.insert(label.value.into());
-                    }
-                }
-                out.into_iter().collect()
-            }
-            Err(err) => {
-                log_warning(format!(
-                    "failed to collect label values for '{name}': {err}"
-                ));
-                Vec::new()
-            }
+        if limit > 0 && values.len() > limit {
+            values.truncate(limit);
         }
+        values
     }
 }
 
-impl LabelSearcher for BaseLabelQuerier {
+impl LabelSearcher for LabelQuerier {
     fn search_label_names(
         &self,
         ctx: &Context,
@@ -458,7 +338,7 @@ impl LabelSearcher for BaseLabelQuerier {
         selectors: &[SeriesSelector],
     ) -> impl Iterator<Item=SearchResult> {
         let values = self.collect_label_names(ctx, selectors);
-        apply_search_hints(values, Some(hints)).into_iter()
+        Self::apply_search_hints(values, Some(hints)).into_iter()
     }
 
     fn search_label_values(
@@ -469,13 +349,14 @@ impl LabelSearcher for BaseLabelQuerier {
         selectors: &[SeriesSelector],
     ) -> impl Iterator<Item=SearchResult> {
         let values = self.collect_label_values(ctx, name, selectors);
-        apply_search_hints(values, Some(hints)).into_iter()
+        Self::apply_search_hints(values, Some(hints)).into_iter()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Filter, FuzzyAlgorithm, SimilarityFilter};
+    use super::FuzzyFilter;
+    use crate::series::index::{FuzzyAlgorithm, SimilarityFilter};
 
     #[test]
     fn similarity_filter_defaults_to_case_sensitive() {

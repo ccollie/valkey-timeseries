@@ -86,8 +86,13 @@ message LabelNamesResponse {
   repeated string names = 1;
 }
 
-message LabelNameSearchResponse {
-  repeated string names = 1;
+message LabelSearchResult {
+  string value = 1;
+  double score = 2;
+}
+
+message LabelSearchResponse {
+  repeated LabelSearchResult results = 1;
 }
 
 message CardinalityResponse {

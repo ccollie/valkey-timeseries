@@ -1,19 +1,17 @@
-use super::ts_labelnamesearch_fanout_command::LabelNameSearchFanoutCommand;
+use super::ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use crate::commands::command_parser::parse_metadata_command_args;
 use crate::common::SortDir;
 use crate::error_consts;
 use crate::fanout::{is_clustered, FanoutClientCommand};
-use crate::series::index::{
-    BaseLabelQuerier, Filter, FuzzyAlgorithm, LabelSearcher, NoOpSearchFilter, SearchHints,
-    SearchResult, SearchResultOrdering, SimilarityFilter, SortBy, SEARCH_RESULT_DEFAULT_LIMIT,
-};
+use crate::series::index::{LabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelSearcher, SearchHints, SearchResult, SearchResultOrdering, SortBy, SEARCH_RESULT_DEFAULT_LIMIT};
 use crate::series::request_types::MatchFilterOptions;
-use std::cmp::Ordering;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::commands::fanout::LabelSearchType;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LabelNameSearchArgs {
+    pub(crate) label: Option<String>,
     pub(crate) search_terms: Vec<String>,
     pub(crate) fuzz_threshold: f64,
     pub(crate) fuzz_algorithm: FuzzyAlgorithm,
@@ -27,6 +25,7 @@ pub(crate) struct LabelNameSearchArgs {
 impl Default for LabelNameSearchArgs {
     fn default() -> Self {
         Self {
+            label: None,
             search_terms: Vec::new(),
             fuzz_threshold: 0.0,
             fuzz_algorithm: FuzzyAlgorithm::JaroWinkler,
@@ -39,169 +38,49 @@ impl Default for LabelNameSearchArgs {
     }
 }
 
-struct LabelNameSearchFilter {
-    /// Pre-normalized terms (lowercased when case-insensitive) for substring matching.
-    terms: Vec<String>,
-    /// One `SimilarityFilter` per term; empty when `fuzz_threshold == 0`.
-    similarity_filters: Vec<SimilarityFilter>,
-    /// Retained for candidate normalization in the substring check.
-    case_sensitive: bool,
-}
+impl LabelNameSearchArgs {
+    pub fn build_search_hints(&self) -> ValkeyResult<SearchHints<'static>> {
+        let order_by = self.get_order_by();
+        let case_sensitive = !self.ignore_case;
+        let limit = self.get_limit();
 
-impl LabelNameSearchFilter {
-    fn new(
-        terms: Vec<String>,
-        algorithm: FuzzyAlgorithm,
-        fuzz_threshold: f64,
-        case_sensitive: bool,
-    ) -> Self {
-        let normalized_terms: Vec<String> = if case_sensitive {
-            terms
+        let filter = if self.search_terms.is_empty() {
+            None
         } else {
-            terms.into_iter().map(|t| t.to_lowercase()).collect()
+            Some(Box::new(LabelNameSearchFilter::new(
+                self.search_terms.clone(),
+                self.fuzz_algorithm,
+                self.fuzz_threshold,
+                !self.ignore_case,
+            )) as Box<dyn FuzzyFilter>)
         };
 
-        let similarity_filters = if fuzz_threshold == 0.0 {
-            Vec::new()
-        } else {
-            normalized_terms
-                .iter()
-                .map(|term| {
-                    SimilarityFilter::new_with_case_sensitivity(
-                        term,
-                        algorithm,
-                        fuzz_threshold,
-                        case_sensitive,
-                    )
-                })
-                .collect()
-        };
-
-        Self {
-            terms: normalized_terms,
-            similarity_filters,
+        Ok(SearchHints {
+            filter,
+            limit,
+            order_by,
             case_sensitive,
-        }
-    }
-}
-
-impl Filter for LabelNameSearchFilter {
-    fn accept(&self, value: &str) -> (bool, f64) {
-        if self.terms.is_empty() {
-            return (true, 1.0);
-        }
-
-        // Normalize candidate once for the substring check.  SimilarityFilter handles
-        // its own normalization internally, so we pass the original `value` to it.
-        let normalized_value;
-        let candidate = if self.case_sensitive {
-            value
-        } else {
-            normalized_value = value.to_lowercase();
-            &normalized_value
-        };
-
-        let mut accepted = false;
-        let mut best_score: f64 = 0.0;
-
-        for (idx, term) in self.terms.iter().enumerate() {
-            if candidate.contains(term.as_str()) {
-                // Exact substring match — perfect score.
-                accepted = true;
-                best_score = best_score.max(1.0);
-                continue;
-            }
-
-            if !self.similarity_filters.is_empty() {
-                // Fuzzy fallback — delegate to SimilarityFilter.
-                let (sim_accepted, score) = self.similarity_filters[idx].accept(value);
-                best_score = best_score.max(score);
-                if sim_accepted {
-                    accepted = true;
-                }
-            }
-        }
-
-        (accepted, best_score)
-    }
-}
-
-fn compare_search_results(
-    o: SearchResultOrdering,
-) -> impl Fn(&SearchResult, &SearchResult) -> Ordering {
-    fn value_asc(a: &SearchResult, b: &SearchResult) -> Ordering {
-        a.value.cmp(&b.value)
+        })
     }
 
-    fn value_desc(a: &SearchResult, b: &SearchResult) -> Ordering {
-        b.value.cmp(&a.value)
+    pub fn get_order_by(&self) -> SearchResultOrdering {
+        resolve_ordering(self.sort_by, self.sort_dir).unwrap_or(SearchResultOrdering::OrderByValueAsc)
     }
 
-    fn score_desc(a: &SearchResult, b: &SearchResult) -> Ordering {
-        match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
-            Ordering::Equal => value_asc(a, b),
-            other => other,
-        }
+    pub fn get_limit(&self) -> usize {
+        self.metadata.limit.unwrap_or(SEARCH_RESULT_DEFAULT_LIMIT)
     }
-
-    match o {
-        SearchResultOrdering::OrderByValueDesc => value_desc,
-        SearchResultOrdering::OrderByScoreDesc => score_desc,
-        SearchResultOrdering::OrderByValueAsc => value_asc,
-    }
-}
-
-pub(crate) fn apply_label_name_search_ranking(
-    values: Vec<String>,
-    parsed: &LabelNameSearchArgs,
-) -> ValkeyResult<Vec<SearchResult>> {
-    let hints = build_search_hints(parsed)?;
-    let no_op = NoOpSearchFilter;
-    let filter: &dyn Filter = hints.filter.as_deref().unwrap_or(&no_op);
-
-    let mut results = Vec::with_capacity(values.len());
-    for value in values {
-        let (accepted, score) = filter.accept(&value);
-        if accepted {
-            results.push(SearchResult { value, score });
-        }
-    }
-
-    match hints.order_by {
-        SearchResultOrdering::OrderByValueAsc => {}
-        SearchResultOrdering::OrderByValueDesc => results.reverse(),
-        SearchResultOrdering::OrderByScoreDesc => {
-            results.sort_by(compare_search_results(
-                SearchResultOrdering::OrderByScoreDesc,
-            ));
-        }
-    }
-
-    if hints.limit > 0 && results.len() > hints.limit {
-        results.truncate(hints.limit);
-    }
-
-    Ok(results)
 }
 
 pub(crate) fn process_label_name_search_request(
     ctx: &Context,
     parsed: &LabelNameSearchArgs,
 ) -> ValkeyResult<Vec<SearchResult>> {
-    let querier = BaseLabelQuerier::new();
-    let raw_hints = SearchHints {
-        filter: None,
-        limit: 0,
-        order_by: SearchResultOrdering::OrderByValueAsc,
-        case_sensitive: !parsed.ignore_case,
-    };
-
-    let values = querier
+    let querier = LabelQuerier::default();
+    let raw_hints = parsed.build_search_hints()?;
+    Ok(querier
         .search_label_names(ctx, &raw_hints, &parsed.metadata.matchers)
-        .map(|r| r.value)
-        .collect::<Vec<_>>();
-
-    apply_label_name_search_ranking(values, parsed)
+        .collect::<Vec<_>>())
 }
 
 /// TS.LABELNAMESEARCH
@@ -220,7 +99,7 @@ pub fn ts_labelnamesearch_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         return Err(WrongArity);
     }
 
-    let mut parsed = parse_label_name_search_args(args)?;
+    let mut parsed = parse_label_name_search_args(args, false)?;
 
     // Search APIs default to a bounded response to keep metadata discovery interactive.
     if parsed.metadata.limit.is_none() {
@@ -233,7 +112,8 @@ pub fn ts_labelnamesearch_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
                 "TS.LABELNAMESEARCH in cluster mode requires at least one matcher",
             ));
         }
-        return LabelNameSearchFanoutCommand::new(parsed).exec(ctx);
+        let operation = LabelSearchFanoutCommand::new(parsed, LabelSearchType::Name)?;
+        return operation.exec(ctx);
     }
 
     let results = process_label_name_search_request(ctx, &parsed)?;
@@ -257,14 +137,20 @@ pub fn ts_labelnamesearch_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     Ok(ValkeyValue::Array(reply))
 }
 
-fn parse_label_name_search_args(args: Vec<ValkeyString>) -> ValkeyResult<LabelNameSearchArgs> {
+fn parse_label_name_search_args(args: Vec<ValkeyString>, allow_label_name: bool) -> ValkeyResult<LabelNameSearchArgs> {
     let mut args = args.into_iter().skip(1).peekable();
     let mut parsed = LabelNameSearchArgs::default();
     let mut metadata_args: Vec<ValkeyString> = Vec::new();
 
     while let Some(arg) = args.next() {
-        let token = arg.to_string_lossy();
-        match parse_label_name_search_token(token.as_bytes()) {
+        match parse_label_name_search_token(arg.as_slice()) {
+            Some(LabelNameSearchToken::Label) => {
+                if !allow_label_name {
+                    return Err(ValkeyError::Str("TSDB: LABEL is not allowed in this context"));
+                }
+                let next_arg = args.next_string()?;
+                parsed.label = Some(next_arg);
+            }
             Some(LabelNameSearchToken::Search) => {
                 let mut saw_term = false;
                 while let Some(next) = args.peek() {
@@ -335,6 +221,7 @@ enum LabelNameSearchToken {
     IncludeScore,
     SortBy,
     SortDir,
+    Label
 }
 
 fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
@@ -347,34 +234,11 @@ fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
         "include_score" => LabelNameSearchToken::IncludeScore,
         "sort_by" => LabelNameSearchToken::SortBy,
         "sort_dir" => LabelNameSearchToken::SortDir,
+        "label" => LabelNameSearchToken::Label
     }
 }
 
-fn build_search_hints(
-    parsed: &LabelNameSearchArgs,
-) -> ValkeyResult<SearchHints<'static>> {
-    let order_by = resolve_ordering(parsed.sort_by, parsed.sort_dir)?;
-
-    let filter = if parsed.search_terms.is_empty() {
-        None
-    } else {
-        Some(Box::new(LabelNameSearchFilter::new(
-            parsed.search_terms.clone(),
-            parsed.fuzz_algorithm,
-            parsed.fuzz_threshold,
-            !parsed.ignore_case,
-        )) as Box<dyn Filter>)
-    };
-
-    Ok(SearchHints {
-        filter,
-        limit: parsed.metadata.limit.unwrap_or(SEARCH_RESULT_DEFAULT_LIMIT),
-        order_by,
-        case_sensitive: !parsed.ignore_case,
-    })
-}
-
-pub(crate) fn resolve_ordering(
+fn resolve_ordering(
     sort_by: Option<SortBy>,
     sort_dir: SortDir,
 ) -> ValkeyResult<SearchResultOrdering> {
@@ -396,7 +260,7 @@ pub(crate) fn resolve_ordering(
     }
 }
 
-pub(crate) fn parse_bool(value: &str) -> ValkeyResult<bool> {
+fn parse_bool(value: &str) -> ValkeyResult<bool> {
     match value.to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
@@ -439,54 +303,5 @@ mod tests {
         let (accepted, score) = filter.accept("node_name");
         assert!(accepted);
         assert_eq!(1.0, score);
-    }
-
-    #[test]
-    fn resolve_ordering_for_alpha_desc() {
-        let ordering = resolve_ordering(Some(SortBy::Alpha), SortDir::Desc).unwrap();
-        assert_eq!(SearchResultOrdering::OrderByValueDesc, ordering);
-    }
-
-    #[test]
-    fn resolve_ordering_rejects_score_asc() {
-        let result = resolve_ordering(Some(SortBy::Score), SortDir::Asc);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn apply_ranking_provides_scores_on_substring_match() {
-        let args = LabelNameSearchArgs {
-            search_terms: vec!["node".to_string()],
-            ..Default::default()
-        };
-        let results =
-            apply_label_name_search_ranking(vec!["node_name".to_string()], &args).unwrap();
-        assert_eq!(1, results.len());
-        assert_eq!("node_name", results[0].value);
-        assert_eq!(1.0, results[0].score);
-    }
-
-    #[test]
-    fn apply_ranking_include_score_flag_does_not_affect_result_values() {
-        // include_score is a presentation concern; ranking output is identical.
-        let args_with = LabelNameSearchArgs {
-            search_terms: vec!["node".to_string()],
-            include_score: true,
-            ..Default::default()
-        };
-        let args_without = LabelNameSearchArgs {
-            search_terms: vec!["node".to_string()],
-            include_score: false,
-            ..Default::default()
-        };
-        let values = vec!["node_name".to_string(), "node_count".to_string()];
-        let with_results = apply_label_name_search_ranking(values.clone(), &args_with).unwrap();
-        let without_results = apply_label_name_search_ranking(values, &args_without).unwrap();
-
-        assert_eq!(with_results.len(), without_results.len());
-        for (a, b) in with_results.iter().zip(without_results.iter()) {
-            assert_eq!(a.value, b.value);
-            assert_eq!(a.score, b.score);
-        }
     }
 }

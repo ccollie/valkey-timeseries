@@ -1,0 +1,232 @@
+use crate::common::strings::{JaroWinklerMatcher, SubsequenceMatcher};
+use std::fmt::Display;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FuzzyAlgorithm {
+    #[default]
+    JaroWinkler,
+    Subsequence,
+    NoOp,
+}
+
+impl TryFrom<&str> for FuzzyAlgorithm {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "jarowinkler" => Ok(FuzzyAlgorithm::JaroWinkler),
+            "subsequence" => Ok(FuzzyAlgorithm::Subsequence),
+            "noop" => Ok(FuzzyAlgorithm::NoOp),
+            _ => Err(format!("Unknown fuzzy algorithm: {}", value)),
+        }
+    }
+}
+
+impl Display for FuzzyAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FuzzyAlgorithm::JaroWinkler => write!(f, "jarowinkler"),
+            FuzzyAlgorithm::Subsequence => write!(f, "subsequence"),
+            FuzzyAlgorithm::NoOp => write!(f, "noop"),
+        }
+    }
+}
+
+/// Filter determines whether a value should be included in results.
+pub trait FuzzyFilter {
+    /// Returns (accepted, score) where score is used for relevance ranking.
+    /// Score should be in range [0.0, 1.0] where 1.0 is perfect match.
+    fn accept(&self, value: &str) -> (bool, f64);
+}
+
+#[derive(Default)]
+pub struct NoOpSearchMatcher;
+
+impl FuzzyFilter for NoOpSearchMatcher {
+    fn accept(&self, _value: &str) -> (bool, f64) {
+        (true, 1.0)
+    }
+}
+
+pub enum SimilarityMatcher {
+    JaroWinkler(JaroWinklerMatcher),
+    Subsequence(SubsequenceMatcher),
+    NoOp(NoOpSearchMatcher),
+}
+
+impl Default for SimilarityMatcher {
+    fn default() -> Self {
+        SimilarityMatcher::NoOp(NoOpSearchMatcher)
+    }
+}
+
+impl SimilarityMatcher {
+    pub fn new(pattern: &str, algorithm: FuzzyAlgorithm) -> Self {
+        match algorithm {
+            FuzzyAlgorithm::JaroWinkler => {
+                SimilarityMatcher::JaroWinkler(JaroWinklerMatcher::new(pattern.to_string()))
+            }
+            FuzzyAlgorithm::Subsequence => {
+                SimilarityMatcher::Subsequence(SubsequenceMatcher::new(pattern))
+            }
+            FuzzyAlgorithm::NoOp => SimilarityMatcher::NoOp(NoOpSearchMatcher),
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            SimilarityMatcher::JaroWinkler(_) => "jarowinkler",
+            SimilarityMatcher::Subsequence(_) => "subsequence",
+            SimilarityMatcher::NoOp(_) => "noop",
+        }
+    }
+
+    pub fn algorithm(&self) -> FuzzyAlgorithm {
+        match self {
+            SimilarityMatcher::JaroWinkler(_) => FuzzyAlgorithm::JaroWinkler,
+            SimilarityMatcher::Subsequence(_) => FuzzyAlgorithm::Subsequence,
+            SimilarityMatcher::NoOp(_) => FuzzyAlgorithm::NoOp,
+        }
+    }
+
+    pub fn score(&self, value: &str) -> f64 {
+        match self {
+            SimilarityMatcher::JaroWinkler(m) => m.score(value),
+            SimilarityMatcher::Subsequence(m) => m.score(value),
+            SimilarityMatcher::NoOp(_) => 1.0,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct SimilarityFilter {
+    matcher: SimilarityMatcher,
+    threshold: f64,
+    case_sensitive: bool,
+}
+
+impl SimilarityFilter {
+    pub fn new(pattern: &str, algorithm: FuzzyAlgorithm, threshold: f64) -> Self {
+        Self::new_with_case_sensitivity(pattern, algorithm, threshold, true)
+    }
+
+    pub fn new_with_case_sensitivity(
+        pattern: &str,
+        algorithm: FuzzyAlgorithm,
+        threshold: f64,
+        case_sensitive: bool,
+    ) -> Self {
+        let normalized_pattern = if case_sensitive {
+            pattern.to_string()
+        } else {
+            pattern.to_lowercase()
+        };
+
+        Self {
+            matcher: SimilarityMatcher::new(&normalized_pattern, algorithm),
+            threshold,
+            case_sensitive,
+        }
+    }
+}
+
+impl FuzzyFilter for SimilarityFilter {
+    fn accept(&self, value: &str) -> (bool, f64) {
+        let normalized_value;
+        let candidate = if self.case_sensitive {
+            value
+        } else {
+            normalized_value = value.to_lowercase();
+            &normalized_value
+        };
+
+        let score = self.matcher.score(candidate);
+        (score >= self.threshold, score)
+    }
+}
+
+pub struct LabelNameSearchFilter {
+    /// Pre-normalized terms (lowercased when case-insensitive) for substring matching.
+    terms: Vec<String>,
+    /// One `SimilarityFilter` per term; empty when `fuzz_threshold == 0`.
+    similarity_filters: Vec<SimilarityFilter>,
+    /// Retained for candidate normalization in the substring check.
+    case_sensitive: bool,
+}
+
+impl LabelNameSearchFilter {
+    pub(crate) fn new(
+        terms: Vec<String>,
+        algorithm: FuzzyAlgorithm,
+        fuzz_threshold: f64,
+        case_sensitive: bool,
+    ) -> Self {
+        let normalized_terms: Vec<String> = if case_sensitive {
+            terms
+        } else {
+            terms.into_iter().map(|t| t.to_lowercase()).collect()
+        };
+
+        let similarity_filters = if fuzz_threshold == 0.0 {
+            Vec::new()
+        } else {
+            normalized_terms
+                .iter()
+                .map(|term| {
+                    SimilarityFilter::new_with_case_sensitivity(
+                        term,
+                        algorithm,
+                        fuzz_threshold,
+                        case_sensitive,
+                    )
+                })
+                .collect()
+        };
+
+        Self {
+            terms: normalized_terms,
+            similarity_filters,
+            case_sensitive,
+        }
+    }
+}
+
+impl FuzzyFilter for LabelNameSearchFilter {
+    fn accept(&self, value: &str) -> (bool, f64) {
+        if self.terms.is_empty() {
+            return (true, 1.0);
+        }
+
+        // Normalize the candidate once for the substring check.  SimilarityFilter handles
+        // its own normalization internally, so we pass the original `value` to it.
+        let normalized_value;
+        let candidate = if self.case_sensitive {
+            value
+        } else {
+            normalized_value = value.to_lowercase();
+            &normalized_value
+        };
+
+        let mut accepted = false;
+        let mut best_score: f64 = 0.0;
+
+        for (idx, term) in self.terms.iter().enumerate() {
+            if candidate.contains(term.as_str()) {
+                // Exact substring match — perfect score.
+                accepted = true;
+                best_score = best_score.max(1.0);
+                continue;
+            }
+
+            if !self.similarity_filters.is_empty() {
+                // Fuzzy fallback — delegate to SimilarityFilter.
+                let (sim_accepted, score) = self.similarity_filters[idx].accept(value);
+                best_score = best_score.max(score);
+                if sim_accepted {
+                    accepted = true;
+                }
+            }
+        }
+
+        (accepted, best_score)
+    }
+}
