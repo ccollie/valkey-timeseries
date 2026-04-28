@@ -1,10 +1,13 @@
 use super::fanout::generated::{LabelSearchRequest, LabelSearchResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::commands::fanout::LabelSearchResult;
-use crate::commands::label_search_utils::{process_label_search_request, LabelNameSearchArgs};
+use crate::commands::fanout::{LabelSearchResult as FanoutLabelSearchResult, LabelSearchType};
+use crate::commands::label_search_utils::{LabelNameSearchArgs, process_label_search_request};
 use crate::common::SortDir;
 use crate::fanout::{FanoutClientCommand, FanoutCommandResult, FanoutContext, NodeInfo};
-use crate::series::index::{merge_search_results, FuzzyAlgorithm, SearchResult, SearchResultOrdering};
+use crate::series::index::{
+    FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SearchResultOrdering,
+    merge_search_results,
+};
 use crate::series::request_types::MatchFilterOptions;
 use simd_json::prelude::ArrayTrait;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
@@ -14,7 +17,7 @@ pub struct LabelSearchFanoutCommand {
     pub args: LabelNameSearchArgs,
     ordering: SearchResultOrdering,
     limit: usize,
-    results: Vec<SearchResult>,
+    results: Vec<IndexLabelSearchResult>,
 }
 
 impl LabelSearchFanoutCommand {
@@ -35,7 +38,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
     type Response = LabelSearchResponse;
 
     fn name() -> &'static str {
-        "cmd:label_search"
+        "cmd:label-search"
     }
 
     fn get_local_response(
@@ -43,12 +46,16 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         req: LabelSearchRequest,
     ) -> ValkeyResult<LabelSearchResponse> {
         if req.fuzz_threshold > 1.0 {
-            return Err(ValkeyError::Str("TSDB: FUZZ_THRESHOLD must be in [0.0..1.0]"));
+            return Err(ValkeyError::Str(
+                "TSDB: FUZZ_THRESHOLD must be in [0.0..1.0]",
+            ));
         }
 
         let matchers = deserialize_matchers_list(Some(req.filters))?;
         let fuzz_algorithm =
-            FuzzyAlgorithm::try_from(req.fuzz_alg.as_str()).map_err(ValkeyError::String)?;
+            FuzzyAlgorithm::try_from(req.fuzz_algorithm.as_str()).map_err(ValkeyError::String)?;
+        let search_type = LabelSearchType::try_from(req.request_type)
+            .map_err(|_| ValkeyError::Str("TSDB: invalid label search request type"))?;
 
         let label = if req.label.is_empty() {
             None
@@ -57,7 +64,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         };
 
         let parsed = LabelNameSearchArgs {
-            search_type: Default::default(),
+            search_type,
             label,
             search_terms: req.search_terms,
             fuzz_threshold: req.fuzz_threshold,
@@ -67,7 +74,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             include_score: false,
             sort_by: None,
             sort_dir: SortDir::Asc,
-            metadata: MatchFilterOptions {
+            series_filter: MatchFilterOptions {
                 matchers,
                 date_range: req.range.map(Into::into),
                 // Do not apply per-node limit; coordinator applies the final limit.
@@ -75,28 +82,34 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             },
         };
 
-        process_label_search_request(ctx, &parsed)
-            .map(|results| LabelSearchResponse {
-                results: results.into_iter().map(|r| LabelSearchResult {
+        process_label_search_request(ctx, &parsed).map(|results| LabelSearchResponse {
+            results: results
+                .into_iter()
+                .map(|r| FanoutLabelSearchResult {
                     value: r.value,
                     score: r.score,
-                }).collect(),
-            })
+                })
+                .collect(),
+        })
     }
 
     fn generate_request(&self) -> LabelSearchRequest {
-        let filters = serialize_matchers_list(self.args.metadata.matchers.as_ref())
+        let filters = serialize_matchers_list(self.args.series_filter.matchers.as_ref())
             .expect("serialize matchers list");
 
-        let label = self.args.label.as_ref().map_or(String::new(), |x| x.clone());
+        let label = self
+            .args
+            .label
+            .as_ref()
+            .map_or(String::new(), |x| x.clone());
         LabelSearchRequest {
             request_type: self.args.search_type.into(),
             label,
             search_terms: self.args.search_terms.clone(),
             fuzz_threshold: self.args.fuzz_threshold,
-            fuzz_alg: self.args.fuzz_algorithm.to_string(),
+            fuzz_algorithm: self.args.fuzz_algorithm.to_string(),
             ignore_case: self.args.ignore_case,
-            range: self.args.metadata.date_range.map(Into::into),
+            range: self.args.series_filter.date_range.map(Into::into),
             filters,
             include_metadata: false,
         }
@@ -104,12 +117,10 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         // Score and filter the incoming names using the configured ranking args.
-        let scored = resp.results
-            .into_iter()
-            .map(|r| SearchResult {
-                value: r.value,
-                score: r.score,
-            });
+        let scored = resp.results.into_iter().map(|r| IndexLabelSearchResult {
+            value: r.value,
+            score: r.score,
+        });
 
         if self.results.is_empty() {
             self.results.extend(scored);

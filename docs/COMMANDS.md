@@ -20,6 +20,7 @@
 - [`TS.MADD`](commands/ts.madd.md)
 - [`TS.MDEL`](commands/ts.mdel.md)
 - [`TS.MGET`](commands/ts.mget.md)
+- [`TS.METRICNAMES`](commands/ts.metricnames.md)
 - [`TS.MRANGE`](commands/ts.mrange.md)
 - [`TS.MREVRANGE`](commands/ts.mrevrange.md)
 - [`TS.OUTLIERS`](commands/ts.outliers.md)

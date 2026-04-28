@@ -130,7 +130,7 @@ message LabelSearchRequest {
   string label = 2;
   repeated string search_terms = 3;
   double fuzz_threshold = 4;
-  string fuzz_alg = 5;
+  string fuzz_algorithm = 5;
   bool ignore_case = 6;
   bool include_metadata = 8;
   MetaDateRangeFilter range = 9;

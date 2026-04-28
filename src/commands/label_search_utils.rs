@@ -1,14 +1,20 @@
 use crate::commands::fanout::LabelSearchType;
 use crate::commands::parse_metadata_command_args;
+use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use crate::common::SortDir;
+use crate::common::threads::spawn;
 use crate::error_consts;
+use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::{
-    FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier, LabelSearcher,
-    SEARCH_RESULT_DEFAULT_LIMIT, SearchHints, SearchResult, SearchResultOrdering, SelectHints,
+    DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier,
+    LabelSearchResult, SEARCH_RESULT_DEFAULT_LIMIT, SearchHints, SearchResultOrdering, SelectHints,
     SortBy,
 };
 use crate::series::request_types::MatchFilterOptions;
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
+use valkey_module::{
+    Context, NextArg, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
+    ValkeyValue,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct LabelNameSearchArgs {
@@ -21,7 +27,7 @@ pub(crate) struct LabelNameSearchArgs {
     pub(crate) include_score: bool,
     pub(crate) sort_by: Option<SortBy>,
     pub(crate) sort_dir: SortDir,
-    pub(crate) metadata: MatchFilterOptions,
+    pub(crate) series_filter: MatchFilterOptions,
 }
 
 impl Default for LabelNameSearchArgs {
@@ -36,13 +42,15 @@ impl Default for LabelNameSearchArgs {
             include_score: false,
             sort_by: None,
             sort_dir: SortDir::Asc,
-            metadata: Default::default(),
+            series_filter: Default::default(),
         }
     }
 }
 
 impl LabelNameSearchArgs {
     pub fn build_search_hints(&self) -> ValkeyResult<SearchHints<'static>> {
+        self.validate()?;
+
         let order_by = self.get_order_by();
         let limit = self.get_limit();
 
@@ -65,12 +73,25 @@ impl LabelNameSearchArgs {
     }
 
     pub fn get_order_by(&self) -> SearchResultOrdering {
-        resolve_ordering(self.sort_by, self.sort_dir)
-            .unwrap_or(SearchResultOrdering::OrderByValueAsc)
+        resolve_ordering(self.sort_by, self.sort_dir).unwrap_or(SearchResultOrdering::ValueAsc)
     }
 
     pub fn get_limit(&self) -> usize {
-        self.metadata.limit.unwrap_or(SEARCH_RESULT_DEFAULT_LIMIT)
+        self.series_filter
+            .limit
+            .unwrap_or(SEARCH_RESULT_DEFAULT_LIMIT)
+    }
+
+    pub fn validate(&self) -> ValkeyResult<()> {
+        if let Some(sort_by) = self.sort_by
+            && sort_by == SortBy::Score
+            && self.sort_dir == SortDir::Asc
+        {
+            return Err(ValkeyError::Str(
+                "TSDB: SORT_DIR asc is not supported for SORT_BY score",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -78,7 +99,7 @@ impl LabelNameSearchArgs {
 enum LabelNameSearchToken {
     Search,
     FuzzThreshold,
-    FuzzAlg,
+    FuzzAlgorithm,
     IgnoreCase,
     IncludeScore,
     SortBy,
@@ -91,11 +112,14 @@ fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
         value,
         "search" => LabelNameSearchToken::Search,
         "fuzz_threshold" => LabelNameSearchToken::FuzzThreshold,
-        "fuzz_alg" => LabelNameSearchToken::FuzzAlg,
+        "fuzz_alg" => LabelNameSearchToken::FuzzAlgorithm,
+        "fuzz_algo" => LabelNameSearchToken::FuzzAlgorithm,
         "ignore_case" => LabelNameSearchToken::IgnoreCase,
         "include_score" => LabelNameSearchToken::IncludeScore,
         "sort_by" => LabelNameSearchToken::SortBy,
+        "sortby" => LabelNameSearchToken::SortBy,
         "sort_dir" => LabelNameSearchToken::SortDir,
+        "sortdir" => LabelNameSearchToken::SortDir,
         "label" => LabelNameSearchToken::Label
     }
 }
@@ -106,15 +130,15 @@ fn resolve_ordering(
 ) -> ValkeyResult<SearchResultOrdering> {
     match sort_by {
         None => Ok(match sort_dir {
-            SortDir::Asc => SearchResultOrdering::OrderByValueAsc,
-            SortDir::Desc => SearchResultOrdering::OrderByValueDesc,
+            SortDir::Asc => SearchResultOrdering::ValueAsc,
+            SortDir::Desc => SearchResultOrdering::ValueDesc,
         }),
         Some(SortBy::Alpha) => Ok(match sort_dir {
-            SortDir::Asc => SearchResultOrdering::OrderByValueAsc,
-            SortDir::Desc => SearchResultOrdering::OrderByValueDesc,
+            SortDir::Asc => SearchResultOrdering::ValueAsc,
+            SortDir::Desc => SearchResultOrdering::ValueDesc,
         }),
         Some(SortBy::Score) => match sort_dir {
-            SortDir::Desc => Ok(SearchResultOrdering::OrderByScoreDesc),
+            SortDir::Desc => Ok(SearchResultOrdering::ScoreDesc),
             SortDir::Asc => Err(ValkeyError::Str(
                 "TSDB: SORT_DIR asc is not supported for SORT_BY score",
             )),
@@ -182,7 +206,7 @@ pub(super) fn parse_label_name_search_args(
                 }
                 parsed.fuzz_threshold = threshold;
             }
-            Some(LabelNameSearchToken::FuzzAlg) => {
+            Some(LabelNameSearchToken::FuzzAlgorithm) => {
                 let value = args.next_str()?;
                 parsed.fuzz_algorithm =
                     FuzzyAlgorithm::try_from(value).map_err(ValkeyError::String)?;
@@ -211,9 +235,13 @@ pub(super) fn parse_label_name_search_args(
         }
     }
 
-    let mut metadata_it = metadata_args.into_iter().skip(0).peekable();
-    parsed.metadata = parse_metadata_command_args(&mut metadata_it, false)?;
+    parsed.series_filter = parse_metadata_command_args(&mut args, false)?;
     parsed.search_type = search_type;
+
+    // Search APIs default to a bounded response to keep metadata discovery interactive.
+    if parsed.series_filter.limit.is_none() {
+        parsed.series_filter.limit = Some(SEARCH_RESULT_DEFAULT_LIMIT);
+    }
 
     Ok(parsed)
 }
@@ -221,27 +249,110 @@ pub(super) fn parse_label_name_search_args(
 pub(crate) fn process_label_search_request(
     ctx: &Context,
     parsed: &LabelNameSearchArgs,
-) -> ValkeyResult<Vec<SearchResult>> {
-    let querier = LabelQuerier::default();
+) -> ValkeyResult<Vec<LabelSearchResult>> {
+    let querier = DefaultLabelQuerier;
     let raw_hints = parsed.build_search_hints()?;
-    let select_hints = if parsed.metadata.matchers.is_empty() && parsed.metadata.date_range.is_none() {
-        None
-    } else {
-        Some(SelectHints::new(
-            parsed.metadata.matchers.clone(),
-            parsed.metadata.date_range,
-        ))
-    };
+    let select_hints =
+        if parsed.series_filter.matchers.is_empty() && parsed.series_filter.date_range.is_none() {
+            None
+        } else {
+            Some(SelectHints::new(
+                parsed.series_filter.matchers.clone(),
+                parsed.series_filter.date_range,
+            ))
+        };
     match parsed.search_type {
-        LabelSearchType::Name => Ok(querier.search_label_names(ctx, &raw_hints, select_hints)?),
+        LabelSearchType::Name => {
+            Ok(querier.get_label_names(ctx, select_hints, Some(&raw_hints))?)
+        }
         LabelSearchType::Value => {
-            let label = parsed.label.as_ref().ok_or_else(|| {
+            let label = parsed.label.as_ref().ok_or({
                 ValkeyError::Str("TSDB: label name must be provided for label value search")
             })?;
-            Ok(querier.search_label_values(ctx, label.as_str(), &raw_hints, select_hints)?)
+            Ok(querier.get_label_values(ctx, label.as_str(), select_hints, Some(&raw_hints))?)
         }
-        _ => Err(ValkeyError::Str(
-            "TSDB: label search type not supported for label name search",
-        )),
+        LabelSearchType::MetricName => {
+            Ok(querier.get_metric_names(ctx, select_hints, Some(&raw_hints))?)
+        }
     }
+}
+
+pub(super) fn label_search_result_to_valkey_value(
+    results: Vec<LabelSearchResult>,
+    include_score: bool,
+) -> ValkeyValue {
+    if include_score {
+        ValkeyValue::Array(
+            results
+                .into_iter()
+                .map(|r| {
+                    ValkeyValue::Array(vec![
+                        ValkeyValue::BulkString(r.value),
+                        ValkeyValue::BulkString(r.score.to_string()),
+                    ])
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        ValkeyValue::Array(
+            results
+                .into_iter()
+                .map(|r| ValkeyValue::BulkString(r.value))
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+pub(super) fn reply_label_search_results(
+    ctx: &Context,
+    results: Vec<LabelSearchResult>,
+    include_score: bool,
+) -> Status {
+    let converted = label_search_result_to_valkey_value(results, include_score);
+    ctx.reply(Ok(converted))
+}
+
+pub(super) fn run_label_search(
+    ctx: &Context,
+    args: Vec<ValkeyString>,
+    cmd_type: LabelSearchType,
+) -> ValkeyResult {
+    let parsed = parse_label_name_search_args(args, LabelSearchType::Name)?;
+
+    if is_clustered(ctx) {
+        let name = match cmd_type {
+            LabelSearchType::Name => "TS.LABELNAMESEARCH",
+            LabelSearchType::Value => "TS.LABELVALUESEARCH",
+            LabelSearchType::MetricName => "TS.METRICNAMES",
+        };
+        if parsed.series_filter.matchers.is_empty() {
+            return Err(ValkeyError::String(format!(
+                "{name} in cluster mode requires at least one matcher"
+            )));
+        }
+        let operation = LabelSearchFanoutCommand::new(parsed)?;
+        return operation.exec(ctx);
+    }
+
+    // todo: if we have series filter with date range, put this onto a thread so we don't block the main thread with a potentially long search.
+    if parsed.series_filter.date_range.is_some() {
+        let blocked_client = ctx.block_client();
+
+        spawn(move || {
+            let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+            let ctx = thread_ctx.lock();
+            let results = process_label_search_request(&ctx, &parsed)
+                .map(|r| label_search_result_to_valkey_value(r, parsed.include_score));
+            thread_ctx.reply(results);
+        });
+
+        // We will reply later, from the thread
+        return Ok(ValkeyValue::NoReply);
+    }
+
+    let results = process_label_search_request(ctx, &parsed)?;
+    Ok(label_search_result_to_valkey_value(
+        results,
+        parsed.include_score,
+    ))
 }

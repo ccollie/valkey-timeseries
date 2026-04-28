@@ -94,9 +94,9 @@ impl From<&Sample> for ValkeyValue {
     }
 }
 
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum SortDir {
+    #[default]
     Asc,
     Desc,
 }
@@ -107,12 +107,6 @@ impl Display for SortDir {
             Self::Asc => write!(f, "asc"),
             Self::Desc => write!(f, "desc"),
         }
-    }
-}
-
-impl Default for SortDir {
-    fn default() -> Self {
-        SortDir::Asc
     }
 }
 

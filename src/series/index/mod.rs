@@ -24,15 +24,15 @@ pub use querier::*;
 pub use timeseries_index::*;
 
 mod key_buffer;
-mod label_search;
+mod label_filter;
+mod label_querier;
 #[cfg(test)]
 mod postings_query_tests;
 #[cfg(test)]
 mod timeseries_index_tests;
-mod label_filter;
 
-pub use label_search::*;
 pub(crate) use label_filter::*;
+pub use label_querier::*;
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;

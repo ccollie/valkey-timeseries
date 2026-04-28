@@ -200,38 +200,18 @@ impl LabelNameSearchFilter {
 
 impl FuzzyFilter for LabelNameSearchFilter {
     fn accept(&self, value: &str) -> (bool, f64) {
-        if self.terms.is_empty() {
+        if self.similarity_filters.is_empty() {
             return (true, 1.0);
         }
-
-        // Normalize the candidate once for the substring check.  SimilarityFilter handles
-        // its own normalization internally, so we pass the original `value` to it.
-        let normalized_value;
-        let candidate = if self.case_sensitive {
-            value
-        } else {
-            normalized_value = value.to_lowercase();
-            &normalized_value
-        };
 
         let mut accepted = false;
         let mut best_score: f64 = 0.0;
 
-        for (idx, term) in self.terms.iter().enumerate() {
-            if candidate.contains(term.as_str()) {
-                // Exact substring match — perfect score.
+        for filter in self.similarity_filters.iter() {
+            let (sim_accepted, score) = filter.accept(value);
+            best_score = best_score.max(score);
+            if sim_accepted {
                 accepted = true;
-                best_score = best_score.max(1.0);
-                continue;
-            }
-
-            if !self.similarity_filters.is_empty() {
-                // Fuzzy fallback — delegate to SimilarityFilter.
-                let (sim_accepted, score) = self.similarity_filters[idx].accept(value);
-                best_score = best_score.max(score);
-                if sim_accepted {
-                    accepted = true;
-                }
             }
         }
 

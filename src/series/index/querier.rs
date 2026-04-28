@@ -1,16 +1,16 @@
-use std::borrow::Cow;
-use super::postings::{KeyType, Postings, EMPTY_BITMAP};
-use super::{get_db_index, get_timeseries_index, PostingsBitmap};
+use super::postings::{EMPTY_BITMAP, KeyType, Postings};
+use super::{PostingsBitmap, get_db_index, get_timeseries_index};
+use crate::common::Timestamp;
 use crate::common::context::get_current_db;
 use crate::common::hash::IntMap;
-use crate::common::Timestamp;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::{check_key_read_permission, has_all_keys_permissions};
 use crate::series::request_types::MetaDateRangeFilter;
-use crate::series::{get_timeseries, SeriesGuard, SeriesRef, TimeSeries};
+use crate::series::{SeriesGuard, SeriesRef, TimeSeries, get_timeseries};
 use blart::AsBytes;
 use orx_parallel::{IterIntoParIter, ParIter};
+use std::borrow::Cow;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub fn series_by_selectors<'a>(
@@ -184,8 +184,8 @@ fn filter_series_by_date_range<'a>(
         .collect();
 
     match matching_ids.len() {
-        0 => Ok(Vec::new()),                   // none match
-        n if n == series.len() => Ok(series),  // all match
+        0 => Ok(Vec::new()),                  // none match
+        n if n == series.len() => Ok(series), // all match
         n if n < 32 => {
             series.retain(|(guard, _)| matching_ids.contains(&guard.id));
             Ok(series)

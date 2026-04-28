@@ -17,6 +17,9 @@
 
 use std::sync::OnceLock;
 
+// Non-exact matches are scaled below 1.0 so rounded scores stay distinguishable from exact matches.
+const SUBSEQUENCE_NON_EXACT_SCORE_SCALE: f64 = 0.999;
+
 /// SubsequenceMatcher pre-computes the encoding of a fixed search pattern so
 /// that it can be scored against many candidate strings without repeating the
 /// ASCII check or char conversion on the pattern for every call. The first
@@ -66,7 +69,7 @@ impl SubsequenceMatcher {
     /// - Intermediate values reward consecutive matches and penalize gaps.
     ///
     /// Raw formula: `Σ(interval²) − Σ(gap / text_len) − trailing_gap / (2 × text_len)`,
-    /// normalized by `pattern_len²`.
+    /// The result is normalized by pattern_length² and scaled below 1.0 for non-exact matches.
     pub fn score(&self, text: &str) -> f64 {
         if self.pattern.is_empty() {
             return 1.0;
@@ -97,6 +100,11 @@ impl SubsequenceMatcher {
             }
         }
     }
+}
+
+fn normalize_subsequence_score(raw_score: f64, pattern_len: usize) -> f64 {
+    let score = raw_score / ((pattern_len * pattern_len) as f64);
+    score * SUBSEQUENCE_NON_EXACT_SCORE_SCALE
 }
 
 /// Byte-slice implementation of the scoring algorithm for pure-ASCII inputs.
@@ -154,7 +162,7 @@ fn match_subsequence_bytes(pattern: &[u8], text: &[u8]) -> f64 {
             prev_to = to;
         }
 
-        // Penalise unmatched trailing characters at half the leading/inner rate.
+        // Penalize unmatched trailing characters at half the leading/inner rate.
         let trailing = text_len as isize - 1 - prev_to as isize;
         if trailing > 0 {
             score -= trailing as f64 * inv_text_len * 0.5;
@@ -184,58 +192,70 @@ fn match_subsequence_bytes(pattern: &[u8], text: &[u8]) -> f64 {
     if best_score < 0.0 {
         return 0.0;
     }
-    best_score / (pattern_len * pattern_len) as f64
+
+    normalize_subsequence_score(best_score, pattern_len)
 }
 
 /// Char-slice implementation of the scoring algorithm for Unicode inputs.
 fn match_subsequence_chars(pattern: &[char], text: &[char]) -> f64 {
     let pattern_len = pattern.len();
     let text_len = text.len();
+    if pattern_len > text_len {
+        return 0.0;
+    }
     let inv_text_len = 1.0 / text_len as f64;
     let max_start = text_len - pattern_len;
 
-    // Tries to match all pattern chars as a subsequence starting at `start`.
-    // Returns the raw score on success, or `None` if the pattern cannot be
-    // fully matched.
-    let match_from = |start: usize| -> Option<f64> {
-        let mut pi = 0;
+    // Scores a match starting at `start`, where `text[start] == pattern[0]`
+    // is guaranteed by the caller. Returns `None` if the pattern cannot be
+    // completed from this position.
+    let score_from = |start: usize| -> Option<f64> {
         let mut i = start;
-        let mut score = 0.0_f64;
-        let mut prev_to: isize = -1;
+        let from = i;
+        let mut to = i;
+        let mut pi = 1; // pattern index
+        i += 1;
 
-        while i < text_len && pi < pattern_len {
-            if text[i] == pattern[pi] {
-                let from = i;
-                let mut to = i;
+        // Extend the initial consecutive run.
+        while pi < pattern_len && i < text_len && text[i] == pattern[pi] {
+            to = i;
+            pi += 1;
+            i += 1;
+        }
+
+        let mut score = 0.0_f64;
+        if from > 0 {
+            score -= from as f64 * inv_text_len;
+        }
+        let size = (to - from + 1) as f64;
+        score += size * size;
+        let mut prev_to = to;
+
+        while pi < pattern_len {
+            // Jump to the next occurrence of `pattern[pi]`.
+            let j = text[i..].iter().position(|&ch| ch == pattern[pi])?;
+            i += j;
+            let from = i;
+            let mut to = i;
+            pi += 1;
+            i += 1;
+            // Extend the consecutive run.
+            while pi < pattern_len && i < text_len && text[i] == pattern[pi] {
+                to = i;
                 pi += 1;
                 i += 1;
-                while i < text_len && pi < pattern_len && text[i] == pattern[pi] {
-                    to = i;
-                    pi += 1;
-                    i += 1;
-                }
-                let gap = if prev_to < 0 {
-                    from as isize
-                } else {
-                    from as isize - prev_to - 1
-                };
-                if gap > 0 {
-                    score -= gap as f64 * inv_text_len;
-                }
-                let size = (to - from + 1) as f64;
-                score += size * size;
-                prev_to = to as isize;
-            } else {
-                i += 1;
             }
+            let gap = from as isize - prev_to as isize - 1;
+            if gap > 0 {
+                score -= gap as f64 * inv_text_len;
+            }
+            let size = (to - from + 1) as f64;
+            score += size * size;
+            prev_to = to;
         }
 
-        if pi < pattern_len {
-            return None;
-        }
-
-        // Penalise unmatched trailing characters at half the leading/inner rate.
-        let trailing = text_len as isize - 1 - prev_to;
+        // Penalize unmatched trailing characters at half the leading/inner rate.
+        let trailing = text_len as isize - 1 - prev_to as isize;
         if trailing > 0 {
             score -= trailing as f64 * inv_text_len * 0.5;
         }
@@ -243,24 +263,29 @@ fn match_subsequence_chars(pattern: &[char], text: &[char]) -> f64 {
     };
 
     let mut best_score = -1.0_f64;
-    for i in 0..=max_start {
-        if text[i] != pattern[0] {
-            continue;
-        }
-        match match_from(i) {
+    let mut i = 0;
+    while i <= max_start {
+        // Scan for the first pattern character within the reachable window.
+        let j = match text[i..=max_start].iter().position(|&ch| ch == pattern[0]) {
+            Some(j) => j,
+            None => break,
+        };
+        i += j;
+        match score_from(i) {
             // If matching fails from this position, no later position can
             // succeed since the remaining text is a strict subset.
             None => break,
             Some(s) if s > best_score => best_score = s,
             _ => {}
         }
+        i += 1;
     }
 
     if best_score < 0.0 {
         return 0.0;
     }
-    // Normalise by pattern_len² (the maximum possible raw score).
-    best_score / (pattern_len * pattern_len) as f64
+    // Normalize by pattern_len² (the maximum possible raw score).
+    normalize_subsequence_score(best_score, pattern_len)
 }
 
 #[cfg(test)]
@@ -303,30 +328,37 @@ mod tests {
                 name: "prefix match",
                 pattern: "my",
                 text: "my awesome text",
-                // intervals [0,1], leading=0, trailing=13. raw = 4 - 13/30, normalised by 4.
-                want: Some(107.0 / 120.0),
+                // intervals [0,1], leading=0, trailing=13. raw = 4 - 13/30, normalized by 4.
+                want: Some(107.0 / 120.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 name: "substring match",
                 pattern: "tex",
                 text: "my awesome text",
-                // intervals [11,13], leading=11, trailing=1. raw = 9 - 11/15 - 1/30, normalised by 9.
-                want: Some(247.0 / 270.0),
+                // intervals [11,13], leading=11, trailing=1. raw = 9 - 11/15 - 1/30, normalized by 9.
+                want: Some(247.0 / 270.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 name: "fuzzy match picks best starting position",
                 pattern: "met",
                 text: "my awesome text",
                 // intervals [8,9] and [11,11], leading=8, inner gap=1, trailing=3.
-                // raw = 5 - 9/15 - 3/30, normalised by 9.
-                want: Some(43.0 / 90.0),
+                // raw = 5 - 9/15 - 3/30, normalized by 9.
+                want: Some(43.0 / 90.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 name: "prefers later position with better consecutive run",
                 pattern: "bac",
                 text: "babac",
-                // match at [2,4], leading gap=2, trailing=0. raw = 9 - 2/5, normalised by 9.
-                want: Some(43.0 / 45.0),
+                // match at [2,4], leading gap=2, trailing=0. raw = 9 - 2/5, normalized by 9.
+                want: Some(43.0 / 45.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE), // Match at [2,4], leading gap=2, trailing=0. raw = 9 - 2/5, normalized by 9.
+            },
+            Case {
+                name: "longer prefix match stays below exact match",
+                pattern: "handler1",
+                text: "handler10",
+                // Intervals [0,7], leading=0, trailing=1. raw = 64 - 1/18, normalized by 64 and scaled.
+                want: Some(1149849.0 / 1152000.0),
             },
             Case {
                 name: "pattern longer than text",
@@ -362,8 +394,8 @@ mod tests {
                 name: "unicode prefix match",
                 pattern: "éà",
                 text: "éàü",
-                // intervals [0,1], leading=0, trailing=1. raw = 4 - 1/6, normalised by 4.
-                want: Some(23.0 / 24.0),
+                // intervals [0,1], leading=0, trailing=1. raw = 4 - 1/6, normalized by 4.
+                want: Some(23.0 / 24.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 name: "unicode no match",
@@ -382,15 +414,15 @@ mod tests {
                 pattern: "éü",
                 text: "éàü",
                 // intervals [0,0] and [2,2], leading=0, inner gap=1, trailing=0.
-                // raw = 1 + 1 - 1/3, normalised by 4.
-                want: Some(5.0 / 12.0),
+                // raw = 1 + 1 - 1/3, normalized by 4.
+                want: Some(5.0 / 12.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 name: "mixed ascii and unicode",
                 pattern: "aé",
                 text: "aéb",
-                // intervals [0,1], leading=0, trailing=1. raw = 4 - 1/6, normalised by 4.
-                want: Some(23.0 / 24.0),
+                // intervals [0,1], leading=0, trailing=1. raw = 4 - 1/6, normalized by 4.
+                want: Some(23.0 / 24.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 // 'é' (U+00E9) encodes as [0xC3 0xA9] and 'ã' (U+00E3) as [0xC3 0xA3].
@@ -411,18 +443,18 @@ mod tests {
                 pattern: "oa",
                 text: "goat",
                 // 'o'(1),'a'(2) form interval [1,2], leading gap=1, trailing=1.
-                // raw = 2² - 1/4 - 1/8 = 29/8, normalised by 2² = 4.
-                want: Some(29.0 / 32.0),
+                // raw = 2² - 1/4 - 1/8 = 29/8, normalized by 2² = 4.
+                want: Some(29.0 / 32.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
             Case {
                 name: "repeated chars use greedy match",
                 pattern: "abaa",
                 text: "abbaa",
                 // Matches 'a'(0),'b'(1),'a'(3),'a'(4): intervals [0,1] and [3,4].
-                // raw = 2² + 2² - 1/5, normalised by 4² = 16.
+                // raw = 2² + 2² - 1/5, normalized by 4² = 16.
                 // A better match exists at 'a'(0),'b'(2),'a'(3),'a'(4) (score 49/80),
-                // but this documents the current greedy behaviour.
-                want: Some(39.0 / 80.0),
+                // but this documents the current greedy behavior.
+                want: Some(39.0 / 80.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE),
             },
         ];
 
@@ -447,10 +479,10 @@ mod tests {
         const EPSILON: f64 = 1e-9;
 
         // Prefix match scores below 1.0; only an exact match scores 1.0.
-        // "pro" in "prometheus": intervals [0,2], trailing=7. raw = 9 - 7/20, normalised by 9.
+        // "pro" in "prometheus": intervals [0,2], trailing=7. raw = 9 - 7/20, normalized by 9.
         let got = SubsequenceMatcher::new("pro").score("prometheus");
         assert!(
-            (got - 173.0 / 180.0).abs() < EPSILON,
+            (got - 173.0 / 180.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE).abs() < EPSILON,
             "prefix score: expected {}, got {got}",
             173.0 / 180.0
         );
@@ -520,7 +552,9 @@ mod tests {
         const EPSILON: f64 = 1e-9;
         for handle in handles {
             let (unicode_score, ascii_score) = handle.join().expect("thread panicked");
-            assert!((unicode_score - 23.0 / 24.0).abs() < EPSILON);
+            assert!(
+                (unicode_score - 23.0 / 24.0 * SUBSEQUENCE_NON_EXACT_SCORE_SCALE).abs() < EPSILON
+            );
             assert_eq!(ascii_score, 0.0);
         }
     }

@@ -1,12 +1,11 @@
 use crate::commands::fanout::LabelSearchType;
 use crate::commands::label_search_utils::run_label_search;
-use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyResult, ValkeyString};
 
-/// TS.LABELNAMESEARCH
+/// TS.METRICNAMES
 /// [SEARCH term [term...]]
 /// [FUZZ_THRESHOLD 0.0..1.0]
-/// [FUZZ_ALGO jarowinkler|subsequence]
+/// [FUZZ_ALG jarowinkler|subsequence]
 /// [IGNORE_CASE true|false]
 /// [INCLUDE_SCORE true|false]
 /// [SORT_BY alpha|score]
@@ -14,10 +13,6 @@ use valkey_module::{Context, ValkeyResult, ValkeyString};
 /// [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
 /// [LIMIT limit]
 /// [FILTER seriesMatcher...]
-pub fn ts_labelnamesearch_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
-    if args.len() < 2 {
-        return Err(WrongArity);
-    }
-
-    run_label_search(ctx, args, LabelSearchType::Name)
+pub fn ts_metricnames_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    run_label_search(ctx, args, LabelSearchType::MetricName)
 }

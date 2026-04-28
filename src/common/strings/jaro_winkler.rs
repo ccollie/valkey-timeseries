@@ -62,6 +62,7 @@ pub fn jaro_winkler(left_: &str, right_: &str) -> f32 {
     let mut matching: f32 = 0.0;
     let mut transpositions: f32 = 0.0;
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..s2_len {
         let mut j = i.saturating_sub(range);
         let l = (i + range + 1).min(s1_len);
@@ -83,6 +84,7 @@ pub fn jaro_winkler(left_: &str, right_: &str) -> f32 {
 
     let mut l = 0;
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..s2_len - 1 {
         if (s2m >> i) & 1 == 1 {
             let mut j = l;
