@@ -1,8 +1,9 @@
 import pytest
+from valkey import ResponseError
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
-from common import LabelSearchResponse, LabelValue
+from common import LabelSearchResponse
 
 
 
