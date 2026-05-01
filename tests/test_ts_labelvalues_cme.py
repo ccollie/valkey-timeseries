@@ -43,6 +43,25 @@ class TestTimeSeriesLabelValues(ValkeyTimeSeriesClusterTestCase):
             client.execute_command('TS.ADD', ts_key, now, i * 10)
             client.execute_command('TS.ADD', ts_key, now + 1000, i * 10 + 5)
 
+    def test_label_values_cardinality_accumulates_across_cluster_nodes(self):
+        """Cardinality should sum when the same value exists on multiple cluster nodes."""
+        cluster: ValkeyCluster = self.new_cluster_client()
+        client = self.new_client_for_primary(0)
+
+        # Create the same label value on different hash slots so the fanout merge
+        # has to combine per-node cardinalities for a single matched value.
+        cluster.execute_command('TS.CREATE', 'svc_a:{1}', 'LABELS', 'service', 'api', 'region', 'us-east')
+        cluster.execute_command('TS.CREATE', 'svc_b:{2}', 'LABELS', 'service', 'api', 'region', 'us-west')
+
+        raw = client.execute_command('TS.LABELVALUES', 'service', 'SEARCH', 'api', 'INCLUDE_METADATA')
+        parsed = LabelSearchResponse.parse(raw)
+
+        assert len(parsed.results) == 1
+        item = parsed.results[0]
+        assert item.value == b'api'
+        assert item.score is not None
+        assert item.cardinality == 2
+
     def test_label_values_with_filter(self):
         """Test retrieving label values with a filter"""
         cluster: ValkeyCluster = self.new_cluster_client()
