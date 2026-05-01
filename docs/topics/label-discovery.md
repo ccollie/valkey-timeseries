@@ -80,8 +80,8 @@ TS.<COMMAND> [label]
   [SEARCH term [term ...]]
   [FUZZY_THRESHOLD threshold]
   [FUZZY_ALGORITHM jarowinkler|subsequence]
-  [IGNORE_CASE true|false]
-  [INCLUDE_METADATA true|false]
+  [IGNORE_CASE]
+  [INCLUDE_METADATA]
   [SORTBY <value|score|cardinality> [ASC|DESC]]
   [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
   [LIMIT limit]
@@ -98,7 +98,7 @@ A user is typing "cpu" into an explorer UI. You want to provide the top 5 closes
 case-insensitively, sorting the best matches first:
 
 ```text
-TS.METRICNAMES SEARCH cpu IGNORE_CASE true FUZZY_ALGORITHM jarowinkler SORTBY score DESC LIMIT 5
+TS.METRICNAMES SEARCH cpu IGNORE_CASE FUZZY_ALGORITHM jarowinkler SORTBY score DESC LIMIT 5
 ```
 
 ### Drill-down by Environment

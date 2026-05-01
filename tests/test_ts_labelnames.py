@@ -434,12 +434,11 @@ class TestTsLabelNames(ValkeyTimeSeriesTestCaseBase):
 
         result_no_ignore = self._exec_fuzzy(
             'SEARCH', 'NODE',
-            'IGNORE_CASE', 'false',
             'FUZZY_THRESHOLD', '0.9',
         )
         result_ignore = self._exec_fuzzy(
             'SEARCH', 'NODE',
-            'IGNORE_CASE', 'true',
+            'IGNORE_CASE', 
             'FUZZY_THRESHOLD', '0.9',
         )
         values_ignore = [lv.value for lv in result_ignore.results]

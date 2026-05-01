@@ -11,7 +11,6 @@ use crate::series::index::{
 };
 use crate::series::request_types::MatchFilterOptions;
 use ahash::AHashMap;
-use simd_json::prelude::ArrayTrait;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
 
 #[derive(Default)]
@@ -133,7 +132,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             SearchResultOrdering::ValueDesc => LabelResultsSortOrder::ValueDesc,
             SearchResultOrdering::ScoreDesc => LabelResultsSortOrder::ScoreDesc,
             SearchResultOrdering::CardinalityAsc => LabelResultsSortOrder::CardinalityAsc,
-            SearchResultOrdering::CardinalityDesc => LabelResultsSortOrder::ScoreDesc,
+            SearchResultOrdering::CardinalityDesc => LabelResultsSortOrder::CardinalityDesc,
         };
 
         let fuzz_algorithm = match self.args.fuzzy_algorithm {

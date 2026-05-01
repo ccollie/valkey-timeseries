@@ -51,8 +51,6 @@ impl LabelNameSearchArgs {
     pub fn build_search_hints(&self) -> ValkeyResult<SearchHints<'static>> {
         self.validate()?;
 
-        // ...existing code... (debug logging removed)
-
         let limit = self.get_limit();
 
         let filter = if self.search_terms.is_empty() {
@@ -139,14 +137,6 @@ fn resolve_label_search_ordering(
     }
 }
 
-fn parse_bool(value: &str) -> ValkeyResult<bool> {
-    match value.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => Err(ValkeyError::Str(error_consts::INVALID_BOOLEAN)),
-    }
-}
-
 fn is_search_token(value: &[u8]) -> bool {
     parse_label_name_search_token(value).is_some()
 }
@@ -211,8 +201,7 @@ pub(super) fn parse_label_name_search_args(
                     FuzzyAlgorithm::try_from(value).map_err(ValkeyError::String)?;
             }
             LabelNameSearchToken::IgnoreCase => {
-                let value = args.next_str()?;
-                parsed.ignore_case = parse_bool(value)?;
+                parsed.ignore_case = true;
             }
             LabelNameSearchToken::SortBy => {
                 let value = args.next_str()?;

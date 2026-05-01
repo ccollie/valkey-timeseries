@@ -7,8 +7,8 @@ TS.METRICNAMES
   [SEARCH term [term ...]]
   [FUZZY_THRESHOLD threshold]
   [FUZZY_ALGORITHM jarowinkler|subsequence]
-  [IGNORE_CASE true|false]
-  [INCLUDE_METADATA true|false]
+  [IGNORE_CASE]
+  [INCLUDE_METADATA]
   [SORTBY <value|score|cardinality> [ASC|DESC]
   [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
   [LIMIT limit]
@@ -19,9 +19,9 @@ TS.METRICNAMES
 
 - `SEARCH` terms are ORed together.
 - `FUZZY_ALGORITHM` accepts `jarowinkler` and `subsequence`. Defaults to `jarowinkler`.
-- `FUZZY_THRESHOLD` accepts `0..100`.
+- `FUZZY_THRESHOLD` accepts `[0.0, 1.0]`.
 - `IGNORE_CASE` toggles case sensitivity in string matching. Defaults to `false`.
-- `INCLUDE_METADATA` set to true to return `score` and `cardinality` in addition to metric names.
+- `INCLUDE_METADATA` include to return `score` and `cardinality` in addition to label names.
 - `SORTBY` specify the sort order of the results.
 - `FILTER_BY_RANGE` limits results to series with data in the given range. With `NOT`, this filter is inverted.
 - `LIMIT` bounds the number of results returned.
@@ -30,7 +30,13 @@ TS.METRICNAMES
 
 ### Return
 
-Array reply of matching metric names.
+Map reply with the following fields:
+
+- `results`: the matching metric names.
+- `has_more`: indicates whether additional results are available.
+  When `INCLUDE_METADATA` is `false`, `results` contains metric name strings.
+  When `INCLUDE_METADATA` is `true`, `results` contains tuples with the metric name and its metadata, including `score`
+  and `cardinality`.
 
 ### Example
 

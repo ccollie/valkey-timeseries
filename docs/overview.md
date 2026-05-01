@@ -55,7 +55,7 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.QUERYINDEX`: Retrieve all series keys matching a label filter.
 * `TS.CARD`: Get the cardinality of the index for a specific label filter.
 * `TS.LABELNAMES`: Get all label names used in the index.
-* `TS.LABELNAMESEARCH`: Search label names with substring and optional fuzzy matching.
+* `TS.METRICNAME`: Search metric names with substring and optional fuzzy matching.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.
 * `TS.LABELSTATS`: Get statistics about label usage in the index.
 
