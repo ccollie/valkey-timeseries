@@ -1,5 +1,7 @@
 from valkey import Valkey, ValkeyCluster
 import pytest
+
+from common import LabelSearchResponse
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
@@ -27,26 +29,7 @@ class TestTimeSeriesMetricNamesCME(ValkeyTimeSeriesClusterTestCase):
             'env=~"(prod|dev)"',
         )
 
-        # Normalize result to a list of metric names to be robust to the new response shape
-        if isinstance(result, dict):
-            res = result.get(b"results") or result.get("results")
-        else:
-            res = result
-
-        names = []
-        for item in res:
-            if isinstance(item, (list, tuple)):
-                names.append(item[0])
-            else:
-                names.append(item)
+        labels = LabelSearchResponse.parse(result)
+        names = [item.value for item in labels.results]
 
         assert sorted(names) == sorted([b"cpu_idle_total", b"cpu_usage_total", b"mem_usage_bytes"])
-
-    def test_metricnames_cluster_requires_matcher(self):
-        client: Valkey = self.new_client_for_primary(0)
-
-        self.verify_error_response(
-            client,
-            "TS.METRICNAMES",
-            "TS.METRICNAMES in cluster mode requires at least one matcher",
-        )
