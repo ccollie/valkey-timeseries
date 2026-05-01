@@ -26,7 +26,6 @@ pub(crate) struct LabelNameSearchArgs {
     pub(crate) fuzzy_threshold: f64,
     pub(crate) fuzzy_algorithm: FuzzyAlgorithm,
     pub(crate) ignore_case: bool,
-    pub(crate) include_score: bool,
     pub(crate) include_metadata: bool,
     pub(crate) sort_order: SearchResultOrdering,
     pub(crate) series_filter: MatchFilterOptions,
@@ -41,7 +40,6 @@ impl Default for LabelNameSearchArgs {
             fuzzy_threshold: 0.0,
             fuzzy_algorithm: FuzzyAlgorithm::JaroWinkler,
             ignore_case: false,
-            include_score: false,
             include_metadata: false,
             sort_order: SearchResultOrdering::ValueAsc,
             series_filter: Default::default(),
@@ -72,6 +70,7 @@ impl LabelNameSearchArgs {
             filter,
             limit,
             order_by: self.sort_order,
+            include_meta: self.include_metadata,
         })
     }
 
@@ -93,7 +92,6 @@ enum LabelNameSearchToken {
     FuzzyThreshold,
     FuzzyAlgorithm,
     IgnoreCase,
-    IncludeScore,
     IncludeMetadata,
     SortBy,
     Limit,
@@ -109,7 +107,6 @@ fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
         "fuzzy_algo" => LabelNameSearchToken::FuzzyAlgorithm,
         "fuzzy_algorithm" => LabelNameSearchToken::FuzzyAlgorithm,
         "ignore_case" => LabelNameSearchToken::IgnoreCase,
-        "include_score" => LabelNameSearchToken::IncludeScore,
         "include_metadata" => LabelNameSearchToken::IncludeMetadata,
         "sortby" => LabelNameSearchToken::SortBy,
         "limit" => LabelNameSearchToken::Limit,
@@ -217,13 +214,8 @@ pub(super) fn parse_label_name_search_args(
                 let value = args.next_str()?;
                 parsed.ignore_case = parse_bool(value)?;
             }
-            LabelNameSearchToken::IncludeScore => {
-                let value = args.next_str()?;
-                parsed.include_score = parse_bool(value)?;
-            }
             LabelNameSearchToken::SortBy => {
                 let value = args.next_str()?;
-                // SORTBY argument received; parsed below
                 let sort_by = SortBy::try_from(value).map_err(|_| {
                     ValkeyError::Str("TSDB: SORTBY must be value, score, or cardinality")
                 })?;

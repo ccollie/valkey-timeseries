@@ -95,8 +95,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             fuzzy_threshold: req.fuzz_threshold,
             fuzzy_algorithm: fuzz_algorithm,
             ignore_case: req.ignore_case,
-            // include_score is a coordinator-only concern; shards always return plain values.
-            include_score: false,
+            // include_score was removed as a user option; shards always return plain values.
             include_metadata: req.include_metadata,
             sort_order,
             series_filter: MatchFilterOptions {
@@ -188,6 +187,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             filter: None,
             limit: self.limit,
             order_by: self.args.sort_order,
+            include_meta: self.args.include_metadata,
         };
 
         let query_result = apply_search_hints(values, &hints);

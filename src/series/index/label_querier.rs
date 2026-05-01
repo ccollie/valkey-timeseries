@@ -41,7 +41,7 @@ impl TryFrom<&str> for SortBy {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.to_ascii_lowercase().as_str() {
-            "alpha" | "value" => Ok(SortBy::Value),
+            "value" => Ok(SortBy::Value),
             "score" => Ok(SortBy::Score),
             "cardinality" => Ok(SortBy::Cardinality),
             _ => Err(ValkeyError::Str(
@@ -101,6 +101,8 @@ pub struct SearchHints<'a> {
 
     /// Selects the ordering of results.
     pub order_by: SearchResultOrdering,
+
+    pub include_meta: bool,
 }
 
 impl<'a> Default for SearchHints<'a> {
@@ -109,6 +111,7 @@ impl<'a> Default for SearchHints<'a> {
             filter: None,
             limit: SEARCH_RESULT_DEFAULT_LIMIT,
             order_by: SearchResultOrdering::default(),
+            include_meta: false,
         }
     }
 }
@@ -308,15 +311,12 @@ fn collect_limited(
     LabelQueryResult::new(items, has_more)
 }
 
-/// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly,
-/// without intersecting with series postings. This is only possible for orderings that are consistent with the
-/// label index order (i.e., value ascending or descending), and when no selectors or date range are involved,
-/// that would require intersecting with series postings.
+/// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly
 fn collect_unscoped_label_names(
     postings: &Postings,
     filter: &dyn FuzzyFilter,
     hints: &SearchHints,
-) -> Option<LabelQueryResult> {
+) -> LabelQueryResult {
     let limit = hints.limit.min(SEARCH_RESULT_LIMIT_MAX);
 
     let check = |(entry, map): (&IndexKey, &PostingsBitmap)| {
@@ -335,18 +335,17 @@ fn collect_unscoped_label_names(
     };
 
     match hints.order_by {
-        SearchResultOrdering::ValueAsc => Some(collect_limited(
-            postings.label_index.iter().filter_map(check),
-            limit,
-        )),
-        SearchResultOrdering::ValueDesc => Some(collect_limited(
-            postings.label_index.iter().rev().filter_map(check),
-            limit,
-        )),
-        SearchResultOrdering::ScoreDesc => None,
-        SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc => {
+        SearchResultOrdering::ValueAsc => {
+            collect_limited(postings.label_index.iter().filter_map(check), limit)
+        }
+        SearchResultOrdering::ValueDesc => {
+            collect_limited(postings.label_index.iter().rev().filter_map(check), limit)
+        }
+        SearchResultOrdering::ScoreDesc
+        | SearchResultOrdering::CardinalityAsc
+        | SearchResultOrdering::CardinalityDesc => {
             let values = postings.label_index.iter().filter_map(check).collect();
-            Some(apply_search_hints(values, hints))
+            apply_search_hints(values, hints)
         }
     }
 }
@@ -356,7 +355,7 @@ fn collect_unscoped_label_values(
     label_name: &str,
     filter: &dyn FuzzyFilter,
     hints: &SearchHints,
-) -> Option<LabelQueryResult> {
+) -> LabelQueryResult {
     let limit = hints.limit.min(SEARCH_RESULT_LIMIT_MAX);
     let prefix = KeyBuffer::for_prefix(label_name);
 
@@ -375,29 +374,30 @@ fn collect_unscoped_label_values(
     };
 
     match hints.order_by {
-        SearchResultOrdering::ValueAsc => Some(collect_limited(
+        SearchResultOrdering::ValueAsc => collect_limited(
             postings
                 .label_index
                 .prefix(prefix.as_bytes())
                 .filter_map(check),
             limit,
-        )),
-        SearchResultOrdering::ValueDesc => Some(collect_limited(
+        ),
+        SearchResultOrdering::ValueDesc => collect_limited(
             postings
                 .label_index
                 .prefix(prefix.as_bytes())
                 .rev()
                 .filter_map(check),
             limit,
-        )),
-        SearchResultOrdering::ScoreDesc => None,
-        SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc => {
+        ),
+        SearchResultOrdering::ScoreDesc
+        | SearchResultOrdering::CardinalityAsc
+        | SearchResultOrdering::CardinalityDesc => {
             let values = postings
                 .label_index
                 .prefix(prefix.as_bytes())
                 .filter_map(check)
                 .collect();
-            Some(apply_search_hints(values, hints))
+            apply_search_hints(values, hints)
         }
     }
 }
@@ -420,35 +420,8 @@ fn collect_label_names(
     let index = get_timeseries_index(ctx);
     let postings = index.get_postings();
     with_search_filter(hints, |filter| {
-        // fast path for when no selectors or date range are involved:
-        // we can scan the label index directly without intersecting with series postings.
-        // This is efficient for small result sets but also avoids doing potentially expensive intersections
-        // when the filter is expected to be highly selective.
         if can_use_unscoped_scan(select_hints) {
-            if let Some(result) = collect_unscoped_label_names(&postings, filter, hints) {
-                return Ok(result);
-            }
-
-            // Score-based ordering is not emitted by the unscoped index-order fast path.
-            // For no-selector requests, materialize candidate names from the postings index,
-            // then apply global ordering/limit via search hints.
-            let mut result = Vec::with_capacity(DEFAULT_LIMIT);
-            for name in postings.get_label_names() {
-                let (accepted, score) = filter.accept(&name);
-                if accepted {
-                    let cardinality = get_label_cardinality(&postings, &name);
-                    if cardinality == 0 {
-                        continue;
-                    }
-                    result.push(LabelSearchResult {
-                        value: name,
-                        score,
-                        cardinality,
-                    });
-                }
-            }
-
-            return Ok(apply_search_hints(result, hints));
+            return Ok(collect_unscoped_label_names(&postings, filter, hints));
         }
 
         let mut names: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
@@ -457,6 +430,11 @@ fn collect_label_names(
         // keep the compiler happy
         let default_hints = SelectHints::default();
         let opts = select_hints.unwrap_or(&default_hints);
+
+        let need_cardinality = matches!(
+            hints.order_by,
+            SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
+        ) || hints.include_meta;
 
         let mut result = Vec::with_capacity(DEFAULT_LIMIT);
         // todo! set a max limit on the number of series we scan here, to avoid OOM or stalls for very
@@ -471,12 +449,19 @@ fn collect_label_names(
                 }
                 let name = label.name.to_string();
                 let (accepted, score) = filter.accept(&name);
+
                 if accepted {
                     // fetch the cardinality
-                    let cardinality = get_label_cardinality(&postings, label.name);
-                    if cardinality == 0 {
-                        continue;
-                    }
+                    let cardinality = if need_cardinality {
+                        let cardinality = get_label_cardinality(&postings, label.name);
+                        if cardinality == 0 {
+                            continue;
+                        }
+                        cardinality
+                    } else {
+                        0
+                    };
+
                     result.push(LabelSearchResult {
                         value: name.to_string(),
                         score,
@@ -506,36 +491,12 @@ fn collect_label_values(
 
     with_search_filter(search_hints, |filter| {
         if can_use_unscoped_scan(select_hints) {
-            if let Some(result) =
-                collect_unscoped_label_values(&postings, label_name, filter, search_hints)
-            {
-                return Ok(result);
-            }
-
-            // Score-based ordering is not emitted by the unscoped prefix-order fast path.
-            // For no-selector requests, materialize candidate values from the postings index,
-            // then apply global ordering/limit via search hints.
-            let mut result = Vec::with_capacity(DEFAULT_LIMIT);
-            for value in postings.get_label_values(label_name) {
-                let (accepted, score) = filter.accept(&value);
-                if accepted {
-                    let label_postings = postings.postings_for_label_value(label_name, &value);
-                    if label_postings.is_empty() {
-                        continue;
-                    }
-                    let cardinality = label_postings.cardinality() as usize;
-                    if cardinality == 0 {
-                        continue;
-                    }
-                    result.push(LabelSearchResult {
-                        value,
-                        score,
-                        cardinality,
-                    });
-                }
-            }
-
-            return Ok(apply_search_hints(result, search_hints));
+            return Ok(collect_unscoped_label_values(
+                &postings,
+                label_name,
+                filter,
+                search_hints,
+            ));
         }
 
         let mut seen: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
@@ -543,6 +504,11 @@ fn collect_label_values(
         // keep the compiler happy
         let default_hints = SelectHints::default();
         let opts = select_hints.unwrap_or(&default_hints);
+
+        let need_cardinality = matches!(
+            search_hints.order_by,
+            SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
+        ) || search_hints.include_meta;
 
         let mut result = Vec::with_capacity(DEFAULT_LIMIT);
         // todo! set a max limit on the number of series we scan here, to avoid OOM or long processing times
@@ -557,16 +523,19 @@ fn collect_label_values(
                 }
                 let value = label.value.to_string();
                 let (accepted, score) = filter.accept(&value);
+
                 if accepted {
                     // fetch the cardinality
-                    let label_postings = postings.postings_for_label_value(label_name, &value);
-                    if label_postings.is_empty() {
-                        continue;
-                    }
-                    let cardinality = label_postings.cardinality() as usize;
-                    if cardinality == 0 {
-                        continue;
-                    }
+                    let cardinality = if need_cardinality {
+                        let label_postings = postings.postings_for_label_value(label_name, &value);
+                        if label_postings.is_empty() {
+                            continue;
+                        }
+                        label_postings.cardinality() as usize
+                    } else {
+                        0
+                    };
+
                     result.push(LabelSearchResult {
                         value: value.clone(),
                         score,
@@ -686,10 +655,10 @@ mod tests {
             filter: None,
             limit: 10,
             order_by: SearchResultOrdering::ValueAsc,
+            include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints)
-            .expect("expected unscoped fast path for value-asc ordering");
+        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints);
 
         assert!(!result.has_more);
         assert_eq!(values(result), vec!["eu-west", "us-east", "us-west"]);
@@ -703,28 +672,13 @@ mod tests {
             filter: None,
             limit: 10,
             order_by: SearchResultOrdering::ValueDesc,
-        };
-
-        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints)
-            .expect("expected unscoped fast path for value-desc ordering");
-
-        assert!(!result.has_more);
-        assert_eq!(values(result), vec!["us-west", "us-east", "eu-west"]);
-    }
-
-    #[test]
-    fn collect_unscoped_label_values_returns_none_for_score_ordering() {
-        let postings = build_label_values_postings();
-        let filter = SimilarityFilter::default();
-        let hints = SearchHints {
-            filter: None,
-            limit: 10,
-            order_by: SearchResultOrdering::ScoreDesc,
+            include_meta: false,
         };
 
         let result = collect_unscoped_label_values(&postings, "region", &filter, &hints);
 
-        assert!(result.is_none());
+        assert!(!result.has_more);
+        assert_eq!(values(result), vec!["us-west", "us-east", "eu-west"]);
     }
 
     fn build_label_names_postings() -> Postings {
@@ -745,10 +699,10 @@ mod tests {
             filter: None,
             limit: 10,
             order_by: SearchResultOrdering::ValueAsc,
+            include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints)
-            .expect("expected unscoped fast path for name-asc ordering");
+        let result = collect_unscoped_label_names(&postings, &filter, &hints);
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -763,29 +717,14 @@ mod tests {
             filter: None,
             limit: 10,
             order_by: SearchResultOrdering::ValueDesc,
-        };
-
-        let result = collect_unscoped_label_names(&postings, &filter, &hints)
-            .expect("expected unscoped fast path for name-desc ordering");
-
-        assert!(!result.has_more);
-        let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
-        assert_eq!(values, vec!["gamma", "beta", "alpha"]);
-    }
-
-    #[test]
-    fn collect_unscoped_label_names_returns_none_for_score_ordering() {
-        let postings = build_label_names_postings();
-        let filter = SimilarityFilter::default();
-        let hints = SearchHints {
-            filter: None,
-            limit: 10,
-            order_by: SearchResultOrdering::ScoreDesc,
+            include_meta: false,
         };
 
         let result = collect_unscoped_label_names(&postings, &filter, &hints);
 
-        assert!(result.is_none());
+        assert!(!result.has_more);
+        let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
+        assert_eq!(values, vec!["gamma", "beta", "alpha"]);
     }
 
     #[test]
@@ -797,10 +736,10 @@ mod tests {
             filter: None,
             limit: 2,
             order_by: SearchResultOrdering::ValueAsc,
+            include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints)
-            .expect("expected unscoped fast path for value-asc ordering");
+        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints);
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
@@ -828,10 +767,10 @@ mod tests {
             filter: None,
             limit: 10,
             order_by: SearchResultOrdering::CardinalityAsc,
+            include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints)
-            .expect("expected unscoped fast path for name-cardinality-asc ordering");
+        let result = collect_unscoped_label_names(&postings, &filter, &hints);
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -848,10 +787,10 @@ mod tests {
             filter: None,
             limit: 2,
             order_by: SearchResultOrdering::CardinalityAsc,
+            include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints)
-            .expect("expected unscoped fast path for name-cardinality-asc ordering");
+        let result = collect_unscoped_label_names(&postings, &filter, &hints);
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
