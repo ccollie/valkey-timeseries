@@ -7,7 +7,7 @@ use valkey_module::{Context, ValkeyResult, ValkeyString};
 /// [FUZZY_THRESHOLD 0.0..1.0]
 /// [FUZZY_ALGORITHM jarowinkler|subsequence]
 /// [IGNORE_CASE true|false]
-/// [INCLUDE_SCORE true|false]
+/// [INCLUDE_METADATA true|false]
 /// [SORTBY <value|score|cardinality> [ASC|DESC]]
 /// [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
 /// [LIMIT limit]
