@@ -4,7 +4,8 @@ from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 from common import LabelSearchResponse, LabelValue
 
-class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
+
+class TestTsLabelNames(ValkeyTimeSeriesTestCaseBase):
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
@@ -412,7 +413,7 @@ class TestTimeSeriesLabelNames(ValkeyTimeSeriesTestCaseBase):
         )
 
     def test_labelnames_search_fuzz_algo_subsequence(self):
-        """FUZZY_ALGO subsequence should match labels containing the term
+        """FUZZY_ALGORITHM subsequence should match labels containing the term
         as a subsequence."""
         self.setup_fuzzy_test_data(self.client)
 
