@@ -287,6 +287,9 @@ def parse_stats_response(response):
     return stats
 
 
+_EXPECTED_RESP2_MAP_KEYS = frozenset({"results", "has_more", b"results", b"has_more"})
+
+
 def _try_unwrap_resp2_map(response):
     """Detect and convert a RESP2-encoded map (flat alternating key-value list) to a dict.
 
@@ -294,7 +297,13 @@ def _try_unwrap_resp2_map(response):
     2*N elements – alternating keys and values – instead of a native Python dict.
     We identify this pattern by:
       1. The response is a list with an even, non-zero number of elements.
-      2. One of the even-indexed "key" positions equals ``b"results"`` or ``"results"``.
+      2. All even-indexed "key" positions are strings/bytes from the known set
+         {``results``, ``has_more``}.
+      3. Both ``results`` and ``has_more`` keys are present.
+
+    Requiring both expected keys (and no unexpected ones) prevents mis-detecting
+    legitimate legacy result arrays that happen to contain the string ``"results"``
+    as a label value at an even index.
 
     If the pattern matches, a plain Python dict is returned.  Otherwise ``None``
     is returned so callers can fall through to other handling.
@@ -305,15 +314,17 @@ def _try_unwrap_resp2_map(response):
     """
     if not isinstance(response, list) or len(response) < 2 or len(response) % 2 != 0:
         return None
-    has_results_key = False
+
+    seen_keys = set()
     for i in range(0, len(response), 2):
         key = response[i]
-        if not isinstance(key, (bytes, str)):
+        if key not in _EXPECTED_RESP2_MAP_KEYS:
             return None
-        if key == b"results" or key == "results":
-            has_results_key = True
+        seen_keys.add(key)
 
-    if not has_results_key:
+    # Normalise to str keys for the presence check
+    normalised = {k.decode() if isinstance(k, bytes) else k for k in seen_keys}
+    if "results" not in normalised or "has_more" not in normalised:
         return None
 
     result = {}
