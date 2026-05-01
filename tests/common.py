@@ -318,6 +318,10 @@ def _try_unwrap_resp2_map(response):
     seen_keys = set()
     for i in range(0, len(response), 2):
         key = response[i]
+        # Metadata payloads are often nested lists (e.g. [[value, score, card], ...]).
+        # Those are not RESP2 map keys, so bail out early instead of hashing them.
+        if not isinstance(key, (str, bytes)):
+            return None
         if key not in _EXPECTED_RESP2_MAP_KEYS:
             return None
         seen_keys.add(key)
