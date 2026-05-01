@@ -57,8 +57,11 @@ pub(super) fn series_posting_ids_by_selectors<'a>(
     let postings = index.get_postings();
 
     let series_ids = postings.postings_for_selectors(selectors)?;
-    if series_ids.is_empty() || date_range.is_none() {
+    if series_ids.is_empty() {
         return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+    }
+    if date_range.is_none() {
+        return Ok(Cow::Owned(series_ids.into_owned()));
     }
     let series = collect_series_from_postings(ctx, &postings, series_ids.iter(), date_range)?;
     let id_iter = series.into_iter().map(|(guard, _)| guard.id);
