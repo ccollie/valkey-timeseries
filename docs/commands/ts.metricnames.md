@@ -9,7 +9,7 @@ TS.METRICNAMES
   [FUZZY_ALGORITHM jarowinkler|subsequence]
   [IGNORE_CASE]
   [INCLUDE_METADATA]
-  [SORTBY <value|score|cardinality> [ASC|DESC]
+  [SORTBY <value|score|cardinality> [ASC|DESC]]
   [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
   [LIMIT limit]
   [FILTER selector ...]

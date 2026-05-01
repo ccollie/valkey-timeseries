@@ -10,7 +10,7 @@ TS.LABELVALUES label
   [FUZZY_ALGORITHM jarowinkler|subsequence]
   [INCLUDE_METADATA]
   [IGNORE_CASE]
-  [SORTBY <value|score|cardinality> [ASC|DESC]
+  [SORTBY <value|score|cardinality> [ASC|DESC]]
   [LIMIT limit]
   [FILTER selector ...]
 ```

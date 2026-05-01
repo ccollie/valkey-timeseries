@@ -60,7 +60,7 @@ the top.
 
 ### 4. Rich Metadata
 
-By including the `INCLUDE_METADATA true` flag, the commands return not just the string names, but also the relevance
+By including the `INCLUDE_METADATA` flag, the commands return not just the string names, but also the relevance
 `score` and the `cardinality` (the number of times that label/value appears).
 UI clients and AI/ML query assistants can use this metadata to make informed decisions about which queries to run next
 or how to render exploration paths.

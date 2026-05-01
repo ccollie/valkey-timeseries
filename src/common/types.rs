@@ -129,6 +129,6 @@ impl TryFrom<&str> for SortDir {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        value.try_into()
+        Self::try_from(value.as_bytes())
     }
 }
