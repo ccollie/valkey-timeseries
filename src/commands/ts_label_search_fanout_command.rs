@@ -1,34 +1,35 @@
-use super::fanout::generated::{LabelSearchRequest, LabelSearchResponse};
+use super::fanout::generated::{LabelResultsSortOrder, LabelSearchRequest, LabelSearchResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
-use crate::commands::fanout::{LabelSearchResult as FanoutLabelSearchResult, LabelSearchType};
+use crate::commands::fanout::{
+    FuzzySearchAlgorithm, LabelSearchResult as FanoutLabelSearchResult, LabelSearchType,
+};
 use crate::commands::label_search_utils::{LabelNameSearchArgs, process_label_search_request};
-use crate::common::SortDir;
 use crate::fanout::{FanoutClientCommand, FanoutCommandResult, FanoutContext, NodeInfo};
 use crate::series::index::{
-    FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SearchResultOrdering,
-    merge_search_results,
+    FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SearchHints, SearchResultOrdering,
+    apply_search_hints,
 };
 use crate::series::request_types::MatchFilterOptions;
+use ahash::AHashMap;
 use simd_json::prelude::ArrayTrait;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
 
 #[derive(Default)]
 pub struct LabelSearchFanoutCommand {
-    pub args: LabelNameSearchArgs,
-    ordering: SearchResultOrdering,
+    args: LabelNameSearchArgs,
     limit: usize,
-    results: Vec<IndexLabelSearchResult>,
+    result_map: AHashMap<String, IndexLabelSearchResult>,
+    has_more: bool,
 }
 
 impl LabelSearchFanoutCommand {
     pub fn new(args: LabelNameSearchArgs) -> ValkeyResult<Self> {
-        let ordering = args.get_order_by();
         let limit = args.get_limit();
         Ok(Self {
             args,
-            ordering,
             limit,
-            results: Vec::new(),
+            has_more: false,
+            result_map: AHashMap::with_capacity(limit),
         })
     }
 }
@@ -47,15 +48,26 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
     ) -> ValkeyResult<LabelSearchResponse> {
         if req.fuzz_threshold > 1.0 {
             return Err(ValkeyError::Str(
-                "TSDB: FUZZ_THRESHOLD must be in [0.0..1.0]",
+                "TSDB: FUZZY_THRESHOLD must be in [0.0..1.0]",
             ));
         }
 
-        let matchers = deserialize_matchers_list(Some(req.filters))?;
-        let fuzz_algorithm =
-            FuzzyAlgorithm::try_from(req.fuzz_algorithm.as_str()).map_err(ValkeyError::String)?;
         let search_type = LabelSearchType::try_from(req.request_type)
             .map_err(|_| ValkeyError::Str("TSDB: invalid label search request type"))?;
+
+        let matchers = deserialize_matchers_list(Some(req.filters))?;
+
+        let algorithm: FuzzySearchAlgorithm = req.fuzz_algorithm.try_into().map_err(|_| {
+            ValkeyError::Str(
+                "TSDB: invalid FUZZY_ALGORITHM value; expected jarowinkler, subsequence, or noop",
+            )
+        })?;
+
+        let fuzz_algorithm = match algorithm {
+            FuzzySearchAlgorithm::JaroWinkler => FuzzyAlgorithm::JaroWinkler,
+            FuzzySearchAlgorithm::Subsequence => FuzzyAlgorithm::Subsequence,
+            FuzzySearchAlgorithm::Noop => FuzzyAlgorithm::NoOp,
+        };
 
         let label = if req.label.is_empty() {
             None
@@ -63,31 +75,45 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             Some(req.label)
         };
 
+        let order: LabelResultsSortOrder = req
+            .sort_order
+            .try_into()
+            .map_err(|_| ValkeyError::Str("TSDB: invalid sort order for label search results"))?;
+
+        let sort_order = match order {
+            LabelResultsSortOrder::ValueAsc => SearchResultOrdering::ValueAsc,
+            LabelResultsSortOrder::ValueDesc => SearchResultOrdering::ValueDesc,
+            LabelResultsSortOrder::ScoreDesc => SearchResultOrdering::ScoreDesc,
+            LabelResultsSortOrder::CardinalityAsc => SearchResultOrdering::CardinalityAsc,
+            LabelResultsSortOrder::CardinalityDesc => SearchResultOrdering::CardinalityDesc,
+        };
+
         let parsed = LabelNameSearchArgs {
             search_type,
             label,
             search_terms: req.search_terms,
-            fuzz_threshold: req.fuzz_threshold,
-            fuzz_algorithm,
+            fuzzy_threshold: req.fuzz_threshold,
+            fuzzy_algorithm: fuzz_algorithm,
             ignore_case: req.ignore_case,
             // include_score is a coordinator-only concern; shards always return plain values.
             include_score: false,
-            sort_by: None,
-            sort_dir: SortDir::Asc,
+            include_metadata: req.include_metadata,
+            sort_order,
             series_filter: MatchFilterOptions {
                 matchers,
                 date_range: req.range.map(Into::into),
-                // Do not apply per-node limit; coordinator applies the final limit.
-                limit: Some(0),
+                limit: Some(req.limit as usize),
             },
         };
 
         process_label_search_request(ctx, &parsed).map(|results| LabelSearchResponse {
+            has_more: false, // TODO: implement has_more
             results: results
                 .into_iter()
                 .map(|r| FanoutLabelSearchResult {
                     value: r.value,
                     score: r.score,
+                    cardinality: r.cardinality as u64,
                 })
                 .collect(),
         })
@@ -102,62 +128,93 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             .label
             .as_ref()
             .map_or(String::new(), |x| x.clone());
+
+        let sort_order = match self.args.sort_order {
+            SearchResultOrdering::ValueAsc => LabelResultsSortOrder::ValueAsc,
+            SearchResultOrdering::ValueDesc => LabelResultsSortOrder::ValueDesc,
+            SearchResultOrdering::ScoreDesc => LabelResultsSortOrder::ScoreDesc,
+            SearchResultOrdering::CardinalityAsc => LabelResultsSortOrder::CardinalityAsc,
+            SearchResultOrdering::CardinalityDesc => LabelResultsSortOrder::ScoreDesc,
+        };
+
+        let fuzz_algorithm = match self.args.fuzzy_algorithm {
+            FuzzyAlgorithm::JaroWinkler => FuzzySearchAlgorithm::JaroWinkler,
+            FuzzyAlgorithm::Subsequence => FuzzySearchAlgorithm::Subsequence,
+            FuzzyAlgorithm::NoOp => FuzzySearchAlgorithm::Noop,
+        }
+            .into();
+
         LabelSearchRequest {
             request_type: self.args.search_type.into(),
             label,
             search_terms: self.args.search_terms.clone(),
-            fuzz_threshold: self.args.fuzz_threshold,
-            fuzz_algorithm: self.args.fuzz_algorithm.to_string(),
+            fuzz_threshold: self.args.fuzzy_threshold,
+            fuzz_algorithm,
             ignore_case: self.args.ignore_case,
             range: self.args.series_filter.date_range.map(Into::into),
             filters,
-            include_metadata: false,
+            include_metadata: self.args.include_metadata,
+            sort_order: sort_order.into(),
+            limit: self.limit as u32,
         }
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
-        // Score and filter the incoming names using the configured ranking args.
-        let scored = resp.results.into_iter().map(|r| IndexLabelSearchResult {
-            value: r.value,
-            score: r.score,
-        });
-
-        if self.results.is_empty() {
-            self.results.extend(scored);
-        } else {
-            let temp = std::mem::take(&mut self.results);
-            self.results = merge_search_results(temp.into_iter(), scored, self.ordering).collect();
+        for r in resp.results.iter() {
+            if let Some(current) = self.result_map.get_mut(&r.value) {
+                current.cardinality += r.cardinality as usize;
+                continue;
+            }
+            self.result_map.insert(
+                r.value.clone(),
+                IndexLabelSearchResult {
+                    value: r.value.clone(),
+                    score: r.score,
+                    cardinality: r.cardinality as usize,
+                },
+            );
         }
 
-        // Bound the collected set to args.limit after each shard response so we
-        // never accumulate more entries than the final answer requires.
-        if self.limit > 0 && self.results.len() > self.limit {
-            self.results.truncate(self.limit);
-        }
+        self.has_more |= resp.has_more;
 
         Ok(())
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
-        let limit = self.limit;
-        if limit > 0 && self.results.len() > limit {
-            self.results.truncate(limit);
-        }
+        let map = std::mem::take(&mut self.result_map);
+        let values = map.into_values().collect::<Vec<_>>();
 
-        if self.args.include_score {
-            ctx.reply_with_array(self.results.len());
-            for r in self.results.iter() {
-                ctx.reply_with_array(2);
-                ctx.reply_with_bulk_string(&r.value);
-                ctx.reply_with_bulk_string(&r.score.to_string());
+        let hints = SearchHints {
+            filter: None,
+            limit: self.limit,
+            order_by: self.args.sort_order,
+        };
+
+        let query_result = apply_search_hints(values, &hints);
+        // A shard may have reported has_more, or the coordinator merge itself may have
+        // truncated additional entries — either condition means results were cut off.
+        self.has_more |= query_result.has_more;
+
+        ctx.reply_with_map(2);
+
+        ctx.reply_with_key("results".into());
+        ctx.reply_with_array(query_result.results.len());
+
+        if self.args.include_metadata {
+            for result in &query_result.results {
+                ctx.reply_with_array(3);
+                ctx.reply_with_bulk_string(&result.value);
+                ctx.reply_with_bulk_string(&result.score.to_string());
+                ctx.reply_with_i64(result.cardinality as i64);
             }
         } else {
-            ctx.reply_with_array(self.results.len());
-            for r in self.results.iter() {
-                ctx.reply_with_bulk_string(&r.value);
+            // values only
+            for result in &query_result.results {
+                ctx.reply_with_bulk_string(&result.value);
             }
         }
 
-        Status::Ok
+        ctx.reply_with_key("has_more".into());
+        ctx.reply_with_bool(self.has_more)
     }
 }

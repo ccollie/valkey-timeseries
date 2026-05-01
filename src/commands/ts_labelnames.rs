@@ -1,51 +1,20 @@
-use super::ts_labelnames_fanout_command::LabelNamesFanoutCommand;
-use crate::commands::command_parser::parse_metadata_command_args;
-use crate::fanout::{FanoutClientCommand, is_clustered};
-use crate::series::index::with_matched_series;
-use crate::series::request_types::MatchFilterOptions;
-use std::collections::BTreeSet;
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use crate::commands::fanout::LabelSearchType;
+use crate::commands::label_search_utils::run_label_search;
+use valkey_module::{Context, ValkeyResult, ValkeyString};
 
-/// https://prometheus.io/docs/prometheus/latest/querying/api/#getting-label-names
-/// TS.LABELNAMES [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp] [LIMIT limit] FILTER seriesMatcher...
+// see https://github.com/tcp13equals2/proposals/blob/c56fb4b25f1151de148f58f0a51799c339185922/proposals/0074-new-labels-values-api.md
+
+/// TS.LABELNAMES
+/// [SEARCH term [term...]]
+/// [FUZZY_THRESHOLD 0.0..1.0]
+/// [FUZZY_ALGORITHM jarowinkler|subsequence]
+/// [IGNORE_CASE true|false]
+/// [INCLUDE_SCORE true|false]
+/// [INCLUDE_META true|false]
+/// [SORTBY <value|score|cardinality> [ASC|DESC]]
+/// [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
+/// [LIMIT limit]
+/// [FILTER seriesMatcher...]
 pub fn ts_labelnames_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
-    let mut args = args.into_iter().skip(1).peekable();
-    let options = parse_metadata_command_args(&mut args, true)?;
-
-    if is_clustered(ctx) {
-        if options.matchers.is_empty() {
-            return Err(ValkeyError::Str(
-                "TS.LABELNAMES in cluster mode requires at least one matcher",
-            ));
-        }
-
-        let operation = LabelNamesFanoutCommand::new(options);
-        return operation.exec(ctx);
-    }
-    let names = process_label_names_request(ctx, &options)?;
-
-    let labels = names
-        .into_iter()
-        .map(ValkeyValue::BulkString)
-        .collect::<Vec<_>>();
-
-    Ok(ValkeyValue::Array(labels))
-}
-
-pub fn process_label_names_request(
-    ctx: &Context,
-    options: &MatchFilterOptions,
-) -> ValkeyResult<Vec<String>> {
-    let mut names: BTreeSet<String> = BTreeSet::new();
-
-    with_matched_series(ctx, &mut names, options, |acc, ts, _| {
-        for label in ts.labels.iter() {
-            acc.insert(label.name.into());
-        }
-    })?;
-
-    let limit = options.limit.unwrap_or(names.len());
-    let names = names.into_iter().take(limit).collect::<Vec<_>>();
-
-    Ok(names)
+    run_label_search(ctx, args, LabelSearchType::Name)
 }

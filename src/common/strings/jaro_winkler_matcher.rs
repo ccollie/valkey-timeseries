@@ -10,6 +10,8 @@ impl JaroWinklerMatcher {
     }
 
     pub fn score(&self, value: &str) -> f64 {
-        jaro_winkler(&self.pattern, value) as f64
+        let s1 = jaro_winkler(&self.pattern, value) as f64;
+        let s2 = jaro_winkler(value, &self.pattern) as f64;
+        s1.max(s2)
     }
 }

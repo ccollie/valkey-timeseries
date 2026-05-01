@@ -41,7 +41,7 @@ pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
 static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static MAIN_THREAD_ID: std::sync::OnceLock<ThreadId> = std::sync::OnceLock::new();
+static MAIN_THREAD_ID: OnceLock<ThreadId> = OnceLock::new();
 
 pub fn is_module_initialized() -> bool {
     IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
@@ -177,7 +177,6 @@ valkey_module! {
         ["TS.QUERYINDEX", commands::ts_queryindex_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.CARD", commands::ts_card_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELNAMES", commands::ts_labelnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELNAMESEARCH", commands::ts_labelnamesearch_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELVALUES", commands::ts_labelvalues_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.METRICNAMES", commands::ts_metricnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
         ["TS.LABELSTATS", commands::ts_labelstats_cmd, "readonly", 0, 0, 0, "read timeseries"],

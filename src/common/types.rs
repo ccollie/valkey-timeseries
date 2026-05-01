@@ -110,14 +110,25 @@ impl Display for SortDir {
     }
 }
 
+impl TryFrom<&[u8]> for SortDir {
+    type Error = String;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        match value.len() {
+            3 if value.eq_ignore_ascii_case(b"asc") => Ok(Self::Asc),
+            4 if value.eq_ignore_ascii_case(b"desc") => Ok(Self::Desc),
+            _ => Err(format!(
+                "invalid sort direction: {}",
+                String::from_utf8_lossy(value)
+            )),
+        }
+    }
+}
+
 impl TryFrom<&str> for SortDir {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.len() {
-            3 if value.eq_ignore_ascii_case("asc") => Ok(Self::Asc),
-            4 if value.eq_ignore_ascii_case("desc") => Ok(Self::Desc),
-            _ => Err(format!("invalid sort direction: {value}")),
-        }
+        value.try_into()
     }
 }

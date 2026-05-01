@@ -12,11 +12,17 @@ pub enum FuzzyAlgorithm {
 impl TryFrom<&str> for FuzzyAlgorithm {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_lowercase().as_str() {
-            "jarowinkler" => Ok(FuzzyAlgorithm::JaroWinkler),
-            "subsequence" => Ok(FuzzyAlgorithm::Subsequence),
-            "noop" => Ok(FuzzyAlgorithm::NoOp),
-            _ => Err(format!("Unknown fuzzy algorithm: {}", value)),
+        let algo = hashify::tiny_map_ignore_case!(
+            value.as_bytes(),
+            "jarowinkler" => FuzzyAlgorithm::JaroWinkler,
+            "jaro-winkler" => FuzzyAlgorithm::JaroWinkler,
+            "subsequence" => FuzzyAlgorithm::Subsequence,
+            "noop" => FuzzyAlgorithm::NoOp,
+        );
+        if let Some(algo) = algo {
+            Ok(algo)
+        } else {
+            Err(format!("Unknown fuzzy algorithm: {}", value))
         }
     }
 }
@@ -201,7 +207,17 @@ impl LabelNameSearchFilter {
 impl FuzzyFilter for LabelNameSearchFilter {
     fn accept(&self, value: &str) -> (bool, f64) {
         if self.similarity_filters.is_empty() {
-            return (true, 1.0);
+            // No fuzzy threshold set: fall back to substring containment check.
+            if self.terms.is_empty() {
+                return (true, 1.0);
+            }
+            let candidate = if self.case_sensitive {
+                value.to_string()
+            } else {
+                value.to_lowercase()
+            };
+            let accepted = self.terms.iter().any(|t| candidate.contains(t.as_str()));
+            return (accepted, if accepted { 1.0 } else { 0.0 });
         }
 
         let mut accepted = false;

@@ -5,12 +5,11 @@ Searches metric names (`__name__` label values) with substring and optional fuzz
 ```text
 TS.METRICNAMES
   [SEARCH term [term ...]]
-  [FUZZ_THRESHOLD threshold]
-  [FUZZ_ALG jarowinkler|subsequence]
+  [FUZZY_THRESHOLD threshold]
+  [FUZZY_ALGORITHM jarowinkler|subsequence]
   [IGNORE_CASE true|false]
   [INCLUDE_SCORE true|false]
-  [SORT_BY alpha|score]
-  [SORT_DIR asc|dsc]
+  [SORTBY <value|score|cardinality> [ASC|DESC]
   [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
   [LIMIT limit]
   [FILTER selector ...]
@@ -19,8 +18,8 @@ TS.METRICNAMES
 ### Optional Arguments
 
 - `SEARCH` terms are ORed together.
-- `FUZZ_ALG` accepts `jarowinkler` and `subsequence`. Defaults to `jarowinkler`.
-- `FUZZ_THRESHOLD` accepts `0..100`.
+- `FUZZY_ALGORITHM` accepts `jarowinkler` and `subsequence`. Defaults to `jarowinkler`.
+- `FUZZY_THRESHOLD` accepts `0..100`.
 - `IGNORE_CASE` toggles case sensitivity in string matching. Defaults to `false`.
 - `INCLUDE_SCORE` returns `[metric_name, score]` pairs.
 - `SORT_BY score` supports `SORT_DIR dsc` only.
@@ -36,6 +35,6 @@ Array reply of matching metric names.
 ### Example
 
 ```text
-TS.METRICNAMES SEARCH cpu FUZZ_THRESHOLD 80 FUZZ_ALG jarowinkler SORT_BY score SORT_DIR dsc FILTER env=prod
+TS.METRICNAMES SEARCH cpu FUZZY_THRESHOLD 0.80 FUZZY_ALGORITHM jarowinkler SORT_BY score SORT_DIR dsc FILTER env=prod
 ```
 

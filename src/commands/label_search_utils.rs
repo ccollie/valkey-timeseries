@@ -1,19 +1,21 @@
+use crate::commands::command_parser::parse_filter_by_range_options;
 use crate::commands::fanout::LabelSearchType;
-use crate::commands::parse_metadata_command_args;
 use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use crate::common::SortDir;
 use crate::common::threads::spawn;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
+use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
     DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier,
-    LabelSearchResult, SEARCH_RESULT_DEFAULT_LIMIT, SearchHints, SearchResultOrdering, SelectHints,
-    SortBy,
+    LabelQueryResult, SEARCH_RESULT_DEFAULT_LIMIT, SEARCH_RESULT_LIMIT_MAX, SearchHints,
+    SearchResultOrdering, SelectHints, SortBy,
 };
 use crate::series::request_types::MatchFilterOptions;
+use std::collections::HashMap;
+use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
-    Context, NextArg, Status, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
-    ValkeyValue,
+    Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
 #[derive(Debug, Clone)]
@@ -21,12 +23,12 @@ pub(crate) struct LabelNameSearchArgs {
     pub(crate) search_type: LabelSearchType,
     pub(crate) label: Option<String>,
     pub(crate) search_terms: Vec<String>,
-    pub(crate) fuzz_threshold: f64,
-    pub(crate) fuzz_algorithm: FuzzyAlgorithm,
+    pub(crate) fuzzy_threshold: f64,
+    pub(crate) fuzzy_algorithm: FuzzyAlgorithm,
     pub(crate) ignore_case: bool,
     pub(crate) include_score: bool,
-    pub(crate) sort_by: Option<SortBy>,
-    pub(crate) sort_dir: SortDir,
+    pub(crate) include_metadata: bool,
+    pub(crate) sort_order: SearchResultOrdering,
     pub(crate) series_filter: MatchFilterOptions,
 }
 
@@ -36,12 +38,12 @@ impl Default for LabelNameSearchArgs {
             search_type: LabelSearchType::Name,
             label: None,
             search_terms: Vec::new(),
-            fuzz_threshold: 0.0,
-            fuzz_algorithm: FuzzyAlgorithm::JaroWinkler,
+            fuzzy_threshold: 0.0,
+            fuzzy_algorithm: FuzzyAlgorithm::JaroWinkler,
             ignore_case: false,
             include_score: false,
-            sort_by: None,
-            sort_dir: SortDir::Asc,
+            include_metadata: false,
+            sort_order: SearchResultOrdering::ValueAsc,
             series_filter: Default::default(),
         }
     }
@@ -51,7 +53,8 @@ impl LabelNameSearchArgs {
     pub fn build_search_hints(&self) -> ValkeyResult<SearchHints<'static>> {
         self.validate()?;
 
-        let order_by = self.get_order_by();
+        // ...existing code... (debug logging removed)
+
         let limit = self.get_limit();
 
         let filter = if self.search_terms.is_empty() {
@@ -59,8 +62,8 @@ impl LabelNameSearchArgs {
         } else {
             Some(Box::new(LabelNameSearchFilter::new(
                 self.search_terms.clone(),
-                self.fuzz_algorithm,
-                self.fuzz_threshold,
+                self.fuzzy_algorithm,
+                self.fuzzy_threshold,
                 !self.ignore_case,
             )) as Box<dyn FuzzyFilter>)
         };
@@ -68,29 +71,18 @@ impl LabelNameSearchArgs {
         Ok(SearchHints {
             filter,
             limit,
-            order_by,
+            order_by: self.sort_order,
         })
-    }
-
-    pub fn get_order_by(&self) -> SearchResultOrdering {
-        resolve_ordering(self.sort_by, self.sort_dir).unwrap_or(SearchResultOrdering::ValueAsc)
     }
 
     pub fn get_limit(&self) -> usize {
         self.series_filter
             .limit
             .unwrap_or(SEARCH_RESULT_DEFAULT_LIMIT)
+            .min(SEARCH_RESULT_LIMIT_MAX)
     }
 
     pub fn validate(&self) -> ValkeyResult<()> {
-        if let Some(sort_by) = self.sort_by
-            && sort_by == SortBy::Score
-            && self.sort_dir == SortDir::Asc
-        {
-            return Err(ValkeyError::Str(
-                "TSDB: SORT_DIR asc is not supported for SORT_BY score",
-            ));
-        }
         Ok(())
     }
 }
@@ -98,33 +90,35 @@ impl LabelNameSearchArgs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LabelNameSearchToken {
     Search,
-    FuzzThreshold,
-    FuzzAlgorithm,
+    FuzzyThreshold,
+    FuzzyAlgorithm,
     IgnoreCase,
     IncludeScore,
+    IncludeMetadata,
     SortBy,
-    SortDir,
-    Label,
+    Limit,
+    Filter,
+    FilterByRange,
 }
 
 fn parse_label_name_search_token(value: &[u8]) -> Option<LabelNameSearchToken> {
     hashify::tiny_map_ignore_case! {
         value,
         "search" => LabelNameSearchToken::Search,
-        "fuzz_threshold" => LabelNameSearchToken::FuzzThreshold,
-        "fuzz_alg" => LabelNameSearchToken::FuzzAlgorithm,
-        "fuzz_algo" => LabelNameSearchToken::FuzzAlgorithm,
+        "fuzzy_threshold" => LabelNameSearchToken::FuzzyThreshold,
+        "fuzzy_algo" => LabelNameSearchToken::FuzzyAlgorithm,
+        "fuzzy_algorithm" => LabelNameSearchToken::FuzzyAlgorithm,
         "ignore_case" => LabelNameSearchToken::IgnoreCase,
         "include_score" => LabelNameSearchToken::IncludeScore,
-        "sort_by" => LabelNameSearchToken::SortBy,
+        "include_metadata" => LabelNameSearchToken::IncludeMetadata,
         "sortby" => LabelNameSearchToken::SortBy,
-        "sort_dir" => LabelNameSearchToken::SortDir,
-        "sortdir" => LabelNameSearchToken::SortDir,
-        "label" => LabelNameSearchToken::Label
+        "limit" => LabelNameSearchToken::Limit,
+        "filter" => LabelNameSearchToken::Filter,
+        "filter_by_range" => LabelNameSearchToken::FilterByRange,
     }
 }
 
-fn resolve_ordering(
+fn resolve_label_search_ordering(
     sort_by: Option<SortBy>,
     sort_dir: SortDir,
 ) -> ValkeyResult<SearchResultOrdering> {
@@ -133,16 +127,18 @@ fn resolve_ordering(
             SortDir::Asc => SearchResultOrdering::ValueAsc,
             SortDir::Desc => SearchResultOrdering::ValueDesc,
         }),
-        Some(SortBy::Alpha) => Ok(match sort_dir {
+        Some(SortBy::Value) => Ok(match sort_dir {
             SortDir::Asc => SearchResultOrdering::ValueAsc,
             SortDir::Desc => SearchResultOrdering::ValueDesc,
         }),
         Some(SortBy::Score) => match sort_dir {
             SortDir::Desc => Ok(SearchResultOrdering::ScoreDesc),
-            SortDir::Asc => Err(ValkeyError::Str(
-                "TSDB: SORT_DIR asc is not supported for SORT_BY score",
-            )),
+            SortDir::Asc => Err(ValkeyError::Str("TSDB: SORTBY score ASC is not supported")),
         },
+        Some(SortBy::Cardinality) => Ok(match sort_dir {
+            SortDir::Asc => SearchResultOrdering::CardinalityAsc,
+            SortDir::Desc => SearchResultOrdering::CardinalityDesc,
+        }),
     }
 }
 
@@ -156,7 +152,6 @@ fn parse_bool(value: &str) -> ValkeyResult<bool> {
 
 fn is_search_token(value: &[u8]) -> bool {
     parse_label_name_search_token(value).is_some()
-        || hashify::tiny_set_ignore_case!(value, "filter", "filter_by_range", "limit")
 }
 
 pub(super) fn parse_label_name_search_args(
@@ -165,22 +160,29 @@ pub(super) fn parse_label_name_search_args(
 ) -> ValkeyResult<LabelNameSearchArgs> {
     let mut args = args.into_iter().skip(1).peekable();
     let mut parsed = LabelNameSearchArgs::default();
-    let mut metadata_args: Vec<ValkeyString> = Vec::new();
+    let mut sorting_specified = false;
 
-    let allow_label_name = matches!(search_type, LabelSearchType::Value);
+    if search_type == LabelSearchType::Value {
+        // For label value search, we require the label name to be specified as the first argument
+        if args.peek().is_none() {
+            return Err(ValkeyError::Str(
+                "TSDB: Label name is required for label value search",
+            ));
+        }
+        parsed.label = Some(args.next_string()?);
+    }
+
+    parsed.search_type = search_type;
 
     while let Some(arg) = args.next() {
-        match parse_label_name_search_token(arg.as_slice()) {
-            Some(LabelNameSearchToken::Label) => {
-                if !allow_label_name {
-                    return Err(ValkeyError::Str(
-                        "TSDB: LABEL is not allowed in this context",
-                    ));
-                }
-                let next_arg = args.next_string()?;
-                parsed.label = Some(next_arg);
-            }
-            Some(LabelNameSearchToken::Search) => {
+        let Some(token) = parse_label_name_search_token(arg.as_slice()) else {
+            return Err(ValkeyError::String(format!(
+                "TSDB: unrecognized argument '{}'",
+                arg.to_string_lossy()
+            )));
+        };
+        match token {
+            LabelNameSearchToken::Search => {
                 let mut saw_term = false;
                 while let Some(next) = args.peek() {
                     if is_search_token(next.as_slice()) {
@@ -194,50 +196,89 @@ pub(super) fn parse_label_name_search_args(
                     return Err(ValkeyError::Str("TSDB: missing SEARCH value"));
                 }
             }
-            Some(LabelNameSearchToken::FuzzThreshold) => {
+            LabelNameSearchToken::FuzzyThreshold => {
                 let value = args.next_str()?;
                 let threshold = value.parse::<f64>().map_err(|_| {
-                    ValkeyError::Str("TSDB: FUZZ_THRESHOLD must be a number in [0.0..1.0]")
+                    ValkeyError::Str("TSDB: FUZZY_THRESHOLD must be a number in [0.0..1.0]")
                 })?;
                 if !(0.0..=1.0).contains(&threshold) {
                     return Err(ValkeyError::Str(
-                        "TSDB: FUZZ_THRESHOLD must be in [0.0..1.0]",
+                        "TSDB: FUZZY_THRESHOLD must be in [0.0..1.0]",
                     ));
                 }
-                parsed.fuzz_threshold = threshold;
+                parsed.fuzzy_threshold = threshold;
             }
-            Some(LabelNameSearchToken::FuzzAlgorithm) => {
+            LabelNameSearchToken::FuzzyAlgorithm => {
                 let value = args.next_str()?;
-                parsed.fuzz_algorithm =
+                parsed.fuzzy_algorithm =
                     FuzzyAlgorithm::try_from(value).map_err(ValkeyError::String)?;
             }
-            Some(LabelNameSearchToken::IgnoreCase) => {
+            LabelNameSearchToken::IgnoreCase => {
                 let value = args.next_str()?;
                 parsed.ignore_case = parse_bool(value)?;
             }
-            Some(LabelNameSearchToken::IncludeScore) => {
+            LabelNameSearchToken::IncludeScore => {
                 let value = args.next_str()?;
                 parsed.include_score = parse_bool(value)?;
             }
-            Some(LabelNameSearchToken::SortBy) => {
+            LabelNameSearchToken::SortBy => {
                 let value = args.next_str()?;
-                parsed.sort_by = Some(
-                    SortBy::try_from(value)
-                        .map_err(|_| ValkeyError::Str("TSDB: SORT_BY must be alpha or score"))?,
-                );
+                // SORTBY argument received; parsed below
+                let sort_by = SortBy::try_from(value).map_err(|_| {
+                    ValkeyError::Str("TSDB: SORTBY must be value, score, or cardinality")
+                })?;
+                if let Some(dir) = args.peek()
+                    && let Some(sort_dir) = SortDir::try_from(dir.as_slice()).ok()
+                {
+                    args.next();
+                    parsed.sort_order = resolve_label_search_ordering(Some(sort_by), sort_dir)?;
+                } else {
+                    let order = if sort_by == SortBy::Score {
+                        SearchResultOrdering::ScoreDesc
+                    } else {
+                        resolve_label_search_ordering(Some(sort_by), SortDir::Asc)?
+                    };
+                    parsed.sort_order = order;
+                }
+                sorting_specified = true;
             }
-            Some(LabelNameSearchToken::SortDir) => {
-                let value = args.next_str()?;
-                parsed.sort_dir = SortDir::try_from(value)
-                    .map_err(|_e| ValkeyError::Str("TSDB: SORT_DIR must be asc or desc"))?;
+            LabelNameSearchToken::IncludeMetadata => {
+                parsed.include_metadata = true;
             }
-            None => metadata_args.push(arg),
+            LabelNameSearchToken::Limit => {
+                let limit = args
+                    .next_u64()
+                    .map_err(|_| ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE))?
+                    as usize;
+                parsed.series_filter.limit = Some(limit);
+            }
+            LabelNameSearchToken::Filter => {
+                while let Some(next) = args.peek() {
+                    if is_search_token(next.as_slice()) {
+                        break;
+                    }
+                    let arg = args.next_str()?;
+                    let selector = parse_series_selector(arg)
+                        .map_err(|_| ValkeyError::Str(error_consts::MISSING_FILTER))?;
+                    parsed.series_filter.matchers.push(selector);
+                }
+            }
+            LabelNameSearchToken::FilterByRange => {
+                let filter = parse_filter_by_range_options(&mut args)?;
+                parsed.series_filter.date_range = Some(filter);
+            }
         }
     }
 
-    parsed.series_filter = parse_metadata_command_args(&mut args, false)?;
-    parsed.search_type = search_type;
-
+    if !sorting_specified {
+        // if the user specified a search term but didn't specify sorting, we default to sorting by relevance score
+        if !parsed.search_terms.is_empty() {
+            parsed.sort_order = SearchResultOrdering::ScoreDesc;
+        } else {
+            // otherwise, we default to sorting by value ascending
+            parsed.sort_order = SearchResultOrdering::ValueAsc;
+        }
+    }
     // Search APIs default to a bounded response to keep metadata discovery interactive.
     if parsed.series_filter.limit.is_none() {
         parsed.series_filter.limit = Some(SEARCH_RESULT_DEFAULT_LIMIT);
@@ -249,7 +290,7 @@ pub(super) fn parse_label_name_search_args(
 pub(crate) fn process_label_search_request(
     ctx: &Context,
     parsed: &LabelNameSearchArgs,
-) -> ValkeyResult<Vec<LabelSearchResult>> {
+) -> ValkeyResult<LabelQueryResult> {
     let querier = DefaultLabelQuerier;
     let raw_hints = parsed.build_search_hints()?;
     let select_hints =
@@ -278,38 +319,40 @@ pub(crate) fn process_label_search_request(
 }
 
 pub(super) fn label_search_result_to_valkey_value(
-    results: Vec<LabelSearchResult>,
-    include_score: bool,
+    query_result: LabelQueryResult,
+    include_meta: bool,
 ) -> ValkeyValue {
-    if include_score {
+    let results_array = if include_meta {
         ValkeyValue::Array(
-            results
+            query_result
+                .results
                 .into_iter()
                 .map(|r| {
                     ValkeyValue::Array(vec![
                         ValkeyValue::BulkString(r.value),
                         ValkeyValue::BulkString(r.score.to_string()),
+                        ValkeyValue::Integer(r.cardinality as i64),
                     ])
                 })
                 .collect::<Vec<_>>(),
         )
     } else {
         ValkeyValue::Array(
-            results
+            query_result
+                .results
                 .into_iter()
                 .map(|r| ValkeyValue::BulkString(r.value))
                 .collect::<Vec<_>>(),
         )
-    }
-}
+    };
 
-pub(super) fn reply_label_search_results(
-    ctx: &Context,
-    results: Vec<LabelSearchResult>,
-    include_score: bool,
-) -> Status {
-    let converted = label_search_result_to_valkey_value(results, include_score);
-    ctx.reply(Ok(converted))
+    let mut map = HashMap::with_capacity(2);
+    map.insert(
+        ValkeyValueKey::BulkString("has_more".into()),
+        ValkeyValue::Bool(query_result.has_more),
+    );
+    map.insert(ValkeyValueKey::BulkString("results".into()), results_array);
+    ValkeyValue::Map(map)
 }
 
 pub(super) fn run_label_search(
@@ -317,24 +360,13 @@ pub(super) fn run_label_search(
     args: Vec<ValkeyString>,
     cmd_type: LabelSearchType,
 ) -> ValkeyResult {
-    let parsed = parse_label_name_search_args(args, LabelSearchType::Name)?;
+    let parsed = parse_label_name_search_args(args, cmd_type)?;
 
     if is_clustered(ctx) {
-        let name = match cmd_type {
-            LabelSearchType::Name => "TS.LABELNAMESEARCH",
-            LabelSearchType::Value => "TS.LABELVALUESEARCH",
-            LabelSearchType::MetricName => "TS.METRICNAMES",
-        };
-        if parsed.series_filter.matchers.is_empty() {
-            return Err(ValkeyError::String(format!(
-                "{name} in cluster mode requires at least one matcher"
-            )));
-        }
         let operation = LabelSearchFanoutCommand::new(parsed)?;
         return operation.exec(ctx);
     }
 
-    // todo: if we have series filter with date range, put this onto a thread so we don't block the main thread with a potentially long search.
     if parsed.series_filter.date_range.is_some() {
         let blocked_client = ctx.block_client();
 
@@ -342,7 +374,7 @@ pub(super) fn run_label_search(
             let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
             let ctx = thread_ctx.lock();
             let results = process_label_search_request(&ctx, &parsed)
-                .map(|r| label_search_result_to_valkey_value(r, parsed.include_score));
+                .map(|r| label_search_result_to_valkey_value(r, parsed.include_metadata));
             thread_ctx.reply(results);
         });
 
@@ -350,9 +382,9 @@ pub(super) fn run_label_search(
         return Ok(ValkeyValue::NoReply);
     }
 
-    let results = process_label_search_request(ctx, &parsed)?;
+    let query_result = process_label_search_request(ctx, &parsed)?;
     Ok(label_search_result_to_valkey_value(
-        results,
-        parsed.include_score,
+        query_result,
+        parsed.include_metadata,
     ))
 }
