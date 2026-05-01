@@ -25,7 +25,7 @@ def exec_sorted_values(client, *args):
     return values
 
 
-class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
+class TestTsLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
