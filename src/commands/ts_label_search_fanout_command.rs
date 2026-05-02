@@ -6,8 +6,8 @@ use crate::commands::fanout::{
 use crate::commands::label_search_utils::{LabelNameSearchArgs, process_label_search_request};
 use crate::fanout::{FanoutClientCommand, FanoutCommandResult, FanoutContext, NodeInfo};
 use crate::series::index::{
-    FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SearchHints, SearchResultOrdering,
-    apply_search_hints,
+    FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SEARCH_RESULT_LIMIT_MAX,
+    SearchHints, SearchResultOrdering, apply_search_hints,
 };
 use crate::series::request_types::MatchFilterOptions;
 use ahash::AHashMap;
@@ -153,7 +153,11 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             filters,
             include_metadata: self.args.include_metadata,
             sort_order: sort_order.into(),
-            limit: self.limit as u32,
+            // Send the maximum shard limit so each shard returns all local matches.
+            // The coordinator applies the user's actual limit after merging shard results,
+            // ensuring that values which appear across multiple shards are merged and
+            // cardinality is summed correctly before truncation.
+            limit: SEARCH_RESULT_LIMIT_MAX as u32,
         }
     }
 

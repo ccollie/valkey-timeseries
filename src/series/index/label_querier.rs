@@ -798,7 +798,6 @@ mod tests {
     #[test]
     fn collect_unscoped_label_values_orders_ascending() {
         let postings = build_label_values_postings();
-        let filter = SimilarityFilter::default();
         let hints = SearchHints {
             filter: None,
             limit: 10,
@@ -815,7 +814,6 @@ mod tests {
     #[test]
     fn collect_unscoped_label_values_orders_descending() {
         let postings = build_label_values_postings();
-        let filter = SimilarityFilter::default();
         let hints = SearchHints {
             filter: None,
             limit: 10,
@@ -842,7 +840,6 @@ mod tests {
     #[test]
     fn collect_unscoped_label_names_orders_ascending() {
         let postings = build_label_names_postings();
-        let filter = SimilarityFilter::default();
         let hints = SearchHints {
             filter: None,
             limit: 10,
@@ -860,7 +857,6 @@ mod tests {
     #[test]
     fn collect_unscoped_label_names_orders_descending() {
         let postings = build_label_names_postings();
-        let filter = SimilarityFilter::default();
         let hints = SearchHints {
             filter: None,
             limit: 10,
