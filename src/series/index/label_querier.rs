@@ -645,39 +645,50 @@ fn collect_label_values(
         ) || search_hints.include_meta;
 
         let mut result = Vec::with_capacity(DEFAULT_LIMIT);
+        let mut result_indexes: AHashMap<String, usize> = if need_cardinality {
+            AHashMap::with_capacity(DEFAULT_LIMIT)
+        } else {
+            AHashMap::default()
+        };
         // todo! set a max limit on the number of series we scan here, to avoid OOM or long processing times
         // for very broad selectors with many matches. We can still apply the filter and return results,
         // but we should avoid scanning an unbounded number of series.
         let matched_series = series_by_selectors(ctx, &opts.selectors, opts.date_range)?;
         for (ts, _) in matched_series {
             if let Some(label) = ts.get_label(label_name) {
-                // DO NOT use seen.insert(), as it would require an allocation even if the label value is already seen
-                if seen.contains(label.value) {
+                let (accepted, score) = filter.accept(label.value);
+
+                if !accepted {
                     continue;
                 }
 
-                let value = label.value.to_string();
-                seen.insert(value);
+                if need_cardinality {
+                    if let Some(idx) = result_indexes.get(label.value) {
+                        result[*idx].cardinality += 1;
+                        continue;
+                    }
 
-                let (accepted, score) = filter.accept(label.value);
+                    let value = label.value.to_string();
+                    let idx = result.len();
+                    result_indexes.insert(value.clone(), idx);
+                    result.push(LabelSearchResult {
+                        value,
+                        score,
+                        cardinality: 1,
+                    });
+                } else {
+                    // DO NOT use seen.insert(), as it would require an allocation even if the label value is already seen
+                    if seen.contains(label.value) {
+                        continue;
+                    }
 
-                if accepted {
-                    // fetch the cardinality
-                    let cardinality = if need_cardinality {
-                        let label_postings =
-                            postings.postings_for_label_value(label_name, label.value);
-                        if label_postings.is_empty() {
-                            continue;
-                        }
-                        label_postings.cardinality() as usize
-                    } else {
-                        0
-                    };
+                    let value = label.value.to_string();
+                    seen.insert(value.clone());
 
                     result.push(LabelSearchResult {
-                        value: label.value.to_string(),
+                        value,
                         score,
-                        cardinality,
+                        cardinality: 0,
                     });
                 }
             }
