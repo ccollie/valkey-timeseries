@@ -41,7 +41,10 @@ TS.LABELNAMES
 
 ### Return
 
-Array reply of matching label names.
+Map reply with the following fields:
+
+- `results`: array of matching label names.
+- `has_more`: boolean indicating whether more results are available.
 
 ### Example
 
