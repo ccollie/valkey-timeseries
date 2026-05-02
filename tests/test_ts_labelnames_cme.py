@@ -45,12 +45,6 @@ class TestTsLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         client.execute_command('TS.CREATE', TS9, 'LABELS', 'location', 'datacenter', 'rack', 'rack1', "ts9",
                                "1")  # Different labels
 
-    def exec_sorted_values(self, *args):
-        """Helper method to execute a command and return a LabelValuesResponse"""
-        result = self.client.execute_command('TS.LABELNAMES', *args)
-        result = LabelSearchResponse.parse(result)
-        values = sorted([lv.value for lv in result.results])
-        return values
 
     def test_labelnames_with_filter(self):
         """Test TS.LABELNAMES with FILTER parameter"""

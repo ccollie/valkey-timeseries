@@ -105,7 +105,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         };
 
         process_label_search_request(ctx, &parsed).map(|results| LabelSearchResponse {
-            has_more: false, // TODO: implement has_more
+            has_more: results.has_more,
             results: results
                 .into_iter()
                 .map(|r| FanoutLabelSearchResult {

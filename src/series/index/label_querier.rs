@@ -8,7 +8,9 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::index::key_buffer::KeyBuffer;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MetaDateRangeFilter;
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
+use itertools::Itertools;
+use std::cmp::Ordering;
 use std::fmt::Display;
 use valkey_module::{Context, ValkeyError};
 
@@ -65,6 +67,35 @@ pub enum SearchResultOrdering {
     CardinalityAsc,
     /// Orders results descending by Cardinality, breaking ties ascending by Value.
     CardinalityDesc,
+}
+
+impl SearchResultOrdering {
+    pub fn is_ascending(&self) -> bool {
+        matches!(
+            self,
+            SearchResultOrdering::ValueAsc | SearchResultOrdering::CardinalityAsc
+        )
+    }
+
+    pub fn is_descending(&self) -> bool {
+        matches!(
+            self,
+            SearchResultOrdering::ValueDesc
+                | SearchResultOrdering::ScoreDesc
+                | SearchResultOrdering::CardinalityDesc
+        )
+    }
+
+    pub fn sort_field(&self) -> SortBy {
+        match self {
+            SearchResultOrdering::ValueAsc | SearchResultOrdering::ValueDesc => SortBy::Value,
+            SearchResultOrdering::ScoreDesc => SortBy::Score,
+            SearchResultOrdering::CardinalityAsc |
+            SearchResultOrdering::CardinalityDesc => {
+                SortBy::Cardinality
+            }
+        }
+    }
 }
 
 /// SelectHints specifies hints passed for data selections.
@@ -165,6 +196,50 @@ impl LabelQueryResult {
     pub fn new(results: Vec<LabelSearchResult>, has_more: bool) -> Self {
         Self { results, has_more }
     }
+
+    /// Merges another query result into this one.
+    ///
+    /// Duplicate values are coalesced by summing cardinality and keeping the best score.
+    /// The merged set is then sorted and limited according to `order_by` and `limit`.
+    pub fn merge_from(
+        &mut self,
+        other: LabelQueryResult,
+        order_by: SearchResultOrdering,
+        limit: usize,
+    ) {
+        let mut merged: AHashMap<String, LabelSearchResult> =
+            AHashMap::with_capacity(self.results.len() + other.results.len());
+
+        for item in self.results.drain(..).chain(other.results.into_iter()) {
+            match merged.get_mut(&item.value) {
+                Some(existing) => {
+                    existing.cardinality += item.cardinality;
+                    if item.score > existing.score {
+                        existing.score = item.score;
+                    }
+                }
+                None => {
+                    let key = item.value.clone();
+                    merged.insert(key, item);
+                }
+            }
+        }
+
+        let merged_has_more = merged.len() > limit;
+
+        let results = if merged_has_more {
+            let comparator = compare_search_results(order_by);
+            let mut items: Vec<_> = merged.into_values().collect();
+            items.sort_by(comparator);
+            items.truncate(limit);
+            items
+        } else {
+            collect_limited_with_heap(merged.into_values().into_iter(), order_by, limit).results
+        };
+
+        self.has_more = self.has_more || other.has_more || merged_has_more;
+        self.results = results;
+    }
 }
 
 impl std::ops::Deref for LabelQueryResult {
@@ -219,36 +294,32 @@ pub trait LabelQuerier {
 /// is first emitted by the streaming merge.
 fn compare_search_results(
     order: SearchResultOrdering,
-) -> impl Fn(&LabelSearchResult, &LabelSearchResult) -> std::cmp::Ordering {
-    fn value_asc(a: &LabelSearchResult, b: &LabelSearchResult) -> std::cmp::Ordering {
+) -> impl Fn(&LabelSearchResult, &LabelSearchResult) -> Ordering {
+    fn value_asc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
         a.value.cmp(&b.value)
     }
 
-    fn value_desc(a: &LabelSearchResult, b: &LabelSearchResult) -> std::cmp::Ordering {
+    fn value_desc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
         b.value.cmp(&a.value)
     }
 
-    fn score_desc(a: &LabelSearchResult, b: &LabelSearchResult) -> std::cmp::Ordering {
-        match b
-            .score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-        {
-            std::cmp::Ordering::Equal => value_asc(a, b),
+    fn score_desc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
+        match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
+            Ordering::Equal => value_asc(a, b),
             other => other,
         }
     }
 
-    fn cardinality_asc(a: &LabelSearchResult, b: &LabelSearchResult) -> std::cmp::Ordering {
+    fn cardinality_asc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
         match a.cardinality.cmp(&b.cardinality) {
-            std::cmp::Ordering::Equal => value_asc(a, b),
+            Ordering::Equal => value_asc(a, b),
             other => other,
         }
     }
 
-    fn cardinality_desc(a: &LabelSearchResult, b: &LabelSearchResult) -> std::cmp::Ordering {
+    fn cardinality_desc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
         match b.cardinality.cmp(&a.cardinality) {
-            std::cmp::Ordering::Equal => value_asc(a, b),
+            Ordering::Equal => value_asc(a, b),
             other => other,
         }
     }
@@ -262,6 +333,15 @@ fn compare_search_results(
     }
 }
 
+fn normalize_limit(limit: usize) -> usize {
+    if limit == 0 {
+        SEARCH_RESULT_DEFAULT_LIMIT
+    } else {
+        limit
+    }
+        .min(SEARCH_RESULT_LIMIT_MAX)
+}
+
 /// `apply_search_hints` sorts and limits a slice of values according to hints,
 /// returning a [`LabelQueryResult`] that includes a `has_more` flag indicating
 /// whether any entries were truncated at the limit.
@@ -269,7 +349,7 @@ pub(crate) fn apply_search_hints(
     mut values: Vec<LabelSearchResult>,
     hints: &SearchHints,
 ) -> LabelQueryResult {
-    let limit = hints.limit;
+    let limit = normalize_limit(hints.limit);
 
     let comparator = compare_search_results(hints.order_by);
     values.sort_by(comparator);
@@ -300,9 +380,8 @@ fn collect_limited(
     iter: impl Iterator<Item=LabelSearchResult>,
     limit: usize,
 ) -> LabelQueryResult {
-    if limit == 0 {
-        return LabelQueryResult::new(iter.collect(), false);
-    }
+    let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
+
     let mut items: Vec<LabelSearchResult> = iter.take(limit + 1).collect();
     let has_more = items.len() > limit;
     if has_more {
@@ -311,95 +390,135 @@ fn collect_limited(
     LabelQueryResult::new(items, has_more)
 }
 
+/// `collect_limited_with_heap` keeps only the best `limit` results in memory for non-value
+/// orderings where we cannot stream directly from the index order.
+fn collect_limited_with_heap(
+    iter: impl Iterator<Item=LabelSearchResult>,
+    order: SearchResultOrdering,
+    limit: usize,
+) -> LabelQueryResult {
+    let cmp = match order.sort_field() {
+        SortBy::Value => |a: &LabelSearchResult, b: &LabelSearchResult| a.value.cmp(&b.value),
+        SortBy::Score => |a: &LabelSearchResult, b: &LabelSearchResult| {
+            match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
+                Ordering::Equal => a.value.cmp(&b.value),
+                other => other,
+            }
+        },
+        SortBy::Cardinality => |a: &LabelSearchResult, b: &LabelSearchResult| {
+            a.cardinality.cmp(&b.cardinality).then(a.value.cmp(&b.value))
+        },
+    };
+
+    let mut items = if order.is_ascending() {
+        iter.k_smallest_relaxed_by(limit + 1, &cmp)
+    } else {
+        iter.k_largest_relaxed_by(limit + 1, &cmp)
+    }
+        .collect::<Vec<_>>();
+
+    items.sort_by(compare_search_results(order));
+
+    let has_more = items.len() > limit;
+    if has_more {
+        items.truncate(limit);
+    }
+
+    LabelQueryResult::new(items, has_more)
+}
+
 /// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly
 fn collect_unscoped_label_names(
     postings: &Postings,
-    filter: &dyn FuzzyFilter,
     hints: &SearchHints,
 ) -> LabelQueryResult {
-    let limit = hints.limit.min(SEARCH_RESULT_LIMIT_MAX);
+    let limit = normalize_limit(hints.limit);
 
-    let check = |(entry, map): (&IndexKey, &PostingsBitmap)| {
-        if map.is_empty() {
-            return None;
-        }
-        let (key, _) = entry.split()?;
-        let (accepted, score) = filter.accept(key);
-        let cardinality = map.cardinality() as usize;
+    with_search_filter(hints, |filter| {
+        let check = |(entry, map): (&IndexKey, &PostingsBitmap)| {
+            if map.is_empty() {
+                return None;
+            }
+            let (key, _) = entry.split()?;
+            let (accepted, score) = filter.accept(key);
+            let cardinality = map.cardinality() as usize;
 
-        accepted.then(|| LabelSearchResult {
-            value: key.to_owned(),
-            score,
-            cardinality,
-        })
-    };
+            accepted.then(|| LabelSearchResult {
+                value: key.to_owned(),
+                score,
+                cardinality,
+            })
+        };
 
-    match hints.order_by {
-        SearchResultOrdering::ValueAsc => {
-            collect_limited(postings.label_index.iter().filter_map(check), limit)
+        match hints.order_by {
+            SearchResultOrdering::ValueAsc => {
+                collect_limited(postings.label_index.iter().filter_map(check), limit)
+            }
+            SearchResultOrdering::ValueDesc => {
+                collect_limited(postings.label_index.iter().rev().filter_map(check), limit)
+            }
+            SearchResultOrdering::ScoreDesc
+            | SearchResultOrdering::CardinalityAsc
+            | SearchResultOrdering::CardinalityDesc => collect_limited_with_heap(
+                postings.label_index.iter().filter_map(check),
+                hints.order_by,
+                limit,
+            ),
         }
-        SearchResultOrdering::ValueDesc => {
-            collect_limited(postings.label_index.iter().rev().filter_map(check), limit)
-        }
-        SearchResultOrdering::ScoreDesc
-        | SearchResultOrdering::CardinalityAsc
-        | SearchResultOrdering::CardinalityDesc => {
-            let values = postings.label_index.iter().filter_map(check).collect();
-            apply_search_hints(values, hints)
-        }
-    }
+    })
 }
 
 fn collect_unscoped_label_values(
     postings: &Postings,
     label_name: &str,
-    filter: &dyn FuzzyFilter,
     hints: &SearchHints,
 ) -> LabelQueryResult {
-    let limit = hints.limit.min(SEARCH_RESULT_LIMIT_MAX);
+    let limit = normalize_limit(hints.limit);
     let prefix = KeyBuffer::for_prefix(label_name);
 
-    let check = |(entry, map): (&IndexKey, &PostingsBitmap)| {
-        if map.is_empty() {
-            return None;
-        }
-        let (_, value) = entry.split()?;
-        let (accepted, score) = filter.accept(value);
-        let cardinality = map.cardinality() as usize;
-        accepted.then(|| LabelSearchResult {
-            value: value.to_owned(),
-            score,
-            cardinality,
-        })
-    };
+    with_search_filter(hints, |filter| {
+        let check = |(entry, map): (&IndexKey, &PostingsBitmap)| {
+            if map.is_empty() {
+                return None;
+            }
+            let (_, value) = entry.split()?;
+            let (accepted, score) = filter.accept(value);
+            let cardinality = map.cardinality() as usize;
+            accepted.then(|| LabelSearchResult {
+                value: value.to_owned(),
+                score,
+                cardinality,
+            })
+        };
 
-    match hints.order_by {
-        SearchResultOrdering::ValueAsc => collect_limited(
-            postings
-                .label_index
-                .prefix(prefix.as_bytes())
-                .filter_map(check),
-            limit,
-        ),
-        SearchResultOrdering::ValueDesc => collect_limited(
-            postings
-                .label_index
-                .prefix(prefix.as_bytes())
-                .rev()
-                .filter_map(check),
-            limit,
-        ),
-        SearchResultOrdering::ScoreDesc
-        | SearchResultOrdering::CardinalityAsc
-        | SearchResultOrdering::CardinalityDesc => {
-            let values = postings
-                .label_index
-                .prefix(prefix.as_bytes())
-                .filter_map(check)
-                .collect();
-            apply_search_hints(values, hints)
+        match hints.order_by {
+            SearchResultOrdering::ValueAsc => collect_limited(
+                postings
+                    .label_index
+                    .prefix(prefix.as_bytes())
+                    .filter_map(check),
+                limit,
+            ),
+            SearchResultOrdering::ValueDesc => collect_limited(
+                postings
+                    .label_index
+                    .prefix(prefix.as_bytes())
+                    .rev()
+                    .filter_map(check),
+                limit,
+            ),
+            SearchResultOrdering::ScoreDesc
+            | SearchResultOrdering::CardinalityAsc
+            | SearchResultOrdering::CardinalityDesc => collect_limited_with_heap(
+                postings
+                    .label_index
+                    .prefix(prefix.as_bytes())
+                    .filter_map(check),
+                hints.order_by,
+                limit,
+            ),
         }
-    }
+    })
 }
 
 /// `get_label_cardinality` returns the cardinality of a label name by looking it up in the label index.
@@ -421,7 +540,7 @@ fn collect_label_names(
     let postings = index.get_postings();
     with_search_filter(hints, |filter| {
         if can_use_unscoped_scan(select_hints) {
-            return Ok(collect_unscoped_label_names(&postings, filter, hints));
+            return Ok(collect_unscoped_label_names(&postings, hints));
         }
 
         let mut names: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
@@ -447,8 +566,9 @@ fn collect_label_names(
                 if names.contains(label.name) {
                     continue;
                 }
-                let name = label.name.to_string();
-                let (accepted, score) = filter.accept(&name);
+                names.insert(label.name.to_string());
+
+                let (accepted, score) = filter.accept(label.name);
 
                 if accepted {
                     // fetch the cardinality
@@ -463,12 +583,11 @@ fn collect_label_names(
                     };
 
                     result.push(LabelSearchResult {
-                        value: name.to_string(),
+                        value: label.name.to_string(),
                         score,
                         cardinality,
                     });
                 }
-                names.insert(name);
             }
         }
 
@@ -494,7 +613,6 @@ fn collect_label_values(
             return Ok(collect_unscoped_label_values(
                 &postings,
                 label_name,
-                filter,
                 search_hints,
             ));
         }
@@ -521,13 +639,17 @@ fn collect_label_values(
                 if seen.contains(label.value) {
                     continue;
                 }
+
                 let value = label.value.to_string();
-                let (accepted, score) = filter.accept(&value);
+                seen.insert(value);
+
+                let (accepted, score) = filter.accept(label.value);
 
                 if accepted {
                     // fetch the cardinality
                     let cardinality = if need_cardinality {
-                        let label_postings = postings.postings_for_label_value(label_name, &value);
+                        let label_postings =
+                            postings.postings_for_label_value(label_name, label.value);
                         if label_postings.is_empty() {
                             continue;
                         }
@@ -537,12 +659,11 @@ fn collect_label_values(
                     };
 
                     result.push(LabelSearchResult {
-                        value: value.clone(),
+                        value: label.value.to_string(),
                         score,
                         cardinality,
                     });
                 }
-                seen.insert(value);
             }
         }
 
@@ -592,10 +713,37 @@ impl LabelQuerier for DefaultLabelQuerier {
 #[cfg(test)]
 mod tests {
     use super::{
-        FuzzyFilter, LabelQueryResult, Postings, SearchHints, SearchResultOrdering,
-        SimilarityFilter, collect_unscoped_label_names, collect_unscoped_label_values,
+        FuzzyFilter, LabelQueryResult, LabelSearchResult, Postings, SearchHints,
+        SearchResultOrdering, SimilarityFilter, collect_limited_with_heap, collect_unscoped_label_names,
+        collect_unscoped_label_values,
     };
     use crate::series::index::FuzzyAlgorithm;
+
+    struct StaticScoreFilter;
+
+    impl FuzzyFilter for StaticScoreFilter {
+        fn accept(&self, value: &str) -> (bool, f64) {
+            match value {
+                "us-east" => (true, 0.9),
+                "us-west" => (true, 0.9),
+                "eu-west" => (true, 0.4),
+                _ => (false, 0.0),
+            }
+        }
+    }
+
+    struct StaticNameScoreFilter;
+
+    impl FuzzyFilter for StaticNameScoreFilter {
+        fn accept(&self, value: &str) -> (bool, f64) {
+            match value {
+                "alpha" => (true, 0.9),
+                "beta" => (true, 0.9),
+                "gamma" => (true, 0.4),
+                _ => (false, 0.0),
+            }
+        }
+    }
 
     fn build_label_values_postings() -> Postings {
         let mut postings = Postings::default();
@@ -658,7 +806,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints);
+        let result = collect_unscoped_label_values(&postings, "region", &hints);
 
         assert!(!result.has_more);
         assert_eq!(values(result), vec!["eu-west", "us-east", "us-west"]);
@@ -675,7 +823,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints);
+        let result = collect_unscoped_label_values(&postings, "region", &hints);
 
         assert!(!result.has_more);
         assert_eq!(values(result), vec!["us-west", "us-east", "eu-west"]);
@@ -702,7 +850,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints);
+        let result = collect_unscoped_label_names(&postings, &hints);
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -720,7 +868,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints);
+        let result = collect_unscoped_label_names(&postings, &hints);
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -730,7 +878,6 @@ mod tests {
     #[test]
     fn collect_unscoped_label_values_sets_has_more_when_truncated() {
         let postings = build_label_values_postings();
-        let filter = SimilarityFilter::default();
         // limit of 2 when there are 3 region values → has_more must be true
         let hints = SearchHints {
             filter: None,
@@ -739,7 +886,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_values(&postings, "region", &filter, &hints);
+        let result = collect_unscoped_label_values(&postings, "region", &hints);
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
@@ -759,10 +906,23 @@ mod tests {
         postings
     }
 
+    fn build_label_values_cardinality_postings() -> Postings {
+        let mut postings = Postings::default();
+        // us-east -> cardinality 1
+        postings.add_posting_for_label_value(1, "region", "us-east");
+        // us-west -> cardinality 2
+        postings.add_posting_for_label_value(2, "region", "us-west");
+        postings.add_posting_for_label_value(3, "region", "us-west");
+        // eu-west -> cardinality 3
+        postings.add_posting_for_label_value(4, "region", "eu-west");
+        postings.add_posting_for_label_value(5, "region", "eu-west");
+        postings.add_posting_for_label_value(6, "region", "eu-west");
+        postings
+    }
+
     #[test]
     fn collect_unscoped_label_names_cardinality_orders_ascending() {
         let postings = build_label_names_cardinality_postings();
-        let filter = SimilarityFilter::default();
         let hints = SearchHints {
             filter: None,
             limit: 10,
@@ -770,7 +930,7 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints);
+        let result = collect_unscoped_label_names(&postings, &hints);
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
@@ -781,7 +941,6 @@ mod tests {
     #[test]
     fn collect_unscoped_label_names_cardinality_sets_has_more_when_truncated() {
         let postings = build_label_names_cardinality_postings();
-        let filter = SimilarityFilter::default();
         // limit of 2 when there are 3 label names -> has_more must be true
         let hints = SearchHints {
             filter: None,
@@ -790,12 +949,60 @@ mod tests {
             include_meta: false,
         };
 
-        let result = collect_unscoped_label_names(&postings, &filter, &hints);
+        let result = collect_unscoped_label_names(&postings, &hints);
 
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
         assert_eq!(values, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn collect_unscoped_label_names_score_orders_descending_with_ties() {
+        let postings = build_label_names_postings();
+        let hints = SearchHints {
+            filter: Some(Box::new(StaticNameScoreFilter)),
+            limit: 2,
+            order_by: SearchResultOrdering::ScoreDesc,
+            include_meta: false,
+        };
+
+        let result = collect_unscoped_label_names(&postings, &hints);
+
+        assert!(result.has_more);
+        assert_eq!(values(result), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn collect_unscoped_label_values_score_orders_descending_with_ties() {
+        let postings = build_label_values_postings();
+        let hints = SearchHints {
+            filter: Some(Box::new(StaticScoreFilter)),
+            limit: 2,
+            order_by: SearchResultOrdering::ScoreDesc,
+            include_meta: false,
+        };
+
+        let result = collect_unscoped_label_values(&postings, "region", &hints);
+
+        assert!(result.has_more);
+        assert_eq!(values(result), vec!["us-east", "us-west"]);
+    }
+
+    #[test]
+    fn collect_unscoped_label_values_cardinality_orders_descending_with_limit() {
+        let postings = build_label_values_cardinality_postings();
+        let hints = SearchHints {
+            filter: None,
+            limit: 2,
+            order_by: SearchResultOrdering::CardinalityDesc,
+            include_meta: false,
+        };
+
+        let result = collect_unscoped_label_values(&postings, "region", &hints);
+
+        assert!(result.has_more);
+        assert_eq!(values(result), vec!["eu-west", "us-west"]);
     }
 
     #[test]
@@ -831,5 +1038,142 @@ mod tests {
             "Expected 'node' to match subsequence 'nde' (score={})",
             score
         );
+    }
+
+    #[test]
+    fn label_query_result_merge_from_coalesces_duplicates() {
+        let mut left = LabelQueryResult::new(
+            vec![
+                LabelSearchResult {
+                    value: "a".into(),
+                    score: 0.5,
+                    cardinality: 2,
+                },
+                LabelSearchResult {
+                    value: "c".into(),
+                    score: 0.1,
+                    cardinality: 1,
+                },
+            ],
+            false,
+        );
+
+        let right = LabelQueryResult::new(
+            vec![
+                LabelSearchResult {
+                    value: "a".into(),
+                    score: 0.9,
+                    cardinality: 3,
+                },
+                LabelSearchResult {
+                    value: "b".into(),
+                    score: 0.7,
+                    cardinality: 4,
+                },
+            ],
+            true,
+        );
+
+        left.merge_from(right, SearchResultOrdering::ValueAsc, 10);
+
+        assert!(left.has_more);
+        assert_eq!(left.results.len(), 3);
+        assert_eq!(left.results[0].value, "a");
+        assert_eq!(left.results[0].score, 0.9);
+        assert_eq!(left.results[0].cardinality, 5);
+    }
+
+    #[test]
+    fn label_query_result_merge_from_sets_has_more_when_truncated() {
+        let mut left = LabelQueryResult::new(
+            vec![LabelSearchResult {
+                value: "a".into(),
+                score: 0.1,
+                cardinality: 1,
+            }],
+            false,
+        );
+
+        let right = LabelQueryResult::new(
+            vec![
+                LabelSearchResult {
+                    value: "b".into(),
+                    score: 0.2,
+                    cardinality: 1,
+                },
+                LabelSearchResult {
+                    value: "c".into(),
+                    score: 0.3,
+                    cardinality: 1,
+                },
+            ],
+            false,
+        );
+
+        left.merge_from(right, SearchResultOrdering::ValueAsc, 2);
+
+        assert!(left.has_more);
+        assert_eq!(values(left), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn collect_limited_with_heap_returns_sorted_results() {
+        let items = vec![
+            LabelSearchResult {
+                value: "c".to_string(),
+                score: 0.5,
+                cardinality: 3,
+            },
+            LabelSearchResult {
+                value: "a".to_string(),
+                score: 0.9,
+                cardinality: 1,
+            },
+            LabelSearchResult {
+                value: "b".to_string(),
+                score: 0.7,
+                cardinality: 2,
+            },
+        ];
+
+        // Test ValueAsc
+        let result = collect_limited_with_heap(
+            items.clone().into_iter(),
+            SearchResultOrdering::ValueAsc,
+            10,
+        );
+        assert_eq!(values(result), vec!["a", "b", "c"]);
+
+        // Test ValueDesc
+        let result = collect_limited_with_heap(
+            items.clone().into_iter(),
+            SearchResultOrdering::ValueDesc,
+            10,
+        );
+        assert_eq!(values(result), vec!["c", "b", "a"]);
+
+        // Test ScoreDesc
+        let result = collect_limited_with_heap(
+            items.clone().into_iter(),
+            SearchResultOrdering::ScoreDesc,
+            10,
+        );
+        assert_eq!(values(result), vec!["a", "b", "c"]);
+
+        // Test CardinalityAsc
+        let result = collect_limited_with_heap(
+            items.clone().into_iter(),
+            SearchResultOrdering::CardinalityAsc,
+            10,
+        );
+        assert_eq!(values(result), vec!["a", "b", "c"]);
+
+        // Test CardinalityDesc
+        let result = collect_limited_with_heap(
+            items.clone().into_iter(),
+            SearchResultOrdering::CardinalityDesc,
+            10,
+        );
+        assert_eq!(values(result), vec!["c", "b", "a"]);
     }
 }

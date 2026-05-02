@@ -13,6 +13,7 @@ use crate::series::index::{
 };
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -148,6 +149,7 @@ pub(super) fn parse_label_name_search_args(
     let mut args = args.into_iter().skip(1).peekable();
     let mut parsed = LabelNameSearchArgs::default();
     let mut sorting_specified = false;
+    let mut algo_specified = false;
 
     if search_type == LabelSearchType::Value {
         // For label value search, we require the label name to be specified as the first argument
@@ -199,6 +201,7 @@ pub(super) fn parse_label_name_search_args(
                 let value = args.next_str()?;
                 parsed.fuzzy_algorithm =
                     FuzzyAlgorithm::try_from(value).map_err(ValkeyError::String)?;
+                algo_specified = true;
             }
             LabelNameSearchToken::IgnoreCase => {
                 parsed.ignore_case = true;
@@ -234,6 +237,7 @@ pub(super) fn parse_label_name_search_args(
                 parsed.series_filter.limit = Some(limit);
             }
             LabelNameSearchToken::Filter => {
+                let filter_count = parsed.series_filter.matchers.len();
                 while let Some(next) = args.peek() {
                     if is_search_token(next.as_slice()) {
                         break;
@@ -242,6 +246,9 @@ pub(super) fn parse_label_name_search_args(
                     let selector = parse_series_selector(arg)
                         .map_err(|_| ValkeyError::Str(error_consts::MISSING_FILTER))?;
                     parsed.series_filter.matchers.push(selector);
+                }
+                if filter_count == parsed.series_filter.matchers.len() {
+                    return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
                 }
             }
             LabelNameSearchToken::FilterByRange => {
@@ -260,6 +267,17 @@ pub(super) fn parse_label_name_search_args(
             parsed.sort_order = SearchResultOrdering::ValueAsc;
         }
     }
+
+    if !algo_specified {
+        if !parsed.search_terms.is_empty() {
+            // if the user specified search terms but didn't specify an algorithm, we default to JaroWinkler
+            parsed.fuzzy_algorithm = FuzzyAlgorithm::JaroWinkler;
+        } else {
+            // if no search terms, the algorithm doesn't matter since it won't be used, so we can default to NoOp
+            parsed.fuzzy_algorithm = FuzzyAlgorithm::NoOp;
+        }
+    }
+
     // Search APIs default to a bounded response to keep metadata discovery interactive.
     if parsed.series_filter.limit.is_none() {
         parsed.series_filter.limit = Some(SEARCH_RESULT_DEFAULT_LIMIT);

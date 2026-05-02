@@ -159,10 +159,10 @@ impl FuzzyFilter for SimilarityFilter {
 }
 
 pub struct LabelNameSearchFilter {
-    /// Pre-normalized terms (lowercased when case-insensitive) for substring matching.
-    terms: Vec<String>,
     /// One `SimilarityFilter` per term; empty when `fuzz_threshold == 0`.
     similarity_filters: Vec<SimilarityFilter>,
+    /// Terms for substring matching when `fuzz_threshold == 0`.
+    substring_terms: Option<Vec<String>>,
     /// Retained for candidate normalization in the substring check.
     case_sensitive: bool,
 }
@@ -197,8 +197,12 @@ impl LabelNameSearchFilter {
         };
 
         Self {
-            terms: normalized_terms,
             similarity_filters,
+            substring_terms: if fuzz_threshold == 0.0 {
+                Some(normalized_terms)
+            } else {
+                None
+            },
             case_sensitive,
         }
     }
@@ -206,18 +210,22 @@ impl LabelNameSearchFilter {
 
 impl FuzzyFilter for LabelNameSearchFilter {
     fn accept(&self, value: &str) -> (bool, f64) {
-        if self.similarity_filters.is_empty() {
-            // No fuzzy threshold set: fall back to substring containment check.
-            if self.terms.is_empty() {
-                return (true, 1.0);
-            }
-            let candidate = if self.case_sensitive {
+        // If no fuzzy filters were created (FUZZY_THRESHOLD == 0.0)
+        // perform a simple substring/prefix containment check using
+        // the pre-normalized `terms`. This preserves the intended
+        // behaviour of SEARCH when no fuzzy threshold is provided.
+        if let Some(terms) = &self.substring_terms {
+            let normalized_value = if self.case_sensitive {
                 value.to_string()
             } else {
                 value.to_lowercase()
             };
-            let accepted = self.terms.iter().any(|t| candidate.contains(t.as_str()));
-            return (accepted, if accepted { 1.0 } else { 0.0 });
+            for term in terms {
+                if normalized_value.contains(term) {
+                    return (true, 1.0);
+                }
+            }
+            return (false, 0.0);
         }
 
         let mut accepted = false;

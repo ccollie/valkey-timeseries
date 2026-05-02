@@ -345,6 +345,7 @@ class TestTsLabelNames(ValkeyTimeSeriesTestCaseBase):
             'SEARCH', 'node',
             'INCLUDE_METADATA',
         )
+        print(f"SEARCH 'node' results with scores: {[(lv.value, lv.score) for lv in result.results]}")
         assert len(result.results) >= 1
         # Results must be ordered score DESC (each score <= previous)
         scores = [lv.score for lv in result.results if lv.score is not None]

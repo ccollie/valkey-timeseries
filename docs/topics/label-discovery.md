@@ -115,5 +115,5 @@ You want to find the most frequently used label names in your dataset to underst
 including the exact counts (`INCLUDE_METADATA`):
 
 ```text
-TS.LABELNAMES INCLUDE_METADATA true SORTBY cardinality DESC LIMIT 10
+TS.LABELNAMES INCLUDE_METADATA SORTBY cardinality DESC LIMIT 10
 ```
