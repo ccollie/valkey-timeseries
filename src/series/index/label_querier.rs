@@ -435,35 +435,51 @@ fn collect_unscoped_label_names(
     let limit = normalize_limit(hints.limit);
 
     with_search_filter(hints, |filter| {
-        let check = |(entry, map): (&IndexKey, &PostingsBitmap)| {
-            if map.is_empty() {
-                return None;
-            }
-            let (key, _) = entry.split()?;
-            let (accepted, score) = filter.accept(key);
-            let cardinality = map.cardinality() as usize;
+        let mut results_by_label = AHashMap::new();
 
-            accepted.then(|| LabelSearchResult {
-                value: key.to_owned(),
-                score,
-                cardinality,
-            })
-        };
+        for (entry, map) in postings.label_index.iter() {
+            if map.is_empty() {
+                continue;
+            }
+
+            let Some((key, _)) = entry.split() else {
+                continue;
+            };
+
+            let (accepted, score) = filter.accept(key);
+            if !accepted {
+                continue;
+            }
+
+            let cardinality = map.cardinality() as usize;
+            results_by_label
+                .entry(key.to_owned())
+                .and_modify(|result: &mut LabelSearchResult| {
+                    result.cardinality += cardinality;
+                })
+                .or_insert_with(|| LabelSearchResult {
+                    value: key.to_owned(),
+                    score,
+                    cardinality,
+                });
+        }
+
+        let mut results: Vec<_> = results_by_label.into_values().collect();
 
         match hints.order_by {
             SearchResultOrdering::ValueAsc => {
-                collect_limited(postings.label_index.iter().filter_map(check), limit)
+                results.sort_by(|a, b| a.value.cmp(&b.value));
+                collect_limited(results.into_iter(), limit)
             }
             SearchResultOrdering::ValueDesc => {
-                collect_limited(postings.label_index.iter().rev().filter_map(check), limit)
+                results.sort_by(|a, b| b.value.cmp(&a.value));
+                collect_limited(results.into_iter(), limit)
             }
             SearchResultOrdering::ScoreDesc
             | SearchResultOrdering::CardinalityAsc
-            | SearchResultOrdering::CardinalityDesc => collect_limited_with_heap(
-                postings.label_index.iter().filter_map(check),
-                hints.order_by,
-                limit,
-            ),
+            | SearchResultOrdering::CardinalityDesc => {
+                collect_limited_with_heap(results.into_iter(), hints.order_by, limit)
+            }
         }
     })
 }
