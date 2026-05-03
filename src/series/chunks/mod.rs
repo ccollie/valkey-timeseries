@@ -9,6 +9,9 @@ mod timeseries_chunk_tests;
 mod uncompressed;
 pub(crate) mod utils;
 mod tsxor;
+mod xor2;
+mod bstream;
+mod bstream_reader;
 
 pub(crate) use tsxor::*;
 

@@ -383,7 +383,7 @@ impl Chunk for TsXorChunk {
         )?;
 
         self.compressor = merge_state.encoder;
-        self.refresh_state_from_compressor();
+        // self.refresh_state_from_compressor();
         Ok(merge_state.result)
     }
 
@@ -409,7 +409,7 @@ impl Chunk for TsXorChunk {
             }
         }
         self.compressor = encoder;
-        self.refresh_state_from_compressor();
+        // self.refresh_state_from_compressor();
         Ok(right_chunk)
     }
 
