@@ -90,8 +90,7 @@ impl SearchResultOrdering {
         match self {
             SearchResultOrdering::ValueAsc | SearchResultOrdering::ValueDesc => SortBy::Value,
             SearchResultOrdering::ScoreDesc => SortBy::Score,
-            SearchResultOrdering::CardinalityAsc |
-            SearchResultOrdering::CardinalityDesc => {
+            SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc => {
                 SortBy::Cardinality
             }
         }
@@ -234,7 +233,7 @@ impl LabelQueryResult {
             items.truncate(limit);
             items
         } else {
-            collect_limited_with_heap(merged.into_values().into_iter(), order_by, limit).results
+            collect_limited_with_heap(merged.into_values(), order_by, limit).results
         };
 
         self.has_more = self.has_more || other.has_more || merged_has_more;
@@ -399,14 +398,18 @@ fn collect_limited_with_heap(
 ) -> LabelQueryResult {
     let cmp = match order.sort_field() {
         SortBy::Value => |a: &LabelSearchResult, b: &LabelSearchResult| a.value.cmp(&b.value),
-        SortBy::Score => |a: &LabelSearchResult, b: &LabelSearchResult| {
-            match b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal) {
-                Ordering::Equal => a.value.cmp(&b.value),
-                other => other,
-            }
+        SortBy::Score => |a: &LabelSearchResult, b: &LabelSearchResult| match b
+            .score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+        {
+            Ordering::Equal => a.value.cmp(&b.value),
+            other => other,
         },
         SortBy::Cardinality => |a: &LabelSearchResult, b: &LabelSearchResult| {
-            a.cardinality.cmp(&b.cardinality).then(a.value.cmp(&b.value))
+            a.cardinality
+                .cmp(&b.cardinality)
+                .then(a.value.cmp(&b.value))
         },
     };
 
@@ -428,14 +431,13 @@ fn collect_limited_with_heap(
 }
 
 /// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly
-fn collect_unscoped_label_names(
-    postings: &Postings,
-    hints: &SearchHints,
-) -> LabelQueryResult {
+fn collect_unscoped_label_names(postings: &Postings, hints: &SearchHints) -> LabelQueryResult {
     let limit = normalize_limit(hints.limit);
 
     with_search_filter(hints, |filter| {
-        let mut results_by_label = AHashMap::new();
+        let mut results: Vec<LabelSearchResult> = Vec::with_capacity(limit);
+        let mut current_name: Option<&str> = None;
+        let mut current_result: Option<LabelSearchResult> = None;
 
         for (entry, map) in postings.label_index.iter() {
             if map.is_empty() {
@@ -446,25 +448,30 @@ fn collect_unscoped_label_names(
                 continue;
             };
 
-            let (accepted, score) = filter.accept(key);
-            if !accepted {
-                continue;
-            }
+            if current_name != Some(key) {
+                if let Some(stored) = current_result.take() {
+                    results.push(stored);
+                }
 
-            let cardinality = map.cardinality() as usize;
-            results_by_label
-                .entry(key.to_owned())
-                .and_modify(|result: &mut LabelSearchResult| {
-                    result.cardinality += cardinality;
-                })
-                .or_insert_with(|| LabelSearchResult {
-                    value: key.to_owned(),
-                    score,
-                    cardinality,
-                });
+                current_name = Some(key);
+                let (accepted, score) = filter.accept(key);
+                current_result = if accepted {
+                    Some(LabelSearchResult {
+                        value: key.to_owned(),
+                        score,
+                        cardinality: map.cardinality() as usize,
+                    })
+                } else {
+                    None
+                };
+            } else if let Some(active) = current_result.as_mut() {
+                active.cardinality += map.cardinality() as usize;
+            }
         }
 
-        let mut results: Vec<_> = results_by_label.into_values().collect();
+        if let Some(stored) = current_result {
+            results.push(stored);
+        }
 
         match hints.order_by {
             SearchResultOrdering::ValueAsc => {
@@ -644,7 +651,7 @@ fn collect_label_values(
             SearchResultOrdering::CardinalityAsc | SearchResultOrdering::CardinalityDesc
         ) || search_hints.include_meta;
 
-        let mut result = Vec::with_capacity(DEFAULT_LIMIT);
+        let mut result: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
         let mut result_indexes: AHashMap<String, usize> = if need_cardinality {
             AHashMap::with_capacity(DEFAULT_LIMIT)
         } else {
@@ -741,8 +748,8 @@ impl LabelQuerier for DefaultLabelQuerier {
 mod tests {
     use super::{
         FuzzyFilter, LabelQueryResult, LabelSearchResult, Postings, SearchHints,
-        SearchResultOrdering, SimilarityFilter, collect_limited_with_heap, collect_unscoped_label_names,
-        collect_unscoped_label_values,
+        SearchResultOrdering, SimilarityFilter, collect_limited_with_heap,
+        collect_unscoped_label_names, collect_unscoped_label_values,
     };
     use crate::series::index::FuzzyAlgorithm;
 
