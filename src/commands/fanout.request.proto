@@ -108,6 +108,26 @@ message IndexQueryRequest {
   repeated SeriesSelector filters = 2;
 }
 
+enum LabelSearchType {
+  NAME = 0;
+  VALUE = 1;
+  METRIC_NAME = 2;
+}
+
+enum FuzzySearchAlgorithm {
+  NOOP = 0;
+  JARO_WINKLER = 1;
+  SUBSEQUENCE = 2;
+}
+
+enum LabelResultsSortOrder {
+  SCORE_DESC = 0;
+  VALUE_ASC = 1;
+  VALUE_DESC = 2;
+  CARDINALITY_ASC = 3;
+  CARDINALITY_DESC = 4;
+}
+
 message LabelNamesRequest {
   MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;
@@ -117,6 +137,20 @@ message LabelValuesRequest {
   string label = 1;
   MetaDateRangeFilter range = 2;
   repeated SeriesSelector filters = 3;
+}
+
+message LabelSearchRequest {
+  LabelSearchType request_type = 1;
+  string label = 2;
+  repeated string search_terms = 3;
+  double fuzz_threshold = 4;
+  FuzzySearchAlgorithm fuzz_algorithm = 5;
+  bool ignore_case = 6;
+  bool include_metadata = 8;
+  MetaDateRangeFilter range = 9;
+  repeated SeriesSelector filters = 10;
+  LabelResultsSortOrder sort_order = 11;
+  uint32 limit = 12;
 }
 
 message CardinalityRequest {

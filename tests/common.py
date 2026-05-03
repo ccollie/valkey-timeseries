@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import os
 import re
 from sys import platform
+from dataclasses import dataclass, field
+from typing import Optional, List, Any
 
 from valkey.commands.timeseries.utils import list_to_dict
 
 CWD = os.path.dirname(os.path.realpath(__file__))
-ROOT_PATH = os.path.abspath(os.path.join(CWD, "../.."))
+ROOT_PATH = os.path.abspath(os.path.join(CWD, ".."))
 
 WORK_DIR = 'work'
 RDB_PATH = os.path.join(CWD, 'rdbs')
@@ -281,3 +285,187 @@ def parse_stats_response(response):
                 stats[key_str] = value
  
     return stats
+
+
+_EXPECTED_RESP2_MAP_KEYS = frozenset({"results", "has_more", b"results", b"has_more"})
+
+
+def _try_unwrap_resp2_map(response):
+    """Detect and convert a RESP2-encoded map (flat alternating key-value list) to a dict.
+
+    In RESP2, a server-side ``ValkeyValue::Map`` is serialised as a flat list of
+    2*N elements – alternating keys and values – instead of a native Python dict.
+    We identify this pattern by:
+      1. The response is a list with an even, non-zero number of elements.
+      2. All even-indexed "key" positions are strings/bytes from the known set
+         {``results``, ``has_more``}.
+      3. Both ``results`` and ``has_more`` keys are present.
+
+    Requiring both expected keys (and no unexpected ones) prevents mis-detecting
+    legitimate legacy result arrays that happen to contain the string ``"results"``
+    as a label value at an even index.
+
+    If the pattern matches, a plain Python dict is returned.  Otherwise ``None``
+    is returned so callers can fall through to other handling.
+
+    HashMap key order is unspecified, so both orderings are handled:
+      ``[b"has_more", 0,  b"results", [...]]``
+      ``[b"results",  [...], b"has_more", 0]``
+    """
+    if not isinstance(response, list) or len(response) < 2 or len(response) % 2 != 0:
+        return None
+
+    seen_keys = set()
+    for i in range(0, len(response), 2):
+        key = response[i]
+        # Metadata payloads are often nested lists (e.g. [[value, score, card], ...]).
+        # Those are not RESP2 map keys, so bail out early instead of hashing them.
+        if not isinstance(key, (str, bytes)):
+            return None
+        if key not in _EXPECTED_RESP2_MAP_KEYS:
+            return None
+        seen_keys.add(key)
+
+    # Normalise to str keys for the presence check
+    normalised = {k.decode() if isinstance(k, bytes) else k for k in seen_keys}
+    if "results" not in normalised or "has_more" not in normalised:
+        return None
+
+    result = {}
+    for i in range(0, len(response), 2):
+        result[response[i]] = response[i + 1]
+    return result
+
+
+def parse_labelsearch_response(response):
+    """
+    Normalize TS.LABELVALUES server response and return a list of `LabelValue`.
+
+    The server may return either:
+      - legacy: a bare array of bulkstrings [b'val1', b'val2', ...], or
+      - new: a map { 'has_more': bool, 'results': [...] } where results may contain
+        either bulkstrings or arrays with metadata [value, score, cardinality].
+
+    This helper returns a list of `LabelValue` objects. It delegates to
+    `LabelValue.parse_response` so both forms are normalized the same way.
+    """
+    # Delegate to LabelValue.parse_response for uniform behavior
+    return LabelValue.parse_response(response)
+
+
+@dataclass
+class LabelValue:
+    """Represents a single value returned from TS.LABELVALUES.
+
+    Fields:
+      value: the raw value (bytes or str depending on server binding)
+      score: optional numeric score (when server returns value metadata)
+      cardinality: optional integer cardinality (when server returns value metadata)
+    """
+    value: Any
+    score: Optional[float] = None
+    cardinality: Optional[int] = None
+
+    @classmethod
+    def parse_response(cls, response) -> List["LabelValue"]:
+        """
+        Parse a TS.LABELVALUES server response into a list of LabelValue objects.
+
+        The server may return either:
+          - legacy: a bare array of bulkstrings [b'val1', b'val2', ...], or
+          - new: a map { 'has_more': bool, 'results': [...] } where results may contain
+            either bulkstrings or arrays with metadata [value, score, cardinality].
+
+        This method normalizes both forms and always returns a list of LabelValue.
+        """
+        if not response:
+            return []
+
+        # In RESP2 a ValkeyValue::Map arrives as a flat alternating key-value
+        # list.  Detect and convert that before the normal dict branch.
+        if not isinstance(response, dict):
+            unwrapped = _try_unwrap_resp2_map(response)
+            if unwrapped is not None:
+                response = unwrapped
+
+        # If server returned a map-like object, extract the results key.
+        if isinstance(response, dict):
+            results = response.get(b"results") or response.get("results") or []
+        else:
+            results = response
+
+        parsed: List[LabelValue] = []
+        for item in results:
+            if isinstance(item, (list, tuple)) and len(item) > 0:
+                # metadata form: [value, score?, cardinality?]
+                value = item[0]
+                score = None
+                cardinality = None
+                if len(item) > 1:
+                    try:
+                        score = float(item[1])
+                    except Exception:
+                        score = item[1]
+                if len(item) > 2:
+                    try:
+                        cardinality = int(item[2])
+                    except Exception:
+                        cardinality = None
+                parsed.append(cls(value=value, score=score, cardinality=cardinality))
+            else:
+                parsed.append(cls(value=item))
+
+        return parsed
+
+
+@dataclass
+class LabelSearchResponse:
+    """Encapsulates the full TS.LABELVALUES/TS.LABELNAMES/TS.METRICNAMES response.
+
+    Fields:
+      has_more: whether the server indicates more results are available
+      results: list of LabelValue entries
+    """
+    has_more: bool = False
+    results: List[LabelValue] = field(default_factory=list)
+
+    def contains_value(self, value: bytes) -> bool:
+        """Check if the response contains a specific label value."""
+        return any(lv.value == value for lv in self.results)
+
+    @classmethod
+    def parse(cls, response) -> "LabelSearchResponse":
+        """Parse a server response (legacy list or dict with metadata) into a
+        LabelValuesResponse instance."""
+        if not response:
+            return cls(has_more=False, results=[])
+
+        # In RESP2 a ValkeyValue::Map arrives as a flat alternating key-value
+        # list.  Detect and convert that before the normal dict branch so that
+        # both has_more and results are extracted correctly.
+        if not isinstance(response, dict):
+            unwrapped = _try_unwrap_resp2_map(response)
+            if unwrapped is not None:
+                response = unwrapped
+
+        # If server returned a map-like response with metadata
+        if isinstance(response, dict):
+            # Extract has_more (can be bool, int, or bytes)
+            raw_has_more = response.get(b"has_more") if (b"has_more" in response) else response.get("has_more")
+            has_more = False
+            if raw_has_more is not None:
+                if isinstance(raw_has_more, bytes):
+                    try:
+                        has_more = raw_has_more.decode('utf-8').lower() in ("1", "true")
+                    except Exception:
+                        has_more = bool(raw_has_more)
+                else:
+                    has_more = bool(raw_has_more)
+
+            raw_results = response.get(b"results") or response.get("results") or []
+            results = LabelValue.parse_response(raw_results)
+            return cls(has_more=has_more, results=results)
+
+        # Legacy response: assume plain list of bulkstrings -> no has_more
+        results = LabelValue.parse_response(response)
+        return cls(has_more=False, results=results)

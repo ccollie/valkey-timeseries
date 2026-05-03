@@ -796,7 +796,7 @@ pub fn parse_range_options(args: &mut CommandArgIterator) -> ValkeyResult<RangeO
     Ok(options)
 }
 
-pub fn parse_filter_by_range_options(
+pub(super) fn parse_filter_by_range_options(
     args: &mut CommandArgIterator,
 ) -> ValkeyResult<MetaDateRangeFilter> {
     let mut exclude_range = false;
@@ -815,7 +815,7 @@ pub fn parse_filter_by_range_options(
     }
 }
 
-pub fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
+pub(super) fn parse_mrange_options(args: &mut CommandArgIterator) -> ValkeyResult<MRangeOptions> {
     const RANGE_OPTION_ARGS: [CommandArgToken; 12] = [
         CommandArgToken::Align,
         CommandArgToken::Aggregation,

@@ -11,6 +11,7 @@ pub mod rdb;
 pub mod replies;
 pub mod rounding;
 pub mod string_interner;
+pub mod strings;
 pub mod threads;
 pub mod time;
 mod types;
