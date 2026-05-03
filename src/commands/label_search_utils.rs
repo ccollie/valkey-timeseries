@@ -13,7 +13,6 @@ use crate::series::index::{
 };
 use crate::series::request_types::MatchFilterOptions;
 use std::collections::HashMap;
-use std::fmt::Debug;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -234,6 +233,9 @@ pub(super) fn parse_label_name_search_args(
                     .next_u64()
                     .map_err(|_| ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE))?
                     as usize;
+                if limit == 0 || limit > SEARCH_RESULT_LIMIT_MAX {
+                    return Err(ValkeyError::Str(error_consts::INVALID_LIMIT_VALUE));
+                }
                 parsed.series_filter.limit = Some(limit);
             }
             LabelNameSearchToken::Filter => {
@@ -285,10 +287,14 @@ pub(super) fn parse_label_name_search_args(
         ));
     }
 
-    // Search APIs default to a bounded response to keep metadata discovery interactive.
-    if parsed.series_filter.limit.is_none() {
+    // when LIMIT is omitted, they should return the full result set. Keep the
+    // bounded default only for metric-name discovery.
+    if parsed.series_filter.limit.is_none()
+        && matches!(parsed.search_type, LabelSearchType::MetricName)
+    {
         parsed.series_filter.limit = Some(SEARCH_RESULT_DEFAULT_LIMIT);
     }
+
 
     Ok(parsed)
 }
