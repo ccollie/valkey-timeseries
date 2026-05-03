@@ -223,9 +223,7 @@ fn jaro_winkler_long(
     // byte values; for real Unicode the actual distinct char count is usually small.
     let mut char_masks: HashMap<char, Vec<u64>> = HashMap::with_capacity(s1_len.min(256));
     for (j, &c) in left.iter().enumerate() {
-        char_masks
-            .entry(c)
-            .or_insert_with(|| vec![0u64; s1_words])[j >> 6] |= 1u64 << (j & 63);
+        char_masks.entry(c).or_insert_with(|| vec![0u64; s1_words])[j >> 6] |= 1u64 << (j & 63);
     }
 
     let mut s1m = vec![0u64; s1_words];

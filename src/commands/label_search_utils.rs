@@ -295,7 +295,6 @@ pub(super) fn parse_label_name_search_args(
         parsed.series_filter.limit = Some(SEARCH_RESULT_DEFAULT_LIMIT);
     }
 
-
     Ok(parsed)
 }
 
