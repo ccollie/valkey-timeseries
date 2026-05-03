@@ -3,8 +3,9 @@ use super::{
     series_by_selectors,
 };
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::error::TsdbResult;
+use crate::error::{TsdbError, TsdbResult};
 use crate::labels::filters::SeriesSelector;
+use crate::series::acl::check_metadata_permissions;
 use crate::series::index::key_buffer::KeyBuffer;
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MetaDateRangeFilter;
@@ -705,6 +706,12 @@ fn collect_label_values(
     })
 }
 
+fn validate_permissions(ctx: &Context) -> TsdbResult<()> {
+    check_metadata_permissions(ctx).map_err(|_| {
+        TsdbError::PermissionsError("insufficient permissions to query labels".to_string())
+    })
+}
+
 #[derive(Default)]
 pub struct DefaultLabelQuerier;
 
@@ -715,6 +722,7 @@ impl LabelQuerier for DefaultLabelQuerier {
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult> {
+        validate_permissions(ctx)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
         collect_label_names(ctx, select_hints.as_ref(), hints)
@@ -727,6 +735,7 @@ impl LabelQuerier for DefaultLabelQuerier {
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult> {
+        validate_permissions(ctx)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
         collect_label_values(ctx, name, select_hints.as_ref(), hints)
@@ -738,6 +747,7 @@ impl LabelQuerier for DefaultLabelQuerier {
         select_hints: Option<SelectHints>,
         search_hints: Option<&SearchHints>,
     ) -> TsdbResult<LabelQueryResult> {
+        validate_permissions(ctx)?;
         let default_hints = SearchHints::default();
         let hints = search_hints.unwrap_or(&default_hints);
         collect_label_values(ctx, METRIC_NAME_LABEL, select_hints.as_ref(), hints)
