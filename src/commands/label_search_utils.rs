@@ -278,6 +278,13 @@ pub(super) fn parse_label_name_search_args(
         }
     }
 
+    // if we have a date range, we require a matcher to prevent expensive unbounded queries
+    if parsed.series_filter.date_range.is_some() && parsed.series_filter.matchers.is_empty() {
+        return Err(ValkeyError::Str(
+            "TSDB: at least one FILTER is required when filtering by date range",
+        ));
+    }
+
     // Search APIs default to a bounded response to keep metadata discovery interactive.
     if parsed.series_filter.limit.is_none() {
         parsed.series_filter.limit = Some(SEARCH_RESULT_DEFAULT_LIMIT);
