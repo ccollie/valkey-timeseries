@@ -13,7 +13,13 @@
 // OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 // ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+use std::collections::HashMap;
+
 /// Calculates the Jaro-Winkler distance of two strings.
+///
+/// Comparison is performed on Unicode scalar values (chars), not raw UTF-8
+/// bytes. This ensures that multi-byte characters are treated as single units
+/// and non-ASCII strings are scored correctly.
 ///
 /// The return value is between 0.0 and 1.0, where 1.0 means the strings are equal.
 ///
@@ -27,13 +33,15 @@
 /// assert_eq!(jaro_winkler("same", "same"), 1.0);
 /// ```
 pub fn jaro_winkler(left_: &str, right_: &str) -> f32 {
-    let llen = left_.len();
-    let rlen = right_.len();
+    let left_chars: Vec<char> = left_.chars().collect();
+    let right_chars: Vec<char> = right_.chars().collect();
+    let llen = left_chars.len();
+    let rlen = right_chars.len();
 
     let (left, right, s1_len, s2_len) = if llen < rlen {
-        (right_, left_, rlen, llen)
+        (right_chars.as_slice(), left_chars.as_slice(), rlen, llen)
     } else {
-        (left_, right_, llen, rlen)
+        (left_chars.as_slice(), right_chars.as_slice(), llen, rlen)
     };
 
     match (s1_len, s2_len) {
@@ -42,21 +50,17 @@ pub fn jaro_winkler(left_: &str, right_: &str) -> f32 {
         (_, _) => (),
     }
 
-    let left_as_bytes = left.as_bytes();
-    let right_as_bytes = right.as_bytes();
-
-    if s1_len == s2_len && left_as_bytes == right_as_bytes {
+    if s1_len == s2_len && left == right {
         return 1.0;
     }
 
     let range = matching_distance(s1_len, s2_len);
 
     if s1_len > 128 {
-        return jaro_winkler_long(left_as_bytes, right_as_bytes, s1_len, s2_len, range);
+        return jaro_winkler_long(left, right, s1_len, s2_len, range);
     }
 
-    // Both strings fit in 128 bits — use raw u128 bitmasks directly,
-    // no enum dispatch overhead.
+    // Both strings fit in 128 chars — use u128 bitmasks directly.
     let mut s1m: u128 = 0;
     let mut s2m: u128 = 0;
     let mut matching: f32 = 0.0;
@@ -67,7 +71,7 @@ pub fn jaro_winkler(left_: &str, right_: &str) -> f32 {
         let mut j = i.saturating_sub(range);
         let l = (i + range + 1).min(s1_len);
         while j < l {
-            if right_as_bytes[i] == left_as_bytes[j] && (s1m >> j) & 1 != 1 {
+            if right[i] == left[j] && (s1m >> j) & 1 != 1 {
                 s1m |= 1 << j;
                 s2m |= 1 << i;
                 matching += 1.0;
@@ -98,32 +102,25 @@ pub fn jaro_winkler(left_: &str, right_: &str) -> f32 {
                 j += 1;
             }
 
-            if right_as_bytes[i] != left_as_bytes[j] {
+            if right[i] != left[j] {
                 transpositions += 1.0;
             }
         }
     }
     transpositions = (transpositions / 2.0).ceil();
 
-    winkler(
-        matching,
-        transpositions,
-        s1_len,
-        s2_len,
-        left_as_bytes,
-        right_as_bytes,
-    )
+    winkler(matching, transpositions, s1_len, s2_len, left, right)
 }
 
-/// Bit-parallel Jaro-Winkler for strings where s1_len > 128.
+/// Bit-parallel Jaro-Winkler for strings where s1_len > 128 chars.
 ///
-/// Instead of scanning the match window byte-by-byte, we precompute a bitmask
-/// for each byte value, recording all positions where it occurs in the longer
-/// string. Matching then reduces to bitwise AND/NOT operations per 64-bit word,
-/// replacing ~range byte comparisons with ~(range/64) word operations.
+/// Instead of scanning the match window char-by-char, we precompute a bitmask
+/// for each distinct char value, recording all positions where it occurs in the
+/// longer string. Matching then reduces to bitwise AND/NOT operations per 64-bit
+/// word, replacing ~range char comparisons with ~(range/64) word operations.
 fn jaro_winkler_long(
-    left_as_bytes: &[u8],
-    right_as_bytes: &[u8],
+    left: &[char],
+    right: &[char],
     s1_len: usize,
     s2_len: usize,
     range: usize,
@@ -131,10 +128,13 @@ fn jaro_winkler_long(
     let s1_words = (s1_len + 63) >> 6;
     let s2_words = (s2_len + 63) >> 6;
 
-    // Precompute: for each byte value, a bitmask of positions in left where it occurs
-    let mut char_masks = vec![0u64; 256 * s1_words];
-    for (j, &b) in left_as_bytes.iter().enumerate() {
-        char_masks[(b as usize) * s1_words + (j >> 6)] |= 1u64 << (j & 63);
+    // Precompute: for each char, a bitmask of positions in left where it occurs.
+    // Using a HashMap because chars have a large domain (unlike the 256-byte case).
+    let mut char_masks: HashMap<char, Vec<u64>> = HashMap::new();
+    for (j, &c) in left.iter().enumerate() {
+        char_masks
+            .entry(c)
+            .or_insert_with(|| vec![0u64; s1_words])[j >> 6] |= 1u64 << (j & 63);
     }
 
     let mut s1m = vec![0u64; s1_words];
@@ -142,38 +142,40 @@ fn jaro_winkler_long(
     let mut matching: f32 = 0.0;
 
     for i in 0..s2_len {
-        let target = right_as_bytes[i] as usize;
+        let target = right[i];
         let j_start = i.saturating_sub(range);
         let j_end = (i + range + 1).min(s1_len);
 
         let start_word = j_start >> 6;
         let end_word = ((j_end - 1) >> 6) + 1;
 
-        for w in start_word..end_word.min(s1_words) {
-            let mut candidates = char_masks[target * s1_words + w] & !s1m[w];
+        if let Some(masks) = char_masks.get(&target) {
+            for w in start_word..end_word.min(s1_words) {
+                let mut candidates = masks[w] & !s1m[w];
 
-            // Mask out bits outside the match window in boundary words
-            let lo = if w == start_word { j_start & 63 } else { 0 };
-            let hi = if w == end_word - 1 {
-                let b = j_end & 63;
-                if b == 0 { 64 } else { b }
-            } else {
-                64
-            };
+                // Mask out bits outside the match window in boundary words.
+                let lo = if w == start_word { j_start & 63 } else { 0 };
+                let hi = if w == end_word - 1 {
+                    let b = j_end & 63;
+                    if b == 0 { 64 } else { b }
+                } else {
+                    64
+                };
 
-            if lo > 0 {
-                candidates &= !((1u64 << lo) - 1);
-            }
-            if hi < 64 {
-                candidates &= (1u64 << hi) - 1;
-            }
+                if lo > 0 {
+                    candidates &= !((1u64 << lo) - 1);
+                }
+                if hi < 64 {
+                    candidates &= (1u64 << hi) - 1;
+                }
 
-            if candidates != 0 {
-                let bit = candidates.trailing_zeros();
-                s1m[w] |= 1u64 << bit;
-                s2m[i >> 6] |= 1u64 << (i & 63);
-                matching += 1.0;
-                break;
+                if candidates != 0 {
+                    let bit = candidates.trailing_zeros();
+                    s1m[w] |= 1u64 << bit;
+                    s2m[i >> 6] |= 1u64 << (i & 63);
+                    matching += 1.0;
+                    break;
+                }
             }
         }
     }
@@ -196,21 +198,14 @@ fn jaro_winkler_long(
                 }
                 j += 1;
             }
-            if right_as_bytes[i] != left_as_bytes[j] {
+            if right[i] != left[j] {
                 transpositions += 1.0;
             }
         }
     }
     transpositions = (transpositions / 2.0).ceil();
 
-    winkler(
-        matching,
-        transpositions,
-        s1_len,
-        s2_len,
-        left_as_bytes,
-        right_as_bytes,
-    )
+    winkler(matching, transpositions, s1_len, s2_len, left, right)
 }
 
 fn winkler(
@@ -218,17 +213,17 @@ fn winkler(
     transpositions: f32,
     s1_len: usize,
     s2_len: usize,
-    left_as_bytes: &[u8],
-    right_as_bytes: &[u8],
+    left: &[char],
+    right: &[char],
 ) -> f32 {
     let jaro = (matching / (s1_len as f32)
         + matching / (s2_len as f32)
         + (matching - transpositions) / matching)
         / 3.0;
 
-    let prefix_length = left_as_bytes
+    let prefix_length = left
         .iter()
-        .zip(right_as_bytes)
+        .zip(right)
         .take(4)
         .take_while(|(l, r)| l == r)
         .count() as f32;
@@ -260,24 +255,25 @@ mod tests {
         assert_eq!(jaro_winkler("hell", "hello"), 0.96_f32);
     }
 
-    /// Reference implementation using the standard (non-bit-parallel) algorithm.
-    /// Used to validate the optimized bit-parallel path produces identical results.
+    /// Reference implementation using the standard (non-bit-parallel) algorithm
+    /// operating on Unicode scalar values. Used to validate that the optimised
+    /// bit-parallel path produces identical results.
     fn jaro_winkler_reference(left_: &str, right_: &str) -> f64 {
-        let llen = left_.len();
-        let rlen = right_.len();
+        let left_chars: Vec<char> = left_.chars().collect();
+        let right_chars: Vec<char> = right_.chars().collect();
+        let llen = left_chars.len();
+        let rlen = right_chars.len();
         let (left, right, s1_len, s2_len) = if llen < rlen {
-            (right_, left_, rlen, llen)
+            (right_chars.as_slice(), left_chars.as_slice(), rlen, llen)
         } else {
-            (left_, right_, llen, rlen)
+            (left_chars.as_slice(), right_chars.as_slice(), llen, rlen)
         };
         match (s1_len, s2_len) {
             (0, 0) => return 1.0,
             (0, _) | (_, 0) => return 0.0,
             _ => (),
         }
-        let left_as_bytes = left.as_bytes();
-        let right_as_bytes = right.as_bytes();
-        if s1_len == s2_len && left_as_bytes == right_as_bytes {
+        if s1_len == s2_len && left == right {
             return 1.0;
         }
         let range = (s1_len.max(s2_len) / 2).saturating_sub(1);
@@ -289,7 +285,7 @@ mod tests {
             let j_start = (i as isize - range as isize).max(0) as usize;
             let j_end = (i + range + 1).min(s1_len);
             for j in j_start..j_end {
-                if right_as_bytes[i] == left_as_bytes[j] && !s1m[j] {
+                if right[i] == left[j] && !s1m[j] {
                     s1m[j] = true;
                     s2m[i] = true;
                     matching += 1.0;
@@ -311,7 +307,7 @@ mod tests {
                     }
                     j += 1;
                 }
-                if right_as_bytes[i] != left_as_bytes[j] {
+                if right[i] != left[j] {
                     transpositions += 1.0;
                 }
             }
@@ -321,9 +317,9 @@ mod tests {
             + matching / (s2_len as f64)
             + (matching - transpositions) / matching)
             / 3.0;
-        let prefix_length = left_as_bytes
+        let prefix_length = left
             .iter()
-            .zip(right_as_bytes)
+            .zip(right)
             .take(4)
             .take_while(|(l, r)| l == r)
             .count() as f64;
@@ -372,6 +368,12 @@ mod tests {
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
+            // Non-ASCII: identical Unicode strings score 1.0
+            ("café", "café"),
+            // Non-ASCII: completely different multibyte strings score < 1.0
+            ("日本語", "中文"),
+            // Non-ASCII: partial overlap of multibyte chars
+            ("naïve", "naive"),
         ];
 
         for (a, b) in &pairs {
@@ -396,5 +398,25 @@ mod tests {
                 reference
             );
         }
+    }
+
+    /// Identical non-ASCII strings must score exactly 1.0.
+    #[test]
+    fn non_ascii_identical_scores_one() {
+        assert_eq!(jaro_winkler("café", "café"), 1.0);
+        assert_eq!(jaro_winkler("日本語", "日本語"), 1.0);
+        assert_eq!(jaro_winkler("Ünïcödé", "Ünïcödé"), 1.0);
+    }
+
+    /// Completely different non-ASCII strings must score < 1.0 (previously
+    /// raw-byte comparison could produce false matches due to shared encoding bytes).
+    #[test]
+    fn non_ascii_different_scores_below_one() {
+        // These Japanese and Chinese strings share no Unicode scalar values.
+        let score = jaro_winkler("日本語", "中文字");
+        assert!(
+            score < 1.0,
+            "expected score < 1.0 for unrelated non-ASCII strings, got {score}"
+        );
     }
 }
