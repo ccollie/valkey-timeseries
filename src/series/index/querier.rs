@@ -44,6 +44,7 @@ pub fn series_by_selectors<'a>(
     collect_series_from_postings(ctx, &postings, series_refs.iter(), range)
 }
 
+#[allow(dead_code)]
 pub(super) fn series_posting_ids_by_selectors<'a>(
     ctx: &Context,
     selectors: &[SeriesSelector],
