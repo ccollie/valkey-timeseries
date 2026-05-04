@@ -44,16 +44,11 @@ pub trait FanoutClientCommand: Default + Send + 'static {
             if let Ok(mut bc) = bc_for_closure.lock() {
                 bc.set_private_data(op, result);
             }
-            // bc_for_closure drops here; if this is the last Arc the
-            // FanoutBlockedClient::drop impl fires and calls unblock().
         };
 
         let exec_result = Self::exec_command(self, ctx, handle_response);
         match exec_result {
             Ok(()) => {
-                // blocked_client drops here (refcount 2 → 1).
-                // bc_for_closure is still alive inside FanoutState;
-                // unblocking happens asynchronously when the closure runs.
                 Ok(ValkeyValue::NoReply)
             }
             Err(err) => {
@@ -67,7 +62,7 @@ pub trait FanoutClientCommand: Default + Send + 'static {
 
                 // Dropping the last Arc triggers unblock(), and the reply_callback
                 // will send the error reply based on the stored fanout_result.
-                drop(blocked_client); // refcount 1 → 0, triggers unblock()
+                drop(blocked_client);
                 Ok(ValkeyValue::NoReply)
             }
         }
@@ -102,7 +97,7 @@ impl<T: FanoutClientCommand> FanoutCommand for T {
         &mut self,
         resp: Self::Response,
         target: &NodeInfo,
-    ) -> crate::fanout::FanoutCommandResult {
+    ) -> FanoutCommandResult {
         FanoutClientCommand::on_response(self, resp, target)
     }
 }
