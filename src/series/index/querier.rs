@@ -137,7 +137,7 @@ pub(super) fn collect_series_from_postings<'a>(
 fn get_multi_series_by_id<'a>(
     ctx: &'a Context,
     postings: &Postings,
-    ids: impl Iterator<Item=SeriesRef>,
+    ids: impl Iterator<Item = SeriesRef>,
 ) -> ValkeyResult<Vec<(SeriesGuard<'a>, ValkeyString)>> {
     let capacity_estimate = ids.size_hint().1.unwrap_or(8);
     let mut result = Vec::with_capacity(capacity_estimate);

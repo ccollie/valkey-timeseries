@@ -140,7 +140,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
             FuzzyAlgorithm::Subsequence => FuzzySearchAlgorithm::Subsequence,
             FuzzyAlgorithm::NoOp => FuzzySearchAlgorithm::Noop,
         }
-            .into();
+        .into();
 
         LabelSearchRequest {
             request_type: self.args.search_type.into(),
