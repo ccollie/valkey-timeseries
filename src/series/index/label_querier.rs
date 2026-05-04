@@ -11,10 +11,10 @@ use crate::series::index::postings::Postings;
 use crate::series::request_types::MetaDateRangeFilter;
 use ahash::{AHashMap, AHashSet};
 use itertools::Itertools;
+use min_max_heap::MinMaxHeap;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::ops::Bound;
-use min_max_heap::MinMaxHeap;
 use valkey_module::{Context, ValkeyError};
 
 const DEFAULT_LIMIT: usize = 100;
@@ -296,9 +296,7 @@ type ComparisonFn = fn(&LabelSearchResult, &LabelSearchResult) -> Ordering;
 /// value alone. For `OrderByScoreDesc` the order is (score desc, value asc),
 /// which is a total order and defines the position at which a duplicate value
 /// is first emitted by the streaming merge.
-fn compare_search_results(
-    order: SearchResultOrdering,
-) -> ComparisonFn {
+fn compare_search_results(order: SearchResultOrdering) -> ComparisonFn {
     fn value_asc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
         a.value.cmp(&b.value)
     }
@@ -622,14 +620,6 @@ fn get_label_names_top_k(
     let mut scanned = 0usize;
     let cmp_fn = compare_search_results(order);
 
-    // The `compare_search_results` comparators are sort-order comparators: `Less` means
-    // "appears earlier in the desired output". This means that the element that should come
-    // *first* is the *minimum* in the heap's eyes, and the element that should come *last*
-    // (i.e., the one to discard when over the limit) is the *maximum*. Therefore:
-    //   - always use `pop_max()` to evict the worst candidate, and
-    //   - always use `drain_asc()` (min → max) to emit results in correct output order.
-    // This holds for both ascending and descending `order` variants.
-
     'outer: loop {
         let start_bound: Bound<&[u8]> = Bound::Excluded(key_buf.as_bytes());
 
@@ -647,6 +637,10 @@ fn get_label_names_top_k(
                 if let Some(stored) = current_result.take() {
                     heap.push(HeapResultHolder(stored, cmp_fn));
                     if heap.len() > limit {
+                        // Evict the worst candidate according to the comparator. The
+                        // comparator is a sort-order comparator where `Less` means
+                        // "appears earlier in the desired output", so the element that
+                        // should be removed when over capacity is the maximum.
                         heap.pop_max();
                         has_more = true;
                     }
@@ -686,6 +680,8 @@ fn get_label_names_top_k(
         }
     }
 
+    // The comparator encodes the desired total output order. Drain ascending
+    // (min -> max) to emit results in that order.
     let results: Vec<LabelSearchResult> = heap.drain_asc().map(|h| h.0).collect();
 
     LabelQueryResult::new(results, has_more)
@@ -857,7 +853,6 @@ fn collect_label_values(
             ));
         }
 
-        let mut seen: AHashSet<String> = AHashSet::with_capacity(DEFAULT_LIMIT);
         // at this point we know we have non-empty selectors or a date range, but do the jig to
         // keep the compiler happy
         let default_hints = SelectHints::default();
@@ -869,52 +864,49 @@ fn collect_label_values(
         ) || search_hints.include_meta;
 
         let mut result: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
-        let mut result_indexes: AHashMap<String, usize> = if need_cardinality {
-            AHashMap::with_capacity(DEFAULT_LIMIT)
-        } else {
-            AHashMap::default()
-        };
+        // Cache filter outcomes by value: `Some(idx)` means accepted and stored at result[idx],
+        // `None` means rejected. This avoids repeated filter calls for duplicates.
+        let mut value_state: AHashMap<String, Option<usize>> =
+            AHashMap::with_capacity(DEFAULT_LIMIT);
+
         // todo! set a max limit on the number of series we scan here, to avoid OOM or long processing times
         // for very broad selectors with many matches. We can still apply the filter and return results,
         // but we should avoid scanning an unbounded number of series.
         let matched_series = series_by_selectors(ctx, &opts.selectors, opts.date_range)?;
         for (ts, _) in matched_series {
             if let Some(label) = ts.get_label(label_name) {
-                let (accepted, score) = filter.accept(label.value);
+                let val = label.value;
 
-                if !accepted {
+                if let Some(state) = value_state.get(val) {
+                    if need_cardinality && let Some(idx) = state {
+                        result[*idx].cardinality += 1;
+                    }
                     continue;
                 }
 
-                if need_cardinality {
-                    if let Some(idx) = result_indexes.get(label.value) {
-                        result[*idx].cardinality += 1;
-                        continue;
-                    }
+                let (accepted, score) = filter.accept(val);
 
-                    let value = label.value.to_string();
-                    let idx = result.len();
-                    result_indexes.insert(value.clone(), idx);
+                if !accepted {
+                    value_state.insert(val.to_string(), None);
+                    continue;
+                }
+
+                let value = val.to_string();
+                let idx = result.len();
+                if need_cardinality {
                     result.push(LabelSearchResult {
-                        value,
+                        value: value.clone(),
                         score,
                         cardinality: 1,
                     });
                 } else {
-                    // DO NOT use seen.insert(), as it would require an allocation even if the label value is already seen
-                    if seen.contains(label.value) {
-                        continue;
-                    }
-
-                    let value = label.value.to_string();
-                    seen.insert(value.clone());
-
                     result.push(LabelSearchResult {
-                        value,
+                        value: value.clone(),
                         score,
                         cardinality: 0,
                     });
                 }
+                value_state.insert(value, Some(idx));
             }
         }
 
