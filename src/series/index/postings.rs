@@ -204,11 +204,10 @@ impl Postings {
             if map.is_empty() {
                 continue;
             }
-            if let Some((name, _)) = key.split() {
-                if !names.contains(name) {
+            if let Some((name, _)) = key.split()
+                && !names.contains(name) {
                     names.insert(name.to_owned());
                 }
-            }
         }
         names
     }
