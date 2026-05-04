@@ -38,6 +38,12 @@ enum MatcherOpType {
   NOT_EQUAL = 1;
   REGEX_EQUAL = 2;
   REGEX_NOT_EQUAL = 3;
+  STARTS_WITH = 4;
+  NOT_STARTS_WITH = 5;
+  CONTAINS = 6;
+  NOT_CONTAINS = 7;
+  MATCH_ALL = 8;
+  MATCH_NONE = 9;
 }
 
 enum MatchersConnector  {
@@ -51,18 +57,26 @@ message FilterListValue {
 
 message FilterPredicateValue {
   oneof label_value {
-    string value = 1;
-    FilterListValue values = 2;
+    bool empty = 1;
+    string single = 2;
+    FilterListValue list = 3;
   }
+}
+
+message RegexFilterValue {
+  string regex = 1;
+  string prefix = 2;
+  string suffix = 3;
 }
 
 message LabelFilter {
   string label = 1;
   MatcherOpType op = 2;
-  oneof value {
-    bool empty = 3;
-    string single = 4;
-    FilterListValue list = 5;
+  oneof matcher {
+    FilterPredicateValue predicate = 3;
+    RegexFilterValue regex = 4;
+    string prefix = 5;
+    string contains = 6;
   }
 }
 

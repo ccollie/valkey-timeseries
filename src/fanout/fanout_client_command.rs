@@ -48,9 +48,7 @@ pub trait FanoutClientCommand: Default + Send + 'static {
 
         let exec_result = Self::exec_command(self, ctx, handle_response);
         match exec_result {
-            Ok(()) => {
-                Ok(ValkeyValue::NoReply)
-            }
+            Ok(()) => Ok(ValkeyValue::NoReply),
             Err(err) => {
                 // Set an error payload so the reply_callback sends back the
                 // proper error message instead of "No reply data".
@@ -93,11 +91,7 @@ impl<T: FanoutClientCommand> FanoutCommand for T {
         FanoutClientCommand::generate_request(self)
     }
 
-    fn on_response(
-        &mut self,
-        resp: Self::Response,
-        target: &NodeInfo,
-    ) -> FanoutCommandResult {
+    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult {
         FanoutClientCommand::on_response(self, resp, target)
     }
 }

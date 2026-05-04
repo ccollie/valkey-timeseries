@@ -29,16 +29,25 @@ mod tests {
         if op.is_regex() {
             panic!("regex matchers are not supported in list matchers");
         }
-        let expected = if op == MatchOp::Equal {
-            LabelFilter {
+        let value = PredicateValue::List(values);
+        let expected = match op {
+            MatchOp::Equal => LabelFilter {
                 label: label.to_string(),
-                matcher: PredicateMatch::Equal(PredicateValue::List(values)),
-            }
-        } else {
-            LabelFilter {
+                matcher: PredicateMatch::Equal(value.clone()),
+            },
+            MatchOp::NotEqual => LabelFilter {
                 label: label.to_string(),
-                matcher: PredicateMatch::NotEqual(PredicateValue::List(values)),
-            }
+                matcher: PredicateMatch::NotEqual(value.clone()),
+            },
+            MatchOp::StartsWith => LabelFilter {
+                label: label.to_string(),
+                matcher: PredicateMatch::StartsWith(value.clone()),
+            },
+            MatchOp::NotStartsWith => LabelFilter {
+                label: label.to_string(),
+                matcher: PredicateMatch::NotStartsWith(value),
+            },
+            _ => panic!("unsupported list matcher op: {op:?}"),
         };
         assert_eq!(
             matcher, &expected,
@@ -346,6 +355,90 @@ mod tests {
                 "flavor",
                 MatchOp::NotEqual,
                 &["original", "cajun", "extra spicy"],
+            );
+        });
+    }
+
+    #[test]
+    fn redis_ts_selector_starts_with_with_lists() {
+        let input = "service^=(api,worker,\"batch-job\")";
+        let result = parse_series_selector(input).unwrap();
+
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 1);
+
+            let matcher = &matchers[0];
+            assert_list_matcher(
+                matcher,
+                "service",
+                MatchOp::StartsWith,
+                &["api", "worker", "batch-job"],
+            );
+        });
+    }
+
+    #[test]
+    fn prometheus_selector_not_starts_with_with_lists() {
+        let input = r#"{service^~(api,worker)}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 1);
+
+            let matcher = &matchers[0];
+            assert_list_matcher(
+                matcher,
+                "service",
+                MatchOp::NotStartsWith,
+                &["api", "worker"],
+            );
+        });
+    }
+
+    #[test]
+    fn starts_with_selector_rejects_empty_values() {
+        for input in ["service^=\"\"", "service^=(api,\"\")", "{service^=()}"] {
+            let err = parse_series_selector(input).expect_err("empty prefix values should fail");
+            assert!(
+                err.to_string()
+                    .contains("starts with matcher does not allow empty values"),
+                "unexpected error for {input:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn regex_match_all_selector_normalizes_to_match_all() {
+        let input = r#"{service=~".*", instance=~"^.*$"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 2);
+            assert_eq!(matchers[0].label, "service");
+            assert!(matches!(matchers[0].matcher, PredicateMatch::MatchAll));
+            assert_eq!(matchers[1].label, "instance");
+            assert!(matches!(matchers[1].matcher, PredicateMatch::MatchAll));
+        });
+    }
+
+    #[test]
+    fn regex_not_match_all_selector_normalizes_to_match_none() {
+        let input = r#"{service!~".*", instance!~"^.*$"}"#;
+        let result = parse_series_selector(input).unwrap();
+
+        with_and_matchers(&result, |matchers| {
+            assert_eq!(matchers.len(), 2);
+            assert_eq!(matchers[0].label, "service");
+            assert!(
+                matches!(matchers[0].matcher, PredicateMatch::MatchNone),
+                "unexpected matcher: {:?}",
+                matchers[0].matcher
+            );
+            assert_eq!(matchers[1].label, "instance");
+            assert!(
+                matches!(matchers[1].matcher, PredicateMatch::MatchNone),
+                "unexpected matcher: {:?}",
+                matchers[1].matcher
             );
         });
     }
