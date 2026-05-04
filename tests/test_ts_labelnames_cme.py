@@ -4,6 +4,7 @@ from valkey import ValkeyCluster, Valkey
 from valkeytestframework.util.waiters import *
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
+from common import LabelSearchResponse
 
 TS1 = 'ts1:{1}'
 TS2 = 'ts2:{2}'
@@ -16,7 +17,15 @@ TS8 = 'ts8:{2}'
 TS9 = 'ts9:{3}'
 
 
-class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
+def exec_sorted_values(client, *args):
+    """Helper method to execute a command and return a LabelValuesResponse"""
+    result = client.execute_command('TS.LABELNAMES', *args)
+    result = LabelSearchResponse.parse(result)
+    values = sorted([lv.value for lv in result.results])
+    return values
+
+
+class TestTsLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
 
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
@@ -36,6 +45,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         client.execute_command('TS.CREATE', TS9, 'LABELS', 'location', 'datacenter', 'rack', 'rack1', "ts9",
                                "1")  # Different labels
 
+
     def test_labelnames_with_filter(self):
         """Test TS.LABELNAMES with FILTER parameter"""
 
@@ -45,11 +55,11 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster_client)
 
         # Get label names for CPU series
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER', 'name=cpu')
         assert result == [b'name', b'node', b'ts1', b'ts2', b'ts5', b'ts6', b'type']
 
         # Get label names for node1 series
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'node=node1')
+        result = exec_sorted_values(client, 'FILTER', 'node=node1')
         assert result == [b'name', b'node', b'ts1', b'ts3', b'ts5', b'type']
 
     def test_labelnames_with_multiple_filters(self):
@@ -60,11 +70,11 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster_client)
 
         # Get label names for CPU usage series
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu', 'type=usage')
+        result = exec_sorted_values(client, 'FILTER', 'name=cpu', 'type=usage')
         assert result == [b'name', b'node', b'ts1', b'ts2', b'type']
 
         # Get label names for series with the location label
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'location=datacenter')
+        result = exec_sorted_values(client, 'FILTER', 'location=datacenter')
         assert result == [b'location', b'rack', b'ts9']
 
     def test_labelnames_with_regex_filters(self):
@@ -75,11 +85,11 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster_client)
 
         # Get label names for series where name matches regex
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'name=~"c.*"')
+        result = exec_sorted_values(client, 'FILTER', 'name=~"c.*"')
         assert result == [b'name', b'node', b'ts1', b'ts2', b'ts5', b'ts6', b'type']
 
         # Get label names for series where node matches pattern
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'node=~"node[12]"')
+        result = exec_sorted_values(client, 'FILTER', 'node=~"node[12]"')
         assert result == [b'name', b'node', b'ts1', b'ts2', b'ts3', b'ts4', b'ts5', b'type']
 
     def test_labelnames_with_time_range(self):
@@ -105,13 +115,13 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
 
         # Query from timestamp 150 onwards - should only include ts5 and ts6
         # (ts1 at now=1000, ts2 at now+100=1100, ts5 at now+200=1200, ts6 at now+500=1500)
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 150, "+", 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', now + 150, "+", 'FILTER', 'name=cpu')
 
         # Should return label names from ts5 (now+200) and ts6 (now+500)
         assert result == [b'name', b'node', b'ts5', b'ts6', b'type']
 
         # Query with both START and END - should only include ts2 and ts5
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 50, now + 250, 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', now + 50, now + 250, 'FILTER', 'name=cpu')
 
         # Should return labels from ts2 (now+100) and ts5 (now+200)
         assert b'name' in result
@@ -123,7 +133,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         assert len(result) == 5
 
         # Query that matches only one series
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 400, "+", 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', now + 400, "+", 'FILTER', 'name=cpu')
 
         # Should only include ts6 (now+500)
         assert b'name' in result
@@ -132,8 +142,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         assert len(result) == 3
 
         # Exclude middle series (ts2 and ts5) - should return ts1 and ts6
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 50, now + 250, 'FILTER',
-                                        'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', 'NOT', now + 50, now + 250, 'FILTER', 'name=cpu')
         assert b'name' in result
         assert b'node' in result
         assert b'type' in result
@@ -144,7 +153,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         assert len(result) == 5
 
         # Exclude ts6 (now+500) - should return ts1, ts2, ts5
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', now + 400, "+", 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', 'NOT', now + 400, "+", 'FILTER', 'name=cpu')
         assert b'name' in result
         assert b'node' in result
         assert b'type' in result
@@ -155,7 +164,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         assert len(result) == 6
 
         # Exclude early data (ts1, ts2, ts5) - should only include ts6
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', 'NOT', "-", now + 250, 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', 'NOT', "-", now + 250, 'FILTER', 'name=cpu')
         assert b'name' in result
         assert b'node' in result
         assert b'ts6' in result
@@ -181,7 +190,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         cluster_client.execute_command('TS.ADD', TS9, now + 500, 40)
 
         # Query with filter and time range
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now, now + 150, 'FILTER', 'name=~"c.*"',
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', now, now + 150, 'FILTER', 'name=~"c.*"',
                                         )
         assert result == [b'name', b'node', b'ts1', b'ts2', b'type']
 
@@ -193,13 +202,13 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster_client)
 
         # Filter that doesn't match any series
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'nonexistent=value')
+        result = exec_sorted_values(client, 'FILTER', 'nonexistent=value')
         assert result == []
 
         # Time range that doesn't match any samples
         now = 1000
         cluster_client.execute_command('TS.ADD', TS1, now, 10)
-        result = client.execute_command('TS.LABELNAMES', 'FILTER_BY_RANGE', now + 2000, "+", 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'FILTER_BY_RANGE', now + 2000, "+", 'FILTER', 'name=cpu')
         assert result == []
 
     def test_labelnames_with_limit(self):
@@ -210,14 +219,14 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster_client)
 
         # Get top 2 label names
-        result = client.execute_command('TS.LABELNAMES', 'LIMIT', 2, 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'LIMIT', 2, 'FILTER', 'name=cpu')
         assert len(result) == 2
 
         # Verify sorted order (alphabetical)
-        all_labels = client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu')
+        all_labels = exec_sorted_values(client, 'FILTER', 'name=cpu')
         expected = all_labels[:5]
 
-        result = client.execute_command('TS.LABELNAMES', 'LIMIT', 5, 'FILTER', 'name=cpu')
+        result = exec_sorted_values(client, 'LIMIT', 5, 'FILTER', 'name=cpu')
         assert result == expected
 
     def test_labelnames_after_series_deletion(self):
@@ -231,7 +240,7 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         cluster_client.execute_command('DEL', TS9)
 
         # Verify unique labels are no longer returned
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'location=datacenter')
+        result = exec_sorted_values(client, 'FILTER', 'location=datacenter')
         assert result == []
 
     def test_labelnames_with_complex_filters(self):
@@ -242,9 +251,9 @@ class TestTimeSeriesLabelNamesCME(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster_client)
 
         # Complex filter: CPU metrics that are not a usage type
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'name=cpu', 'type!=usage')
+        result = exec_sorted_values(client, 'FILTER', 'name=cpu', 'type!=usage')
         assert result == [b'name', b'node', b'ts5', b'ts6', b'type']
 
         # Complex filter with regex: nodes that don't match the pattern
-        result = client.execute_command('TS.LABELNAMES', 'FILTER', 'node!~"node[12]"')
+        result = exec_sorted_values(client, 'FILTER', 'node!~"node[12]"')
         assert result == [b'location', b'name', b'node', b'rack', b'ts6', b'ts7', b'ts8', b'ts9', b'type']

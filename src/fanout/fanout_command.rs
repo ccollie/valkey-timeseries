@@ -52,9 +52,9 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// Generate the request to be sent to each target node.
     fn generate_request(&self) -> Self::Request;
 
-    /// Called once per successful response from a target node.
+    /// Called once per response from a target node.
     ///
-    /// This handler is now fallible; returning `Err(FanoutError)` will be treated as a
+    /// Returning `Err(FanoutError)` will be treated as a
     /// per-shard failure (it increments the aggregated error count and will cause the
     /// overall fanout to reply with an error at completion). Implementations should
     /// return `Ok(())` on success.

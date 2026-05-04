@@ -1,16 +1,26 @@
-### TS.LABEL_VALUES
+### TS.LABELVALUES
 
 #### Syntax
 
 ```
-TS.LABELVALUES label [START fromTimestamp] [END toTimestamp]
+TS.LABELVALUES label
+  [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
+  [SEARCH term [term ...]]
+  [FUZZY_THRESHOLD threshold]
+  [FUZZY_ALGORITHM jarowinkler|subsequence]
+  [INCLUDE_METADATA]
+  [IGNORE_CASE]
+  [SORTBY <value|score|cardinality> [ASC|DESC]]
+  [LIMIT limit]
+  [FILTER selector ...]
 ```
-returns a list of label mut values for a provided label name.
+
+returns a list of label values for a provided label name.
 
 ### Required Arguments
 
 <details open><summary><code>label</code></summary>
-The label name for which to retrieve mut values.
+The label name for which to retrieve values.
 </details>
 
 ### Optional Arguments

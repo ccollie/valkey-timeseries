@@ -86,6 +86,17 @@ message LabelNamesResponse {
   repeated string names = 1;
 }
 
+message LabelSearchResult {
+  string value = 1;
+  double score = 2;
+  uint64 cardinality = 3;
+}
+
+message LabelSearchResponse {
+  repeated LabelSearchResult results = 1;
+  bool has_more = 2;
+}
+
 message CardinalityResponse {
   uint64 cardinality = 1;
 }

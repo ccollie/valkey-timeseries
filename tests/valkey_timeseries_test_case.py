@@ -11,7 +11,8 @@ from valkey.cluster import ValkeyCluster, ClusterNode
 from valkey.client import Valkey
 from valkey.connection import Connection
 from typing import List, Tuple
-from common import VALKEY_SERVER_PATH, LOGS_DIR, ValkeyInfo, CompactionRule, parse_info_response, TEST_DIR
+from common import VALKEY_SERVER_PATH, LOGS_DIR, ValkeyInfo, CompactionRule, parse_info_response, TEST_DIR, \
+    MODULE_PATH as DEFAULT_MODULE_PATH
 import random
 import string
 import logging
@@ -285,10 +286,14 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
 
     @pytest.fixture(autouse=True)
     def setup_test(self, request):
-        args = {"enable-debug-command":"yes", 'loadmodule': os.getenv('MODULE_PATH')}
+        module_path = os.getenv('MODULE_PATH') or DEFAULT_MODULE_PATH
+        # Ensure the module path is absolute so valkey-server can find it
+        # regardless of the working directory it is launched from.
+        module_path = os.path.abspath(module_path)
+        args = {"enable-debug-command": "yes", 'loadmodule': module_path}
         server_path = VALKEY_SERVER_PATH
 
-        self.server, self.client = self.create_server(testdir = self.testdir, server_path=server_path, args=args)
+        self.server, self.client = self.create_server(testdir=self.testdir, server_path=server_path, args=args)
         logging.info("startup args are: %s", args)
 
     def validate_rules(self, key, expected_rules: List[CompactionRule], check_dest: bool = True):
@@ -521,12 +526,13 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
             ReplicationGroup.cleanup(rg)
 
     def get_config_file_lines(self, test_dir, port) -> List[str]:
+        module_path = os.path.abspath(os.getenv('MODULE_PATH') or DEFAULT_MODULE_PATH)
         return [
             "enable-debug-command yes",
             f"dir {test_dir}",
             "cluster-enabled yes",
             f"cluster-config-file nodes_{port}.conf",
-            f"loadmodule {os.getenv('MODULE_PATH')}",
+            f"loadmodule {module_path}",
         ]
 
     def _wait_for_meet(self, count: int) -> bool:
@@ -587,8 +593,9 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
 
 
 def EnableDebugMode(config: List[str]):
-    # turn "loadmodule xx.so" into "loadmodule xx.so --debug-mode yes"
-    load_module = f"loadmodule {os.getenv('MODULE_PATH')}"
+    # turn "loadmodule xx.so" into "loadmodule xx.so --ts.debug-mode yes"
+    module_path = os.path.abspath(os.getenv('MODULE_PATH') or DEFAULT_MODULE_PATH)
+    load_module = f"loadmodule {module_path}"
     return [x.replace(load_module, load_module + " --ts.debug-mode yes") for x in config]
 
 
