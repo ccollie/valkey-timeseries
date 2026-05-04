@@ -14,6 +14,7 @@ use itertools::Itertools;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::ops::Bound;
+use min_max_heap::MinMaxHeap;
 use valkey_module::{Context, ValkeyError};
 
 const DEFAULT_LIMIT: usize = 100;
@@ -288,6 +289,8 @@ pub trait LabelQuerier {
     ) -> TsdbResult<LabelQueryResult>;
 }
 
+type ComparisonFn = fn(&LabelSearchResult, &LabelSearchResult) -> Ordering;
+
 /// `compare_search_results` returns the total-order comparison function for the
 /// given Ordering. For `OrderByValueAsc` and `OrderByValueDesc` the order is on
 /// value alone. For `OrderByScoreDesc` the order is (score desc, value asc),
@@ -295,7 +298,7 @@ pub trait LabelQuerier {
 /// is first emitted by the streaming merge.
 fn compare_search_results(
     order: SearchResultOrdering,
-) -> impl Fn(&LabelSearchResult, &LabelSearchResult) -> Ordering {
+) -> ComparisonFn {
     fn value_asc(a: &LabelSearchResult, b: &LabelSearchResult) -> Ordering {
         a.value.cmp(&b.value)
     }
@@ -398,22 +401,7 @@ fn collect_limited_with_heap(
     order: SearchResultOrdering,
     limit: usize,
 ) -> LabelQueryResult {
-    let cmp = match order.sort_field() {
-        SortBy::Value => |a: &LabelSearchResult, b: &LabelSearchResult| a.value.cmp(&b.value),
-        SortBy::Score => |a: &LabelSearchResult, b: &LabelSearchResult| match b
-            .score
-            .partial_cmp(&a.score)
-            .unwrap_or(Ordering::Equal)
-        {
-            Ordering::Equal => a.value.cmp(&b.value),
-            other => other,
-        },
-        SortBy::Cardinality => |a: &LabelSearchResult, b: &LabelSearchResult| {
-            a.cardinality
-                .cmp(&b.cardinality)
-                .then(a.value.cmp(&b.value))
-        },
-    };
+    let cmp = compare_search_results(order);
 
     let mut items = if order.is_ascending() {
         iter.k_smallest_relaxed_by(limit + 1, &cmp)
@@ -422,7 +410,7 @@ fn collect_limited_with_heap(
     }
     .collect::<Vec<_>>();
 
-    items.sort_by(compare_search_results(order));
+    items.sort_by(cmp);
 
     let has_more = items.len() > limit;
     if has_more {
@@ -501,7 +489,7 @@ fn get_label_names_asc(
     LabelQueryResult::new(results, has_more)
 }
 
-/// Get label names in descending order, applying a fuzzy filter if provided. Efficently skips label names
+/// Get label names in descending order, applying a fuzzy filter if provided. Efficiently skips label names
 /// that don't match the filter by using the index ordering to jump past them.
 fn get_label_names_desc(
     postings: &Postings,
@@ -573,7 +561,44 @@ fn get_label_names_desc(
     LabelQueryResult::new(results, has_more)
 }
 
-/// `get_label_names_top_k` streams the label index (with the same jump optimisation used by
+/// `HeapResultHolder` is a helper struct for use in the binary heap below.
+///
+/// It stores the full [`SearchResultOrdering`] (not just [`SortBy`]) because the
+/// correct value tie-break direction depends on which drain direction will be used:
+///
+/// * `drain_asc()` (ascending orderings) yields min → max, so items that should appear
+///   first in the output must compare **less** — value-asc tie-break is correct.
+/// * `drain_desc()` (descending orderings) yields max → min, so items that should appear
+///   first must compare **greater** — value-desc tie-break in `Ord` produces value-asc
+///   output after the drain.
+///
+/// This means the `Ord` implementation can encode the complete desired output order
+/// directly, and no post-drain sort is required.
+
+#[derive(Debug)]
+struct HeapResultHolder(LabelSearchResult, ComparisonFn);
+
+impl PartialOrd<Self> for HeapResultHolder {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapResultHolder {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.1(&self.0, &other.0)
+    }
+}
+
+impl PartialEq for HeapResultHolder {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for HeapResultHolder {}
+
+/// `get_label_names_top_k` streams the label index (with the same jump optimization used by
 /// `get_label_names_asc` / `get_label_names_desc`) and uses a binary heap to keep only the
 /// best `limit` results according to `order`.
 ///
@@ -588,49 +613,22 @@ fn get_label_names_top_k(
     order: SearchResultOrdering,
     limit: usize,
 ) -> LabelQueryResult {
-    use std::collections::BinaryHeap;
-
-    // A newtype wrapper that inverts the "best-first" comparison so that
-    // `BinaryHeap::pop` always removes the element that ranks *last* under
-    // `order`. Storing `order` per item costs one word but avoids any unsafe
-    // global state and keeps heap logic self-contained.
-    #[derive(Debug)]
-    struct WorstFirst {
-        inner: LabelSearchResult,
-        order: SearchResultOrdering,
-    }
-
-    impl PartialEq for WorstFirst {
-        fn eq(&self, other: &Self) -> bool {
-            self.cmp(other) == Ordering::Equal
-        }
-    }
-    impl Eq for WorstFirst {}
-
-    impl Ord for WorstFirst {
-        fn cmp(&self, other: &Self) -> Ordering {
-            // `compare_search_results(order)(a, b)` returns `Greater` when `a`
-            // ranks *after* `b` (i.e., `a` is worse). Passing `(self, other)`
-            // directly means `self.cmp(other) = Greater` when self is worse,
-            // which is exactly what we need: the heap's max element (the one
-            // BinaryHeap::pop removes) is always the worst-ranked item.
-            compare_search_results(self.order)(&self.inner, &other.inner)
-        }
-    }
-
-    impl PartialOrd for WorstFirst {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    let mut heap: BinaryHeap<WorstFirst> = BinaryHeap::with_capacity(limit + 2);
+    let mut heap: MinMaxHeap<HeapResultHolder> = MinMaxHeap::with_capacity(limit + 2);
     let mut current_result: Option<LabelSearchResult> = None;
     // "!" is lexicographically before all valid label names.
     let mut key_buf: String = "!".to_string();
     let mut curr_key: &str = "";
     let mut has_more = false;
     let mut scanned = 0usize;
+    let cmp_fn = compare_search_results(order);
+
+    // The `compare_search_results` comparators are sort-order comparators: `Less` means
+    // "appears earlier in the desired output". This means that the element that should come
+    // *first* is the *minimum* in the heap's eyes, and the element that should come *last*
+    // (i.e., the one to discard when over the limit) is the *maximum*. Therefore:
+    //   - always use `pop_max()` to evict the worst candidate, and
+    //   - always use `drain_asc()` (min → max) to emit results in correct output order.
+    // This holds for both ascending and descending `order` variants.
 
     'outer: loop {
         let start_bound: Bound<&[u8]> = Bound::Excluded(key_buf.as_bytes());
@@ -647,12 +645,9 @@ fn get_label_names_top_k(
                 curr_key = key_name;
 
                 if let Some(stored) = current_result.take() {
-                    heap.push(WorstFirst {
-                        inner: stored,
-                        order,
-                    });
+                    heap.push(HeapResultHolder(stored, cmp_fn));
                     if heap.len() > limit {
-                        heap.pop();
+                        heap.pop_max();
                         has_more = true;
                     }
                     scanned += 1;
@@ -684,18 +679,14 @@ fn get_label_names_top_k(
     }
 
     if let Some(stored) = current_result {
-        heap.push(WorstFirst {
-            inner: stored,
-            order,
-        });
+        heap.push(HeapResultHolder(stored, cmp_fn));
         if heap.len() > limit {
-            heap.pop();
+            heap.pop_max();
             has_more = true;
         }
     }
 
-    let mut results: Vec<LabelSearchResult> = heap.into_iter().map(|w| w.inner).collect();
-    results.sort_by(compare_search_results(order));
+    let results: Vec<LabelSearchResult> = heap.drain_asc().map(|h| h.0).collect();
 
     LabelQueryResult::new(results, has_more)
 }
