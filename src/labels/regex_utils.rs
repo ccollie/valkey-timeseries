@@ -114,6 +114,11 @@ pub(crate) fn is_match_all_regex_pattern(expr: &str) -> bool {
 
 fn get_or_values(sre: &Hir, dest: &mut Vec<String>) -> bool {
     use HirKind::*;
+
+    if dest.len() > MAX_OR_VALUES {
+        return false;
+    }
+
     match sre.kind() {
         Class(clazz) => {
             // Expand simple character classes into literal single-character strings when
@@ -196,6 +201,9 @@ fn get_or_values(sre: &Hir, dest: &mut Vec<String>) -> bool {
             let (pre, suffixes) = prefixes.split_at(prefix_count);
             for prefix in pre.iter() {
                 for suffix in suffixes.iter() {
+                    if dest.len() > MAX_OR_VALUES {
+                        return false;
+                    }
                     dest.push(format!("{prefix}{suffix}"));
                 }
             }
@@ -368,11 +376,11 @@ impl Eq for RegexDecomposition {}
 /// the inverted postings index without running the full regex engine.
 ///
 /// Recognized patterns:
-/// - **Simple alternations** (`foo|bar|baz`) → `RegexDecomposition::Literals`
-/// - **Anchored prefix** (`^prod.*` / `^prod.+`) → `RegexDecomposition::Prefix`
-/// - **Exact contains** (`.*foo.*`) → `RegexDecomposition::Contains`
-/// - **Plain literal** (`prod`) → `RegexDecomposition::Literals` (single element)
-/// - **Anchored prefix with a non-wildcard remainder** (`^foo.+bar`, `^foo.*bar`, `^foo.?bar`, `^foo.bar`) → `RegexDecomposition::PrefixWithRegex(prefix, regex)` where `regex` is the compiled regex for the string.
+/// - **Simple alternations** (`foo|bar|baz`) -> `RegexDecomposition::Literals`
+/// - **Anchored prefix** (`^prod.*` / `^prod.+`) -> `RegexDecomposition::Prefix`
+/// - **Exact contains** (`.*foo.*`) -> `RegexDecomposition::Contains`
+/// - **Plain literal** (`prod`) -> `RegexDecomposition::Literals` (single element)
+/// - **Anchored prefix with a non-wildcard remainder** (`^foo.+bar`, `^foo.*bar`, `^foo.?bar`, `^foo.bar`) -> `RegexDecomposition::PrefixWithRegex(prefix, regex)` where `regex` is the compiled regex for the string.
 ///
 /// Returns `None` for anything more complex.
 pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
@@ -382,7 +390,6 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
     }
 
     let sre = build_hir(expr)?;
-    // (No test-only debug printing here.)
     // For Prometheus-compatible filters, we assume matchers are anchored.
     // Treat the parsed HIR as if it had start/end anchors, so decomposition
     // can be more aggressive about extracting prefixes.
@@ -436,7 +443,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
                 // original expression (which already contains the prefix) and
                 // cause duplication when `compile_prefixed_regex` combines the
                 // prefix again. Convert the `remainder` HIR to a pattern and
-                // compile that instead so the resulting compiled regex
+                // compile that instead, so the resulting compiled regex
                 // represents `prefix + remainder` as intended.
                 if let Ok(compiled) = compile_prefixed_regex(&hir_to_string(&remainder), prefix) {
                     return Ok(compiled);

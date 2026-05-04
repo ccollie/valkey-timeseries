@@ -1072,18 +1072,17 @@ fn handle_not_contains<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
 ) -> Cow<'a, PostingsBitmap> {
-    if filter.matches_empty() {
-        return with_label(postings, &filter.label);
-    }
     let PredicateMatch::NotContains(value) = &filter.matcher else {
         panic!("unexpected matcher type in handle_not_contains");
     };
     let mut state = value;
-    let res =
+    let contains_matches =
         postings.postings_for_label_matching(&filter.label, &mut state, |candidate, value| {
-            value.matches_not_contains_all(candidate)
+            value.matches_contains_any(candidate)
         });
-    Cow::Owned(res)
+    let res = &postings.all_postings;
+    let value = res.andnot(&contains_matches);
+    Cow::Owned(value)
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap

@@ -179,8 +179,8 @@ impl PredicateValue {
                 !list.is_empty()
                     && list.iter().all(|prefix| !prefix.is_empty())
                     && list
-                    .iter()
-                    .all(|prefix| !value.starts_with(prefix.as_str()))
+                        .iter()
+                        .all(|prefix| !value.starts_with(prefix.as_str()))
             }
         }
     }
@@ -1370,7 +1370,7 @@ mod tests {
             "instance",
             PredicateValue::from(vec!["server".to_string(), "client".to_string()]),
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(filter.op(), MatchOp::StartsWith);
         assert!(filter.matches("server-1"));
@@ -1388,7 +1388,7 @@ mod tests {
                 "server".to_string(),
                 "".to_string(),
             ]))
-                .is_err()
+            .is_err()
         );
     }
 }

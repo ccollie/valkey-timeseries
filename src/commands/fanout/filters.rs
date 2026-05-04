@@ -257,15 +257,15 @@ impl TryFrom<&FanoutFilter> for LabelFilter {
             (MatcherOpType::MatchAll, None) => PredicateMatch::MatchAll,
             (MatcherOpType::MatchNone, None) => PredicateMatch::MatchNone,
             (MatcherOpType::RegexEqual, Some(Matcher::Regex(regex)))
-            if is_match_all_regex_pattern(regex.regex.as_str()) =>
-                {
-                    PredicateMatch::MatchAll
-                }
+                if is_match_all_regex_pattern(regex.regex.as_str()) =>
+            {
+                PredicateMatch::MatchAll
+            }
             (MatcherOpType::RegexNotEqual, Some(Matcher::Regex(regex)))
-            if is_match_all_regex_pattern(regex.regex.as_str()) =>
-                {
-                    PredicateMatch::MatchNone
-                }
+                if is_match_all_regex_pattern(regex.regex.as_str()) =>
+            {
+                PredicateMatch::MatchNone
+            }
             (MatcherOpType::RegexEqual, Some(Matcher::Regex(regex))) => {
                 PredicateMatch::RegexEqual(regex_matcher_from_fanout(regex)?)
             }
