@@ -13,6 +13,7 @@ use ahash::{AHashMap, AHashSet};
 use itertools::Itertools;
 use std::cmp::Ordering;
 use std::fmt::Display;
+use std::ops::Bound;
 use valkey_module::{Context, ValkeyError};
 
 const DEFAULT_LIMIT: usize = 100;
@@ -339,7 +340,7 @@ fn normalize_limit(limit: usize) -> usize {
     } else {
         limit
     }
-        .min(SEARCH_RESULT_LIMIT_MAX)
+    .min(SEARCH_RESULT_LIMIT_MAX)
 }
 
 /// `apply_search_hints` sorts and limits a slice of values according to hints,
@@ -377,7 +378,7 @@ fn can_use_unscoped_scan(select_hints: Option<&SelectHints>) -> bool {
 /// and sets `has_more` if the extra item was present. When `limit` is 0, all items are
 /// collected and `has_more` is always `false`.
 fn collect_limited(
-    iter: impl Iterator<Item=LabelSearchResult>,
+    iter: impl Iterator<Item = LabelSearchResult>,
     limit: usize,
 ) -> LabelQueryResult {
     let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
@@ -393,7 +394,7 @@ fn collect_limited(
 /// `collect_limited_with_heap` keeps only the best `limit` results in memory for non-value
 /// orderings where we cannot stream directly from the index order.
 fn collect_limited_with_heap(
-    iter: impl Iterator<Item=LabelSearchResult>,
+    iter: impl Iterator<Item = LabelSearchResult>,
     order: SearchResultOrdering,
     limit: usize,
 ) -> LabelQueryResult {
@@ -419,7 +420,7 @@ fn collect_limited_with_heap(
     } else {
         iter.k_largest_relaxed_by(limit + 1, &cmp)
     }
-        .collect::<Vec<_>>();
+    .collect::<Vec<_>>();
 
     items.sort_by(compare_search_results(order));
 
@@ -431,63 +432,287 @@ fn collect_limited_with_heap(
     LabelQueryResult::new(items, has_more)
 }
 
-/// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly
-fn collect_unscoped_label_names(postings: &Postings, hints: &SearchHints) -> LabelQueryResult {
-    let limit = normalize_limit(hints.limit);
+/// Get label names in ascending order, applying a fuzzy filter if provided.
+fn get_label_names_asc(
+    postings: &Postings,
+    filter: &dyn FuzzyFilter,
+    limit: Option<usize>,
+) -> LabelQueryResult {
+    let mut results: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
+    let mut current_result: Option<LabelSearchResult> = None;
+    // "!" is lexicographically before all valid label names, so this ensures we start scanning from the beginning of the index
+    let mut key_buf: String = "!".to_string();
+    let mut curr_key: &str = "";
+    let mut has_more = false;
+    let limit = limit.unwrap_or(SEARCH_RESULT_LIMIT_MAX);
 
-    with_search_filter(hints, |filter| {
-        let mut results: Vec<LabelSearchResult> = Vec::with_capacity(limit);
-        let mut current_name: Option<&str> = None;
-        let mut current_result: Option<LabelSearchResult> = None;
+    'outer: loop {
+        let start_bound: Bound<&[u8]> = Bound::Excluded(key_buf.as_bytes());
 
-        for (entry, map) in postings.label_index.iter() {
-            if map.is_empty() {
-                continue;
-            }
-
-            let Some((key, _)) = entry.split() else {
+        for (key, map) in postings
+            .label_index
+            .range::<[u8], _>((start_bound, Bound::<&[u8]>::Unbounded))
+        {
+            let Some((key_name, _)) = key.split() else {
+                // Defensive: advance past this malformed entry so we don't re-visit it.
                 continue;
             };
 
-            if current_name != Some(key) {
+            if curr_key != key_name {
+                curr_key = key_name;
+
                 if let Some(stored) = current_result.take() {
+                    if results.len() == limit {
+                        has_more = true;
+                        break 'outer;
+                    }
                     results.push(stored);
                 }
 
-                current_name = Some(key);
-                let (accepted, score) = filter.accept(key);
-                current_result = if accepted {
-                    Some(LabelSearchResult {
-                        value: key.to_owned(),
-                        score,
-                        cardinality: map.cardinality() as usize,
-                    })
-                } else {
-                    None
-                };
+                let (accepted, score) = filter.accept(key_name);
+                if !accepted {
+                    // jump past this label by setting the next search start to be greater than "key=" (the prefix for all values of this label name)
+                    // `?` > `=` in byte order, so this ensures we skip all entries for this label name
+                    key_buf.clear();
+                    key_buf.push_str(key_name);
+                    key_buf.push('?');
+                    continue 'outer;
+                }
+
+                current_result = Some(LabelSearchResult {
+                    value: key_name.to_owned(),
+                    score,
+                    cardinality: map.cardinality() as usize,
+                });
             } else if let Some(active) = current_result.as_mut() {
                 active.cardinality += map.cardinality() as usize;
             }
         }
 
-        if let Some(stored) = current_result {
-            results.push(stored);
+        break;
+    }
+
+    if let Some(stored) = current_result
+        && results.len() < limit
+    {
+        results.push(stored);
+    }
+
+    LabelQueryResult::new(results, has_more)
+}
+
+/// Get label names in descending order, applying a fuzzy filter if provided. Efficently skips label names
+/// that don't match the filter by using the index ordering to jump past them.
+fn get_label_names_desc(
+    postings: &Postings,
+    filter: &dyn FuzzyFilter,
+    limit: Option<usize>,
+) -> LabelQueryResult {
+    let mut results: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
+    let mut current_result: Option<LabelSearchResult> = None;
+    let mut has_more = false;
+    let limit = limit.unwrap_or(SEARCH_RESULT_LIMIT_MAX);
+    // When Some, use Excluded(buf) as the upper bound; when None, use Unbounded.
+    let mut upper_bound_buf: Option<Vec<u8>> = None;
+    let mut curr_key: &str = "";
+
+    'outer: loop {
+        let end_bound: Bound<&[u8]> = match &upper_bound_buf {
+            Some(buf) => Bound::Excluded(buf.as_slice()),
+            None => Bound::Unbounded,
+        };
+
+        for (key, map) in postings
+            .label_index
+            .range::<[u8], _>((Bound::<&[u8]>::Unbounded, end_bound))
+            .rev()
+        {
+            let Some((key_name, _)) = key.split() else {
+                continue;
+            };
+
+            if curr_key != key_name {
+                curr_key = key_name;
+
+                if let Some(stored) = current_result.take() {
+                    if results.len() == limit {
+                        has_more = true;
+                        break 'outer;
+                    }
+                    results.push(stored);
+                }
+
+                let (accepted, score) = filter.accept(key_name);
+                if !accepted {
+                    // Jump past all values for this label name.
+                    // "name" < "name=..." lexicographically, so Excluded("name") skips
+                    // all index entries for this label name.
+                    upper_bound_buf = Some(key_name.as_bytes().to_vec());
+                    continue 'outer;
+                }
+
+                current_result = Some(LabelSearchResult {
+                    value: key_name.to_owned(),
+                    score,
+                    cardinality: map.cardinality() as usize,
+                });
+            } else if let Some(active) = current_result.as_mut() {
+                active.cardinality += map.cardinality() as usize;
+            }
         }
 
-        match hints.order_by {
-            SearchResultOrdering::ValueAsc => {
-                results.sort_by(|a, b| a.value.cmp(&b.value));
-                collect_limited(results.into_iter(), limit)
+        break;
+    }
+
+    if let Some(stored) = current_result
+        && results.len() < limit
+    {
+        results.push(stored);
+    }
+
+    LabelQueryResult::new(results, has_more)
+}
+
+/// `get_label_names_top_k` streams the label index (with the same jump optimisation used by
+/// `get_label_names_asc` / `get_label_names_desc`) and uses a binary heap to keep only the
+/// best `limit` results according to `order`.
+///
+/// Unlike the value-ordered variants, this function must visit every accepted label name
+/// before it can determine the final ranking, so it scans up to [`SEARCH_RESULT_LIMIT_MAX`]
+/// labels. Completed labels are pushed directly into a bounded heap, avoiding the
+/// intermediate `Vec` allocation that would be required by first collecting all results and
+/// then selecting the top-K.
+fn get_label_names_top_k(
+    postings: &Postings,
+    filter: &dyn FuzzyFilter,
+    order: SearchResultOrdering,
+    limit: usize,
+) -> LabelQueryResult {
+    use std::collections::BinaryHeap;
+
+    // A newtype wrapper that inverts the "best-first" comparison so that
+    // `BinaryHeap::pop` always removes the element that ranks *last* under
+    // `order`. Storing `order` per item costs one word but avoids any unsafe
+    // global state and keeps heap logic self-contained.
+    #[derive(Debug)]
+    struct WorstFirst {
+        inner: LabelSearchResult,
+        order: SearchResultOrdering,
+    }
+
+    impl PartialEq for WorstFirst {
+        fn eq(&self, other: &Self) -> bool {
+            self.cmp(other) == Ordering::Equal
+        }
+    }
+    impl Eq for WorstFirst {}
+
+    impl Ord for WorstFirst {
+        fn cmp(&self, other: &Self) -> Ordering {
+            // `compare_search_results(order)(a, b)` returns `Greater` when `a`
+            // ranks *after* `b` (i.e., `a` is worse). Passing `(self, other)`
+            // directly means `self.cmp(other) = Greater` when self is worse,
+            // which is exactly what we need: the heap's max element (the one
+            // BinaryHeap::pop removes) is always the worst-ranked item.
+            compare_search_results(self.order)(&self.inner, &other.inner)
+        }
+    }
+
+    impl PartialOrd for WorstFirst {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    let mut heap: BinaryHeap<WorstFirst> = BinaryHeap::with_capacity(limit + 2);
+    let mut current_result: Option<LabelSearchResult> = None;
+    // "!" is lexicographically before all valid label names.
+    let mut key_buf: String = "!".to_string();
+    let mut curr_key: &str = "";
+    let mut has_more = false;
+    let mut scanned = 0usize;
+
+    'outer: loop {
+        let start_bound: Bound<&[u8]> = Bound::Excluded(key_buf.as_bytes());
+
+        for (key, map) in postings
+            .label_index
+            .range::<[u8], _>((start_bound, Bound::<&[u8]>::Unbounded))
+        {
+            let Some((key_name, _)) = key.split() else {
+                continue;
+            };
+
+            if curr_key != key_name {
+                curr_key = key_name;
+
+                if let Some(stored) = current_result.take() {
+                    heap.push(WorstFirst {
+                        inner: stored,
+                        order,
+                    });
+                    if heap.len() > limit {
+                        heap.pop();
+                        has_more = true;
+                    }
+                    scanned += 1;
+                    if scanned >= SEARCH_RESULT_LIMIT_MAX {
+                        break 'outer;
+                    }
+                }
+
+                let (accepted, score) = filter.accept(key_name);
+                if !accepted {
+                    // Jump past all values for this label name (same trick as get_label_names_asc).
+                    key_buf.clear();
+                    key_buf.push_str(key_name);
+                    key_buf.push('?');
+                    continue 'outer;
+                }
+
+                current_result = Some(LabelSearchResult {
+                    value: key_name.to_owned(),
+                    score,
+                    cardinality: map.cardinality() as usize,
+                });
+            } else if let Some(active) = current_result.as_mut() {
+                active.cardinality += map.cardinality() as usize;
             }
-            SearchResultOrdering::ValueDesc => {
-                results.sort_by(|a, b| b.value.cmp(&a.value));
-                collect_limited(results.into_iter(), limit)
-            }
-            SearchResultOrdering::ScoreDesc
-            | SearchResultOrdering::CardinalityAsc
-            | SearchResultOrdering::CardinalityDesc => {
-                collect_limited_with_heap(results.into_iter(), hints.order_by, limit)
-            }
+        }
+
+        break;
+    }
+
+    if let Some(stored) = current_result {
+        heap.push(WorstFirst {
+            inner: stored,
+            order,
+        });
+        if heap.len() > limit {
+            heap.pop();
+            has_more = true;
+        }
+    }
+
+    let mut results: Vec<LabelSearchResult> = heap.into_iter().map(|w| w.inner).collect();
+    results.sort_by(compare_search_results(order));
+
+    LabelQueryResult::new(results, has_more)
+}
+
+/// `collect_unscoped_label_names` attempts to satisfy a label name search by scanning the label index directly
+fn collect_unscoped_label_names(postings: &Postings, hints: &SearchHints) -> LabelQueryResult {
+    let limit = normalize_limit(hints.limit);
+
+    with_search_filter(hints, |filter| match hints.order_by {
+        SearchResultOrdering::ValueAsc => get_label_names_asc(postings, filter, Some(hints.limit)),
+        SearchResultOrdering::ValueDesc => {
+            get_label_names_desc(postings, filter, Some(hints.limit))
+        }
+        SearchResultOrdering::ScoreDesc
+        | SearchResultOrdering::CardinalityAsc
+        | SearchResultOrdering::CardinalityDesc => {
+            get_label_names_top_k(postings, filter, hints.order_by, limit)
         }
     })
 }
