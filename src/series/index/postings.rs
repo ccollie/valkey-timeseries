@@ -205,7 +205,9 @@ impl Postings {
                 continue;
             }
             if let Some((name, _)) = key.split() {
-                names.insert(name.to_string());
+                if !names.contains(name) {
+                    names.insert(name.to_owned());
+                }
             }
         }
         names
