@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use twox_hash::XxHash64;
 
+
 /// Parse a match[] selector string into a VectorSelector
 fn parse_selector(selector: &str) -> Result<VectorSelector, String> {
     let expr = promql_parser::parser::parse(selector).map_err(|e| e.to_string())?;

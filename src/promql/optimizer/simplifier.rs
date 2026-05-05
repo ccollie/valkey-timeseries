@@ -20,9 +20,9 @@
 
 use crate::parser::ParseResult;
 use crate::promql::binops::apply_binary_op;
-use crate::promql::exec::optimizer::const_evaluator::const_simplify;
-use crate::promql::exec::optimizer::pushdown::optimize_in_place;
-use crate::promql::exec::optimizer::utils::{
+use crate::promql::optimizer::const_evaluator::const_simplify;
+use crate::promql::optimizer::pushdown::optimize_in_place;
+use crate::promql::optimizer::utils::{
     expr_contains, is_null, is_number, is_one, is_op_with, is_zero,
 };
 use crate::promql::functions::PromqlFunctionKind;
@@ -33,52 +33,30 @@ use std::ops::Deref;
 // https://prometheus.io/docs/prometheus/latest/querying/operators
 // Expression simplification API
 
-pub fn simplify_expression(expr: Expr) -> ParseResult<Expr> {
-    let simplifier = ExprSimplifier::new();
-    simplifier.simplify(expr)
+
+/// Simplifies this [`Expr`]`s as much as possible, evaluating
+/// constants and applying simplifications.
+///
+/// The types of the expression must match what operators expect,
+/// or else an error may occur trying to evaluate.
+///
+/// # Example:
+///
+/// `b > 2 AND b > 2`
+///
+/// can be written to
+///
+/// `b > 2`
+///
+pub fn optimize_expr(expr: Expr) -> ParseResult<Expr> {
+    let expr = const_simplify(expr);
+
+    let mut expr = simplify_internal(expr);
+    // push down filters
+    optimize_in_place(&mut expr);
+    Ok(expr)
 }
 
-pub fn optimize(expr: Expr) -> ParseResult<Expr> {
-    simplify_expression(expr)
-}
-
-/// This structure handles API for expression simplification
-#[derive(Default)]
-pub struct ExprSimplifier {}
-
-impl ExprSimplifier {
-    /// Create a new `ExprSimplifier` with the given `info` such as an
-    /// instance of [`SimplifyContext`]. See
-    /// [`simplify`](Self::simplify) for an example.
-    ///
-    /// [`SimplifyContext`]: crate::simplify_expressions::context::SimplifyContext
-    pub fn new() -> Self {
-        Self {}
-    }
-
-    /// Simplifies this [`Expr`]`s as much as possible, evaluating
-    /// constants and applying simplifications.
-    ///
-    /// The types of the expression must match what operators expect,
-    /// or else an error may occur trying to evaluate.
-    ///
-    /// # Example:
-    ///
-    /// `b > 2 AND b > 2`
-    ///
-    /// can be written to
-    ///
-    /// `b > 2`
-    ///
-    pub fn simplify(&self, mut expr: Expr) -> ParseResult<Expr> {
-        expr = const_simplify(expr);
-
-        let mut expr = simplify_internal(expr);
-        // push down filters
-        optimize_in_place(&mut expr);
-        Ok(expr)
-    }
-}
 
 /// Simplifies [`Expr`]s by applying algebraic transformation rules
 ///
@@ -88,7 +66,7 @@ impl ExprSimplifier {
 /// * `1 == bool 1` to `1`
 /// * `0 == bool 1` to `0`
 /// * `expr == NaN` and `expr != NaN` to `NaN`
-pub fn simplify_internal(expr: Expr) -> Expr {
+fn simplify_internal(expr: Expr) -> Expr {
     match expr {
         Expr::Binary(BinaryExpr {
                          lhs,
@@ -473,8 +451,7 @@ mod tests {
     // ------------------------------
 
     fn try_simplify(expr: Expr) -> ParseResult<Expr> {
-        let simplifier = ExprSimplifier::new();
-        simplifier.simplify(expr)
+        optimize_expr(expr)
     }
 
     fn simplify(expr: Expr) -> Expr {

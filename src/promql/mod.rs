@@ -11,6 +11,7 @@ mod utils;
 
 #[cfg(test)]
 pub(crate) mod promqltest;
+mod optimizer;
 
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/valkey_timeseries.promql.rs"));

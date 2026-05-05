@@ -8,7 +8,7 @@ use promql_parser::parser::{
     AggregateExpr, BinaryExpr, Call, Expr, ParenExpr, SubqueryExpr, UnaryExpr,
 };
 
-pub fn const_simplify(expr: Expr) -> Expr {
+pub(super) fn const_simplify(expr: Expr) -> Expr {
     match expr {
         Expr::Unary(uo) => handle_unary_expr(uo),
         Expr::Binary(_) => handle_binop_internal(expr),

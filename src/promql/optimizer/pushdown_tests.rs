@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use crate::promql::exec::optimizer::pushdown::{
+    use crate::promql::optimizer::pushdown::{
         get_common_label_filters, pushdown_binary_op_filters,
     };
-    use crate::promql::exec::optimizer::simplifier::optimize;
+    use crate::promql::optimizer::simplifier::optimize_expr;
     use promql_parser::label::Matchers;
     use promql_parser::parser::{Expr, parse};
 
@@ -132,7 +132,7 @@ mod tests {
     fn test_get_common_label_filters() {
         let get_filters = |q: &str| -> String {
             let e = parse_selector(q);
-            let expr = optimize(e).expect("unexpected error in optimize()");
+            let expr = optimize_expr(e).expect("unexpected error in optimize()");
 
             let mut lfs = get_common_label_filters(&expr);
             lfs.sort_by(|a, b| a.name.cmp(&b.name));
@@ -616,17 +616,14 @@ mod tests {
 
     #[test]
     fn test_optimize_subqueries() {
-        // Test subqueries with parentheses syntax: (foo[range:step])
-        // Subqueries return a range vector (matrix) that can be passed to functions
-        // like rate() that expect a range vector input.
         validate_optimized(
-            r#"rate((foo[1h:5m])) + bar{baz="a"}"#,
-            r#"rate((foo{baz="a"}[1h:5m])) + bar{baz="a"}"#,
+            r#"rate(foo[1h:5m]) + bar{baz="a"}"#,
+            r#"rate(foo{baz="a"}[1h:5m]) + bar{baz="a"}"#,
         );
 
         validate_optimized(
-            r#"rate((foo[5m])) + bar{baz="a"}"#,
-            r#"rate((foo{baz="a"}[5m])) + bar{baz="a"}"#,
+            r#"rate(foo[5m]) + bar{baz="a"}"#,
+            r#"rate(foo{baz="a"}[5m]) + bar{baz="a"}"#,
         );
     }
 
@@ -655,7 +652,7 @@ mod tests {
     fn validate_optimized(q: &str, expected: &str) {
         let e = parse_selector(q);
         let _orig = e.to_string();
-        let e_optimized = optimize(e.clone()).expect("unexpected error in optimize()");
+        let e_optimized = optimize_expr(e.clone()).expect("unexpected error in optimize()");
         let e_expected = parse_selector(expected);
 
         assert_eq!(

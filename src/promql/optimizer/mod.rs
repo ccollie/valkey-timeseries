@@ -4,3 +4,5 @@ mod pushdown;
 mod pushdown_tests;
 mod simplifier;
 mod utils;
+
+pub use simplifier::optimize_expr;
