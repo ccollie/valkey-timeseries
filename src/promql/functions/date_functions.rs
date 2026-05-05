@@ -78,7 +78,11 @@ pub(in crate::promql) fn days_in_month(dt: DateTime<Utc>) -> u32 {
         .num_days() as u32
 }
 
-pub(in crate::promql) fn eval_datetime_function(samples: &mut [EvalSample], eval_timestamp_ms: i64, part: DateTimePart) {
+pub(in crate::promql) fn eval_datetime_function(
+    samples: &mut [EvalSample],
+    eval_timestamp_ms: i64,
+    part: DateTimePart,
+) {
     for sample in samples {
         sample.value = datetime_from_seconds(sample.value)
             .map(|dt| part.extract(dt))
