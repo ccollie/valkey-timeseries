@@ -19,9 +19,9 @@ mod special_functions;
 mod types;
 pub(crate) mod utils;
 
+pub(in crate::promql) use date_functions::{DateTimePart, datetime_from_seconds};
 pub(crate) use function_list::*;
 pub(crate) use types::*;
-pub(in crate::promql) use date_functions::{DateTimePart, datetime_from_seconds};
 
 // Return the concrete `PromQLFunctionImpl` so callers can store the concrete
 // implementation without relying on opaque `impl Trait` return types.

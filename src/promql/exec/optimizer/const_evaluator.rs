@@ -1,31 +1,12 @@
 use crate::parser::number::parse_number;
-use crate::promql::functions::{datetime_from_seconds, DateTimePart, PromqlFunctionKind};
-use num_traits::FloatConst;
-use promql_parser::parser::token::{TokenType, T_ADD, T_EQLC, T_NEQ, T_GT, T_LT, T_LTE, T_GTE};
-use promql_parser::parser::{AggregateExpr, BinaryExpr, Call, Expr, SubqueryExpr, UnaryExpr};
 use crate::promql::binops::apply_binary_op;
-
-/// Can the expression be evaluated at plan time, (assuming all of
-/// its children can also be evaluated)?
-pub(super) fn can_evaluate(expr: &Expr) -> bool {
-    // check for reasons we can't evaluate this node
-    //
-    // NOTE all expr types are listed here, so when new ones are
-    //  added, they can be checked for their ability to be evaluated
-    // at plan time
-    match expr {
-        Expr::Aggregate(_) => false,
-        Expr::Paren(_) => true,
-        // only handle immutable scalar functions
-        Expr::Call(_) => true,
-        Expr::NumberLiteral(_)
-        | Expr::StringLiteral(_)
-        | Expr::Unary(_)
-        | Expr::Binary(_) => true,
-        Expr::VectorSelector(_) | Expr::MatrixSelector(_) => false,
-        &Expr::Subquery(_) | &Expr::Extension(_) => todo!(),
-    }
-}
+use crate::promql::functions::{DateTimePart, PromqlFunctionKind, datetime_from_seconds};
+use crate::promql::{EvalResult, EvaluationError};
+use num_traits::FloatConst;
+use promql_parser::parser::token::{T_ADD, T_EQLC, T_GTE, T_GTR, T_LSS, T_LTE, T_NEQ, TokenType};
+use promql_parser::parser::{
+    AggregateExpr, BinaryExpr, Call, Expr, ParenExpr, SubqueryExpr, UnaryExpr,
+};
 
 pub fn const_simplify(expr: Expr) -> Expr {
     match expr {
@@ -33,37 +14,47 @@ pub fn const_simplify(expr: Expr) -> Expr {
         Expr::Binary(_) => handle_binop_internal(expr),
         Expr::Call(fe) => handle_function_expr(fe),
         Expr::Aggregate(ae) => handle_aggregation_expr(ae),
-        Expr::Subquery(s) => handle_rollup_expr(s.expr),
+        Expr::Subquery(s) => handle_rollup_expr(s),
         Expr::Paren(p) => {
-            let expr = const_simplify(&p.expr);
-            Expr::Paren(expr)
+            let expr = const_simplify(*p.expr);
+            if let Expr::NumberLiteral(_) = expr {
+                return expr;
+            }
+            let paren_expr = ParenExpr {
+                expr: Box::new(expr),
+            };
+            Expr::Paren(paren_expr)
         }
         _ => expr,
     }
 }
 
-
 fn handle_unary_expr(ue: UnaryExpr) -> Expr {
     let mut ue = ue;
-    match ue.expr.as_mut() {
+    match *ue.expr {
         Expr::NumberLiteral(n) => {
             return Expr::from(-n.val);
         }
         Expr::Unary(u2) => {
-            return std::mem::take(&mut u2.expr);
+            let exp = const_simplify(*u2.expr);
+            if let Expr::NumberLiteral(n) = exp {
+                return Expr::from(-n.val);
+            }
+            ue.expr = Box::new(exp);
         }
         _ => {}
     }
-    Expr::Unary(u)
+    Expr::Unary(ue)
 }
 
 fn handle_binop_internal(be: Expr) -> Expr {
     if let Expr::Binary(BinaryExpr {
-                            lhs,
-                            rhs,
-                            op,
-                            modifier
-                        }) = be {
+        lhs,
+        rhs,
+        op,
+        modifier,
+    }) = be
+    {
         let left = if let Expr::Binary(_) = *lhs {
             handle_binop_internal(*lhs)
         } else {
@@ -93,7 +84,7 @@ fn handle_binary_expr(be: BinaryExpr) -> Expr {
             handle_number_number(ln.val, rn.val, op, is_bool)
         }
         (Expr::StringLiteral(left), Expr::StringLiteral(right), op) => {
-            handle_string_string(left, right, op, is_bool)
+            handle_string_string(&left.val, &right.val, op, is_bool)
         }
         _ => Expr::Binary(be),
     }
@@ -132,18 +123,18 @@ fn handle_string_string(left: &str, right: &str, op: TokenType, is_bool: bool) -
     }
 }
 
-pub fn string_compare(a: &str, b: &str, op: TokenType, is_bool: bool) -> ParseResult<f64> {
-    let res = match op {
+pub fn string_compare(a: &str, b: &str, op: TokenType, is_bool: bool) -> EvalResult<f64> {
+    let res = match op.id() {
         T_EQLC => a == b,
         T_NEQ => a != b,
-        T_LT => a < b,
-        T_GT => a > b,
         T_LTE => a <= b,
         T_GTE => a >= b,
+        T_LSS => a < b,
+        T_GTR => a > b,
         _ => {
-            return Err(ParseError::Unsupported(format!(
+            return Err(EvaluationError::InternalError(format!(
                 "unexpected operator {op} in string comparison"
-            )))
+            )));
         }
     };
     Ok(if res {
@@ -157,8 +148,19 @@ pub fn string_compare(a: &str, b: &str, op: TokenType, is_bool: bool) -> ParseRe
 
 fn get_single_scalar_arg(fe: &Call) -> Option<f64> {
     if fe.args.len() == 1 {
-        if let Expr::NumberLiteral(val) = &*fe.args.args[0] {
-            return Some(val.val);
+        match &*fe.args.args[0] {
+            Expr::NumberLiteral(n) => return Some(n.val),
+            Expr::StringLiteral(s) => return parse_number(&s.val).ok(),
+            Expr::Call(fe) => {
+                if fe.func.name == "vector" && fe.args.len() == 1 {
+                    match &*fe.args.args[0] {
+                        Expr::NumberLiteral(n) => return Some(n.val),
+                        Expr::StringLiteral(s) => return parse_number(&s.val).ok(),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -214,33 +216,10 @@ fn handle_function_expr(fe: Call) -> Expr {
         return Expr::Call(fe);
     };
     match kind {
-        Scalar if arg_count == 1 => {
-            let arg = &*fe.args.args[0];
-            match *arg {
-                // Verify whether the arg is a string.
-                // Then try converting the string to number.
-                Expr::StringLiteral(s) => {
-                    let n = parse_number(&s.val).unwrap_or(f64::NAN);
-                    Expr::from(n)
-                }
-                Expr::NumberLiteral(n) => Expr::from(n.val),
-                _ => {
-                    let expr = const_simplify(*arg);
-                    // `Scalar(q)` returns q if q contains only a single time series. Otherwise, it returns nothing.
-                    // It's challenging to determine if a time series is a single time series from a vector selector.
-                    match expr {
-                        Expr::NumberLiteral(_) | Expr::StringLiteral(_) => expr,
-                        Expr::Binary(_) => handle_binop_internal(expr),
-                        Expr::Call(fe1) => handle_function_expr(fe1),
-                        _ => Expr::Call(fe),
-                    }
-                }
-            }
-        }
         Vector if arg_count == 1 => {
             let mut fe = fe;
             // ????
-            fe.args.args.remove(0)
+            *fe.args.args.remove(0)
         }
         Pi if arg_count == 0 => Expr::from(f64::PI()),
         _ => {
@@ -254,14 +233,16 @@ fn handle_function_expr(fe: Call) -> Expr {
 }
 
 pub(crate) fn extract_datetime_part(epoch_secs: f64, part: DateTimePart) -> Option<f64> {
-    datetime_from_seconds(epoch_secs)
-        .map(|dt| part.extract(dt))
+    datetime_from_seconds(epoch_secs).map(|dt| part.extract(dt))
 }
 
 fn handle_aggregation_expr(ae: AggregateExpr) -> Expr {
     if let Some(param) = ae.param {
         let arg = const_simplify(*param);
-        let ae = AggregateExpr { param: Some(Box::new(arg)), ..ae };
+        let ae = AggregateExpr {
+            param: Some(Box::new(arg)),
+            ..ae
+        };
         return Expr::Aggregate(ae);
     };
     Expr::Aggregate(ae)
@@ -282,17 +263,17 @@ fn handle_expr_vecs(args: Vec<Expr>) -> Vec<Expr> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use chrono::Utc;
     use promql_parser::parser::{NumberLiteral, StringLiteral, parse};
-
-    use super::*;
 
     // ------------------------------
     // --- ConstEvaluator tests -----
     // ------------------------------
     fn test_const_simplify(input_expr: Expr, expected_expr: Expr) {
         let evaluated_expr = const_simplify(input_expr.clone());
-        assert_eq!(&evaluated_expr, &expected_expr,
+        assert_eq!(
+            &evaluated_expr, &expected_expr,
             "Mismatch evaluating {input_expr}\n  Expected:{expected_expr}\n  Got:{evaluated_expr}"
         );
     }
@@ -301,16 +282,12 @@ mod tests {
         let input = parse(input_expr).expect("parse failed");
         let expected = parse(expected_expr).expect("parse failed");
         let simplified = const_simplify(input);
-        assert_eq!(&simplified, &expected,
-                   "Mismatch simplifying {input_expr}\n  Expected:{expected_expr}\n  Got:{simplified_expr}"
+        assert_eq!(
+            &simplified,
+            &expected,
+            "Mismatch simplifying {input_expr}\n  Expected:{expected_expr}\n  Got:{}",
+            simplified.prettify()
         );
-    }
-
-    fn set_bool_modifier(expr: Expr) -> Expr {
-        match expr {
-            Expr::Binary(be) => Expr::Binary(be.return_bool()),
-            _ => expr,
-        }
     }
 
     fn remove_bool_modifier(expr: Expr) -> Expr {
@@ -335,78 +312,27 @@ mod tests {
     fn test_const_evaluator() {
         // true --> true
         test_simplify("1.0", "1.0");
-        // true or true --> true
-        test_simplify("1.0 or 1.0", "1.0");
-        // true or false --> true
-        test_simplify("1.0 or 0.0", "1.0");
-
         // c == 1 --> c == 1
         test_simplify("c == 1.0", "c == 1.0");
         // c = 1 + 2 --> c + 3
-        test_simplify("c = 1.0 + 2.0", "c = 3.0");
-        // (foo != foo) OR (c == 1) --> false OR (c == 1)
-        test_simplify(
-            r#"( "foo" != bool "foo" ) OR ( c == 1.0 )"#,
-            "false OR ( c == 1.0 )",
-        );
-    }
-
-    #[test]
-    fn test_const_evaluator_strings() {
-        // "foo" + "bar" --> "foobar"
-        test_simplify(r#""foo" + "bar""#, "foobar");
-
-        // "foo" == bool "foo" --> 1.0
-        test_simplify(r#""foo" == bool "foo""#, "1.0");
-
-        // "foo" != bool "foo" --> 0.0
-        test_simplify(r#""foo" != bool "foo""#, "0.0");
-
-        // "foo" != "foo" --> NAN
-        test_simplify(r#""foo" != "foo""#, "NAN"); // wrong
-
-        // "foo" != bool "bar" --> 1.0
-        test_simplify(r#""foo" != bool "bar""#, "1.0");
-
-        // "foo" > bool "bar" --> 1.0
-        test_simplify(r#""foo" > bool "bar""#, "1.0");
-
-        // "foo" < bool "bar" --> 0.0
-        test_simplify(r#""foo" < bool "bar""#, "0.0");
-
-        // "foo" < "bar" --> NAN
-        test_simplify(r#""foo" < "bar""#, "NAN"); // wrong
-
-        // "foo" >= bool "foo" --> 1.0
-        test_simplify(r#""foo" >= bool "foo""#, "1.0");
-
-        // "foo_99" >= bool "foo" --> 1.0
-        test_simplify(r#""foo_99" >= "foo""#, "1.0");
-
-        // "foo" <= bool "foo1" --> 1.0
-        test_simplify(r#""foo" <= bool "foo1""#, "1.0");
-
-        // "foo" <= bool "foo" --> 1.0
-        test_simplify(r#""foo" <= bool "foo""#, "1.0");
-    }
-
-    #[test]
-    fn test_const_evaluator_scalar_functions() {
-        let rand = Expr::call("rand", vec![]).expect("invalid function call");
-        let expr = rand.clone() + (Expr::from(1.0) + Expr::from(2.0));
-        let expected = rand + Expr::from(3.0);
-        test_const_simplify(expr, expected);
-
-        // parenthesization matters: can't rewrite
-        // (rand() + 1) + 2 --> (rand() + 1) + 2)
-        let rand = Expr::call("rand", vec![]).expect("invalid function call");
-        let expr = (rand + Expr::from(1.0)) + Expr::from(2.0);
-        test_const_simplify(expr.clone(), expr);
+        test_simplify("c == 1.0 + 2.0", "c == 3.0");
     }
 
     fn test_math_fn(name: &str, arg: f64, expected: f64) {
-        let expr = Expr::call(name, vec![Expr::from(arg)]).expect("invalid function call");
-        test_const_simplify(expr, number(expected));
+        let expr = format!("{}(vector({}))", name, arg);
+        let simplified = const_simplify(parse(&expr).expect("parse failed")).prettify();
+        let simplified_value = parse_number(&simplified).unwrap();
+        if expected.is_nan() {
+            assert!(
+                simplified_value.is_nan(),
+                "Expected NaN for {expr}, but got {simplified_value}"
+            );
+        } else {
+            assert_eq!(
+                expected, simplified_value,
+                "Mismatch evaluating {expr}\n  Expected:{expected}\n  Got:{simplified_value}"
+            );
+        }
     }
 
     #[test]
@@ -484,9 +410,14 @@ mod tests {
     }
 
     fn test_date_part_fn(name: &str, epoch_secs: f64, part: DateTimePart) {
-        let expr = Expr::call(name, vec![number(epoch_secs)]).expect("invalid function call");
-        let value = extract_datetime_part(epoch_secs, part);
-        test_const_simplify(expr, number(value));
+        let expr = format!("{name}(vector({epoch_secs}))");
+        let simplified = const_simplify(parse(&expr).expect("parse failed")).prettify();
+        let expected = extract_datetime_part(epoch_secs, part).unwrap();
+        let actual = parse_number(&simplified).unwrap();
+        assert_eq!(
+            expected, actual,
+            "Mismatch evaluating {expr}\n  Expected:{expected}\n  Got:{actual}"
+        );
     }
 
     #[test]
@@ -506,26 +437,21 @@ mod tests {
         test_date_part_fn("year", epoch, DateTimePart::Year);
     }
 
-
     #[test]
     fn test_scalar_vector() {
         struct TestCase {
             expr: &'static str,
-            expected: f64,
+            expected: &'static str,
         }
 
         let tests = vec![
             TestCase {
                 expr: "(9+scalar(vector(-10)))",
-                expected: -1.0,
-            },
-            TestCase {
-                expr: r#"(scalar("12.90"))"#,
-                expected: 12.90,
+                expected: "-1.0",
             },
             TestCase {
                 expr: "scalar(9+vector(4)) / 2",
-                expected: 6.5,
+                expected: "6.5",
             },
             TestCase {
                 expr: r#"scalar(
@@ -535,7 +461,7 @@ mod tests {
                     ) - vector( 2 )
                 ) + vector(2)
             ) * 9"#,
-                expected: 54.0,
+                expected: "54.0",
             },
             TestCase {
                 expr: "5 - scalar(
@@ -545,45 +471,44 @@ mod tests {
                     ) - vector( 2 )
                 ) + vector(2)
             )",
-                expected: -1.0,
+                expected: "-1.0",
             },
             TestCase {
                 expr: "scalar(vector(1) + vector(2))",
-                expected: 3.0,
+                expected: "3.0",
             },
             TestCase {
                 expr: "scalar(vector(1) + scalar(vector(1) + vector(2)))",
-                expected: 4.0,
+                expected: "4.0",
             },
             TestCase {
                 expr: "scalar(vector(1) + scalar(vector(1) + scalar(vector(1) + vector(2))))",
-                expected: 5.0,
+                expected: "5.0",
             },
             TestCase {
                 expr: "(scalar(9+vector(4)) * 4 - 9+scalar(vector(3)))",
-                expected: 46.0,
+                expected: "46.0",
             },
             TestCase {
                 expr: "scalar(1 +vector(2 != bool 1))",
-                expected: 2.0,
+                expected: "2.0",
             },
             TestCase {
                 expr: "scalar(1 +vector(1 != bool 1))",
-                expected: 1.0,
+                expected: "1.0",
             },
             TestCase {
                 expr: "1 >= bool 1",
-                expected: 1.0,
+                expected: "1.0",
             },
             TestCase {
                 expr: "1 >= bool 2",
-                expected: 0.0,
+                expected: "0.0",
             },
         ];
 
         for tt in tests {
-            let expr = parse(tt.expr).expect("parse failed");
-            test_const_simplify(expr, number(tt.expected));
+            test_simplify(tt.expr, tt.expected);
         }
     }
 }

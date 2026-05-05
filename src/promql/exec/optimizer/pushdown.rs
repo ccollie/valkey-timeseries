@@ -1,8 +1,9 @@
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::promql::functions::{resolve_function, PromqlFunctionKind};
+use crate::promql::functions::{PromqlFunctionKind, resolve_function};
 use crate::promql::hashers::{FingerprintHashSet, HasFingerprint};
 use ahash::HashSetExt;
 use promql_parser::label::{Matcher, Matchers};
+use promql_parser::parser::token::{T_LOR, T_LUNLESS};
 use promql_parser::parser::value::ValueType;
 use promql_parser::parser::{AggregateExpr, Expr, LabelModifier, VectorMatchCardinality};
 use smallvec::SmallVec;
@@ -30,13 +31,13 @@ pub(crate) fn can_pushdown_filters(expr: &Expr) -> bool {
     use Expr::*;
 
     match expr {
-        Call(call) => {
-            call.args.args.iter().any(|x| can_pushdown_filters(x.deref()))
-        }
-        Binary(be) => {
-            can_pushdown_filters(&be.lhs) || can_pushdown_filters(&be.rhs)
-        }
-        Aggregate(agg) => agg.param.as_ref().map_or(false, |e| can_pushdown_filters(&e)),
+        Call(call) => call
+            .args
+            .args
+            .iter()
+            .any(|x| can_pushdown_filters(x.deref())),
+        Binary(be) => can_pushdown_filters(&be.lhs) || can_pushdown_filters(&be.rhs),
+        Aggregate(agg) => agg.param.as_ref().is_some_and(|e| can_pushdown_filters(e)),
         Unary(unary) => can_pushdown_filters(&unary.expr),
         Subquery(s) => can_pushdown_filters(&s.expr),
         _ => false,
@@ -47,6 +48,16 @@ pub(crate) fn optimize_in_place(expr: &mut Expr) {
     use Expr::*;
 
     match expr {
+        VectorSelector(vs) => {
+            if vs.name.is_none()
+                && let Some(pos) = vs.matchers.matchers.iter().position(|m| {
+                    m.name == "__name__" && m.op == promql_parser::label::MatchOp::Equal
+                })
+            {
+                let m = vs.matchers.matchers.remove(pos);
+                vs.name = Some(m.value);
+            }
+        }
         Call(f) => {
             for arg in f.args.args.iter_mut() {
                 optimize_in_place(arg);
@@ -64,6 +75,7 @@ pub(crate) fn optimize_in_place(expr: &mut Expr) {
             push_down_binary_op_filters_in_place(expr, &mut lfs);
         }
         Unary(unary) => optimize_in_place(&mut unary.expr),
+        Paren(p) => optimize_in_place(&mut p.expr),
         Subquery(s) => optimize_in_place(&mut s.expr),
         _ => {}
     }
@@ -77,7 +89,7 @@ pub fn get_common_label_filters(e: &Expr) -> Vec<Matcher> {
         Subquery(s) => get_common_label_filters(&s.expr),
         MatrixSelector(m) => get_common_label_filters_without_metric_name(&m.vs.matchers),
         Call(fe) => {
-            if let Some(func) = resolve_function(&fe.func.name) {
+            if let Some(func) = resolve_function(fe.func.name) {
                 let kind = func.kind();
                 return match kind {
                     PromqlFunctionKind::LabelJoin | PromqlFunctionKind::LabelReplace => {
@@ -87,27 +99,24 @@ pub fn get_common_label_filters(e: &Expr) -> Vec<Matcher> {
                         get_common_label_filters_for_count_values_over_time(&fe.args.args)
                     }
                     _ => {
-                        let Some(pos) = fe.func.arg_types
-                            .iter()
-                            .position(|&arg| arg != ValueType::Scalar && arg != ValueType::String)
+                        let Some(pos) =
+                            fe.func.arg_types.iter().position(|&arg| {
+                                arg != ValueType::Scalar && arg != ValueType::String
+                            })
                         else {
                             return vec![];
                         };
                         let arg = &fe.args.args[pos];
                         get_common_label_filters(arg)
                     }
-                }
+                };
             }
             vec![]
         }
         Aggregate(agg) => {
-            if let Some(argument) = &agg.param {
-                let mut filters = get_common_label_filters(&argument);
-                trim_filters_by_aggr_modifier(&mut filters, &agg);
-                filters
-            } else {
-                vec![]
-            }
+            let mut filters = get_common_label_filters(&agg.expr);
+            trim_filters_by_aggr_modifier(&mut filters, agg);
+            filters
         }
         Unary(unary) => get_common_label_filters(&unary.expr),
         Paren(p) => get_common_label_filters(&p.expr),
@@ -210,7 +219,6 @@ fn get_common_label_filters_for_count_values_over_time(args: &[Box<Expr>]) -> Ve
     drop_label_filters_for_label_name(&lfs, &args[0])
 }
 
-
 fn get_common_label_filters_for_label_replace(args: &[Box<Expr>]) -> Vec<Matcher> {
     if args.len() < 2 {
         return vec![];
@@ -243,9 +251,7 @@ pub fn trim_filters_by_match_modifier(
         None => {}
         Some(modifier) => match modifier {
             LabelModifier::Include(labels) => filter_label_filters_on(lfs, &labels.labels),
-            LabelModifier::Exclude(labels) => {
-                filter_label_filters_ignoring(lfs, &labels.labels)
-            }
+            LabelModifier::Exclude(labels) => filter_label_filters_ignoring(lfs, &labels.labels),
         },
     }
 }
@@ -303,14 +309,29 @@ pub fn pushdown_binary_op_filters(expr: &Expr, common_filters: Vec<Matcher>) -> 
 fn can_pushdown_op_filters(expr: &Expr) -> bool {
     use Expr::*;
     // these are the types handled below in pushdown_binary_op_filters_in_place
-    matches!(
-        expr,
-            | Call(_)
-            | Binary(_)
-            | Aggregate(_)
-            | Paren(_)
-            | Unary(_)
-    )
+    matches!(expr, |Call(_)| Binary(_)
+        | Aggregate(_)
+        | Paren(_)
+        | Subquery(_)
+        | Unary(_))
+}
+
+fn push_filters_to_matchers(matchers: &mut Matchers, common_filters: &[Matcher]) {
+    if !matchers.matchers.is_empty() {
+        union_label_filters_internal(&mut matchers.matchers, common_filters);
+        matchers
+            .matchers
+            .sort_by(|a, b| a.name.cmp(&b.name).then(a.value.cmp(&b.value)));
+    } else if !matchers.or_matchers.is_empty() {
+        for matcher in matchers.or_matchers.iter_mut() {
+            union_label_filters_internal(matcher, common_filters);
+            matcher.sort_by(|a, b| a.name.cmp(&b.name).then(a.value.cmp(&b.value)));
+        }
+    } else {
+        let mut new_matchers = common_filters.to_vec();
+        new_matchers.sort_by(|a, b| a.name.cmp(&b.name).then(a.value.cmp(&b.value)));
+        matchers.matchers = new_matchers;
+    }
 }
 
 pub fn push_down_binary_op_filters_in_place(e: &mut Expr, common_filters: &mut Vec<Matcher>) {
@@ -322,50 +343,31 @@ pub fn push_down_binary_op_filters_in_place(e: &mut Expr, common_filters: &mut V
 
     match e {
         VectorSelector(me) => {
-            if me.matchers.matchers.is_empty() {
-                return;
-            }
-            if !me.matchers.matchers.is_empty() {
-                union_label_filters_internal(&mut me.matchers.matchers, common_filters);
-            } else if !me.matchers.or_matchers.is_empty() {
-                for matcher in me.matchers.or_matchers.iter_mut() {
-                    union_label_filters_internal(matcher, common_filters);
-                }
-            } else {
-                me.matchers.matchers = common_filters.clone();
-            }
+            push_filters_to_matchers(&mut me.matchers, common_filters);
         }
         MatrixSelector(me) => {
-            if me.vs.matchers.matchers.is_empty() {
-                return;
-            }
-            if !me.vs.matchers.matchers.is_empty() {
-                union_label_filters_internal(&mut me.vs.matchers.matchers, common_filters);
-            } else if !me.vs.matchers.or_matchers.is_empty() {
-                for matcher in me.vs.matchers.or_matchers.iter_mut() {
-                    union_label_filters_internal(matcher, common_filters);
-                }
-            } else {
-                me.vs.matchers.matchers = common_filters.clone();
-            }
+            push_filters_to_matchers(&mut me.vs.matchers, common_filters);
         }
         Subquery(s) => push_down_binary_op_filters_in_place(&mut s.expr, common_filters),
-        Call(fe) => {
-            match fe.func.name {
-                "label_replace" | "label_join" => {
-                    pushdown_label_filters_for_label_replace(&mut fe.args.args, common_filters)
+        Call(fe) => match fe.func.name {
+            "label_replace" | "label_join" => {
+                pushdown_label_filters_for_label_replace(&mut fe.args.args, common_filters)
+            }
+            _ => {
+                if fe.func.name == "absent" || fe.func.name == "absent_over_time" {
+                    return;
                 }
-                _ => {
-                    if let Some(index) = fe.func.arg_types
-                        .iter()
-                        .position(|&arg| arg != ValueType::Scalar && arg != ValueType::String) {
-                        if let Some(arg) = fe.args.args.get_mut(index) {
-                            push_down_binary_op_filters_in_place(arg, common_filters);
-                        }
-                    }
+                if let Some(index) = fe
+                    .func
+                    .arg_types
+                    .iter()
+                    .position(|&arg| arg != ValueType::Scalar && arg != ValueType::String)
+                    && let Some(arg) = fe.args.args.get_mut(index)
+                {
+                    push_down_binary_op_filters_in_place(arg, common_filters);
                 }
             }
-        }
+        },
         Unary(unary) => {
             push_down_binary_op_filters_in_place(&mut unary.expr, common_filters);
         }
@@ -378,6 +380,7 @@ pub fn push_down_binary_op_filters_in_place(e: &mut Expr, common_filters: &mut V
         }
         Aggregate(aggr) => {
             trim_filters_by_aggr_modifier(common_filters, aggr);
+            push_down_binary_op_filters_in_place(&mut aggr.expr, common_filters);
             if let Some(expr) = aggr.param.as_mut() {
                 push_down_binary_op_filters_in_place(expr, common_filters);
             }
@@ -458,7 +461,7 @@ fn union_label_filters(first: Vec<Matcher>, second: Vec<Matcher>) -> Vec<Matcher
 
 fn union_label_filters_internal(first: &mut Vec<Matcher>, second: &[Matcher]) {
     // use SmallVec here because generally the number of filters is small, and we want to avoid allocation
-    let set: FingerprintHashSet = get_label_filters_set(&first);
+    let set: FingerprintHashSet = get_label_filters_set(first);
     for matcher in second.iter() {
         let sig = matcher.fingerprint();
         if !set.contains(&sig) {
@@ -469,7 +472,7 @@ fn union_label_filters_internal(first: &mut Vec<Matcher>, second: &[Matcher]) {
 
 fn drop_label_filters_for_label_names<'a>(
     lfs: &[Matcher],
-    label_names: impl Iterator<Item=&'a Expr>,
+    label_names: impl Iterator<Item = &'a Expr>,
 ) -> Vec<Matcher> {
     if lfs.is_empty() {
         return vec![];
@@ -480,12 +483,10 @@ fn drop_label_filters_for_label_names<'a>(
             names_set.push(v);
         }
     }
-    let res = lfs
-        .iter()
+    lfs.iter()
         .filter(|x| !names_set.contains(&x.name.as_str()))
         .cloned()
-        .collect();
-    res
+        .collect()
 }
 
 fn drop_label_filters_for_label_name(lfs: &[Matcher], label_name: &Expr) -> Vec<Matcher> {
@@ -500,9 +501,7 @@ fn drop_label_filters_for_label_name(lfs: &[Matcher], label_name: &Expr) -> Vec<
 fn filter_label_filters_on(lfs: &mut Vec<Matcher>, args: &[String]) {
     if !args.is_empty() {
         let m: SmallVec<&String, 8> = args.iter().collect();
-        lfs.retain(|x| {
-            m.contains(&&x.name)
-        })
+        lfs.retain(|x| m.contains(&&x.name))
     } else {
         lfs.clear()
     }
@@ -511,9 +510,7 @@ fn filter_label_filters_on(lfs: &mut Vec<Matcher>, args: &[String]) {
 fn filter_label_filters_ignoring(lfs: &mut Vec<Matcher>, args: &[String]) {
     if !args.is_empty() {
         let m: SmallVec<&String, 8> = args.iter().collect();
-        lfs.retain(|x| {
-            !m.contains(&&x.name)
-        });
+        lfs.retain(|x| !m.contains(&&x.name));
     }
 }
 
@@ -523,4 +520,3 @@ fn get_expr_as_string(expr: &Expr) -> Option<&str> {
         _ => None,
     }
 }
-
