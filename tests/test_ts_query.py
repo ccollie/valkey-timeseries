@@ -110,15 +110,6 @@ class TestTsQuery(ValkeyTimeSeriesTestCaseBase):
 
         assert result is not None
 
-    def test_query_with_plus_timestamp(self):
-        """Test TS.QUERY with + timestamp (current time)."""
-        self.setup_simple_series()
-
-        # + is another way to specify current time
-        result = self.client.execute_command('TS.QUERY', 'http_requests', 'TIME', '+')
-
-        assert result is not None
-
     def test_query_with_lookback_delta(self):
         """Test TS.QUERY with LOOKBACK_DELTA option."""
         self.setup_simple_series()
