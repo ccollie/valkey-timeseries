@@ -211,6 +211,15 @@ fn simplify_math_fn(fe: &Call, func: PromqlFunctionKind) -> Option<f64> {
 
 fn handle_function_expr(fe: Call) -> Expr {
     use PromqlFunctionKind::*;
+    // const-simplify function arguments first so we can simplify calls like
+    // `scalar(9 + vector(4))` -> `scalar(9 + 4)` -> `scalar(13)` -> `13`
+    let mut fe = fe;
+    fe.args.args = fe
+        .args
+        .args
+        .into_iter()
+        .map(|b| Box::new(const_simplify(*b)))
+        .collect();
     let arg_count = fe.args.len();
     let Ok(kind) = PromqlFunctionKind::try_from(fe.func.name) else {
         return Expr::Call(fe);
@@ -218,8 +227,16 @@ fn handle_function_expr(fe: Call) -> Expr {
     match kind {
         Vector if arg_count == 1 => {
             let mut fe = fe;
-            // ????
+            // unwrap vector(...) -> inner literal when possible
             *fe.args.args.remove(0)
+        }
+        Scalar if arg_count == 1 => {
+            // try to extract a single scalar argument (e.g., scalar(vector(123)) -> 123)
+            if let Some(v) = get_single_scalar_arg(&fe) {
+                Expr::from(v)
+            } else {
+                Expr::Call(fe)
+            }
         }
         Pi if arg_count == 0 => Expr::from(f64::PI()),
         _ => {

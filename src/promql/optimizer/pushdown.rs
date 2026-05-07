@@ -243,10 +243,7 @@ fn trim_filters_by_aggr_modifier(lfs: &mut Vec<Matcher>, afe: &AggregateExpr) {
 /// - It returns lfs as is if be doesn't contain any group modifier
 /// - It returns only filters specified in on()
 /// - It drops filters specified inside ignoring()
-fn trim_filters_by_match_modifier(
-    lfs: &mut Vec<Matcher>,
-    group_modifier: &Option<LabelModifier>,
-) {
+fn trim_filters_by_match_modifier(lfs: &mut Vec<Matcher>, group_modifier: &Option<LabelModifier>) {
     match group_modifier {
         None => {}
         Some(modifier) => match modifier {
@@ -293,7 +290,10 @@ fn get_label_filters_without_metric_name(lfs: &[Matcher]) -> Vec<Matcher> {
 ///
 /// The `{x="y"}` cannot be pushed down to `sum(bar)`, since this
 /// may change binary operation results.
-pub(super) fn pushdown_binary_op_filters(expr: &Expr, common_filters: Vec<Matcher>) -> Cow<'_, Expr> {
+pub(super) fn pushdown_binary_op_filters(
+    expr: &Expr,
+    common_filters: Vec<Matcher>,
+) -> Cow<'_, Expr> {
     // according to pushdown_binary_op_filters_in_place, only the following types need to be
     // handled, so exit otherwise
     if common_filters.is_empty() || !can_pushdown_op_filters(expr) {

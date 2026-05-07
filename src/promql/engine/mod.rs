@@ -47,7 +47,7 @@ pub struct QueryOptions {
     pub is_tracing: bool,
     /// Enable experimental functions for the current request
     pub enable_experimental_functions: bool,
-    /// Whether to optimize the queries by simplify the query plan and pushing down filters to the data source. 
+    /// Whether to optimize the queries by simplify the query plan and pushing down filters to the data source.
     /// This can improve performance but may cause higher memory usage and slower response times for some queries.
     pub optimize_queries: bool,
 }

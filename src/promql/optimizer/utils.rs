@@ -22,8 +22,11 @@ use promql_parser::parser::{BinaryExpr, Expr, NumberLiteral};
 /// Returns true if `needle` is found in a chain of `search_op`
 /// expressions, such as `(A AND B) AND C`
 pub(super) fn expr_contains(expr: &Expr, needle: &Expr, search_op: TokenType) -> bool {
-    match expr {
-        Expr::Binary(BinaryExpr { lhs, op, rhs, .. }) if *op == search_op => {
+    // unwrap parentheses on either side so comparisons succeed whether either side is paren-wrapped
+    match (expr, needle) {
+        (Expr::Paren(pe), _) => expr_contains(&pe.expr, needle, search_op),
+        (_, Expr::Paren(pn)) => expr_contains(expr, &pn.expr, search_op),
+        (Expr::Binary(BinaryExpr { lhs, op, rhs, .. }), _) if *op == search_op => {
             expr_contains(lhs, needle, search_op) || expr_contains(rhs, needle, search_op)
         }
         _ => expr == needle,
@@ -60,6 +63,29 @@ pub(super) fn is_null(expr: &Expr) -> bool {
 
 /// returns true if `haystack` looks like `(needle OP X)` or `(X OP needle)`
 pub(super) fn is_op_with(target_op: TokenType, haystack: &Expr, needle: &Expr) -> bool {
-    matches!(haystack, Expr::Binary(BinaryExpr { lhs, op, rhs, .. })
-        if op == &target_op && (needle == lhs.as_ref() || needle == rhs.as_ref()))
+    // unwrap needle if it's paren-wrapped so comparisons succeed
+    if let Expr::Paren(pn) = needle {
+        return is_op_with(target_op, haystack, &pn.expr);
+    }
+
+    match haystack {
+        // unwrap parentheses and inspect inner expression
+        Expr::Paren(p) => is_op_with(target_op, &p.expr, needle),
+        Expr::Binary(BinaryExpr { lhs, op, rhs, .. }) if op == &target_op => {
+            // compare needle with lhs/rhs after unwrapping any Paren wrapper on them
+            let lhs_un = match lhs.as_ref() {
+                Expr::Paren(p) => p.expr.as_ref(),
+                other => other,
+            };
+            let rhs_un = match rhs.as_ref() {
+                Expr::Paren(p) => p.expr.as_ref(),
+                other => other,
+            };
+            if needle == lhs_un || needle == rhs_un {
+                return true;
+            }
+            false
+        }
+        _ => false,
+    }
 }

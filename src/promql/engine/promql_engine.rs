@@ -3,6 +3,7 @@ use crate::common::{Sample, Timestamp};
 use crate::promql::engine::{QueryOptions, QueryReader};
 use crate::promql::error::QueryError;
 use crate::promql::model::{InstantSample, Labels, QueryValue, RangeSample};
+use crate::promql::optimizer::optimize_expr;
 use crate::promql::time::step_times;
 use crate::promql::utils::range_bounds_to_system_time;
 use crate::promql::{Evaluator, ExprResult, QueryResult};
@@ -14,7 +15,6 @@ use std::ops::RangeBounds;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use twox_hash::XxHash64;
-use crate::promql::optimizer::optimize_expr;
 
 /// Parse a match[] selector string into a VectorSelector
 fn parse_selector(selector: &str) -> Result<VectorSelector, String> {
@@ -26,8 +26,7 @@ fn parse_selector(selector: &str) -> Result<VectorSelector, String> {
 }
 
 fn parse_query(query: &str, options: &QueryOptions) -> QueryResult<Expr> {
-    let mut expr = promql_parser::parser::parse(query)
-        .map_err(|e| QueryError::InvalidQuery(e))?;
+    let mut expr = promql_parser::parser::parse(query).map_err(QueryError::InvalidQuery)?;
     if options.optimize_queries {
         // todo: better error handling for optimization errors (e.g. include original query in error message)
         expr = optimize_expr(expr)
