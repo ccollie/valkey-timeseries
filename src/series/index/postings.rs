@@ -406,6 +406,7 @@ impl Postings {
     ///
     /// # Returns
     /// A `PostingsBitmap` that contains the union of all postings that match the given label and prefix.
+    ///
     pub fn postings_by_prefix(&self, label: &str, prefix: &str) -> PostingsBitmap {
         let search_prefix = KeyBuffer::for_label_value_prefix(label, prefix);
 
