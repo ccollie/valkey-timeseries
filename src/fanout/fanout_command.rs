@@ -53,7 +53,7 @@ pub trait FanoutCommand: Default + Send + 'static {
         exec_command(ctx, self, targets, timeout, f)
     }
 
-    /// Execute the fanout operation synchronously across cluster nodes.
+    /// Execute the fanout operation and wait synchronously.
     fn exec_sync(self, ctx: &Context) -> FanoutResult<Self::Response> {
         let timeout = self.get_timeout();
         let targets = self.get_targets(ctx);
@@ -84,16 +84,11 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// Called once all responses have been received, or on timeout.
     fn on_completion(&mut self) {}
 
-    /// Return the final response after the fanout operation is complete.
-    /// By default, it returns a default instance of the response type.
-    fn get_response(self) -> Self::Response {
-        Self::Response::default()
-    }
-
-    /// Return the final response after the fanout operation is complete.
-    /// By default, it returns a default instance of the response type.
-    fn get_response(self) -> Self::Response {
-        Self::Response::default()
+    /// If true, the fanout operation should abort immediately on the first
+    /// failing `on_response`. Default is `false` to preserve existing
+    /// per-shard error aggregation behavior.
+    fn fail_fast(&self) -> bool {
+        false
     }
 
     fn generate_error_reply(&self) -> FanoutError {
@@ -101,6 +96,12 @@ pub trait FanoutCommand: Default + Send + 'static {
             "Internal error in fanout operation '{}'",
             Self::name()
         ))
+    }
+
+    /// Return the final response after the fanout operation is complete.
+    /// By default, it returns a default instance of the response type.
+    fn get_response(self) -> Self::Response {
+        Self::Response::default()
     }
 }
 
@@ -180,7 +181,7 @@ enum FanoutLifecycleState {
     Completed,
 }
 
-/// Execute the fanout operation synchronously across cluster nodes.
+/// Execute the fanout operation across cluster nodes and wait synchronously for the response.
 pub fn exec_command_sync<OP: FanoutCommand>(
     ctx: &Context,
     command: OP,
@@ -428,7 +429,7 @@ fn spawn_local_request<OP, F>(
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     spawn(move || {
-        // Minimize the scope of GIL locking, avoiding re-entering the GIL which is non-reentrant.
+        // Minimize the scope of GIL locking, avoiding re-entering the `GIL` which is non-reentrant.
         let result = {
             let ctx = MODULE_CONTEXT.lock();
             with_fanout_user(&ctx, user.as_deref(), |ctx| {
