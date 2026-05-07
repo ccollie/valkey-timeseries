@@ -103,6 +103,14 @@ impl HasFingerprint for VectorSelector {
     }
 }
 
+impl HasFingerprint for Matcher {
+    fn fingerprint(&self) -> SeriesFingerprint {
+        let mut hasher = create_hasher();
+        update_hash_for_matcher(self, &mut hasher);
+        hasher.finish_128()
+    }
+}
+
 pub(in crate::promql) fn update_hasher_for_vector_selector(
     vs: &VectorSelector,
     hasher: &mut xxhash3_128::Hasher,

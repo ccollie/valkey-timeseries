@@ -297,7 +297,7 @@ impl Hash for RegexMatcher {
 }
 
 impl RegexMatcher {
-    fn new(regex: Regex, value: String) -> Self {
+    pub(crate) fn new(regex: Regex, value: String) -> Self {
         Self::from_parts(regex, value, None)
     }
 
@@ -887,6 +887,12 @@ impl DerefMut for FilterList {
 impl From<Vec<LabelFilter>> for FilterList {
     fn from(value: Vec<LabelFilter>) -> Self {
         Self::new(value)
+    }
+}
+
+impl From<SmallVec<LabelFilter, 3>> for FilterList {
+    fn from(value: SmallVec<LabelFilter, 3>) -> Self {
+        Self(value)
     }
 }
 

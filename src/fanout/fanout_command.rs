@@ -49,7 +49,7 @@ pub trait FanoutCommand: Default + Send + 'static {
         exec_command(ctx, self, targets, timeout, f)
     }
 
-    /// Execute the fanout operation and wait synchronously.
+    /// Execute the fanout operation synchronously across cluster nodes.
     fn exec_sync(self, ctx: &Context) -> FanoutResult<Self::Response> {
         let timeout = self.get_timeout();
         let targets = self.get_targets(ctx);
@@ -85,6 +85,12 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// per-shard error aggregation behavior.
     fn fail_fast(&self) -> bool {
         false
+    }
+
+    /// Return the final response after the fanout operation is complete.
+    /// By default, it returns a default instance of the response type.
+    fn get_response(self) -> Self::Response {
+        Self::Response::default()
     }
 
     fn generate_error_reply(&self) -> FanoutError {
@@ -168,7 +174,7 @@ where
     Ok(())
 }
 
-/// Execute the fanout operation across cluster nodes and wait synchronously for the response.
+/// Execute the fanout operation synchronously across cluster nodes.
 pub fn exec_command_sync<OP: FanoutCommand>(
     ctx: &Context,
     command: OP,
