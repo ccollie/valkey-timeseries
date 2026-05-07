@@ -1,5 +1,6 @@
 pub mod command_parser;
 mod fanout;
+mod label_search_utils;
 mod promql_utils;
 mod ts_add;
 mod ts_addbulk;
