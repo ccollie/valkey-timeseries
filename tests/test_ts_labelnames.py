@@ -335,6 +335,42 @@ class TestTsLabelNames(ValkeyTimeSeriesTestCaseBase):
             f"Expected at least one 'met*' label name in {values}"
         )
 
+    def test_labelnames_search_unscoped_by_label_name(self):
+        """Unscoped SEARCH (no FILTER) should find label names across the entire index."""
+        # Create a small set of series with label names that share a common prefix
+        self.client.execute_command(
+            'TS.CREATE', 'ls1', 'LABELS', 'region', 'us', 'service', 'api'
+        )
+        self.client.execute_command(
+            'TS.CREATE', 'ls2', 'LABELS', 'reg', 'abc', 'region_code', 'us-east'
+        )
+        self.client.execute_command(
+            'TS.CREATE', 'ls3', 'LABELS', 'meta', 'x'
+        )
+
+        # Search for the prefix 'reg' without any FILTER — this exercises the unscoped code path
+        result = self._exec_fuzzy('SEARCH', 'reg')
+        values = [lv.value for lv in result.results]
+
+        # Expect at least one of the label names that start with 'reg' to be present
+        assert any(v in values for v in [b'reg', b'region', b'region_code']), (
+            f"Expected at least one 'reg*' label name in {values}"
+        )
+
+    def test_labelnames_unscoped_no_args(self):
+        """TS.LABELNAMES with no arguments should return all label names in the index."""
+        # Create series with several distinct label names
+        self.client.execute_command('TS.CREATE', 'ua1', 'LABELS', 'aaa', '1', 'bbb', '2')
+        self.client.execute_command('TS.CREATE', 'ua2', 'LABELS', 'ccc', '3', 'aaa', '4')
+
+        # Call TS.LABELNAMES with no args (unscoped) and collect sorted values
+        result = self.exec_sorted_values()
+
+        # Ensure all label names created are present
+        assert b'aaa' in result
+        assert b'bbb' in result
+        assert b'ccc' in result
+
     def test_labelnames_search_returns_highest_scores_first(self):
         """Default ordering when SEARCH is specified should be by relevance
         score descending."""

@@ -13,8 +13,8 @@ use ahash::{AHashMap, AHashSet};
 use itertools::Itertools;
 use min_max_heap::MinMaxHeap;
 use std::cmp::Ordering;
+use std::collections::Bound;
 use std::fmt::Display;
-use std::ops::Bound;
 use valkey_module::{Context, ValkeyError};
 
 const DEFAULT_LIMIT: usize = 100;
@@ -419,18 +419,22 @@ fn collect_limited_with_heap(
 }
 
 /// Get label names in ascending order, applying a fuzzy filter if provided.
-fn get_label_names_asc(
-    postings: &Postings,
+fn iterate_label_names_asc<'a, F>(
+    postings: &'a Postings,
     filter: &dyn FuzzyFilter,
     limit: Option<usize>,
-) -> LabelQueryResult {
-    let mut results: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
-    let mut current_result: Option<LabelSearchResult> = None;
+    mut f: F,
+) -> bool
+where
+    F: FnMut(&'a str, f64, usize),
+{
+    let mut current_result: Option<(&str, f64, usize)> = None;
     // "!" is lexicographically before all valid label names, so this ensures we start scanning from the beginning of the index
     let mut key_buf: String = "!".to_string();
     let mut curr_key: &str = "";
     let mut has_more = false;
     let limit = limit.unwrap_or(SEARCH_RESULT_LIMIT_MAX);
+    let mut count: usize = 0;
 
     'outer: loop {
         let start_bound: Bound<&[u8]> = Bound::Excluded(key_buf.as_bytes());
@@ -448,11 +452,12 @@ fn get_label_names_asc(
                 curr_key = key_name;
 
                 if let Some(stored) = current_result.take() {
-                    if results.len() == limit {
+                    if count == limit {
                         has_more = true;
                         break 'outer;
                     }
-                    results.push(stored);
+                    f(stored.0, stored.1, stored.2);
+                    count += 1;
                 }
 
                 let (accepted, score) = filter.accept(key_name);
@@ -464,14 +469,9 @@ fn get_label_names_asc(
                     key_buf.push('?');
                     continue 'outer;
                 }
-
-                current_result = Some(LabelSearchResult {
-                    value: key_name.to_owned(),
-                    score,
-                    cardinality: map.cardinality() as usize,
-                });
+                current_result = Some((key_name, score, map.cardinality() as usize));
             } else if let Some(active) = current_result.as_mut() {
-                active.cardinality += map.cardinality() as usize;
+                active.2 += map.cardinality() as usize;
             }
         }
 
@@ -479,10 +479,29 @@ fn get_label_names_asc(
     }
 
     if let Some(stored) = current_result
-        && results.len() < limit
+        && count < limit
     {
-        results.push(stored);
+        f(stored.0, stored.1, stored.2);
     }
+
+    has_more
+}
+
+/// Get label names in ascending order, applying a fuzzy filter if provided.
+fn get_label_names_asc(
+    postings: &Postings,
+    filter: &dyn FuzzyFilter,
+    limit: Option<usize>,
+) -> LabelQueryResult {
+    let mut results: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
+    let has_more =
+        iterate_label_names_asc(postings, filter, limit, |key_name, score, cardinality| {
+            results.push(LabelSearchResult {
+                value: key_name.to_owned(),
+                score,
+                cardinality,
+            });
+        });
 
     LabelQueryResult::new(results, has_more)
 }
@@ -497,7 +516,7 @@ fn get_label_names_desc(
     let mut results: Vec<LabelSearchResult> = Vec::with_capacity(DEFAULT_LIMIT);
     let mut current_result: Option<LabelSearchResult> = None;
     let mut has_more = false;
-    let limit = limit.unwrap_or(SEARCH_RESULT_LIMIT_MAX);
+    let limit = limit.unwrap_or(DEFAULT_LIMIT);
     // When Some, use Excluded(buf) as the upper bound; when None, use Unbounded.
     let mut upper_bound_buf: Option<Vec<u8>> = None;
     let mut curr_key: &str = "";
@@ -572,117 +591,139 @@ fn get_label_names_desc(
 ///
 /// This means the `Ord` implementation can encode the complete desired output order
 /// directly, and no post-drain sort is required.
+#[derive(Debug, Clone, Copy)]
+struct HeapResultHolder<'a> {
+    value: &'a str,
+    score: f64,
+    cardinality: usize,
+    order: SearchResultOrdering,
+}
 
-#[derive(Debug)]
-struct HeapResultHolder(LabelSearchResult, ComparisonFn);
+impl<'a> HeapResultHolder<'a> {
+    fn new(value: &'a str, score: f64, cardinality: usize, order: SearchResultOrdering) -> Self {
+        Self {
+            value,
+            score,
+            cardinality,
+            order,
+        }
+    }
 
-impl PartialOrd<Self> for HeapResultHolder {
+    fn compare_parts(
+        order: SearchResultOrdering,
+        a_value: &str,
+        a_score: f64,
+        a_cardinality: usize,
+        b_value: &str,
+        b_score: f64,
+        b_cardinality: usize,
+    ) -> Ordering {
+        match order {
+            SearchResultOrdering::ValueAsc => a_value.cmp(b_value),
+            SearchResultOrdering::ValueDesc => b_value.cmp(a_value),
+            SearchResultOrdering::ScoreDesc => {
+                match b_score.partial_cmp(&a_score).unwrap_or(Ordering::Equal) {
+                    Ordering::Equal => a_value.cmp(b_value),
+                    other => other,
+                }
+            }
+            SearchResultOrdering::CardinalityAsc => match a_cardinality.cmp(&b_cardinality) {
+                Ordering::Equal => a_value.cmp(b_value),
+                other => other,
+            },
+            SearchResultOrdering::CardinalityDesc => match b_cardinality.cmp(&a_cardinality) {
+                Ordering::Equal => a_value.cmp(b_value),
+                other => other,
+            },
+        }
+    }
+
+    fn compare_candidate(
+        &self,
+        candidate_value: &str,
+        candidate_score: f64,
+        candidate_cardinality: usize,
+    ) -> Ordering {
+        Self::compare_parts(
+            self.order,
+            candidate_value,
+            candidate_score,
+            candidate_cardinality,
+            self.value,
+            self.score,
+            self.cardinality,
+        )
+    }
+}
+
+impl PartialOrd<Self> for HeapResultHolder<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for HeapResultHolder {
+impl Ord for HeapResultHolder<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.1(&self.0, &other.0)
+        Self::compare_parts(
+            self.order,
+            self.value,
+            self.score,
+            self.cardinality,
+            other.value,
+            other.score,
+            other.cardinality,
+        )
     }
 }
 
-impl PartialEq for HeapResultHolder {
+impl PartialEq for HeapResultHolder<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.value == other.value
+            && self.score == other.score
+            && self.cardinality == other.cardinality
+            && self.order == other.order
     }
 }
 
-impl Eq for HeapResultHolder {}
+impl Eq for HeapResultHolder<'_> {}
 
-/// `get_label_names_top_k` streams the label index (with the same jump optimization used by
-/// `get_label_names_asc` / `get_label_names_desc`) and uses a binary heap to keep only the
-/// best `limit` results according to `order`.
-///
-/// Unlike the value-ordered variants, this function must visit every accepted label name
-/// before it can determine the final ranking, so it scans up to [`SEARCH_RESULT_LIMIT_MAX`]
-/// labels. Completed labels are pushed directly into a bounded heap, avoiding the
-/// intermediate `Vec` allocation that would be required by first collecting all results and
-/// then selecting the top-K.
 fn get_label_names_top_k(
     postings: &Postings,
     filter: &dyn FuzzyFilter,
     order: SearchResultOrdering,
     limit: usize,
 ) -> LabelQueryResult {
-    let mut heap: MinMaxHeap<HeapResultHolder> = MinMaxHeap::with_capacity(limit + 2);
-    let mut current_result: Option<LabelSearchResult> = None;
-    // "!" is lexicographically before all valid label names.
-    let mut key_buf: String = "!".to_string();
-    let mut curr_key: &str = "";
+    let limit = if limit == 0 { DEFAULT_LIMIT } else { limit };
+    let mut heap: MinMaxHeap<HeapResultHolder<'_>> = MinMaxHeap::with_capacity(limit + 2);
     let mut has_more = false;
-    let mut scanned = 0usize;
-    let cmp_fn = compare_search_results(order);
-
-    'outer: loop {
-        let start_bound: Bound<&[u8]> = Bound::Excluded(key_buf.as_bytes());
-
-        for (key, map) in postings
-            .label_index
-            .range::<[u8], _>((start_bound, Bound::<&[u8]>::Unbounded))
-        {
-            let Some((key_name, _)) = key.split() else {
-                continue;
+    let _ = iterate_label_names_asc(postings, filter, None, |key_name, score, cardinality| {
+        if heap.len() == limit {
+            let Some(worst) = heap.peek_max() else {
+                return;
             };
 
-            if curr_key != key_name {
-                curr_key = key_name;
-
-                if let Some(stored) = current_result.take() {
-                    heap.push(HeapResultHolder(stored, cmp_fn));
-                    if heap.len() > limit {
-                        // Evict the worst candidate according to the comparator. The
-                        // comparator is a sort-order comparator where `Less` means
-                        // "appears earlier in the desired output", so the element that
-                        // should be removed when over capacity is the maximum.
-                        heap.pop_max();
-                        has_more = true;
-                    }
-                    scanned += 1;
-                    if scanned >= SEARCH_RESULT_LIMIT_MAX {
-                        break 'outer;
-                    }
-                }
-
-                let (accepted, score) = filter.accept(key_name);
-                if !accepted {
-                    // Jump past all values for this label name (same trick as get_label_names_asc).
-                    key_buf.clear();
-                    key_buf.push_str(key_name);
-                    key_buf.push('?');
-                    continue 'outer;
-                }
-
-                current_result = Some(LabelSearchResult {
-                    value: key_name.to_owned(),
-                    score,
-                    cardinality: map.cardinality() as usize,
-                });
-            } else if let Some(active) = current_result.as_mut() {
-                active.cardinality += map.cardinality() as usize;
-            }
-        }
-
-        break;
-    }
-
-    if let Some(stored) = current_result {
-        heap.push(HeapResultHolder(stored, cmp_fn));
-        if heap.len() > limit {
-            heap.pop_max();
             has_more = true;
-        }
-    }
 
-    // The comparator encodes the desired total output order. Drain ascending
-    // (min -> max) to emit results in that order.
-    let results: Vec<LabelSearchResult> = heap.drain_asc().map(|h| h.0).collect();
+            let candidate_cmp = worst.compare_candidate(key_name, score, cardinality);
+            if candidate_cmp != Ordering::Less {
+                return;
+            }
+
+            heap.pop_max();
+        }
+
+        heap.push(HeapResultHolder::new(key_name, score, cardinality, order));
+    });
+
+    // Allocate only for final returned rows.
+    let results: Vec<LabelSearchResult> = heap
+        .drain_asc()
+        .map(|h| LabelSearchResult {
+            value: h.value.to_owned(),
+            score: h.score,
+            cardinality: h.cardinality,
+        })
+        .collect();
 
     LabelQueryResult::new(results, has_more)
 }
@@ -1081,17 +1122,25 @@ mod tests {
 
     fn build_label_names_postings() -> Postings {
         let mut postings = Postings::default();
-        // create one posting per label name; values are irrelevant for name-only scans
-        postings.add_posting_for_label_value(1, "alpha", "v");
-        postings.add_posting_for_label_value(2, "beta", "v");
-        postings.add_posting_for_label_value(3, "gamma", "v");
-        // add a distractor under a different label to ensure prefixing works
+        postings.add_posting_for_label_value(1, "alpha", "alpha");
+        postings.add_posting_for_label_value(2, "beta", "beta");
+        postings.add_posting_for_label_value(3, "gamma", "gamma");
+        postings.add_posting_for_label_value(4, "service", "api");
+        postings
+    }
+
+    fn build_label_names_metric_index_postings() -> Postings {
+        let mut postings = Postings::default();
+        postings.add_posting_for_label_value(1, "alpha", "a");
+        postings.add_posting_for_label_value(2, "beta", "b");
+        postings.add_posting_for_label_value(3, "gamma", "g");
+        postings.add_posting_for_label_value(4, "service", "api");
         postings
     }
 
     #[test]
     fn collect_unscoped_label_names_orders_ascending() {
-        let postings = build_label_names_postings();
+        let postings = build_label_names_metric_index_postings();
         let hints = SearchHints {
             filter: None,
             limit: 10,
@@ -1103,12 +1152,12 @@ mod tests {
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
-        assert_eq!(values, vec!["alpha", "beta", "gamma"]);
+        assert_eq!(values, vec!["alpha", "beta", "gamma", "service"]);
     }
 
     #[test]
     fn collect_unscoped_label_names_orders_descending() {
-        let postings = build_label_names_postings();
+        let postings = build_label_names_metric_index_postings();
         let hints = SearchHints {
             filter: None,
             limit: 10,
@@ -1120,7 +1169,7 @@ mod tests {
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
-        assert_eq!(values, vec!["gamma", "beta", "alpha"]);
+        assert_eq!(values, vec!["service", "gamma", "beta", "alpha"]);
     }
 
     #[test]
@@ -1143,14 +1192,14 @@ mod tests {
     fn build_label_names_cardinality_postings() -> Postings {
         let mut postings = Postings::default();
         // label 'b' -> cardinality 1
-        postings.add_posting_for_label_value(1, "b", "v");
+        postings.add_posting_for_label_value(1, "beta", "b");
         // label 'a' -> cardinality 2
-        postings.add_posting_for_label_value(2, "a", "v");
-        postings.add_posting_for_label_value(3, "a", "v");
+        postings.add_posting_for_label_value(2, "alpha", "a");
+        postings.add_posting_for_label_value(3, "alpha", "a");
         // label 'c' -> cardinality 3
-        postings.add_posting_for_label_value(4, "c", "v");
-        postings.add_posting_for_label_value(5, "c", "v");
-        postings.add_posting_for_label_value(6, "c", "v");
+        postings.add_posting_for_label_value(4, "gamma", "c");
+        postings.add_posting_for_label_value(5, "gamma", "c");
+        postings.add_posting_for_label_value(6, "gamma", "c");
         postings
     }
 
@@ -1182,8 +1231,8 @@ mod tests {
 
         assert!(!result.has_more);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
-        // cardinalities: b=1, a=2, c=3 -> ascending by cardinality
-        assert_eq!(values, vec!["b", "a", "c"]);
+        // cardinalities: beta=1, alpha=2, gamma=3 -> ascending by cardinality
+        assert_eq!(values, vec!["beta", "alpha", "gamma"]);
     }
 
     #[test]
@@ -1202,7 +1251,7 @@ mod tests {
         assert!(result.has_more);
         assert_eq!(result.results.len(), 2);
         let values: Vec<String> = result.into_iter().map(|r| r.value).collect();
-        assert_eq!(values, vec!["b", "a"]);
+        assert_eq!(values, vec!["beta", "alpha"]);
     }
 
     #[test]
@@ -1219,6 +1268,38 @@ mod tests {
 
         assert!(result.has_more);
         assert_eq!(values(result), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn collect_unscoped_label_names_score_truncation_keeps_best_tie() {
+        let postings = build_label_names_postings();
+        let hints = SearchHints {
+            filter: Some(Box::new(StaticNameScoreFilter)),
+            limit: 1,
+            order_by: SearchResultOrdering::ScoreDesc,
+            include_meta: false,
+        };
+
+        let result = collect_unscoped_label_names(&postings, &hints);
+
+        assert!(result.has_more);
+        assert_eq!(values(result), vec!["alpha"]);
+    }
+
+    #[test]
+    fn collect_unscoped_label_names_cardinality_desc_replaces_worst_candidate() {
+        let postings = build_label_names_cardinality_postings();
+        let hints = SearchHints {
+            filter: None,
+            limit: 1,
+            order_by: SearchResultOrdering::CardinalityDesc,
+            include_meta: false,
+        };
+
+        let result = collect_unscoped_label_names(&postings, &hints);
+
+        assert!(result.has_more);
+        assert_eq!(values(result), vec!["gamma"]);
     }
 
     #[test]

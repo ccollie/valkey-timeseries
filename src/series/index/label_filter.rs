@@ -38,7 +38,7 @@ impl Display for FuzzyAlgorithm {
 }
 
 /// Filter determines whether a value should be included in results.
-pub trait FuzzyFilter {
+pub trait FuzzyFilter: Send + Sync {
     /// Returns (accepted, score) where score is used for relevance ranking.
     /// Score should be in range [0.0, 1.0] where 1.0 is perfect match.
     fn accept(&self, value: &str) -> (bool, f64);
