@@ -97,12 +97,6 @@ pub trait FanoutCommand: Default + Send + 'static {
         let message = "Internal error found.";
         FanoutError::custom(message)
     }
-
-    /// Return the final response after the fanout operation is complete.
-    /// By default, it returns a default instance of the response type.
-    fn get_response(self) -> Self::Response {
-        Self::Response::default()
-    }
 }
 
 /// Execute the fanout operation across cluster nodes.
