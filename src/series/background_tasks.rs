@@ -1,39 +1,48 @@
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::{BuildNoHashHasher, IntMap};
 use crate::common::logging::{log_debug, log_warning};
-use crate::common::threads::spawn;
+use crate::common::threads::{spawn, spawn_with_context};
 use crate::series::index::{
     IndexKey, TIMESERIES_INDEX, get_db_index, get_timeseries_index, with_timeseries_postings,
 };
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
 use blart::AsBytes;
-use orx_parallel::{IntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut};
+use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
-use valkey_module::{Context, DetachedFromClient, Status, ThreadSafeContext};
+use valkey_module::{Context, Status};
 use valkey_module_macros::{cron_event_handler, shutdown_event_handler};
 
 const RETENTION_CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
-const SERIES_TRIM_BATCH_SIZE: usize = 50;
+const SERIES_TRIM_BATCH_SIZE: usize = 25;
 const STALE_ID_CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
 const STALE_ID_BATCH_SIZE: usize = 25;
 const INDEX_OPTIMIZE_BATCH_SIZE: usize = 50;
 const INDEX_OPTIMIZE_INTERVAL: Duration = Duration::from_secs(60);
 const DB_CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 
-#[derive(Debug, Default)]
-struct IndexMeta {
-    stale_id_cursor: Option<IndexKey>,
-    optimize_cursor: Option<IndexKey>,
-    last_updated: u64,
-}
+const INDEX_LOCK_POISON_MSG: &str = "Failed to lock INDEX_CURSORS";
+const MAX_TRIM_TURNS: usize = 5;
 
 type IndexCursorMap = std::collections::HashMap<i32, IndexMeta, BuildNoHashHasher<i32>>;
 type SeriesCursorMap = IntMap<i32, SeriesRef>;
 
-type DispatchMap =
-    papaya::HashMap<u64, Vec<fn(&ThreadSafeContext<DetachedFromClient>)>, BuildNoHashHasher<u64>>;
+type DispatchMap = papaya::HashMap<u64, Vec<TaskType>, BuildNoHashHasher<u64>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskType {
+    TrimSeries,
+    RemoveStaleSeries,
+    OptimizeIndices,
+    TrimUnusedDbs,
+}
+
+#[derive(Debug, Default)]
+struct IndexMeta {
+    stale_id_cursor: Option<IndexKey>,
+    optimize_cursor: Option<IndexKey>,
+}
 
 static CRON_TICKS: AtomicU64 = AtomicU64::new(0);
 static CRON_INTERVAL_MS: AtomicU64 = AtomicU64::new(100);
@@ -43,13 +52,12 @@ static SERIES_TRIM_CURSORS: LazyLock<Mutex<SeriesCursorMap>> =
 static INDEX_CURSORS: LazyLock<Mutex<IndexCursorMap>> =
     LazyLock::new(|| Mutex::new(IndexCursorMap::default()));
 
-static CURRENT_DB: AtomicI32 = AtomicI32::new(0);
+static CURRENT_TRIM_DB: AtomicI32 = AtomicI32::new(0);
+static CURRENT_OPTIMIZE_DB: AtomicI32 = AtomicI32::new(0);
+static CURRENT_STALE_IDS_DB: AtomicI32 = AtomicI32::new(0);
 
-static DISPATCH_MAP: LazyLock<DispatchMap> = LazyLock::new(|| DispatchMap::default());
+static DISPATCH_MAP: LazyLock<DispatchMap> = LazyLock::new(DispatchMap::default);
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
-
-const INDEX_LOCK_POISON_MSG: &str = "Failed to lock INDEX_CURSORS";
-const MAX_TRIM_TURNS: usize = 5;
 
 pub(crate) fn init_background_tasks(ctx: &Context) {
     let interval_ms = get_ticks_interval(ctx);
@@ -57,28 +65,33 @@ pub(crate) fn init_background_tasks(ctx: &Context) {
 
     let cron_interval = Duration::from_millis(interval_ms);
 
-    register_task(ctx, RETENTION_CLEANUP_INTERVAL, cron_interval, process_trim);
+    register_task(
+        ctx,
+        RETENTION_CLEANUP_INTERVAL,
+        cron_interval,
+        TaskType::TrimSeries,
+    );
     register_task(
         ctx,
         STALE_ID_CLEANUP_INTERVAL,
         cron_interval,
-        process_remove_stale_series,
+        TaskType::RemoveStaleSeries,
     );
     register_task(
         ctx,
         INDEX_OPTIMIZE_INTERVAL,
         cron_interval,
-        optimize_indices,
+        TaskType::OptimizeIndices,
     );
-    register_task(ctx, DB_CLEANUP_INTERVAL, cron_interval, trim_unused_dbs);
+    register_task(
+        ctx,
+        DB_CLEANUP_INTERVAL,
+        cron_interval,
+        TaskType::TrimUnusedDbs,
+    );
 }
 
-fn register_task(
-    ctx: &Context,
-    task_interval: Duration,
-    cron_interval: Duration,
-    f: fn(&ThreadSafeContext<DetachedFromClient>),
-) {
+fn register_task(ctx: &Context, task_interval: Duration, cron_interval: Duration, task: TaskType) {
     if cron_interval.is_zero() {
         panic!("register_task: cron_interval is zero");
     }
@@ -97,15 +110,15 @@ fn register_task(
     map.update_or_insert_with(
         interval_ticks,
         |handlers| {
-            if handlers.iter().any(|&h| h as usize == f as usize) {
+            if handlers.contains(&task) {
                 handlers.clone()
             } else {
                 let mut v = handlers.clone();
-                v.push(f);
+                v.push(task);
                 v
             }
         },
-        || vec![f],
+        || vec![task],
     );
 }
 
@@ -199,9 +212,9 @@ fn set_optimize_cursor(db: i32, cursor: Option<IndexKey>) {
     })
 }
 
-fn next_db() -> i32 {
+fn advance_db(cursor: &AtomicI32) -> i32 {
     let used_dbs = get_used_dbs();
-    let current = CURRENT_DB.load(Ordering::Relaxed);
+    let current = cursor.load(Ordering::Relaxed);
 
     let next = used_dbs
         .iter()
@@ -210,13 +223,25 @@ fn next_db() -> i32 {
         .or_else(|| used_dbs.first().copied())
         .unwrap_or(0);
 
-    CURRENT_DB.store(next, Ordering::Relaxed);
+    cursor.store(next, Ordering::Relaxed);
     next
 }
 
-fn process_trim(ctx: &ThreadSafeContext<DetachedFromClient>) {
+fn next_trim_db() -> i32 {
+    advance_db(&CURRENT_TRIM_DB)
+}
+
+fn next_optimize_db() -> i32 {
+    advance_db(&CURRENT_OPTIMIZE_DB)
+}
+
+fn next_stale_ids_db() -> i32 {
+    advance_db(&CURRENT_STALE_IDS_DB)
+}
+
+fn process_trim(ctx: &Context) {
     let mut processed = 0;
-    let start_db = next_db();
+    let start_db = next_trim_db();
     let mut db = start_db;
 
     for _ in 0..MAX_TRIM_TURNS {
@@ -230,25 +255,27 @@ fn process_trim(ctx: &ThreadSafeContext<DetachedFromClient>) {
             break;
         }
 
-        db = next_db();
+        db = next_trim_db();
         if db == start_db {
             break;
         }
     }
 }
 
-fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
+fn trim_series(ctx: &Context, db: i32) -> usize {
     let cursor = get_trim_cursor(db);
+    let save_db = get_current_db(ctx);
 
-    let ctx_ = ctx.lock();
-    if set_current_db(&ctx_, db) == Status::Err {
+    if set_current_db(ctx, db) == Status::Err {
         log_warning(format!("Failed to select db {db}"));
         return 0;
     }
 
-    let mut batch = fetch_series_batch(&ctx_, cursor + 1, |series| {
+    let mut batch = fetch_series_batch(ctx, cursor + 1, |series| {
         !series.retention.is_zero() && !series.is_empty()
     });
+
+    set_current_db(ctx, save_db);
 
     if batch.is_empty() {
         set_trim_cursor(db, 0);
@@ -272,8 +299,6 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
         })
         .sum();
 
-    drop(ctx_);
-
     set_trim_cursor(db, last_processed);
 
     if processed > 0 {
@@ -285,6 +310,15 @@ fn trim_series(ctx: &ThreadSafeContext<DetachedFromClient>, db: i32) -> usize {
     processed
 }
 
+/// Process optimization for a specific database, called by the dispatcher.
+fn optimize_indices_for_db() {
+    let db = next_optimize_db();
+    let index = get_db_index(db);
+    let cursor = get_optimize_cursor(db);
+    let new_cursor = index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE);
+    set_optimize_cursor(db, new_cursor);
+}
+
 fn fetch_series_batch(
     ctx: &'_ Context,
     start_id: SeriesRef,
@@ -294,29 +328,34 @@ fn fetch_series_batch(
         let all_postings = &postings.all_postings;
         let mut cursor = all_postings.cursor();
         cursor.reset_at_or_after(start_id);
-
-        let mut buf = [0_u64; SERIES_TRIM_BATCH_SIZE];
-        let n = cursor.read_many(&mut buf);
-        if n == 0 {
-            return (vec![], vec![]);
-        }
-
         let mut stale_ids = Vec::new();
-        let mut result = Vec::with_capacity(n);
+        let mut result = Vec::new();
 
-        for &id in &buf[..n] {
-            let Some(k) = postings.get_key_by_id(id) else {
-                continue;
-            };
+        // loop through a max of 3 times to fill the batch, to allow skipping stale ids without returning a smaller batch
+        for _ in 0..3 {
+            let mut buf = [0_u64; SERIES_TRIM_BATCH_SIZE];
+            let n = cursor.read_many(&mut buf);
+            if n == 0 {
+                break;
+            }
+            result.reserve(n);
+            for &id in &buf[..n] {
+                let Some(k) = postings.get_key_by_id(id) else {
+                    continue;
+                };
 
-            let key = ctx.create_string(k.as_bytes());
-            let Ok(Some(series)) = get_timeseries_mut(ctx, &key, false, None) else {
-                stale_ids.push(id);
-                continue;
-            };
+                let key = ctx.create_string(k.as_bytes());
+                let Ok(Some(series)) = get_timeseries_mut(ctx, &key, false, None) else {
+                    stale_ids.push(id);
+                    continue;
+                };
 
-            if pred(&series) {
-                result.push(series);
+                if pred(&series) {
+                    result.push(series);
+                    if result.len() >= SERIES_TRIM_BATCH_SIZE {
+                        break;
+                    }
+                }
             }
         }
 
@@ -333,10 +372,11 @@ fn fetch_series_batch(
     result
 }
 
-fn remove_stale_series_internal(db: i32) {
+fn remove_stale_series_internal() {
     if is_shutting_down() {
         return;
     }
+    let db = next_stale_ids_db();
     if let Some(index) = TIMESERIES_INDEX.pin().get(&db) {
         let mut state = 0;
         let cursor = get_stale_id_cursor(db);
@@ -356,51 +396,7 @@ fn remove_stale_series_internal(db: i32) {
     }
 }
 
-fn process_remove_stale_series(_ctx: &ThreadSafeContext<DetachedFromClient>) {
-    if is_shutting_down() {
-        return;
-    }
-
-    let db_ids = get_used_dbs();
-    if db_ids.is_empty() {
-        return;
-    }
-
-    db_ids
-        .par()
-        .for_each(|&db| remove_stale_series_internal(db));
-}
-
-fn optimize_indices(_ctx: &ThreadSafeContext<DetachedFromClient>) {
-    if is_shutting_down() {
-        return;
-    }
-
-    let db_ids = get_used_dbs();
-    if db_ids.is_empty() {
-        return;
-    }
-
-    let cursors: Vec<(i32, Option<IndexKey>)> = db_ids
-        .iter()
-        .map(|&db| (db, get_optimize_cursor(db)))
-        .collect();
-
-    let results = cursors
-        .into_par()
-        .map(|(db, cursor)| {
-            let index = get_db_index(db);
-            let new_cursor = index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE);
-            (db, new_cursor)
-        })
-        .collect::<Vec<_>>();
-
-    for (db, new_cursor) in results {
-        set_optimize_cursor(db, new_cursor);
-    }
-}
-
-fn trim_unused_dbs(_ctx: &ThreadSafeContext<DetachedFromClient>) {
+fn trim_unused_dbs() {
     let index = TIMESERIES_INDEX.pin();
     index.retain(|db, ts_index| {
         if ts_index.is_empty() {
@@ -412,42 +408,36 @@ fn trim_unused_dbs(_ctx: &ThreadSafeContext<DetachedFromClient>) {
     });
 }
 
+fn dispatch_background_task(task: TaskType) {
+    match task {
+        TaskType::TrimSeries => spawn_with_context(process_trim),
+        TaskType::RemoveStaleSeries => {
+            spawn(remove_stale_series_internal);
+        }
+        TaskType::OptimizeIndices => {
+            spawn(optimize_indices_for_db);
+        }
+        TaskType::TrimUnusedDbs => {
+            spawn(trim_unused_dbs);
+        }
+    }
+}
+
 #[cron_event_handler]
-fn cron_event_handler(ctx: &Context, _hz: u64) {
+fn cron_event_handler(_ctx: &Context, _hz: u64) {
     if is_shutting_down() {
         return;
     }
 
     let ticks = CRON_TICKS.fetch_add(1, Ordering::Relaxed);
-    let save_db = get_current_db(ctx);
-
-    dispatch_tasks(ticks);
-
-    set_current_db(ctx, save_db);
-}
-
-fn dispatch_tasks(ticks: u64) {
     let map = DISPATCH_MAP.pin();
 
-    // Collect tasks to run without holding the pinned map longer than needed.
-    let mut tasks: Vec<fn(&ThreadSafeContext<DetachedFromClient>)> = Vec::new();
     for (&interval, handlers) in map.iter() {
         if ticks.is_multiple_of(interval) {
-            tasks.extend(handlers.iter().copied());
+            for task in handlers {
+                dispatch_background_task(*task);
+            }
         }
-    }
-
-    drop(map);
-
-    if tasks.is_empty() {
-        return;
-    }
-
-    log_debug(format!("cron_event_handler: tasks={}", tasks.len()));
-
-    for task in tasks {
-        let thread_ctx = ThreadSafeContext::new();
-        spawn(move || task(&thread_ctx));
     }
 }
 
@@ -476,6 +466,6 @@ fn is_shutting_down() -> bool {
 
 #[shutdown_event_handler]
 fn shutdown_event_handler(ctx: &Context, _event: u64) {
-    ctx.log_notice("Sever shutdown callback event ...");
+    ctx.log_notice("Server shutdown callback event ...");
     SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
