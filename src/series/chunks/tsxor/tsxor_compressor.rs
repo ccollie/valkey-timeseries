@@ -43,7 +43,7 @@ impl CacheWindow {
         self.buffer.push_front(val);
     }
 
-    pub fn contains(&self, val: u64) -> bool {
+    fn contains(&self, val: u64) -> bool {
         self.buffer.iter().any(|v| *v == val)
     }
 
@@ -58,7 +58,7 @@ impl CacheWindow {
     /// Get the best candidate from the window for the given value based on the similarity metric (clz + ctz)
     /// TODO: This is a linear search and could be optimized with SIMD or by keeping track of leading/trailing
     /// zeros for each entry in the window
-    pub fn get_candidate(&self, val: u64) -> u64 {
+    fn get_candidate(&self, val: u64) -> u64 {
         // compute similarity metric (clz + ctz) and pick best match
         let mut best_score: i32 = -1;
         let mut best_idx: usize = 0;
@@ -365,8 +365,6 @@ mod tests {
             ts += 60;
             values.push((ts - 60, v));
         }
-
-        let buf = c.as_ref();
 
         let mut d = c.get_decompressor();
         let mut out = vec![];

@@ -62,18 +62,18 @@
 //! sample's joint timestamp+value encoding using putVarbitIntFast.
 
 use super::XOR2Iterator;
+use crate::common::rdb::{
+    rdb_load_bool, rdb_load_u8, rdb_load_usize, rdb_save_bool, rdb_save_u8, rdb_save_usize,
+    RdbSerializable,
+};
 use crate::series::chunks::bstream::{BStream, ONE, ZERO};
 use std::cmp;
+use valkey_module::{raw, ValkeyError, ValkeyResult};
 
 pub(super) const CHUNK_HEADER_SIZE: usize = 2; // Placeholder, adjust as needed
 const CHUNK_COMPACT_CAPACITY_THRESHOLD: usize = 1024; // Placeholder
 pub(super) const MAX_FIRST_ST_CHANGE_ON: u8 = 0x7F;
 
-
-pub trait Chunk: Send + Sync {
-    fn num_samples(&self) -> usize;
-    fn compact(&mut self);
-}
 
 fn write_header_first_st_known(b: &mut [u8]) {
     b[0] = 0x80;
@@ -108,6 +108,9 @@ pub struct XOR2Chunk {
     num_total: u16,
     first_st_change_on: u16,
     first_st_known: bool,
+    first_timestamp: i64,
+    last_timestamp: i64,
+    last_value: f64,
 }
 
 impl XOR2Chunk {
@@ -128,6 +131,9 @@ impl XOR2Chunk {
             num_total: 0,
             first_st_change_on: 0,
             first_st_known: false,
+            first_timestamp: 0,
+            last_timestamp: 0,
+            last_value: f64::NAN,
         }
     }
 
@@ -136,10 +142,7 @@ impl XOR2Chunk {
     }
 
     pub fn num_samples(&self) -> usize {
-        if self.b.bytes().len() < 2 {
-            return 0;
-        }
-        u16::from_be_bytes([self.b.bytes()[0], self.b.bytes()[1]]) as usize
+        self.num_total as usize
     }
 
     pub fn compact(&mut self) {
@@ -254,12 +257,17 @@ impl XOR2Chunk {
     }
 
     fn update_header(&mut self) {
-        let bytes = self.b.bytes();
-        if bytes.len() >= 2 {
-            let _num_bytes = self.num_total.to_be_bytes();
-            // Note: This is simplified; actual implementation would need to modify
-            // the existing buffer
-            todo!()
+        if self.b.bytes().len() >= CHUNK_HEADER_SIZE + 1 {
+            let [hi, lo] = self.num_total.to_be_bytes();
+            self.b.stream[0] = hi;
+            self.b.stream[1] = lo;
+
+            let mut st_header = [0u8; 1];
+            if self.first_st_known {
+                write_header_first_st_known(&mut st_header);
+            }
+            write_header_first_st_change_on(&mut st_header, self.first_st_change_on);
+            self.b.stream[CHUNK_HEADER_SIZE] = st_header[0];
         }
     }
 
@@ -269,19 +277,12 @@ impl XOR2Chunk {
 
         match self.num_total {
             0 => {
-                let mut buf = [0u8; 10];
-                let encoded = leb128::write::signed(buf.as_mut(), t).unwrap();
-                for &b in &buf[..encoded] {
-                    self.b.write_byte(b);
-                }
+                self.b.write_signed_int(t);
                 self.b.write_bits_fast(v.to_bits(), 64);
+                self.first_timestamp = t;
 
                 if st != 0 {
-                    let mut buf = [0u8; 10];
-                    let encoded = leb128::write::signed(buf.as_mut(), t - st).unwrap();
-                    for &b in &buf[..encoded] {
-                        self.b.write_byte(b);
-                    }
+                    self.b.write_signed_int(t - st);
                     self.first_st_known = true;
                     let bytes = self.b.bytes();
                     if bytes.len() > CHUNK_HEADER_SIZE {
@@ -293,13 +294,7 @@ impl XOR2Chunk {
             }
             1 => {
                 t_delta = (t - self.t) as u64;
-
-                let mut buf = [0u8; 10];
-                let encoded = leb128::write::unsigned(buf.as_mut(), t_delta).unwrap();
-                for &b in &buf[..encoded] {
-                    self.b.write_byte(b);
-                }
-
+                self.b.write_unsigned_int(t_delta);
                 self.write_v_delta(v);
 
                 if st != self.st {
@@ -310,14 +305,14 @@ impl XOR2Chunk {
                         let mut header = [0u8; 1];
                         write_header_first_st_change_on(&mut header, 1);
                     }
-                    put_varbit_int_fast(&mut self.b, st_diff);
+                    self.b.write_signed_int(st_diff);
                 }
             }
             _ => {
                 t_delta = (t - self.t) as u64;
                 let dod = (t_delta as i64) - (self.t_delta as i64);
 
-                if self.first_st_change_on == 0 && st == self.st && self.num_total != MAX_FIRST_ST_CHANGE_ON as u16 {
+                if self.first_st_change_on == 0 && st == self.st {
                     let v_bits = v.to_bits();
                     match (dod, v_bits == self.v.to_bits()) {
                         (0, true) => {
@@ -365,7 +360,7 @@ impl XOR2Chunk {
                                 }
                                 _ => {
                                     self.b.write_bit(ZERO);
-                                    put_varbit_int_fast(&mut self.b, delta_st_diff);
+                                    self.b.write_signed_int(delta_st_diff);
                                 }
                             }
                         }
@@ -388,7 +383,7 @@ impl XOR2Chunk {
                                 }
                                 _ => {
                                     self.b.write_bit(ZERO);
-                                    put_varbit_int_fast(&mut self.b, delta_st_diff);
+                                    self.b.write_signed_int(delta_st_diff);
                                 }
                             }
                         }
@@ -411,7 +406,7 @@ impl XOR2Chunk {
                                     self.b.write_bits_fast((0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF), 13);
                                 }
                                 _ => {
-                                    put_varbit_int_fast(&mut self.b, delta_st_diff);
+                                    self.b.write_signed_int(delta_st_diff);
                                 }
                             }
                         }
@@ -421,13 +416,17 @@ impl XOR2Chunk {
                     self.t = t;
                     self.t_delta = t_delta;
                     self.num_total += 1;
+
+                    self.last_value = v;
+                    self.last_timestamp = t;
+
                     self.update_header();
                     return;
                 }
 
                 self.encode_joint(dod, v);
 
-                if st != self.st || self.num_total == MAX_FIRST_ST_CHANGE_ON as u16 {
+                if st != self.st {
                     st_diff = self.t - st;
                     self.first_st_change_on = self.num_total;
                     let bytes = self.b.bytes();
@@ -435,13 +434,16 @@ impl XOR2Chunk {
                         let mut header = [0u8; 1];
                         write_header_first_st_change_on(&mut header, self.num_total);
                     }
-                    put_varbit_int_fast(&mut self.b, st_diff);
+                    self.b.write_signed_int(st_diff);
                 }
             }
         }
 
         self.st = st;
         self.t = t;
+        self.last_timestamp = t;
+        self.last_value = v;
+
         if !is_stale_nan(v) {
             self.v = v;
         }
@@ -456,67 +458,83 @@ impl XOR2Chunk {
     }
 }
 
+impl RdbSerializable for XOR2Chunk {
+    fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
+        rdb_save_usize(rdb, self.num_total as usize);
+        rdb_save_usize(rdb, self.first_st_change_on as usize);
+        rdb_save_bool(rdb, self.first_st_known);
+        raw::save_signed(rdb, self.first_timestamp);
+        raw::save_signed(rdb, self.last_timestamp);
+        raw::save_double(rdb, self.last_value);
+        raw::save_signed(rdb, self.st);
+        raw::save_signed(rdb, self.t);
+        raw::save_double(rdb, self.v);
+        raw::save_unsigned(rdb, self.t_delta);
+        raw::save_signed(rdb, self.st_diff);
+        rdb_save_u8(rdb, self.leading);
+        rdb_save_u8(rdb, self.trailing);
+        raw::save_slice(rdb, self.b.bytes());
+        raw::save_unsigned(rdb, self.b.position() as u64);
+    }
+
+    fn rdb_load(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
+        let num_total = u16::try_from(rdb_load_usize(rdb)?).map_err(|_| {
+            ValkeyError::String("Invalid XOR2 chunk sample count".into())
+        })?;
+        let first_st_change_on = u16::try_from(rdb_load_usize(rdb)?).map_err(|_| {
+            ValkeyError::String("Invalid XOR2 chunk first_st_change_on".into())
+        })?;
+        let first_st_known = rdb_load_bool(rdb)?;
+        let first_timestamp = raw::load_signed(rdb)?;
+        let last_timestamp = raw::load_signed(rdb)?;
+        let last_value = raw::load_double(rdb)?;
+        let st = raw::load_signed(rdb)?;
+        let t = raw::load_signed(rdb)?;
+        let v = raw::load_double(rdb)?;
+        let t_delta = raw::load_unsigned(rdb)?;
+        let st_diff = raw::load_signed(rdb)?;
+        let leading = rdb_load_u8(rdb)?;
+        let trailing = rdb_load_u8(rdb)?;
+        let bytes = raw::load_string_buffer(rdb)?.as_ref().to_vec();
+        let position = raw::load_unsigned(rdb)?;
+
+        if bytes.len() < CHUNK_HEADER_SIZE + 1 {
+            return Err(ValkeyError::String("Invalid XOR2 chunk RDB payload".into()));
+        }
+
+        if position > 8 {
+            return Err(ValkeyError::String(format!(
+                "Invalid XOR2 chunk bit position: {position}"
+            )));
+        }
+
+        let position = position as u8;
+
+        let mut chunk = Self {
+            b: BStream::hydrate(bytes, position),
+            st,
+            t,
+            v,
+            t_delta,
+            st_diff,
+            leading,
+            trailing,
+            num_total,
+            first_st_change_on,
+            first_st_known,
+            first_timestamp,
+            last_timestamp,
+            last_value,
+        };
+        chunk.update_header();
+        Ok(chunk)
+    }
+}
+
 
 // Helper functions
 pub(super) const STALE_NAN: u64 = 0x7FF0000000000002; // Prometheus stale NaN marker
 
 pub(super) fn is_stale_nan(v: f64) -> bool {
     v.to_bits() == STALE_NAN
-}
-
-fn put_varbit_int_fast(b: &mut BStream, x: i64) {
-    // Simplified: use zigzag encoding for signed integers
-    let zigzag = ((x << 1) ^ (x >> 63)) as u64;
-    let mut remaining = zigzag;
-    while remaining >= 0x80 {
-        b.write_byte(((remaining & 0x7F) | 0x80) as u8);
-        remaining >>= 7;
-    }
-    b.write_byte(remaining as u8);
-}
-
-
-// leb128 module placeholder
-mod leb128 {
-    pub mod write {
-        pub fn signed(buf: &mut [u8], mut n: i64) -> Result<usize, &'static str> {
-            let mut i = 0;
-            loop {
-                let mut byte = (n & 0x7F) as u8;
-                n >>= 7;
-                if n != 0 && n != -1 {
-                    byte |= 0x80;
-                }
-                if i < buf.len() {
-                    buf[i] = byte;
-                } else {
-                    return Err("buffer too small");
-                }
-                i += 1;
-                if n == 0 || (n == -1 && (byte & 0x80 == 0)) {
-                    break;
-                }
-            }
-            Ok(i)
-        }
-
-        pub fn unsigned(buf: &mut [u8], mut n: u64) -> Result<usize, &'static str> {
-            let mut i = 0;
-            while n >= 0x80 {
-                if i < buf.len() {
-                    buf[i] = (n as u8) | 0x80;
-                } else {
-                    return Err("buffer too small");
-                }
-                n >>= 7;
-                i += 1;
-            }
-            if i < buf.len() {
-                buf[i] = n as u8;
-            } else {
-                return Err("buffer too small");
-            }
-            Ok(i + 1)
-        }
-    }
 }

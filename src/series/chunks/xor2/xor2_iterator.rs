@@ -1,5 +1,5 @@
 use crate::common::Sample;
-use crate::series::chunks::xor2::chunk::read_st_header;
+use crate::series::chunks::xor2::chunk::{is_stale_nan, read_st_header, STALE_NAN};
 use std::error::Error;
 use std::io;
 use crate::series::chunks::bstream_reader::BStreamReader;
@@ -23,7 +23,7 @@ pub struct XOR2Iterator<'a> {
 
 impl<'a> XOR2Iterator<'a> {
     pub(super) fn new(buf: &'a [u8]) -> Self {
-        Self {
+        let mut it = Self {
             br: BStreamReader::new(buf),
             num_total: 0,
             num_read: 0,
@@ -38,7 +38,9 @@ impl<'a> XOR2Iterator<'a> {
             st_diff: 0,
             err: None,
             baseline_v: 0.0,
-        }
+        };
+        it.reset(buf);
+        it
     }
 
     pub(super) fn reset(&mut self, b: &'a [u8]) {
@@ -117,7 +119,7 @@ impl<'a> XOR2Iterator<'a> {
             if ctrl == 0x6 {
                 return self.decode_new_leading_trailing();
             }
-            self.val = f64::from_bits(crate::series::chunks::xor2::chunk::STALE_NAN);
+            self.val = f64::from_bits(STALE_NAN);
             return Ok(());
         }
 
@@ -149,7 +151,7 @@ impl<'a> XOR2Iterator<'a> {
             return self.decode_new_leading_trailing();
         }
 
-        self.val = f64::from_bits(crate::series::chunks::xor2::chunk::STALE_NAN);
+        self.val = f64::from_bits(STALE_NAN);
         Ok(())
     }
 
@@ -226,26 +228,23 @@ impl<'a> XOR2Iterator<'a> {
         while t > self.t || self.num_read == 0 {
             self.next()?;
         }
-        Some(Sample {
-            timestamp: self.t,
-            value: self.val,
-        })
+        Some(Sample::new(self.t, self.val))
     }
 
-    fn at(&self) -> (i64, f64) {
-        (self.t, self.val)
+    pub(crate) fn at(&self) -> Sample {
+        Sample::new(self.t, self.val)
     }
 
     fn at_t(&self) -> i64 {
         self.t
     }
 
-    fn at_st(&self) -> i64 {
+    pub(crate) fn at_st(&self) -> i64 {
         self.st
     }
 
-    fn err(&self) -> Option<&dyn Error> {
-        todo!()
+    pub(crate) fn err(&self) -> Option<&dyn Error> {
+        self.err.as_ref().map(|e| e as &dyn Error)
     }
 }
 
@@ -274,7 +273,7 @@ impl Iterator for XOR2Iterator<'_> {
             };
             self.t = t;
             self.val = f64::from_bits(v_bits);
-            if !crate::series::chunks::xor2::chunk::is_stale_nan(self.val) {
+            if !is_stale_nan(self.val) {
                 self.baseline_v = self.val;
             }
 

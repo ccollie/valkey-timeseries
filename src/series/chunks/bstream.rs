@@ -71,6 +71,14 @@ impl BStream {
         &self.stream
     }
 
+    pub(crate) fn position(&self) -> u8 {
+        self.count
+    }
+
+    pub(crate) fn hydrate(stream: Vec<u8>, count: u8) -> Self {
+        Self { stream, count }
+    }
+
     pub fn into_bytes(self) -> Vec<u8> {
         self.stream
     }
@@ -105,7 +113,7 @@ impl BStream {
     }
 
     /// Write a single byte to the stream.
-    pub fn write_byte(&mut self, byt: u8) {
+    pub(in crate::series::chunks) fn write_byte(&mut self, byt: u8) {
         if self.count == 0 {
             self.stream.push(byt);
             return;
@@ -139,7 +147,7 @@ impl BStream {
     }
 
     /// Like write_bits but handles the partial last byte inline to avoid per-byte
-    /// write_byte calls, and writes complete bytes directly to the stream.
+    /// write_byte calls and writes complete bytes directly to the stream.
     pub fn write_bits_fast(&mut self, mut u: u64, mut nbits: usize) {
         u <<= 64 - nbits;
 
@@ -169,6 +177,25 @@ impl BStream {
             self.stream.push((u >> 56) as u8);
             self.count = (8 - nbits) as u8;
         }
+    }
+
+    pub(in crate::series::chunks) fn write_unsigned_int(&mut self, mut n: u64) {
+        while n >= 0x80 {
+            self.write_byte((n as u8) | 0x80);
+            n >>= 7;
+        }
+        self.write_byte(n as u8);
+    }
+
+    pub(in crate::series::chunks) fn write_signed_int(&mut self, n: i64) {
+        let zigzag = ((n << 1) ^ (n >> 63)) as u64;
+        let mut remaining = zigzag;
+        while remaining >= 0x80 {
+            let byte = ((remaining & 0x7F) | 0x80) as u8;
+            self.write_byte(byte);
+            remaining >>= 7;
+        }
+        self.write_byte(remaining as u8);
     }
 }
 

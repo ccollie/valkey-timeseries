@@ -12,6 +12,7 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
 use std::hash::{Hash, Hasher};
+use crate::common::rdb::RdbSerializable;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
@@ -477,6 +478,16 @@ impl Chunk for TsXorChunk {
     fn debug_digest(&self, dig: &mut Digest) {
         dig.add_string_buffer(self.buf());
         dig.add_long_long(self.max_size as i64);
+    }
+}
+
+impl RdbSerializable for TsXorChunk {
+    fn rdb_save(&self, rdb: *mut RedisModuleIO) {
+        <Self as Chunk>::save_rdb(self, rdb);
+    }
+
+    fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
+        <Self as Chunk>::load_rdb(rdb, 0)
     }
 }
 

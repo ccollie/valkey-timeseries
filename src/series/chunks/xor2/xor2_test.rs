@@ -11,21 +11,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Sample {
-    pub st: i64,
-    pub t: i64,
-    pub v: f64,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Triple {
     st: i64,
     t: i64,
     v: f64,
 }
-
-
 
 // XOR2 Chunk implementation
 const MAX_FIRST_ST_CHANGE_ON: usize = 127;
@@ -60,28 +51,6 @@ mod tests {
         (leading, trailing, 64 - leading - trailing)
     }
 
-
-    fn benchmark_xor2_write(b: &mut test::Bencher) {
-        // Creating samples array
-        let mut samples: Vec<(i64, f64)> = Vec::with_capacity(120);
-        for i in 0..120 {
-            samples.push((
-                i as i64 * 1000,
-                i as f64 + i as f64 / 10.0 + i as f64 / 100.0 + i as f64 / 1000.0,
-            ));
-        }
-
-        b.iter(|| {
-            // Create new XOR2 chunk
-            let mut c = NewXOR2Chunk();
-            let mut app = c.appender().unwrap();
-            for s in &samples {
-                // Append samples to the chunk
-                app.append(0, s.0, s.1);
-            }
-        });
-    }
-
     fn require_xor2_samples(samples: &[Triple]) {
         let mut chunk = XOR2Chunk::new();
 
@@ -91,9 +60,7 @@ mod tests {
 
         let mut it = chunk.iterator();
         for want in samples.iter() {
-            let Some(sample) = it.next() else {
-                panic!("expected more samples");
-            };
+            let sample = it.next().expect("expected more samples");
             assert_eq!(want.t, sample.timestamp);
             assert_eq!(want.v, sample.value);
         }
@@ -213,9 +180,8 @@ mod tests {
 
         let mut it = c.iterator();
         for expected in &timestamps {
-            assert_eq!(Val::Float, it.next());
-            let (ts, _) = it.at();
-            assert_eq!(*expected, ts);
+            let sample = it.next().expect("expected more samples");
+            assert_eq!(*expected, sample.timestamp);
         }
         assert_eq!(None, it.next());
     }
@@ -264,12 +230,6 @@ mod tests {
         );
     }
 
-    fn test_xor2_chunk_st(t: &mut Test) {
-        test_chunk_st_handling(t, ValType::Float, || {
-            Xor2Chunk::new()
-        });
-    }
-
     #[test]
     fn test_xor2_chunk_more_than_127_samples() {
         const AFTER_MAX: usize = MAX_FIRST_ST_CHANGE_ON + 3;
@@ -282,11 +242,11 @@ mod tests {
 
         let mut it = chunk.iterator();
         for i in 0..AFTER_MAX {
+            let sample = it.next().expect("expected more samples");
             let st = it.at_st();
-            let (ts, v) = it.at();
             assert_eq!(0, st);
-            assert_eq!(i as i64 * 10 + 1, ts);
-            assert_eq!(i as f64 * 1.5, v);
+            assert_eq!(i as i64 * 10 + 1, sample.timestamp);
+            assert_eq!(i as f64 * 1.5, sample.value);
         }
 
         assert!(it.err().is_none());
@@ -304,15 +264,15 @@ mod tests {
 
         let mut it = chunk.iterator();
         for i in 0..AFTER_MAX {
+            let sample = it.next().expect("expected more samples");
             let st = it.at_st();
-            let (ts, v) = it.at();
             if i == AFTER_MAX - 1 {
                 assert_eq!(((AFTER_MAX - 1) * 10) as i64, st);
             } else {
                 assert_eq!(0, st);
             }
-            assert_eq!((i * 10 + 1) as i64, ts);
-            assert_eq!(i as f64 * 1.5, v);
+            assert_eq!((i * 10 + 1) as i64, sample.timestamp);
+            assert_eq!(i as f64 * 1.5, sample.value);
         }
 
         assert_eq!(None, it.next());
@@ -345,30 +305,6 @@ mod tests {
             assert_eq!(expected.1, sample.value);
         }
     }
-    #[test]
-    fn test_xor2_basic() {
-        let mut chunk = XOR2Chunk::new();
-
-        let samples = vec![
-            (0, 1000, 1.0),
-            (0, 2000, 2.0),
-            (0, 3000, 3.0),
-            (0, 4000, 4.0),
-            (0, 5000, 5.0),
-        ];
-
-        for (st, t, v) in &samples {
-            chunk.append(*st, *t, *v);
-        }
-        let mut iterator = chunk.iterator();
-        for (expected_st, expected_t, expected_v) in samples {
-            let Some(sample) = iterator.next() else {
-                panic!("expected more samples");
-            };
-            assert_eq!(sample.timestamp, expected_t);
-            assert_eq!(sample.value, expected_v);
-        }
-    }
 
     #[test]
     fn test_xor2_with_staleness() {
@@ -389,14 +325,13 @@ mod tests {
         }
 
         let mut iterator = chunk.iterator();
-        for (expected_st, expected_t, expected_v, is_stale) in samples {
+        for (_st, _expected_t, expected_v, is_stale) in samples {
             let Some(sample) = iterator.next() else {
                 panic!("expected more samples");
             };
-            let ts = sample.timestamp;
             let v = sample.value;
             if is_stale {
-                assert!(v.to_bits() == stale_nan_bits);
+                assert_eq!(v.to_bits(), stale_nan_bits);
             } else {
                 assert_eq!(v, expected_v);
             }
