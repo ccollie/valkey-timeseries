@@ -3,7 +3,6 @@ use joinkit::EitherOrBoth;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::time::Duration;
-use valkey_module::ValkeyValue;
 
 mod asof;
 mod join_handler;
@@ -41,7 +40,7 @@ pub trait JoinkitExt: Iterator {
 impl<T: ?Sized> JoinkitExt for T where T: Iterator {}
 
 #[derive(Clone, Debug)]
-pub struct JoinValue(EitherOrBoth<Sample, Sample>);
+pub struct JoinValue(pub(crate) EitherOrBoth<Sample, Sample>);
 
 impl JoinValue {
     pub fn left(sample: Sample) -> Self {
@@ -95,22 +94,6 @@ impl Deref for JoinValue {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl From<JoinValue> for ValkeyValue {
-    fn from(row: JoinValue) -> Self {
-        match row.0 {
-            EitherOrBoth::Both(left, right) => {
-                ValkeyValue::Array(vec![ValkeyValue::from(left), ValkeyValue::from(right)])
-            }
-            EitherOrBoth::Left(left) => {
-                ValkeyValue::Array(vec![ValkeyValue::from(left), ValkeyValue::Null])
-            }
-            EitherOrBoth::Right(right) => {
-                ValkeyValue::Array(vec![ValkeyValue::Null, ValkeyValue::from(right)])
-            }
-        }
     }
 }
 

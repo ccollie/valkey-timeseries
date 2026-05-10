@@ -71,6 +71,21 @@ impl AnomalyMethod {
             AnomalyMethod::Esd => "Extreme Studentized Deviate (ESD)",
         }
     }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            AnomalyMethod::Ewma => "ewma",
+            AnomalyMethod::Cusum => "cusum",
+            AnomalyMethod::ZScore => "zscore",
+            AnomalyMethod::ModifiedZScore => "modified-zscore",
+            AnomalyMethod::SmoothedZScore => "smoothed-zscore",
+            AnomalyMethod::Mad => "mad",
+            AnomalyMethod::DoubleMAD => "double-mad",
+            AnomalyMethod::InterquartileRange => "iqr",
+            AnomalyMethod::RandomCutForest => "rcf",
+            AnomalyMethod::Esd => "esd",
+        }
+    }
 }
 
 impl FromStr for AnomalyMethod {

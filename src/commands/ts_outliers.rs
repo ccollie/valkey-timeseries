@@ -9,15 +9,15 @@ use crate::commands::{
     parse_timestamp_range,
 };
 use crate::common::Sample;
-use crate::common::hash::IntSet;
+use crate::common::replies::{
+    ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
+};
 use crate::common::threads::spawn;
 use crate::error_consts;
 use crate::series::{TimestampRange, get_timeseries};
-use std::collections::HashMap;
-use valkey_module::redisvalue::ValkeyValueKey;
+use logger_rust::log_debug;
 use valkey_module::{
-    AclPermissions, Context, NextArg, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyString,
-    ValkeyValue,
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
@@ -98,7 +98,7 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     process_request(
         ctx,
-        key.to_vec(),
+        key,
         date_range,
         options,
         anomaly_direction,
@@ -108,53 +108,75 @@ pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
 fn process_request(
     ctx: &Context,
-    key: Vec<u8>,
+    key: ValkeyString,
     date_range: TimestampRange,
     options: AnomalyOptions,
     anomaly_direction: AnomalyDirection,
     output_format: OutputFormat,
 ) -> ValkeyResult {
-    let blocked_client = ctx.block_client();
-    spawn(move || {
-        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+    let key = ctx.create_string(key);
 
-        let samples_res = {
-            let ctx = thread_ctx.lock();
-            let key = ctx.create_string(key);
-            match get_timeseries(&ctx, &key, Some(AclPermissions::ACCESS), false) {
-                Ok(Some(series)) => {
-                    let (start, end) = date_range.get_series_range(&series, None, false);
-                    Ok(series.get_range(start, end))
-                }
-                Ok(None) => Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
-                Err(e) => Err(e),
-            }
+    let samples = match get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), false) {
+        Ok(Some(series)) => {
+            let (start, end) = date_range.get_series_range(&series, None, false);
+            series.get_range(start, end)
+        }
+        Ok(None) => return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
+        Err(e) => return Err(e),
+    };
+
+    if !should_run_in_background(samples.len(), options.method()) {
+        let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
+        let reply_ctx = ReplyContext::new(ctx.ctx);
+        return match detect_anomalies(&values, options) {
+            Err(err) => Err(ValkeyError::String(format!(
+                "TSDB: outlier detection failed: {err}"
+            ))),
+            Ok(result) => send_reply(
+                &reply_ctx,
+                result,
+                samples,
+                anomaly_direction,
+                output_format,
+            ),
         };
+    }
 
-        match samples_res {
-            Err(e) => {
-                thread_ctx.reply(Err(e));
+    let blocked_client = block_client(ctx);
+    spawn(move || {
+        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
+
+        let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
+        match detect_anomalies(&values, options) {
+            Err(err) => {
+                thread_ctx.reply(Err(ValkeyError::String(format!(
+                    "TSDB: outlier detection failed: {err}"
+                ))));
             }
-            Ok(samples) => {
-                let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
-                match detect_anomalies(&values, options) {
-                    Err(err) => {
-                        thread_ctx.reply(Err(ValkeyError::String(format!(
-                            "TSDB: outlier detection failed: {err}"
-                        ))));
-                    }
-                    Ok(result) => {
-                        let reply =
-                            format_output(result, samples, anomaly_direction, output_format);
-                        thread_ctx.reply(reply);
-                    }
-                }
+            Ok(result) => {
+                let ctx = thread_ctx.get_reply_context();
+                let _ = send_reply(&ctx, result, samples, anomaly_direction, output_format);
             }
         }
     });
 
     // Reply will be sent from the background thread
     Ok(ValkeyValue::NoReply)
+}
+
+const SPAWN_THRESHOLD_SAMPLES: usize = 1000;
+
+fn is_cpu_intensive(method: AnomalyMethod) -> bool {
+    matches!(method, AnomalyMethod::RandomCutForest | AnomalyMethod::Esd)
+}
+
+/// Just a naive heuristic to decide whether to spawn a background thread for anomaly detection
+/// based on the number of samples and method complexity.
+fn should_run_in_background(samples: usize, method: AnomalyMethod) -> bool {
+    match is_cpu_intensive(method) {
+        true => samples > SPAWN_THRESHOLD_SAMPLES,
+        false => samples > 10_000, // For lightweight methods, we can allow more samples before spawning
+    }
 }
 
 fn parse_method_options(
@@ -382,7 +404,7 @@ fn parse_smoothed_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<
     })
 }
 
-// Mad [ESTIMATOR <mad-estimator>] [<value>], e.g. Mad ESTIMATOR HarrellDavis THRESHOLD 3.0
+// Mad [ESTIMATOR <mad-estimator>] [<value>], e.g., Mad ESTIMATOR HarrellDavis THRESHOLD 3.0
 fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut mad_options = MADAnomalyOptions::default();
     while let Some(arg) = args.peek() {
@@ -595,176 +617,204 @@ fn parse_single_duration(iter: &mut CommandArgIterator, option_name: &str) -> Va
     Ok(duration)
 }
 
-fn format_output(
+fn send_reply(
+    ctx: &ReplyContext,
     result: AnomalyResult,
     samples: Vec<Sample>,
     direction: AnomalyDirection,
     output_format: OutputFormat,
 ) -> ValkeyResult {
     match output_format {
-        OutputFormat::Full => format_output_full(result, &samples, direction),
-        OutputFormat::Simple => format_output_simple(result, &samples, direction),
-        OutputFormat::Cleaned => format_output_cleaned(result, samples, direction),
+        OutputFormat::Full => reply_output_full(ctx, result, &samples, direction),
+        OutputFormat::Simple => reply_simple(ctx, result, &samples, direction),
+        OutputFormat::Cleaned => reply_cleaned(ctx, result, samples, direction),
     }
 }
 
 /// Returns anomalies only as a list of tuples (timestamp, value, anomaly_direction, anomaly score)
-fn format_output_simple(
+fn reply_simple(
+    ctx: &ReplyContext,
     result: AnomalyResult,
     samples: &[Sample],
     direction: AnomalyDirection,
 ) -> ValkeyResult {
-    Ok(format_anomalies(&result, samples, direction))
+    reply_with_anomalies(ctx, &result, samples, direction);
+    Ok(ValkeyValue::NoReply)
 }
 
 /// Returns all samples excluding those that are anomalies in the specified direction, as well as anomalies
-fn format_output_cleaned(
+fn reply_cleaned(
+    ctx: &ReplyContext,
     result: AnomalyResult,
     samples: Vec<Sample>,
     direction: AnomalyDirection,
 ) -> ValkeyResult {
-    let cleaned_samples = format_cleaned_samples(&samples, &result.anomalies, direction);
-    let anomalies = format_anomalies(&result, &samples, direction);
-    let result: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::from([
-        ("samples".into(), ValkeyValue::Array(cleaned_samples)),
-        ("outliers".into(), anomalies),
-    ]);
-    Ok(ValkeyValue::Map(result))
+    ctx.reply_with_map(2);
+    ctx.reply_with_bulk_string("samples");
+    reply_with_cleaned_samples(ctx, &samples, &result.anomalies, direction);
+    ctx.reply_with_bulk_string("outliers");
+    reply_with_anomalies(ctx, &result, &samples, direction);
+    Ok(ValkeyValue::NoReply)
 }
 
-fn format_cleaned_samples(
+fn reply_with_cleaned_samples(
+    ctx: &ReplyContext,
     samples: &[Sample],
     outliers: &[Anomaly],
     direction: AnomalyDirection,
-) -> Vec<ValkeyValue> {
+) {
     if outliers.is_empty() {
-        return samples
-            .iter()
-            .map(|sample| sample.into())
-            .collect::<Vec<ValkeyValue>>();
+        return reply_with_samples(ctx, samples);
     }
 
-    let indices: IntSet<usize> = outliers
+    let excluded_indices: std::collections::HashSet<usize> = outliers
         .iter()
         .filter(|anomaly| anomaly.signal.matches_direction(direction))
         .map(|anomaly| anomaly.index)
         .collect();
 
-    samples
-        .iter()
-        .enumerate()
-        .filter(|(index, _x)| !indices.contains(index))
-        .map(|(_, sample)| sample.into())
-        .collect::<Vec<ValkeyValue>>()
+    ctx.reply_with_postponed_array();
+    let mut count: usize = 0;
+
+    for sample in samples.iter().enumerate().filter_map(|(idx, sample)| {
+        if excluded_indices.contains(&idx) {
+            None
+        } else {
+            Some(sample)
+        }
+    }) {
+        reply_with_sample(ctx, sample);
+        count += 1;
+    }
+
+    ctx.reply_with_array_len(count);
 }
 
 /// Returns anomalies only as a list of tuples (timestamp, value, anomaly_direction, score)
-fn format_anomalies(
+fn reply_with_anomalies(
+    ctx: &ReplyContext,
     result: &AnomalyResult,
     samples: &[Sample],
     direction: AnomalyDirection,
-) -> ValkeyValue {
+) {
+    ctx.reply_with_postponed_array();
+    let mut count: usize = 0;
     // Collect only the anomalies
-    let anomalies: Vec<ValkeyValue> = result
-        .anomalies
-        .iter()
-        .filter_map(|outlier| {
-            if !outlier.signal.matches_direction(direction) {
-                return None;
-            }
-            let sample = samples.get(outlier.index)?;
-            let anomaly: ValkeyValue = outlier.signal.into();
-            let timestamp = ValkeyValue::Integer(sample.timestamp);
-            let sample_value = ValkeyValue::Float(sample.value);
-            let anomaly_score = ValkeyValue::Float(outlier.score);
-            Some(ValkeyValue::Array(vec![
-                timestamp,
-                sample_value,
-                anomaly,
-                anomaly_score,
-            ]))
-        })
-        .collect();
+    for (outlier, sample) in result.anomalies.iter().filter_map(|outlier| {
+        if !outlier.signal.matches_direction(direction) {
+            return None;
+        }
+        samples.get(outlier.index).map(|sample| (outlier, sample))
+    }) {
+        reply_with_outlier(ctx, outlier, sample);
+        count += 1;
+    }
 
-    ValkeyValue::Array(anomalies)
+    ctx.reply_with_array_len(count);
+    if count > 3 {
+        log_debug!(
+            "Anomalies: {anomalies:?}",
+            anomalies = result
+                .anomalies
+                .iter()
+                .filter(|o| o.signal.matches_direction(direction))
+                .map(|o| (o.index, o.score))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
-fn format_output_full(
+fn reply_output_full(
+    ctx: &ReplyContext,
     result: AnomalyResult,
     samples: &[Sample],
     direction: AnomalyDirection,
 ) -> ValkeyResult {
-    let mut res: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::new();
+    let map_len = 6 + if result.method_info.is_none() { 0 } else { 1 };
+
+    ctx.reply_with_map(map_len);
 
     // Add method info
-    res.insert(
-        "method".into(),
-        ValkeyValue::SimpleString(format!("{:?}", result.method)),
-    );
-
-    // Add the threshold
-    res.insert("threshold".into(), ValkeyValue::Float(result.threshold));
+    ctx.reply_with_bulk_string("method");
+    ctx.reply_with_bulk_string(result.method.short_name());
+    ctx.reply_with_bulk_string("threshold");
+    ctx.reply_with_double(result.threshold);
+    ctx.reply_with_bulk_string("direction");
+    ctx.reply_with_bulk_string(direction.name());
 
     // Add samples
-    let sample_values: Vec<ValkeyValue> = samples
-        .iter()
-        .zip(result.scores.iter())
-        .map(|(sample, score)| {
-            ValkeyValue::Array(vec![
-                ValkeyValue::Integer(sample.timestamp),
-                ValkeyValue::Float(sample.value),
-                ValkeyValue::Float(*score),
-            ])
-        })
-        .collect();
-    res.insert("samples".into(), ValkeyValue::Array(sample_values));
+    ctx.reply_with_bulk_string("samples");
+    reply_with_samples(ctx, samples);
 
     // Add scores
-    let scores: Vec<ValkeyValue> = result
-        .scores
-        .iter()
-        .map(|&x| ValkeyValue::Float(x))
-        .collect();
-    res.insert("scores".into(), ValkeyValue::Array(scores));
+    ctx.reply_with_bulk_string("scores");
+    reply_with_scores(ctx, &result.scores);
 
     // Add anomalies
-    let anomalies = format_anomalies(&result, samples, direction);
-
-    res.insert("outliers".into(), anomalies);
+    ctx.reply_with_bulk_string("outliers");
+    reply_with_anomalies(ctx, &result, samples, direction);
 
     // Add method-specific info if available
     if let Some(method_info) = result.method_info {
+        ctx.reply_with_bulk_string("method_info");
         match method_info {
             MethodInfo::Fenced {
                 lower_fence,
                 upper_fence,
                 center_line,
             } => {
-                let mut fenced_info = HashMap::new();
-                fenced_info.insert("lower_fence".into(), ValkeyValue::Float(lower_fence));
-                fenced_info.insert("upper_fence".into(), ValkeyValue::Float(upper_fence));
-                if let Some(center) = center_line {
-                    fenced_info.insert("center_line".into(), ValkeyValue::Float(center));
+                let mut map_len: usize = 2;
+                if center_line.is_some() {
+                    map_len += 1;
                 }
-                res.insert("method_info".into(), ValkeyValue::Map(fenced_info));
+                ctx.reply_with_map(map_len);
+                ctx.reply_with_bulk_string("lower_fence");
+                ctx.reply_with_double(lower_fence);
+                ctx.reply_with_bulk_string("upper_fence");
+                ctx.reply_with_double(upper_fence);
+                if let Some(center) = center_line {
+                    ctx.reply_with_bulk_string("center_line");
+                    ctx.reply_with_double(center);
+                }
             }
             MethodInfo::Spc {
                 control_limits,
                 center_line,
             } => {
-                let mut spc_info = HashMap::new();
-                spc_info.insert(
-                    "control_limits".into(),
-                    ValkeyValue::Array(vec![
-                        ValkeyValue::Float(control_limits.0),
-                        ValkeyValue::Float(control_limits.1),
-                    ]),
-                );
-                spc_info.insert("center_line".into(), ValkeyValue::Float(center_line));
-                res.insert("method_info".into(), ValkeyValue::Map(spc_info));
+                ctx.reply_with_map(2);
+
+                ctx.reply_with_bulk_string("control_limits");
+                ctx.reply_with_array(2);
+                ctx.reply_with_double(control_limits.0);
+                ctx.reply_with_double(control_limits.1);
+
+                ctx.reply_with_bulk_string("center_line");
+                ctx.reply_with_double(center_line);
             }
         }
     }
 
-    Ok(ValkeyValue::Map(res))
+    Ok(ValkeyValue::NoReply)
+}
+
+fn reply_with_samples(ctx: &ReplyContext, samples: &[Sample]) {
+    ctx.reply_with_array(samples.len());
+    for sample in samples {
+        reply_with_sample(ctx, sample);
+    }
+}
+
+fn reply_with_scores(ctx: &ReplyContext, scores: &[f64]) {
+    ctx.reply_with_array(scores.len());
+    for &score in scores {
+        ctx.reply_with_double(score);
+    }
+}
+
+fn reply_with_outlier(ctx: &ReplyContext, outlier: &Anomaly, sample: &Sample) {
+    ctx.reply_with_array(4);
+    ctx.reply_with_integer(sample.timestamp);
+    ctx.reply_with_double(sample.value);
+    ctx.reply_with_integer(outlier.signal as i64);
+    ctx.reply_with_double(outlier.score);
 }

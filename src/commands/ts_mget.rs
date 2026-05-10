@@ -1,5 +1,7 @@
 use super::ts_mget_fanout_command::MGetFanoutCommand;
 use crate::commands::command_parser::CommandArgToken;
+use crate::commands::fanout::MGetValue;
+use crate::commands::utils::reply_with_mget_values;
 use crate::commands::{parse_command_arg_token, parse_label_list, parse_series_selector_list};
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
@@ -7,7 +9,7 @@ use crate::labels::Label;
 use crate::series::index::with_matched_series;
 use crate::series::request_types::{MGetRequest, MGetSeriesData, MatchFilterOptions};
 use crate::series::{get_latest_compaction_sample, get_series_labels};
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
 /// TS.MGET
 ///   [LATEST]
@@ -26,10 +28,12 @@ pub fn ts_mget_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
 
     let mget_results = process_mget_request(ctx, options)?;
+    let mget_results = mget_results
+        .into_iter()
+        .map(Into::into)
+        .collect::<Vec<MGetValue>>();
 
-    let result = mget_results.into_iter().map(|s| s.into()).collect();
-
-    Ok(ValkeyValue::Array(result))
+    reply_with_mget_values(ctx, &mget_results)
 }
 
 /// Parsing commands with variadic args gets wonky. For example, if we have something like:

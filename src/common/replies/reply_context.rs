@@ -1,36 +1,34 @@
-use crate::common::replies::{
-    reply, reply_error_string, reply_with_bulk_string, reply_with_key, reply_with_simple_string,
+use super::raw_replies::{
+    IntoRawCtx, reply, reply_error_string, reply_with_array_len, reply_with_bulk_string,
+    reply_with_simple_string,
 };
 use crate::series::index::{TimeSeriesIndexGuard, get_db_index};
 use std::ops::Deref;
 use std::os::raw::c_long;
 use valkey_module::logging::ValkeyLogLevel;
-use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     Context, RedisModule_GetSelectedDb, RedisModule_SelectDb, Status,
     VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, raw,
 };
 
-/// Fanout reply context
-///
 /// A thin wrapper around the underlying `RedisModuleCtx` that provides convenience
-/// helpers for generating replies and managing the selected database while handling
-/// fanout responses.
+/// helpers for generating replies and managing the selected database. It is designed to avoid
+/// the allocation tax of using `Context::reply`, which requires a `ValkeyValue` as a parameter, meaning
+/// that every collection would require an extra allocation for the `ValkeyValue` wrapper, not
+/// to mention the copying of data from reply into the `ValkeyValue`.
 ///
-/// This struct restores the original selected DB when dropped if it changed during
-/// the lifetime of the `FanoutContext`.
+/// `ReplyContext` provides direct raw access to the underlying `RedisModuleCtx` to construct replies
+/// without extra allocation.
 ///
 /// # Invariant
-/// The `FanoutContext` must ALWAYS be created and used from the Valkey main thread.
-/// In the codebase this is guaranteed because the only way to get a `FanoutContext`
-/// is from a callback invoked by `exec_command`, which executes on the main thread.
-pub struct FanoutContext {
+/// The `ReplyContext` must ALWAYS be created and used from the Valkey main thread.
+pub struct ReplyContext {
     save_db: Option<i32>,
     ctx: Context,
     raw_ctx: *mut raw::RedisModuleCtx,
 }
 
-impl FanoutContext {
+impl ReplyContext {
     pub(crate) fn new(ctx: *mut raw::RedisModuleCtx) -> Self {
         Self {
             save_db: None,
@@ -79,12 +77,12 @@ impl FanoutContext {
     }
 
     /// Reply with a 64-bit integer value.
-    pub fn reply_with_i64(&self, value: i64) -> Status {
+    pub fn reply_with_integer(&self, value: i64) -> Status {
         raw::reply_with_long_long(self.raw_ctx, value)
     }
 
     /// Reply with a double-precision floating point value.
-    pub fn reply_with_f64(&self, value: f64) -> Status {
+    pub fn reply_with_double(&self, value: f64) -> Status {
         raw::reply_with_double(self.raw_ctx, value)
     }
 
@@ -128,9 +126,9 @@ impl FanoutContext {
         raw::reply_with_array(self.raw_ctx, VALKEYMODULE_POSTPONED_ARRAY_LEN as c_long)
     }
 
-    /// Reply with a `ValkeyValueKey` (integer/string/bulk/etc.).
-    pub fn reply_with_key(&self, result: ValkeyValueKey) -> Status {
-        reply_with_key(self.raw_ctx, result)
+    /// Set the length of a previously started postponed-length array reply.
+    pub fn reply_with_array_len(&self, len: usize) -> Status {
+        reply_with_array_len(self.raw_ctx, len)
     }
 
     /// Forward a `ValkeyResult` to the reply machinery.
@@ -146,7 +144,7 @@ impl FanoutContext {
     }
 }
 
-impl Drop for FanoutContext {
+impl Drop for ReplyContext {
     fn drop(&mut self) {
         if let Some(db) = self.save_db {
             self.set_current_db(db);
@@ -154,10 +152,16 @@ impl Drop for FanoutContext {
     }
 }
 
-impl Deref for FanoutContext {
+impl Deref for ReplyContext {
     type Target = Context;
 
     fn deref(&self) -> &Self::Target {
         &self.ctx
+    }
+}
+
+impl IntoRawCtx for &ReplyContext {
+    fn into_raw(self) -> *mut raw::RedisModuleCtx {
+        self.raw_ctx
     }
 }

@@ -55,7 +55,7 @@ impl ConfigValue {
 
     fn reply(&self, ctx: &Context) {
         let _ = match self {
-            ConfigValue::Integer(v) => reply_with_i64(ctx, *v),
+            ConfigValue::Integer(v) => reply_with_integer(ctx, *v),
             ConfigValue::Float(v) => reply_with_double(ctx, *v),
             ConfigValue::String(s) => reply_with_bulk_string(ctx, s),
             ConfigValue::Duration(d) => reply_with_duration(ctx, *d),
@@ -280,14 +280,14 @@ fn reply_with_config_value(ctx: &Context, cfg: &ConfigMeta, settings: &ConfigSet
         "ts-compaction-policy" => { let _ = reply_with_bulk_string(ctx, &settings.compaction_policy); },
         "ts-decimal-digits" => {
             if let Some(RoundingStrategy::DecimalDigits(digits)) = settings.rounding {
-                let _ = reply_with_i64(ctx, digits as i64);
+                let _ = reply_with_integer(ctx, digits as i64);
             } else {
                 let _ = reply_with_str(ctx, "none");
             }
         },
         "ts-significant-digits" => {
             if let Some(RoundingStrategy::SignificantDigits(digits)) = settings.rounding {
-                let _ = reply_with_i64(ctx, digits as i64);
+                let _ = reply_with_integer(ctx, digits as i64);
             } else {
                 let _ = reply_with_str(ctx, "none");
             }

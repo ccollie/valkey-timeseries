@@ -255,7 +255,7 @@ Returns anomaly information based on the `OUTPUT` format:
 **Map reply** with keys:
 
 * `method` - Detection method name (string)
-* `threshold` - Threshold value used (float)
+* `threshold` - Threshold value used (double)
 * `samples` - All samples with scores: `[[timestamp, value, score], ...]`
 * `scores` - Array of anomaly scores for all samples
 * `outliers` - Array of detected outliers (same format as SIMPLE)

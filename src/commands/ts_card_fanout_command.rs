@@ -50,6 +50,6 @@ impl FanoutClientCommand for CardFanoutCommand {
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
-        ctx.reply_with_i64(self.result as i64)
+        ctx.reply_with_integer(self.result as i64)
     }
 }

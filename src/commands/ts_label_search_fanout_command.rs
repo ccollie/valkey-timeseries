@@ -208,7 +208,7 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
                 ctx.reply_with_array(3);
                 ctx.reply_with_bulk_string(&result.value);
                 ctx.reply_with_bulk_string(&result.score.to_string());
-                ctx.reply_with_i64(result.cardinality as i64);
+                ctx.reply_with_integer(result.cardinality as i64);
             }
         } else {
             // values only

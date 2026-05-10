@@ -1,4 +1,5 @@
 use super::fanout::generated::{MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse};
+use crate::commands::utils::reply_with_mrange_series_results;
 use crate::common::Sample;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
@@ -88,7 +89,8 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         match result {
             Ok(mut series) => {
                 sort_mrange_results(&mut series, is_grouped);
-                ctx.reply(Ok(series.into()))
+                let _ = reply_with_mrange_series_results(ctx, &series);
+                Status::Ok
             }
             Err(e) => {
                 let warning = format!("Error processing MRange responses: {e:?}");

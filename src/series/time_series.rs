@@ -700,18 +700,15 @@ impl TimeSeries {
 
         // Check if any chunk in the range has samples within the time range
         let chunks = &self.chunks[start_index..=end_index];
-        match (self.is_compressed(), chunks) {
-            (_, []) => false,
-            (_, [chunk]) => chunk.has_samples_in_range(start_time, end_time),
-            // Uncompressed chunks, iterate linearly
-            (false, many) => many
-                .iter()
-                .any(|c| c.has_samples_in_range(start_time, end_time)),
-            // Compressed chunks, check each chunk in parallel
-            (true, many) => many
-                .par()
-                .any(|&chunk| chunk.has_samples_in_range(start_time, end_time)),
-        }
+
+        // Do NOT use parallel iteration here. This method can be called from within
+        // another parallel iterator (e.g., in `filter_series_by_date_range`),
+        // and nested parallelism with Rayon can lead to deadlocks if the global
+        // thread pool is exhausted. A sequential check is safer and the performance
+        // impact is minimal for a single series's chunks.
+        chunks
+            .iter()
+            .any(|c| c.has_samples_in_range(start_time, end_time))
     }
 
     pub fn increment_sample_value(

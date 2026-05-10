@@ -1,10 +1,13 @@
+use crate::common::replies::ReplyContext;
+use crate::fanout::FanoutCommandResult;
 use crate::fanout::blocked_client::FanoutBlockedClient;
 use crate::fanout::serialization::Serializable;
 use crate::fanout::{FanoutCommand, FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
-use crate::fanout::{FanoutCommandResult, FanoutContext};
 use ahash::HashSet;
 use std::sync::{Arc, Mutex};
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
+
+pub type FanoutContext = ReplyContext;
 
 /// A trait for cluster-mode commands which send results back to clients after receiving responses from other nodes.
 /// This is a higher-level abstraction over `FanoutCommand` that includes client response handling logic.
