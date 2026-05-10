@@ -651,9 +651,9 @@ fn reply_cleaned(
     direction: AnomalyDirection,
 ) -> ValkeyResult {
     ctx.reply_with_map(2);
-    ctx.reply_with_bulk_string("samples");
+    ctx.reply_with_string("samples");
     reply_with_cleaned_samples(ctx, &samples, &result.anomalies, direction);
-    ctx.reply_with_bulk_string("outliers");
+    ctx.reply_with_string("outliers");
     reply_with_anomalies(ctx, &result, &samples, direction);
     Ok(ValkeyValue::NoReply)
 }
@@ -736,19 +736,19 @@ fn reply_output_full(
     ctx.reply_with_map(map_len);
 
     // Add method info
-    ctx.reply_with_bulk_string("method");
-    ctx.reply_with_bulk_string(result.method.short_name());
-    ctx.reply_with_bulk_string("threshold");
+    ctx.reply_with_string("method");
+    ctx.reply_with_string(result.method.short_name());
+    ctx.reply_with_string("threshold");
     ctx.reply_with_double(result.threshold);
-    ctx.reply_with_bulk_string("direction");
-    ctx.reply_with_bulk_string(direction.name());
+    ctx.reply_with_string("direction");
+    ctx.reply_with_string(direction.name());
 
     // Add samples
-    ctx.reply_with_bulk_string("samples");
+    ctx.reply_with_string("samples");
     reply_with_samples(ctx, samples);
 
     // Add scores
-    ctx.reply_with_bulk_string("scores");
+    ctx.reply_with_string("scores");
     ctx.reply_with_array(result.scores.len());
     for (sample, &score) in samples.iter().zip(result.scores.iter()) {
         ctx.reply_with_array(3);
@@ -758,12 +758,12 @@ fn reply_output_full(
     }
 
     // Add anomalies
-    ctx.reply_with_bulk_string("outliers");
+    ctx.reply_with_string("outliers");
     reply_with_anomalies(ctx, &result, samples, direction);
 
     // Add method-specific info if available
     if let Some(method_info) = result.method_info {
-        ctx.reply_with_bulk_string("method_info");
+        ctx.reply_with_string("method_info");
         match method_info {
             MethodInfo::Fenced {
                 lower_fence,
@@ -775,12 +775,12 @@ fn reply_output_full(
                     map_len += 1;
                 }
                 ctx.reply_with_map(map_len);
-                ctx.reply_with_bulk_string("lower_fence");
+                ctx.reply_with_string("lower_fence");
                 ctx.reply_with_double(lower_fence);
-                ctx.reply_with_bulk_string("upper_fence");
+                ctx.reply_with_string("upper_fence");
                 ctx.reply_with_double(upper_fence);
                 if let Some(center) = center_line {
-                    ctx.reply_with_bulk_string("center_line");
+                    ctx.reply_with_string("center_line");
                     ctx.reply_with_double(center);
                 }
             }
@@ -790,12 +790,12 @@ fn reply_output_full(
             } => {
                 ctx.reply_with_map(2);
 
-                ctx.reply_with_bulk_string("control_limits");
+                ctx.reply_with_string("control_limits");
                 ctx.reply_with_array(2);
                 ctx.reply_with_double(control_limits.0);
                 ctx.reply_with_double(control_limits.1);
 
-                ctx.reply_with_bulk_string("center_line");
+                ctx.reply_with_string("center_line");
                 ctx.reply_with_double(center_line);
             }
         }

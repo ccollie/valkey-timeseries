@@ -59,18 +59,22 @@ pub(crate) fn block_client(ctx: &Context) -> BlockedClient {
     BlockedClient::new(blocked_client)
 }
 
-pub struct ThreadSafeReplyContext<B: Send> {
+pub struct ThreadSafeReplyContext {
     pub(crate) ctx: *mut raw::RedisModuleCtx,
 
     /// 'Drop' only uses this field implicitly, so avoid a compiler warning
     #[allow(dead_code)]
-    blocked_client: B,
+    blocked_client: BlockedClient,
 }
 
-unsafe impl<B: Send> Send for ThreadSafeReplyContext<B> {}
-unsafe impl<B: Send> Sync for ThreadSafeReplyContext<B> {}
+/// SAFETY:
+/// This is copied from the implementation of `ThreadSafeContext` in `thread_safe.rs`, with the same safety guarantees.
+/// The Valkey modules API does not require locking for `Reply` functions, and the `ReplyContext` constructed has its context
+/// as private.
+unsafe impl Send for ThreadSafeReplyContext {}
+unsafe impl Sync for ThreadSafeReplyContext {}
 
-impl ThreadSafeReplyContext<BlockedClient> {
+impl ThreadSafeReplyContext {
     #[must_use]
     pub fn with_blocked_client(blocked_client: BlockedClient) -> Self {
         let ctx = unsafe { raw::RedisModule_GetThreadSafeContext.unwrap()(blocked_client.inner) };
@@ -93,13 +97,13 @@ impl ThreadSafeReplyContext<BlockedClient> {
     }
 }
 
-impl<B: Send> Drop for ThreadSafeReplyContext<B> {
+impl Drop for ThreadSafeReplyContext {
     fn drop(&mut self) {
         unsafe { raw::RedisModule_FreeThreadSafeContext.unwrap()(self.ctx) };
     }
 }
 
-impl IntoRawCtx for &ThreadSafeReplyContext<BlockedClient> {
+impl IntoRawCtx for &ThreadSafeReplyContext {
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
         self.ctx
     }

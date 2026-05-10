@@ -7,23 +7,12 @@ use std::ops::Deref;
 use std::os::raw::c_long;
 use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{
-    Context, RedisModule_GetSelectedDb, RedisModule_SelectDb, Status,
-    VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, raw,
+    Context, RedisModule_GetSelectedDb, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyResult, raw,
 };
 
-/// A thin wrapper around the underlying `RedisModuleCtx` that provides convenience
-/// helpers for generating replies and managing the selected database. It is designed to avoid
-/// the allocation tax of using `Context::reply`, which requires a `ValkeyValue` as a parameter, meaning
-/// that every collection would require an extra allocation for the `ValkeyValue` wrapper, not
-/// to mention the copying of data from reply into the `ValkeyValue`.
-///
-/// `ReplyContext` provides direct raw access to the underlying `RedisModuleCtx` to construct replies
-/// without extra allocation.
-///
-/// # Invariant
-/// The `ReplyContext` must ALWAYS be created and used from the Valkey main thread.
+/// `ReplyContext` is a thin wrapper around `RedisModuleCtx` that provides efficient,
+/// zero-allocation reply helpers and automatic database state management.
 pub struct ReplyContext {
-    save_db: Option<i32>,
     ctx: Context,
     raw_ctx: *mut raw::RedisModuleCtx,
 }
@@ -31,7 +20,6 @@ pub struct ReplyContext {
 impl ReplyContext {
     pub(crate) fn new(ctx: *mut raw::RedisModuleCtx) -> Self {
         Self {
-            save_db: None,
             ctx: Context { ctx },
             raw_ctx: ctx,
         }
@@ -39,36 +27,21 @@ impl ReplyContext {
 
     /// Log a message at the specified `level` using the underlying context.
     pub fn log(&self, level: ValkeyLogLevel, message: &str) {
-        let context = Context { ctx: self.raw_ctx };
-        context.log(level, message);
+        self.ctx.log(level, message);
     }
 
     /// Convenience logging helpers
     pub fn log_debug(&self, message: &str) {
         self.log(ValkeyLogLevel::Debug, message);
     }
-
     pub fn log_notice(&self, message: &str) {
         self.log(ValkeyLogLevel::Notice, message);
     }
-
     pub fn log_verbose(&self, message: &str) {
         self.log(ValkeyLogLevel::Verbose, message);
     }
-
     pub fn log_warning(&self, message: &str) {
         self.log(ValkeyLogLevel::Warning, message);
-    }
-
-    /// Switch the selected DB for this context. The original DB is saved on first
-    /// switch so it can be restored when the `FanoutContext` is dropped.
-    pub fn set_current_db(&mut self, db: i32) {
-        if self.save_db.is_none() {
-            self.save_db = Some(self.get_current_db());
-        }
-        unsafe {
-            RedisModule_SelectDb.unwrap()(self.raw_ctx, db);
-        }
     }
 
     /// Return the currently selected DB index from the underlying context.
@@ -102,7 +75,7 @@ impl ReplyContext {
     }
 
     /// Reply with a bulk string.
-    pub fn reply_with_bulk_string(&self, value: &str) -> Status {
+    pub fn reply_with_string(&self, value: &str) -> Status {
         reply_with_bulk_string(self.raw_ctx, value)
     }
 
@@ -141,14 +114,6 @@ impl ReplyContext {
     pub fn get_db_index(&self) -> TimeSeriesIndexGuard<'_> {
         let db = self.get_current_db();
         get_db_index(db)
-    }
-}
-
-impl Drop for ReplyContext {
-    fn drop(&mut self) {
-        if let Some(db) = self.save_db {
-            self.set_current_db(db);
-        }
     }
 }
 

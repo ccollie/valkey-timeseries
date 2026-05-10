@@ -258,7 +258,7 @@ Returns anomaly information based on the `OUTPUT` format:
 * `direction` - Detection direction: `positive`, `negative`, or `both` (string)
 * `threshold` - Threshold value used (double)
 * `samples` - All samples with scores: `[[timestamp, value, score], ...]`
-* `scores` - Array of anomaly scores for all samples
+* `scores` - Array of anomaly scores for all samples, aligned by index with `samples`
 * `outliers` - Array of detected outliers (same format as SIMPLE)
 * `method_info` - Algorithm-specific metadata (map, if available):
     * For IQR: `lower_fence`, `upper_fence`

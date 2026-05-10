@@ -2,12 +2,12 @@ use super::fanout::generated::{MGetValue, MultiGetRequest, MultiGetResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
 use crate::commands::utils::reply_with_mget_values;
+use crate::common::logging::log_error;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::request_types::MGetRequest;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
-use crate::common::logging::log_error;
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutCommand {

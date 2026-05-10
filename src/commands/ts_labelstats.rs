@@ -36,24 +36,24 @@ pub(super) fn reply_with_postings_stats(ctx: &ReplyContext, stats: &PostingsStat
     };
     ctx.reply_with_map(map_len);
 
-    ctx.reply_with_bulk_string("totalSeries");
+    ctx.reply_with_string("totalSeries");
     ctx.reply_with_integer(stats.series_count as i64);
 
-    ctx.reply_with_bulk_string("totalLabels");
+    ctx.reply_with_string("totalLabels");
     ctx.reply_with_integer(stats.label_count as i64);
 
-    ctx.reply_with_bulk_string("totalLabelValuePairs");
+    ctx.reply_with_string("totalLabelValuePairs");
     ctx.reply_with_integer(stats.total_label_value_pairs as i64);
 
-    ctx.reply_with_bulk_string("seriesCountByMetricName");
+    ctx.reply_with_string("seriesCountByMetricName");
     reply_with_stats_slice(ctx, &stats.series_count_by_metric_name);
-    ctx.reply_with_bulk_string("labelValueCountByLabelName");
+    ctx.reply_with_string("labelValueCountByLabelName");
     reply_with_stats_slice(ctx, &stats.series_count_by_label_name);
     if let Some(series_count_by_focus_label_value) = &stats.series_count_by_focus_label_value {
-        ctx.reply_with_bulk_string("seriesCountByFocusLabelValue");
+        ctx.reply_with_string("seriesCountByFocusLabelValue");
         reply_with_stats_slice(ctx, series_count_by_focus_label_value);
     }
-    ctx.reply_with_bulk_string("seriesCountByLabelValuePair");
+    ctx.reply_with_string("seriesCountByLabelValuePair");
     reply_with_stats_slice(ctx, &stats.series_count_by_label_value_pairs);
 }
 
@@ -66,6 +66,6 @@ fn reply_with_stats_slice(ctx: &ReplyContext, items: &[PostingStat]) {
 
 fn reply_with_posting_stat(ctx: &ReplyContext, stat: &PostingStat) {
     ctx.reply_with_map(1);
-    ctx.reply_with_bulk_string(&stat.name);
+    ctx.reply_with_string(&stat.name);
     ctx.reply_with_integer(stat.count as i64);
 }
