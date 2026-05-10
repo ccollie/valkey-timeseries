@@ -9,6 +9,7 @@ use crate::commands::{
     parse_timestamp_range,
 };
 use crate::common::Sample;
+use crate::common::hash::IntSet;
 use crate::common::replies::{
     ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
 };
@@ -667,7 +668,7 @@ fn reply_with_cleaned_samples(
         return reply_with_samples(ctx, samples);
     }
 
-    let excluded_indices: std::collections::HashSet<usize> = outliers
+    let excluded_indices: IntSet<usize> = outliers
         .iter()
         .filter(|anomaly| anomaly.signal.matches_direction(direction))
         .map(|anomaly| anomaly.index)
