@@ -14,8 +14,6 @@ use crate::series::index::{
     SearchResultOrdering, SelectHints, SortBy,
 };
 use crate::series::request_types::MatchFilterOptions;
-use std::collections::HashMap;
-use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 #[derive(Debug, Clone)]
@@ -329,7 +327,7 @@ pub(crate) fn process_label_search_request(
     }
 }
 
-fn reply_with_label_search_result(
+pub(super) fn reply_with_label_search_result(
     ctx: &Context,
     query_result: LabelQueryResult,
     include_meta: bool,
@@ -353,43 +351,6 @@ fn reply_with_label_search_result(
     reply_with_bool(ctx, query_result.has_more);
 
     Ok(ValkeyValue::NoReply)
-}
-
-pub(super) fn label_search_result_to_valkey_value(
-    query_result: LabelQueryResult,
-    include_meta: bool,
-) -> ValkeyValue {
-    let results_array = if include_meta {
-        ValkeyValue::Array(
-            query_result
-                .results
-                .into_iter()
-                .map(|r| {
-                    ValkeyValue::Array(vec![
-                        ValkeyValue::BulkString(r.value),
-                        ValkeyValue::BulkString(r.score.to_string()),
-                        ValkeyValue::Integer(r.cardinality as i64),
-                    ])
-                })
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        ValkeyValue::Array(
-            query_result
-                .results
-                .into_iter()
-                .map(|r| ValkeyValue::BulkString(r.value))
-                .collect::<Vec<_>>(),
-        )
-    };
-
-    let mut map = HashMap::with_capacity(2);
-    map.insert(
-        ValkeyValueKey::BulkString("has_more".into()),
-        ValkeyValue::Bool(query_result.has_more),
-    );
-    map.insert(ValkeyValueKey::BulkString("results".into()), results_array);
-    ValkeyValue::Map(map)
 }
 
 pub(super) fn run_label_search(
