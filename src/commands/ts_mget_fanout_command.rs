@@ -7,6 +7,7 @@ use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::request_types::MGetRequest;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
+use crate::common::logging::log_error;
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutCommand {
@@ -66,7 +67,12 @@ impl FanoutClientCommand for MGetFanoutCommand {
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
-        reply_with_mget_values(ctx, &self.series).expect("reply failed with mget values");
-        Status::Ok
+        match reply_with_mget_values(ctx, &self.series) {
+            Ok(_) => Status::Ok,
+            Err(e) => {
+                log_error(format!("Error processing MGET response: {}", e));
+                Status::Err
+            }
+        }
     }
 }
