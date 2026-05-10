@@ -1,5 +1,6 @@
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::commands::ts_queryindex_fanout_command::QueryIndexFanoutCommand;
+use crate::common::replies::{reply_with_array, reply_with_valkey_string};
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::index::series_keys_by_selectors;
 use valkey_module::ValkeyError::WrongArity;
@@ -22,5 +23,11 @@ pub fn ts_queryindex_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     let mut keys = series_keys_by_selectors(ctx, &options.matchers, options.date_range)?;
 
     keys.sort_unstable();
-    Ok(ValkeyValue::from(keys))
+
+    reply_with_array(ctx, keys.len());
+    for key in keys.iter() {
+        reply_with_valkey_string(ctx, key);
+    }
+
+    Ok(ValkeyValue::NoReply)
 }

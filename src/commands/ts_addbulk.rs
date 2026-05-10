@@ -1,5 +1,6 @@
 use crate::commands::ts_create::parse_series_options;
 use crate::common::Sample;
+use crate::common::replies::{reply_with_array, reply_with_integer};
 use crate::series::{
     IngestedSamples, TimeSeries, bulk_insert_samples, create_and_store_series, get_timeseries_mut,
 };
@@ -59,10 +60,9 @@ fn handle_ingest(ctx: &Context, series: &mut TimeSeries, samples: Vec<Sample>) -
 
     let success_count = results.iter().filter(|res| res.is_ok()).count();
 
-    let result = vec![
-        ValkeyValue::Integer(success_count as i64),
-        ValkeyValue::Integer(sample_count as i64),
-    ];
+    reply_with_array(ctx, 2);
+    reply_with_integer(ctx, success_count as i64);
+    reply_with_integer(ctx, sample_count as i64);
 
-    Ok(ValkeyValue::Array(result))
+    Ok(ValkeyValue::NoReply)
 }

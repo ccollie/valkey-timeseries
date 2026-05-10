@@ -255,9 +255,10 @@ Returns anomaly information based on the `OUTPUT` format:
 **Map reply** with keys:
 
 * `method` - Detection method name (string)
-* `threshold` - Threshold value used (float)
+* `direction` - Detection direction: `positive`, `negative`, or `both` (string)
+* `threshold` - Threshold value used (double)
 * `samples` - All samples with scores: `[[timestamp, value, score], ...]`
-* `scores` - Array of anomaly scores for all samples
+* `scores` - Array of anomaly scores for all samples, aligned by index with `samples`
 * `outliers` - Array of detected outliers (same format as SIMPLE)
 * `method_info` - Algorithm-specific metadata (map, if available):
     * For IQR: `lower_fence`, `upper_fence`
@@ -326,27 +327,29 @@ Get detailed analysis with metadata for API request spikes:
 127.0.0.1:6379> TS.OUTLIERS requests:api - + OUTPUT FULL DIRECTION POSITIVE METHOD IQR THRESHOLD 1.5
 1) "method"
 2) "InterquartileRange"
-3) "threshold"
-4) "1.5"
-5) "samples"
-6) 1) 1) (integer) 1609459200000
+3) "direction"
+4) "positive"
+5) "threshold"
+6) "1.5"
+7) "samples"
+8) 1) 1) (integer) 1609459200000
       2) "125.4"
       3) "0.15"
    2) 1) (integer) 1609462800000
       2) "135.2"
       3) "0.18"
    ...
-7) "scores"
-8) 1) "0.15"
+9) "scores"
+10) 1) "0.15"
    2) "0.18"
    ...
-9) "outliers"
-10) 1) 1) (integer) 1609462800000
+11) "outliers"
+12) 1) 1) (integer) 1609462800000
        2) "850.2"
        3) (integer) 1
        4) "0.94"
-11) "method_info"
-12) 1) "lower_fence"
+13) "method_info"
+14) 1) "lower_fence"
     2) "-50.3"
     3) "upper_fence"
     4) "250.7"

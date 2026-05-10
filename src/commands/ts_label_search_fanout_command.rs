@@ -3,7 +3,9 @@ use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matc
 use crate::commands::fanout::{
     FuzzySearchAlgorithm, LabelSearchResult as FanoutLabelSearchResult, LabelSearchType,
 };
-use crate::commands::label_search_utils::{LabelNameSearchArgs, process_label_search_request};
+use crate::commands::label_search_utils::{
+    LabelNameSearchArgs, process_label_search_request, reply_with_label_search_result,
+};
 use crate::fanout::{FanoutClientCommand, FanoutCommandResult, FanoutContext, NodeInfo};
 use crate::series::index::{
     FuzzyAlgorithm, LabelSearchResult as IndexLabelSearchResult, SEARCH_RESULT_LIMIT_MAX,
@@ -198,26 +200,9 @@ impl FanoutClientCommand for LabelSearchFanoutCommand {
         // truncated additional entries — either condition means results were cut off.
         self.has_more |= query_result.has_more;
 
-        ctx.reply_with_map(2);
-
-        ctx.reply_with_key("results".into());
-        ctx.reply_with_array(query_result.results.len());
-
-        if self.args.include_metadata {
-            for result in &query_result.results {
-                ctx.reply_with_array(3);
-                ctx.reply_with_bulk_string(&result.value);
-                ctx.reply_with_bulk_string(&result.score.to_string());
-                ctx.reply_with_i64(result.cardinality as i64);
-            }
-        } else {
-            // values only
-            for result in &query_result.results {
-                ctx.reply_with_bulk_string(&result.value);
-            }
+        match reply_with_label_search_result(ctx, query_result, hints.include_meta) {
+            Ok(_) => Status::Ok,
+            Err(_e) => Status::Err,
         }
-
-        ctx.reply_with_key("has_more".into());
-        ctx.reply_with_bool(self.has_more)
     }
 }

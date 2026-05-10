@@ -1,4 +1,5 @@
 use crate::commands::command_parser::parse_range_options;
+use crate::common::replies::reply_with_samples;
 use crate::iterators::TimeSeriesRangeIterator;
 use crate::series::get_timeseries;
 use valkey_module::{
@@ -41,10 +42,6 @@ fn range_internal(ctx: &Context, args: Vec<ValkeyString>, is_reverse: bool) -> V
     let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)?.unwrap();
     let iter = TimeSeriesRangeIterator::new(Some(ctx), &series, &options, is_reverse);
 
-    let samples = iter
-        .into_iter()
-        .map(|x| x.into())
-        .collect::<Vec<ValkeyValue>>();
-
-    Ok(ValkeyValue::from(samples))
+    reply_with_samples(ctx, iter);
+    Ok(ValkeyValue::NoReply)
 }
