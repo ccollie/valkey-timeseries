@@ -749,7 +749,13 @@ fn reply_output_full(
 
     // Add scores
     ctx.reply_with_bulk_string("scores");
-    reply_with_scores(ctx, &result.scores);
+    ctx.reply_with_array(result.scores.len());
+    for (sample, &score) in samples.iter().zip(result.scores.iter()) {
+        ctx.reply_with_array(3);
+        ctx.reply_with_integer(sample.timestamp);
+        ctx.reply_with_double(sample.value);
+        ctx.reply_with_double(score);
+    }
 
     // Add anomalies
     ctx.reply_with_bulk_string("outliers");
