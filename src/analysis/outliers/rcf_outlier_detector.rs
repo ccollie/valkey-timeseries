@@ -89,7 +89,6 @@ pub struct RCFOptions {
 
 pub const RCF_DEFAULT_NUM_TREES: usize = 100;
 pub const RCF_DEFAULT_SAMPLE_SIZE: usize = 256;
-pub const RCF_DEFAULT_TIME_DECAY: f64 = 0.0;
 
 impl Default for RCFOptions {
     fn default() -> Self {
