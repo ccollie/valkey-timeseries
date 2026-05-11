@@ -87,11 +87,15 @@ pub struct RCFOptions {
     pub parallel_enabled: Option<bool>,
 }
 
+pub const RCF_DEFAULT_NUM_TREES: usize = 100;
+pub const RCF_DEFAULT_SAMPLE_SIZE: usize = 256;
+pub const RCF_DEFAULT_TIME_DECAY: f64 = 0.0;
+
 impl Default for RCFOptions {
     fn default() -> Self {
         Self {
-            num_trees: Some(100),
-            sample_size: Some(256),
+            num_trees: Some(RCF_DEFAULT_NUM_TREES),
+            sample_size: Some(RCF_DEFAULT_SAMPLE_SIZE),
             threshold: None,
             time_decay: None,
             shingle_size: None,
@@ -105,8 +109,8 @@ impl RCFOptions {
     /// Create RCFOptions with default values overridden by provided ones.
     pub fn with_overrides(overrides: RCFOptions) -> Self {
         RCFOptions {
-            num_trees: overrides.num_trees.or(Some(100)),
-            sample_size: overrides.sample_size.or(Some(256)),
+            num_trees: overrides.num_trees.or(Some(RCF_DEFAULT_NUM_TREES)),
+            sample_size: overrides.sample_size.or(Some(RCF_DEFAULT_SAMPLE_SIZE)),
             threshold: overrides.threshold,
             time_decay: overrides.time_decay,
             shingle_size: overrides.shingle_size,
@@ -130,7 +134,7 @@ impl RCFOptions {
 
         // Missing values fall back to the same defaults used elsewhere.
         let num_trees = self.num_trees.unwrap_or(100);
-        let sample_size = self.sample_size.unwrap_or(256).max(2); // avoid log2(0/1)
+        let sample_size = self.sample_size.unwrap_or(RCF_DEFAULT_SAMPLE_SIZE).max(2); // avoid log2(0/1)
         let shingle_size = self.shingle_size.unwrap_or(1).max(1);
 
         // Univariate base dimension = 1, so the effective dimension is just the shingle size.

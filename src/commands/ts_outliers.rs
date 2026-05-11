@@ -1,6 +1,7 @@
 use crate::analysis::outliers::{
     Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold,
+    AnomalyResult, ESDOutlierOptions, EWMA_DEFAULT_ALPHA, MADAnomalyOptions, MethodInfo,
+    RCF_DEFAULT_NUM_TREES, RCF_DEFAULT_SAMPLE_SIZE, RCFOptions, RCFThreshold,
     SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::analysis::seasonality::Seasonality;
@@ -862,7 +863,7 @@ fn reply_with_parameters(
         AnomalyDetectionMethodOptions::Ewma(alpha) => {
             ctx.reply_with_map(1);
             ctx.reply_with_string("alpha");
-            ctx.reply_with_double(alpha.unwrap_or(0.3));
+            ctx.reply_with_double(alpha.unwrap_or(EWMA_DEFAULT_ALPHA));
         }
         AnomalyDetectionMethodOptions::ZScore(_)
         | AnomalyDetectionMethodOptions::ModifiedZScore(_)
@@ -902,9 +903,9 @@ fn reply_with_parameters(
             ctx.reply_with_map(map_len);
 
             ctx.reply_with_string("num_trees");
-            ctx.reply_with_integer(opts.num_trees.unwrap_or(100) as i64);
+            ctx.reply_with_integer(opts.num_trees.unwrap_or(RCF_DEFAULT_NUM_TREES) as i64);
             ctx.reply_with_string("sample_size");
-            ctx.reply_with_integer(opts.sample_size.unwrap_or(256) as i64);
+            ctx.reply_with_integer(opts.sample_size.unwrap_or(RCF_DEFAULT_SAMPLE_SIZE) as i64);
 
             if let Some(threshold_opt) = &opts.threshold {
                 match threshold_opt {
