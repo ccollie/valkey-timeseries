@@ -1,22 +1,21 @@
 use crate::analysis::outliers::{
-    Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
-    AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold,
-    SmoothedZScoreOptions, detect_anomalies,
+    detect_anomalies, Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod,
+    AnomalyOptions, AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions,
+    RCFThreshold, SmoothedZScoreOptions,
 };
 use crate::analysis::seasonality::Seasonality;
 use crate::commands::{
-    CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_duration_ms,
-    parse_timestamp_range,
+    parse_command_arg_token, parse_timestamp_range, CommandArgIterator,
+    CommandArgToken,
 };
-use crate::common::Sample;
-use crate::common::hash::IntSet;
+use crate::common::hash::{IntMap, IntSet};
 use crate::common::replies::{
-    ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
+    block_client, reply_with_sample, ReplyContext, ThreadSafeReplyContext,
 };
 use crate::common::threads::spawn;
+use crate::common::Sample;
 use crate::error_consts;
-use crate::series::{TimestampRange, get_timeseries};
-use logger_rust::log_debug;
+use crate::series::{get_timeseries, TimestampRange};
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
@@ -129,7 +128,7 @@ fn process_request(
     if !should_run_in_background(samples.len(), options.method()) {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
         let reply_ctx = ReplyContext::new(ctx.ctx);
-        return match detect_anomalies(&values, options) {
+        return match detect_anomalies(&values, options.clone()) {
             Err(err) => Err(ValkeyError::String(format!(
                 "TSDB: outlier detection failed: {err}"
             ))),
@@ -139,6 +138,7 @@ fn process_request(
                 samples,
                 anomaly_direction,
                 output_format,
+                &options,
             ),
         };
     }
@@ -148,7 +148,7 @@ fn process_request(
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
 
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
-        match detect_anomalies(&values, options) {
+        match detect_anomalies(&values, options.clone()) {
             Err(err) => {
                 thread_ctx.reply(Err(ValkeyError::String(format!(
                     "TSDB: outlier detection failed: {err}"
@@ -156,7 +156,14 @@ fn process_request(
             }
             Ok(result) => {
                 let ctx = thread_ctx.get_reply_context();
-                let _ = send_reply(&ctx, result, samples, anomaly_direction, output_format);
+                let _ = send_reply(
+                    &ctx,
+                    result,
+                    samples,
+                    anomaly_direction,
+                    output_format,
+                    &options,
+                );
             }
         }
     });
@@ -176,7 +183,7 @@ fn is_cpu_intensive(method: AnomalyMethod) -> bool {
 fn should_run_in_background(samples: usize, method: AnomalyMethod) -> bool {
     match is_cpu_intensive(method) {
         true => samples > SPAWN_THRESHOLD_SAMPLES,
-        false => samples > 10_000, // For lightweight methods, we can allow more samples before spawning
+        false => samples > 5_000, // For lightweight methods, we can allow more samples before spawning
     }
 }
 
@@ -575,20 +582,6 @@ fn parse_optional_threshold_option(args: &mut CommandArgIterator) -> ValkeyResul
     }
 }
 
-fn parse_single_option_value(
-    iter: &mut CommandArgIterator,
-    option_name: &str,
-) -> ValkeyResult<f64> {
-    if let Some(arg) = iter.next()
-        && arg.as_slice().eq_ignore_ascii_case(option_name.as_bytes())
-    {
-        return parse_single_value(iter, option_name);
-    }
-    Err(ValkeyError::String(format!(
-        "TSDB: Missing or invalid {option_name}"
-    )))
-}
-
 fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<f64> {
     let Ok(value_str) = iter.next_str() else {
         return Err(ValkeyError::String(format!(
@@ -603,30 +596,16 @@ fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> Valke
     })
 }
 
-fn parse_single_duration(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<i64> {
-    let Ok(value_str) = iter.next_str() else {
-        return Err(ValkeyError::String(format!(
-            "TSDB: Missing value for {option_name}"
-        )));
-    };
-    let duration = parse_duration_ms(value_str)?;
-    if duration < 0 {
-        return Err(ValkeyError::String(format!(
-            "TSDB: invalid duration for {option_name}"
-        )));
-    }
-    Ok(duration)
-}
-
 fn send_reply(
     ctx: &ReplyContext,
     result: AnomalyResult,
     samples: Vec<Sample>,
     direction: AnomalyDirection,
     output_format: OutputFormat,
+    options: &AnomalyOptions,
 ) -> ValkeyResult {
     match output_format {
-        OutputFormat::Full => reply_output_full(ctx, result, &samples, direction),
+        OutputFormat::Full => reply_output_full(ctx, result, &samples, direction, options),
         OutputFormat::Simple => reply_simple(ctx, result, &samples, direction),
         OutputFormat::Cleaned => reply_cleaned(ctx, result, samples, direction),
     }
@@ -712,17 +691,6 @@ fn reply_with_anomalies(
     }
 
     ctx.reply_with_array_len(count);
-    if count > 3 {
-        log_debug!(
-            "Anomalies: {anomalies:?}",
-            anomalies = result
-                .anomalies
-                .iter()
-                .filter(|o| o.signal.matches_direction(direction))
-                .map(|o| (o.index, o.score))
-                .collect::<Vec<_>>()
-        );
-    }
 }
 
 fn reply_output_full(
@@ -730,36 +698,51 @@ fn reply_output_full(
     result: AnomalyResult,
     samples: &[Sample],
     direction: AnomalyDirection,
+    options: &AnomalyOptions,
 ) -> ValkeyResult {
-    let map_len = 6 + if result.method_info.is_none() { 0 } else { 1 };
+    let mut map_len = 4; // method, direction, samples, parameters
+    if result.method_info.is_some() {
+        map_len += 1;
+    }
+    if options.seasonality.is_some() {
+        map_len += 1;
+    }
 
     ctx.reply_with_map(map_len);
 
     // Add method info
     ctx.reply_with_string("method");
     ctx.reply_with_string(result.method.short_name());
-    ctx.reply_with_string("threshold");
-    ctx.reply_with_double(result.threshold);
     ctx.reply_with_string("direction");
     ctx.reply_with_string(direction.name());
 
-    // Add samples
+    // Add samples with scores and signal
     ctx.reply_with_string("samples");
-    reply_with_samples(ctx, samples);
+    reply_with_samples_scores_and_signals(ctx, samples, &result.anomalies);
 
-    // Add scores
-    ctx.reply_with_string("scores");
-    ctx.reply_with_array(result.scores.len());
-    for (sample, &score) in samples.iter().zip(result.scores.iter()) {
-        ctx.reply_with_array(3);
-        ctx.reply_with_integer(sample.timestamp);
-        ctx.reply_with_double(sample.value);
-        ctx.reply_with_double(score);
+    // Add parameters
+    ctx.reply_with_string("parameters");
+    reply_with_parameters(ctx, &options.options, result.threshold);
+
+    // Add seasonality info if available
+    if let Some(seasonality) = &options.seasonality {
+        ctx.reply_with_string("seasonality");
+        match seasonality {
+            Seasonality::Auto => {
+                ctx.reply_with_map(1);
+                ctx.reply_with_string("method");
+                ctx.reply_with_string("auto");
+            }
+            Seasonality::Periods(periods) => {
+                ctx.reply_with_map(1);
+                ctx.reply_with_string("periods");
+                ctx.reply_with_array(periods.len());
+                for p in periods {
+                    ctx.reply_with_integer(*p as i64);
+                }
+            }
+        }
     }
-
-    // Add anomalies
-    ctx.reply_with_string("outliers");
-    reply_with_anomalies(ctx, &result, samples, direction);
 
     // Add method-specific info if available
     if let Some(method_info) = result.method_info {
@@ -811,10 +794,51 @@ fn reply_with_samples(ctx: &ReplyContext, samples: &[Sample]) {
     }
 }
 
-fn reply_with_scores(ctx: &ReplyContext, scores: &[f64]) {
-    ctx.reply_with_array(scores.len());
-    for &score in scores {
-        ctx.reply_with_double(score);
+fn reply_with_samples_scores_and_signals(
+    ctx: &ReplyContext,
+    samples: &[Sample],
+    anomalies: &[Anomaly],
+) {
+    if anomalies.is_empty() {
+        ctx.reply_with_array(samples.len());
+        for sample in samples {
+            ctx.reply_with_array(4);
+            ctx.reply_with_integer(sample.timestamp);
+            ctx.reply_with_double(sample.value);
+            ctx.reply_with_double(0.0);
+            ctx.reply_with_integer(0);
+        }
+        return;
+    }
+
+    let map: IntMap<usize, &Anomaly> = anomalies
+        .iter()
+        .map(|anomaly| (anomaly.index, anomaly))
+        .collect();
+
+    let first_anomaly_index = anomalies[0].index;
+    let last_anomaly_index = anomalies[anomalies.len() - 1].index;
+
+    ctx.reply_with_array(samples.len());
+    for (idx, sample) in samples.iter().enumerate() {
+        ctx.reply_with_array(4);
+        ctx.reply_with_integer(sample.timestamp);
+        ctx.reply_with_double(sample.value);
+
+        if idx < first_anomaly_index || idx > last_anomaly_index {
+            // If the sample index is outside the range of anomaly indices, we can skip the map lookup
+            ctx.reply_with_double(0.0);
+            ctx.reply_with_integer(0);
+            continue;
+        }
+
+        if let Some(anomaly) = map.get(&idx) {
+            ctx.reply_with_double(anomaly.score);
+            ctx.reply_with_integer(anomaly.signal as i64);
+        } else {
+            ctx.reply_with_double(0.0);
+            ctx.reply_with_integer(0);
+        }
     }
 }
 
@@ -824,4 +848,109 @@ fn reply_with_outlier(ctx: &ReplyContext, outlier: &Anomaly, sample: &Sample) {
     ctx.reply_with_double(sample.value);
     ctx.reply_with_integer(outlier.signal as i64);
     ctx.reply_with_double(outlier.score);
+}
+
+fn reply_with_parameters(
+    ctx: &ReplyContext,
+    options: &AnomalyDetectionMethodOptions,
+    threshold: f64,
+) {
+    match options {
+        AnomalyDetectionMethodOptions::Ewma(alpha) => {
+            ctx.reply_with_map(1);
+            ctx.reply_with_string("alpha");
+            ctx.reply_with_double(alpha.unwrap_or(0.3));
+        }
+        AnomalyDetectionMethodOptions::ZScore(_)
+        | AnomalyDetectionMethodOptions::ModifiedZScore(_)
+        | AnomalyDetectionMethodOptions::InterQuartileRange(_) => {
+            ctx.reply_with_map(1);
+            ctx.reply_with_string("threshold");
+            ctx.reply_with_double(threshold);
+        }
+        AnomalyDetectionMethodOptions::SmoothedZScore(opts) => {
+            ctx.reply_with_map(3);
+            ctx.reply_with_string("threshold");
+            ctx.reply_with_double(opts.threshold);
+            ctx.reply_with_string("lag");
+            ctx.reply_with_integer(opts.lag as i64);
+            ctx.reply_with_string("influence");
+            ctx.reply_with_double(opts.influence);
+        }
+        AnomalyDetectionMethodOptions::Mad(opts)
+        | AnomalyDetectionMethodOptions::DoubleMAD(opts) => {
+            ctx.reply_with_map(2);
+            ctx.reply_with_string("threshold");
+            ctx.reply_with_double(opts.k);
+            ctx.reply_with_string("estimator");
+            ctx.reply_with_string(opts.estimator.alias());
+        }
+        AnomalyDetectionMethodOptions::Rcf(opts) => {
+            let mut map_len = 3; // num_trees, sample_size, threshold
+            if opts.time_decay.is_some() {
+                map_len += 1;
+            }
+            if opts.shingle_size.is_some() {
+                map_len += 1;
+            }
+            if opts.output_after.is_some() {
+                map_len += 1;
+            }
+            ctx.reply_with_map(map_len);
+
+            ctx.reply_with_string("num_trees");
+            ctx.reply_with_integer(opts.num_trees.unwrap_or(100) as i64);
+            ctx.reply_with_string("sample_size");
+            ctx.reply_with_integer(opts.sample_size.unwrap_or(256) as i64);
+
+            if let Some(threshold_opt) = &opts.threshold {
+                match threshold_opt {
+                    RCFThreshold::Contamination(c) => {
+                        ctx.reply_with_string("contamination");
+                        ctx.reply_with_double(*c);
+                    }
+                    RCFThreshold::StdDev(s) => {
+                        ctx.reply_with_string("threshold");
+                        ctx.reply_with_double(*s);
+                    }
+                }
+            } else {
+                // Always include threshold, even if default
+                ctx.reply_with_string("threshold");
+                ctx.reply_with_double(threshold);
+            }
+
+            if let Some(decay) = opts.time_decay {
+                ctx.reply_with_string("decay");
+                ctx.reply_with_double(decay);
+            }
+            if let Some(shingle) = opts.shingle_size {
+                ctx.reply_with_string("shingle_size");
+                ctx.reply_with_integer(shingle as i64);
+            }
+            if let Some(warmup) = opts.output_after {
+                ctx.reply_with_string("output_after");
+                ctx.reply_with_integer(warmup as i64);
+            }
+        }
+        AnomalyDetectionMethodOptions::Esd(opts) => {
+            let o = opts.clone().unwrap_or_default();
+            let mut map_len = 2; // alpha, hybrid
+            if o.max_outliers.is_some() {
+                map_len += 1;
+            }
+            ctx.reply_with_map(map_len);
+            ctx.reply_with_string("alpha");
+            ctx.reply_with_double(o.alpha);
+            ctx.reply_with_string("hybrid");
+            ctx.reply_with_bool(o.hybrid);
+            if let Some(max) = o.max_outliers {
+                ctx.reply_with_string("max_outliers");
+                ctx.reply_with_integer(max as i64);
+            }
+        }
+        AnomalyDetectionMethodOptions::Cusum => {
+            ctx.reply_with_map(0);
+        }
+    }
 }

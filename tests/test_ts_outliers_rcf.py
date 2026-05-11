@@ -225,8 +225,12 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
         result = TSOutliersFullResult.parse(raw)
 
         assert result.method == AnomalyMethod.RANDOM_CUT_FOREST
-        assert result.threshold > 0.0
-        assert len(result.samples) == len(data)
+        assert result.parameters["threshold"] > 0.0
+        assert result.parameters["num_trees"] == 100
+        assert result.parameters["sample_size"] == 256
+        assert result.parameters["output_after"] == 30
+
+        assert len(result.samples) == 120
         # There should be at least one anomaly
         assert result.anomaly_count() >= 1
 
@@ -285,7 +289,7 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
         )
         result = TSOutliersFullResult.parse(raw)
 
-        for anomaly in result.anomalies:
+        for anomaly in result.anomalies():
             assert anomaly.score > 0.0, (
                 f"anomaly score {anomaly.score} should be positive"
             )
@@ -306,11 +310,12 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
                 "OUTPUT_AFTER", 20,
             )
             result = TSOutliersFullResult.parse(raw)
-            assert abs(result.threshold - t) < 1e-9, (
-                f"expected threshold {t}, got {result.threshold}"
+            assert "threshold" in result.parameters
+            assert abs(result.parameters["threshold"] - t) < 1e-9, (
+                f"expected threshold {t}, got {result.parameters['threshold']}"
             )
 
-        # Test CONTAMINATION
+        # Test CONTAMINATION (percentile-based)
         for c in (0.01, 0.05, 0.1):
             raw = self.client.execute_command(
                 "TS.OUTLIERS", key, "-", "+",
@@ -320,8 +325,9 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
                 "OUTPUT_AFTER", 20,
             )
             result = TSOutliersFullResult.parse(raw)
-            assert abs(result.threshold - c) < 1e-9, (
-                f"expected contamination {c} in threshold field, got {result.threshold}"
+            assert "contamination" in result.parameters
+            assert abs(result.parameters["contamination"] - c) < 1e-9, (
+                f"expected contamination {c}, got {result.parameters['contamination']}"
             )
 
     # ── OUTPUT format: cleaned ────────────────────────────────────────────────

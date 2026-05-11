@@ -256,10 +256,13 @@ Returns anomaly information based on the `OUTPUT` format:
 
 * `method` - Detection method name (string)
 * `direction` - Detection direction: `positive`, `negative`, or `both` (string)
-* `threshold` - Threshold value used (double)
-* `samples` - All samples with scores: `[[timestamp, value, score], ...]`
-* `scores` - Array of anomaly scores for all samples, aligned by index with `samples`
-* `outliers` - Array of detected outliers (same format as SIMPLE)
+* `samples` - Array of sample tuples: `[[timestamp, value, score, signal], ...]`
+    * `timestamp` - Sample timestamp (integer)
+    * `value` - Original sample value (double)
+    * `score` - Calculated anomaly score (0.0-1.0)
+    * `signal` - Deviation direction (`-1`, `0`, `1`)
+* `parameters` - A map of the parameters used for the detection method.
+* `seasonality` - (optional) A map describing the seasonality parameters used.
 * `method_info` - Algorithm-specific metadata (map, if available):
     * For IQR: `lower_fence`, `upper_fence`
     * For SPC methods (CUSUM, EWMA): `control_limits`, `center_line`
@@ -329,27 +332,21 @@ Get detailed analysis with metadata for API request spikes:
 2) "InterquartileRange"
 3) "direction"
 4) "positive"
-5) "threshold"
-6) "1.5"
-7) "samples"
-8) 1) 1) (integer) 1609459200000
+5) "samples"
+6) 1) 1) (integer) 1609459200000
       2) "125.4"
       3) "0.15"
+      4) (integer) 0
    2) 1) (integer) 1609462800000
       2) "135.2"
       3) "0.18"
+      4) (integer) 1
    ...
-9) "scores"
-10) 1) "0.15"
-   2) "0.18"
-   ...
-11) "outliers"
-12) 1) 1) (integer) 1609462800000
-       2) "850.2"
-       3) (integer) 1
-       4) "0.94"
-13) "method_info"
-14) 1) "lower_fence"
+7) "parameters"
+8) 1) "threshold"
+    2) "1.5"
+9) "method_info"
+10) 1) "lower_fence"
     2) "-50.3"
     3) "upper_fence"
     4) "250.7"

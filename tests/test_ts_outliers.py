@@ -551,20 +551,19 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         # Basic structure checks
         assert len(result.samples) > 500
         assert result.method.value == "ZScore"
-        assert result.threshold == 3.0
-
-        # Find the spike in the returned samples
-        spike_sample = next((s for s in result.samples if s.timestamp == spike_ts), None)
-        assert spike_sample is not None, f"Spike timestamp {spike_ts} not found in samples"
-        assert spike_sample.value == 500.0
+        assert result.parameters["threshold"] == 3.0
+        anomalies = result.anomalies()
+        assert anomalies, "Expected at least one anomaly"
+        assert anomalies[0].timestamp == spike_ts
+        assert anomalies[0].value == 500.0
 
         # The anomaly should be returned in the outliers structure
-        assert len(result.anomalies) == 1, f"Expected one anomaly, got {result.anomalies}"
-        anomaly = result.anomalies[0]
+        assert len(result.anomalies()) == 1, f"Expected one anomaly, got {result.anomalies()}"
+        anomaly = result.anomalies()[0]
         assert anomaly.timestamp == spike_ts
         assert anomaly.value == 500.0
         assert anomaly.signal == 1
-        assert anomaly.is_positive()
+        assert anomaly.is_positive_anomaly()
 
 
 
@@ -647,31 +646,19 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         # basic checks
         assert result.method.value == "ZScore", f"unexpected method {result.method}"
-        assert abs(result.threshold - 3.0) < 1e-12, f"unexpected threshold {result.threshold}"
+        assert abs(result.parameters["threshold"] - 3.0) < 1e-12, f"unexpected threshold {result.parameters['threshold']}"
+        # Seasonal decomposition can surface extra edge anomalies; require at least the injected spikes.
+        assert len(result.anomalies()) >= 3, f"expected at least 3 anomalies, got {len(result.anomalies())}"
 
-        print(f"Items len = {len(items)}")
-
-        # ensure returned sample list aligns with stored samples (see explanation re: zip)
-        assert len(result.samples) == stored_count, (
-            f"full.samples length ({len(result.samples)}) != stored_count ({stored_count})"
-        )
-
-        # collect anomaly values/timestamps
-        anomaly_values = [a.value for a in result.anomalies]
-        anomaly_timestamps = [a.timestamp for a in result.anomalies]
-
-        # At minimum expect the injected spikes to appear in the anomalies list; check presence, but be tolerant to detector sensitivity:
-        expect_values = {400.0, -50.0, 380.0}
-        found_values = set(v for v in anomaly_values if any(abs(v - ev) < 1e-8 for ev in expect_values))
-        assert found_values, f"None of the expected anomalies {expect_values} were detected. Found anomalies (values): {anomaly_values}"
-
-        # Prefer at least 2 of the 3 to be detected (robust but strict enough)
-        matches = sum(1 for ev in expect_values if any(abs(a.value - ev) < 1e-8 for a in result.anomalies))
-        assert matches >= 2, f"Expected to detect at least 2 of {expect_values}, detected {matches}; anomalies: {result.anomalies}"
+        # Verify anomaly details
+        anomaly_values = [a.value for a in result.anomalies()]
+        assert any(abs(v - 400.0) < 1e-8 for v in anomaly_values)
+        assert any(abs(v + 50.0) < 1e-8 for v in anomaly_values)
+        assert any(abs(v - 380.0) < 1e-8 for v in anomaly_values)
 
         # verify positive/negative signal distribution
-        positive_anomalies = [a for a in result.anomalies if a.signal == 1]
-        negative_anomalies = [a for a in result.anomalies if a.signal == -1]
+        positive_anomalies = [a for a in result.anomalies() if a.signal == 1]
+        negative_anomalies = [a for a in result.anomalies() if a.signal == -1]
         assert len(positive_anomalies) >= 1, f"expected at least one positive anomaly, got {positive_anomalies}"
         assert len(negative_anomalies) >= 1, f"expected at least one negative anomaly, got {negative_anomalies}"
 

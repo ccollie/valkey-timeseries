@@ -32,6 +32,16 @@ def to_str(value: Any) -> str:
     return str(value)
 
 
+def _to_float_if_numeric(v: Any) -> Any:
+    """Converts bytes to float if they represent a numeric value."""
+    if isinstance(v, bytes):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return v
+    return v
+
+
 def maybe_map_from_kv_array(value: Any) -> Any:
     """Convert a flat key/value array into a dict when needed.
 
@@ -45,7 +55,9 @@ def maybe_map_from_kv_array(value: Any) -> Any:
         if len(value) % 2 != 0:
             raise ValueError("Invalid key-value array length")
         for i in range(0, len(value), 2):
-            out[to_str(value[i])] = value[i + 1]
+            key = to_str(value[i])
+            val = _to_float_if_numeric(value[i + 1])
+            out[key] = val
         return out
     return value
 
@@ -108,26 +120,42 @@ class AnomalyMethod(Enum):
 class Sample:
     """A single time-series sample.
 
-    Represented as a tuple/array in replies: [timestamp, value] or
-    [timestamp, value, score]. The optional `score` holds an anomaly
-    score when present.
+    Represented as a tuple/array in replies: [timestamp, value],
+    [timestamp, value, score], or [timestamp, value, score, signal].
     """
 
     timestamp: int
     value: float
     score: Optional[float] = None
+    signal: AnomalySignal = 0  # type: ignore[assignment]
+
+    def is_positive_anomaly(self) -> bool:
+        return self.signal == 1
+
+    def is_negative_anomaly(self) -> bool:
+        return self.signal == -1
+
+    def is_anomalous(self) -> bool:
+        return self.signal != 0
 
     @staticmethod
     def parse(value: Any) -> "Sample":
-        if not isinstance(value, Sequence) or (len(value) != 2 and len(value) != 3):
-            raise TypeError("Sample must be a 2- or 3-item array: [timestamp, value, score?]")
+        if not isinstance(value, Sequence) or len(value) not in (2, 3, 4):
+            raise TypeError("Sample must be [timestamp, value], [timestamp, value, score], or [timestamp, value, score, signal]")
         timestamp = to_int(value[0])
         val = to_float(value[1])
         score = None
+        signal: AnomalySignal = 0  # type: ignore[assignment]
         if len(value) == 3:
             score = to_float(value[2])
+        elif len(value) == 4:
+            score = to_float(value[2])
+            signal_int = to_int(value[3])
+            if signal_int not in (-1, 0, 1):
+                raise ValueError(f"Invalid sample signal: {signal_int}")
+            signal = signal_int  # type: ignore[assignment]
 
-        return Sample(timestamp=timestamp, value=val, score=score)
+        return Sample(timestamp=timestamp, value=val, score=score, signal=signal)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,20 +223,21 @@ MethodInfo = Union[MethodInfoFenced, MethodInfoSpc, MethodInfoIsolationForest]
 @dataclass(frozen=True, slots=True)
 class TSOutliersFullResult:
     method: AnomalyMethod
-    threshold: float
+    parameters: dict[str, Any]
     samples: List[Sample]
-    anomalies: List[AnomalyEntry]
     method_info: Optional[MethodInfo] = None
+    threshold: Optional[float] = None  # Legacy, for backward compatibility
+
     @staticmethod
     def parse(value: Any) -> TSOutliersFullResult:
         """
         Parse a Valkey client response for `TS.OUTLIERS ... FORMAT full`.
 
         Expected shape (as Python types):
-        - dict with keys: method, threshold, samples, outliers (or legacy 'anomalies'), optional method_info
-        - samples: list of [timestamp, value, score?]
-        - outliers / anomalies: list of [timestamp, value, signal, score]
+        - dict with keys: method, parameters, samples, optional method_info
+        - samples: list of [timestamp, value, score, signal]
           where `signal` is one of -1, 0, 1
+        - optional legacy outliers/anomalies list: [timestamp, value, signal, score]
         - method_info: dict with one of:
             * {lower_fence, upper_fence}
             * {control_limits: [low, high], center_line}
@@ -221,17 +250,28 @@ class TSOutliersFullResult:
             raise TypeError(f"Expected dict for FORMAT full result, got {type(value)!r}")
 
         method = AnomalyMethod.parse(value.get("method"))
-        threshold = to_float(value.get("threshold"))
+        parameters = maybe_map_from_kv_array(value.get("parameters", {}))
+
+        # For backward compatibility, some tests might still rely on a top-level threshold
+        threshold = parameters.get("threshold")
 
         raw_samples = value.get("samples") or []
         samples: List[Sample] = [Sample.parse(pair) for pair in raw_samples]
 
-        # Accept either 'outliers' or legacy 'anomalies' key for anomaly entries
+        # Backfill signal metadata from legacy outliers for older shapes that omit sample signal.
         anomalies_raw = value.get("outliers") or value.get("anomalies") or []
-        anomalies: List[AnomalyEntry] = []
-        for raw_anomaly in anomalies_raw:
-            anomaly = AnomalyEntry.parse(raw_anomaly)
-            anomalies.append(anomaly)  # type: ignore[arg-type]
+        if anomalies_raw and all(sample.signal == 0 for sample in samples):
+            parsed_anomalies = [AnomalyEntry.parse(item) for item in anomalies_raw]
+            by_ts: dict[int, AnomalyEntry] = {item.timestamp: item for item in parsed_anomalies}
+            samples = [
+                Sample(
+                    timestamp=sample.timestamp,
+                    value=sample.value,
+                    score=sample.score if sample.score is not None else by_ts[sample.timestamp].score if sample.timestamp in by_ts else None,
+                    signal=by_ts[sample.timestamp].signal if sample.timestamp in by_ts else 0,
+                )
+                for sample in samples
+            ]
 
         method_info_val = value.get("method_info")
         method_info: Optional[MethodInfo] = None
@@ -247,21 +287,19 @@ class TSOutliersFullResult:
                     control_limits=(to_float(cl[0]), to_float(cl[1])),
                     center_line=to_float(method_info_val["center_line"]),
                 )
-            elif "average_path_length" in method_info_val:
-                method_info = MethodInfoIsolationForest(
-                    average_path_length=to_float(method_info_val["average_path_length"])
-                )
-
         return TSOutliersFullResult(
             method=method,
-            threshold=threshold,
+            parameters=parameters,
             samples=samples,
-            anomalies=anomalies,
             method_info=method_info,
+            threshold=threshold,
         )
 
+    def anomalies(self) -> List[Sample]:
+        return [sample for sample in self.samples if sample.signal != 0]
+
     def anomaly_count(self) -> int:
-        return len(self.anomalies)
+        return len(self.anomalies())
 
 
 @dataclass(frozen=True, slots=True)
