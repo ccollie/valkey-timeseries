@@ -120,7 +120,7 @@ impl AnomalyOptions {
 /// ```
 pub fn detect_anomalies(
     ts: &[f64],
-    options: AnomalyOptions,
+    options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
     let n = ts.len();
 
@@ -146,15 +146,18 @@ pub fn detect_anomalies(
     handle_dispatch(ts, options)
 }
 
-fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = build_detector(ts, options.options)?;
+fn handle_dispatch(
+    ts: &[f64],
+    options: &AnomalyOptions,
+) -> TimeSeriesAnalysisResult<AnomalyResult> {
+    let mut detector = build_detector(ts, &options.options)?;
     detector.train(ts)?;
     detector.detect(ts)
 }
 
 fn build_detector(
     ts: &[f64],
-    method_options: AnomalyDetectionMethodOptions,
+    method_options: &AnomalyDetectionMethodOptions,
 ) -> TimeSeriesAnalysisResult<Box<dyn BatchOutlierDetector>> {
     let detector: Box<dyn BatchOutlierDetector> = match method_options {
         AnomalyDetectionMethodOptions::Cusum => Box::new(CusumOutlierDetector::default()),
@@ -188,7 +191,7 @@ fn build_detector(
             Box::new(DoubleMadOutlierDetector::with_options(options))
         }
         AnomalyDetectionMethodOptions::Rcf(opts) => {
-            let detector = RcfOutlierDetector::new(opts)
+            let detector = RcfOutlierDetector::new(*opts)
                 .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{e:?}")))?;
             Box::new(detector)
         }

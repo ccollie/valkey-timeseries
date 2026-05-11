@@ -128,7 +128,7 @@ fn process_request(
     if !should_run_in_background(samples.len(), options.method()) {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
         let reply_ctx = ReplyContext::new(ctx.ctx);
-        return match detect_anomalies(&values, options.clone()) {
+        return match detect_anomalies(&values, &options) {
             Err(err) => Err(ValkeyError::String(format!(
                 "TSDB: outlier detection failed: {err}"
             ))),
@@ -148,7 +148,7 @@ fn process_request(
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
 
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
-        match detect_anomalies(&values, options.clone()) {
+        match detect_anomalies(&values, &options) {
             Err(err) => {
                 thread_ctx.reply(Err(ValkeyError::String(format!(
                     "TSDB: outlier detection failed: {err}"
@@ -820,9 +820,7 @@ fn reply_with_samples_scores_and_signals(
         .map(|anomaly| (anomaly.index, anomaly))
         .collect();
 
-    let mut count: usize = 0;
-
-    ctx.reply_with_postponed_array();
+    ctx.reply_with_array(samples.len());
 
     for (idx, (sample, &score)) in samples.iter().zip(scores.iter()).enumerate() {
         let mut signal = 0;
@@ -839,11 +837,7 @@ fn reply_with_samples_scores_and_signals(
         ctx.reply_with_double(sample.value);
         ctx.reply_with_double(score);
         ctx.reply_with_integer(signal);
-
-        count += 1;
     }
-
-    ctx.reply_with_array_len(count);
 }
 
 fn reply_with_outlier(ctx: &ReplyContext, outlier: &Anomaly, sample: &Sample) {
