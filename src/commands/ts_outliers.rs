@@ -713,7 +713,13 @@ fn reply_output_full(
 
     // Add samples with scores and signal
     ctx.reply_with_string("samples");
-    reply_with_samples_scores_and_signals(ctx, samples, &result.anomalies);
+    reply_with_samples_scores_and_signals(
+        ctx,
+        samples,
+        &result.anomalies,
+        &result.scores,
+        direction,
+    );
 
     // Add parameters
     ctx.reply_with_string("parameters");
@@ -793,14 +799,16 @@ fn reply_with_samples_scores_and_signals(
     ctx: &ReplyContext,
     samples: &[Sample],
     anomalies: &[Anomaly],
+    scores: &[f64],
+    direction: AnomalyDirection,
 ) {
     if anomalies.is_empty() {
         ctx.reply_with_array(samples.len());
-        for sample in samples {
+        for (sample, &score) in samples.iter().zip(scores.iter()) {
             ctx.reply_with_array(4);
             ctx.reply_with_integer(sample.timestamp);
             ctx.reply_with_double(sample.value);
-            ctx.reply_with_double(0.0);
+            ctx.reply_with_double(score);
             ctx.reply_with_integer(0);
         }
         return;
@@ -811,30 +819,30 @@ fn reply_with_samples_scores_and_signals(
         .map(|anomaly| (anomaly.index, anomaly))
         .collect();
 
-    let first_anomaly_index = anomalies[0].index;
-    let last_anomaly_index = anomalies[anomalies.len() - 1].index;
+    let mut count: usize = 0;
 
-    ctx.reply_with_array(samples.len());
-    for (idx, sample) in samples.iter().enumerate() {
+    ctx.reply_with_postponed_array();
+
+    for (idx, (sample, &score)) in samples.iter().zip(scores.iter()).enumerate() {
+        let mut signal = 0;
+
+        if let Some(anomaly) = map
+            .get(&idx)
+            .filter(|a| a.signal.matches_direction(direction))
+        {
+            signal = anomaly.signal as i64;
+        }
+
         ctx.reply_with_array(4);
         ctx.reply_with_integer(sample.timestamp);
         ctx.reply_with_double(sample.value);
+        ctx.reply_with_double(score);
+        ctx.reply_with_integer(signal);
 
-        if idx < first_anomaly_index || idx > last_anomaly_index {
-            // If the sample index is outside the range of anomaly indices, we can skip the map lookup
-            ctx.reply_with_double(0.0);
-            ctx.reply_with_integer(0);
-            continue;
-        }
-
-        if let Some(anomaly) = map.get(&idx) {
-            ctx.reply_with_double(anomaly.score);
-            ctx.reply_with_integer(anomaly.signal as i64);
-        } else {
-            ctx.reply_with_double(0.0);
-            ctx.reply_with_integer(0);
-        }
+        count += 1;
     }
+
+    ctx.reply_with_array_len(count);
 }
 
 fn reply_with_outlier(ctx: &ReplyContext, outlier: &Anomaly, sample: &Sample) {
