@@ -90,7 +90,7 @@ impl AnomalyOptions {
 ///
 /// # Arguments
 ///
-/// * `ts` - The time series to analyze
+/// * `values` - The time series to analyze
 /// * `options` - Options controlling the anomaly detection
 ///
 /// # Returns
@@ -103,19 +103,19 @@ impl AnomalyOptions {
 /// use crate::analysis::outliers::anomalies::{detect_anomalies, AnomalyOptions, AnomalyDetectionMethodOptions};
 ///
 /// // Create a time series with some anomalies
-/// let mut ts = vec![0.0; 100];
+/// let mut values = vec![0.0; 100];
 /// for i in 0..100 {
-///     ts[i] = (i as f64 / 10.0).sin();
+///     values[i] = (i as f64 / 10.0).sin();
 /// }
-/// ts[25] = 5.0; // Anomaly
-/// ts[75] = -5.0; // Anomaly
+/// values[25] = 5.0; // Anomaly
+/// values[75] = -5.0; // Anomaly
 ///
 /// let options = AnomalyOptions {
 ///     options: AnomalyDetectionMethodOptions::ZScore(Some(3.0)),
 ///     ..Default::default()
 /// };
 ///
-/// let result = detect_anomalies(&ts, options).unwrap();
+/// let result = detect_anomalies(&values, options).unwrap();
 /// println!("Anomalies detected: {}", result.anomalies.len());
 /// ```
 pub fn detect_anomalies(
@@ -163,17 +163,17 @@ fn handle_dispatch(
 }
 
 fn build_detector(
-    ts: &[f64],
+    values: &[f64],
     method_options: &AnomalyDetectionMethodOptions,
 ) -> TimeSeriesAnalysisResult<Box<dyn BatchOutlierDetector>> {
     let detector: Box<dyn BatchOutlierDetector> = match method_options {
         AnomalyDetectionMethodOptions::Cusum => Box::new(CusumOutlierDetector::default()),
         AnomalyDetectionMethodOptions::Ewma(alpha) => Box::new(EwmaOutlierDetector::from_series(
-            ts,
+            values,
             alpha.unwrap_or(EWMA_DEFAULT_ALPHA),
         )),
         AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => Box::new(
-            IQROutlierDetector::new(ts, threshold.unwrap_or(IQR_DEFAULT_THRESHOLD)),
+            IQROutlierDetector::new(values, threshold.unwrap_or(IQR_DEFAULT_THRESHOLD)),
         ),
         AnomalyDetectionMethodOptions::ZScore(threshold) => Box::new(ZScoreOutlierDetector::new(
             threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
