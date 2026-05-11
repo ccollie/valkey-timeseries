@@ -249,8 +249,9 @@ class TSOutliersFullResult:
         if not isinstance(value, dict):
             raise TypeError(f"Expected dict for FORMAT full result, got {type(value)!r}")
 
-        method = AnomalyMethod.parse(value.get("method"))
+
         parameters = maybe_map_from_kv_array(value.get("parameters", {}))
+        method = AnomalyMethod.parse(value.get("method"))
 
         # For backward compatibility, some tests might still rely on a top-level threshold
         threshold = parameters.get("threshold")
@@ -273,7 +274,7 @@ class TSOutliersFullResult:
                 for sample in samples
             ]
 
-        method_info_val = value.get("method_info")
+        method_info_val = maybe_map_from_kv_array(value.get("method_info"))
         method_info: Optional[MethodInfo] = None
         if isinstance(method_info_val, dict):
             if "lower_fence" in method_info_val and "upper_fence" in method_info_val:
