@@ -90,7 +90,7 @@ impl AnomalyOptions {
 ///
 /// # Arguments
 ///
-/// * `ts` - The time series to analyze
+/// * `values` - The time series to analyze
 /// * `options` - Options controlling the anomaly detection
 ///
 /// # Returns
@@ -103,26 +103,26 @@ impl AnomalyOptions {
 /// use crate::analysis::outliers::anomalies::{detect_anomalies, AnomalyOptions, AnomalyDetectionMethodOptions};
 ///
 /// // Create a time series with some anomalies
-/// let mut ts = vec![0.0; 100];
+/// let mut values = vec![0.0; 100];
 /// for i in 0..100 {
-///     ts[i] = (i as f64 / 10.0).sin();
+///     values[i] = (i as f64 / 10.0).sin();
 /// }
-/// ts[25] = 5.0; // Anomaly
-/// ts[75] = -5.0; // Anomaly
+/// values[25] = 5.0; // Anomaly
+/// values[75] = -5.0; // Anomaly
 ///
 /// let options = AnomalyOptions {
 ///     options: AnomalyDetectionMethodOptions::ZScore(Some(3.0)),
 ///     ..Default::default()
 /// };
 ///
-/// let result = detect_anomalies(&ts, options).unwrap();
+/// let result = detect_anomalies(&values, options).unwrap();
 /// println!("Anomalies detected: {}", result.anomalies.len());
 /// ```
 pub fn detect_anomalies(
-    ts: &[f64],
-    options: AnomalyOptions,
+    values: &[f64],
+    options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
+    let n = values.len();
 
     if n < 3 {
         return Err(TimeSeriesAnalysisError::InsufficientData {
@@ -134,36 +134,46 @@ pub fn detect_anomalies(
 
     // Apply seasonal adjustment if requested
     if let Some(adjustment) = &options.seasonality {
-        let adjusted = seasonally_adjust(ts, adjustment)?;
+        let adjusted = seasonally_adjust(values, adjustment)?;
         let mut result = handle_dispatch(&adjusted, options)?;
         // we calculate anomalies on the seasonally adjusted data, but we want to report the original values in the result
         for anomaly in &mut result.anomalies {
-            anomaly.value = ts[anomaly.index];
+            anomaly.value = values[anomaly.index];
         }
         return Ok(result);
     };
 
-    handle_dispatch(ts, options)
+    handle_dispatch(values, options)
 }
 
-fn handle_dispatch(ts: &[f64], options: AnomalyOptions) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = build_detector(ts, options.options)?;
-    detector.train(ts)?;
-    detector.detect(ts)
+fn handle_dispatch(
+    values: &[f64],
+    options: &AnomalyOptions,
+) -> TimeSeriesAnalysisResult<AnomalyResult> {
+    let mut detector = build_detector(values, &options.options)?;
+    detector.train(values)?;
+    let res = detector.detect(values)?;
+    debug_assert_eq!(
+        values.len(),
+        res.scores.len(),
+        "Mismatch between scores.len() and samples.len() in {:?}",
+        options.method()
+    );
+    Ok(res)
 }
 
 fn build_detector(
-    ts: &[f64],
-    method_options: AnomalyDetectionMethodOptions,
+    values: &[f64],
+    method_options: &AnomalyDetectionMethodOptions,
 ) -> TimeSeriesAnalysisResult<Box<dyn BatchOutlierDetector>> {
     let detector: Box<dyn BatchOutlierDetector> = match method_options {
         AnomalyDetectionMethodOptions::Cusum => Box::new(CusumOutlierDetector::default()),
         AnomalyDetectionMethodOptions::Ewma(alpha) => Box::new(EwmaOutlierDetector::from_series(
-            ts,
+            values,
             alpha.unwrap_or(EWMA_DEFAULT_ALPHA),
         )),
         AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => Box::new(
-            IQROutlierDetector::new(ts, threshold.unwrap_or(IQR_DEFAULT_THRESHOLD)),
+            IQROutlierDetector::new(values, threshold.unwrap_or(IQR_DEFAULT_THRESHOLD)),
         ),
         AnomalyDetectionMethodOptions::ZScore(threshold) => Box::new(ZScoreOutlierDetector::new(
             threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
@@ -188,7 +198,7 @@ fn build_detector(
             Box::new(DoubleMadOutlierDetector::with_options(options))
         }
         AnomalyDetectionMethodOptions::Rcf(opts) => {
-            let detector = RcfOutlierDetector::new(opts)
+            let detector = RcfOutlierDetector::new(*opts)
                 .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{e:?}")))?;
             Box::new(detector)
         }

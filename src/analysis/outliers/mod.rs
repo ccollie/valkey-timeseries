@@ -20,6 +20,7 @@ mod zscore_outlier_detector;
 
 pub use anomalies::*;
 pub use esd_outlier_detector::*;
+pub use ewma_outlier_detector::*;
 pub use rcf_outlier_detector::*;
 pub use smoothed_zscores::*;
 

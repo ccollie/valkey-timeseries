@@ -47,7 +47,7 @@ Controls the output format. One of:
 
 * `SIMPLE` (default) - Returns only the detected outliers
 * `FULL` - Returns all samples with scores, plus anomaly metadata
-* `CLEANED` - Returns normal samples (excluding outliers) and detected anomalies separately
+* `CLEANED` - Returns only normal samples (excluding outliers)
 
 </details>
 
@@ -86,7 +86,7 @@ SEASONALITY [AUTO | period1 ...]
 <details open>
 <summary><code>METHOD</code></summary>
 
-Specifies the outliers detection algorithm. **Required**. The following methods are supported:
+Specifies the outlier detection algorithm. **Required**. The following methods are supported:
 
 #### CUSUM
 
@@ -256,20 +256,20 @@ Returns anomaly information based on the `OUTPUT` format:
 
 * `method` - Detection method name (string)
 * `direction` - Detection direction: `positive`, `negative`, or `both` (string)
-* `threshold` - Threshold value used (double)
-* `samples` - All samples with scores: `[[timestamp, value, score], ...]`
-* `scores` - Array of anomaly scores for all samples, aligned by index with `samples`
-* `outliers` - Array of detected outliers (same format as SIMPLE)
+* `samples` - Array of sample tuples: `[[timestamp, value, score, signal], ...]`
+    * `timestamp` - Sample timestamp (integer)
+    * `value` - Original sample value (double)
+    * `score` - Calculated anomaly score (0.0-1.0)
+    * `signal` - Deviation direction (`-1`, `0`, `1`)
+* `parameters` - A map of the parameters used for the detection method.
+* `seasonality` - (optional) A map describing the seasonality parameters used.
 * `method_info` - Algorithm-specific metadata (map, if available):
     * For IQR: `lower_fence`, `upper_fence`
     * For SPC methods (CUSUM, EWMA): `control_limits`, `center_line`
 
 #### CLEANED format
 
-**Map reply** with keys:
-
-* `samples` - Normal samples (excluding outliers): `[[timestamp, value], ...]`
-* `outliers` - Detected anomalies: `[[timestamp, value, signal, score], ...]`
+**Array reply:** Cleaned samples only, as `[[timestamp, value], ...]`
 
 ## Complexity
 
@@ -329,27 +329,21 @@ Get detailed analysis with metadata for API request spikes:
 2) "InterquartileRange"
 3) "direction"
 4) "positive"
-5) "threshold"
-6) "1.5"
-7) "samples"
-8) 1) 1) (integer) 1609459200000
+5) "samples"
+6) 1) 1) (integer) 1609459200000
       2) "125.4"
       3) "0.15"
+      4) (integer) 0
    2) 1) (integer) 1609462800000
       2) "135.2"
       3) "0.18"
+      4) (integer) 1
    ...
-9) "scores"
-10) 1) "0.15"
-   2) "0.18"
-   ...
-11) "outliers"
-12) 1) 1) (integer) 1609462800000
-       2) "850.2"
-       3) (integer) 1
-       4) "0.94"
-13) "method_info"
-14) 1) "lower_fence"
+7) "parameters"
+8) 1) "threshold"
+    2) "1.5"
+9) "method_info"
+10) 1) "lower_fence"
     2) "-50.3"
     3) "upper_fence"
     4) "250.7"
@@ -375,21 +369,15 @@ Handle both daily and weekly patterns in hourly traffic data:
 <details open>
 <summary><b>Get cleaned data (anomalies removed)</b></summary>
 
-Extract normal operating data and anomalies separately:
+Extract normal operating data with anomalies removed:
 
 ```valkey-cli
 127.0.0.1:6379> TS.OUTLIERS cpu:usage - + OUTPUT CLEANED DIRECTION BOTH METHOD EWMA ALPHA 0.3
-1) "samples"
-2) 1) 1) (integer) 1609459200000
-      2) "45.2"
-   2) 1) (integer) 1609462800000
-      2) "47.8"
-   ...
-3) "outliers"
-4) 1) 1) (integer) 1609470000000
-      2) "98.5"
-      3) (integer) 1
-      4) "0.91"
+1) 1) (integer) 1609459200000
+   2) "45.2"
+2) 1) (integer) 1609462800000
+   2) "47.8"
+...
 ```
 
 </details>
