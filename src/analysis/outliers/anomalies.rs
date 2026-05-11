@@ -119,10 +119,10 @@ impl AnomalyOptions {
 /// println!("Anomalies detected: {}", result.anomalies.len());
 /// ```
 pub fn detect_anomalies(
-    ts: &[f64],
+    values: &[f64],
     options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let n = ts.len();
+    let n = values.len();
 
     if n < 3 {
         return Err(TimeSeriesAnalysisError::InsufficientData {
@@ -134,25 +134,32 @@ pub fn detect_anomalies(
 
     // Apply seasonal adjustment if requested
     if let Some(adjustment) = &options.seasonality {
-        let adjusted = seasonally_adjust(ts, adjustment)?;
+        let adjusted = seasonally_adjust(values, adjustment)?;
         let mut result = handle_dispatch(&adjusted, options)?;
         // we calculate anomalies on the seasonally adjusted data, but we want to report the original values in the result
         for anomaly in &mut result.anomalies {
-            anomaly.value = ts[anomaly.index];
+            anomaly.value = values[anomaly.index];
         }
         return Ok(result);
     };
 
-    handle_dispatch(ts, options)
+    handle_dispatch(values, options)
 }
 
 fn handle_dispatch(
-    ts: &[f64],
+    values: &[f64],
     options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = build_detector(ts, &options.options)?;
-    detector.train(ts)?;
-    detector.detect(ts)
+    let mut detector = build_detector(values, &options.options)?;
+    detector.train(values)?;
+    let res = detector.detect(values)?;
+    debug_assert_eq!(
+        values.len(),
+        res.scores.len(),
+        "Mismatch between scores.len() and samples.len() in {:?}",
+        options.method()
+    );
+    Ok(res)
 }
 
 fn build_detector(
