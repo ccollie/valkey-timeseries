@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 """Helpers to parse TS.OUTLIERS test responses.
 
@@ -308,42 +308,26 @@ class TSOutliersCleanedResult:
 
     Attributes:
         samples: List of samples with anomalies removed (cleaned data)
-        anomalies: List of detected anomaly entries
     """
     samples: List[Sample]
-    anomalies: List[AnomalyEntry]
 
     @staticmethod
     def parse(value: Any) -> "TSOutliersCleanedResult":
         """Parse the raw Valkey response into a TSOutliersCleanedResult.
 
-        Accepts responses shaped either with an 'outliers' key (preferred) or
-        a legacy 'anomalies' key for the list of anomaly entries.
+        FORMAT cleaned now returns only an array of cleaned samples.
         """
-        value = maybe_map_from_kv_array(value)
+        if not isinstance(value, Sequence):
+            raise TypeError("FORMAT cleaned result must be an array of samples")
 
-        if not isinstance(value, Mapping):
-            raise TypeError("FORMAT cleaned result must be a map with keys: samples and outliers/anomalies")
+        samples = [Sample.parse(item) for item in value]
 
-        raw_samples = value.get("samples") or []
-        raw_anomalies = value.get("outliers") or value.get("anomalies") or []
-
-        samples = [Sample.parse(item) for item in raw_samples]
-        anomalies = [AnomalyEntry.parse(item) for item in raw_anomalies]
-
-        return TSOutliersCleanedResult(samples=samples, anomalies=anomalies)
-
-    def anomaly_count(self) -> int:
-        """Return the number of detected anomalies."""
-        return len(self.anomalies)
+        return TSOutliersCleanedResult(samples=samples)
 
     def sample_count(self) -> int:
         """Return the number of cleaned samples."""
         return len(self.samples)
 
-    def anomaly_values(self) -> List[float]:
-        """Return the list of anomaly values."""
-        return [entry.value for entry in self.anomalies]
 
     def sample_values(self) -> List[float]:
         """Return list of cleaned sample values."""

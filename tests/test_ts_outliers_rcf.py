@@ -333,7 +333,7 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
     # ── OUTPUT format: cleaned ────────────────────────────────────────────────
 
     def test_rcf_output_cleaned_excludes_anomalies_from_samples(self):
-        """OUTPUT cleaned: anomalous samples are absent from the samples list."""
+        """OUTPUT cleaned: response is cleaned samples only, without anomaly entries."""
         key = "rcf:output_cleaned:exclude"
         data = [10.0] * 120
         data[50] = 500.0
@@ -351,12 +351,15 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
         )
         result = TSOutliersCleanedResult.parse(raw)
 
+        assert isinstance(raw, list)
+        assert all(len(item) == 2 for item in raw)
+
         sample_values = result.sample_values()
         assert 500.0 not in sample_values, "spike at index 50 must be excluded from cleaned samples"
         assert 600.0 not in sample_values, "spike at index 90 must be excluded from cleaned samples"
 
     def test_rcf_output_cleaned_samples_plus_anomalies_total_equals_input(self):
-        """OUTPUT cleaned: len(samples) + len(anomalies) == total input points."""
+        """OUTPUT cleaned: len(cleaned_samples) + len(simple_anomalies) == total input points."""
         key = "rcf:output_cleaned:count"
         n = 120
         data = [10.0] * n
@@ -364,7 +367,7 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
         data[90] = 600.0
         _add(self.client, key, 1_000, data)
 
-        raw = self.client.execute_command(
+        raw_cleaned = self.client.execute_command(
             "TS.OUTLIERS", key, "-", "+",
             "OUTPUT", "cleaned",
             "METHOD", "rcf",
@@ -373,9 +376,19 @@ class TestRCFOutlierDetector(ValkeyTimeSeriesTestCaseBase):
             "THRESHOLD", 3.0,
             "OUTPUT_AFTER", 30,
         )
-        result = TSOutliersCleanedResult.parse(raw)
+        raw_simple = self.client.execute_command(
+            "TS.OUTLIERS", key, "-", "+",
+            "OUTPUT", "simple",
+            "METHOD", "rcf",
+            "NUM_TREES", 100,
+            "SAMPLE_SIZE", 256,
+            "THRESHOLD", 3.0,
+            "OUTPUT_AFTER", 30,
+        )
+        result = TSOutliersCleanedResult.parse(raw_cleaned)
+        anomalies = _parse_anomalies(raw_simple)
 
-        assert result.sample_count() + result.anomaly_count() == n
+        assert result.sample_count() + len(anomalies) == n
 
     def test_rcf_output_cleaned_direction_positive_keeps_negative_anomaly(self):
         """OUTPUT cleaned with DIRECTION positive keeps negative anomalies in samples."""

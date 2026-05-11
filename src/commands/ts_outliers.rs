@@ -1,21 +1,20 @@
 use crate::analysis::outliers::{
-    detect_anomalies, Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod,
-    AnomalyOptions, AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions,
-    RCFThreshold, SmoothedZScoreOptions,
+    Anomaly, AnomalyDetectionMethodOptions, AnomalyDirection, AnomalyMethod, AnomalyOptions,
+    AnomalyResult, ESDOutlierOptions, MADAnomalyOptions, MethodInfo, RCFOptions, RCFThreshold,
+    SmoothedZScoreOptions, detect_anomalies,
 };
 use crate::analysis::seasonality::Seasonality;
 use crate::commands::{
-    parse_command_arg_token, parse_timestamp_range, CommandArgIterator,
-    CommandArgToken,
+    CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_timestamp_range,
 };
+use crate::common::Sample;
 use crate::common::hash::{IntMap, IntSet};
 use crate::common::replies::{
-    block_client, reply_with_sample, ReplyContext, ThreadSafeReplyContext,
+    ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
 };
 use crate::common::threads::spawn;
-use crate::common::Sample;
 use crate::error_consts;
-use crate::series::{get_timeseries, TimestampRange};
+use crate::series::{TimestampRange, get_timeseries};
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
@@ -444,7 +443,7 @@ fn parse_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptio
 }
 
 /// doubleMAD [ESTIMATOR <mad-estimator>] [THRESHOLD <value>]
-/// e.g. doubleMAD ESTIMATOR HarrellDavis THRESHOLD 3.0
+/// e.g., doubleMAD ESTIMATOR HarrellDavis THRESHOLD 3.0
 fn parse_double_mad_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut double_mad_options = MADAnomalyOptions::default();
 
@@ -607,7 +606,7 @@ fn send_reply(
     match output_format {
         OutputFormat::Full => reply_output_full(ctx, result, &samples, direction, options),
         OutputFormat::Simple => reply_simple(ctx, result, &samples, direction),
-        OutputFormat::Cleaned => reply_cleaned(ctx, result, samples, direction),
+        OutputFormat::Cleaned => reply_cleaned(ctx, &result, &samples, direction),
     }
 }
 
@@ -622,18 +621,14 @@ fn reply_simple(
     Ok(ValkeyValue::NoReply)
 }
 
-/// Returns all samples excluding those that are anomalies in the specified direction, as well as anomalies
+/// Returns only samples excluding anomalies in the specified direction.
 fn reply_cleaned(
     ctx: &ReplyContext,
-    result: AnomalyResult,
-    samples: Vec<Sample>,
+    result: &AnomalyResult,
+    samples: &[Sample],
     direction: AnomalyDirection,
 ) -> ValkeyResult {
-    ctx.reply_with_map(2);
-    ctx.reply_with_string("samples");
-    reply_with_cleaned_samples(ctx, &samples, &result.anomalies, direction);
-    ctx.reply_with_string("outliers");
-    reply_with_anomalies(ctx, &result, &samples, direction);
+    reply_with_cleaned_samples(ctx, samples, &result.anomalies, direction);
     Ok(ValkeyValue::NoReply)
 }
 

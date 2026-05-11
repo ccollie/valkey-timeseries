@@ -428,7 +428,7 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
         assert len(result) == 0
 
     def test_format_cleaned(self):
-        """Test OUTPUT cleaned returns samples without anomalies and anomaly list."""
+        """Test OUTPUT cleaned returns only samples with directed anomalies removed."""
         key = 'test:outliers:format:cleaned'
 
         # Create data with clear anomalies
@@ -450,22 +450,23 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
             'METHOD', 'zscore', 'THRESHOLD', '2.5'
         )
 
-        # The result should be a map with 'samples' and 'anomalies' keys
+        # CLEANED is an array of [timestamp, value] samples
         result = TSOutliersCleanedResult.parse(result)
+        anomalies_both = convert_anomaly_entries(
+            self.client.execute_command(
+                'TS.OUTLIERS', key, '-', '+',
+                'OUTPUT', 'simple',
+                'METHOD', 'zscore', 'THRESHOLD', '2.5'
+            )
+        )
 
-        anomaly_values = [float(a.value) for a in result.anomalies]
-
-        # Anomalies should contain the outliers (50.0 and -30.0)
-        assert result.anomaly_count() == 2
-
-        assert 50.0 in anomaly_values
-        assert -30.0 in anomaly_values
+        assert len(anomalies_both) == 2
 
         # Cleaned samples should exclude anomalies
         sample_values = [s.value for s in result.samples]
         assert 50.0 not in sample_values
         assert -30.0 not in sample_values
-        assert len(sample_values) == len(data) - 2  # Total minus anomalies
+        assert len(sample_values) == len(data) - len(anomalies_both)
 
         # Test OUTPUT cleaned with DIRECTION positive (only removes positive anomalies)
         result_positive = self.client.execute_command(
@@ -477,7 +478,14 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         res = TSOutliersCleanedResult.parse(result_positive)
         samples_pos = res.samples
-        anomalies_pos = res.anomalies
+        anomalies_pos = convert_anomaly_entries(
+            self.client.execute_command(
+                'TS.OUTLIERS', key, '-', '+',
+                'OUTPUT', 'simple',
+                'DIRECTION', 'positive',
+                'METHOD', 'zscore', 'THRESHOLD', '2.5'
+            )
+        )
 
         assert len(anomalies_pos) == 1
         assert anomalies_pos[0].value == 50.0
@@ -499,7 +507,14 @@ class TestOutliersMethods(ValkeyTimeSeriesTestCaseBase):
 
         res = TSOutliersCleanedResult.parse(result_negative)
         samples_neg = res.samples
-        anomalies_neg = res.anomalies
+        anomalies_neg = convert_anomaly_entries(
+            self.client.execute_command(
+                'TS.OUTLIERS', key, '-', '+',
+                'OUTPUT', 'simple',
+                'DIRECTION', 'negative',
+                'METHOD', 'zscore', 'THRESHOLD', '2.5'
+            )
+        )
 
         assert len(anomalies_neg) == 1
         assert anomalies_neg[0].value == -30.0

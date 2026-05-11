@@ -47,7 +47,7 @@ Controls the output format. One of:
 
 * `SIMPLE` (default) - Returns only the detected outliers
 * `FULL` - Returns all samples with scores, plus anomaly metadata
-* `CLEANED` - Returns normal samples (excluding outliers) and detected anomalies separately
+* `CLEANED` - Returns only normal samples (excluding outliers)
 
 </details>
 
@@ -86,7 +86,7 @@ SEASONALITY [AUTO | period1 ...]
 <details open>
 <summary><code>METHOD</code></summary>
 
-Specifies the outliers detection algorithm. **Required**. The following methods are supported:
+Specifies the outlier detection algorithm. **Required**. The following methods are supported:
 
 #### CUSUM
 
@@ -269,10 +269,7 @@ Returns anomaly information based on the `OUTPUT` format:
 
 #### CLEANED format
 
-**Map reply** with keys:
-
-* `samples` - Normal samples (excluding outliers): `[[timestamp, value], ...]`
-* `outliers` - Detected anomalies: `[[timestamp, value, signal, score], ...]`
+**Array reply:** Cleaned samples only, as `[[timestamp, value], ...]`
 
 ## Complexity
 
@@ -372,21 +369,15 @@ Handle both daily and weekly patterns in hourly traffic data:
 <details open>
 <summary><b>Get cleaned data (anomalies removed)</b></summary>
 
-Extract normal operating data and anomalies separately:
+Extract normal operating data with anomalies removed:
 
 ```valkey-cli
 127.0.0.1:6379> TS.OUTLIERS cpu:usage - + OUTPUT CLEANED DIRECTION BOTH METHOD EWMA ALPHA 0.3
-1) "samples"
-2) 1) 1) (integer) 1609459200000
-      2) "45.2"
-   2) 1) (integer) 1609462800000
-      2) "47.8"
-   ...
-3) "outliers"
-4) 1) 1) (integer) 1609470000000
-      2) "98.5"
-      3) (integer) 1
-      4) "0.91"
+1) 1) (integer) 1609459200000
+   2) "45.2"
+2) 1) (integer) 1609462800000
+   2) "47.8"
+...
 ```
 
 </details>
