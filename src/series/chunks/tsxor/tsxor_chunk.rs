@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
+
 use crate::common::encoding::{try_read_uvarint, write_uvarint};
 use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_f64, rdb_load_timestamp, rdb_load_usize, rdb_save_f64, rdb_save_timestamp, rdb_save_usize};
@@ -5,23 +8,112 @@ use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::SampleIter;
-use crate::series::chunks::tsxor::tsxor_compressor::CompressorTSXor;
+use crate::series::chunks::buffered_writer::BufferedWriter;
+use crate::series::chunks::gorilla::utils::{zigzag_decode, zigzag_encode};
+use crate::series::chunks::traits::BitWrite;
 use crate::series::chunks::tsxor::tsxor_decompressor::DecompressorTSXor;
 use crate::series::chunks::{merge_samples, Chunk};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
-use std::hash::{Hash, Hasher};
 use crate::common::rdb::RdbSerializable;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
-/// A TSXor-based chunk implementation. This is a simple wrapper around the
-/// compressor that stores the encoded buffer and performs
-/// operations by decoding/re-encoding as needed.
+pub(super) const WINDOW_SIZE: usize = 127;
+pub(super) const FIRST_DELTA_BITS: u32 = 32;
+
+#[derive(Debug, Clone, GetSize)]
+pub(super) struct CacheWindow {
+    buffer: VecDeque<u64>,
+}
+
+impl Default for CacheWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CacheWindow {
+    fn new() -> Self {
+        let mut buffer = VecDeque::with_capacity(WINDOW_SIZE);
+        for _ in 0..WINDOW_SIZE {
+            buffer.push_back(0);
+        }
+        Self { buffer }
+    }
+
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub fn insert(&mut self, val: u64) {
+        self.buffer.pop_back();
+        self.buffer.push_front(val);
+    }
+
+    fn get_index_of(&self, val: u64) -> Option<usize> {
+        self.buffer.iter().position(|v| *v == val)
+    }
+
+    pub fn get(&self, offset: usize) -> u64 {
+        self.buffer[offset]
+    }
+
+    fn get_candidate(&self, val: u64) -> u64 {
+        let mut best_score: i32 = -1;
+        let mut best_idx: usize = 0;
+        for (i, &b) in self.buffer.iter().enumerate() {
+            let x = val ^ b;
+            let score = if x != 0 {
+                (x.leading_zeros() + x.trailing_zeros()) as i32
+            } else {
+                64i32
+            };
+            if score > best_score {
+                best_score = score;
+                best_idx = i;
+            }
+        }
+        self.buffer[best_idx]
+    }
+
+    pub fn serialize(&self, dest: &mut Vec<u8>) {
+        write_uvarint(dest, self.len() as u64);
+        for &val in self.buffer.iter() {
+            write_uvarint(dest, val);
+        }
+    }
+
+    fn deserialize_from(src: &mut &[u8]) -> Option<Self> {
+        let len = try_read_uvarint(src).ok()? as usize;
+        if len > WINDOW_SIZE {
+            return None;
+        }
+
+        let mut buffer = VecDeque::with_capacity(WINDOW_SIZE);
+        for _ in 0..len {
+            let val = try_read_uvarint(src).ok()?;
+            buffer.push_back(val);
+        }
+
+        for _ in len..WINDOW_SIZE {
+            buffer.push_back(0);
+        }
+
+        Some(Self { buffer })
+    }
+}
+
+/// A TSXor-based chunk implementation with inlined TSXor compression state.
 #[derive(Debug, Clone, GetSize)]
 pub struct TsXorChunk {
-    compressor: CompressorTSXor,
+    writer: BufferedWriter,
+    window: CacheWindow,
+    stored_timestamp: u64,
+    stored_delta: i64,
+    block_timestamp: u64,
+    count: usize,
     max_size: usize,
     first_timestamp: Timestamp,
     last_timestamp: Timestamp,
@@ -55,15 +147,14 @@ impl Default for TsXorChunk {
 }
 
 impl TsXorChunk {
-    fn reset_state(&mut self) {
-        self.first_timestamp = 0;
-        self.last_timestamp = 0;
-        self.last_value = f64::NAN;
-    }
-
-    pub fn with_max_size(max_size: usize) -> Self {
+    fn new_encoder(max_size: usize) -> Self {
         TsXorChunk {
-            compressor: CompressorTSXor::new(),
+            writer: BufferedWriter::new(),
+            window: CacheWindow::new(),
+            stored_timestamp: 0,
+            stored_delta: 0,
+            block_timestamp: 0,
+            count: 0,
             max_size,
             first_timestamp: 0,
             last_timestamp: 0,
@@ -71,12 +162,27 @@ impl TsXorChunk {
         }
     }
 
+    fn reset_state(&mut self) {
+        self.first_timestamp = 0;
+        self.last_timestamp = 0;
+        self.last_value = f64::NAN;
+    }
+
+    pub fn with_max_size(max_size: usize) -> Self {
+        Self::new_encoder(max_size)
+    }
+
     pub fn is_full(&self) -> bool {
-        self.compressor.len() >= self.max_size
+        self.count >= self.max_size
     }
 
     pub fn clear(&mut self) {
-        self.compressor.clear();
+        self.writer.clear();
+        self.window = CacheWindow::new();
+        self.stored_timestamp = 0;
+        self.stored_delta = 0;
+        self.block_timestamp = 0;
+        self.count = 0;
         self.reset_state();
     }
 
@@ -91,21 +197,24 @@ impl TsXorChunk {
         self.first_timestamp = first.timestamp;
         self.last_timestamp = last.timestamp;
         self.last_value = last.value;
-        let mut c = CompressorTSXor::new();
+        let mut c = Self::new_encoder(self.max_size);
         for s in samples.iter() {
-            c.add(s.timestamp as u64, s.value);
+            c.append_sample(*s);
         }
-        self.compressor = c;
+        *self = c;
+        self.first_timestamp = first.timestamp;
+        self.last_timestamp = last.timestamp;
+        self.last_value = last.value;
         Ok(())
     }
 
     pub fn data_size(&self) -> usize {
-        self.compressor.get_size()
+        self.get_size()
     }
 
     /// Borrow the internal encoded buffer
     pub fn buf(&self) -> &[u8] {
-        self.compressor.as_ref()
+        self.writer.get_ref()
     }
 
     pub fn bytes_per_sample(&self) -> usize {
@@ -116,6 +225,166 @@ impl TsXorChunk {
 
     pub fn get_iter(&self, start: Timestamp, end: Timestamp) -> TsXorChunkIterator<'_> {
         TsXorChunkIterator::new(self.buf(), self.len(), start, end)
+    }
+
+    pub(crate) fn append_sample(&mut self, sample: Sample) {
+        self.append(sample.timestamp as u64, sample.value);
+    }
+
+    pub(crate) fn append(&mut self, timestamp: u64, val: f64) {
+        if self.count == 0 {
+            self.block_timestamp = timestamp;
+            self.stored_delta = (timestamp as i128 - self.block_timestamp as i128) as i64;
+            self.stored_timestamp = timestamp;
+            self.writer.write_u64(timestamp);
+            let _ = self.writer.write_bits(FIRST_DELTA_BITS, self.stored_delta as u64);
+            self.writer.write_u64(val.to_bits());
+            self.window.insert(val.to_bits());
+        } else {
+            self.compress_timestamp(timestamp);
+            self.compress_value(val);
+        }
+        self.count += 1;
+    }
+
+    fn compress_timestamp(&mut self, timestamp: u64) {
+        let new_delta = (timestamp as i128 - self.stored_timestamp as i128) as i64;
+        let delta_d = new_delta - self.stored_delta;
+
+        if delta_d == 0 {
+            let _ = self.writer.write_bit(false);
+        } else {
+            let mut enc = zigzag_encode(delta_d);
+            let mut length = 64 - enc.leading_zeros();
+            if length == 0 {
+                length = 1;
+            }
+
+            if length <= 7 {
+                enc |= (0x02u64) << 7;
+                let _ = self.writer.write_bits(9, enc);
+            } else if (8..=9).contains(&length) {
+                enc |= (0x06u64) << 9;
+                let _ = self.writer.write_bits(12, enc);
+            } else if (10..=12).contains(&length) {
+                enc |= (0x0Eu64) << 12;
+                let _ = self.writer.write_bits(16, enc);
+            } else {
+                let _ = self.writer.write_bits(4, 0x0Fu64);
+                let _ = self.writer.write_bits(32, enc);
+            }
+        }
+
+        self.stored_delta = (timestamp as i128 - self.stored_timestamp as i128) as i64;
+        self.stored_timestamp = timestamp;
+    }
+
+    fn write_full_value(&mut self, v: u64) {
+        self.writer.write_byte(255);
+        for b in v.to_be_bytes().iter() {
+            self.writer.write_byte(*b);
+        }
+    }
+
+    fn compress_value(&mut self, value: f64) {
+        let v = value.to_bits();
+
+        if let Some(offset) = self.window.get_index_of(v) {
+            self.writer.write_byte(offset as u8);
+        } else {
+            let candidate = self.window.get_candidate(v);
+            let xor = candidate ^ v;
+            let lead_bytes = (xor.leading_zeros() / 8) as usize;
+            let trail_bytes = (xor.trailing_zeros() / 8) as usize;
+
+            if (lead_bytes + trail_bytes) > 1 {
+                if let Some(offset) = self.window.get_index_of(candidate) {
+                    let off = (offset as u8) | 0x80u8;
+                    self.writer.write_byte(off);
+
+                    let xor_len_bytes = 8 - lead_bytes - trail_bytes;
+                    let xor_shifted = xor >> (trail_bytes * 8);
+                    let head = ((trail_bytes as u8) << 4) | (xor_len_bytes as u8 & 0x0F);
+                    self.writer.write_byte(head);
+
+                    let arr = xor_shifted.to_be_bytes();
+                    let start = 8 - xor_len_bytes;
+                    for &b in arr.iter().skip(start) {
+                        self.writer.write_byte(b);
+                    }
+                } else {
+                    self.write_full_value(v);
+                }
+            } else {
+                self.write_full_value(v);
+            }
+        }
+
+        self.window.insert(v);
+    }
+
+    pub(crate) fn serialize_encoder_state(&self, dest: &mut Vec<u8>) {
+        write_uvarint(dest, self.writer.position() as u64);
+        write_uvarint(dest, self.writer.get_ref().len() as u64);
+        dest.extend_from_slice(self.writer.get_ref());
+        self.window.serialize(dest);
+        write_uvarint(dest, self.stored_timestamp);
+        write_uvarint(dest, zigzag_encode(self.stored_delta));
+        write_uvarint(dest, self.block_timestamp);
+        write_uvarint(dest, self.count as u64);
+    }
+
+    pub(crate) fn deserialize_encoder_state(&mut self, src: &[u8]) {
+        let mut src = src;
+
+        let writer_pos = match try_read_uvarint(&mut src) {
+            Ok(pos) if pos <= 8 => pos as u32,
+            _ => return,
+        };
+
+        let writer_len = match try_read_uvarint(&mut src) {
+            Ok(len) => len as usize,
+            Err(_) => return,
+        };
+
+        if src.len() < writer_len {
+            return;
+        }
+
+        let writer_buf = src[..writer_len].to_vec();
+        src = &src[writer_len..];
+
+        let window = match CacheWindow::deserialize_from(&mut src) {
+            Some(window) => window,
+            None => return,
+        };
+
+        let stored_timestamp = match try_read_uvarint(&mut src) {
+            Ok(ts) => ts,
+            Err(_) => return,
+        };
+
+        let stored_delta = match try_read_uvarint(&mut src) {
+            Ok(delta) => zigzag_decode(delta),
+            Err(_) => return,
+        };
+
+        let block_timestamp = match try_read_uvarint(&mut src) {
+            Ok(ts) => ts,
+            Err(_) => return,
+        };
+
+        let count = match try_read_uvarint(&mut src) {
+            Ok(count) => count as usize,
+            Err(_) => return,
+        };
+
+        self.writer = BufferedWriter::hydrate(writer_buf, writer_pos);
+        self.window = window;
+        self.stored_timestamp = stored_timestamp;
+        self.stored_delta = stored_delta;
+        self.block_timestamp = block_timestamp;
+        self.count = count;
     }
 }
 
@@ -167,7 +436,7 @@ impl Chunk for TsXorChunk {
     }
 
     fn len(&self) -> usize {
-        self.compressor.len()
+        self.count
     }
 
     fn last_value(&self) -> f64 {
@@ -189,15 +458,15 @@ impl Chunk for TsXorChunk {
         }
 
         let old_len = self.len();
-        let mut decoder = self.compressor.get_decompressor();
-        let mut encoder = CompressorTSXor::new();
+        let mut decoder = DecompressorTSXor::new(self.buf(), self.len());
+        let mut encoder = Self::new_encoder(self.max_size);
         let mut first_ts: Option<Timestamp> = None;
         let mut last_sample: Option<Sample> = None;
         while let Some((ts, value)) = decoder.next() {
             let ts = ts as Timestamp;
             if ts < start_ts || ts > end_ts {
                 let sample = Sample::new(ts, value);
-                encoder.add_sample(sample);
+                encoder.append_sample(sample);
                 if first_ts.is_none() {
                     first_ts = Some(ts);
                 }
@@ -215,7 +484,12 @@ impl Chunk for TsXorChunk {
             self.reset_state();
         }
 
-        self.compressor = encoder;
+        self.writer = encoder.writer;
+        self.window = encoder.window;
+        self.stored_timestamp = encoder.stored_timestamp;
+        self.stored_delta = encoder.stored_delta;
+        self.block_timestamp = encoder.block_timestamp;
+        self.count = encoder.count;
         Ok(old_len - new_len)
     }
 
@@ -223,7 +497,7 @@ impl Chunk for TsXorChunk {
         if self.is_empty() {
             self.first_timestamp = sample.timestamp;
         }
-        self.compressor.add_sample(*sample);
+        self.append_sample(*sample);
         self.last_timestamp = sample.timestamp;
         self.last_value = sample.value;
         Ok(())
@@ -252,18 +526,18 @@ impl Chunk for TsXorChunk {
             self.add_sample(&sample)?;
             return Ok(1);
         }
-        let mut encoder = CompressorTSXor::new();
+        let mut encoder = Self::new_encoder(self.max_size);
         let mut iter = self.get_iter(0, self.last_timestamp + 1);
         let mut last_sample: Option<Sample> = None;
         let mut first_ts: Option<Timestamp> = None;
 
         if ts < self.first_timestamp() {
             // add a sample to the beginning
-            encoder.add(sample.timestamp as u64, sample.value);
+            encoder.append(sample.timestamp as u64, sample.value);
             first_ts = Some(sample.timestamp);
             // Add all existing samples after the new one
             for current in iter {
-                encoder.add_sample(current);
+                encoder.append_sample(current);
                 last_sample = Some(current);
             }
         } else {
@@ -273,7 +547,7 @@ impl Chunk for TsXorChunk {
                 if current.timestamp >= ts {
                     break;
                 }
-                encoder.add_sample(current);
+                encoder.append_sample(current);
                 if first_ts.is_none() {
                     first_ts = Some(current.timestamp);
                 }
@@ -282,22 +556,27 @@ impl Chunk for TsXorChunk {
             if current.timestamp == ts {
                 duplicate_found = true;
                 current.value = dp_policy.duplicate_value(ts, current.value, sample.value)?;
-                encoder.add_sample(current);
+                encoder.append_sample(current);
             } else {
-                encoder.add(sample.timestamp as u64, sample.value);
+                encoder.append(sample.timestamp as u64, sample.value);
                 // Add the current sample that caused the break (if it exists and is valid)
                 if current.timestamp > ts {
-                    encoder.add_sample(current);
+                    encoder.append_sample(current);
                 }
             }
 
             for current in iter {
-                encoder.add_sample(current);
+                encoder.append_sample(current);
                 last_sample = Some(current);
             }
         }
 
-        self.compressor = encoder;
+        self.writer = encoder.writer;
+        self.window = encoder.window;
+        self.stored_timestamp = encoder.stored_timestamp;
+        self.stored_delta = encoder.stored_delta;
+        self.block_timestamp = encoder.block_timestamp;
+        self.count = encoder.count;
         if let Some(last) = last_sample {
             self.last_timestamp = last.timestamp;
             self.last_value = last.value;
@@ -353,12 +632,12 @@ impl Chunk for TsXorChunk {
         }
 
         struct MergeState {
-            encoder: CompressorTSXor,
+            encoder: TsXorChunk,
             result: Vec<SampleAddResult>,
         }
 
         let mut merge_state = MergeState {
-            encoder: CompressorTSXor::new(),
+            encoder: TsXorChunk::new_encoder(self.max_size),
             result: Vec::with_capacity(samples.len()),
         };
 
@@ -371,7 +650,7 @@ impl Chunk for TsXorChunk {
             dp_policy,
             &mut merge_state,
             |state, sample, is_duplicate| {
-                state.encoder.add(sample.timestamp as u64, sample.value);
+                state.encoder.append(sample.timestamp as u64, sample.value);
                 if sample_set.remove(&sample.timestamp) {
                     if is_duplicate {
                         state.result.push(SampleAddResult::Duplicate);
@@ -383,7 +662,12 @@ impl Chunk for TsXorChunk {
             },
         )?;
 
-        self.compressor = merge_state.encoder;
+        self.writer = merge_state.encoder.writer;
+        self.window = merge_state.encoder.window;
+        self.stored_timestamp = merge_state.encoder.stored_timestamp;
+        self.stored_delta = merge_state.encoder.stored_delta;
+        self.block_timestamp = merge_state.encoder.block_timestamp;
+        self.count = merge_state.encoder.count;
         // self.refresh_state_from_compressor();
         Ok(merge_state.result)
     }
@@ -392,7 +676,7 @@ impl Chunk for TsXorChunk {
     where
         Self: Sized,
     {
-        let mut encoder = CompressorTSXor::new();
+        let mut encoder = Self::new_encoder(self.max_size);
         let mut right_chunk = Self::with_max_size(self.max_size);
 
         if self.is_empty() {
@@ -404,12 +688,17 @@ impl Chunk for TsXorChunk {
         for (i, sample) in iter.enumerate() {
             if i < mid {
                 // todo: handle min and max timestamps
-                encoder.add(sample.timestamp as u64, sample.value);
+                encoder.append(sample.timestamp as u64, sample.value);
             } else {
                 right_chunk.add_sample(&sample)?;
             }
         }
-        self.compressor = encoder;
+        self.writer = encoder.writer;
+        self.window = encoder.window;
+        self.stored_timestamp = encoder.stored_timestamp;
+        self.stored_delta = encoder.stored_delta;
+        self.block_timestamp = encoder.block_timestamp;
+        self.count = encoder.count;
         // self.refresh_state_from_compressor();
         Ok(right_chunk)
     }
@@ -422,7 +711,7 @@ impl Chunk for TsXorChunk {
         rdb_save_timestamp(rdb, self.last_timestamp);
         rdb_save_f64(rdb, self.last_value);
         let mut state = Vec::new();
-        self.compressor.serialize(&mut state);
+        self.serialize_encoder_state(&mut state);
         valkey_module::raw::save_slice(rdb, &state);
     }
 
@@ -433,7 +722,7 @@ impl Chunk for TsXorChunk {
         let last_value = rdb_load_f64(rdb)?;
         let state = valkey_module::raw::load_string_buffer(rdb)?;
         let mut chunk = TsXorChunk::with_max_size(max_size);
-        chunk.compressor = CompressorTSXor::deserialize(state.as_ref());
+        chunk.deserialize_encoder_state(state.as_ref());
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
         chunk.first_timestamp = first_timestamp;
@@ -446,7 +735,7 @@ impl Chunk for TsXorChunk {
         write_uvarint(dest, self.last_timestamp as u64);
         write_uvarint(dest, f64::to_bits(self.last_value));
         let mut state = Vec::new();
-        self.compressor.serialize(&mut state);
+        self.serialize_encoder_state(&mut state);
         write_uvarint(dest, state.len() as u64);
         dest.extend_from_slice(&state);
     }
@@ -471,7 +760,7 @@ impl Chunk for TsXorChunk {
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
         chunk.first_timestamp = first_timestamp;
-        chunk.compressor = CompressorTSXor::deserialize(state);
+        chunk.deserialize_encoder_state(state);
         Ok(chunk)
     }
 

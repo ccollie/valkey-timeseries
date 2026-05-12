@@ -1,7 +1,7 @@
 use crate::series::chunks::buffered_read::BufferedReader;
 use crate::series::chunks::gorilla::utils::zigzag_decode;
 use crate::series::chunks::traits::BitRead;
-use crate::series::chunks::tsxor::tsxor_compressor::{CacheWindow, FIRST_DELTA_BITS};
+use crate::series::chunks::tsxor::tsxor_chunk::{CacheWindow, FIRST_DELTA_BITS};
 
 /// Decompressor for TSXor single-column
 pub(crate) struct DecompressorTSXor<'a> {
@@ -117,7 +117,7 @@ impl<'a> DecompressorTSXor<'a> {
                 }
             };
 
-            // End-of-stream marker written by CompressorTSXor::close().
+            // End-of-stream marker written by the TSXor encoder.
             if to_read == 32 && bits == u32::MAX as u64 {
                 self.end_of_stream = true;
                 return None;
