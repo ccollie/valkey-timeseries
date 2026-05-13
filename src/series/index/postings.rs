@@ -1,6 +1,5 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
-use crate::common::hash::IntMap;
 use crate::common::logging::log_warning;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::filters::{
@@ -14,7 +13,7 @@ use croaring::Bitmap64;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -35,7 +34,7 @@ pub struct Postings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
-    pub(super) id_to_key: IntMap<SeriesRef, KeyType>,
+    pub(in crate::series) id_to_key: BTreeMap<SeriesRef, KeyType>,
     /// Set of timeseries ids of series that should be removed from the index. This really only
     /// happens when the index is inconsistent (value does not exist in the db but exists in the index)
     /// Keep track and cleanup from the index during a gc pass.
@@ -48,7 +47,7 @@ impl Default for Postings {
     fn default() -> Self {
         Postings {
             label_index: PostingsIndex::new(),
-            id_to_key: IntMap::default(),
+            id_to_key: BTreeMap::new(),
             stale_ids: PostingsBitmap::default(),
             all_postings: PostingsBitmap::default(),
         }
@@ -723,16 +722,25 @@ impl Postings {
         self.id_to_key.get(&id)
     }
 
-    /// Marks an id as stale by adding its ID to the stale IDs set.
-    /// Context: used in the case of possible index sync issues. When the index is queried and an id is returned
-    /// with no corresponding series, we have no access to the series data to do a proper
-    /// cleanup. We remove the key from the index and mark the ID as stale, which will be cleaned up later.
+    pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
+        self.mark_ids_as_stale(&[id]);
+    }
+
+    /// Marks ids as stale by adding its ID to the stale IDs set.
+    /// ## Context
+    /// This is used in the case of possible index sync issues. When the index is queried and an id is returned
+    /// with no corresponding series, we have no access to the series data to do a proper cleanup. Also, at the end
+    /// of cluster migration, the source node needs to remove all series ids corresponding to the migrated slots.
+    ///
+    /// We remove the key from the index and mark the ID as stale, which will be cleaned up later in a background task.
     /// The stale IDs are stored in a bitmap for efficient removal and are checked to ensure that no stale IDs are
     /// returned in queries until they are removed.
-    pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
-        let _ = self.id_to_key.remove(&id);
-        self.stale_ids.add(id);
-        self.all_postings.remove(id);
+    pub(crate) fn mark_ids_as_stale(&mut self, ids: &[SeriesRef]) {
+        for id in ids {
+            let _ = self.id_to_key.remove(id);
+        }
+        self.stale_ids.add_many(ids);
+        self.all_postings.remove_many(ids);
     }
 
     #[cfg(test)]

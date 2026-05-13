@@ -1,5 +1,6 @@
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
+use crate::fanout::calculate_hash_slot;
 use ahash::{AHashMap, HashSet, HashSetExt};
 use rand::{Rng, RngExt, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
@@ -10,6 +11,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr};
+use std::ops::Deref;
 use std::sync::{Arc, LazyLock, OnceLock};
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
@@ -161,6 +163,14 @@ impl SlotRangeSet {
 impl Display for SlotRangeSet {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self.ranges.fmt(f)
+    }
+}
+
+impl Deref for SlotRangeSet {
+    type Target = RangeSetBlaze<u16>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ranges
     }
 }
 
@@ -447,6 +457,15 @@ impl ShardInfo {
     pub fn is_empty(&self) -> bool {
         self.primary.is_none() && self.replicas.is_empty()
     }
+
+    pub fn i_own_slot(&self, slot: u16) -> bool {
+        self.owned_slots.contains(slot)
+    }
+
+    pub fn owns_key(&self, key: &[u8]) -> bool {
+        let slot = calculate_hash_slot(key);
+        self.i_own_slot(slot)
+    }
 }
 
 impl PartialOrd<ShardInfo> for ShardInfo {
@@ -486,6 +505,8 @@ type LazyTargets = OnceLock<Arc<HashSet<NodeInfo>>>;
 /// Main cluster map structure
 #[derive(Debug, Default)]
 pub struct ClusterMap {
+    /// The id of the local shard (for easy access without dereferencing CURRENT_NODE_ID all the time)
+    local_node_id: NodeId,
     /// Slot set for slots owned by the cluster
     owned_slots: SlotRangeSet,
     shards: BTreeSet<ShardInfo>,
@@ -511,6 +532,11 @@ impl ClusterMap {
         self.owned_slots.contains(slot)
     }
 
+    pub fn is_owned_key(&self, key: &[u8]) -> bool {
+        let slot = calculate_hash_slot(key);
+        self.i_own_slot(slot)
+    }
+
     /// Get the count of owned slots
     pub fn owned_slot_count(&self) -> usize {
         self.owned_slots.len()
@@ -534,6 +560,10 @@ impl ClusterMap {
     /// Get cluster level slot fingerprint
     pub fn cluster_slots_fingerprint(&self) -> u64 {
         self.cluster_slots_fingerprint
+    }
+
+    pub fn get_local_shard(&self) -> Option<&ShardInfo> {
+        self.shards.get(&self.local_node_id)
     }
 
     /// Helper function to refresh targets in CreateNewClusterMap
@@ -792,6 +822,7 @@ impl ClusterMap {
 
         // Build slot-to-shard map
         new_map.build_slot_to_shard_map(&slot_ranges_parsed);
+        new_map.local_node_id = my_node_id;
 
         // Check if a cluster map is full
         new_map.is_consistent &= new_map.check_cluster_map_full();

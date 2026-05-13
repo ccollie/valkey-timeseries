@@ -1,5 +1,4 @@
 use std::ops::Deref;
-use std::sync::atomic::AtomicU64;
 mod index_key;
 mod posting_stats;
 mod postings;
@@ -13,7 +12,7 @@ use std::sync::LazyLock;
 use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString};
 
 use crate::common::hash::BuildNoHashHasher;
-use crate::common::logging::log_warning;
+use crate::common::logging::{log_debug, log_warning};
 use crate::series::index::postings::Postings;
 use crate::series::request_types::MatchFilterOptions;
 use crate::series::{SeriesGuardMut, SeriesRef, TimeSeries, get_timeseries_mut};
@@ -23,16 +22,20 @@ pub use postings::PostingsBitmap;
 pub use querier::*;
 pub use timeseries_index::*;
 
+mod ids;
 mod key_buffer;
 mod label_filter;
 mod label_querier;
 #[cfg(test)]
 mod postings_query_tests;
+mod reindex;
+pub mod slot_migrations;
 #[cfg(test)]
 mod timeseries_index_tests;
 
 pub(crate) use label_filter::*;
 pub use label_querier::*;
+pub(crate) use slot_migrations::{add_delayed_indexing_key, is_in_asm_slot_import};
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
@@ -59,14 +62,8 @@ impl Deref for TimeSeriesIndexGuard<'_> {
 pub(crate) static TIMESERIES_INDEX: LazyLock<TimeSeriesIndexMap> =
     LazyLock::new(TimeSeriesIndexMap::default);
 
-pub(crate) static TIMESERIES_ID: AtomicU64 = AtomicU64::new(1);
-
 pub fn next_timeseries_id() -> u64 {
-    TIMESERIES_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-pub fn reset_timeseries_id(id: u64) {
-    TIMESERIES_ID.store(id, std::sync::atomic::Ordering::Relaxed);
+    ids::generate()
 }
 
 pub fn get_db_index(db: i32) -> TimeSeriesIndexGuard<'static> {
@@ -111,6 +108,19 @@ where
     let index = get_timeseries_index_for_db(db, &guard);
     let mut state = ();
     let res = index.with_postings(&mut state, |postings, _| f(postings));
+    drop(guard);
+    res
+}
+
+pub fn with_timeseries_postings_mut<F, R>(ctx: &Context, f: F) -> R
+where
+    F: FnOnce(&mut Postings) -> R,
+{
+    let db = get_current_db(ctx);
+    let guard = TIMESERIES_INDEX.guard();
+    let index = get_timeseries_index_for_db(db, &guard);
+    let mut state = ();
+    let res = index.with_postings_mut(&mut state, |postings, _| f(postings));
     drop(guard);
     res
 }
@@ -164,22 +174,24 @@ pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString
 }
 
 pub fn remove_series_from_index(ts: &TimeSeries) {
-    let guard = get_db_index(ts._db);
+    let Some(db) = ts._db else {
+        log_debug(format!(
+            "Skipping index removal for series id {} because _db is unassigned",
+            ts.id
+        ));
+        return;
+    };
+    let guard = get_db_index(db);
     guard.remove_timeseries(ts);
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {
     let db = get_current_db(ctx);
     let map = TIMESERIES_INDEX.pin();
-    if map.remove(&db).is_some() && map.is_empty() {
-        // if we removed indices for all dbs, we need to reset the id
-        // to 0 so that we can start from 1 again
-        reset_timeseries_id(0);
-    }
+    map.remove(&db);
 }
 
 pub fn clear_all_timeseries_indexes() {
-    reset_timeseries_id(0);
     TIMESERIES_INDEX.pin().clear();
 }
 
@@ -195,6 +207,35 @@ pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
     // mark the id for removal, signal to src_series to remove it
     let index = get_timeseries_index(ctx);
     index.mark_id_as_stale(id);
+}
+
+pub(crate) fn index_series_by_key(ctx: &Context, key: &[u8]) {
+    let db = get_current_db(ctx);
+    let valkey_key = ctx.create_string(key);
+    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
+        ctx.log_warning("Failed to load series for key restore");
+        return;
+    };
+    series._db = Some(db);
+
+    let index = get_db_index(db);
+    if !index.has_id(series.id) {
+        index.index_timeseries(&series, key);
+    } else {
+        ctx.log_warning("Trying to restore a series that is already in the index");
+    }
+}
+
+/// Handle the "restore" event, which is triggered for each key restored from disk during server startup
+/// or slot migration. It collects the keys for later indexing if we're in the middle of an ASM slot import,
+/// otherwise it indexes them immediately.
+pub(crate) fn handle_index_key_restore(ctx: &Context, key: &[u8]) {
+    let db = get_current_db(ctx);
+    if is_in_asm_slot_import() {
+        add_delayed_indexing_key(db, key);
+        return;
+    }
+    index_series_by_key(ctx, key);
 }
 
 pub(crate) fn init_croaring_allocator() {
