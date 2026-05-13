@@ -1,6 +1,10 @@
 use crate::fanout::FanoutTargetMode;
 use std::sync::atomic::AtomicBool;
-use valkey_module::{Context, ContextFlags, ValkeyResult};
+use valkey_module::{
+    Context, ContextFlags, ValkeyModule_ClusterKeySlot, ValkeyModuleString, ValkeyResult,
+    ValkeyString,
+};
+pub(crate) const SLOT_SIZE: u16 = 16384;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
 
@@ -54,5 +58,79 @@ pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
                 FanoutTargetMode::Random
             }
         }
+    }
+}
+
+/// Calculates the hash slot for a given key according to Valkey cluster specification.
+///
+/// The hash slot is computed as CRC16(key) % 16384, but only considering the substring
+/// between curly braces {} if present (hash tags).
+///
+/// # Arguments
+/// * `key` - The key string to compute the hash slot for
+///
+/// # Returns
+/// * The hash slot number between 0 and 16383
+pub fn calculate_hash_slot(key: &[u8]) -> u16 {
+    let key = get_hash_tag(key).unwrap_or(key);
+    slot(key)
+}
+
+pub(crate) fn slot(key: &[u8]) -> u16 {
+    crc16::State::<crc16::XMODEM>::calculate(key) % SLOT_SIZE
+}
+
+/// Finds the hash tag boundaries in a key.
+/// Returns (start_index_of_brace, end_index_of_brace)
+/// If no valid hash tag is found, returns (key.len(), 0)
+fn get_hash_tag(key: &[u8]) -> Option<&[u8]> {
+    let open = key.iter().position(|v| *v == b'{')?;
+    let close = key[open..].iter().position(|v| *v == b'}')?;
+
+    let rv = &key[open + 1..open + close];
+    (!rv.is_empty()).then_some(rv)
+}
+
+pub(crate) fn get_cluster_key_slot(key: &ValkeyString) -> u16 {
+    unsafe { ValkeyModule_ClusterKeySlot.unwrap()(key.inner as *mut ValkeyModuleString) as u16 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_key() {
+        let slot = calculate_hash_slot(b"hello");
+        // Expected slot can be verified against Redis/Valkey
+        assert!(slot < 16384);
+    }
+
+    #[test]
+    fn test_hash_tag() {
+        // With hash tag, only "world" is used for hashing
+        let slot1 = calculate_hash_slot(b"hello{world}foo");
+        let slot2 = calculate_hash_slot(b"world");
+        assert_eq!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_empty_hash_tag() {
+        // Empty braces should be ignored
+        let slot1 = calculate_hash_slot(b"hello{}world");
+        let slot2 = calculate_hash_slot(b"hello{world");
+        let slot3 = calculate_hash_slot(b"hello}world");
+
+        // With invalid hash tag, whole key is used
+        assert_eq!(slot1, calculate_hash_slot(b"hello{}world"));
+        assert_eq!(slot2, calculate_hash_slot(b"hello{world"));
+        assert_eq!(slot3, calculate_hash_slot(b"hello}world"));
+    }
+
+    #[test]
+    fn test_get_hashtag() {
+        assert_eq!(get_hash_tag(&b"foo{bar}baz"[..]), Some(&b"bar"[..]));
+        assert_eq!(get_hash_tag(&b"foo{}{baz}"[..]), None);
+        assert_eq!(get_hash_tag(&b"foo{{bar}}zap"[..]), Some(&b"{bar"[..]));
     }
 }

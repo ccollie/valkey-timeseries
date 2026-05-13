@@ -64,7 +64,8 @@ pub struct TimeSeries {
     pub rules: Vec<CompactionRule>,
     /// Internal bookkeeping for current db. Simplifies event handling related to indexing.
     /// This is not part of the time series data itself, nor is it stored to rdb.
-    pub(crate) _db: i32,
+    /// `None` means the series is currently unassigned to a local db.
+    pub(crate) _db: Option<i32>,
 }
 
 impl TimeSeries {
@@ -933,7 +934,7 @@ impl Default for TimeSeries {
             last_sample: None,
             src_series: None,
             rules: vec![],
-            _db: 0,
+            _db: None,
         }
     }
 }

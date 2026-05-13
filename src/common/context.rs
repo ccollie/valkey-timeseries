@@ -3,7 +3,7 @@ use std::os::raw::c_int;
 use valkey_module::{
     Context, ContextFlags, RedisModule_GetSelectedDb, RedisModule_SelectDb, Status, ValkeyError,
     ValkeyModule_GetServerInfo, ValkeyModule_ServerInfoGetFieldSigned, ValkeyModuleCtx,
-    ValkeyModuleServerInfoData, ValkeyResult,
+    ValkeyModuleServerInfoData, ValkeyResult, raw,
 };
 
 // Safety: RedisModule_GetSelectedDb is safe to call
@@ -63,6 +63,28 @@ fn get_server_info_field_signed(
         }
         Ok(res)
     }
+}
+
+pub fn register_server_event_handler(
+    ctx: &Context,
+    server_event: u64,
+    inner_callback: raw::RedisModuleEventCallback,
+) -> Result<(), ValkeyError> {
+    let res = unsafe {
+        raw::RedisModule_SubscribeToServerEvent.unwrap()(
+            ctx.ctx,
+            raw::RedisModuleEvent {
+                id: server_event,
+                dataver: 1,
+            },
+            inner_callback,
+        )
+    };
+    if res != raw::REDISMODULE_OK as i32 {
+        return Err(ValkeyError::Str("TSDB: failed subscribing to server event"));
+    }
+
+    Ok(())
 }
 
 pub fn get_available_memory(ctx: &Context) -> Option<i64> {

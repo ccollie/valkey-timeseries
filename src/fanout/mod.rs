@@ -1,5 +1,6 @@
 mod blocked_client;
 mod cluster_map;
+pub(crate) mod cluster_migrations;
 mod cluster_rpc;
 mod fanout_client_command;
 mod fanout_command;
@@ -20,11 +21,24 @@ pub use fanout_command::*;
 pub use fanout_error::*;
 pub use utils::*;
 
+use crate::fanout::cluster_migrations::{
+    AtomicSlotMigrationEventHandler, register_atomic_slot_migration_event_handler,
+    supports_atomic_slot_migration,
+};
 pub use cluster_map::{ClusterMap, FanoutTargetMode, NodeInfo};
+
+#[allow(unused_imports)]
+pub use cluster_migrations::{SlotMigration, get_slot_migrations};
 pub use registry::register_fanout_operation;
 
-pub(crate) fn init_fanout(ctx: &Context) {
+pub(crate) fn init_fanout(ctx: &Context, cleanup_fn: Option<AtomicSlotMigrationEventHandler>) {
+    if !is_clustered(ctx) {
+        return;
+    }
     register_cluster_message_handlers(ctx);
+    if supports_atomic_slot_migration(ctx) {
+        register_atomic_slot_migration_event_handler(ctx, cleanup_fn);
+    }
 }
 
 static CLUSTER_MAP: LazyLock<ArcSwap<ClusterMap>> =
