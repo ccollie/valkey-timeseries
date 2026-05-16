@@ -1,5 +1,6 @@
 use crate::common::threads::spawn;
-use crate::series::index::{IndexKey, get_db_index};
+use crate::common::logging::log_debug;
+use crate::series::index::{IndexKey, TIMESERIES_INDEX, get_db_index};
 use crate::series::tasks::utils::find_next_db;
 use std::sync::{LazyLock, Mutex};
 
@@ -33,18 +34,132 @@ pub fn optimize_indices_for_db() {
 fn optimize_indices_internal() {
     let (db, cursor) = {
         let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
-        let db = context.db;
-        if let Some(next_db) = find_next_db(db) {
-            context.db = next_db;
-        } else {
-            context.cursor = None;
-            context.db = 0;
-        }
-        (db, context.cursor.take())
+        (context.db, context.cursor.take())
     };
+
+    let db_exists = {
+        let index = TIMESERIES_INDEX.pin();
+        index.get(&db).is_some()
+    };
+
+    if !db_exists {
+        if cursor.is_some() {
+            log_debug(format!(
+                "Skipping optimize indices for db {db}: tracked db is missing"
+            ));
+        }
+        set_optimize_cursor(db, None);
+        return;
+    }
 
     let index = get_db_index(db);
     let new_cursor = index.optimize_incremental(cursor, INDEX_OPTIMIZE_BATCH_SIZE);
 
     set_optimize_cursor(db, new_cursor);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::series::TimeSeries;
+    use crate::series::index::next_timeseries_id;
+    use serial_test::serial;
+
+    fn reset_test_state() {
+        TIMESERIES_INDEX.pin().retain(|_, _| false);
+
+        let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        context.db = 0;
+        context.cursor = None;
+    }
+
+    fn make_series(id: u64, idx: usize) -> TimeSeries {
+        let mut series = TimeSeries::new();
+        series.id = id;
+        series.labels = format!(r#"metric_1{{region="us-east-1",host="h{idx}"}}"#)
+            .parse()
+            .unwrap();
+        series
+    }
+
+    fn populate_db(db: i32, entries: usize) {
+        let index = get_db_index(db);
+        for i in 0..entries {
+            let id = next_timeseries_id();
+            let key = format!("series:{db}:{i}");
+            let series = make_series(id, i);
+            index.index_timeseries(&series, key.as_bytes());
+        }
+    }
+
+    fn current_context() -> (i32, Option<IndexKey>) {
+        let context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        (context.db, context.cursor.clone())
+    }
+
+    fn set_context(db: i32, cursor: Option<IndexKey>) {
+        let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        context.db = db;
+        context.cursor = cursor;
+    }
+
+    #[test]
+    #[serial]
+    fn optimize_stays_on_same_db_while_cursor_exists() {
+        reset_test_state();
+        populate_db(1, INDEX_OPTIMIZE_BATCH_SIZE + 25);
+        populate_db(2, 5);
+        set_context(1, None);
+
+        optimize_indices_internal();
+
+        let (db, cursor) = current_context();
+        assert_eq!(db, 1);
+        assert!(cursor.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn optimize_advances_to_next_db_when_cursor_exhausted() {
+        reset_test_state();
+        populate_db(1, 2);
+        populate_db(2, 2);
+        set_context(1, None);
+
+        optimize_indices_internal();
+
+        let (db, cursor) = current_context();
+        assert_eq!(db, 2);
+        assert_eq!(cursor, None);
+    }
+
+    #[test]
+    #[serial]
+    fn optimize_db_zero_is_processed_as_valid_db() {
+        reset_test_state();
+        populate_db(0, INDEX_OPTIMIZE_BATCH_SIZE + 10);
+        populate_db(2, 3);
+
+        optimize_indices_internal();
+
+        let (db, cursor) = current_context();
+        assert_eq!(db, 0);
+        assert!(cursor.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn missing_db_with_cursor_advances_without_panicking() {
+        reset_test_state();
+        populate_db(4, 3);
+
+        set_context(3, Some(IndexKey::from("host=h1")));
+
+        optimize_indices_internal();
+
+        let (db, cursor) = current_context();
+        assert_eq!(db, 4);
+        assert_eq!(cursor, None);
+    }
+}
+
