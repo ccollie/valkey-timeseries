@@ -804,17 +804,11 @@ impl Postings {
             self.label_index.remove(&key);
         }
 
-        // Clean up id_to_key map for all stale IDs
-        // This is done in every batch since we need to ensure consistency
-        if keys_processed > 0 {
-            self.stale_ids.iter().for_each(|id| {
-                let _ = self.id_to_key.remove(&id);
-            });
-
-            // Clear stale_ids if we've processed all keys
-            if next_key.is_none() {
-                self.stale_ids.clear();
-            }
+        // If we processed some keys but didn't reach the end, we can return the next key to continue from.
+        // If we processed keys and there are no more keys to process, it means we've reached the end of the index,
+        // so we can clear the stale IDs as they have been fully processed.
+        if keys_processed > 0 && next_key.is_none() {
+            self.stale_ids.clear();
         }
 
         next_key
