@@ -1,15 +1,21 @@
-use crate::common::context::{get_current_db, set_current_db};
+//! This module subscribes to Valkey events to ensure secondary index consistency.
+//!
+use crate::common::context::{get_current_db, register_server_event_handler, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::fanout::cluster_migrations::AtomicSlotMigrationEvent;
-use crate::series::index::{TIMESERIES_INDEX, get_db_index};
+use crate::series::index::{
+    TIMESERIES_INDEX, clear_all_timeseries_indexes, clear_timeseries_index, get_db_index,
+    get_timeseries_index, index_series_by_key, swap_timeseries_index_dbs,
+};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::series::tasks::remove_stale_series_internal;
-use crate::series::{SeriesRef, TimeSeries};
+use crate::series::tasks::remove_all_stale_series_internal;
+use crate::series::{SeriesRef, TimeSeries, get_timeseries, get_timeseries_mut};
 use range_set_blaze::RangeSetBlaze;
+use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, Mutex, RwLock};
 use valkey_module::server_events::PersistenceSubevent;
-use valkey_module::{Context, MODULE_CONTEXT};
+use valkey_module::{Context, MODULE_CONTEXT, NotifyEvent, ValkeyResult, logging, raw};
 use valkey_module_macros::persistence_event_handler;
 
 const BATCH_SIZE: usize = 256;
@@ -170,6 +176,9 @@ fn remove_non_owned_keys(db: i32, source_slots: &RangeSetBlaze<u16>) -> usize {
 /// by subscribing to the Keyspace Notification hooks in `server_events` to handle the standard data eviction/deletion hooks.
 ///
 /// In other words, we only need special handling for the source primary node.
+/// ## Possible Future Optimization
+/// Check if the source_slots covers all slots the current node is responsible for (or a full reshard) and if so, we can just clear
+/// the entire index instead.
 fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
     // spawn a background task to clean up the index so we don't block the main thread, this can take a while if there are a lot of keys to clean up
     std::thread::spawn(move || {
@@ -184,7 +193,7 @@ fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
         }
 
         if deleted_count > 0 {
-            remove_stale_series_internal();
+            remove_all_stale_series_internal();
         }
     });
 }
@@ -269,4 +278,129 @@ fn persistence_event_handler(ctx: &Context, persistence_event: PersistenceSubeve
             }
         }
     }
+}
+
+fn handle_key_move(ctx: &Context, key: &[u8], old_db: i32) {
+    let new_db = get_current_db(ctx);
+    // fetch the series from the new
+    let valkey_key = ctx.create_string(key);
+    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
+        logging::log_warning("Failed to load series for key move");
+        return;
+    };
+
+    // remove the series from the old db index
+    let old_index = get_db_index(old_db);
+    old_index.remove_timeseries(&series);
+
+    // add the series to the new db index
+    series._db = Some(new_db);
+    let new_index = get_db_index(new_db);
+    new_index.index_timeseries(&series, key);
+}
+
+fn handle_key_rename(ctx: &Context, _old_key: &[u8], new_key: &[u8]) {
+    let index = get_timeseries_index(ctx);
+    let key = ctx.create_string(new_key);
+    let Ok(Some(series)) = get_timeseries(ctx, &key, None, false) else {
+        logging::log_warning("Failed to load series for key rename");
+        return;
+    };
+    index.reindex_timeseries(&series, new_key);
+}
+
+/// Handle the "restore" event, which is triggered for each key restored from disk during server startup
+/// or slot migration. It collects the keys for later indexing if we're in the middle of an ASM slot import,
+/// otherwise it indexes them immediately.
+fn handle_key_restore(ctx: &Context, key: &[u8]) {
+    let db = get_current_db(ctx);
+    if is_in_asm_slot_import() {
+        add_delayed_indexing_key(db, key);
+        return;
+    }
+    index_series_by_key(ctx, key);
+}
+
+static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
+static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);
+
+pub(crate) fn generic_key_events_handler(
+    ctx: &Context,
+    _event_type: NotifyEvent,
+    event: &str,
+    key: &[u8],
+) {
+    hashify::fnc_map!(event.as_bytes(),
+        "loaded" => {
+            // Handle the "loaded" event, which is triggered for each key loaded from disk during server startup.
+            handle_key_restore(ctx, key);
+        },
+        "move_from" => {
+            *MOVE_FROM_DB.lock().unwrap() = get_current_db(ctx);
+        },
+        "move_to" => {
+            let mut lock = MOVE_FROM_DB.lock().unwrap();
+            let old_db = *lock;
+            *lock = -1;
+            if old_db != -1 {
+                 handle_key_move(ctx, key, old_db);
+            }
+        },
+        "rename_from" => {
+            *RENAME_FROM_KEY.lock().unwrap() = key.to_vec();
+        },
+        "rename_to" => {
+            let mut old_key = RENAME_FROM_KEY.lock().unwrap();
+            if !old_key.is_empty() {
+                handle_key_rename(ctx, &old_key, key);
+                old_key.clear();
+            }
+        },
+        "restore" => {
+            handle_key_restore(ctx, key);
+        },
+        _ => {}
+    );
+}
+
+unsafe extern "C" fn on_flush_event(
+    ctx: *mut raw::RedisModuleCtx,
+    _eid: raw::RedisModuleEvent,
+    sub_event: u64,
+    data: *mut c_void,
+) {
+    if sub_event == raw::REDISMODULE_SUBEVENT_FLUSHDB_END {
+        let fi: &raw::RedisModuleFlushInfo = unsafe { &*(data as *mut raw::RedisModuleFlushInfo) };
+
+        if fi.dbnum == -1 {
+            clear_all_timeseries_indexes();
+        } else {
+            let ctx = Context::new(ctx);
+            set_current_db(&ctx, fi.dbnum);
+            clear_timeseries_index(&ctx);
+        }
+    };
+}
+
+unsafe extern "C" fn on_swap_db_event(
+    _ctx: *mut raw::RedisModuleCtx,
+    eid: raw::RedisModuleEvent,
+    _sub_event: u64,
+    data: *mut c_void,
+) {
+    if eid.id == raw::REDISMODULE_EVENT_SWAPDB {
+        let ei: &raw::RedisModuleSwapDbInfo =
+            unsafe { &*(data as *mut raw::RedisModuleSwapDbInfo) };
+
+        let from_db = ei.dbnum_first;
+        let to_db = ei.dbnum_second;
+
+        swap_timeseries_index_dbs(from_db, to_db);
+    }
+}
+
+pub(crate) fn register_server_event_handlers(ctx: &Context) -> ValkeyResult<()> {
+    register_server_event_handler(ctx, raw::REDISMODULE_EVENT_FLUSHDB, Some(on_flush_event))?;
+    register_server_event_handler(ctx, raw::REDISMODULE_EVENT_SWAPDB, Some(on_swap_db_event))?;
+    Ok(())
 }

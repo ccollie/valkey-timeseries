@@ -32,14 +32,14 @@ mod parser;
 pub mod series;
 
 pub use labels::Label;
-mod server_events;
 mod tests;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
-use crate::series::index::slot_migrations::slot_migration_event_handler;
+use crate::series::index::server_events::{
+    generic_key_events_handler, register_server_event_handlers, slot_migration_event_handler,
+};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::server_events::{generic_key_events_handler, register_server_events};
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
@@ -117,8 +117,8 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         };
     }
 
-    if let Err(e) = register_server_events(ctx) {
-        let msg = format!("Failed to register server events: {e}");
+    if let Err(e) = register_server_event_handlers(ctx) {
+        let msg = format!("Failed to register server event handlers: {e}");
         ctx.log_warning(&msg);
         return Status::Err;
     }
