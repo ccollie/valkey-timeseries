@@ -2,7 +2,9 @@ use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::log_debug;
 use crate::is_shutting_down;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX};
-use crate::series::tasks::{optimize_indices_for_db, process_series_trim, remove_stale_series_ids};
+use crate::series::tasks::{
+    optimize_indices_for_db, process_series_trim, remove_stale_series_ids_incremental,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -148,7 +150,7 @@ fn dispatch_background_task(task: TaskType) {
     match task {
         TaskType::TrimSeries => process_series_trim(),
         TaskType::RemoveStaleSeries => {
-            remove_stale_series_ids();
+            remove_stale_series_ids_incremental();
         }
         TaskType::OptimizeIndices => optimize_indices_for_db(),
         TaskType::TrimUnusedDbs => trim_unused_dbs(),
