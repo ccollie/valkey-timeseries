@@ -20,6 +20,7 @@ mod zscore_outlier_detector;
 
 pub use anomalies::*;
 pub use esd_outlier_detector::*;
+pub use ewma_outlier_detector::*;
 pub use rcf_outlier_detector::*;
 pub use smoothed_zscores::*;
 
@@ -69,6 +70,21 @@ impl AnomalyMethod {
             AnomalyMethod::InterquartileRange => "Interquartile Range (IQR)",
             AnomalyMethod::RandomCutForest => "Random Cut Forest",
             AnomalyMethod::Esd => "Extreme Studentized Deviate (ESD)",
+        }
+    }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            AnomalyMethod::Ewma => "ewma",
+            AnomalyMethod::Cusum => "cusum",
+            AnomalyMethod::ZScore => "zscore",
+            AnomalyMethod::ModifiedZScore => "modified-zscore",
+            AnomalyMethod::SmoothedZScore => "smoothed-zscore",
+            AnomalyMethod::Mad => "mad",
+            AnomalyMethod::DoubleMAD => "double-mad",
+            AnomalyMethod::InterquartileRange => "iqr",
+            AnomalyMethod::RandomCutForest => "rcf",
+            AnomalyMethod::Esd => "esd",
         }
     }
 }

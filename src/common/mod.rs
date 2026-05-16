@@ -10,6 +10,7 @@ pub mod logging;
 pub mod math;
 pub mod pool;
 pub mod rdb;
+pub mod replies;
 pub mod rounding;
 pub mod string_interner;
 pub mod strings;

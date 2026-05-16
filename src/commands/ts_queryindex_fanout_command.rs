@@ -57,7 +57,7 @@ impl FanoutClientCommand for QueryIndexFanoutCommand {
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
         ctx.reply_with_array(self.keys.len());
         for key in self.keys.iter() {
-            ctx.reply_with_bulk_string(key);
+            ctx.reply_with_string(key);
         }
         Status::Ok
     }

@@ -186,7 +186,7 @@ fn filter_series_by_date_range<'a>(
     // since they hold a reference to the Context, which is not `Send`/`Sync` - hence the
     // need to collect IDs first and then reconstruct the guards from the original vector.
     // NOTE: we should evaluate the possible implications for a large number of selected series
-    // (e.g. thousands) - in that case, we might want to consider batching access to the
+    // (e.g., thousands) - in that case, we might want to consider batching access to the
     // GIL while checking below.
     let matching_ids: Vec<u64> = series
         .iter()

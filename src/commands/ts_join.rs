@@ -1,8 +1,12 @@
 use crate::commands::command_parser::{parse_join_args, parse_timestamp_range};
+use crate::common::replies::{reply_with_array, reply_with_null, reply_with_sample};
 use crate::error_consts;
-use crate::join::{JoinOptions, process_join};
+use crate::join::{JoinOptions, JoinResultType, process_join};
 use crate::series::get_timeseries;
-use valkey_module::{AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
+use joinkit::EitherOrBoth;
+use valkey_module::{
+    AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
+};
 
 /// TS.JOIN key1 key2 fromTimestamp toTimestamp
 ///   [INNER | FULL | LEFT | RIGHT | ANTI | SEMI | ASOF [PREVIOUS | NEXT | NEAREST] tolerance [ALLOW_EXACT_MATCH [true|false]]]
@@ -36,5 +40,34 @@ pub fn ts_join_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         get_timeseries(ctx, &right_key, Some(AclPermissions::ACCESS), true)?.unwrap();
 
     let result = process_join(&left_series, &right_series, &options)?;
-    Ok(result.into())
+    match result {
+        JoinResultType::Samples(samples) => {
+            reply_with_array(ctx, samples.len());
+            for sample in samples.iter() {
+                reply_with_sample(ctx, sample);
+            }
+        }
+        JoinResultType::Values(values) => {
+            reply_with_array(ctx, values.len());
+            for value in values.iter() {
+                reply_with_array(ctx, 2);
+                match value.0 {
+                    EitherOrBoth::Both(ref l, ref r) => {
+                        reply_with_sample(ctx, l);
+                        reply_with_sample(ctx, r);
+                    }
+                    EitherOrBoth::Left(ref l) => {
+                        reply_with_sample(ctx, l);
+                        reply_with_null(ctx);
+                    }
+                    EitherOrBoth::Right(ref r) => {
+                        reply_with_null(ctx);
+                        reply_with_sample(ctx, r);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ValkeyValue::NoReply)
 }

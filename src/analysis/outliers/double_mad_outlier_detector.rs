@@ -48,7 +48,7 @@ impl DoubleMadOutlierDetector {
 
     /// Construct an untrained detector with the provided options.
     /// Fences will be computed when `train` is called (or on-demand in `detect`).
-    pub fn with_options(options: MADAnomalyOptions) -> Self {
+    pub fn with_options(options: &MADAnomalyOptions) -> Self {
         Self::new(options.k, options.estimator)
     }
 

@@ -12,7 +12,7 @@ use crate::series::{DateRange, TimestampRange, ValueFilter};
 use get_size2::GetSize;
 use std::fmt::Display;
 use std::hash::Hash;
-use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString};
 
 pub use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::rdb::{rdb_load_f64, rdb_load_u8, rdb_save_f64, rdb_save_u8};
@@ -308,24 +308,6 @@ pub(crate) struct MRangeSeriesResult {
     pub data: TimeSeriesChunk,
 }
 
-impl From<MRangeSeriesResult> for ValkeyValue {
-    fn from(series: MRangeSeriesResult) -> Self {
-        let labels: Vec<_> = series
-            .labels
-            .into_iter()
-            .map(|label| label.into())
-            .collect();
-
-        let samples: Vec<_> = series.data.iter().map(|s| s.into()).collect();
-        let series = vec![
-            ValkeyValue::BulkString(series.key),
-            ValkeyValue::Array(labels),
-            ValkeyValue::Array(samples),
-        ];
-        ValkeyValue::Array(series)
-    }
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct MGetRequest {
     pub with_labels: bool,
@@ -338,31 +320,6 @@ pub struct MGetSeriesData {
     pub series_key: ValkeyString,
     pub labels: Vec<Option<Label>>,
     pub sample: Option<Sample>,
-}
-
-impl From<MGetSeriesData> for ValkeyValue {
-    fn from(series: MGetSeriesData) -> Self {
-        let labels: Vec<_> = series
-            .labels
-            .into_iter()
-            .map(|label| match label {
-                Some(label) => label.into(),
-                None => ValkeyValue::Null,
-            })
-            .collect();
-
-        let sample_value: ValkeyValue = if let Some(sample) = series.sample {
-            sample.into()
-        } else {
-            ValkeyValue::Array(vec![])
-        };
-        let series = vec![
-            ValkeyValue::from(series.series_key),
-            ValkeyValue::Array(labels),
-            sample_value,
-        ];
-        ValkeyValue::Array(series)
-    }
 }
 
 #[derive(Debug, Default, Clone)]

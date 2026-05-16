@@ -1,4 +1,5 @@
-use crate::fanout::{FanoutClientCommand, FanoutContext, FanoutResult};
+use crate::fanout::FanoutContext;
+use crate::fanout::{FanoutClientCommand, FanoutResult};
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use valkey_module::{

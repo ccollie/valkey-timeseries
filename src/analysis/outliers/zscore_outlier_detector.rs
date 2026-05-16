@@ -289,7 +289,6 @@ mod tests {
     #[test]
     fn test_anomalies_have_high_normalized_scores() {
         // Keep the original intent: anomalies should score "high" on the normalized scale.
-        // Note: score cannot exceed 1.0 anymore, so check for closeness to 1 instead of > 3.
         let mut ts: Vec<f64> = (0..100).map(|i| (i as f64 / 10.0).sin()).collect();
         ts[25] = 5.0;
         ts[75] = -5.0;
@@ -362,7 +361,7 @@ mod tests {
         let ts = vec![1.0, 2.0];
         let options = AnomalyOptions::default();
 
-        let result = detect_anomalies(&ts, options);
+        let result = detect_anomalies(&ts, &options);
         assert!(result.is_err());
 
         // Test with constant time series

@@ -1,5 +1,6 @@
 use crate::commands::parse_mrange_options;
 use crate::commands::ts_mrange_fanout_command::MRangeFanoutCommand;
+use crate::commands::utils::reply_with_mrange_series_results;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
 use crate::series::mrange::process_mrange_query;
@@ -40,5 +41,5 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
     }
 
     let result_rows = process_mrange_query(ctx, options, false)?;
-    Ok(result_rows.into())
+    reply_with_mrange_series_results(ctx, &result_rows)
 }

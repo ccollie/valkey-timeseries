@@ -1,12 +1,13 @@
-use super::fanout::generated::{Label, MGetValue, MultiGetRequest, MultiGetResponse, Sample};
+use super::fanout::generated::{MGetValue, MultiGetRequest, MultiGetResponse};
 use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
 use crate::commands::process_mget_request;
-use crate::commands::utils::{reply_with_fanout_labels, reply_with_fanout_sample};
+use crate::commands::utils::reply_with_mget_values;
+use crate::common::logging::log_error;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::request_types::MGetRequest;
-use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
 
 #[derive(Debug, Default)]
 pub struct MGetFanoutCommand {
@@ -66,58 +67,12 @@ impl FanoutClientCommand for MGetFanoutCommand {
     }
 
     fn reply(&mut self, ctx: &FanoutContext) -> Status {
-        let count = self.series.len();
-        let status = ctx.reply_with_array(count);
-        if status != Status::Ok {
-            return status;
-        }
-        for response in self.series.iter() {
-            let status = reply_with_mget_value(ctx, response);
-            if status != Status::Ok {
-                return status;
+        match reply_with_mget_values(ctx, &self.series) {
+            Ok(_) => Status::Ok,
+            Err(e) => {
+                log_error(format!("Error processing MGET response: {}", e));
+                Status::Err
             }
         }
-        Status::Ok
     }
-}
-
-fn mget_value_to_reply(value: MGetValue) -> ValkeyValue {
-    ValkeyValue::Array(vec![
-        ValkeyValue::BulkString(value.key),
-        fanout_labels_to_reply(value.labels),
-        fanout_sample_to_reply(value.sample),
-    ])
-}
-
-fn fanout_labels_to_reply(labels: Vec<Label>) -> ValkeyValue {
-    ValkeyValue::Array(labels.into_iter().map(fanout_label_to_reply).collect())
-}
-
-fn fanout_label_to_reply(label: Label) -> ValkeyValue {
-    if label.name.is_empty() {
-        ValkeyValue::Null
-    } else {
-        ValkeyValue::Array(vec![
-            ValkeyValue::BulkString(label.name),
-            ValkeyValue::BulkString(label.value),
-        ])
-    }
-}
-
-fn fanout_sample_to_reply(sample: Option<Sample>) -> ValkeyValue {
-    match sample {
-        Some(sample) => ValkeyValue::Array(vec![
-            ValkeyValue::Integer(sample.timestamp),
-            ValkeyValue::Float(sample.value),
-        ]),
-        None => ValkeyValue::Null,
-    }
-}
-
-pub(super) fn reply_with_mget_value(ctx: &FanoutContext, value: &MGetValue) -> Status {
-    ctx.reply_with_array(3);
-    ctx.reply_with_bulk_string(value.key.as_str());
-    reply_with_fanout_labels(ctx, &value.labels);
-    reply_with_fanout_sample(ctx, &value.sample);
-    Status::Ok
 }

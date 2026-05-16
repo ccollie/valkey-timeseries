@@ -5,23 +5,13 @@ use crate::common::threads::join;
 use crate::join::{JoinOptions, JoinType, JoinValue, create_join_iter};
 use crate::series::TimeSeries;
 use joinkit::EitherOrBoth;
-use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
+use valkey_module::{ValkeyError, ValkeyResult};
 
 // naming is hard :-)
 /// The result of a join operation, which can be either samples (if reduced) or raw join values
 pub enum JoinResultType {
     Samples(Vec<Sample>),
     Values(Vec<JoinValue>),
-}
-
-impl From<JoinResultType> for ValkeyValue {
-    fn from(value: JoinResultType) -> Self {
-        let arr = match value {
-            JoinResultType::Samples(samples) => samples.iter().map(|x| x.into()).collect(),
-            JoinResultType::Values(values) => values.into_iter().map(|x| x.into()).collect(),
-        };
-        ValkeyValue::Array(arr)
-    }
 }
 
 pub fn process_join(
