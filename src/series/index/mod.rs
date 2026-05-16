@@ -29,13 +29,12 @@ mod label_querier;
 #[cfg(test)]
 mod postings_query_tests;
 mod reindex;
-pub mod slot_migrations;
+pub mod server_events;
 #[cfg(test)]
 mod timeseries_index_tests;
 
 pub(crate) use label_filter::*;
 pub use label_querier::*;
-pub(crate) use slot_migrations::{add_delayed_indexing_key, is_in_asm_slot_import};
 
 /// Map from db to TimeseriesIndex
 pub type TimeSeriesIndexMap = HashMap<i32, TimeSeriesIndex, BuildNoHashHasher<i32>>;
@@ -224,18 +223,6 @@ pub(crate) fn index_series_by_key(ctx: &Context, key: &[u8]) {
     } else {
         ctx.log_warning("Trying to restore a series that is already in the index");
     }
-}
-
-/// Handle the "restore" event, which is triggered for each key restored from disk during server startup
-/// or slot migration. It collects the keys for later indexing if we're in the middle of an ASM slot import,
-/// otherwise it indexes them immediately.
-pub(crate) fn handle_index_key_restore(ctx: &Context, key: &[u8]) {
-    let db = get_current_db(ctx);
-    if is_in_asm_slot_import() {
-        add_delayed_indexing_key(db, key);
-        return;
-    }
-    index_series_by_key(ctx, key);
 }
 
 pub(crate) fn init_croaring_allocator() {
