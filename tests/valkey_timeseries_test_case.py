@@ -12,7 +12,7 @@ from valkey.client import Valkey
 from valkey.connection import Connection
 from typing import List, Tuple
 from common import VALKEY_SERVER_PATH, LOGS_DIR, ValkeyInfo, CompactionRule, parse_info_response, TEST_DIR, \
-    MODULE_PATH as DEFAULT_MODULE_PATH
+    MODULE_PATH as DEFAULT_MODULE_PATH, get_module_path
 import random
 import string
 import logging
@@ -140,9 +140,16 @@ class ReplicationGroup:
         return info_dict
 
     def wait_for_replica_offset_to_sync_up(self, index):
+        # Snapshot the primary's current replication offset, then wait for the
+        # replica to reach that value.  The previous implementation had the
+        # lambda and the expected value swapped: it polled the primary's
+        # *current* (ever-increasing) offset and compared it against the
+        # replica's offset captured once at call-time — a condition that can
+        # never be satisfied once the primary advances past that snapshot.
+        target = self.get_primary_repl_offset()
         wait_for_equal(
-            lambda: self.get_primary_repl_offset(),
-            self.get_replica_repl_offset(index),
+            lambda: self.get_replica_repl_offset(index),
+            target,
             timeout=TEST_MAX_WAIT_TIME_SECONDS,
         )
 
@@ -170,6 +177,13 @@ class ReplicationGroup:
 
 class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
     """Common base class for the various Search test cases"""
+
+    def resolve_module_path(self) -> str:
+        """Resolve and validate the module path used by test servers."""
+        module_path = os.path.abspath(os.getenv('MODULE_PATH') or get_module_path() or DEFAULT_MODULE_PATH)
+        if not os.path.exists(module_path):
+            raise FileNotFoundError(f"Module path does not exist: {module_path}")
+        return module_path
 
     def normalize_dir_name(self, name: str) -> str:
         """Replace special chars from a string with an underscore"""
@@ -286,10 +300,7 @@ class ValkeyTimeSeriesTestCaseBase(ValkeyTimeSeriesTestCaseCommon):
 
     @pytest.fixture(autouse=True)
     def setup_test(self, request):
-        module_path = os.getenv('MODULE_PATH') or DEFAULT_MODULE_PATH
-        # Ensure the module path is absolute so valkey-server can find it
-        # regardless of the working directory it is launched from.
-        module_path = os.path.abspath(module_path)
+        module_path = self.resolve_module_path()
         args = {"enable-debug-command": "yes", 'loadmodule': module_path}
         server_path = VALKEY_SERVER_PATH
 
@@ -391,6 +402,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
         self,
         port: int,
         test_name: str,
+        module_path: str,
         cluster_enabled=True,
         is_primary=True,
     ) -> Tuple[ValkeyServerHandle, Valkey, str]:
@@ -422,11 +434,14 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
         )
         os.chdir(curdir)
         self.wait_for_logfile(logfile, "Ready to accept connections")
+        # Verify each node loaded the exact module artifact requested for this test run.
+        self.wait_for_logfile(logfile, f"Module 'ts' loaded from {module_path}")
         client.ping()
         return server, client, logfile
 
     @pytest.fixture(autouse=True)
     def setup_test(self, request):
+        module_path = self.resolve_module_path()
         replica_count = self.REPLICAS_COUNT
         # Extract parameters from pytest's parametrize decorator
         if hasattr(request.node, 'callspec') and 'setup_test' in request.node.callspec.params:
@@ -452,6 +467,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
             server, client, logfile = self.start_server(
                 primary_port,
                 test_name,
+                module_path,
                 True,
                 is_primary=True,
             )
@@ -465,6 +481,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
                     self.start_server(
                         replica_port,
                         test_name,
+                        module_path,
                         cluster_enabled=True,
                         is_primary=False,
                     )
@@ -526,7 +543,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
             ReplicationGroup.cleanup(rg)
 
     def get_config_file_lines(self, test_dir, port) -> List[str]:
-        module_path = os.path.abspath(os.getenv('MODULE_PATH') or DEFAULT_MODULE_PATH)
+        module_path = self.resolve_module_path()
         return [
             "enable-debug-command yes",
             f"dir {test_dir}",
@@ -561,9 +578,11 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
 
     def start_new_server(self, is_primary=True) -> Node:
         """Create a new Valkey server instance"""
+        module_path = self.resolve_module_path()
         server, client, logfile = self.start_server(
             self.get_bind_port(),
             self.test_name,
+            module_path,
             False,
             is_primary,
         )
@@ -594,7 +613,7 @@ class ValkeyTimeSeriesClusterTestCase(ValkeyTimeSeriesTestCaseCommon):
 
 def EnableDebugMode(config: List[str]):
     # turn "loadmodule xx.so" into "loadmodule xx.so --ts.debug-mode yes"
-    module_path = os.path.abspath(os.getenv('MODULE_PATH') or DEFAULT_MODULE_PATH)
+    module_path = os.path.abspath(os.getenv('MODULE_PATH') or get_module_path() or DEFAULT_MODULE_PATH)
     load_module = f"loadmodule {module_path}"
     return [x.replace(load_module, load_module + " --ts.debug-mode yes") for x in config]
 

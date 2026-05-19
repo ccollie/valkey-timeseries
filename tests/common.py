@@ -46,7 +46,27 @@ def get_dynamic_lib_extension():
         raise Exception(f"Unsupported platform: {system}")
 
 PLATFORM = get_platform()
-MODULE_PATH = os.path.abspath("{}/target/debug/libvalkey_timeseries{}".format(ROOT_PATH, get_dynamic_lib_extension()))
+
+# Default MODULE_PATH selection:
+# - If the environment variable MODULE_PATH is set, use it.
+# - Otherwise prefer the release build artifact (target/release/...), but fall
+#   back to the debug build if the release artifact doesn't exist. This makes
+#   integration tests pick up the release dylib built by `cargo build --release`
+#   while still allowing overrides via the environment.
+def _default_module_path():
+    env_path = os.environ.get('MODULE_PATH')
+    if env_path:
+        return os.path.abspath(env_path)
+
+    ext = get_dynamic_lib_extension()
+    release_path = os.path.abspath(f"{ROOT_PATH}/target/release/libvalkey_timeseries{ext}")
+    debug_path = os.path.abspath(f"{ROOT_PATH}/target/debug/libvalkey_timeseries{ext}")
+
+    if os.path.exists(release_path):
+        return release_path
+    return debug_path
+
+MODULE_PATH = _default_module_path()
 
 def get_server_version():
     version = os.getenv('VALKEY_VERSION')
@@ -62,12 +82,18 @@ def get_server_path(version):
     return os.path.abspath(path)
 
 def get_module_path():
+    # Respect explicit environment override first
     path = os.environ.get('MODULE_PATH')
-    if path is None:
-        path = os.path.join(ROOT_PATH, "target/debug/libvalkey_metrics{}".format(get_dynamic_lib_extension()))
-        path = os.path.abspath(path)
+    if path:
+        return os.path.abspath(path)
 
-    return path
+    # Prefer release artifact if available, otherwise use debug.
+    ext = get_dynamic_lib_extension()
+    release = os.path.abspath(os.path.join(ROOT_PATH, f"target/release/libvalkey_timeseries{ext}"))
+    debug = os.path.abspath(os.path.join(ROOT_PATH, f"target/debug/libvalkey_timeseries{ext}"))
+    if os.path.exists(release):
+        return release
+    return debug
 
 def parse_info_response(response):
     """Helper function to parse TS.INFO list response into a dictionary."""

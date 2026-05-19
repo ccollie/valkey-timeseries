@@ -194,20 +194,6 @@ pub fn clear_all_timeseries_indexes() {
     TIMESERIES_INDEX.pin().clear();
 }
 
-pub fn swap_timeseries_index_dbs(from_db: i32, to_db: i32) {
-    let guard = TIMESERIES_INDEX.guard();
-
-    let first = get_timeseries_index_for_db(from_db, &guard);
-    let second = get_timeseries_index_for_db(to_db, &guard);
-    first.swap(second)
-}
-
-pub fn mark_series_for_removal(ctx: &Context, id: SeriesRef) {
-    // mark the id for removal, signal to src_series to remove it
-    let index = get_timeseries_index(ctx);
-    index.mark_id_as_stale(id);
-}
-
 pub(crate) fn index_series_by_key(ctx: &Context, key: &[u8]) {
     let db = get_current_db(ctx);
     let valkey_key = ctx.create_string(key);

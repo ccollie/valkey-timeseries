@@ -1,5 +1,5 @@
-use crate::common::threads::spawn;
 use crate::common::logging::log_debug;
+use crate::common::threads::spawn;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX, get_db_index};
 use crate::series::tasks::utils::find_next_db;
 use std::sync::{LazyLock, Mutex};
@@ -31,7 +31,7 @@ pub fn optimize_indices_for_db() {
 }
 
 /// Process optimization for a specific database, called by the dispatcher.
-fn optimize_indices_internal() {
+pub(in crate::series) fn optimize_indices_internal() {
     let (db, cursor) = {
         let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
         (context.db, context.cursor.take())
@@ -162,4 +162,3 @@ mod tests {
         assert_eq!(cursor, None);
     }
 }
-

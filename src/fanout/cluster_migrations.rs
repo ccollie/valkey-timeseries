@@ -73,64 +73,67 @@ pub fn get_slot_migrations(ctx: &Context) -> Result<Vec<SlotMigration>, String> 
 
     let mut out = Vec::with_capacity(top.len());
 
+    fn apply_field(ctx: &Context, mig: &mut SlotMigration, key: &str, value: CallResult) {
+        match key {
+            "name" => mig.name = as_str(value).unwrap_or_default(),
+            "operation" => mig.operation = as_str(value).unwrap_or_default(),
+            "slot_ranges" => {
+                let s = as_str(value).unwrap_or_default();
+                match parse_slot_ranges(&s) {
+                    Ok(ranges) => mig.slot_ranges = ranges,
+                    Err(e) => ctx.log_warning(&format!("Error parsing slot ranges '{s}': {e}")),
+                }
+            }
+            "target_node" => {
+                let s = as_str(value).unwrap_or_default();
+                if !s.is_empty() {
+                    mig.target_node = Some(s);
+                }
+            }
+            "source_node" => {
+                let s = as_str(value).unwrap_or_default();
+                if !s.is_empty() {
+                    mig.source_node = Some(s);
+                }
+            }
+            "create_time" => mig.create_time = as_i64(value).unwrap_or(0),
+            "last_update_time" => mig.last_update_time = as_i64(value).unwrap_or(0),
+            "last_ack_time" => mig.last_ack_time = as_i64(value).unwrap_or(0),
+            "state" => mig.state = as_str(value).unwrap_or_default(),
+            "message" => mig.message = as_str(value).unwrap_or_default(),
+            "cow_size" => mig.cow_size = as_i64(value).unwrap_or(0),
+            "remaining_repl_size" => mig.remaining_repl_size = as_i64(value).unwrap_or(0),
+            _ => {}
+        }
+    }
+
     for job_entry in top.iter().flatten() {
-        let map_arr = match job_entry {
-            CallReply::Array(arr) => arr,
+        let mut mig = SlotMigration::default();
+        match job_entry {
+            CallReply::Array(arr) => {
+                let mut i = 0usize;
+                while i + 1 < arr.len() {
+                    let key = arr.get(i).and_then(as_str).unwrap_or_default();
+                    if !key.is_empty()
+                        && let Some(value) = arr.get(i + 1)
+                    {
+                        apply_field(ctx, &mut mig, &key.to_ascii_lowercase(), value);
+                    }
+                    i += 2;
+                }
+            }
+            CallReply::Map(map) => {
+                for (key, value) in map.iter() {
+                    let Some(key) = as_str(key) else {
+                        continue;
+                    };
+                    apply_field(ctx, &mut mig, &key.to_ascii_lowercase(), value);
+                }
+            }
             other => {
                 ctx.log_warning(&format!("Unexpected slot migration entry type: {other:?}"));
                 continue;
             }
-        };
-
-        let mut mig = SlotMigration::default();
-
-        let set_string = |idx: usize, field: &mut String| {
-            *field = map_arr.get(idx).and_then(as_str).unwrap_or_default();
-        };
-
-        let set_slots = |idx: usize, field: &mut RangeSetBlaze<u16>| {
-            let s = map_arr.get(idx).and_then(as_str).unwrap_or_default();
-            match parse_slot_ranges(&s) {
-                Ok(ranges) => *field = ranges,
-                Err(e) => ctx.log_warning(&format!("Error parsing slot ranges '{s}': {e}")),
-            }
-        };
-
-        let set_i64 = |idx: usize, field: &mut i64| {
-            *field = map_arr.get(idx).and_then(as_i64).unwrap_or(0);
-        };
-
-        let set_optional_node = |idx: usize, field: &mut Option<String>| {
-            let s = map_arr.get(idx).and_then(as_str).unwrap_or_default();
-            if !s.is_empty() {
-                *field = Some(s);
-            }
-        };
-
-        let mut i = 0usize;
-        while i + 1 < map_arr.len() {
-            let key = map_arr.get(i).and_then(as_str).unwrap_or_default();
-            let val_idx = i + 1;
-
-            hashify::fnc_map_ignore_case!(key.as_bytes(),
-                "name" => set_string(val_idx, &mut mig.name),
-                "operation" => set_string(val_idx, &mut mig.operation),
-                "slot_ranges" => set_slots(val_idx, &mut mig.slot_ranges),
-                "target_node" => set_optional_node(val_idx, &mut mig.target_node),
-                "source_node" => set_optional_node(val_idx, &mut mig.source_node),
-                "create_time" => set_i64(val_idx, &mut mig.create_time),
-                "last_update_time" => set_i64(val_idx, &mut mig.last_update_time),
-                "last_ack_time" => set_i64(val_idx, &mut mig.last_ack_time),
-                "state" => set_string(val_idx, &mut mig.state),
-                "message" => set_string(val_idx, &mut mig.message),
-                "cow_size" => set_i64(val_idx, &mut mig.cow_size),
-                "remaining_repl_size" => set_i64(val_idx, &mut mig.remaining_repl_size),
-                _ => {
-                    // Unknown key - ignore
-                }
-            );
-
-            i += 2;
         }
 
         out.push(mig);
@@ -225,6 +228,7 @@ const VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_EXPORT_COMPLETED: u64 = 5;
 
 const VALKEYMODULE_NODE_ID_LEN: usize = 40;
 
+#[derive(Debug)]
 pub enum AtomicSlotMigrationEvent {
     ImportStarted,
     ExportStarted,
@@ -329,7 +333,7 @@ unsafe extern "C" fn on_atomic_slot_migration_event(
     }
 }
 
-pub(super) fn register_atomic_slot_migration_event_handler(
+pub fn register_atomic_slot_migration_event_handler(
     ctx: &Context,
     on_event: Option<AtomicSlotMigrationEventHandler>,
 ) {
@@ -349,6 +353,23 @@ pub(super) fn register_atomic_slot_migration_event_handler(
     };
     if res != raw::REDISMODULE_OK as i32 {
         ctx.log_warning("Failed to subscribe to atomic slot migration events");
+    }
+    // Declare that this module handles atomic slot migration events, so the
+    // server will permit ASM operations involving this module. This maps to
+    // the VALKEYMODULE_OPTIONS_HANDLE_ATOMIC_SLOT_MIGRATION flag in the
+    // Valkey module API.
+    // VALKEYMODULE_OPTIONS_HANDLE_ATOMIC_SLOT_MIGRATION == (1 << 5)
+    unsafe {
+        if let Some(set_opts) = raw::ValkeyModule_SetModuleOptions {
+            let flag = 1 << 5;
+            set_opts(ctx.ctx as *mut raw::ValkeyModuleCtx, flag);
+            ctx.log_notice(&format!(
+                "Declared module options in init: HANDLE_ATOMIC_SLOT_MIGRATION (0x{:x})",
+                flag
+            ));
+        } else {
+            ctx.log_notice("ValkeyModule_SetModuleOptions not available in raw bindings (init)");
+        }
     }
 }
 

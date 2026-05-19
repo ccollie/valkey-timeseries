@@ -10,13 +10,13 @@ Quick start (commands you can run)
   `cargo fmt --check && cargo clippy --profile release --all-targets -- -D clippy::all && RUSTFLAGS="-D warnings" cargo build --all --all-targets --release`
 - Local dev script (recommended):
     - `SERVER_VERSION=unstable ./build.sh`  # builds module, builds valkey-server, runs unit & integration tests
-    - To run ASAN integration pass: `ASAN_BUILD=true SERVER_VERSION=unstable ./build.sh`
+    - To run ASAN integration pass: `ASAN_BUILD=true SERVER_VERSION=9.0.1 ./build.sh`
     - Run a subset of Python integration tests: `TEST_PATTERN="test_ts_add" SERVER_VERSION=unstable ./build.sh`
 
 Key ENV and behavior (from `./build.sh`)
 
 - `SERVER_VERSION` (required): controls which valkey-server is cloned/built and stored at
-  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `unstable` if not set, which tracks the latest main
+  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `9.0.1` if not set, which tracks the latest main
   branch.
 - `ASAN_BUILD`: when set runs tests with LeakSanitizer checks and fails on leaks.
 - `TEST_PATTERN`: passed to pytest `-k` to select tests.
@@ -43,7 +43,7 @@ High-level architecture (big picture)
   `src/commands/fanout.*.proto`) and explicit fanout registration (`register_fanout_operations`) to implement
   cluster-wide queries.
 
-Project-specific conventions & patterns
+Project-specific conventions and patterns
 
 - All Valkey commands are declared in the `valkey_module!` macro in `src/lib.rs`; change there to add/remove commands.
 - Command files follow `ts_<command>.rs` naming and export `ts_<command>_cmd` functions (see `src/commands/mod.rs`).

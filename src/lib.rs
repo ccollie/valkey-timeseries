@@ -37,7 +37,7 @@ mod tests;
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
 use crate::series::index::server_events::{
-    generic_key_events_handler, register_server_event_handlers, slot_migration_event_handler,
+    generic_key_events_handler, register_server_event_handlers,
 };
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 
@@ -95,7 +95,6 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
-    // respond with either Status::Ok or Status::Err (if you want to prevent module loading)
     Status::Ok
 }
 
@@ -108,19 +107,19 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
+    if let Err(e) = register_server_event_handlers(ctx) {
+        let msg = format!("Failed to register server event handlers: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
+    }
+
     if is_clustered(ctx) {
-        init_fanout(ctx, Some(slot_migration_event_handler));
+        init_fanout(ctx);
         if let Err(e) = register_fanout_operations() {
             let msg = format!("Failed to register fanout operations: {e}");
             ctx.log_warning(&msg);
             return Status::Err;
         };
-    }
-
-    if let Err(e) = register_server_event_handlers(ctx) {
-        let msg = format!("Failed to register server event handlers: {e}");
-        ctx.log_warning(&msg);
-        return Status::Err;
     }
 
     MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
