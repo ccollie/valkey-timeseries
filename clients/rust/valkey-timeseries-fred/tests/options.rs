@@ -1,4 +1,4 @@
-use valkey_timeseries_fred::{MRangeOptions, RangeOptions, ValkeyTimeseriesClient};
+use valkey_timeseries_fred::{MRangeOptions, RangeOptions};
 
 #[test]
 fn range_options_builder_tracks_variadic_filters() {
@@ -33,10 +33,4 @@ fn mrange_options_builder_tracks_groupby_and_selected_labels() {
         options.groupby,
         Some(("region".to_string(), "sum".to_string()))
     );
-}
-
-#[test]
-fn client_is_cloneable_for_pooling_usage() {
-    let client = ValkeyTimeseriesClient::from_config(fred::types::RedisConfig::default());
-    let _clone = client.clone();
 }

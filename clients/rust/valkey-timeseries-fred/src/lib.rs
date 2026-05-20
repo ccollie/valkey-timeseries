@@ -115,6 +115,8 @@ impl ValkeyTimeseriesClient {
         parse_i64(self.custom("TS.ADD", args, ClusterHash::FirstKey).await?)
     }
 
+    /// `TS.ADDBULK` returns a module-defined response shape, so this method
+    /// exposes the raw `RedisValue` for caller-directed parsing.
     pub async fn ts_addbulk(
         &self,
         key: impl Into<RedisValue>,
@@ -158,6 +160,10 @@ impl ValkeyTimeseriesClient {
         )
     }
 
+    /// Generic wrapper over `TS._DEBUG`.
+    ///
+    /// Current module subcommands include `HELP`, `STRINGPOOLSTATS [TOPK]`,
+    /// and `LIST_CONFIGS [VERBOSE]`.
     pub async fn ts_debug(
         &self,
         subcommand: impl Into<RedisValue>,
@@ -247,6 +253,8 @@ impl ValkeyTimeseriesClient {
         self.custom("TS.INFO", args, ClusterHash::FirstKey).await
     }
 
+    /// `join_args` should contain the trailing `TS.JOIN` options after
+    /// destination/source keys (for example join strategy and aggregations).
     pub async fn ts_join(
         &self,
         destination_key: impl Into<RedisValue>,
