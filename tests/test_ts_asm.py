@@ -79,19 +79,33 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
     def _wait_for_no_migrations(self, client: Valkey, timeout: int = 30):
         """Wait for all migrations to complete (CLUSTER GETSLOTMIGRATIONS returns empty)."""
-        def check_migrations():
+        deadline = time.time() + timeout
+        last_state = None
+
+        while time.time() < deadline:
             try:
                 result = client.execute_command("CLUSTER GETSLOTMIGRATIONS")
-                # Result is a dict/map when there are no migrations
-                if isinstance(result, dict):
-                    return len(result) == 0
-                # Or empty list
-                return len(result) == 0
             except Exception as e:
                 logger.warning(f"Error checking migrations: {e}")
-                return False
+                time.sleep(1)
+                continue
 
-        wait_for_true(check_migrations, timeout=timeout)
+            if isinstance(result, dict):
+                if len(result) == 0:
+                    return
+                state = result
+            else:
+                if len(result) == 0:
+                    return
+                state = result
+
+            if state != last_state:
+                logger.warning(f"Waiting for migrations to drain; state={state}")
+                last_state = state
+
+            time.sleep(1)
+
+        raise TimeoutError(f"Timed out waiting for migrations to complete; last_state={last_state}")
 
     def _assert_queryindex_empty(self, client: Valkey, label_filter: str):
         """Assert TS.QUERYINDEX returns an empty list for the given filter."""
