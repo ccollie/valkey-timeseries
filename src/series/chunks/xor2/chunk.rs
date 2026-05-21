@@ -257,7 +257,7 @@ impl XOR2Chunk {
     }
 
     fn update_header(&mut self) {
-        if self.b.bytes().len() >= CHUNK_HEADER_SIZE + 1 {
+        if self.b.bytes().len() > CHUNK_HEADER_SIZE {
             let [hi, lo] = self.num_total.to_be_bytes();
             self.b.stream[0] = hi;
             self.b.stream[1] = lo;
