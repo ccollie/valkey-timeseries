@@ -153,4 +153,33 @@ pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::ChunkEncoding;
+
+    #[test]
+    fn chunk_encoding_u8_roundtrip() {
+        let encodings = [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::TSXor,
+            ChunkEncoding::Pco,
+            ChunkEncoding::Xor2,
+        ];
+
+        for &enc in &encodings {
+            let b = enc as u8;
+            let decoded = ChunkEncoding::try_from(b).expect("valid encoding byte");
+            assert_eq!(decoded, enc, "roundtrip failed for encoding {:?}", enc);
+        }
+    }
+
+    #[test]
+    fn chunk_encoding_invalid_u8_returns_err() {
+        // Pick a value outside the defined range (1..=5)
+        let invalid: u8 = 0u8;
+        assert!(ChunkEncoding::try_from(invalid).is_err());
+
+        let invalid2: u8 = 255u8;
+        assert!(ChunkEncoding::try_from(invalid2).is_err());
+    }
+}
