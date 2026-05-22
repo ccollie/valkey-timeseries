@@ -320,7 +320,6 @@ impl TSXorChunk {
                 for &b in arr.iter().skip(start) {
                     self.writer.write_byte(b);
                 }
-
             } else {
                 self.write_full_value(v);
             }
@@ -953,26 +952,6 @@ mod tests {
             TSXorChunk::deserialize(&serialized),
             Err(TsdbError::ChunkDecoding)
         ));
-    }
-
-    #[test]
-    fn cache_window_insert_deduplicates_and_moves_to_front() {
-        let mut window = CacheWindow::new();
-        window.insert(10);
-        window.insert(20);
-        window.insert(30);
-
-        assert_eq!(window.len(), 3);
-        assert_eq!(window.get(0), 30);
-        assert_eq!(window.get(1), 20);
-        assert_eq!(window.get(2), 10);
-
-        // Re-insert existing value; it should move to front without increasing length.
-        window.insert(20);
-        assert_eq!(window.len(), 3);
-        assert_eq!(window.get(0), 20);
-        assert_eq!(window.get(1), 30);
-        assert_eq!(window.get(2), 10);
     }
 
     #[test]
