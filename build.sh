@@ -27,7 +27,9 @@ RUSTFLAGS="-D warnings" cargo build --all --all-targets  --release
 # Only run unit tests if no specific integration test is specified
 if [[ -z "$TEST_PATTERN" ]]; then
   echo "Running unit tests..."
-  cargo test --features enable-system-alloc
+  cargo test --lib --tests --features enable-system-alloc
+  echo "Running doc tests..."
+  cargo test --doc --features enable-system-alloc
 fi
 
 # Ensure SERVER_VERSION environment variable is set
