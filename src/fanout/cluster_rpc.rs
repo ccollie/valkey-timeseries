@@ -104,9 +104,9 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 ///
 /// There's no need for global uniqueness because:
 ///
-///     - Each node only looks up requests in its own INFLIGHT_REQUESTS map
-///     - Request IDs never need to be coordinated across nodes
-///     - Two different nodes can safely use the same ID simultaneously for different requests
+/// - Each node only looks up requests in its own INFLIGHT_REQUESTS map
+/// - Request IDs never need to be coordinated across nodes
+/// - Two different nodes can safely use the same ID simultaneously for different requests
 ///
 fn generate_id() -> u64 {
     loop {
@@ -543,7 +543,7 @@ extern "C" fn on_error_received(
 /// The provided `receiver_func` must be valid for the lifetime of the module
 /// and correctly handle the arguments passed by Valkey.
 fn register_message_receiver(
-    ctx: &Context, // Static method as it's usually done once at load time
+    ctx: &Context,
     type_: u8,
     receiver_func: ValkeyModuleClusterMessageReceiver,
 ) {
