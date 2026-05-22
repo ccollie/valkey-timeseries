@@ -24,7 +24,7 @@ pub const SEARCH_RESULT_LIMIT_MAX: usize = 1000;
 
 /// SortBy is a closed set of label search result sort keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum SortBy {
+pub enum SortBy {
     #[default]
     Value,
     Score,

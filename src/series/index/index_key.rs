@@ -35,6 +35,10 @@ impl IndexKey {
     pub fn len(&self) -> usize {
         self.0.len() - 1
     }
+    
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl Display for IndexKey {

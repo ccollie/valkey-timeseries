@@ -61,6 +61,12 @@ impl Hash for GorillaEncoder {
     }
 }
 
+impl Default for GorillaEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GorillaEncoder {
     pub fn new() -> GorillaEncoder {
         let writer = BufferedWriter::new();

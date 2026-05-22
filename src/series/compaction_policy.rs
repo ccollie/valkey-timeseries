@@ -59,6 +59,12 @@ pub struct PolicyConfig {
     global_policies: Vec<CompactionPolicy>,
 }
 
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PolicyConfig {
     pub fn new() -> Self {
         PolicyConfig {
