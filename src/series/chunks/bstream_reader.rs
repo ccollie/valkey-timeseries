@@ -332,8 +332,8 @@ mod tests {
         let data = vec![0b10000000u8];
         let mut reader = BStreamReader::new(&data);
 
-        assert_eq!(reader.read_bit().unwrap(), true);
-        assert_eq!(reader.read_bit().unwrap(), false);
+        assert!(reader.read_bit().unwrap());
+        assert!(!reader.read_bit().unwrap());
     }
 
     #[test]
