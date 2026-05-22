@@ -1,0 +1,45 @@
+use crate::commands::parse_mrange_options;
+use crate::commands::ts_mrange_fanout_command::MRangeFanoutCommand;
+use crate::commands::utils::reply_with_mrange_series_results;
+use crate::error_consts;
+use crate::fanout::{FanoutClientCommand, is_clustered};
+use crate::series::mrange::process_mrange_query;
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
+
+/// TS.MRANGE fromTimestamp toTimestamp
+//   [LATEST]
+//   [FILTER_BY_TS ts...]
+//   [FILTER_BY_VALUE min max]
+//   [WITHLABELS | <SELECTED_LABELS label...>]
+//   [COUNT count]
+//   [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+//   FILTER filterExpr...
+//   [GROUPBY label REDUCE reducer]
+pub fn ts_mrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    mrange_internal(ctx, args, false)
+}
+
+pub fn ts_mrevrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    mrange_internal(ctx, args, true)
+}
+
+fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> ValkeyResult {
+    let mut args = args.into_iter().skip(1).peekable();
+    let mut options = parse_mrange_options(&mut args)?;
+
+    if options.filters.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+
+    options.is_reverse = reverse;
+
+    args.done()?;
+
+    if is_clustered(ctx) {
+        let operation = MRangeFanoutCommand::new(options);
+        return operation.exec(ctx);
+    }
+
+    let result_rows = process_mrange_query(ctx, options, false)?;
+    reply_with_mrange_series_results(ctx, &result_rows)
+}

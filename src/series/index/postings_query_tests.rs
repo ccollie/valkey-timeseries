@@ -908,6 +908,37 @@ mod tests {
     }
 
     #[test]
+    fn test_debug_or_host_regex() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        fn parse_metric(metric_name: &str) -> MetricName {
+            metric_name.parse().unwrap()
+        }
+
+        let series_data = HashMap::from([
+            (5, parse_metric(r#"cpu_usage{host="server1", env="prod"}"#)),
+            (6, parse_metric(r#"cpu_usage{host="server2", env="prod"}"#)),
+        ]);
+
+        for (&series_ref, metric) in series_data.iter() {
+            let labels = metric.to_label_vec();
+            add_series(&mut ix, &mut labels_map, series_ref, &labels);
+        }
+
+        let or_matchers = vec![vec![
+            LabelFilter::create(RegexEqual, "host", "^server[12]$").unwrap(),
+        ]];
+        let filter: SeriesSelector = or_matchers.into();
+        let actual = ix.postings_for_selector(&filter).unwrap();
+
+        assert!(actual.contains(5));
+        assert!(actual.contains(6));
+    }
+
+    #[test]
     fn test_querying_after_reindex() {
         let index = TimeSeriesIndex::new();
 
@@ -1015,6 +1046,7 @@ mod tests {
         let regex_filter = SeriesSelector::with_filters(regex_matchers);
 
         let regex_query_result = index.postings_for_selector(&regex_filter).unwrap();
+
         assert!(
             regex_query_result.contains(ts.id),
             "Query should still work after rename"
@@ -1029,5 +1061,132 @@ mod tests {
                 "Series ID should map to new key"
             );
         });
+    }
+
+    #[test]
+    fn test_regex_charclass_node12() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        let series_data = HashMap::from([
+            (1, labels_from_strings(&["node", "node1"])),
+            (2, labels_from_strings(&["node", "node2"])),
+            (3, labels_from_strings(&["node", "node3"])),
+        ]);
+
+        for (series_ref, labels) in series_data.iter() {
+            add_series(&mut ix, &mut labels_map, *series_ref, labels);
+        }
+
+        // Create a regex matcher using a character class and ensure it matches node1 and node2
+        let lf = LabelFilter::create(RegexEqual, "node", "node[12]").unwrap();
+        let actual = get_labels_by_filters(&ix, &[lf], &labels_map);
+
+        // Extract the matched node values and assert the right ones matched
+        let mut matched: Vec<String> = actual
+            .iter()
+            .map(|lbls| {
+                lbls.iter()
+                    .find(|l| l.name == "node")
+                    .unwrap()
+                    .value
+                    .clone()
+            })
+            .collect();
+        matched.sort();
+        assert_eq!(matched, vec!["node1".to_string(), "node2".to_string()]);
+    }
+
+    #[test]
+    fn test_regex_matchers_with_ordered_literal_hints() {
+        use MatchOp::*;
+
+        let mut ix: TimeSeriesIndex = TimeSeriesIndex::default();
+        let mut labels_map: HashMap<SeriesRef, Vec<Label>> = HashMap::new();
+
+        let series_data = HashMap::from([
+            (
+                1,
+                labels_from_strings(&["instance", "server-east-db-primary-prod"]),
+            ),
+            (
+                2,
+                labels_from_strings(&["instance", "server-east-prod-primary-db"]),
+            ),
+            (3, labels_from_strings(&["instance", "foo-123-bar"])),
+            (4, labels_from_strings(&["instance", "bar-123-foo"])),
+        ]);
+
+        for (series_ref, labels) in series_data.iter() {
+            add_series(&mut ix, &mut labels_map, *series_ref, labels);
+        }
+
+        let prefixed = LabelFilter::create(RegexEqual, "instance", "^server.*db.*prod$").unwrap();
+        let actual = get_labels_by_filters(&ix, &[prefixed], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("server-east-db-primary-prod")
+        );
+
+        let generic = LabelFilter::create(RegexEqual, "instance", ".*foo.*bar.*").unwrap();
+        let actual = get_labels_by_filters(&ix, &[generic], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("foo-123-bar")
+        );
+
+        let prefixed_suffix = LabelFilter::create(RegexEqual, "instance", "^server.+db$").unwrap();
+        let actual = get_labels_by_filters(&ix, &[prefixed_suffix], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("server-east-prod-primary-db")
+        );
+
+        let suffix_only = LabelFilter::create(RegexEqual, "instance", "^.*bar$").unwrap();
+        let actual = get_labels_by_filters(&ix, &[suffix_only], &labels_map);
+        assert_eq!(actual.len(), 1);
+        assert_eq!(
+            actual[0]
+                .iter()
+                .find(|label| label.name == "instance")
+                .map(|label| label.value.as_str()),
+            Some("foo-123-bar")
+        );
+
+        let contains_list =
+            LabelFilter::create(RegexEqual, "instance", ".*(server|client).*").unwrap();
+        let actual = get_labels_by_filters(&ix, &[contains_list], &labels_map);
+        assert_eq!(actual.len(), 2);
+        let mut matched: Vec<_> = actual
+            .iter()
+            .filter_map(|labels| {
+                labels
+                    .iter()
+                    .find(|label| label.name == "instance")
+                    .map(|label| label.value.clone())
+            })
+            .collect();
+        matched.sort();
+        assert_eq!(
+            matched,
+            vec![
+                "server-east-db-primary-prod".to_string(),
+                "server-east-prod-primary-db".to_string(),
+            ]
+        );
     }
 }

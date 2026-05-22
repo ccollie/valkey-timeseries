@@ -9,7 +9,7 @@ mod tests {
         DuplicatePolicy, SampleAddResult,
         chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
     };
-    use crate::tests::generators::DataGenerator;
+    use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;
 
     /// A test helper function for asserting floating point numbers is within the
@@ -32,6 +32,7 @@ mod tests {
         DataGenerator::builder()
             .samples(count)
             .start(1000)
+            .algorithm(RandAlgo::StdNorm)
             .interval(Duration::from_millis(1000))
             .build()
             .generate()
@@ -2506,11 +2507,7 @@ mod tests {
     #[test]
     fn test_has_samples_in_range_different_encodings() {
         // Test with different chunk encodings to ensure behavior is consistent
-        for encoding in [
-            ChunkEncoding::Uncompressed,
-            ChunkEncoding::Gorilla,
-            ChunkEncoding::Pco,
-        ] {
+        for encoding in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
                 Sample {
@@ -2531,11 +2528,7 @@ mod tests {
 
     #[test]
     fn test_has_samples_in_range_edge_cases() {
-        for encoding in [
-            ChunkEncoding::Uncompressed,
-            ChunkEncoding::Gorilla,
-            ChunkEncoding::Pco,
-        ] {
+        for encoding in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
                 Sample {
@@ -2643,8 +2636,15 @@ mod tests {
     #[test]
     fn test_timeseries_chunk_serialization_large_dataset() {
         for &encoding in CHUNK_TYPES.iter() {
-            let mut chunk = TimeSeriesChunk::new(encoding, 8192); // Larger chunk size
-            let samples = generate_random_samples(500); // Large dataset
+            let mut chunk = TimeSeriesChunk::new(encoding, 16384); // Larger chunk size
+            let samples = DataGenerator::builder()
+                .samples(2000)
+                .start(1000)
+                .algorithm(RandAlgo::MackeyGlass)
+                .interval(Duration::from_millis(1000))
+                .decimal_digits(3)
+                .build()
+                .generate();
 
             for sample in &samples {
                 if let Err(TsdbError::CapacityFull(_)) = chunk.add_sample(sample) {
@@ -2657,6 +2657,7 @@ mod tests {
             }
 
             let serialized = serialize_chunk(chunk.clone());
+
             let deserialized = deserialize_chunk(&serialized);
 
             assert_eq!(chunk, deserialized);

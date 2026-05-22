@@ -38,6 +38,12 @@ enum MatcherOpType {
   NOT_EQUAL = 1;
   REGEX_EQUAL = 2;
   REGEX_NOT_EQUAL = 3;
+  STARTS_WITH = 4;
+  NOT_STARTS_WITH = 5;
+  CONTAINS = 6;
+  NOT_CONTAINS = 7;
+  MATCH_ALL = 8;
+  MATCH_NONE = 9;
 }
 
 enum MatchersConnector  {
@@ -51,18 +57,26 @@ message FilterListValue {
 
 message FilterPredicateValue {
   oneof label_value {
-    string value = 1;
-    FilterListValue values = 2;
+    bool empty = 1;
+    string single = 2;
+    FilterListValue list = 3;
   }
+}
+
+message RegexFilterValue {
+  string regex = 1;
+  string prefix = 2;
+  string suffix = 3;
 }
 
 message LabelFilter {
   string label = 1;
   MatcherOpType op = 2;
-  oneof value {
-    bool empty = 3;
-    string single = 4;
-    FilterListValue list = 5;
+  oneof matcher {
+    FilterPredicateValue predicate = 3;
+    RegexFilterValue regex = 4;
+    string prefix = 5;
+    string contains = 6;
   }
 }
 
@@ -108,6 +122,26 @@ message IndexQueryRequest {
   repeated SeriesSelector filters = 2;
 }
 
+enum LabelSearchType {
+  NAME = 0;
+  VALUE = 1;
+  METRIC_NAME = 2;
+}
+
+enum FuzzySearchAlgorithm {
+  NOOP = 0;
+  JARO_WINKLER = 1;
+  SUBSEQUENCE = 2;
+}
+
+enum LabelResultsSortOrder {
+  SCORE_DESC = 0;
+  VALUE_ASC = 1;
+  VALUE_DESC = 2;
+  CARDINALITY_ASC = 3;
+  CARDINALITY_DESC = 4;
+}
+
 message LabelNamesRequest {
   MetaDateRangeFilter range = 1;
   repeated SeriesSelector filters = 2;
@@ -117,6 +151,20 @@ message LabelValuesRequest {
   string label = 1;
   MetaDateRangeFilter range = 2;
   repeated SeriesSelector filters = 3;
+}
+
+message LabelSearchRequest {
+  LabelSearchType request_type = 1;
+  string label = 2;
+  repeated string search_terms = 3;
+  double fuzz_threshold = 4;
+  FuzzySearchAlgorithm fuzz_algorithm = 5;
+  bool ignore_case = 6;
+  bool include_metadata = 8;
+  MetaDateRangeFilter range = 9;
+  repeated SeriesSelector filters = 10;
+  LabelResultsSortOrder sort_order = 11;
+  uint32 limit = 12;
 }
 
 message CardinalityRequest {

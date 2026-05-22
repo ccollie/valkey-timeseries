@@ -17,7 +17,7 @@ It returns the following statistics:
 
 - Total number of indexed series
 - Number of distinct labels and label=value pairs in the index
-- Top-N cardinalities for:
+- Top-K cardinalities for:
   - a specific label’s values (optional `LABEL`)
   - labels by usage
   - label=value pairs by usage
@@ -50,7 +50,7 @@ Number of distinct `label=value` pairs in the index.
 
 ### `seriesCountByMetricName`
 
-Top-N highest cardinality metrics:
+Top-K highest cardinality metrics:
 
 - `name`: the metric name
 - `count`: cardinality (series count) having `LABEL=<name>`
@@ -59,7 +59,7 @@ Top-N highest cardinality metrics:
 
 ### `labelValueCountByLabelName`
 
-Top-N label names by total usage, each item containing:
+Top-K label names by total usage, each item containing:
 
 - `name`: label name
 - `count`: sum of cardinalities across that label’s `label=value` postings

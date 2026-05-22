@@ -68,6 +68,9 @@ pub enum TsdbError {
 
     #[error("End of stream")]
     EndOfStream,
+
+    #[error("TSDB: permissions error: {0}")]
+    PermissionsError(String),
 }
 
 pub type TsdbResult<T = ()> = Result<T, TsdbError>;

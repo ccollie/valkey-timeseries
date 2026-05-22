@@ -22,6 +22,8 @@ const SECONDARY_TOKENS: &[Token] = &[
     Token::OpNotEqual,
     Token::RegexEqual,
     Token::RegexNotEqual,
+    Token::StartsWith,
+    Token::NotStartsWith,
     Token::LeftBrace,
     Token::Eof,
 ];
@@ -135,21 +137,16 @@ fn parse_redis_ts_predicate(
         LabelFilter::create(op, label, value)
     } else {
         let value = parse_matcher_value(lex)?;
-        create_equality_filter(label, op, value)
+        create_predicate_filter(label, op, value)
     }
 }
 
-fn create_equality_filter(
+fn create_predicate_filter(
     label: String,
     op: MatchOp,
     value: PredicateValue,
 ) -> ParseResult<LabelFilter> {
-    let matcher = match op {
-        MatchOp::Equal => PredicateMatch::Equal(value),
-        MatchOp::NotEqual => PredicateMatch::NotEqual(value),
-        _ => unreachable!("create_equality_filter: unexpected operator"),
-    };
-    Ok(LabelFilter { label, matcher })
+    LabelFilter::create_with_value(op, label, value)
 }
 
 fn parse_label_filters(p: &mut Lexer<Token>, name: Option<String>) -> ParseResult<SeriesSelector> {
@@ -265,6 +262,8 @@ fn parse_label_filter(
             OpNotEqual,
             RegexEqual,
             RegexNotEqual,
+            StartsWith,
+            NotStartsWith,
             Comma,
             RightBrace,
             OpOr,
@@ -275,6 +274,8 @@ fn parse_label_filter(
             OpNotEqual,
             RegexEqual,
             RegexNotEqual,
+            StartsWith,
+            NotStartsWith,
             Comma,
             RightBrace,
         ][..]
@@ -300,7 +301,7 @@ fn parse_label_filter(
         Ok((LabelFilter::create(op, label, value)?, None))
     } else {
         let value = parse_matcher_value(p)?;
-        Ok((create_equality_filter(label, op, value)?, None))
+        Ok((create_predicate_filter(label, op, value)?, None))
     }
 }
 

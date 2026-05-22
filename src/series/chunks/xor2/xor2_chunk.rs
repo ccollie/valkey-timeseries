@@ -380,23 +380,6 @@ impl XOR2Chunk {
     }
 
     pub fn append(&mut self, st: i64, t: i64, v: f64) {
-        if cfg!(test) {
-            // helpful debug for failing tests
-            if v.is_finite() && (v.abs() < 1000.0) {
-                eprintln!(
-                    "[xor2.append] num_total={} st={} t={} v={}",
-                    self.num_total, st, t, v
-                );
-            } else {
-                eprintln!(
-                    "[xor2.append] num_total={} st={} t={} v_bits={:#x}",
-                    self.num_total,
-                    st,
-                    t,
-                    v.to_bits()
-                );
-            }
-        }
         let mut t_delta = 0u64;
         let mut st_diff = 0i64;
 
@@ -816,18 +799,13 @@ impl Chunk for XOR2Chunk {
             let mut current = Sample::default();
 
             // append all samples strictly before ts
-            loop {
-                match iter.next() {
-                    Some(item) => {
-                        current = item;
-                        if current.timestamp >= ts {
-                            break;
-                        }
-                        let st_cur = iter.at_st();
-                        new_chunk.append(st_cur, current.timestamp, current.value);
-                    }
-                    None => break,
+            while let Some(item) = iter.next() {
+                current = item;
+                if current.timestamp >= ts {
+                    break;
                 }
+                let st_cur = iter.at_st();
+                new_chunk.append(st_cur, current.timestamp, current.value);
             }
 
             if current.timestamp == ts {
@@ -868,7 +846,7 @@ impl Chunk for XOR2Chunk {
     ) -> TsdbResult<Vec<SampleAddResult>> {
         let mut result = Vec::with_capacity(samples.len());
 
-        if self.is_empty() || (samples.len() > 0 && samples[0].timestamp > self.last_timestamp()) {
+        if self.is_empty() || (!samples.is_empty() && samples[0].timestamp > self.last_timestamp()) {
             for sample in samples.iter() {
                 match self.add_sample(sample) {
                     Ok(_) => result.push(SampleAddResult::Ok(*sample)),

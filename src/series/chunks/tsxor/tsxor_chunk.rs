@@ -39,11 +39,9 @@ impl Default for CacheWindow {
 
 impl CacheWindow {
     fn new() -> Self {
-        let mut buffer = VecDeque::with_capacity(WINDOW_SIZE);
-        for _ in 0..WINDOW_SIZE {
-            buffer.push_back(0);
+        Self {
+            buffer: VecDeque::with_capacity(WINDOW_SIZE),
         }
-        Self { buffer }
     }
 
     pub fn len(&self) -> usize {
@@ -51,7 +49,9 @@ impl CacheWindow {
     }
 
     pub fn insert(&mut self, val: u64) {
-        self.buffer.pop_back();
+        if self.len() == WINDOW_SIZE {
+            self.buffer.pop_back();
+        }
         self.buffer.push_front(val);
     }
 
@@ -64,6 +64,10 @@ impl CacheWindow {
     }
 
     fn get_candidate(&self, val: u64) -> u64 {
+        if self.buffer.is_empty() {
+            return 0;
+        }
+
         let mut best_score: i32 = -1;
         let mut best_idx: usize = 0;
         for (i, &b) in self.buffer.iter().enumerate() {
@@ -98,10 +102,6 @@ impl CacheWindow {
         for _ in 0..len {
             let val = try_read_uvarint(src).ok()?;
             buffer.push_back(val);
-        }
-
-        for _ in len..WINDOW_SIZE {
-            buffer.push_back(0);
         }
 
         Some(Self { buffer })
@@ -305,23 +305,22 @@ impl TSXorChunk {
             let trail_bytes = (xor.trailing_zeros() / 8) as usize;
 
             if (lead_bytes + trail_bytes) > 1 {
-                if let Some(offset) = self.window.get_index_of(candidate) {
-                    let off = (offset as u8) | 0x80u8;
-                    self.writer.write_byte(off);
+                let offset = self.window.get_index_of(candidate).unwrap_or_default();
 
-                    let xor_len_bytes = 8 - lead_bytes - trail_bytes;
-                    let xor_shifted = xor >> (trail_bytes * 8);
-                    let head = ((trail_bytes as u8) << 4) | (xor_len_bytes as u8 & 0x0F);
-                    self.writer.write_byte(head);
+                let off = (offset as u8) | 0x80u8;
+                self.writer.write_byte(off);
 
-                    let arr = xor_shifted.to_be_bytes();
-                    let start = 8 - xor_len_bytes;
-                    for &b in arr.iter().skip(start) {
-                        self.writer.write_byte(b);
-                    }
-                } else {
-                    self.write_full_value(v);
+                let xor_len_bytes = 8 - lead_bytes - trail_bytes;
+                let xor_shifted = xor >> (trail_bytes * 8);
+                let head = ((trail_bytes as u8) << 4) | (xor_len_bytes as u8 & 0x0F);
+                self.writer.write_byte(head);
+
+                let arr = xor_shifted.to_be_bytes();
+                let start = 8 - xor_len_bytes;
+                for &b in arr.iter().skip(start) {
+                    self.writer.write_byte(b);
                 }
+
             } else {
                 self.write_full_value(v);
             }
@@ -954,5 +953,37 @@ mod tests {
             TSXorChunk::deserialize(&serialized),
             Err(TsdbError::ChunkDecoding)
         ));
+    }
+
+    #[test]
+    fn cache_window_insert_deduplicates_and_moves_to_front() {
+        let mut window = CacheWindow::new();
+        window.insert(10);
+        window.insert(20);
+        window.insert(30);
+
+        assert_eq!(window.len(), 3);
+        assert_eq!(window.get(0), 30);
+        assert_eq!(window.get(1), 20);
+        assert_eq!(window.get(2), 10);
+
+        // Re-insert existing value; it should move to front without increasing length.
+        window.insert(20);
+        assert_eq!(window.len(), 3);
+        assert_eq!(window.get(0), 20);
+        assert_eq!(window.get(1), 30);
+        assert_eq!(window.get(2), 10);
+    }
+
+    #[test]
+    fn cache_window_respects_capacity_with_unique_values() {
+        let mut window = CacheWindow::new();
+        for i in 0..(WINDOW_SIZE + 5) {
+            window.insert(i as u64);
+        }
+
+        assert_eq!(window.len(), WINDOW_SIZE);
+        assert_eq!(window.get(0), (WINDOW_SIZE + 4) as u64);
+        assert_eq!(window.get(WINDOW_SIZE - 1), 5);
     }
 }

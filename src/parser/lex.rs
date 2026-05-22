@@ -67,6 +67,12 @@ pub enum Token {
     #[token("!~")]
     RegexNotEqual,
 
+    #[token("^=")]
+    StartsWith,
+
+    #[token("^~")]
+    NotStartsWith,
+
     #[regex("\"(?s:[^\"\\\\]|\\\\.)*", unterminated_string_literal)]
     #[regex("'(?s:[^'\\\\]|\\\\.)*", unterminated_string_literal)]
     #[regex("@[^\"'\\s]\\S+", unterminated_string_literal)]
@@ -99,6 +105,8 @@ impl Token {
             Self::OpNotEqual => "!=",
             Self::RegexEqual => "=~",
             Self::RegexNotEqual => "!~",
+            Self::StartsWith => "^=",
+            Self::NotStartsWith => "^~",
 
             Self::Eof => "<eof>",
 
@@ -226,6 +234,8 @@ mod tests {
     #[test_case("!=", OpNotEqual)]
     #[test_case("=~", RegexEqual)]
     #[test_case("!~", RegexNotEqual)]
+    #[test_case("^=", StartsWith)]
+    #[test_case("^~", NotStartsWith)]
     fn operator(src: &str, tok: Token) {
         test_tokens!(src, [tok]);
     }
