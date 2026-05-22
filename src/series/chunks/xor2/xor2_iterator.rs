@@ -1,15 +1,17 @@
 use crate::common::Sample;
-use crate::series::chunks::xor2::chunk::{is_stale_nan, read_st_header, STALE_NAN};
+use crate::series::chunks::bstream_reader::BStreamReader;
+use crate::series::chunks::xor2::xor2_chunk::{
+    CHUNK_HEADER_SIZE, ST_HEADER_SIZE, STALE_NAN, is_stale_nan, read_st_header,
+};
 use std::error::Error;
 use std::io;
-use crate::series::chunks::bstream_reader::BStreamReader;
 
 pub struct XOR2Iterator<'a> {
     br: BStreamReader<'a>,
     num_total: u16,
     num_read: u16,
     first_st_known: bool,
-    first_st_change_on: u8,
+    first_st_change_on: u16,
     leading: u8,
     trailing: u8,
     st: i64,
@@ -44,8 +46,8 @@ impl<'a> XOR2Iterator<'a> {
     }
 
     pub(super) fn reset(&mut self, b: &'a [u8]) {
-        let st_header_start = crate::series::chunks::xor2::chunk::CHUNK_HEADER_SIZE;
-        let data_start = st_header_start + 1;
+        let st_header_start = CHUNK_HEADER_SIZE;
+        let data_start = st_header_start + ST_HEADER_SIZE;
 
         if b.len() > data_start {
             self.br = BStreamReader::new(&b[data_start..]);
@@ -55,8 +57,9 @@ impl<'a> XOR2Iterator<'a> {
             self.num_total = u16::from_be_bytes([b[0], b[1]]);
         }
 
-        if b.len() > st_header_start {
-            let (first_st_known, first_st_change_on) = read_st_header(&b[st_header_start..st_header_start + 1]);
+        if b.len() >= st_header_start + ST_HEADER_SIZE {
+            let (first_st_known, first_st_change_on) =
+                read_st_header(&b[st_header_start..st_header_start + ST_HEADER_SIZE]);
             self.first_st_known = first_st_known;
             self.first_st_change_on = first_st_change_on;
         }
@@ -156,7 +159,7 @@ impl<'a> XOR2Iterator<'a> {
     }
 
     fn decode_value_known_non_zero(&mut self) -> io::Result<()> {
-        let sz = 64 - self.leading - self.trailing ;
+        let sz = 64 - self.leading - self.trailing;
 
         if self.br.valid > sz {
             let ctrl_bit = (self.br.buffer >> (self.br.valid - 1)) & 1;
@@ -204,7 +207,7 @@ impl<'a> XOR2Iterator<'a> {
 
         self.leading = new_leading;
         let sigbits = if sig_bits == 0 { 64 } else { sig_bits };
-        self.trailing = 64 - self.leading - sigbits ;
+        self.trailing = 64 - self.leading - sigbits;
 
         let value_bits = if self.br.valid >= sigbits {
             self.br.valid -= sigbits;
@@ -391,11 +394,11 @@ impl Iterator for XOR2Iterator<'_> {
             }
             _ => {
                 self.t += self.t_delta as i64;
-                self.val = f64::from_bits(crate::series::chunks::xor2::chunk::STALE_NAN);
+                self.val = f64::from_bits(STALE_NAN);
             }
         }
 
-        if self.first_st_change_on > 0 && saved_num_read >= self.first_st_change_on as u16 {
+        if self.first_st_change_on > 0 && saved_num_read >= self.first_st_change_on {
             let sdod = match self.br.read_varint() {
                 Ok(sd) => sd,
                 Err(e) => {
@@ -403,7 +406,7 @@ impl Iterator for XOR2Iterator<'_> {
                     return None;
                 }
             };
-            if saved_num_read == self.first_st_change_on as u16 {
+            if saved_num_read == self.first_st_change_on {
                 self.st_diff = sdod;
             } else {
                 self.st_diff += sdod;

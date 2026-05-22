@@ -50,10 +50,9 @@ impl<'a> BStreamReader<'a> {
 
     /// Reads a single bit and returns it as a boolean.
     pub fn read_bit(&mut self) -> io::Result<bool> {
-        if self.valid == 0
-            && !self.load_next_buffer(1) {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
-            }
+        if self.valid == 0 && !self.load_next_buffer(1) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
+        }
         self.read_bit_fast()
     }
 
@@ -74,10 +73,9 @@ impl<'a> BStreamReader<'a> {
     ///
     /// The result has the bits in the right-most positions, with other bits set to 0.
     pub fn read_bits(&mut self, nbits: u8) -> io::Result<u64> {
-        if self.valid == 0
-            && !self.load_next_buffer(nbits) {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
-            }
+        if self.valid == 0 && !self.load_next_buffer(nbits) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
+        }
 
         if nbits <= self.valid {
             return self.read_bits_fast(nbits);
@@ -90,6 +88,11 @@ impl<'a> BStreamReader<'a> {
         self.valid = 0;
 
         if !self.load_next_buffer(nbits_remaining) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
+        }
+
+        // If load_next_buffer loaded fewer valid bits than requested, treat as EOF
+        if self.valid < nbits_remaining {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
         }
 

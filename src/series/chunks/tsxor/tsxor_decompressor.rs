@@ -1,3 +1,4 @@
+use crate::common::logging::log_warning;
 use crate::series::chunks::buffered_read::BufferedReader;
 use crate::series::chunks::gorilla::utils::zigzag_decode;
 use crate::series::chunks::traits::BitRead;
@@ -75,7 +76,6 @@ impl<'a> DecompressorTSXor<'a> {
 
         // first sample
         if self.index == 0 {
-            self.index += 1;
             let sd = match self.reader.read_bits(FIRST_DELTA_BITS) {
                 Ok(v) => v,
                 Err(_) => return None,
@@ -83,21 +83,21 @@ impl<'a> DecompressorTSXor<'a> {
             self.stored_delta = sd as i64;
             let val_bits = match self.reader.read_u64() {
                 Ok(v) => v,
-                Err(_e) => {
-                    // todo: proper logging
-                    eprintln!("Error reading first value bits: {}", _e);
+                Err(e) => {
+                    log_warning(format!("Error reading first value bits: {}", e));
                     return None;
                 }
             };
             self.cache.insert(val_bits);
             self.stored_val = f64::from_bits(val_bits);
             self.stored_timestamp = self.block_timestamp + sd;
+            // we've successfully produced the first sample
+            self.index = 1;
             return Some((self.stored_timestamp, self.stored_val));
         }
 
-        self.index += 1;
-        if self.index > self.sample_count {
-            // sanity check to prevent reading beyond expected sample count, in case of malformed input
+        // If we've already produced sample_count samples, stop
+        if self.index >= self.sample_count {
             self.end_of_stream = true;
             return None;
         }
@@ -111,8 +111,7 @@ impl<'a> DecompressorTSXor<'a> {
             let bits = match self.reader.read_bits(to_read) {
                 Ok(v) => v,
                 Err(e) => {
-                    // TODO: proper logging
-                    eprintln!("Error reading delta delta bits: {}", e);
+                    log_warning(format!("Error reading delta delta bits: {}", e));
                     return None;
                 }
             };
@@ -130,12 +129,6 @@ impl<'a> DecompressorTSXor<'a> {
         self.stored_timestamp = (self.stored_timestamp as i128 + self.stored_delta as i128) as u64;
 
         // next value (single column)
-        // read one byte from leftover bytes area. We need to track a byte cursor over the remaining
-        // bytes that were appended after the bit stream. To simplify, we locate the current bit-reader
-        // byte position by introspecting buffer, and reader state is not exposed; instead we rely on
-        // reading value bytes using read_byte/read_u64 from the bit reader, which is correct because
-        // the compressor wrote bytes into the same bitstream in the same order.
-        // Attempt to read a single byte
         let head = match self.reader.read_byte() {
             Ok(b) => b,
             Err(_) => return None,
@@ -149,8 +142,7 @@ impl<'a> DecompressorTSXor<'a> {
             match self.reader.read_u64() {
                 Ok(v) => v,
                 Err(e) => {
-                    // todo: proper logging
-                    eprintln!("Error reading full value bits: {}", e);
+                    log_warning(format!("Error reading full bits: {}", e));
                     return None;
                 }
             }
@@ -160,7 +152,7 @@ impl<'a> DecompressorTSXor<'a> {
             let info = match self.reader.read_byte() {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("Error reading XOR info byte: {}", e);
+                    log_warning(format!("Error reading XOR info byte: {}", e));
                     return None;
                 }
             };
@@ -171,7 +163,7 @@ impl<'a> DecompressorTSXor<'a> {
                 match self.reader.read_byte() {
                     Ok(b) => xor_val = (xor_val << 8) | (b as u64),
                     Err(e) => {
-                        eprintln!("Error reading XOR value byte: {}", e);
+                        log_warning(format!("Error reading XOR value byte: {}", e));
                         return None;
                     }
                 }
@@ -190,6 +182,8 @@ impl<'a> DecompressorTSXor<'a> {
         let value = f64::from_bits(final_val);
         self.stored_val = value;
 
+        // Successfully produced a sample, increment produced count
+        self.index += 1;
         Some((self.stored_timestamp, value))
     }
 }

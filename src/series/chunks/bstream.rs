@@ -39,11 +39,13 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+use get_size2::GetSize;
+
 pub(in crate::series::chunks) const ZERO: bool = false;
 pub(in crate::series::chunks) const ONE: bool = true;
 
-
 /// A stream of bits for writing.
+#[derive(Clone, GetSize)]
 pub struct BStream {
     /// The data stream.
     pub(in crate::series::chunks) stream: Vec<u8>,

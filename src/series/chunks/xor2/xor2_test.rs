@@ -23,9 +23,13 @@ const MAX_FIRST_ST_CHANGE_ON: usize = 127;
 
 #[cfg(test)]
 mod tests {
-    use crate::series::chunks::bstream::BStream;
-    use crate::series::chunks::xor2::chunk::{is_stale_nan, XOR2Chunk, STALE_NAN};
     use super::*;
+    use crate::common::Sample;
+    use crate::series::chunks::Chunk;
+    use crate::series::chunks::ChunkEncoding;
+    use crate::series::chunks::bstream::BStream;
+    use crate::series::chunks::timeseries_chunk::TimeSeriesChunk;
+    use crate::series::chunks::xor2::xor2_chunk::{STALE_NAN, XOR2Chunk, is_stale_nan};
 
     fn write_xor2_new_window_payload(bs: &mut BStream, delta: u64) -> (u8, u8) {
         let (leading, trailing, sigbits) = xor2_delta_window(delta);
@@ -92,7 +96,11 @@ mod tests {
             };
             assert_eq!(expected.0, sample.timestamp);
             if expected.2 {
-                assert!(is_stale_nan(sample.value), "Expected stale NaN at ts={}", sample.timestamp);
+                assert!(
+                    is_stale_nan(sample.value),
+                    "Expected stale NaN at ts={}",
+                    sample.timestamp
+                );
             } else {
                 assert_eq!(expected.1, sample.value);
             }
@@ -101,61 +109,181 @@ mod tests {
 
     fn test_xor2_large_dod_with_active_st() {
         require_xor2_samples(&[
-            Triple { st: 0, t: 0, v: 1.0 },
-            Triple { st: 900, t: 1000, v: 2.0 },
-            Triple { st: 1000, t: 2000, v: 3.0 },
-            Triple { st: 1047576, t: 1050576, v: 4.0 },
+            Triple {
+                st: 0,
+                t: 0,
+                v: 1.0,
+            },
+            Triple {
+                st: 900,
+                t: 1000,
+                v: 2.0,
+            },
+            Triple {
+                st: 1000,
+                t: 2000,
+                v: 3.0,
+            },
+            Triple {
+                st: 1047576,
+                t: 1050576,
+                v: 4.0,
+            },
         ]);
     }
 
     fn test_xor2_active_st_fast_path_boundaries() {
         require_xor2_samples(&[
-            Triple { st: 0, t: 1000, v: 1.0 },
-            Triple { st: 1990, t: 2000, v: 1.0 },
-            Triple { st: 2986, t: 3000, v: 1.0 },
-            Triple { st: 3954, t: 4000, v: 1.0 },
-            Triple { st: 4698, t: 5000, v: 1.0 },
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 1990,
+                t: 2000,
+                v: 1.0,
+            },
+            Triple {
+                st: 2986,
+                t: 3000,
+                v: 1.0,
+            },
+            Triple {
+                st: 3954,
+                t: 4000,
+                v: 1.0,
+            },
+            Triple {
+                st: 4698,
+                t: 5000,
+                v: 1.0,
+            },
         ]);
     }
 
     fn test_xor2_active_st_13_bit_dod_value_unchanged_st_delta_branches() {
         require_xor2_samples(&[
-            Triple { st: 0, t: 1000, v: 1.0 },
-            Triple { st: 0, t: 2000, v: 1.0 },
-            Triple { st: 1500, t: 3000, v: 1.0 }, // First ST change: stDiff=500.
-            Triple { st: 2500, t: 4001, v: 1.0 }, // Active ST, dod=1, deltaStDiff=0.
-            Triple { st: 3497, t: 5003, v: 1.0 }, // Active ST, dod=1, deltaStDiff=4.
-            Triple { st: 4467, t: 6004, v: 1.0 }, // Active ST, dod=-1, deltaStDiff=32.
-            Triple { st: 5212, t: 7007, v: 1.0 }, // Active ST, dod=2, deltaStDiff=256.
-            Triple { st: 5915, t: 8008, v: 1.0 }, // Active ST, dod=-2, deltaStDiff=300.
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 0,
+                t: 2000,
+                v: 1.0,
+            },
+            Triple {
+                st: 1500,
+                t: 3000,
+                v: 1.0,
+            }, // First ST change: stDiff=500.
+            Triple {
+                st: 2500,
+                t: 4001,
+                v: 1.0,
+            }, // Active ST, dod=1, deltaStDiff=0.
+            Triple {
+                st: 3497,
+                t: 5003,
+                v: 1.0,
+            }, // Active ST, dod=1, deltaStDiff=4.
+            Triple {
+                st: 4467,
+                t: 6004,
+                v: 1.0,
+            }, // Active ST, dod=-1, deltaStDiff=32.
+            Triple {
+                st: 5212,
+                t: 7007,
+                v: 1.0,
+            }, // Active ST, dod=2, deltaStDiff=256.
+            Triple {
+                st: 5915,
+                t: 8008,
+                v: 1.0,
+            }, // Active ST, dod=-2, deltaStDiff=300.
         ]);
     }
 
     fn test_xor2_encode_joint_value_unchanged_then_changed() {
         require_xor2_samples(&[
-            Triple { st: 0, t: 1000, v: 1.0 },
-            Triple { st: 0, t: 2000, v: 2.0 },
-            Triple { st: 0, t: 7096, v: 2.0 },
-            Triple { st: 0, t: 12192, v: 3.0 },
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 0,
+                t: 2000,
+                v: 2.0,
+            },
+            Triple {
+                st: 0,
+                t: 7096,
+                v: 2.0,
+            },
+            Triple {
+                st: 0,
+                t: 12192,
+                v: 3.0,
+            },
         ]);
     }
 
     fn test_xor2_constant_non_zero_st_fast_path() {
         require_xor2_samples(&[
-            Triple { st: 500, t: 1000, v: 1.0 },
-            Triple { st: 500, t: 2000, v: 2.0 },
-            Triple { st: 500, t: 3000, v: 2.0 },
-            Triple { st: 500, t: 4050, v: 2.0 },
-            Triple { st: 500, t: 5100, v: 3.0 },
+            Triple {
+                st: 500,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 500,
+                t: 2000,
+                v: 2.0,
+            },
+            Triple {
+                st: 500,
+                t: 3000,
+                v: 2.0,
+            },
+            Triple {
+                st: 500,
+                t: 4050,
+                v: 2.0,
+            },
+            Triple {
+                st: 500,
+                t: 5100,
+                v: 3.0,
+            },
         ]);
     }
 
     fn test_xor2_active_st_dod_zero_value_change() {
         require_xor2_samples(&[
-            Triple { st: 0, t: 1000, v: 1.0 },
-            Triple { st: 500, t: 2000, v: 2.0 },
-            Triple { st: 500, t: 3000, v: 3.0 }, // dod=0, value changed.
-            Triple { st: 500, t: 4000, v: 4.0 }, // dod=0, value changed.
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 500,
+                t: 2000,
+                v: 2.0,
+            },
+            Triple {
+                st: 500,
+                t: 3000,
+                v: 3.0,
+            }, // dod=0, value changed.
+            Triple {
+                st: 500,
+                t: 4000,
+                v: 4.0,
+            }, // dod=0, value changed.
         ]);
     }
 
@@ -165,11 +293,17 @@ mod tests {
 
         // Timestamps with dod values spanning multiple encoding ranges.
         let timestamps = vec![
-            1000, 2000, 3000,
+            1000,
+            2000,
+            3000,
             // dod in 13-bit range.
-            3050, 4050, 5050,
+            3050,
+            4050,
+            5050,
             // dod in 20-bit range (large jitter).
-            5050 + 100000, 5050 + 200000, 5050 + 300000,
+            5050 + 100000,
+            5050 + 200000,
+            5050 + 300000,
             // Back to regular.
             5050 + 301000,
         ];
@@ -205,29 +339,73 @@ mod tests {
     }
 
     fn test_xor2_active_st_dod_zero_value_unchanged_zero_st_delta() {
-        require_xor2_samples(
-            &[
-                Triple { st: 0, t: 1000, v: 1.0 },
-                Triple { st: 0, t: 2000, v: 1.0 },
-                Triple { st: 1500, t: 3000, v: 1.0 }, // First ST change: stDiff=500.
-                Triple { st: 2500, t: 4000, v: 1.0 }, // Active ST, dod=0, value unchanged, deltaStDiff=0.
-                Triple { st: 3500, t: 5000, v: 1.0 }, // Repeat to keep the path live on consecutive samples.
-            ],
-        );
+        require_xor2_samples(&[
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 0,
+                t: 2000,
+                v: 1.0,
+            },
+            Triple {
+                st: 1500,
+                t: 3000,
+                v: 1.0,
+            }, // First ST change: stDiff=500.
+            Triple {
+                st: 2500,
+                t: 4000,
+                v: 1.0,
+            }, // Active ST, dod=0, value unchanged, deltaStDiff=0.
+            Triple {
+                st: 3500,
+                t: 5000,
+                v: 1.0,
+            }, // Repeat to keep the path live on consecutive samples.
+        ]);
     }
 
     fn test_xor2_active_st_value_change_inline_st_delta_branches() {
-        require_xor2_samples(
-            &[
-                Triple { st: 0, t: 1000, v: 1.0 },
-                Triple { st: 0, t: 2000, v: 2.0 },
-                Triple { st: 1500, t: 3000, v: 3.0 }, // First ST change: stDiff=500.
-                Triple { st: 2500, t: 4000, v: 4.0 }, // Active ST default case, deltaStDiff=0.
-                Triple { st: 3497, t: 5000, v: 5.0 }, // Active ST default case, deltaStDiff=3.
-                Triple { st: 4466, t: 6000, v: 6.0 }, // Active ST default case, deltaStDiff=31.
-                Triple { st: 5211, t: 7000, v: 7.0 }, // Active ST default case, deltaStDiff=255.
-            ],
-        );
+        require_xor2_samples(&[
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 0,
+                t: 2000,
+                v: 2.0,
+            },
+            Triple {
+                st: 1500,
+                t: 3000,
+                v: 3.0,
+            }, // First ST change: stDiff=500.
+            Triple {
+                st: 2500,
+                t: 4000,
+                v: 4.0,
+            }, // Active ST default case, deltaStDiff=0.
+            Triple {
+                st: 3497,
+                t: 5000,
+                v: 5.0,
+            }, // Active ST default case, deltaStDiff=3.
+            Triple {
+                st: 4466,
+                t: 6000,
+                v: 6.0,
+            }, // Active ST default case, deltaStDiff=31.
+            Triple {
+                st: 5211,
+                t: 7000,
+                v: 7.0,
+            }, // Active ST default case, deltaStDiff=255.
+        ]);
     }
 
     #[test]
@@ -277,8 +455,6 @@ mod tests {
 
         assert_eq!(None, it.next());
     }
-
-
 
     #[test]
     fn test_xor2_basic() {
@@ -335,6 +511,161 @@ mod tests {
             } else {
                 assert_eq!(v, expected_v);
             }
+        }
+    }
+
+    #[test]
+    fn test_xor2_serialize_deserialize_roundtrip_preserves_append_state() {
+        let samples = [
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 500,
+                t: 2000,
+                v: 2.0,
+            },
+            Triple {
+                st: 500,
+                t: 3000,
+                v: 3.0,
+            },
+        ];
+
+        let mut chunk = XOR2Chunk::new();
+        for sample in samples {
+            chunk.append(sample.st, sample.t, sample.v);
+        }
+
+        let mut serialized = Vec::new();
+        chunk.serialize(&mut serialized);
+
+        let mut restored = XOR2Chunk::deserialize(&serialized).expect("deserialize");
+        assert_eq!(
+            chunk, restored,
+            "serialized chunk should round-trip its internal state"
+        );
+
+        let next = Triple {
+            st: 500,
+            t: 4000,
+            v: 4.0,
+        };
+        chunk.append(next.st, next.t, next.v);
+        restored.append(next.st, next.t, next.v);
+
+        let got: Vec<_> = restored.iterator().collect();
+        let want: Vec<_> = chunk.iterator().collect();
+        assert_eq!(want.len(), got.len());
+        for (a, b) in want.iter().zip(got.iter()) {
+            assert_eq!(a.timestamp, b.timestamp);
+            assert_eq!(a.value.to_bits(), b.value.to_bits());
+        }
+    }
+
+    #[test]
+    fn test_xor2_clone_preserves_partial_writer_position() {
+        let samples = [
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 1.0,
+            },
+            Triple {
+                st: 500,
+                t: 2000,
+                v: 2.0,
+            },
+            Triple {
+                st: 500,
+                t: 3000,
+                v: 3.0,
+            },
+        ];
+
+        let mut chunk = XOR2Chunk::new();
+        for sample in samples {
+            chunk.append(sample.st, sample.t, sample.v);
+        }
+
+        let mut cloned = chunk.clone();
+        let next = Triple {
+            st: 500,
+            t: 4000,
+            v: 4.0,
+        };
+        chunk.append(next.st, next.t, next.v);
+        cloned.append(next.st, next.t, next.v);
+
+        let got: Vec<_> = cloned.iterator().collect();
+        let want: Vec<_> = chunk.iterator().collect();
+        assert_eq!(want.len(), got.len());
+        for (a, b) in want.iter().zip(got.iter()) {
+            assert_eq!(a.timestamp, b.timestamp);
+            assert_eq!(a.value.to_bits(), b.value.to_bits());
+        }
+    }
+
+    #[test]
+    fn test_xor2_updates_bounds_on_same_st_fast_path() {
+        let samples = [
+            Triple {
+                st: 0,
+                t: 1000,
+                v: 12.0,
+            },
+            Triple {
+                st: 0,
+                t: 2000,
+                v: 12.0,
+            },
+            Triple {
+                st: 0,
+                t: 3000,
+                v: 24.0,
+            },
+            Triple {
+                st: 0,
+                t: 4000,
+                v: 13.0,
+            },
+            Triple {
+                st: 0,
+                t: 5000,
+                v: 24.0,
+            },
+            Triple {
+                st: 0,
+                t: 6000,
+                v: 24.0,
+            },
+            Triple {
+                st: 0,
+                t: 7000,
+                v: 24.0,
+            },
+            Triple {
+                st: 0,
+                t: 8000,
+                v: 23.0,
+            },
+        ];
+
+        let mut chunk = TimeSeriesChunk::new(ChunkEncoding::Xor2, 16384);
+        for sample in samples {
+            chunk.add_sample(&Sample::new(sample.t, sample.v)).unwrap();
+        }
+
+        assert_eq!(8000, chunk.last_timestamp());
+        assert_eq!(23.0, chunk.last_value());
+
+        let got = chunk.get_range(0, 8001).unwrap();
+        assert_eq!(samples.len(), got.len());
+        for (sample, got) in samples.iter().zip(got.iter()) {
+            assert_eq!(sample.t, got.timestamp);
+            assert_eq!(sample.v.to_bits(), got.value.to_bits());
         }
     }
 }

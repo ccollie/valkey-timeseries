@@ -27,7 +27,7 @@ pub mod iterators;
 mod join;
 mod labels;
 mod parser;
-mod series;
+pub mod series;
 mod server_events;
 mod tests;
 

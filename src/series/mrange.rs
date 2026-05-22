@@ -22,7 +22,7 @@ struct MRangeSeriesMeta<'a> {
     group_label_value: Option<String>,
 }
 
-pub fn process_mrange_query(
+pub(crate) fn process_mrange_query(
     ctx: &Context,
     options: MRangeOptions,
     clustered: bool,

@@ -58,7 +58,8 @@ impl From<ChunkEncoding> for FanoutChunkEncoding {
         match value {
             ChunkEncoding::Uncompressed => FanoutChunkEncoding::Uncompressed,
             ChunkEncoding::Gorilla => FanoutChunkEncoding::Gorilla,
-            ChunkEncoding::Tsxor => FanoutChunkEncoding::Gorilla, // no direct mapping; fallback to Gorilla encoding for fanout transport
+            ChunkEncoding::TSXor => FanoutChunkEncoding::Tsxor,
+            ChunkEncoding::Xor2 => FanoutChunkEncoding::Xor2,
             ChunkEncoding::Pco => FanoutChunkEncoding::Pco,
         }
     }
@@ -70,6 +71,8 @@ impl From<FanoutChunkEncoding> for ChunkEncoding {
             FanoutChunkEncoding::Uncompressed => ChunkEncoding::Uncompressed,
             FanoutChunkEncoding::Gorilla => ChunkEncoding::Gorilla,
             FanoutChunkEncoding::Pco => ChunkEncoding::Pco,
+            FanoutChunkEncoding::Tsxor => ChunkEncoding::TSXor,
+            FanoutChunkEncoding::Xor2 => ChunkEncoding::Xor2,
         }
     }
 }
