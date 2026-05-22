@@ -1678,7 +1678,7 @@ mod tests {
 
         // Get filtered range
         let filtered_samples = ts.get_range_filtered(20, 80, Some(&timestamp_filter), None);
-        
+
         // Check that only the samples within the range 20 to 80 are returned
         assert_eq!(filtered_samples.len(), 4);
         assert_eq!(filtered_samples[0].timestamp, 20);

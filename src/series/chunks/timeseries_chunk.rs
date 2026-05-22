@@ -199,28 +199,28 @@ impl TimeSeriesChunk {
                     samples.push(sample);
                     index += 1;
                 }
-                        Ordering::Greater => {
-                            // Advance the index while ensuring we don't go out of bounds.
-                            // Use a flag to avoid pushing the same sample twice (when we break out of the loop
-                            // after a match and then perform the post-loop equality check).
-                            let mut matched = false;
-                            while index + 1 < timestamps.len() && first_ts < sample.timestamp {
-                                index += 1;
-                                first_ts = timestamps[index];
-                                if first_ts == sample.timestamp {
-                                    samples.push(sample);
-                                    index += 1;
-                                    matched = true;
-                                    break;
-                                }
-                            }
-                            // If we reached the last timestamp (or didn't match in the loop), check equality once more
-                            // without advancing past bounds. Only push if we haven't already matched above.
-                            if !matched && index < timestamps.len() && first_ts == sample.timestamp {
-                                samples.push(sample);
-                                index += 1;
-                            }
+                Ordering::Greater => {
+                    // Advance the index while ensuring we don't go out of bounds.
+                    // Use a flag to avoid pushing the same sample twice (when we break out of the loop
+                    // after a match and then perform the post-loop equality check).
+                    let mut matched = false;
+                    while index + 1 < timestamps.len() && first_ts < sample.timestamp {
+                        index += 1;
+                        first_ts = timestamps[index];
+                        if first_ts == sample.timestamp {
+                            samples.push(sample);
+                            index += 1;
+                            matched = true;
+                            break;
                         }
+                    }
+                    // If we reached the last timestamp (or didn't match in the loop), check equality once more
+                    // without advancing past bounds. Only push if we haven't already matched above.
+                    if !matched && index < timestamps.len() && first_ts == sample.timestamp {
+                        samples.push(sample);
+                        index += 1;
+                    }
+                }
             }
         }
 

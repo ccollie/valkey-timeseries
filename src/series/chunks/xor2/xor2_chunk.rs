@@ -846,7 +846,8 @@ impl Chunk for XOR2Chunk {
     ) -> TsdbResult<Vec<SampleAddResult>> {
         let mut result = Vec::with_capacity(samples.len());
 
-        if self.is_empty() || (!samples.is_empty() && samples[0].timestamp > self.last_timestamp()) {
+        if self.is_empty() || (!samples.is_empty() && samples[0].timestamp > self.last_timestamp())
+        {
             for sample in samples.iter() {
                 match self.add_sample(sample) {
                     Ok(_) => result.push(SampleAddResult::Ok(*sample)),

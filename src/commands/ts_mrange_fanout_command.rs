@@ -212,7 +212,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.grouping,
             reverse_aggr,
         )
-            .collect()
+        .collect()
     } else if series.len() == 1 {
         create_sample_iterator_adapter(
             series[0].data.iter(),
@@ -220,7 +220,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.grouping,
             reverse_aggr,
         )
-            .collect()
+        .collect()
     } else {
         let iters = series.iter().map(|s| s.data.iter()).collect::<Vec<_>>();
         create_sample_iterator_adapter(
@@ -229,7 +229,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.grouping,
             reverse_aggr,
         )
-            .collect()
+        .collect()
     }
 }
 
