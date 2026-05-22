@@ -738,11 +738,13 @@ impl Chunk for XOR2Chunk {
         let mut new_chunk = XOR2Chunk::with_max_size(self.max_size);
         let saved_count = self.len();
 
-        for sample in self.iterator() {
+        let mut iter = self.iterator();
+        while let Some(sample) = iter.next() {
             if sample.timestamp >= start_ts && sample.timestamp <= end_ts {
                 continue;
             }
-            new_chunk.append(0, sample.timestamp, sample.value);
+            let st = iter.at_st();
+            new_chunk.append(st, sample.timestamp, sample.value);
         }
 
         *self = new_chunk;
