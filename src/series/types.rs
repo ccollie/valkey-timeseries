@@ -100,6 +100,9 @@ impl DuplicatePolicy {
     ///
     /// # Example
     /// ```rust
+    /// use valkey_timeseries::series::DuplicatePolicy;
+    /// let duplicate_policy = DuplicatePolicy::KeepLast;
+    /// let ts = 0;
     /// let result = duplicate_policy.duplicate_value(ts, 42.0, 43.0);
     /// match result {
     ///     Ok(value) => println!("Resolved value: {}", value),

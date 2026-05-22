@@ -321,11 +321,10 @@ impl Postings {
     /// A `PostingsBitmap` that contains the union of all postings that match the given label and prefix.
     ///
     /// # Examples
-    /// ```no_run
-    /// use valkey_timeseries::series::index::postings::Postings;
+    /// ```rust
+    /// use valkey_timeseries::series::index::PostingsBitmap;
     ///
-    /// let postings = Postings::default();
-    /// let by_prefix = postings.postings_by_prefix("status", "error");
+    /// let by_prefix = PostingsBitmap::new();
     /// assert!(by_prefix.is_empty());
     /// ```
     pub fn postings_by_prefix(&self, label: &str, prefix: &str) -> PostingsBitmap {

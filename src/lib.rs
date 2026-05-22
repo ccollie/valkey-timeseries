@@ -29,6 +29,8 @@ mod join;
 mod labels;
 mod parser;
 pub mod series;
+
+pub use labels::Label;
 mod server_events;
 mod tests;
 
