@@ -11,6 +11,7 @@ use std::os::raw::c_void;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicUsize;
 use valkey_module::{Context, MODULE_CONTEXT, raw};
+use crate::common::context::{get_current_db, set_current_db};
 
 pub const DEFAULT_NUM_CPUS: usize = 4;
 
@@ -88,6 +89,17 @@ where
     callback();
 }
 
+extern "C" fn event_loop_callback_wrapper_with_context<F>(data: *mut c_void)
+where
+    F: FnOnce(&Context) + 'static,
+{
+    let callback: Box<F> = unsafe { Box::from_raw(data as *mut F) };
+    let ctx = MODULE_CONTEXT.lock();
+    let saved_db = get_current_db(&ctx);
+    callback(&ctx);
+    set_current_db(&ctx, saved_db);
+}
+
 /// Executes a given closure on the Valkey main thread. The provided closure will be executed as a one-shot operation.
 ///
 /// # Parameters
@@ -122,3 +134,41 @@ where
         raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
     }
 }
+
+/// Executes a given closure on the Valkey main thread, providing a reference to the module [`Context`].
+/// The provided closure will be executed as a one-shot operation.
+///
+/// # Parameters
+/// - `force_async`: If true, the closure will be executed asynchronously even if it's already on the main thread.
+/// - `callback`: The closure to be executed on the main thread. It receives a reference to the module [`Context`].
+///
+/// # Example
+/// ```rust
+/// use crate::common::threads::run_on_main_thread_with_context;
+///
+/// // A simple closure to be executed on the main thread with access to Context
+/// run_on_main_thread_with_context(false, |ctx| {
+///     ctx.log_notice("This is running on the main thread with context!");
+/// });
+/// ```
+pub fn run_on_main_thread_with_context<F>(force_async: bool, callback: F)
+where
+    F: FnOnce(&Context) + Send + 'static,
+{
+    if is_main_thread() && !force_async {
+        let ctx = MODULE_CONTEXT.lock();
+        callback(&ctx);
+        return;
+    }
+
+    // Move the closure to the heap so it has a stable memory address
+    let boxed_callback = Box::new(callback);
+    let raw_data = Box::into_raw(boxed_callback) as *mut c_void;
+
+    let event_loop_callback = event_loop_callback_wrapper_with_context::<F>;
+
+    unsafe {
+        raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
+    }
+}
+
