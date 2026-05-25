@@ -3,23 +3,24 @@
 use crate::common::context::{get_current_db, register_server_event_handler, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::{log_debug, log_notice};
+use crate::common::threads::run_on_main_thread_with_context;
 use crate::fanout::cluster_migrations::{
-    AtomicSlotMigrationEvent, register_atomic_slot_migration_event_handler,
-    supports_atomic_slot_migration,
+    register_atomic_slot_migration_event_handler, supports_atomic_slot_migration,
+    AtomicSlotMigrationEvent,
 };
 use crate::series::index::{
-    TIMESERIES_INDEX, clear_all_timeseries_indexes, clear_timeseries_index, get_db_index,
-    get_timeseries_index, get_timeseries_index_for_db, index_series_by_key,
+    clear_all_timeseries_indexes, clear_timeseries_index, get_db_index, get_timeseries_index,
+    get_timeseries_index_for_db, index_series_by_key, TIMESERIES_INDEX,
 };
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::tasks::remove_all_stale_series_internal;
-use crate::series::{SeriesRef, TimeSeries, get_timeseries, get_timeseries_mut};
+use crate::series::{get_timeseries, get_timeseries_mut, SeriesRef, TimeSeries};
 use range_set_blaze::RangeSetBlaze;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use valkey_module::server_events::PersistenceSubevent;
-use valkey_module::{Context, MODULE_CONTEXT, NotifyEvent, ValkeyResult, logging, raw};
+use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyResult, MODULE_CONTEXT};
 use valkey_module_macros::persistence_event_handler;
 
 const BATCH_SIZE: usize = 256;
@@ -37,6 +38,11 @@ static DELAYED_KEYS_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn clear_delayed_keys_map() {
     DELAYED_KEYS_MAP.pin().clear();
+}
+
+fn clear_delayed_keys_in_db(db: i32) {
+    let pending_keys = DELAYED_KEYS_MAP.pin();
+    pending_keys.remove(&db);
 }
 
 pub fn add_delayed_indexing_key(db: i32, key: &[u8]) {
@@ -573,10 +579,12 @@ unsafe extern "C" fn on_flush_event(
 
         if fi.dbnum == -1 {
             clear_all_timeseries_indexes();
+            clear_delayed_keys_map();
         } else {
             let ctx = Context::new(ctx);
             set_current_db(&ctx, fi.dbnum);
             clear_timeseries_index(&ctx);
+            clear_delayed_keys_in_db(fi.dbnum);
         }
     };
 }
