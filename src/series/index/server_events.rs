@@ -39,10 +39,10 @@ pub(super) fn clear_delayed_keys_map() {
     DELAYED_KEYS_MAP.pin().clear();
 }
 
-pub fn add_delayed_indexing_key(db: i32, keys: &[u8]) {
+pub fn add_delayed_indexing_key(db: i32, key: &[u8]) {
     let pending_keys = DELAYED_KEYS_MAP.pin();
 
-    let converted_key = keys.to_vec().into_boxed_slice();
+    let converted_key = key.to_vec().into_boxed_slice();
     pending_keys
         .get_or_insert_with(db, || RwLock::new(Vec::with_capacity(64)))
         .write()
