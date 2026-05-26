@@ -2,7 +2,7 @@ use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::Timestamp;
 use crate::common::binop::ComparisonOperator;
 use crate::common::rounding::{MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, RoundingStrategy};
-use crate::common::time::{current_time_millis, timestamp_so_system_time};
+use crate::common::time::{current_time_millis, timestamp_to_system_time};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::join::join_reducer::JoinReducer;
@@ -1405,8 +1405,8 @@ pub(super) fn parse_query_range_command_args(
 
     let eval_stmt = EvalStmt {
         expr,
-        start: timestamp_so_system_time(start),
-        end: timestamp_so_system_time(end),
+        start: timestamp_to_system_time(start),
+        end: timestamp_to_system_time(end),
         interval: step,
         lookback_delta,
     };
@@ -1446,7 +1446,7 @@ pub(super) fn parse_query_command_args(
         }
     }
 
-    let query_time = timestamp_so_system_time(evaluation_ts.as_timestamp(None));
+    let query_time = timestamp_to_system_time(evaluation_ts.as_timestamp(None));
 
     let eval_stmt = EvalStmt {
         expr,
