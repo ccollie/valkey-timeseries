@@ -1,5 +1,5 @@
 use crate::common::Sample;
-use crate::series::chunks::bstream_reader::BStreamReader;
+use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
 use crate::series::chunks::xor2::xor2_chunk::{
     CHUNK_HEADER_SIZE, ST_HEADER_SIZE, STALE_NAN, is_stale_nan, read_st_header,
 };
@@ -7,7 +7,7 @@ use std::error::Error;
 use std::io;
 
 pub struct XOR2Iterator<'a> {
-    br: BStreamReader<'a>,
+    br: BitStreamReader<'a>,
     num_total: u16,
     num_read: u16,
     first_st_known: bool,
@@ -26,7 +26,7 @@ pub struct XOR2Iterator<'a> {
 impl<'a> XOR2Iterator<'a> {
     pub(super) fn new(buf: &'a [u8]) -> Self {
         let mut it = Self {
-            br: BStreamReader::new(buf),
+            br: BitStreamReader::new(buf),
             num_total: 0,
             num_read: 0,
             first_st_known: false,
@@ -50,7 +50,7 @@ impl<'a> XOR2Iterator<'a> {
         let data_start = st_header_start + ST_HEADER_SIZE;
 
         if b.len() > data_start {
-            self.br = BStreamReader::new(&b[data_start..]);
+            self.br = BitStreamReader::new(&b[data_start..]);
         }
 
         if b.len() >= 2 {

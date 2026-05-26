@@ -1,5 +1,6 @@
-use super::traits::BitRead;
-use std::io::{Error, ErrorKind, Result};
+use crate::common::logging::log_warning;
+use crate::series::chunks::stream::traits::BitRead;
+use std::io::Result;
 
 const BYTE_WIDTH: usize = size_of::<u64>();
 const BIT_WIDTH: usize = BYTE_WIDTH * 8;
@@ -15,11 +16,6 @@ pub const MSB: u8 = 0x080;
 #[inline]
 pub(crate) fn zigzag_decode(from: u64) -> i64 {
     ((from >> 1) ^ (-((from & 1) as i64)) as u64) as i64
-}
-
-#[inline]
-pub(crate) fn zigzag_encode(from: i64) -> u64 {
-    ((from << 1) ^ (from >> 63)) as u64
 }
 
 // from bitter crate
@@ -41,17 +37,19 @@ pub(crate) fn sign_extend(val: u64, bits: u32) -> i64 {
 pub(crate) fn read_bool<R: BitRead>(reader: &mut R) -> Result<bool> {
     match reader.read_bit() {
         Ok(v) => Ok(v),
-        Err(_) => Err(unexpected_eof()),
+        Err(e) => {
+            log_warning(format!("bitstream read_bool error: {e}"));
+            Err(e)
+        }
     }
 }
 
 pub(crate) fn read_bits<R: BitRead>(reader: &mut R, bits: u32) -> Result<u64> {
     match reader.read_bits(bits) {
         Ok(v) => Ok(v),
-        Err(_) => Err(unexpected_eof()),
+        Err(e) => {
+            log_warning(format!("bitstream read_bits error: {e}"));
+            Err(e)
+        }
     }
-}
-
-fn unexpected_eof() -> Error {
-    Error::new(ErrorKind::UnexpectedEof, "unexpected end of stream")
 }

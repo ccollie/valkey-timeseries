@@ -62,7 +62,7 @@
 //! sample's joint timestamp+value encoding using putVarbitIntFast.
 
 use super::XOR2Iterator;
-use crate::common::encoding::{try_read_uvarint, write_uvarint};
+use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_f64_le, write_uvarint};
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_u8, rdb_load_usize, rdb_save_bool, rdb_save_u8,
     rdb_save_usize,
@@ -70,9 +70,9 @@ use crate::common::rdb::{
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::bstream::{BStream, ONE, ZERO};
 use crate::series::chunks::chunk::Chunk;
 use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::stream::bitstream::{BitStream, ONE, ZERO};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
@@ -109,7 +109,7 @@ pub(super) fn read_st_header(b: &[u8]) -> (bool, u16) {
 
 #[derive(GetSize)]
 pub struct XOR2Chunk {
-    b: BStream,
+    stream: BitStream,
     max_size: usize,
     st: i64,
     t: i64,
@@ -140,7 +140,7 @@ impl std::fmt::Debug for XOR2Chunk {
 impl PartialEq for XOR2Chunk {
     fn eq(&self, other: &Self) -> bool {
         self.max_size == other.max_size
-            && self.b.bytes() == other.b.bytes()
+            && self.stream.bytes() == other.stream.bytes()
             && self.st == other.st
             && self.t == other.t
             && self.v.to_bits() == other.v.to_bits()
@@ -160,7 +160,7 @@ impl PartialEq for XOR2Chunk {
 impl std::hash::Hash for XOR2Chunk {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.max_size.hash(state);
-        self.b.bytes().hash(state);
+        self.stream.hash(state);
         self.st.hash(state);
         self.t.hash(state);
         self.v.to_bits().hash(state);
@@ -180,11 +180,11 @@ impl std::hash::Hash for XOR2Chunk {
 impl XOR2Chunk {
     pub(crate) fn with_max_size(max_size: usize) -> Self {
         let stream = vec![0u8; CHUNK_HEADER_SIZE + ST_HEADER_SIZE]; // reserve header bytes
-        let mut b = BStream::new();
+        let mut b = BitStream::new();
         b.reset(stream);
 
         Self {
-            b,
+            stream: b,
             max_size,
             st: 0,
             t: i64::MIN,
@@ -207,7 +207,7 @@ impl XOR2Chunk {
     }
 
     pub fn bytes(&self) -> &[u8] {
-        self.b.bytes()
+        self.stream.bytes()
     }
 
     pub fn num_samples(&self) -> usize {
@@ -215,16 +215,16 @@ impl XOR2Chunk {
     }
 
     pub fn compact(&mut self) {
-        let l = self.b.len();
-        if self.b.stream.capacity() > l + CHUNK_COMPACT_CAPACITY_THRESHOLD {
+        let l = self.stream.len();
+        if self.stream.stream.capacity() > l + CHUNK_COMPACT_CAPACITY_THRESHOLD {
             let mut buf = vec![0u8; l];
-            buf.copy_from_slice(&self.b.stream);
-            self.b.stream = buf;
+            buf.copy_from_slice(&self.stream.stream);
+            self.stream.stream = buf;
         }
     }
 
     pub fn reset(&mut self, stream: Vec<u8>) {
-        self.b.reset(stream);
+        self.stream.reset(stream);
     }
 
     pub fn is_full(&self) -> bool {
@@ -238,7 +238,7 @@ impl XOR2Chunk {
 
     pub fn clear(&mut self) {
         let stream = vec![0u8; CHUNK_HEADER_SIZE + ST_HEADER_SIZE];
-        self.b.reset(stream);
+        self.stream.reset(stream);
         self.st = 0;
         self.t = i64::MIN;
         self.v = 0.0;
@@ -264,14 +264,14 @@ impl XOR2Chunk {
 
     fn write_v_delta(&mut self, v: f64) {
         if is_stale_nan(v) {
-            self.b.write_bits_fast(0b111, 3);
+            self.stream.write_bits_fast(0b111, 3);
             return;
         }
 
         let delta = v.to_bits() ^ self.v.to_bits();
 
         if delta == 0 {
-            self.b.write_bit(ZERO);
+            self.stream.write_bit(ZERO);
             return;
         }
 
@@ -279,21 +279,22 @@ impl XOR2Chunk {
         let new_trailing = delta.trailing_zeros() as u8;
 
         if self.leading != 0xFF && new_leading >= self.leading && new_trailing >= self.trailing {
-            self.b.write_bits_fast(0b10, 2);
+            self.stream.write_bits_fast(0b10, 2);
             let sig_bits = 64 - self.leading as usize - self.trailing as usize;
-            self.b.write_bits_fast(delta >> self.trailing, sig_bits);
+            self.stream
+                .write_bits_fast(delta >> self.trailing, sig_bits);
             return;
         }
 
         self.leading = new_leading;
         self.trailing = new_trailing;
 
-        self.b.write_bits_fast(0b110, 3);
-        self.b.write_bits_fast(new_leading as u64, 5);
+        self.stream.write_bits_fast(0b110, 3);
+        self.stream.write_bits_fast(new_leading as u64, 5);
 
         let sig_bits = 64 - new_leading as usize - new_trailing as usize;
-        self.b.write_bits_fast(sig_bits as u64, 6);
-        self.b.write_bits_fast(delta >> new_trailing, sig_bits);
+        self.stream.write_bits_fast(sig_bits as u64, 6);
+        self.stream.write_bits_fast(delta >> new_trailing, sig_bits);
     }
 
     fn write_v_delta_known_non_zero(&mut self, delta: u64) {
@@ -301,35 +302,36 @@ impl XOR2Chunk {
         let new_trailing = delta.trailing_zeros() as u8;
 
         if self.leading != 0xFF && new_leading >= self.leading && new_trailing >= self.trailing {
-            self.b.write_bit(ZERO);
+            self.stream.write_bit(ZERO);
             let sig_bits = 64 - self.leading as usize - self.trailing as usize;
-            self.b.write_bits_fast(delta >> self.trailing, sig_bits);
+            self.stream
+                .write_bits_fast(delta >> self.trailing, sig_bits);
             return;
         }
 
         self.leading = new_leading;
         self.trailing = new_trailing;
 
-        self.b.write_bit(ONE);
-        self.b.write_bits_fast(new_leading as u64, 5);
+        self.stream.write_bit(ONE);
+        self.stream.write_bits_fast(new_leading as u64, 5);
 
         let sig_bits = 64 - new_leading as usize - new_trailing as usize;
-        self.b.write_bits_fast(sig_bits as u64, 6);
-        self.b.write_bits_fast(delta >> new_trailing, sig_bits);
+        self.stream.write_bits_fast(sig_bits as u64, 6);
+        self.stream.write_bits_fast(delta >> new_trailing, sig_bits);
     }
 
     fn encode_joint(&mut self, dod: i64, v: f64) {
         if dod == 0 {
             if is_stale_nan(v) {
-                self.b.write_bits_fast(0b11111, 5);
+                self.stream.write_bits_fast(0b11111, 5);
                 return;
             }
             let v_bits = v.to_bits() ^ self.v.to_bits();
             if v_bits == 0 {
-                self.b.write_bit(ZERO);
+                self.stream.write_bit(ZERO);
                 return;
             }
-            self.b.write_bits_fast(0b10, 2);
+            self.stream.write_bits_fast(0b10, 2);
             self.write_v_delta_known_non_zero(v_bits);
             return;
         }
@@ -337,36 +339,36 @@ impl XOR2Chunk {
         match dod {
             -4096..=4095 => {
                 // 13-bit dod
-                self.b
+                self.stream
                     .write_byte(0b110_00000 | ((dod as u64 >> 8) & 0x1F) as u8);
-                self.b.write_byte(dod as u8);
+                self.stream.write_byte(dod as u8);
             }
             -524288..=524287 => {
                 // 20-bit dod
-                self.b
+                self.stream
                     .write_byte(0b1110_0000 | ((dod as u64 >> 16) & 0x0F) as u8);
-                self.b.write_byte((dod >> 8) as u8);
-                self.b.write_byte(dod as u8);
+                self.stream.write_byte((dod >> 8) as u8);
+                self.stream.write_byte(dod as u8);
             }
             _ => {
                 // 64-bit escape
-                self.b.write_bits_fast(0b11110, 5);
-                self.b.write_bits_fast(dod as u64, 64);
+                self.stream.write_bits_fast(0b11110, 5);
+                self.stream.write_bits_fast(dod as u64, 64);
             }
         }
 
         if v.to_bits() == self.v.to_bits() {
-            self.b.write_bit(ZERO);
+            self.stream.write_bit(ZERO);
         } else {
             self.write_v_delta(v);
         }
     }
 
     fn update_header(&mut self) {
-        if self.b.bytes().len() >= CHUNK_HEADER_SIZE + ST_HEADER_SIZE {
+        if self.stream.bytes().len() >= CHUNK_HEADER_SIZE + ST_HEADER_SIZE {
             let [hi, lo] = self.num_total.to_be_bytes();
-            self.b.stream[0] = hi;
-            self.b.stream[1] = lo;
+            self.stream.stream[0] = hi;
+            self.stream.stream[1] = lo;
 
             let mut st_header = [0u8; ST_HEADER_SIZE];
             if self.first_st_known {
@@ -374,8 +376,8 @@ impl XOR2Chunk {
             }
             write_header_first_st_change_on(&mut st_header, self.first_st_change_on);
             // write both header bytes into reserved positions
-            self.b.stream[CHUNK_HEADER_SIZE] = st_header[0];
-            self.b.stream[CHUNK_HEADER_SIZE + 1] = st_header[1];
+            self.stream.stream[CHUNK_HEADER_SIZE] = st_header[0];
+            self.stream.stream[CHUNK_HEADER_SIZE + 1] = st_header[1];
         }
     }
 
@@ -385,14 +387,14 @@ impl XOR2Chunk {
 
         match self.num_total {
             0 => {
-                self.b.write_signed_int(t);
-                self.b.write_bits_fast(v.to_bits(), 64);
+                self.stream.write_signed_int(t);
+                self.stream.write_bits_fast(v.to_bits(), 64);
                 self.first_timestamp = t;
 
                 if st != 0 {
-                    self.b.write_signed_int(t - st);
+                    self.stream.write_signed_int(t - st);
                     self.first_st_known = true;
-                    let bytes = self.b.bytes();
+                    let bytes = self.stream.bytes();
                     if bytes.len() > CHUNK_HEADER_SIZE {
                         let mut header = [0u8; ST_HEADER_SIZE];
                         write_header_first_st_known(&mut header);
@@ -402,18 +404,18 @@ impl XOR2Chunk {
             }
             1 => {
                 t_delta = (t - self.t) as u64;
-                self.b.write_unsigned_int(t_delta);
+                self.stream.write_unsigned_int(t_delta);
                 self.write_v_delta(v);
 
                 if st != self.st {
                     st_diff = self.t - st;
                     self.first_st_change_on = 1;
-                    let bytes = self.b.bytes();
+                    let bytes = self.stream.bytes();
                     if bytes.len() > CHUNK_HEADER_SIZE {
                         let mut header = [0u8; ST_HEADER_SIZE];
                         write_header_first_st_change_on(&mut header, 1);
                     }
-                    self.b.write_signed_int(st_diff);
+                    self.stream.write_signed_int(st_diff);
                 }
             }
             _ => {
@@ -424,13 +426,13 @@ impl XOR2Chunk {
                     let v_bits = v.to_bits();
                     match (dod, v_bits == self.v.to_bits()) {
                         (0, true) => {
-                            self.b.write_bit(ZERO);
+                            self.stream.write_bit(ZERO);
                         }
                         (d, true) if (-(1 << 12)..=(1 << 12) - 1).contains(&d) => {
-                            self.b
+                            self.stream
                                 .write_byte(0b110_00000 | ((dod as u64 >> 8) & 0x1F) as u8);
-                            self.b.write_byte(dod as u8);
-                            self.b.write_bit(ZERO);
+                            self.stream.write_byte(dod as u8);
+                            self.stream.write_bit(ZERO);
                         }
                         _ => {
                             self.encode_joint(dod, v);
@@ -461,62 +463,62 @@ impl XOR2Chunk {
                     match (dod, v_bits == self.v.to_bits()) {
                         (0, true) => match delta_st_diff {
                             0 => {
-                                self.b.write_bit(ZERO);
-                                self.b.write_bit(ZERO);
+                                self.stream.write_bit(ZERO);
+                                self.stream.write_bit(ZERO);
                             }
                             -3..=4 => {
-                                self.b.write_bits_fast(
+                                self.stream.write_bits_fast(
                                     (0b10 << 3) | ((delta_st_diff as u64) & 0x7),
                                     6,
                                 );
                             }
                             -31..=32 => {
-                                self.b.write_bits_fast(
+                                self.stream.write_bits_fast(
                                     (0b110 << 6) | ((delta_st_diff as u64) & 0x3F),
                                     10,
                                 );
                             }
                             -255..=256 => {
-                                self.b.write_bits_fast(
+                                self.stream.write_bits_fast(
                                     (0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF),
                                     14,
                                 );
                             }
                             _ => {
-                                self.b.write_bit(ZERO);
-                                self.b.write_signed_int(delta_st_diff);
+                                self.stream.write_bit(ZERO);
+                                self.stream.write_signed_int(delta_st_diff);
                             }
                         },
                         (d, true) if (-(1 << 12)..=(1 << 12) - 1).contains(&d) => {
-                            self.b
+                            self.stream
                                 .write_byte(0b110_00000 | ((dod as u64 >> 8) & 0x1F) as u8);
-                            self.b.write_byte(dod as u8);
+                            self.stream.write_byte(dod as u8);
                             match delta_st_diff {
                                 0 => {
-                                    self.b.write_bit(ZERO);
-                                    self.b.write_bit(ZERO);
+                                    self.stream.write_bit(ZERO);
+                                    self.stream.write_bit(ZERO);
                                 }
                                 -3..=4 => {
-                                    self.b.write_bits_fast(
+                                    self.stream.write_bits_fast(
                                         (0b10 << 3) | ((delta_st_diff as u64) & 0x7),
                                         6,
                                     );
                                 }
                                 -31..=32 => {
-                                    self.b.write_bits_fast(
+                                    self.stream.write_bits_fast(
                                         (0b110 << 6) | ((delta_st_diff as u64) & 0x3F),
                                         10,
                                     );
                                 }
                                 -255..=256 => {
-                                    self.b.write_bits_fast(
+                                    self.stream.write_bits_fast(
                                         (0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF),
                                         14,
                                     );
                                 }
                                 _ => {
-                                    self.b.write_bit(ZERO);
-                                    self.b.write_signed_int(delta_st_diff);
+                                    self.stream.write_bit(ZERO);
+                                    self.stream.write_signed_int(delta_st_diff);
                                 }
                             }
                         }
@@ -527,28 +529,28 @@ impl XOR2Chunk {
                             }
                             match delta_st_diff {
                                 0 => {
-                                    self.b.write_bit(ZERO);
+                                    self.stream.write_bit(ZERO);
                                 }
                                 -3..=4 => {
-                                    self.b.write_bits_fast(
+                                    self.stream.write_bits_fast(
                                         (0b10 << 3) | ((delta_st_diff as u64) & 0x7),
                                         5,
                                     );
                                 }
                                 -31..=32 => {
-                                    self.b.write_bits_fast(
+                                    self.stream.write_bits_fast(
                                         (0b110 << 6) | ((delta_st_diff as u64) & 0x3F),
                                         9,
                                     );
                                 }
                                 -255..=256 => {
-                                    self.b.write_bits_fast(
+                                    self.stream.write_bits_fast(
                                         (0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF),
                                         13,
                                     );
                                 }
                                 _ => {
-                                    self.b.write_signed_int(delta_st_diff);
+                                    self.stream.write_signed_int(delta_st_diff);
                                 }
                             }
                         }
@@ -571,12 +573,12 @@ impl XOR2Chunk {
                 if st != self.st {
                     st_diff = self.t - st;
                     self.first_st_change_on = self.num_total;
-                    let bytes = self.b.bytes();
+                    let bytes = self.stream.bytes();
                     if bytes.len() > CHUNK_HEADER_SIZE {
                         let mut header = [0u8; ST_HEADER_SIZE];
                         write_header_first_st_change_on(&mut header, self.num_total);
                     }
-                    self.b.write_signed_int(st_diff);
+                    self.stream.write_signed_int(st_diff);
                 }
             }
         }
@@ -596,7 +598,7 @@ impl XOR2Chunk {
     }
 
     pub fn iterator(&self) -> XOR2Iterator<'_> {
-        XOR2Iterator::new(self.b.bytes())
+        XOR2Iterator::new(self.stream.bytes())
     }
 }
 
@@ -616,8 +618,7 @@ impl RdbSerializable for XOR2Chunk {
         raw::save_signed(rdb, self.st_diff);
         rdb_save_u8(rdb, self.leading);
         rdb_save_u8(rdb, self.trailing);
-        raw::save_slice(rdb, self.b.bytes());
-        raw::save_unsigned(rdb, self.b.position() as u64);
+        self.stream.rdb_save(rdb);
     }
 
     fn rdb_load(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
@@ -637,23 +638,14 @@ impl RdbSerializable for XOR2Chunk {
         let st_diff = raw::load_signed(rdb)?;
         let leading = rdb_load_u8(rdb)?;
         let trailing = rdb_load_u8(rdb)?;
-        let bytes = raw::load_string_buffer(rdb)?.as_ref().to_vec();
-        let position = raw::load_unsigned(rdb)?;
 
-        if bytes.len() < CHUNK_HEADER_SIZE + ST_HEADER_SIZE {
+        let stream = BitStream::rdb_load(rdb)?;
+        if stream.len() < CHUNK_HEADER_SIZE + ST_HEADER_SIZE {
             return Err(ValkeyError::String("Invalid XOR2 chunk RDB payload".into()));
         }
 
-        if position > 8 {
-            return Err(ValkeyError::String(format!(
-                "Invalid XOR2 chunk bit position: {position}"
-            )));
-        }
-
-        let position = position as u8;
-
         let mut chunk = Self {
-            b: BStream::hydrate(bytes, position),
+            stream,
             max_size,
             st,
             t,
@@ -683,10 +675,8 @@ pub(super) fn is_stale_nan(v: f64) -> bool {
 
 impl Clone for XOR2Chunk {
     fn clone(&self) -> Self {
-        let stream = self.b.bytes().to_vec();
-
         Self {
-            b: BStream::hydrate(stream, self.b.position()),
+            stream: self.stream.clone(),
             max_size: self.max_size,
             st: self.st,
             t: self.t,
@@ -723,7 +713,7 @@ impl Chunk for XOR2Chunk {
     }
 
     fn size(&self) -> usize {
-        self.b.len()
+        self.stream.len()
     }
 
     fn max_size(&self) -> usize {
@@ -948,60 +938,42 @@ impl Chunk for XOR2Chunk {
         write_uvarint(dest, self.first_st_known as u64);
         write_uvarint(dest, self.first_timestamp as u64);
         write_uvarint(dest, self.last_timestamp as u64);
-        write_uvarint(dest, f64::to_bits(self.last_value));
+        write_f64_le(dest, self.last_value);
         write_uvarint(dest, self.st as u64);
         write_uvarint(dest, self.t as u64);
-        write_uvarint(dest, f64::to_bits(self.v));
+        write_f64_le(dest, self.v);
         write_uvarint(dest, self.t_delta);
         write_uvarint(dest, self.st_diff as u64);
         write_uvarint(dest, self.leading as u64);
         write_uvarint(dest, self.trailing as u64);
-        write_uvarint(dest, self.b.position() as u64);
-        write_uvarint(dest, self.b.bytes().len() as u64);
-        dest.extend_from_slice(self.b.bytes());
+        self.stream.serialize(dest);
     }
 
     fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
         let mut remaining = buf;
-        let max_size =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as usize;
-        let num_total =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as u16;
-        let first_st_change_on =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as u16;
-        let first_st_known =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? != 0;
-        let first_timestamp =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as i64;
-        let last_timestamp =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as i64;
-        let last_value =
-            f64::from_bits(try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)?);
-        let st = try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as i64;
-        let t = try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as i64;
-        let v =
-            f64::from_bits(try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)?);
-        let t_delta = try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)?;
-        let st_diff =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as i64;
-        let leading = try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as u8;
-        let trailing =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as u8;
-        let position = try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)?;
-        let stream_len =
-            try_read_uvarint(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)? as usize;
+        let max_size = read_uvarint(&mut remaining)? as usize;
+        let num_total = read_uvarint(&mut remaining)? as u16;
+        let first_st_change_on = read_uvarint(&mut remaining)? as u16;
+        let first_st_known = read_uvarint(&mut remaining)? != 0;
+        let first_timestamp = read_i64(&mut remaining)?;
+        let last_timestamp = read_i64(&mut remaining)?;
+        let last_value = read_f64_le(&mut remaining)?;
+        let st = read_i64(&mut remaining)?;
+        let t = read_i64(&mut remaining)?;
+        let v = read_f64_le(&mut remaining)?;
+        let t_delta = read_uvarint(&mut remaining)?;
+        let st_diff = read_i64(&mut remaining)?;
+        let leading = read_uvarint(&mut remaining)? as u8;
+        let trailing = read_uvarint(&mut remaining)? as u8;
+        let stream =
+            BitStream::deserialize(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        if position > 8 || remaining.len() != stream_len {
-            return Err(TsdbError::ChunkDecoding);
-        }
-
-        let stream = remaining.to_vec();
         if stream.len() < CHUNK_HEADER_SIZE + ST_HEADER_SIZE {
             return Err(TsdbError::ChunkDecoding);
         }
 
         let mut chunk = Self {
-            b: BStream::hydrate(stream, position as u8),
+            stream,
             max_size,
             st,
             t,
@@ -1028,6 +1000,18 @@ impl Chunk for XOR2Chunk {
         dig.add_long_long(self.last_timestamp);
         dig.add_long_long(self.max_size as i64);
     }
+}
+
+fn read_uvarint(buf: &mut &[u8]) -> TsdbResult<u64> {
+    try_read_uvarint(buf).map_err(|_| TsdbError::ChunkDecoding)
+}
+
+fn read_i64(buf: &mut &[u8]) -> TsdbResult<i64> {
+    read_uvarint(buf).map(|v| v as i64)
+}
+
+fn read_f64_le(buf: &mut &[u8]) -> TsdbResult<f64> {
+    try_read_f64_le(buf).map_err(|_| TsdbError::ChunkDecoding)
 }
 
 #[cfg(test)]

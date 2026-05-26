@@ -1,12 +1,11 @@
 use crate::common::logging::log_warning;
-use crate::series::chunks::buffered_read::BufferedReader;
 use crate::series::chunks::gorilla::utils::zigzag_decode;
-use crate::series::chunks::traits::BitRead;
+use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
 use crate::series::chunks::tsxor::tsxor_chunk::{CacheWindow, FIRST_DELTA_BITS};
 
 /// Decompressor for TSXor single-column
 pub(crate) struct DecompressorTSXor<'a> {
-    reader: BufferedReader<'a>,
+    reader: BitStreamReader<'a>,
     bytes: &'a [u8],
     byte_idx: usize,
     cache: CacheWindow,
@@ -23,7 +22,7 @@ pub(crate) struct DecompressorTSXor<'a> {
 
 impl<'a> DecompressorTSXor<'a> {
     pub(super) fn new(buf: &'a [u8], sample_count: usize) -> Self {
-        let mut reader = BufferedReader::new(buf);
+        let mut reader = BitStreamReader::new(buf);
         // read header
         let block_timestamp = reader.read_u64().unwrap_or(0);
         let end_of_stream = sample_count == 0;
@@ -76,7 +75,7 @@ impl<'a> DecompressorTSXor<'a> {
 
         // first sample
         if self.index == 0 {
-            let sd = match self.reader.read_bits(FIRST_DELTA_BITS) {
+            let sd = match self.reader.read_bits(FIRST_DELTA_BITS as u8) {
                 Ok(v) => v,
                 Err(_) => return None,
             };
@@ -108,7 +107,7 @@ impl<'a> DecompressorTSXor<'a> {
         let delta_delta = if to_read == 0 {
             0i64
         } else {
-            let bits = match self.reader.read_bits(to_read) {
+            let bits = match self.reader.read_bits(to_read as u8) {
                 Ok(v) => v,
                 Err(e) => {
                     log_warning(format!("Error reading delta delta bits: {}", e));

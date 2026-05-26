@@ -1,10 +1,9 @@
-mod bstream;
-mod bstream_reader;
 mod chunk;
 mod gorilla;
 mod merge;
 mod pco;
 mod serialization;
+mod stream;
 mod timeseries_chunk;
 #[cfg(test)]
 mod timeseries_chunk_tests;

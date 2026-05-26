@@ -2562,9 +2562,26 @@ mod tests {
         data
     }
 
-    /// Deserializes TimeSeriesChunk coming from a cluster node.
+    /// Deserializes TimeSeriesChunk.
     pub fn deserialize_chunk(data: &[u8]) -> TimeSeriesChunk {
-        TimeSeriesChunk::deserialize(data).unwrap()
+        match TimeSeriesChunk::deserialize(data) {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                eprintln!("[deserialize_chunk] Failed to deserialize chunk: {:?}", e);
+                eprintln!(
+                    "[deserialize_chunk] data_len={}, first_byte={:?}",
+                    data.len(),
+                    data.first()
+                );
+                if data.is_empty() {
+                    eprintln!(
+                        "[deserialize_chunk] data (hex, up to 128 bytes): {:02x?}",
+                        &data[..data.len().min(128)]
+                    );
+                }
+                panic!("ChunkDecoding");
+            }
+        }
     }
 
     #[test]

@@ -69,6 +69,11 @@ pub(crate) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
     buf.push(value as u8);
 }
 
+pub(crate) fn write_f64(buf: &mut Vec<u8>, value: f64) {
+    let bits = value.to_bits();
+    write_u64_le(buf, bits);
+}
+
 /// Writes a signed varint using zigzag encoding
 pub(crate) fn write_signed_varint(buf: &mut Vec<u8>, value: i64) {
     // Use zigzag encoding for signed values

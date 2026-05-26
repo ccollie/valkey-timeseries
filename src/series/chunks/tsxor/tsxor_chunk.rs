@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
-use crate::common::encoding::{try_read_uvarint, write_uvarint};
+use crate::common::encoding::{
+    try_read_f64_le, try_read_signed_varint, try_read_uvarint, write_f64_le, write_signed_varint,
+    write_uvarint, zigzag_encode,
+};
 use crate::common::logging::log_warning;
 use crate::common::rdb::RdbSerializable;
 use crate::common::rdb::{
@@ -12,9 +15,7 @@ use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::SampleIter;
-use crate::series::chunks::buffered_writer::BufferedWriter;
-use crate::series::chunks::gorilla::utils::{zigzag_decode, zigzag_encode};
-use crate::series::chunks::traits::BitWrite;
+use crate::series::chunks::stream::bitstream::BitStream;
 use crate::series::chunks::tsxor::tsxor_decompressor::DecompressorTSXor;
 use crate::series::chunks::{Chunk, merge_samples};
 use crate::series::{DuplicatePolicy, SampleAddResult};
@@ -92,26 +93,43 @@ impl CacheWindow {
         }
     }
 
-    fn deserialize_from(src: &mut &[u8]) -> Option<Self> {
-        let len = try_read_uvarint(src).ok()? as usize;
+    fn deserialize(src: &mut &[u8]) -> TsdbResult<Self> {
+        let len = match try_read_uvarint(src) {
+            Ok(l) => l as usize,
+            Err(_) => {
+                log_warning(
+                    "TSXorChunk deserialization failed: unable to read cache window length",
+                );
+                return Err(TsdbError::ChunkDecoding);
+            }
+        };
         if len > WINDOW_SIZE {
-            return None;
+            log_warning("TSXorChunk deserialization failed: window size exceeded");
+            return Err(TsdbError::ChunkDecoding);
         }
 
         let mut buffer = VecDeque::with_capacity(WINDOW_SIZE);
         for _ in 0..len {
-            let val = try_read_uvarint(src).ok()?;
+            let val = match try_read_uvarint(src) {
+                Ok(v) => v,
+                Err(_) => {
+                    log_warning(
+                        "TSXorChunk deserialization failed: unable to read cache window value",
+                    );
+                    return Err(TsdbError::ChunkDecoding);
+                }
+            };
             buffer.push_back(val);
         }
 
-        Some(Self { buffer })
+        Ok(Self { buffer })
     }
 }
 
 /// A TSXor-based chunk implementation with inlined TSXor compression state.
 #[derive(Debug, Clone, GetSize)]
 pub struct TSXorChunk {
-    writer: BufferedWriter,
+    writer: BitStream,
     window: CacheWindow,
     stored_timestamp: u64,
     stored_delta: i64,
@@ -152,7 +170,7 @@ impl Default for TSXorChunk {
 impl TSXorChunk {
     fn new_encoder(max_size: usize) -> Self {
         TSXorChunk {
-            writer: BufferedWriter::new(),
+            writer: BitStream::new(),
             window: CacheWindow::new(),
             stored_timestamp: 0,
             stored_delta: 0,
@@ -259,7 +277,7 @@ impl TSXorChunk {
         let delta_d = new_delta - self.stored_delta;
 
         if delta_d == 0 {
-            let _ = self.writer.write_bit(false);
+            self.writer.write_bit(false);
         } else {
             let mut enc = zigzag_encode(delta_d);
             let mut length = 64 - enc.leading_zeros();
@@ -328,68 +346,38 @@ impl TSXorChunk {
         self.window.insert(v);
     }
 
-    pub(crate) fn serialize_encoder_state(&self, dest: &mut Vec<u8>) {
-        write_uvarint(dest, self.writer.position() as u64);
-        write_uvarint(dest, self.writer.get_ref().len() as u64);
-        dest.extend_from_slice(self.writer.get_ref());
+    fn serialize_encoder_state(&self, dest: &mut Vec<u8>) {
+        self.writer.serialize(dest);
         self.window.serialize(dest);
         write_uvarint(dest, self.stored_timestamp);
-        write_uvarint(dest, zigzag_encode(self.stored_delta));
+        write_signed_varint(dest, self.stored_delta);
         write_uvarint(dest, self.block_timestamp);
         write_uvarint(dest, self.count as u64);
     }
 
-    pub(crate) fn deserialize_encoder_state(&mut self, src: &[u8]) {
+    fn deserialize_encoder_state(&mut self, src: &[u8]) -> TsdbResult<()> {
         let mut src = src;
 
-        let writer_pos = match try_read_uvarint(&mut src) {
-            Ok(pos) if pos <= 8 => pos as u32,
-            _ => return,
-        };
+        let writer = BitStream::deserialize(&mut src).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        let writer_len = match try_read_uvarint(&mut src) {
-            Ok(len) => len as usize,
-            Err(_) => return,
-        };
+        let window = CacheWindow::deserialize(&mut src).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        if src.len() < writer_len {
-            return;
-        }
+        let stored_timestamp = try_read_uvarint(&mut src).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        let writer_buf = src[..writer_len].to_vec();
-        src = &src[writer_len..];
+        let stored_delta =
+            try_read_signed_varint(&mut src).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        let window = match CacheWindow::deserialize_from(&mut src) {
-            Some(window) => window,
-            None => return,
-        };
+        let block_timestamp = try_read_uvarint(&mut src).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        let stored_timestamp = match try_read_uvarint(&mut src) {
-            Ok(ts) => ts,
-            Err(_) => return,
-        };
+        let count = try_read_uvarint(&mut src).map_err(|_| TsdbError::ChunkDecoding)? as usize;
 
-        let stored_delta = match try_read_uvarint(&mut src) {
-            Ok(delta) => zigzag_decode(delta),
-            Err(_) => return,
-        };
-
-        let block_timestamp = match try_read_uvarint(&mut src) {
-            Ok(ts) => ts,
-            Err(_) => return,
-        };
-
-        let count = match try_read_uvarint(&mut src) {
-            Ok(count) => count as usize,
-            Err(_) => return,
-        };
-
-        self.writer = BufferedWriter::hydrate(writer_buf, writer_pos);
+        self.writer = writer;
         self.window = window;
         self.stored_timestamp = stored_timestamp;
         self.stored_delta = stored_delta;
         self.block_timestamp = block_timestamp;
         self.count = count;
+        Ok(())
     }
 }
 
@@ -766,7 +754,7 @@ impl Chunk for TSXorChunk {
         let last_value = rdb_load_f64(rdb)?;
         let state = valkey_module::raw::load_string_buffer(rdb)?;
         let mut chunk = TSXorChunk::with_max_size(max_size);
-        chunk.deserialize_encoder_state(state.as_ref());
+        chunk.deserialize_encoder_state(state.as_ref())?;
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
         chunk.first_timestamp = first_timestamp;
@@ -777,11 +765,8 @@ impl Chunk for TSXorChunk {
         write_uvarint(dest, self.max_size as u64);
         write_uvarint(dest, self.first_timestamp as u64);
         write_uvarint(dest, self.last_timestamp as u64);
-        write_uvarint(dest, f64::to_bits(self.last_value));
-        let mut state = Vec::new();
-        self.serialize_encoder_state(&mut state);
-        write_uvarint(dest, state.len() as u64);
-        dest.extend_from_slice(&state);
+        write_f64_le(dest, self.last_value);
+        self.serialize_encoder_state(dest);
     }
 
     fn deserialize(buf: &[u8]) -> TsdbResult<Self> {
@@ -791,23 +776,15 @@ impl Chunk for TSXorChunk {
             try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as Timestamp;
         let last_timestamp =
             try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as Timestamp;
-        let last_value =
-            f64::from_bits(try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)?);
-        let state_len = try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as usize;
-        if b.len() < state_len {
-            return Err(TsdbError::ChunkDecoding);
-        }
+        // read last_value as f64 little-endian (matches serialize)
+        let last_value = try_read_f64_le(&mut b).map_err(|_| TsdbError::ChunkDecoding)?;
 
-        let (state, rest) = b.split_at(state_len);
-        if !rest.is_empty() {
-            return Err(TsdbError::ChunkDecoding);
-        }
-
+        // The remaining bytes are the encoder state; pass them to the state deserializer
         let mut chunk = TSXorChunk::with_max_size(max_size);
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
         chunk.first_timestamp = first_timestamp;
-        chunk.deserialize_encoder_state(state);
+        chunk.deserialize_encoder_state(b)?;
         Ok(chunk)
     }
 

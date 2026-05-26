@@ -27,11 +27,11 @@ mod tests {
     use crate::common::Sample;
     use crate::series::chunks::Chunk;
     use crate::series::chunks::ChunkEncoding;
-    use crate::series::chunks::bstream::BStream;
+    use crate::series::chunks::stream::bitstream::BitStream;
     use crate::series::chunks::timeseries_chunk::TimeSeriesChunk;
     use crate::series::chunks::xor2::xor2_chunk::{STALE_NAN, XOR2Chunk, is_stale_nan};
 
-    fn write_xor2_new_window_payload(bs: &mut BStream, delta: u64) -> (u8, u8) {
+    fn write_xor2_new_window_payload(bs: &mut BitStream, delta: u64) -> (u8, u8) {
         let (leading, trailing, sigbits) = xor2_delta_window(delta);
         let mut encoded_sigbits = sigbits;
         if sigbits == 64 {

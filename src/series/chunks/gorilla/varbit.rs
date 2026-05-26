@@ -1,8 +1,8 @@
 //! Prometheus' varbit encoding.
 //!
 
-use super::traits::{BitRead, BitWrite};
 use super::utils::{read_bits, read_bool, sign_extend};
+use crate::series::chunks::stream::traits::{BitRead, BitWrite};
 
 /// Writes an i64 using varbit encoding with a bit bucketing
 /// optimized for the dod's observed in histogram buckets, plus a few additional
@@ -120,8 +120,8 @@ pub(crate) fn read_varbit_int<R: BitRead>(reader: &mut R) -> std::io::Result<i64
 #[cfg(test)]
 mod tests {
     use super::{read_varbit_int, write_varbit};
-    use crate::series::chunks::gorilla::buffered_read::BufferedReader;
-    use crate::series::chunks::gorilla::buffered_writer::BufferedWriter;
+    use crate::series::chunks::stream::bitstream::BitStream;
+    use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
 
     const NUMBERS: [i64; 33] = [
         i64::MIN,
@@ -161,14 +161,14 @@ mod tests {
 
     #[test]
     fn test_write_varbit() {
-        let mut bit_writer = BufferedWriter::new();
+        let mut bit_writer = BitStream::new();
 
         for number in NUMBERS.iter().cloned() {
             write_varbit(number, &mut bit_writer).unwrap();
         }
 
         let binding = bit_writer.get_ref();
-        let mut reader = BufferedReader::new(binding);
+        let mut reader = BitStreamReader::new(binding);
         // Read again
         for want in NUMBERS {
             let got = read_varbit_int(&mut reader).unwrap();
