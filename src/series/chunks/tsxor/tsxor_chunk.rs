@@ -194,7 +194,7 @@ impl TSXorChunk {
     }
 
     pub fn is_full(&self) -> bool {
-        self.count >= self.max_size
+        self.buf().len() >= self.max_size
     }
 
     pub fn clear(&mut self) {

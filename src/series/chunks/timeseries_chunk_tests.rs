@@ -2573,7 +2573,7 @@ mod tests {
                     data.len(),
                     data.first()
                 );
-                if data.is_empty() {
+                if !data.is_empty() {
                     eprintln!(
                         "[deserialize_chunk] data (hex, up to 128 bytes): {:02x?}",
                         &data[..data.len().min(128)]

@@ -81,7 +81,8 @@ impl<'a> XOR2Iterator<'a> {
     fn read_dod(&mut self, w: u8) -> io::Result<()> {
         let b = if self.br.valid >= w {
             self.br.valid -= w;
-            (self.br.buffer >> self.br.valid) & ((1u64 << w) - 1)
+            let mask = if w == 64 { u64::MAX } else { (1u64 << w) - 1 };
+            (self.br.buffer >> self.br.valid) & mask
         } else {
             self.br.read_bits(w)?
         };
@@ -117,9 +118,11 @@ impl<'a> XOR2Iterator<'a> {
                 // `10x`: reuse previous leading/trailing window, consume 2 bits.
                 self.br.valid -= 2;
                 let sz = 64 - self.leading - self.trailing;
+                let mask = if sz == 64 { u64::MAX } else { (1u64 << sz) - 1 };
+
                 let value_bits = if self.br.valid >= sz {
                     self.br.valid -= sz;
-                    (self.br.buffer >> self.br.valid) & ((1u64 << sz) - 1)
+                    (self.br.buffer >> self.br.valid) & mask
                 } else {
                     self.br.read_bits(sz)?
                 };
@@ -183,13 +186,15 @@ impl<'a> XOR2Iterator<'a> {
     ///    - `1` → new leading/trailing window
     fn decode_value_known_non_zero(&mut self) -> io::Result<()> {
         let sz = 64 - self.leading - self.trailing;
+        let mask = if sz == 64 { u64::MAX } else { (1u64 << sz) - 1 };
+
         // Fast path: combine the 1-bit reuse/new-window control read with the
         // sz-bit value read into a single buffer operation.
         if self.br.valid > sz {
             let ctrl_bit = (self.br.buffer >> (self.br.valid - 1)) & 1;
             if ctrl_bit == 0 {
                 self.br.valid -= 1 + sz;
-                let value_bits = (self.br.buffer >> self.br.valid) & ((1u64 << sz) - 1);
+                let value_bits = (self.br.buffer >> self.br.valid) & mask;
                 let mut v_bits = self.baseline_v.to_bits();
                 v_bits ^= value_bits << self.trailing;
                 self.val = f64::from_bits(v_bits);
@@ -207,7 +212,7 @@ impl<'a> XOR2Iterator<'a> {
         if !bit {
             let value_bits = if self.br.valid >= sz {
                 self.br.valid -= sz;
-                (self.br.buffer >> self.br.valid) & ((1u64 << sz) - 1)
+                (self.br.buffer >> self.br.valid) & mask
             } else {
                 self.br.read_bits(sz)?
             };
@@ -239,9 +244,15 @@ impl<'a> XOR2Iterator<'a> {
         let sigbits = if sig_bits == 0 { 64 } else { sig_bits };
         self.trailing = 64 - self.leading - sigbits;
 
+        let mask = if sigbits == 64 {
+            u64::MAX
+        } else {
+            (1u64 << sigbits) - 1
+        };
+
         let value_bits = if self.br.valid >= sigbits {
             self.br.valid -= sigbits;
-            (self.br.buffer >> self.br.valid) & ((1u64 << sigbits) - 1)
+            (self.br.buffer >> self.br.valid) & mask
         } else {
             self.br.read_bits(sigbits)?
         };

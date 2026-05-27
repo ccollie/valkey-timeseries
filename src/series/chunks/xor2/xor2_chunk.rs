@@ -423,11 +423,6 @@ impl XOR2Chunk {
                 if st != self.st {
                     st_diff = self.t - st;
                     self.first_st_change_on = 1;
-                    let bytes = self.stream.bytes();
-                    if bytes.len() > CHUNK_HEADER_SIZE {
-                        let mut header = [0u8; ST_HEADER_SIZE];
-                        write_header_first_st_change_on(&mut header, 1);
-                    }
                     put_varbit_int_fast(&mut self.stream, st_diff);
                 }
             }
@@ -448,7 +443,7 @@ impl XOR2Chunk {
                         (0, true) => {
                             // Unchanged value and timestamp: write a single 0 bit.
                             // This is the most common case for stable metrics.
-                            // a.v stays correct (v == a.v), so no update needed.
+                            // self.v stays correct (v == self.v), so no update needed.
                             self.stream.write_bit(ZERO);
                         }
                         (d, true) if (-(1 << 12)..=(1 << 12) - 1).contains(&d) => {

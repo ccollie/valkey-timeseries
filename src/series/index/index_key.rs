@@ -37,7 +37,8 @@ impl IndexKey {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        // The inner buffer is always NUL-terminated, so an "empty" key is `[0]`.
+        self.0.len() <= 1
     }
 }
 
