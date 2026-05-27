@@ -61,7 +61,7 @@
 //! When ST is present, the ST delta (prevT - st) is appended after each
 //! sample's joint timestamp+value encoding using putVarbitIntFast.
 
-use super::XOR2Iterator;
+use super::Xor2Iterator;
 use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_f64_le, write_uvarint};
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_u8, rdb_load_usize, rdb_save_bool, rdb_save_u8,
@@ -108,12 +108,12 @@ pub(super) fn read_st_header(b: &[u8]) -> (bool, u16) {
     (first_st_known, first_st_change_on)
 }
 
-#[derive(GetSize)]
-pub struct XOR2Chunk {
+#[derive(GetSize, Clone)]
+pub struct Xor2Chunk {
     stream: BitStream,
     max_size: usize,
     st: i64,
-    t: i64,
+    ts: i64,
     v: f64,
     t_delta: u64,
     st_diff: i64,
@@ -127,7 +127,7 @@ pub struct XOR2Chunk {
     last_value: f64,
 }
 
-impl std::fmt::Debug for XOR2Chunk {
+impl std::fmt::Debug for Xor2Chunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("XOR2Chunk")
             .field("max_size", &self.max_size)
@@ -138,12 +138,12 @@ impl std::fmt::Debug for XOR2Chunk {
     }
 }
 
-impl PartialEq for XOR2Chunk {
+impl PartialEq for Xor2Chunk {
     fn eq(&self, other: &Self) -> bool {
         self.max_size == other.max_size
             && self.stream.bytes() == other.stream.bytes()
             && self.st == other.st
-            && self.t == other.t
+            && self.ts == other.ts
             && self.v.to_bits() == other.v.to_bits()
             && self.t_delta == other.t_delta
             && self.st_diff == other.st_diff
@@ -158,12 +158,12 @@ impl PartialEq for XOR2Chunk {
     }
 }
 
-impl std::hash::Hash for XOR2Chunk {
+impl std::hash::Hash for Xor2Chunk {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.max_size.hash(state);
         self.stream.hash(state);
         self.st.hash(state);
-        self.t.hash(state);
+        self.ts.hash(state);
         self.v.to_bits().hash(state);
         self.t_delta.hash(state);
         self.st_diff.hash(state);
@@ -178,7 +178,7 @@ impl std::hash::Hash for XOR2Chunk {
     }
 }
 
-impl XOR2Chunk {
+impl Xor2Chunk {
     pub(crate) fn with_max_size(max_size: usize) -> Self {
         let stream = vec![0u8; CHUNK_HEADER_SIZE + ST_HEADER_SIZE]; // reserve header bytes
         let mut b = BitStream::new();
@@ -188,7 +188,7 @@ impl XOR2Chunk {
             stream: b,
             max_size,
             st: 0,
-            t: i64::MIN,
+            ts: i64::MIN,
             v: 0.0,
             t_delta: 0,
             st_diff: 0,
@@ -241,7 +241,7 @@ impl XOR2Chunk {
         let stream = vec![0u8; CHUNK_HEADER_SIZE + ST_HEADER_SIZE];
         self.stream.reset(stream);
         self.st = 0;
-        self.t = i64::MIN;
+        self.ts = i64::MIN;
         self.v = 0.0;
         self.t_delta = 0;
         self.st_diff = 0;
@@ -407,27 +407,21 @@ impl XOR2Chunk {
                 if st != 0 {
                     self.stream.write_signed_int(t - st);
                     self.first_st_known = true;
-                    let bytes = self.stream.bytes();
-                    if bytes.len() > CHUNK_HEADER_SIZE {
-                        let mut header = [0u8; ST_HEADER_SIZE];
-                        write_header_first_st_known(&mut header);
-                        // Need to modify the actual buffer
-                    }
                 }
             }
             1 => {
-                t_delta = (t - self.t) as u64;
+                t_delta = (t - self.ts) as u64;
                 self.stream.write_unsigned_int(t_delta);
                 self.write_v_delta(v);
 
                 if st != self.st {
-                    st_diff = self.t - st;
+                    st_diff = self.ts - st;
                     self.first_st_change_on = 1;
                     put_varbit_int_fast(&mut self.stream, st_diff);
                 }
             }
             _ => {
-                t_delta = (t - self.t) as u64;
+                t_delta = (t - self.ts) as u64;
                 let dod = (t_delta as i64).saturating_sub(self.t_delta as i64);
 
                 // Fast path: no new ST data to write for this sample.
@@ -462,7 +456,7 @@ impl XOR2Chunk {
                             }
                         }
                     }
-                    self.t = t;
+                    self.ts = t;
                     self.t_delta = t_delta;
                     self.st_diff = st_diff;
                     self.num_total += 1;
@@ -480,7 +474,7 @@ impl XOR2Chunk {
                 // per-sample ST delta. Inline T+V encoding and the zero-delta ST case to
                 // avoid two non-inlined function calls (encode_joint + put_varbit_int_fast).
                 if self.first_st_change_on > 0 {
-                    let new_st_diff = self.t - st;
+                    let new_st_diff = self.ts - st;
                     let delta_st_diff = new_st_diff - self.st_diff;
                     let v_bits = v.to_bits();
 
@@ -507,7 +501,7 @@ impl XOR2Chunk {
                     }
                     self.st_diff = new_st_diff;
                     self.st = st;
-                    self.t = t;
+                    self.ts = t;
                     self.t_delta = t_delta;
                     self.num_total += 1;
 
@@ -522,13 +516,8 @@ impl XOR2Chunk {
 
                 if st != self.st || self.num_total == MAX_FIRST_ST_CHANGE_ON as u16 {
                     // First ST change: record prevT - st.
-                    st_diff = self.t - st;
+                    st_diff = self.ts - st;
                     self.first_st_change_on = self.num_total;
-                    let bytes = self.stream.bytes();
-                    if bytes.len() > CHUNK_HEADER_SIZE {
-                        let mut header = [0u8; ST_HEADER_SIZE];
-                        write_header_first_st_change_on(&mut header, self.num_total);
-                    }
 
                     put_varbit_int_fast(&mut self.stream, st_diff);
                 }
@@ -536,7 +525,7 @@ impl XOR2Chunk {
         }
 
         self.st = st;
-        self.t = t;
+        self.ts = t;
         self.last_timestamp = t;
         self.last_value = v;
 
@@ -549,12 +538,12 @@ impl XOR2Chunk {
         self.update_header();
     }
 
-    pub fn iterator(&self) -> XOR2Iterator<'_> {
-        XOR2Iterator::new(self.stream.bytes())
+    pub fn iterator(&self) -> Xor2Iterator<'_> {
+        Xor2Iterator::new(self.stream.bytes())
     }
 }
 
-impl RdbSerializable for XOR2Chunk {
+impl RdbSerializable for Xor2Chunk {
     fn rdb_save(&self, rdb: *mut raw::RedisModuleIO) {
         rdb_save_usize(rdb, self.max_size);
         rdb_save_usize(rdb, self.num_total as usize);
@@ -564,7 +553,7 @@ impl RdbSerializable for XOR2Chunk {
         raw::save_signed(rdb, self.last_timestamp);
         raw::save_double(rdb, self.last_value);
         raw::save_signed(rdb, self.st);
-        raw::save_signed(rdb, self.t);
+        raw::save_signed(rdb, self.ts);
         raw::save_double(rdb, self.v);
         raw::save_unsigned(rdb, self.t_delta);
         raw::save_signed(rdb, self.st_diff);
@@ -584,7 +573,7 @@ impl RdbSerializable for XOR2Chunk {
         let last_timestamp = raw::load_signed(rdb)?;
         let last_value = raw::load_double(rdb)?;
         let st = raw::load_signed(rdb)?;
-        let t = raw::load_signed(rdb)?;
+        let ts = raw::load_signed(rdb)?;
         let v = raw::load_double(rdb)?;
         let t_delta = raw::load_unsigned(rdb)?;
         let st_diff = raw::load_signed(rdb)?;
@@ -600,7 +589,7 @@ impl RdbSerializable for XOR2Chunk {
             stream,
             max_size,
             st,
-            t,
+            ts,
             v,
             t_delta,
             st_diff,
@@ -625,29 +614,7 @@ pub(super) fn is_stale_nan(v: f64) -> bool {
     v.to_bits() == STALE_NAN
 }
 
-impl Clone for XOR2Chunk {
-    fn clone(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-            max_size: self.max_size,
-            st: self.st,
-            t: self.t,
-            v: self.v,
-            t_delta: self.t_delta,
-            st_diff: self.st_diff,
-            leading: self.leading,
-            trailing: self.trailing,
-            num_total: self.num_total,
-            first_st_change_on: self.first_st_change_on,
-            first_st_known: self.first_st_known,
-            first_timestamp: self.first_timestamp,
-            last_timestamp: self.last_timestamp,
-            last_value: self.last_value,
-        }
-    }
-}
-
-impl Chunk for XOR2Chunk {
+impl Chunk for Xor2Chunk {
     fn first_timestamp(&self) -> Timestamp {
         self.first_timestamp
     }
@@ -677,7 +644,7 @@ impl Chunk for XOR2Chunk {
             return Ok(0);
         }
 
-        let mut new_chunk = XOR2Chunk::with_max_size(self.max_size);
+        let mut new_chunk = Xor2Chunk::with_max_size(self.max_size);
         let saved_count = self.len();
 
         let mut iter = self.iterator();
@@ -720,7 +687,7 @@ impl Chunk for XOR2Chunk {
             return Ok(1);
         }
 
-        let mut new_chunk = XOR2Chunk::with_max_size(self.max_size);
+        let mut new_chunk = Xor2Chunk::with_max_size(self.max_size);
         let mut iter = self.iterator();
 
         if ts < self.first_timestamp() {
@@ -810,7 +777,7 @@ impl Chunk for XOR2Chunk {
         let left = SampleIter::vec(self.iterator().collect::<Vec<Sample>>());
         let right = SampleIter::Slice(samples.iter());
 
-        let mut new_chunk = XOR2Chunk::with_max_size(self.max_size);
+        let mut new_chunk = Xor2Chunk::with_max_size(self.max_size);
 
         // Build a set of input timestamps so we only produce a single result per unique
         // input timestamp. This mirrors the behavior of the Uncompressed chunk.
@@ -845,8 +812,8 @@ impl Chunk for XOR2Chunk {
     }
 
     fn split(&mut self) -> TsdbResult<Self> {
-        let mut left_chunk = XOR2Chunk::with_max_size(self.max_size);
-        let mut right_chunk = XOR2Chunk::with_max_size(self.max_size);
+        let mut left_chunk = Xor2Chunk::with_max_size(self.max_size);
+        let mut right_chunk = Xor2Chunk::with_max_size(self.max_size);
 
         if self.is_empty() {
             return Ok(self.clone());
@@ -892,7 +859,7 @@ impl Chunk for XOR2Chunk {
         write_uvarint(dest, self.last_timestamp as u64);
         write_f64_le(dest, self.last_value);
         write_uvarint(dest, self.st as u64);
-        write_uvarint(dest, self.t as u64);
+        write_uvarint(dest, self.ts as u64);
         write_f64_le(dest, self.v);
         write_uvarint(dest, self.t_delta);
         write_uvarint(dest, self.st_diff as u64);
@@ -911,7 +878,7 @@ impl Chunk for XOR2Chunk {
         let last_timestamp = read_i64(&mut remaining)?;
         let last_value = read_f64_le(&mut remaining)?;
         let st = read_i64(&mut remaining)?;
-        let t = read_i64(&mut remaining)?;
+        let ts = read_i64(&mut remaining)?;
         let v = read_f64_le(&mut remaining)?;
         let t_delta = read_uvarint(&mut remaining)?;
         let st_diff = read_i64(&mut remaining)?;
@@ -928,7 +895,7 @@ impl Chunk for XOR2Chunk {
             stream,
             max_size,
             st,
-            t,
+            ts,
             v,
             t_delta,
             st_diff,
@@ -991,7 +958,7 @@ mod debug_tests {
             },
         ];
 
-        let mut c = XOR2Chunk::new();
+        let mut c = Xor2Chunk::new();
         c.set_data(&samples).unwrap();
         eprintln!("[debug_xor2] chunk.len() = {}", c.len());
         let all: Vec<_> = c.iterator().collect();

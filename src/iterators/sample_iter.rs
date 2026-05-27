@@ -2,7 +2,7 @@ use crate::common::Sample;
 use crate::iterators::TimeSeriesRangeIterator;
 use crate::iterators::vec_sample_iterator::VecSampleIterator;
 use crate::series::chunks::{
-    GorillaChunkIterator, PcoSampleIterator, TsXorChunkIterator, XOR2Iterator,
+    GorillaChunkIterator, PcoSampleIterator, TsXorChunkIterator, Xor2Iterator,
 };
 
 #[derive(Default)]
@@ -13,7 +13,7 @@ pub enum SampleIter<'a> {
     Pco(Box<PcoSampleIterator<'a>>),
     TSXor(TsXorChunkIterator<'a>),
     Range(TimeSeriesRangeIterator<'a>),
-    XOR2(Box<XOR2Iterator<'a>>),
+    XOR2(Box<Xor2Iterator<'a>>),
     #[default]
     Empty,
 }
@@ -36,7 +36,7 @@ impl<'a> SampleIter<'a> {
     pub fn tsxor(iter: TsXorChunkIterator<'a>) -> Self {
         SampleIter::TSXor(iter)
     }
-    pub fn xor2(iter: XOR2Iterator<'a>) -> Self {
+    pub fn xor2(iter: Xor2Iterator<'a>) -> Self {
         SampleIter::XOR2(Box::new(iter))
     }
 }

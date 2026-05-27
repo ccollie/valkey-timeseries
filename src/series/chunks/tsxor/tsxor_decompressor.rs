@@ -3,8 +3,8 @@ use crate::common::logging::log_warning;
 use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
 use crate::series::chunks::tsxor::tsxor_chunk::{CacheWindow, FIRST_DELTA_BITS};
 
-/// Decompressor for TSXor single-column
-pub(crate) struct DecompressorTSXor<'a> {
+/// Decompressor for TsXor single-column
+pub(crate) struct TsXorDecompressor<'a> {
     reader: BitStreamReader<'a>,
     bytes: &'a [u8],
     byte_idx: usize,
@@ -20,13 +20,13 @@ pub(crate) struct DecompressorTSXor<'a> {
     sample_count: usize,
 }
 
-impl<'a> DecompressorTSXor<'a> {
+impl<'a> TsXorDecompressor<'a> {
     pub(super) fn new(buf: &'a [u8], sample_count: usize) -> Self {
         let mut reader = BitStreamReader::new(buf);
         // read header
         let block_timestamp = reader.read_u64().unwrap_or(0);
         let end_of_stream = sample_count == 0;
-        DecompressorTSXor {
+        TsXorDecompressor {
             reader,
             bytes: buf,
             byte_idx: 0,

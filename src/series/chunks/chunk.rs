@@ -17,7 +17,7 @@ pub enum ChunkEncoding {
     Uncompressed = 1,
     #[default]
     Gorilla = 2,
-    TSXor = 3,
+    TsXor = 3,
     Pco = 4,
     Xor2 = 5,
 }
@@ -27,7 +27,7 @@ impl ChunkEncoding {
         match self {
             ChunkEncoding::Uncompressed => "uncompressed",
             ChunkEncoding::Gorilla => "gorilla",
-            ChunkEncoding::TSXor => "tsxor",
+            ChunkEncoding::TsXor => "tsxor",
             ChunkEncoding::Xor2 => "xor2",
             ChunkEncoding::Pco => "pco",
         }
@@ -50,7 +50,7 @@ impl TryFrom<u8> for ChunkEncoding {
         match value {
             1 => Ok(ChunkEncoding::Uncompressed),
             2 => Ok(ChunkEncoding::Gorilla),
-            3 => Ok(ChunkEncoding::TSXor),
+            3 => Ok(ChunkEncoding::TsXor),
             4 => Ok(ChunkEncoding::Pco),
             5 => Ok(ChunkEncoding::Xor2),
             _ => Err(ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING)),
@@ -81,7 +81,7 @@ fn parse_encoding(encoding: &str) -> Option<ChunkEncoding> {
         "compressed" => ChunkEncoding::default(),
         "uncompressed" => ChunkEncoding::Uncompressed,
         "gorilla" => ChunkEncoding::Gorilla,
-        "tsxor" => ChunkEncoding::TSXor,
+        "tsxor" => ChunkEncoding::TsXor,
         "xor2" => ChunkEncoding::Xor2,
         "pco" => ChunkEncoding::Pco,
     }
@@ -161,7 +161,7 @@ mod tests {
         let encodings = [
             ChunkEncoding::Uncompressed,
             ChunkEncoding::Gorilla,
-            ChunkEncoding::TSXor,
+            ChunkEncoding::TsXor,
             ChunkEncoding::Pco,
             ChunkEncoding::Xor2,
         ];

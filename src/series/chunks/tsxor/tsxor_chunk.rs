@@ -16,7 +16,7 @@ use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::SampleIter;
 use crate::series::chunks::stream::bitstream::BitStream;
-use crate::series::chunks::tsxor::tsxor_decompressor::DecompressorTSXor;
+use crate::series::chunks::tsxor::tsxor_decompressor::TsXorDecompressor;
 use crate::series::chunks::{Chunk, merge_samples};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
@@ -128,7 +128,7 @@ impl CacheWindow {
 
 /// A TSXor-based chunk implementation with inlined TSXor compression state.
 #[derive(Debug, Clone, GetSize)]
-pub struct TSXorChunk {
+pub struct TsXorChunk {
     writer: BitStream,
     window: CacheWindow,
     stored_timestamp: u64,
@@ -141,7 +141,7 @@ pub struct TSXorChunk {
     last_value: f64,
 }
 
-impl PartialEq for TSXorChunk {
+impl PartialEq for TsXorChunk {
     fn eq(&self, other: &Self) -> bool {
         self.max_size == other.max_size
             && self.first_timestamp == other.first_timestamp
@@ -151,7 +151,7 @@ impl PartialEq for TSXorChunk {
     }
 }
 
-impl Hash for TSXorChunk {
+impl Hash for TsXorChunk {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.max_size.hash(state);
         self.first_timestamp.hash(state);
@@ -161,15 +161,15 @@ impl Hash for TSXorChunk {
     }
 }
 
-impl Default for TSXorChunk {
+impl Default for TsXorChunk {
     fn default() -> Self {
         Self::with_max_size(crate::config::DEFAULT_CHUNK_SIZE_BYTES)
     }
 }
 
-impl TSXorChunk {
+impl TsXorChunk {
     fn new_encoder(max_size: usize) -> Self {
-        TSXorChunk {
+        TsXorChunk {
             writer: BitStream::new(),
             window: CacheWindow::new(),
             stored_timestamp: 0,
@@ -382,7 +382,7 @@ impl TSXorChunk {
 }
 
 pub struct TsXorChunkIterator<'a> {
-    decoder: DecompressorTSXor<'a>,
+    decoder: TsXorDecompressor<'a>,
     is_init: bool,
     start: Timestamp,
     end: Timestamp,
@@ -392,7 +392,7 @@ pub struct TsXorChunkIterator<'a> {
 impl<'a> TsXorChunkIterator<'a> {
     pub(crate) fn new(buf: &'a [u8], count: usize, start: Timestamp, end: Timestamp) -> Self {
         Self {
-            decoder: DecompressorTSXor::new(buf, count),
+            decoder: TsXorDecompressor::new(buf, count),
             start,
             end,
             is_init: false,
@@ -435,7 +435,7 @@ impl<'a> Iterator for TsXorChunkIterator<'a> {
     }
 }
 
-impl Chunk for TSXorChunk {
+impl Chunk for TsXorChunk {
     fn first_timestamp(&self) -> Timestamp {
         self.first_timestamp
     }
@@ -469,7 +469,7 @@ impl Chunk for TSXorChunk {
         }
 
         let old_len = self.len();
-        let mut decoder = DecompressorTSXor::new(self.buf(), self.len());
+        let mut decoder = TsXorDecompressor::new(self.buf(), self.len());
         let mut encoder = Self::new_encoder(self.max_size);
         let mut first_ts: Option<Timestamp> = None;
         let mut last_sample: Option<Sample> = None;
@@ -605,7 +605,7 @@ impl Chunk for TSXorChunk {
         dp_policy: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
         fn add_sample(
-            chunk: &mut TSXorChunk,
+            chunk: &mut TsXorChunk,
             sample: &Sample,
             res: &mut Vec<SampleAddResult>,
         ) -> TsdbResult<()> {
@@ -643,12 +643,12 @@ impl Chunk for TSXorChunk {
         }
 
         struct MergeState {
-            encoder: TSXorChunk,
+            encoder: TsXorChunk,
             result: Vec<SampleAddResult>,
         }
 
         let mut merge_state = MergeState {
-            encoder: TSXorChunk::new_encoder(self.max_size),
+            encoder: TsXorChunk::new_encoder(self.max_size),
             result: Vec::with_capacity(samples.len()),
         };
         // Track first and last samples seen so we can set the resulting chunk's metadata
@@ -753,7 +753,7 @@ impl Chunk for TSXorChunk {
         let last_timestamp = rdb_load_timestamp(rdb)?;
         let last_value = rdb_load_f64(rdb)?;
         let state = valkey_module::raw::load_string_buffer(rdb)?;
-        let mut chunk = TSXorChunk::with_max_size(max_size);
+        let mut chunk = TsXorChunk::with_max_size(max_size);
         chunk.deserialize_encoder_state(state.as_ref())?;
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
@@ -780,7 +780,7 @@ impl Chunk for TSXorChunk {
         let last_value = try_read_f64_le(&mut b).map_err(|_| TsdbError::ChunkDecoding)?;
 
         // The remaining bytes are the encoder state; pass them to the state deserializer
-        let mut chunk = TSXorChunk::with_max_size(max_size);
+        let mut chunk = TsXorChunk::with_max_size(max_size);
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
         chunk.first_timestamp = first_timestamp;
@@ -794,7 +794,7 @@ impl Chunk for TSXorChunk {
     }
 }
 
-impl RdbSerializable for TSXorChunk {
+impl RdbSerializable for TsXorChunk {
     fn rdb_save(&self, rdb: *mut RedisModuleIO) {
         <Self as Chunk>::save_rdb(self, rdb);
     }
@@ -819,7 +819,7 @@ mod tests {
             samples.push(Sample::new(ts, v));
         }
 
-        let mut chunk = TSXorChunk::with_max_size(1024 * 1024);
+        let mut chunk = TsXorChunk::with_max_size(1024 * 1024);
         chunk.set_data(&samples).expect("set_data");
 
         // pick range: 10..30
@@ -849,13 +849,13 @@ mod tests {
             samples.push(Sample::new(1_700_000_000 + (i * 60), (i as f64) * 1.5));
         }
 
-        let mut chunk = TSXorChunk::with_max_size(8192);
+        let mut chunk = TsXorChunk::with_max_size(8192);
         chunk.set_data(&samples).expect("set_data");
 
         let mut serialized = Vec::new();
         chunk.serialize(&mut serialized);
 
-        let restored = TSXorChunk::deserialize(&serialized).expect("deserialize");
+        let restored = TsXorChunk::deserialize(&serialized).expect("deserialize");
         assert_eq!(restored.max_size(), 8192);
         assert_eq!(restored.len(), samples.len());
         assert_eq!(
@@ -868,7 +868,7 @@ mod tests {
             samples.last().unwrap().value.to_bits()
         );
 
-        let mut decoder = DecompressorTSXor::new(restored.buf(), restored.len());
+        let mut decoder = TsXorDecompressor::new(restored.buf(), restored.len());
         let mut actual = Vec::new();
         while let Some((ts, value)) = decoder.next() {
             actual.push(Sample::new(ts as i64, value));
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn tsxor_chunk_updates_state_as_data_changes() {
-        let mut chunk = TSXorChunk::with_max_size(4096);
+        let mut chunk = TsXorChunk::with_max_size(4096);
         let initial = vec![
             Sample::new(1_000, 1.0),
             Sample::new(1_060, 2.0),
@@ -918,7 +918,7 @@ mod tests {
             Sample::new(1_120, 3.0),
         ];
 
-        let mut chunk = TSXorChunk::with_max_size(4096);
+        let mut chunk = TsXorChunk::with_max_size(4096);
         chunk.set_data(&samples).expect("set_data");
 
         let mut serialized = Vec::new();
@@ -926,7 +926,7 @@ mod tests {
         serialized.pop();
 
         assert!(matches!(
-            TSXorChunk::deserialize(&serialized),
+            TsXorChunk::deserialize(&serialized),
             Err(TsdbError::ChunkDecoding)
         ));
     }

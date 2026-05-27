@@ -4,9 +4,9 @@ use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::{FilteredSampleIterator, SampleIter};
-use crate::series::chunks::tsxor::TSXorChunk;
+use crate::series::chunks::tsxor::TsXorChunk;
 use crate::series::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
-use crate::series::chunks::xor2::XOR2Chunk;
+use crate::series::chunks::xor2::Xor2Chunk;
 use crate::series::types::ValueFilter;
 use crate::series::{
     DuplicatePolicy, SampleAddResult,
@@ -22,8 +22,8 @@ use valkey_module::{RedisModuleIO, ValkeyResult};
 pub enum TimeSeriesChunk {
     Uncompressed(UncompressedChunk),
     Gorilla(GorillaChunk),
-    Tsxor(TSXorChunk),
-    Xor(XOR2Chunk),
+    Tsxor(TsXorChunk),
+    Xor(Xor2Chunk),
     Pco(PcoChunk),
 }
 
@@ -39,12 +39,12 @@ impl TimeSeriesChunk {
                 let chunk = GorillaChunk::with_max_size(chunk_size);
                 Gorilla(chunk)
             }
-            ChunkEncoding::TSXor => {
-                let chunk = TSXorChunk::with_max_size(chunk_size);
+            ChunkEncoding::TsXor => {
+                let chunk = TsXorChunk::with_max_size(chunk_size);
                 Tsxor(chunk)
             }
             ChunkEncoding::Xor2 => {
-                let chunk = XOR2Chunk::with_max_size(chunk_size);
+                let chunk = Xor2Chunk::with_max_size(chunk_size);
                 Xor(chunk)
             }
             ChunkEncoding::Pco => Pco(PcoChunk::with_max_size(chunk_size)),
@@ -66,7 +66,7 @@ impl TimeSeriesChunk {
         match self {
             TimeSeriesChunk::Uncompressed(_) => ChunkEncoding::Uncompressed,
             TimeSeriesChunk::Gorilla(_) => ChunkEncoding::Gorilla,
-            TimeSeriesChunk::Tsxor(_) => ChunkEncoding::TSXor,
+            TimeSeriesChunk::Tsxor(_) => ChunkEncoding::TsXor,
             TimeSeriesChunk::Xor(_) => ChunkEncoding::Xor2,
             TimeSeriesChunk::Pco(_) => ChunkEncoding::Pco,
         }
@@ -526,8 +526,8 @@ impl Chunk for TimeSeriesChunk {
         let chunk = match chunk_type {
             ChunkEncoding::Uncompressed => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
             ChunkEncoding::Gorilla => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
-            ChunkEncoding::TSXor => Tsxor(TSXorChunk::load_rdb(rdb, enc_ver)?),
-            ChunkEncoding::Xor2 => Xor(XOR2Chunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::TsXor => Tsxor(TsXorChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::Xor2 => Xor(Xor2Chunk::load_rdb(rdb, enc_ver)?),
             ChunkEncoding::Pco => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
         };
         Ok(chunk)
@@ -545,7 +545,7 @@ impl Chunk for TimeSeriesChunk {
                 chunk.serialize(dest)
             }
             Tsxor(chunk) => {
-                dest.push(ChunkEncoding::TSXor as u8);
+                dest.push(ChunkEncoding::TsXor as u8);
                 chunk.serialize(dest)
             }
             Xor(chunk) => {
@@ -577,12 +577,12 @@ impl Chunk for TimeSeriesChunk {
                 let chunk = GorillaChunk::deserialize(&buf[1..])?;
                 Ok(Gorilla(chunk))
             }
-            ChunkEncoding::TSXor => {
-                let chunk = TSXorChunk::deserialize(&buf[1..])?;
+            ChunkEncoding::TsXor => {
+                let chunk = TsXorChunk::deserialize(&buf[1..])?;
                 Ok(Tsxor(chunk))
             }
             ChunkEncoding::Xor2 => {
-                let chunk = XOR2Chunk::deserialize(&buf[1..])?;
+                let chunk = Xor2Chunk::deserialize(&buf[1..])?;
                 Ok(Xor(chunk))
             }
             ChunkEncoding::Pco => {

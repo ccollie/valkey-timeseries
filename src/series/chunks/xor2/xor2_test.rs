@@ -29,7 +29,7 @@ mod tests {
     use crate::series::chunks::ChunkEncoding;
     use crate::series::chunks::stream::bitstream::BitStream;
     use crate::series::chunks::timeseries_chunk::TimeSeriesChunk;
-    use crate::series::chunks::xor2::xor2_chunk::{STALE_NAN, XOR2Chunk, is_stale_nan};
+    use crate::series::chunks::xor2::xor2_chunk::{STALE_NAN, Xor2Chunk, is_stale_nan};
 
     fn write_xor2_new_window_payload(bs: &mut BitStream, delta: u64) -> (u8, u8) {
         let (leading, trailing, sigbits) = xor2_delta_window(delta);
@@ -56,7 +56,7 @@ mod tests {
     }
 
     fn require_xor2_samples(samples: &[Triple]) {
-        let mut chunk = XOR2Chunk::new();
+        let mut chunk = Xor2Chunk::new();
 
         for sample in samples.iter() {
             chunk.append(sample.st, sample.t, sample.v);
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_xor2_stale_with_dod_non_zero() {
-        let mut c = XOR2Chunk::new();
+        let mut c = Xor2Chunk::new();
 
         // Stale NaN samples where the timestamp dod is non-zero, exercising the
         // `111` value encoding path inside writeVDelta.
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_xor2_irregular_timestamps() {
-        let mut c = XOR2Chunk::new();
+        let mut c = Xor2Chunk::new();
 
         // Timestamps with dod values spanning multiple encoding ranges.
         let timestamps = vec![
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_xor2_large_dod() {
-        let mut c = XOR2Chunk::new();
+        let mut c = Xor2Chunk::new();
         // Force the 64-bit escape path with a very large dod.
         let timestamps = vec![0, 1000, 2000, 2000 + (1 << 20)];
         for ts in &timestamps {
@@ -413,7 +413,7 @@ mod tests {
         const AFTER_MAX: usize = MAX_FIRST_ST_CHANGE_ON + 3;
 
         // zero ST
-        let mut chunk = XOR2Chunk::new();
+        let mut chunk = Xor2Chunk::new();
         for i in 0..AFTER_MAX {
             chunk.append(0, (i * 10 + 1) as i64, i as f64 * 1.5);
         }
@@ -431,7 +431,7 @@ mod tests {
 
         // non-zero ST after 127
 
-        let mut chunk = XOR2Chunk::new();
+        let mut chunk = Xor2Chunk::new();
         for i in 0..AFTER_MAX {
             let mut st = 0;
             if i == AFTER_MAX - 1 {
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn test_xor2_basic() {
-        let mut c = XOR2Chunk::new();
+        let mut c = Xor2Chunk::new();
 
         let samples = vec![
             (1000, 1.0),
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_xor2_with_staleness() {
-        let mut chunk = XOR2Chunk::new();
+        let mut chunk = Xor2Chunk::new();
 
         let stale_nan_bits = 0x7ff0000000000002;
         let samples = vec![
@@ -534,7 +534,7 @@ mod tests {
             },
         ];
 
-        let mut chunk = XOR2Chunk::new();
+        let mut chunk = Xor2Chunk::new();
         for sample in samples {
             chunk.append(sample.st, sample.t, sample.v);
         }
@@ -542,7 +542,7 @@ mod tests {
         let mut serialized = Vec::new();
         chunk.serialize(&mut serialized);
 
-        let mut restored = XOR2Chunk::deserialize(&serialized).expect("deserialize");
+        let mut restored = Xor2Chunk::deserialize(&serialized).expect("deserialize");
         assert_eq!(
             chunk, restored,
             "serialized chunk should round-trip its internal state"
@@ -585,7 +585,7 @@ mod tests {
             },
         ];
 
-        let mut chunk = XOR2Chunk::new();
+        let mut chunk = Xor2Chunk::new();
         for sample in samples {
             chunk.append(sample.st, sample.t, sample.v);
         }

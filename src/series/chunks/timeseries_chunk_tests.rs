@@ -23,7 +23,7 @@ mod tests {
     const CHUNK_TYPES: [ChunkEncoding; 5] = [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
-        ChunkEncoding::TSXor,
+        ChunkEncoding::TsXor,
         ChunkEncoding::Xor2,
         ChunkEncoding::Pco,
     ];
