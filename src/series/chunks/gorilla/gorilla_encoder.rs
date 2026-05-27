@@ -1,5 +1,4 @@
 use super::GorillaIterator;
-use super::varbit::write_varbit;
 use super::varbit_xor::write_varbit_xor;
 use crate::common::Sample;
 use crate::common::encoding::{
@@ -14,6 +13,7 @@ use crate::common::rdb::{
 };
 use crate::error::{TsdbError, TsdbResult};
 use crate::series::chunks::stream::bitstream::BitStream;
+use crate::series::chunks::stream::varbit::write_varbit;
 use get_size2::GetSize;
 use std::ffi::c_longlong;
 use std::hash::Hash;
@@ -153,7 +153,7 @@ impl GorillaEncoder {
         }
         let delta_of_delta = timestamp_delta - self.timestamp_delta;
 
-        write_varbit(delta_of_delta, &mut self.writer)?;
+        write_varbit(&mut self.writer, delta_of_delta)?;
 
         let (leading_bits, trailing_bits) = write_varbit_xor(
             value,

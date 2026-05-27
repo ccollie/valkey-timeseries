@@ -4,8 +4,6 @@ mod gorilla_chunk;
 mod gorilla_encoder;
 mod gorilla_iterator;
 mod serialization;
-pub(crate) mod utils;
-mod varbit;
 mod varbit_xor;
 
 pub use gorilla_chunk::*;

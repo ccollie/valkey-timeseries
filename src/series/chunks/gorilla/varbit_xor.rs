@@ -1,5 +1,5 @@
-use super::utils::{read_bits, read_bool};
 use crate::series::chunks::stream::traits::{BitRead, BitWrite};
+use crate::series::chunks::stream::utils::{read_bits, read_bool};
 
 /// Writes a f64 as a Prometheus varbit xor encoded number.
 ///

@@ -1,5 +1,5 @@
+use crate::common::encoding::zigzag_decode;
 use crate::common::logging::log_warning;
-use crate::series::chunks::gorilla::utils::zigzag_decode;
 use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
 use crate::series::chunks::tsxor::tsxor_chunk::{CacheWindow, FIRST_DELTA_BITS};
 

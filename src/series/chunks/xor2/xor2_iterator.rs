@@ -1,5 +1,6 @@
 use crate::common::Sample;
 use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
+use crate::series::chunks::stream::varbit::read_varbit_int;
 use crate::series::chunks::xor2::xor2_chunk::{
     CHUNK_HEADER_SIZE, ST_HEADER_SIZE, STALE_NAN, is_stale_nan, read_st_header,
 };
@@ -76,6 +77,7 @@ impl<'a> XOR2Iterator<'a> {
         self.err = None;
     }
 
+    /// read_dod reads a signed dod of width w bits and updates it.tDelta and it.t.
     fn read_dod(&mut self, w: u8) -> io::Result<()> {
         let b = if self.br.valid >= w {
             self.br.valid -= w;
@@ -95,7 +97,15 @@ impl<'a> XOR2Iterator<'a> {
         Ok(())
     }
 
+    /// `decode_value` reads the XOR2 value encoding for the dod≠0 case:
+    ///
+    ///    - `0`   → value unchanged
+    ///    - `10`  → reuse the previous leading/trailing window
+    ///    - `110` → new leading/trailing window
+    ///    - `111` → stale NaN
     fn decode_value(&mut self) -> io::Result<()> {
+        // Fast path: 3 bits available — read the full control prefix in one shot.
+        // Encoding: `0`=unchanged, `10`=reuse window, `110`=new window, `111`=stale NaN.
         if self.br.valid >= 3 {
             let ctrl = (self.br.buffer >> (self.br.valid - 3)) & 0x7;
             if ctrl & 0x4 == 0 {
@@ -104,6 +114,7 @@ impl<'a> XOR2Iterator<'a> {
                 return Ok(());
             }
             if ctrl & 0x6 == 0x4 {
+                // `10x`: reuse previous leading/trailing window, consume 2 bits.
                 self.br.valid -= 2;
                 let sz = 64 - self.leading - self.trailing;
                 let value_bits = if self.br.valid >= sz {
@@ -118,23 +129,28 @@ impl<'a> XOR2Iterator<'a> {
                 self.baseline_v = self.val;
                 return Ok(());
             }
+            // `11x`: consume 3 bits.
             self.br.valid -= 3;
             if ctrl == 0x6 {
+                // `110`: new leading/trailing window.
                 return self.decode_new_leading_trailing();
             }
+            // `111`: stale NaN.
             self.val = f64::from_bits(STALE_NAN);
             return Ok(());
         }
 
-        // Slow path
+        // Slow path: fewer than 3 bits buffered (rare, only near buffer refills).
         let bit = self.br.read_bit()?;
         if !bit {
+            // `0` → value unchanged.
             self.val = self.baseline_v;
             return Ok(());
         }
 
         let bit2 = self.br.read_bit()?;
         if !bit2 {
+            // `10` → reuse previous leading/trailing window.
             let sz = 64 - self.leading - self.trailing;
             let value_bits = if self.br.valid >= sz {
                 self.br.valid -= sz;
@@ -151,16 +167,24 @@ impl<'a> XOR2Iterator<'a> {
 
         let bit3 = self.br.read_bit()?;
         if !bit3 {
+            // `110` → new leading/trailing window.
             return self.decode_new_leading_trailing();
         }
 
+        // `111` → stale NaN.
         self.val = f64::from_bits(STALE_NAN);
         Ok(())
     }
 
+    /// `decode_value_known_non_zero` reads the XOR2 value encoding for the dod=0,
+    /// value-changed case:
+    ///
+    ///    - `0` → reuse the previous leading/trailing window
+    ///    - `1` → new leading/trailing window
     fn decode_value_known_non_zero(&mut self) -> io::Result<()> {
         let sz = 64 - self.leading - self.trailing;
-
+        // Fast path: combine the 1-bit reuse/new-window control read with the
+        // sz-bit value read into a single buffer operation.
         if self.br.valid > sz {
             let ctrl_bit = (self.br.buffer >> (self.br.valid - 1)) & 1;
             if ctrl_bit == 0 {
@@ -172,10 +196,13 @@ impl<'a> XOR2Iterator<'a> {
                 self.baseline_v = self.val;
                 return Ok(());
             }
+
+            // `1`: new leading/trailing window.
             self.br.valid -= 1;
             return self.decode_new_leading_trailing();
         }
 
+        // Slow path: read control bit then value bits separately.
         let bit = self.br.read_bit()?;
         if !bit {
             let value_bits = if self.br.valid >= sz {
@@ -191,9 +218,12 @@ impl<'a> XOR2Iterator<'a> {
             return Ok(());
         }
 
+        // `1` → new leading/trailing window.
         self.decode_new_leading_trailing()
     }
 
+    /// `decode_new_leading_trailing` reads a new leading/sigbits/value triple and
+    /// updates `self.leading`, `self.trailing`, `self.val`, and `self.baseline_v`.
     fn decode_new_leading_trailing(&mut self) -> io::Result<()> {
         let (new_leading, sig_bits) = if self.br.valid >= 11 {
             let val = (self.br.buffer >> (self.br.valid - 11)) & 0x7FF;
@@ -352,10 +382,12 @@ impl Iterator for XOR2Iterator<'_> {
 
         match ctrl {
             0 => {
+                // dod=0, value unchanged.
                 self.t += self.t_delta as i64;
                 self.val = self.baseline_v;
             }
             1 => {
+                // dod=0, value changed.
                 self.t += self.t_delta as i64;
                 if let Err(e) = self.decode_value_known_non_zero() {
                     self.err = Some(e);
@@ -363,6 +395,7 @@ impl Iterator for XOR2Iterator<'_> {
                 }
             }
             2 => {
+                // 13-bit dod.
                 if let Err(e) = self.read_dod(13) {
                     self.err = Some(e);
                     return None;
@@ -373,6 +406,7 @@ impl Iterator for XOR2Iterator<'_> {
                 }
             }
             3 => {
+                // 20-bit dod.
                 if let Err(e) = self.read_dod(20) {
                     self.err = Some(e);
                     return None;
@@ -383,6 +417,7 @@ impl Iterator for XOR2Iterator<'_> {
                 }
             }
             4 => {
+                // 64-bit escape.
                 if let Err(e) = self.read_dod(64) {
                     self.err = Some(e);
                     return None;
@@ -393,13 +428,16 @@ impl Iterator for XOR2Iterator<'_> {
                 }
             }
             _ => {
+                // dod=0, stale NaN.
                 self.t += self.t_delta as i64;
                 self.val = f64::from_bits(STALE_NAN);
             }
         }
 
+        // Optional ST data, appended after the joint timestamp+value encoding.
+        // The ST delta was encoded as (prevT - st), using the PREVIOUS sample's t.
         if self.first_st_change_on > 0 && saved_num_read >= self.first_st_change_on {
-            let sdod = match self.br.read_varint() {
+            let sdod = match read_varbit_int(&mut self.br) {
                 Ok(sd) => sd,
                 Err(e) => {
                     self.err = Some(e);

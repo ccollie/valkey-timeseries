@@ -1,9 +1,9 @@
 use super::GorillaEncoder;
-use super::varbit::read_varbit_int;
 use super::varbit_xor::read_varbit_xor;
 use crate::common::Sample;
 use crate::error::{TsdbError, TsdbResult};
 use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
+use crate::series::chunks::stream::varbit::read_varbit_int;
 
 pub struct GorillaIterator<'a> {
     reader: BitStreamReader<'a>,

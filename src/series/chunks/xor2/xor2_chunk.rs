@@ -73,6 +73,7 @@ use crate::iterators::SampleIter;
 use crate::series::chunks::chunk::Chunk;
 use crate::series::chunks::merge::merge_samples;
 use crate::series::chunks::stream::bitstream::{BitStream, ONE, ZERO};
+use crate::series::chunks::stream::varbit::put_varbit_int_fast;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
@@ -297,6 +298,15 @@ impl XOR2Chunk {
         self.stream.write_bits_fast(delta >> new_trailing, sig_bits);
     }
 
+    /// `write_v_delta_known_non_zero` encodes a precomputed value XOR delta for the
+    /// dod=0, value-changed case. `delta` must be non-zero or staleNaN. Stale NaN with dod=0 is
+    /// handled at the joint control level (`11111`) and never reaches this function.
+    ///
+    /// Encoding:
+    ///
+    ///    `0` → reuse previous leading/trailing window
+    ///
+    ///    `1` → new leading/trailing window
     fn write_v_delta_known_non_zero(&mut self, delta: u64) {
         let new_leading = cmp::min(delta.leading_zeros() as u8, 31);
         let new_trailing = delta.trailing_zeros() as u8;
@@ -320,6 +330,8 @@ impl XOR2Chunk {
         self.stream.write_bits_fast(delta >> new_trailing, sig_bits);
     }
 
+    /// encode_joint writes the XOR2 joint timestamp+value control sequence for
+    /// samples >= 2.
     fn encode_joint(&mut self, dod: i64, v: f64) {
         if dod == 0 {
             if is_stale_nan(v) {
@@ -338,25 +350,26 @@ impl XOR2Chunk {
 
         match dod {
             -4096..=4095 => {
-                // 13-bit dod
+                // 13-bit dod: prefix `110` packed with top 5 bits → 2 bytes total.
                 self.stream
                     .write_byte(0b110_00000 | ((dod as u64 >> 8) & 0x1F) as u8);
                 self.stream.write_byte(dod as u8);
             }
             -524288..=524287 => {
-                // 20-bit dod
+                // 20-bit dod: prefix `1110` packed with top 4 bits → 3 bytes total.
                 self.stream
                     .write_byte(0b1110_0000 | ((dod as u64 >> 16) & 0x0F) as u8);
                 self.stream.write_byte((dod >> 8) as u8);
                 self.stream.write_byte(dod as u8);
             }
             _ => {
-                // 64-bit escape
+                // 64-bit escape (rare): `11110`.
                 self.stream.write_bits_fast(0b11110, 5);
                 self.stream.write_bits_fast(dod as u64, 64);
             }
         }
 
+        // Inline the most common value-unchanged case to avoid a function call.
         if v.to_bits() == self.v.to_bits() {
             self.stream.write_bit(ZERO);
         } else {
@@ -415,20 +428,33 @@ impl XOR2Chunk {
                         let mut header = [0u8; ST_HEADER_SIZE];
                         write_header_first_st_change_on(&mut header, 1);
                     }
-                    self.stream.write_signed_int(st_diff);
+                    put_varbit_int_fast(&mut self.stream, st_diff);
                 }
             }
             _ => {
                 t_delta = (t - self.t) as u64;
-                let dod = (t_delta as i64) - (self.t_delta as i64);
+                let dod = (t_delta as i64).saturating_sub(self.t_delta as i64);
 
-                if self.first_st_change_on == 0 && st == self.st {
+                // Fast path: no new ST data to write for this sample.
+                // Covers: ST never seen (st=0 always), or ST recorded initially but unchanged.
+                // Must use the slow path at maxFirstSTChangeOn so the header remains valid
+                // even if ST changes on a later sample (index > maxFirstSTChangeOn).
+                if self.first_st_change_on == 0
+                    && st == self.st
+                    && self.num_total != MAX_FIRST_ST_CHANGE_ON as u16
+                {
                     let v_bits = v.to_bits();
                     match (dod, v_bits == self.v.to_bits()) {
                         (0, true) => {
+                            // Unchanged value and timestamp: write a single 0 bit.
+                            // This is the most common case for stable metrics.
+                            // a.v stays correct (v == a.v), so no update needed.
                             self.stream.write_bit(ZERO);
                         }
                         (d, true) if (-(1 << 12)..=(1 << 12) - 1).contains(&d) => {
+                            // 13-bit dod, value unchanged: the most common case for metrics with
+                            // a small timestamp jitter. Inline both bytes and the zero-value bit to
+                            // avoid calling encode_joint and write_v_delta.
                             self.stream
                                 .write_byte(0b110_00000 | ((dod as u64 >> 8) & 0x1F) as u8);
                             self.stream.write_byte(dod as u8);
@@ -455,104 +481,33 @@ impl XOR2Chunk {
                     return;
                 }
 
+                // Active-ST fast path: first_st_change_on is set, so every sample needs a
+                // per-sample ST delta. Inline T+V encoding and the zero-delta ST case to
+                // avoid two non-inlined function calls (encode_joint + put_varbit_int_fast).
                 if self.first_st_change_on > 0 {
                     let new_st_diff = self.t - st;
                     let delta_st_diff = new_st_diff - self.st_diff;
                     let v_bits = v.to_bits();
 
                     match (dod, v_bits == self.v.to_bits()) {
-                        (0, true) => match delta_st_diff {
-                            0 => {
-                                self.stream.write_bit(ZERO);
-                                self.stream.write_bit(ZERO);
-                            }
-                            -3..=4 => {
-                                self.stream.write_bits_fast(
-                                    (0b10 << 3) | ((delta_st_diff as u64) & 0x7),
-                                    6,
-                                );
-                            }
-                            -31..=32 => {
-                                self.stream.write_bits_fast(
-                                    (0b110 << 6) | ((delta_st_diff as u64) & 0x3F),
-                                    10,
-                                );
-                            }
-                            -255..=256 => {
-                                self.stream.write_bits_fast(
-                                    (0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF),
-                                    14,
-                                );
-                            }
-                            _ => {
-                                self.stream.write_bit(ZERO);
-                                self.stream.write_signed_int(delta_st_diff);
-                            }
-                        },
+                        // dod=0, value unchanged.
+                        (0, true) => {
+                            self.stream.write_bit(ZERO);
+                            put_varbit_int_fast(&mut self.stream, delta_st_diff);
+                        }
                         (d, true) if (-(1 << 12)..=(1 << 12) - 1).contains(&d) => {
                             self.stream
                                 .write_byte(0b110_00000 | ((dod as u64 >> 8) & 0x1F) as u8);
                             self.stream.write_byte(dod as u8);
-                            match delta_st_diff {
-                                0 => {
-                                    self.stream.write_bit(ZERO);
-                                    self.stream.write_bit(ZERO);
-                                }
-                                -3..=4 => {
-                                    self.stream.write_bits_fast(
-                                        (0b10 << 3) | ((delta_st_diff as u64) & 0x7),
-                                        6,
-                                    );
-                                }
-                                -31..=32 => {
-                                    self.stream.write_bits_fast(
-                                        (0b110 << 6) | ((delta_st_diff as u64) & 0x3F),
-                                        10,
-                                    );
-                                }
-                                -255..=256 => {
-                                    self.stream.write_bits_fast(
-                                        (0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF),
-                                        14,
-                                    );
-                                }
-                                _ => {
-                                    self.stream.write_bit(ZERO);
-                                    self.stream.write_signed_int(delta_st_diff);
-                                }
-                            }
+                            self.stream.write_bit(ZERO);
+                            put_varbit_int_fast(&mut self.stream, delta_st_diff);
                         }
                         _ => {
                             self.encode_joint(dod, v);
                             if !is_stale_nan(v) {
                                 self.v = v;
                             }
-                            match delta_st_diff {
-                                0 => {
-                                    self.stream.write_bit(ZERO);
-                                }
-                                -3..=4 => {
-                                    self.stream.write_bits_fast(
-                                        (0b10 << 3) | ((delta_st_diff as u64) & 0x7),
-                                        5,
-                                    );
-                                }
-                                -31..=32 => {
-                                    self.stream.write_bits_fast(
-                                        (0b110 << 6) | ((delta_st_diff as u64) & 0x3F),
-                                        9,
-                                    );
-                                }
-                                -255..=256 => {
-                                    self.stream.write_bits_fast(
-                                        (0b1110 << 9) | ((delta_st_diff as u64) & 0x1FF),
-                                        13,
-                                    );
-                                }
-                                _ => {
-                                    self.stream.write_signed_int(delta_st_diff);
-                                }
-                            }
+                            put_varbit_int_fast(&mut self.stream, delta_st_diff);
                         }
                     }
                     self.st_diff = new_st_diff;
@@ -570,7 +525,8 @@ impl XOR2Chunk {
 
                 self.encode_joint(dod, v);
 
-                if st != self.st {
+                if st != self.st || self.num_total == MAX_FIRST_ST_CHANGE_ON as u16 {
+                    // First ST change: record prevT - st.
                     st_diff = self.t - st;
                     self.first_st_change_on = self.num_total;
                     let bytes = self.stream.bytes();
@@ -578,7 +534,8 @@ impl XOR2Chunk {
                         let mut header = [0u8; ST_HEADER_SIZE];
                         write_header_first_st_change_on(&mut header, self.num_total);
                     }
-                    self.stream.write_signed_int(st_diff);
+
+                    put_varbit_int_fast(&mut self.stream, st_diff);
                 }
             }
         }

@@ -184,3 +184,21 @@ pub(crate) fn zigzag_decode(from: u64) -> i64 {
 pub(crate) fn zigzag_encode(from: i64) -> u64 {
     ((from << 1) ^ (from >> 63)) as u64
 }
+
+const BYTE_WIDTH: usize = size_of::<u64>();
+const BIT_WIDTH: usize = BYTE_WIDTH * 8;
+
+// from bitter crate
+#[inline]
+pub(crate) fn sign_extend(val: u64, bits: u32) -> i64 {
+    // Branchless sign extension from bit twiddling hacks:
+    // https://graphics.stanford.edu/~seander/bithacks.html#VariableSignExtend
+    //
+    // The 3 operation approach with division turned out to be significantly slower,
+    // and so was not used.
+    debug_assert!(val.leading_zeros() as usize >= (BIT_WIDTH - bits as usize));
+    let m = 1i64.wrapping_shl(bits.wrapping_sub(1));
+    #[allow(clippy::cast_possible_wrap)]
+    let val = val as i64;
+    (val ^ m) - m
+}

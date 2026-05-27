@@ -38,7 +38,7 @@ impl<'a> BitStreamReader<'a> {
     }
 
     /// Fast path for reading a bit.
-    fn read_bit_fast(&mut self) -> io::Result<bool> {
+    pub(super) fn read_bit_fast(&mut self) -> io::Result<bool> {
         if self.valid == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
         }
@@ -88,7 +88,7 @@ impl<'a> BitStreamReader<'a> {
     }
 
     /// Fast path for reading bits.
-    fn read_bits_fast(&mut self, nbits: u8) -> io::Result<u64> {
+    pub(super) fn read_bits_fast(&mut self, nbits: u8) -> io::Result<u64> {
         if nbits > self.valid {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF"));
         }
