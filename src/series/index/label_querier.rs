@@ -212,7 +212,7 @@ impl LabelQueryResult {
         let mut merged: AHashMap<String, LabelSearchResult> =
             AHashMap::with_capacity(self.results.len() + other.results.len());
 
-        for item in self.results.drain(..).chain(other.results.into_iter()) {
+        for item in self.results.drain(..).chain(other.results) {
             match merged.get_mut(&item.value) {
                 Some(existing) => {
                     existing.cardinality += item.cardinality;

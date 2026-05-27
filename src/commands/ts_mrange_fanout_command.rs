@@ -205,7 +205,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
 
     if reverse_iter {
         let mut samples: Vec<_> = series.iter().flat_map(|s| s.data.iter()).collect();
-        samples.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        samples.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         create_sample_iterator_adapter(
             samples.into_iter(),
             &options.range,
