@@ -251,6 +251,10 @@ impl TsXorChunk {
     }
 
     pub(crate) fn append_sample(&mut self, sample: Sample) {
+        debug_assert!(
+            sample.timestamp >= 0,
+            "negative timestamps should have been handled by caller"
+        );
         self.append(sample.timestamp as u64, sample.value);
     }
 
@@ -715,10 +719,16 @@ impl Chunk for TsXorChunk {
 
         let mid = self.len() / 2;
         let iter = self.get_iter(self.first_timestamp(), self.last_timestamp() + 1);
+        // Track first/last metadata for the left partition.
+        let mut left_first_ts: Option<Timestamp> = None;
+        let mut left_last_sample: Option<Sample> = None;
         for (i, sample) in iter.enumerate() {
             if i < mid {
-                // todo: handle min and max timestamps
                 encoder.append(sample.timestamp as u64, sample.value);
+                if left_first_ts.is_none() {
+                    left_first_ts = Some(sample.timestamp);
+                }
+                left_last_sample = Some(sample);
             } else {
                 right_chunk.add_sample(&sample)?;
             }
@@ -729,7 +739,14 @@ impl Chunk for TsXorChunk {
         self.stored_delta = encoder.stored_delta;
         self.block_timestamp = encoder.block_timestamp;
         self.count = encoder.count;
-        // self.refresh_state_from_compressor();
+        // Update metadata for the left (self) partition.
+        if let Some(first_ts) = left_first_ts {
+            self.first_timestamp = first_ts;
+        }
+        if let Some(last) = left_last_sample {
+            self.last_timestamp = last.timestamp;
+            self.last_value = last.value;
+        }
         Ok(right_chunk)
     }
 
@@ -754,17 +771,17 @@ impl Chunk for TsXorChunk {
         let last_value = rdb_load_f64(rdb)?;
         let state = valkey_module::raw::load_string_buffer(rdb)?;
         let mut chunk = TsXorChunk::with_max_size(max_size);
-        chunk.deserialize_encoder_state(state.as_ref())?;
+        chunk.first_timestamp = first_timestamp;
         chunk.last_timestamp = last_timestamp;
         chunk.last_value = last_value;
-        chunk.first_timestamp = first_timestamp;
+        chunk.deserialize_encoder_state(state.as_ref())?;
         Ok(chunk)
     }
 
     fn serialize(&self, dest: &mut Vec<u8>) {
         write_uvarint(dest, self.max_size as u64);
-        write_uvarint(dest, self.first_timestamp as u64);
-        write_uvarint(dest, self.last_timestamp as u64);
+        write_signed_varint(dest, self.first_timestamp);
+        write_signed_varint(dest, self.last_timestamp);
         write_f64_le(dest, self.last_value);
         self.serialize_encoder_state(dest);
     }
@@ -773,9 +790,9 @@ impl Chunk for TsXorChunk {
         let mut b = buf;
         let max_size = try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as usize;
         let first_timestamp =
-            try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as Timestamp;
+            try_read_signed_varint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as Timestamp;
         let last_timestamp =
-            try_read_uvarint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as Timestamp;
+            try_read_signed_varint(&mut b).map_err(|_| TsdbError::ChunkDecoding)? as Timestamp;
         // read last_value as f64 little-endian (matches serialize)
         let last_value = try_read_f64_le(&mut b).map_err(|_| TsdbError::ChunkDecoding)?;
 
