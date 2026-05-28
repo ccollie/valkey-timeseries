@@ -155,9 +155,11 @@ impl<'a> Xor2Iterator<'a> {
         if !bit2 {
             // `10` → reuse previous leading/trailing window.
             let sz = 64 - self.leading - self.trailing;
+            let mask = if sz == 64 { u64::MAX } else { (1u64 << sz) - 1 };
+
             let value_bits = if self.br.valid >= sz {
                 self.br.valid -= sz;
-                (self.br.buffer >> self.br.valid) & ((1u64 << sz) - 1)
+                (self.br.buffer >> self.br.valid) & mask
             } else {
                 self.br.read_bits(sz)?
             };
@@ -279,7 +281,8 @@ impl<'a> Xor2Iterator<'a> {
         Sample::new(self.t, self.val)
     }
 
-    fn at_t(&self) -> i64 {
+    #[allow(dead_code)]
+    fn at_ts(&self) -> i64 {
         self.t
     }
 
@@ -357,7 +360,7 @@ impl Iterator for Xor2Iterator<'_> {
             }
 
             if self.first_st_change_on == 1 {
-                let sdod = match self.br.read_varint() {
+                let sdod = match read_varbit_int(&mut self.br) {
                     Ok(sd) => sd,
                     Err(e) => {
                         self.err = Some(e);

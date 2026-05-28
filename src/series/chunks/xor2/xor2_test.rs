@@ -107,6 +107,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_xor2_large_dod_with_active_st() {
         require_xor2_samples(&[
             Triple {
@@ -132,6 +133,71 @@ mod tests {
         ]);
     }
 
+    // Temporary debug test to dump chunk bytes and iterator state for the failing case.
+    #[test]
+    fn debug_xor2_large_dod_with_active_st_dump() {
+        let samples = [
+            Triple {
+                st: 0,
+                t: 0,
+                v: 1.0,
+            },
+            Triple {
+                st: 900,
+                t: 1000,
+                v: 2.0,
+            },
+            Triple {
+                st: 1000,
+                t: 2000,
+                v: 3.0,
+            },
+            Triple {
+                st: 1047576,
+                t: 1050576,
+                v: 4.0,
+            },
+        ];
+
+        let mut chunk = Xor2Chunk::new();
+        for s in &samples {
+            chunk.append(s.st, s.t, s.v);
+        }
+
+        let bytes = chunk.bytes();
+        eprintln!(
+            "chunk.len={} num_samples={}",
+            chunk.size(),
+            chunk.num_samples()
+        );
+        eprintln!(
+            "chunk.bytes (hex) = {}",
+            bytes
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+
+        let mut it = chunk.iterator();
+        let mut idx = 0usize;
+        while let Some(sample) = it.next() {
+            eprintln!(
+                "it[{}] ts={} val={} val_bits=0x{:016x} st={}",
+                idx,
+                sample.timestamp,
+                sample.value,
+                sample.value.to_bits(),
+                it.at_st()
+            );
+            idx += 1;
+        }
+        if let Some(err) = it.err() {
+            eprintln!("iterator.err={:?}", err);
+        }
+    }
+
+    #[test]
     fn test_xor2_active_st_fast_path_boundaries() {
         require_xor2_samples(&[
             Triple {
@@ -162,6 +228,7 @@ mod tests {
         ]);
     }
 
+    #[test]
     fn test_xor2_active_st_13_bit_dod_value_unchanged_st_delta_branches() {
         require_xor2_samples(&[
             Triple {
@@ -207,6 +274,7 @@ mod tests {
         ]);
     }
 
+    #[test]
     fn test_xor2_encode_joint_value_unchanged_then_changed() {
         require_xor2_samples(&[
             Triple {
@@ -232,6 +300,7 @@ mod tests {
         ]);
     }
 
+    #[test]
     fn test_xor2_constant_non_zero_st_fast_path() {
         require_xor2_samples(&[
             Triple {
@@ -262,6 +331,7 @@ mod tests {
         ]);
     }
 
+    #[test]
     fn test_xor2_active_st_dod_zero_value_change() {
         require_xor2_samples(&[
             Triple {
@@ -338,6 +408,7 @@ mod tests {
         assert_eq!(None, it.next());
     }
 
+    #[test]
     fn test_xor2_active_st_dod_zero_value_unchanged_zero_st_delta() {
         require_xor2_samples(&[
             Triple {
@@ -368,6 +439,7 @@ mod tests {
         ]);
     }
 
+    #[test]
     fn test_xor2_active_st_value_change_inline_st_delta_branches() {
         require_xor2_samples(&[
             Triple {
