@@ -133,14 +133,14 @@ fn deinitialize(ctx: &Context) -> Status {
     Status::Ok
 }
 
-#[cfg(not(test))]
+#[cfg(not(all(test, doctest)))]
 macro_rules! get_allocator {
     () => {
         valkey_module::alloc::ValkeyAlloc
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, doctest))]
 macro_rules! get_allocator {
     () => {
         std::alloc::System
