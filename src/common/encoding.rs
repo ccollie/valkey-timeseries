@@ -69,6 +69,11 @@ pub(crate) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
     buf.push(value as u8);
 }
 
+/// Writes a single u8 byte to the buffer.
+pub(crate) fn write_u8(buf: &mut Vec<u8>, value: u8) {
+    buf.push(value);
+}
+
 /// Writes a signed varint using zigzag encoding
 pub(crate) fn write_signed_varint(buf: &mut Vec<u8>, value: i64) {
     // Use zigzag encoding for signed values
@@ -134,6 +139,16 @@ pub(crate) fn try_read_uvarint(buf: &mut &[u8]) -> DecodeResult<u64> {
     *buf = &buf[current_offset..];
 
     Ok(value)
+}
+
+/// Reads a single u8 byte from the buffer.
+pub(crate) fn try_read_u8(buf: &mut &[u8]) -> DecodeResult<u8> {
+    if buf.is_empty() {
+        return Err(DecodeError::insufficient_data(buf.len(), 1));
+    }
+    let val = buf[0];
+    *buf = &buf[1..];
+    Ok(val)
 }
 
 /// Reads a signed varint from the buffer using zigzag encoding

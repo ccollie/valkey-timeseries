@@ -62,7 +62,10 @@
 //! sample's joint timestamp+value encoding using putVarbitIntFast.
 
 use super::Xor2Iterator;
-use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_f64_le, write_uvarint};
+use crate::common::encoding::{
+    try_read_f64_le, try_read_signed_varint, try_read_u8, try_read_uvarint, write_f64_le,
+    write_signed_varint, write_u8, write_uvarint,
+};
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_u8, rdb_load_usize, rdb_save_bool, rdb_save_u8,
     rdb_save_usize,
@@ -855,16 +858,17 @@ impl Chunk for Xor2Chunk {
         write_uvarint(dest, self.num_total as u64);
         write_uvarint(dest, self.first_st_change_on as u64);
         write_uvarint(dest, self.first_st_known as u64);
-        write_uvarint(dest, self.first_timestamp as u64);
-        write_uvarint(dest, self.last_timestamp as u64);
+        write_signed_varint(dest, self.first_timestamp);
+        write_signed_varint(dest, self.last_timestamp);
         write_f64_le(dest, self.last_value);
-        write_uvarint(dest, self.st as u64);
-        write_uvarint(dest, self.ts as u64);
+        write_signed_varint(dest, self.st);
+        write_signed_varint(dest, self.ts);
         write_f64_le(dest, self.v);
         write_uvarint(dest, self.t_delta);
-        write_uvarint(dest, self.st_diff as u64);
-        write_uvarint(dest, self.leading as u64);
-        write_uvarint(dest, self.trailing as u64);
+        write_signed_varint(dest, self.st_diff);
+        // leading and trailing are u8 values; store them as single bytes
+        write_u8(dest, self.leading);
+        write_u8(dest, self.trailing);
         self.stream.serialize(dest);
     }
 
@@ -882,8 +886,8 @@ impl Chunk for Xor2Chunk {
         let v = read_f64_le(&mut remaining)?;
         let t_delta = read_uvarint(&mut remaining)?;
         let st_diff = read_i64(&mut remaining)?;
-        let leading = read_uvarint(&mut remaining)? as u8;
-        let trailing = read_uvarint(&mut remaining)? as u8;
+        let leading = read_u8(&mut remaining)?;
+        let trailing = read_u8(&mut remaining)?;
         let stream =
             BitStream::deserialize(&mut remaining).map_err(|_| TsdbError::ChunkDecoding)?;
 
@@ -925,8 +929,12 @@ fn read_uvarint(buf: &mut &[u8]) -> TsdbResult<u64> {
     try_read_uvarint(buf).map_err(|_| TsdbError::ChunkDecoding)
 }
 
+fn read_u8(buf: &mut &[u8]) -> TsdbResult<u8> {
+    try_read_u8(buf).map_err(|_| TsdbError::ChunkDecoding)
+}
+
 fn read_i64(buf: &mut &[u8]) -> TsdbResult<i64> {
-    read_uvarint(buf).map(|v| v as i64)
+    try_read_signed_varint(buf).map_err(|_| TsdbError::ChunkDecoding)
 }
 
 fn read_f64_le(buf: &mut &[u8]) -> TsdbResult<f64> {
