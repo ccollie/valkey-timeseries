@@ -12,19 +12,18 @@ mod tests {
     use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;
 
-    /// A test helper function for asserting floating point numbers is within the
+    /// A test helper function for asserting floating point numbers are within the
     /// machine epsilon because strict comparison of floating point numbers is
     /// incorrect
     pub fn approximately_equal(f1: f64, f2: f64) -> bool {
         (f1 - f2).abs() < f64::EPSILON
     }
 
-    // Temporarily narrow to a single chunk type to isolate failures.
     const CHUNK_TYPES: [ChunkEncoding; 5] = [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
-        ChunkEncoding::TsXor,
         ChunkEncoding::Xor2,
+        ChunkEncoding::TsXor,
         ChunkEncoding::Pco,
     ];
 
@@ -1208,17 +1207,17 @@ mod tests {
     #[test]
     fn test_encode() {
         struct Test {
-            name: String,
+            name: &'static str,
             input: Vec<f64>,
         }
 
         let tests = [
             Test {
-                name: String::from("from reference paper"),
+                name: "from reference paper",
                 input: vec![12.0, 12.0, 24.0, 13.0, 24.0, 24.0, 24.0, 23.0],
             },
             Test {
-                name: String::from("random"),
+                name: "random",
                 input: vec![
                     -3.8970913068231994e+307,
                     -9.036931257783943e+307,
@@ -1245,7 +1244,7 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("previous example as natural numbers"),
+                name: "previous example as natural numbers",
                 input: vec![
                     -38970913068231994.0,
                     -9036931257783943.0,
@@ -1272,7 +1271,7 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("similar values"),
+                name: "similar values",
                 input: vec![
                     6.00065e+06,
                     6.000656e+06,
@@ -1282,7 +1281,7 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("two hours data"),
+                name: "two hours data",
                 input: vec![
                     761.0, 727.0, 763.0, 706.0, 700.0, 679.0, 757.0, 708.0, 739.0, 707.0, 699.0,
                     740.0, 729.0, 766.0, 730.0, 715.0, 705.0, 693.0, 765.0, 724.0, 799.0, 761.0,
@@ -1298,11 +1297,11 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("identical values"),
+                name: "identical values",
                 input: vec![12123.1234; 1000],
             },
             Test {
-                name: String::from("1000 real CPU values"),
+                name: "1000 real CPU values",
                 input: vec![
                     11.286653185035389,
                     3.7310629773381745,

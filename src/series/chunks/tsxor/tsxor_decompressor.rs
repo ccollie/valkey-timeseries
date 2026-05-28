@@ -6,11 +6,7 @@ use crate::series::chunks::tsxor::tsxor_chunk::{CacheWindow, FIRST_DELTA_BITS};
 /// Decompressor for TsXor single-column
 pub(crate) struct TsXorDecompressor<'a> {
     reader: BitStreamReader<'a>,
-    bytes: &'a [u8],
-    byte_idx: usize,
     cache: CacheWindow,
-    stored_leading_zeros: Vec<u64>, // todo: smallvec
-    stored_trailing_zeros: Vec<u64>,
     stored_val: f64,
     stored_timestamp: u64,
     stored_delta: i64,
@@ -28,11 +24,7 @@ impl<'a> TsXorDecompressor<'a> {
         let end_of_stream = sample_count == 0;
         TsXorDecompressor {
             reader,
-            bytes: buf,
-            byte_idx: 0,
             cache: CacheWindow::default(),
-            stored_leading_zeros: vec![],
-            stored_trailing_zeros: vec![],
             stored_val: 0.0,
             stored_timestamp: 0,
             stored_delta: 0,
