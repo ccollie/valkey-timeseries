@@ -1,6 +1,6 @@
 use super::fanout_error::INVALID_MESSAGE_ERROR;
 use crate::common::encoding::{
-    try_read_signed_varint, try_read_string, try_read_u8, try_read_uvarint, write_byte_slice,
+    try_read_signed_varint, try_read_string, try_read_uvarint, write_byte_slice,
     write_signed_varint, write_uvarint,
 };
 use crate::fanout::{FanoutError, FanoutResult};
@@ -41,8 +41,6 @@ impl FanoutMessageHeader {
         // Encode handler as a string
         write_byte_slice(buf, self.handler.as_bytes());
 
-        // reserved is stored as a single byte
-        // reserved is stored as a little-endian u16
         write_u16_le(buf, self.reserved);
     }
 
@@ -84,10 +82,6 @@ impl FanoutMessageHeader {
 
 fn read_uvarint(input: &mut &[u8]) -> FanoutResult<u64> {
     try_read_uvarint(input).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))
-}
-
-fn read_u8(input: &mut &[u8]) -> FanoutResult<u8> {
-    try_read_u8(input).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))
 }
 
 fn write_u16_le(slice: &mut Vec<u8>, v: u16) {
