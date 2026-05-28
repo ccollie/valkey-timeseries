@@ -135,6 +135,7 @@ mod tests {
 
     // Temporary debug test to dump chunk bytes and iterator state for the failing case.
     #[test]
+    #[ignore]
     fn debug_xor2_large_dod_with_active_st_dump() {
         let samples = [
             Triple {

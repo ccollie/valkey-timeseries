@@ -827,7 +827,7 @@ mod tests {
         let end = samples[29].timestamp;
 
         // get via TimeSeriesChunk::range_iter dispatch
-        let ts_chunk = crate::series::chunks::TimeSeriesChunk::Tsxor(chunk.clone());
+        let ts_chunk = crate::series::chunks::TimeSeriesChunk::TsXor(chunk.clone());
         let iter = ts_chunk.range_iter(start, end);
         let got: Vec<Sample> = iter.collect();
 

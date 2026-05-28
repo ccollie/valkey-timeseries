@@ -3,7 +3,6 @@ mod encoder_tests;
 mod gorilla_chunk;
 mod gorilla_encoder;
 mod gorilla_iterator;
-mod serialization;
 mod varbit_xor;
 
 pub use gorilla_chunk::*;

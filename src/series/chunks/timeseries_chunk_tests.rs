@@ -59,7 +59,6 @@ mod tests {
         ];
 
         for chunk_type in CHUNK_TYPES {
-            eprintln!("[test_remove_range_chunk] testing chunk_type={chunk_type:?}");
             let mut chunk = TimeSeriesChunk::new(chunk_type, 400);
             chunk.set_data(&samples).unwrap();
 
@@ -279,22 +278,7 @@ mod tests {
             chunk.set_data(&samples).unwrap();
 
             assert_eq!(chunk.len(), 4);
-
-            // debug: print samples before removal
-            eprintln!("[debug] chunk.len() = {}", chunk.len());
-            let before = chunk.get_range(0, 100).unwrap();
-            eprintln!(
-                "[debug] before remove_range {:?} => {:?}",
-                chunk_type, before
-            );
-
             chunk.remove_range(20, 30).unwrap();
-
-            eprintln!(
-                "[debug] after first remove_range {:?} => len={}",
-                chunk_type,
-                chunk.len()
-            );
 
             assert_eq!(chunk.len(), 2);
 
