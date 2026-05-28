@@ -28,7 +28,6 @@ impl FanoutMessageHeader {
         // Start with the marker
         write_marker(buf);
 
-        // Encode the version as 2 bytes (u16)
         // version is stored as a little-endian u16
         write_u16_le(buf, self.version);
 
