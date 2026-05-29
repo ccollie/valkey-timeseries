@@ -74,11 +74,14 @@ fn get_ts_info(
         ValkeyValue::Integer(ts.chunk_size_bytes as i64),
     );
 
-    if ts.chunk_compression.is_compressed() {
+    if ts.chunk_encoding.is_compressed() {
         map.insert("chunkType".into(), "compressed".into());
     } else {
         map.insert("chunkType".into(), "uncompressed".into());
     }
+
+    // add encoding
+    map.insert("encoding".into(), ts.chunk_encoding.name().into());
 
     if let Some(policy) = ts.sample_duplicates.policy {
         map.insert("duplicatePolicy".into(), policy.as_str().into());

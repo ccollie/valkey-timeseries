@@ -669,7 +669,7 @@ mod tests {
     fn test_merge_samples_spanning_multiple_chunks() {
         // Force small chunks
         let mut ts = TimeSeries::with_options(TimeSeriesOptions {
-            chunk_compression: ChunkEncoding::Uncompressed,
+            chunk_encoding: ChunkEncoding::Uncompressed,
             chunk_size: Some(64), // Small chunk size to force splitting
             ..Default::default()
         })

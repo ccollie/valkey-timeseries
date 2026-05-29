@@ -329,7 +329,7 @@ impl From<SampleAddResult> for ValkeyResult {
 pub struct TimeSeriesOptions {
     /// The source ID of the series, if this is a derived series
     pub src_id: Option<SeriesRef>,
-    pub chunk_compression: ChunkEncoding,
+    pub chunk_encoding: ChunkEncoding,
     pub chunk_size: Option<usize>,
     pub retention: Option<Duration>,
     pub sample_duplicate_policy: Option<SampleDuplicatePolicy>,
@@ -371,7 +371,7 @@ impl TimeSeriesOptions {
             } else {
                 None
             },
-            chunk_compression: chunk_encoding,
+            chunk_encoding,
             chunk_size: Some(chunk_size),
             rounding,
             sample_duplicate_policy: Some(SampleDuplicatePolicy {
@@ -388,7 +388,7 @@ impl Default for TimeSeriesOptions {
     fn default() -> Self {
         Self {
             src_id: None,
-            chunk_compression: ChunkEncoding::default(),
+            chunk_encoding: ChunkEncoding::default(),
             chunk_size: Some(CHUNK_SIZE_DEFAULT as usize),
             retention: None,
             sample_duplicate_policy: None,
@@ -403,7 +403,7 @@ impl From<&ConfigSettings> for TimeSeriesOptions {
     fn from(settings: &ConfigSettings) -> Self {
         Self {
             src_id: None,
-            chunk_compression: settings.chunk_encoding,
+            chunk_encoding: settings.chunk_encoding,
             chunk_size: Some(settings.chunk_size_bytes),
             retention: settings.retention_period,
             sample_duplicate_policy: Some(settings.duplicate_policy),

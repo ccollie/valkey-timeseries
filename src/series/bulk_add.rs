@@ -346,7 +346,7 @@ pub fn bulk_insert_samples(
 
     // Process new-chunk groups in parallel (each creates its own chunk).
     if !new_groups.is_empty() {
-        let encoding = series.chunk_compression;
+        let encoding = series.chunk_encoding;
         let chunk_size = series.chunk_size_bytes;
         let new_results: Vec<(usize, TimeSeriesChunk, Vec<SampleAddResult>)> = new_groups
             .par()
