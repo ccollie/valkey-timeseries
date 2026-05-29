@@ -219,6 +219,236 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         new_compacted_samples = client.execute_command('TS.RANGE', key4, '-', '+')
         assert len(new_compacted_samples) >= len(original_states[key4]['samples'])
 
+    # ------------------------------------------------------------------
+    # Encoding-specific RDB round-trip helpers and tests
+    # ------------------------------------------------------------------
+
+    def _roundtrip_encoding(self, client, encoding, expected_encoding, expected_chunk_type, key=None):
+        """
+        Create a series with the given ENCODING, populate it with enough
+        samples to span multiple chunks, snapshot its state, perform a
+        bgsave/restart cycle, and assert that the encoding name, sample
+        data, and per-key digest are all identical after restore.
+
+        Returns the key name so callers can do additional assertions.
+        """
+        if key is None:
+            key = f'enc_roundtrip:{encoding.lower()}'
+
+        # Use a small CHUNK_SIZE (128 bytes) to guarantee multiple chunks
+        # are created, exercising both the header and per-chunk RDB paths.
+        client.execute_command(
+            'TS.CREATE', key,
+            'ENCODING', encoding,
+            'CHUNK_SIZE', 128,
+            'LABELS', 'encoding', encoding.lower(),
+        )
+
+        # Add 200 samples to force the series across many chunks
+        base_ts = 1_000_000
+        for i in range(200):
+            client.execute_command('TS.ADD', key, base_ts + i * 1000, float(i) * 1.5)
+
+        # Snapshot state before save
+        pre_info = get_info(client, key)
+        pre_samples = client.execute_command('TS.RANGE', key, '-', '+')
+        pre_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', key)
+
+        # Confirm the encoding is what we expect before the cycle
+        assert pre_info['encoding'] == expected_encoding, (
+            f"Expected encoding '{expected_encoding}' before save, "
+            f"got '{pre_info['encoding']}'"
+        )
+        assert pre_info['chunkType'] == expected_chunk_type, (
+            f"Expected chunkType '{expected_chunk_type}' before save, "
+            f"got '{pre_info['chunkType']}'"
+        )
+        assert pre_info['totalSamples'] == 200
+
+        # Save RDB and restart the server
+        client.bgsave()
+        self.server.wait_for_save_done()
+        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        assert self.server.is_alive()
+        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+
+        # Snapshot state after restore
+        post_info = get_info(client, key)
+        post_samples = client.execute_command('TS.RANGE', key, '-', '+')
+        post_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', key)
+
+        # Encoding must survive the round-trip
+        assert post_info['encoding'] == expected_encoding, (
+            f"Encoding changed after restore: expected '{expected_encoding}', "
+            f"got '{post_info['encoding']}'"
+        )
+        assert post_info['chunkType'] == expected_chunk_type, (
+            f"chunkType changed after restore: expected '{expected_chunk_type}', "
+            f"got '{post_info['chunkType']}'"
+        )
+
+        # All samples must be identical
+        assert post_samples == pre_samples, (
+            f"Samples changed after restore for encoding '{encoding}'"
+        )
+
+        # Digest must be byte-for-byte identical
+        assert post_digest == pre_digest, (
+            f"Digest changed after restore for encoding '{encoding}'"
+        )
+
+        # Info must match (excluding memoryUsage which can legitimately differ)
+        del pre_info['memoryUsage']
+        del post_info['memoryUsage']
+        assert post_info == pre_info, (
+            f"TS.INFO changed after restore for encoding '{encoding}'"
+        )
+
+        return key
+
+    def test_save_restore_uncompressed_encoding(self):
+        """RDB round-trip preserves data and encoding for UNCOMPRESSED chunks."""
+        client = self.server.get_new_client()
+        self._roundtrip_encoding(client, 'UNCOMPRESSED', 'uncompressed', 'uncompressed')
+
+    def test_save_restore_gorilla_encoding(self):
+        """RDB round-trip preserves data and encoding for GORILLA chunks.
+
+        Also verifies that the COMPRESSED alias resolves to the same
+        gorilla encoding after a save/restore cycle.
+        """
+        client = self.server.get_new_client()
+        self._roundtrip_encoding(client, 'GORILLA', 'gorilla', 'compressed')
+
+        # COMPRESSED is an alias for Gorilla – confirm the encoding name
+        # stored to RDB is still 'gorilla' after restore.
+        alias_key = 'enc_roundtrip:compressed_alias'
+        client.execute_command(
+            'TS.CREATE', alias_key,
+            'ENCODING', 'COMPRESSED',
+            'CHUNK_SIZE', 128,
+        )
+        for i in range(50):
+            client.execute_command('TS.ADD', alias_key, 2_000_000 + i * 1000, float(i))
+
+        pre_info = get_info(client, alias_key)
+        assert pre_info['encoding'] == 'gorilla', (
+            "COMPRESSED alias should resolve to 'gorilla' encoding"
+        )
+
+        client.bgsave()
+        self.server.wait_for_save_done()
+        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        assert self.server.is_alive()
+        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+
+        post_info = get_info(client, alias_key)
+        assert post_info['encoding'] == 'gorilla', (
+            "COMPRESSED alias: encoding should still read 'gorilla' after restore"
+        )
+        assert post_info['chunkType'] == 'compressed'
+
+    def test_save_restore_pco_encoding(self):
+        """RDB round-trip preserves data and encoding for PCO chunks."""
+        client = self.server.get_new_client()
+        self._roundtrip_encoding(client, 'PCO', 'pco', 'compressed')
+
+    def test_save_restore_tsxor_encoding(self):
+        """RDB round-trip preserves data and encoding for TSXOR chunks."""
+        client = self.server.get_new_client()
+        self._roundtrip_encoding(client, 'TSXOR', 'tsxor', 'compressed')
+
+    def test_save_restore_xor2_encoding(self):
+        """RDB round-trip preserves data and encoding for XOR2 chunks."""
+        client = self.server.get_new_client()
+        self._roundtrip_encoding(client, 'XOR2', 'xor2', 'compressed')
+
+    def test_save_restore_all_encodings_digest_match(self):
+        """All five chunk encodings produce identical per-key digests after a
+        single bgsave/restart cycle.  This catches any encoding-specific
+        regression in a single test run.
+        """
+        client = self.server.get_new_client()
+
+        encoding_cases = [
+            ('UNCOMPRESSED', 'uncompressed', 'uncompressed'),
+            ('GORILLA',      'gorilla',      'compressed'),
+            ('PCO',          'pco',          'compressed'),
+            ('TSXOR',        'tsxor',        'compressed'),
+            ('XOR2',         'xor2',         'compressed'),
+        ]
+
+        keys = []
+        base_ts = 5_000_000
+        for encoding, _exp_enc, _exp_ct in encoding_cases:
+            key = f'all_enc:{encoding.lower()}'
+            keys.append(key)
+            client.execute_command(
+                'TS.CREATE', key,
+                'ENCODING', encoding,
+                'CHUNK_SIZE', 128,
+                'LABELS', 'encoding', encoding.lower(),
+            )
+            # Use 150 samples per series with varied values to stress the
+            # encoding paths (mix of monotone increments and small floats)
+            for i in range(150):
+                client.execute_command(
+                    'TS.ADD', key,
+                    base_ts + i * 1000,
+                    round(i * 0.73 + (i % 7) * 3.14, 4),
+                )
+
+        # Verify all series report the expected encoding before saving
+        for (encoding, exp_enc, exp_ct), key in zip(encoding_cases, keys):
+            info = get_info(client, key)
+            assert info['encoding'] == exp_enc, (
+                f"Pre-save: key '{key}' expected encoding '{exp_enc}', got '{info['encoding']}'"
+            )
+            assert info['chunkType'] == exp_ct, (
+                f"Pre-save: key '{key}' expected chunkType '{exp_ct}', got '{info['chunkType']}'"
+            )
+            assert info['totalSamples'] == 150
+
+        # Capture per-key digests before save
+        pre_digests = {
+            key: client.execute_command('DEBUG', 'DIGEST-VALUE', key)
+            for key in keys
+        }
+        pre_server_digest = client.execute_command('DEBUG', 'DIGEST')
+
+        # Save RDB and restart
+        client.bgsave()
+        self.server.wait_for_save_done()
+        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        assert self.server.is_alive()
+        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+
+        # Server-level digest must be identical
+        post_server_digest = client.execute_command('DEBUG', 'DIGEST')
+        assert post_server_digest == pre_server_digest, (
+            "Server digest changed after restore across all encodings"
+        )
+
+        # Every per-key digest must be identical, and the encoding must be unchanged
+        for (encoding, exp_enc, exp_ct), key in zip(encoding_cases, keys):
+            post_digest = client.execute_command('DEBUG', 'DIGEST-VALUE', key)
+            assert post_digest == pre_digests[key], (
+                f"Digest changed after restore for encoding '{encoding}' (key '{key}')"
+            )
+
+            post_info = get_info(client, key)
+            assert post_info['encoding'] == exp_enc, (
+                f"Post-restore: key '{key}' expected encoding '{exp_enc}', got '{post_info['encoding']}'"
+            )
+            assert post_info['chunkType'] == exp_ct, (
+                f"Post-restore: key '{key}' expected chunkType '{exp_ct}', got '{post_info['chunkType']}'"
+            )
+
+            post_samples = client.execute_command('TS.RANGE', key, '-', '+')
+            assert len(post_samples) == 150, (
+                f"Sample count changed after restore for encoding '{encoding}'"
+            )
+
     def test_save_restore_preserves_exact_digest(self):
         """Test that save/restore preserves exact digest for complex series"""
         client = self.server.get_new_client()
