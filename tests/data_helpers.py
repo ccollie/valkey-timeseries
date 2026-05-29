@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime
 
 PIPELINE_SIZE = 1000
-DATA_DIR = os.path.abspath('../data/')
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 
 PC_Timestamp = 'timestamp'
 PC_Region = 'region'
@@ -149,7 +149,7 @@ def load_json_rows(file_path):
 
 
 def load_power_consumption_data():
-    data_path = os.path.join(DATA_DIR, 'power_consumption_data.json')
+    data_path = os.path.join(DATA_DIR, 'power_consumption.json')
     with open(data_path, 'r') as f:
         data = json.load(f)
         res = {}
@@ -258,7 +258,7 @@ def ingest_temperature_data(valkey_conn):
     r.execute()
 
 
-def ingest_power_consumption_data(valkey_conn):
+def ingest_power_consumption_data(valkey_conn, encoding='COMPRESSED', chunk_size_bytes='8ki'):
     print("Loading data into valkey...")
     r = valkey_conn.pipeline(transaction=False)
     count = 0
@@ -268,7 +268,7 @@ def ingest_power_consumption_data(valkey_conn):
     for key, values in load_power_consumption_data().items():
         region, location_type = key.split(':')
         metric = 'power_consumption{{region="{}",location_type="{}"}}'.format(region, location_type)
-        valkey_conn.execute_command('TS.CREATE', key, metric, 'DECIMAL_DIGITS', 1, 'LABELS', 'region', region, 'location_type', location_type)
+        valkey_conn.execute_command('TS.CREATE', key, metric, 'ENCODING', encoding, 'CHUNK_SIZE_BYTES', chunk_size_bytes, 'DECIMAL_DIGITS', 1, 'LABELS', 'region', region, 'location_type', location_type)
         print(f"Created series: {key}, metric={metric}")
 
         for ts, consumption in values:
