@@ -81,7 +81,7 @@ use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
 use std::cmp;
-use valkey_module::{ValkeyError, ValkeyResult, digest::Digest, raw};
+use valkey_module::{ValkeyError, ValkeyResult, raw};
 
 pub(super) const CHUNK_HEADER_SIZE: usize = 2;
 // Number of bytes used for ST header (first byte: flag + low 7 bits, second byte: high bits)
@@ -915,13 +915,6 @@ impl Chunk for Xor2Chunk {
         chunk.update_header();
 
         Ok(chunk)
-    }
-
-    fn debug_digest(&self, dig: &mut Digest) {
-        dig.add_long_long(self.num_total as i64);
-        dig.add_long_long(self.first_timestamp);
-        dig.add_long_long(self.last_timestamp);
-        dig.add_long_long(self.max_size as i64);
     }
 }
 

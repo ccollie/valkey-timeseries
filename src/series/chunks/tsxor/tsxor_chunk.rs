@@ -21,13 +21,12 @@ use crate::series::chunks::{Chunk, merge_samples};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
-use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
 pub(super) const WINDOW_SIZE: usize = 127;
 pub(super) const FIRST_DELTA_BITS: u32 = 32;
 
-#[derive(Debug, Clone, GetSize)]
+#[derive(Debug, Clone, GetSize, Hash)]
 pub(super) struct CacheWindow {
     buffer: VecDeque<u64>,
 }
@@ -803,11 +802,6 @@ impl Chunk for TsXorChunk {
         chunk.first_timestamp = first_timestamp;
         chunk.deserialize_encoder_state(b)?;
         Ok(chunk)
-    }
-
-    fn debug_digest(&self, dig: &mut Digest) {
-        dig.add_string_buffer(self.buf());
-        dig.add_long_long(self.max_size as i64);
     }
 }
 
