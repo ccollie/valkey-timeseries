@@ -1,6 +1,6 @@
 use crate::error_consts;
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::labels::InternedLabel;
+use crate::labels::{HasFingerprint, InternedLabel, SeriesFingerprint};
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
@@ -143,5 +143,15 @@ mod tests {
                 "{name:?} was rejected"
             );
         }
+    }
+}
+
+impl HasFingerprint for [Label] {
+    fn fingerprint(&self) -> SeriesFingerprint {
+        let mut hasher = super::hash::create_hasher();
+        for label in self {
+            super::hash::hash_key_value(&mut hasher, &label.name, &label.value);
+        }
+        hasher.finish_128()
     }
 }
