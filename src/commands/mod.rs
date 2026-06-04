@@ -4,6 +4,8 @@ mod label_search_utils;
 mod ts_add;
 mod ts_addbulk;
 mod ts_alter;
+mod ts_asm_restore;
+mod ts_autoforecast;
 mod ts_card;
 mod ts_card_fanout_command;
 mod ts_create;
@@ -46,6 +48,8 @@ mod utils;
 // via their defining module path (e.g. `crate::commands::ts_create::parse_series_options`).
 // Only modules whose items are consumed through `crate::commands::*` are re-exported below.
 pub use command_parser::*;
+pub use ts_asm_restore::*;
+pub(crate) use ts_autoforecast::*;
 pub use ts_debug::*;
 pub use ts_mget::*;
 pub use ts_restore::*;
