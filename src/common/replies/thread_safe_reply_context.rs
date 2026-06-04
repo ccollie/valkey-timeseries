@@ -108,6 +108,37 @@ impl ThreadSafeReplyContext {
         self.answered.store(true, Ordering::Relaxed);
         ReplyContext::new(self.ctx)
     }
+
+    /// All non-reply APIs require locking, so we mirror
+    /// `valkey_module::ThreadSafeContext::lock` semantics.
+    pub fn lock(&self) -> ContextGuard {
+        unsafe { raw::RedisModule_ThreadSafeContextLock.unwrap()(self.ctx) };
+        let ctx = unsafe { raw::RedisModule_GetThreadSafeContext.unwrap()(ptr::null_mut()) };
+        let ctx = Context::new(ctx);
+        ContextGuard { ctx }
+    }
+
+    /// Log a message at the specified `level` using the underlying context.
+    pub fn log(&self, level: ValkeyLogLevel, message: &str) {
+        Context::new(self.ctx).log(level, message);
+    }
+
+    /// Convenience logging helpers.
+    pub fn log_debug(&self, message: &str) {
+        self.log(ValkeyLogLevel::Debug, message);
+    }
+
+    pub fn log_notice(&self, message: &str) {
+        self.log(ValkeyLogLevel::Notice, message);
+    }
+
+    pub fn log_verbose(&self, message: &str) {
+        self.log(ValkeyLogLevel::Verbose, message);
+    }
+
+    pub fn log_warning(&self, message: &str) {
+        self.log(ValkeyLogLevel::Warning, message);
+    }
 }
 
 impl Drop for ThreadSafeReplyContext {

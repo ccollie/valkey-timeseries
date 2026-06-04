@@ -1,3 +1,4 @@
+use crate::common::Sample;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{create_key_string, get_current_db, notify_keyspace_event};
 use crate::error_consts;
@@ -220,6 +221,35 @@ pub fn create_and_store_series<'a>(
         // If compactions are enabled, add the default compaction rules
         add_default_compactions(ctx, &mut series, key)?
     }
+    Ok(series)
+}
+
+pub fn get_or_create_series<'a>(
+    ctx: &'a Context,
+    key: &ValkeyString,
+    options: Option<TimeSeriesOptions>,
+) -> ValkeyResult<SeriesGuardMut<'a>> {
+    match get_timeseries_mut(ctx, key, false, Some(AclPermissions::UPDATE))? {
+        Some(series) => Ok(series),
+        None => create_and_store_series(ctx, key, options.unwrap_or_default(), true, true),
+    }
+}
+
+pub fn create_or_update_series_with_samples<'a>(
+    ctx: &'a Context,
+    key: &ValkeyString,
+    creation_options: Option<TimeSeriesOptions>,
+    samples: &[Sample],
+    policy_override: Option<DuplicatePolicy>,
+) -> ValkeyResult<SeriesGuardMut<'a>> {
+    let mut series = get_or_create_series(ctx, key, creation_options)?;
+
+    if !samples.is_empty() {
+        let mut sorted_samples = samples.to_vec();
+        sorted_samples.sort_by_key(|sample| sample.timestamp);
+        series.merge_samples(&sorted_samples, policy_override)?;
+    }
+
     Ok(series)
 }
 
