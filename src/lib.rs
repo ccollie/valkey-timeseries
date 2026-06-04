@@ -266,6 +266,7 @@ valkey_module! {
         // `register_commands`. Only internal/admin commands remain in this positional table.
         // ACL categories for the annotated commands are (re-)applied by
         // `assign_command_acl_categories`, since the command-info path does not set them.
+        ["ts.autoforecast", commands::ts_autoforecast_cmd, "write deny-oom", 1, 1, 1, "read write timeseries"],
         ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["ts._restore", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]
