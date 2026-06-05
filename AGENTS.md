@@ -6,6 +6,11 @@ Purpose
 
 Quick start (commands you can run)
 
+- Docker (containerized):
+    - `make docker-build && make docker-up`  # build image, start standalone container
+    - `make docker-up-cluster`               # start 3-node cluster for fanout testing
+    - `make docker-test`                     # run integration tests against container
+    - `make docker-down`                     # stop and remove containers
 - Build + checks:
   `cargo fmt --check && cargo clippy --profile release --all-targets -- -D clippy::all && RUSTFLAGS="-D warnings" cargo build --all --all-targets --release`
 - Local dev script (recommended):
@@ -184,6 +189,11 @@ Where to look first (key files & directories)
 - `tools/compression_report.rs` — the `compression_report` binary; encoding size/ratio matrix with baseline checking.
   `tools/compression_report.sh` is the wrapper that builds and runs it with the right features.
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
+- `Dockerfile` / `Dockerfile.source` — containerized builds (official Valkey base vs. full source).
+- `docker-compose.yml` / `docker-compose.cluster.yml` — standalone and 3-node cluster testing.
+- `scripts/docker-entrypoint.sh` — runtime configuration via env vars for Docker containers.
+- `scripts/build-docker.sh` — helper for building Docker images with different versions/features.
+- `Makefile` — unified interface wrapping Docker and host-native commands.
 - `README.md`, `docs/COMMANDS.md`, and `docs/commands/` — human-facing command descriptions and examples.
 
 Quick tips for code changes
@@ -196,6 +206,8 @@ Quick tips for code changes
   `src/commands/fanout.*.proto`.
 - When changing `src/commands/fanout.*.proto`, `src/promql/types.proto`, or `src/promql/promqltest/testdata/*.test`,
   rerun `cargo test` or `./build.sh` so `build.rs` regenerates the derived Rust files.
+- When changing the Docker setup, rebuild with `make docker-build` (or `./scripts/build-docker.sh` for custom
+  versions); the `Dockerfile.source` variant is for testing against unreleased Valkey versions.
 
 Limitations of this document
 
