@@ -5,6 +5,7 @@ The following commands are supported
 - [`TS.ADD`](ts.add.md)
 - [`TS.ADDBULK`](ts.addbulk.md)
 - [`TS.ALTER`](ts.alter.md)
+- [`TS.AUTOFORECAST`](ts.autoforcast.md)
 - [`TS.CARD`](ts.card.md)
 - [`TS.CREATE`](ts.create.md)
 - [`TS.CREATERULE`](ts.createrule.md)
