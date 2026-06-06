@@ -50,6 +50,7 @@ The following commands are supported
 - [`TS.ADD`](docs/commands/ts.add.md)
 - [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
 - [`TS.ALTER`](docs/commands/ts.alter.md)
+- [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md)
 - [`TS.CARD`](docs/commands/ts.card.md)
 - [`TS.CREATE`](docs/commands/ts.create.md)
 - [`TS.CREATERULE`](docs/commands/ts.createrule.md)
