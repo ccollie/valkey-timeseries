@@ -249,6 +249,7 @@ valkey_module! {
         // ACL categories for the annotated commands come from the `acl_categories!`
         // declaration beside each handler, applied by `assign_command_acl_categories`.
         ["ts.autoforecast", commands::ts_autoforecast_cmd, "write deny-oom", 1, 1, 1, "read write timeseries"],
+        ["ts.decompose", commands::ts_decompose_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
         ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["ts._restore", commands::ts_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]
