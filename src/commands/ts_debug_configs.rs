@@ -16,6 +16,7 @@ use std::convert::Into;
 use std::fmt::Display;
 use std::time::Duration;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
+use crate::common::replies::reply_with_integer;
 
 /// The type of value a config holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
