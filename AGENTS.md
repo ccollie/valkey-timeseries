@@ -11,6 +11,9 @@ Quick start (commands you can run)
     - `make docker-up-cluster`               # start 3-node cluster for fanout testing
     - `make docker-test`                     # run integration tests against container
     - `make docker-down`                     # stop and remove containers
+    - `make docker-up-with-data`             # start container + load sample datasets
+    - `make docker-load-data`                # load sample data into running container
+    - `LOAD_SAMPLE_DATA=all make docker-up-with-data`  # start with all sample datasets
 - Build + checks:
   `cargo fmt --check && cargo clippy --profile release --all-targets -- -D clippy::all && RUSTFLAGS="-D warnings" cargo build --all --all-targets --release`
 - Local dev script (recommended):
@@ -31,7 +34,7 @@ Key ENV and behavior (from `./build.sh`)
 
 Setup & Environment Notes
 
-- Rust version: The project requires a minimum Rust version of `1.88`.
+- Rust version: The project requires a minimum Rust version of `1.92`.
 - Python tests: Integration tests use Python. Dependencies are managed in `pyproject.toml`, locked in `uv.lock`, and
   mirrored in `requirements.txt` (or installed via `uv sync`). The `build.sh` script handles this, but if running
   `pytest` manually, ensure packages are installed.
@@ -162,6 +165,16 @@ Benchmarks
   truth for `--check`.
 - `build.sh` does not run benches or the compression report; they are manual.
 
+Sample data loading (Docker)
+
+- `LOAD_SAMPLE_DATA` env var controls which datasets to load: `cpu`, `memory`, `power`, `web`, or `all`.
+- `make docker-up-with-data` starts Valkey and loads sample data (default: `cpu,memory`).
+- `make docker-load-data` loads data into an already-running container.
+- `LOAD_SAMPLE_DATA=all make docker-up-with-data` loads all available datasets.
+- The data loader runs as a one-shot `python:3.12-slim` service defined in `docker-compose.data.yml`.
+- Sample data files live in `tests/data/` and are mounted read-only into the loader container.
+- The loader script (`scripts/load-sample-data.py`) uses the `valkey` Python package and `tests/data_helpers.py`.
+
 Where to look first (key files & directories)
 
 - `src/lib.rs` — module entrypoint, command registration, lifecycle (preload/init/deinit).
@@ -190,9 +203,12 @@ Where to look first (key files & directories)
   `tools/compression_report.sh` is the wrapper that builds and runs it with the right features.
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
 - `Dockerfile` / `Dockerfile.source` — containerized builds (official Valkey base vs. full source).
-- `docker-compose.yml` / `docker-compose.cluster.yml` — standalone and 3-node cluster testing.
+- `docker-compose.yml` / `docker-compose.cluster.yml` / `docker-compose.data.yml` — standalone, 3-node cluster, and sample data loading.
 - `scripts/docker-entrypoint.sh` — runtime configuration via env vars for Docker containers.
 - `scripts/build-docker.sh` — helper for building Docker images with different versions/features.
+- `scripts/load-sample-data.py` — Python script to load sample datasets into a running Valkey instance.
+- `tests/data/` — sample data files: CPU, memory, power consumption, Amazon web traffic.
+- `tests/data_helpers.py` — data loading functions used by tests and the loader script.
 - `Makefile` — unified interface wrapping Docker and host-native commands.
 - `README.md`, `docs/COMMANDS.md`, and `docs/commands/` — human-facing command descriptions and examples.
 
