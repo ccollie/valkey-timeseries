@@ -294,7 +294,7 @@ impl Hash for RegexMatcher {
 }
 
 impl RegexMatcher {
-    fn new(regex: Regex, value: String) -> Self {
+    pub(crate) fn new(regex: Regex, value: String) -> Self {
         Self::from_parts(regex, value, None)
     }
 
