@@ -45,3 +45,4 @@ tests/build
 # The benchmark driver is a separate workspace whose lockfile is deliberately committed
 # (docs/plans/rts-comparative-benchmarks-plan.md).
 !tools/server_bench/Cargo.lock
+.idea/workspace.xml
