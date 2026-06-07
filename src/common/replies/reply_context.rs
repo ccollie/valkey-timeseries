@@ -37,7 +37,6 @@ impl<'a> ReplyContext<'a> {
     /// on the main thread when the client was blocked. Safe from any one thread.
     pub(crate) fn with_protocol(ctx: *mut raw::RedisModuleCtx, resp3: bool) -> Self {
         Self {
-            save_db: None,
             ctx: Context { ctx },
             raw_ctx: ctx,
             resp3,
@@ -69,8 +68,7 @@ impl<'a> ReplyContext<'a> {
 
     /// Log a message at the specified `level` using the underlying context.
     pub fn log(&self, level: ValkeyLogLevel, message: &str) {
-        let context = Context { ctx: self.raw_ctx };
-        context.log(level, message);
+        self.ctx.log(level, message);
     }
 
     /// Convenience logging helpers
@@ -83,12 +81,12 @@ impl<'a> ReplyContext<'a> {
     }
 
     /// Reply with a 64-bit integer value.
-    pub fn reply_with_i64(&self, value: i64) -> Status {
+    pub fn reply_with_integer(&self, value: i64) -> Status {
         raw::reply_with_long_long(self.raw_ctx, value)
     }
 
     /// Reply with a double-precision floating point value.
-    pub fn reply_with_f64(&self, value: f64) -> Status {
+    pub fn reply_with_double(&self, value: f64) -> Status {
         raw::reply_with_double(self.raw_ctx, value)
     }
 
@@ -103,7 +101,7 @@ impl<'a> ReplyContext<'a> {
     }
 
     /// Reply with a bulk string.
-    pub fn reply_with_bulk_string(&self, value: &str) -> Status {
+    pub fn reply_with_string(&self, value: &str) -> Status {
         reply_with_bulk_string(self.raw_ctx, value)
     }
 
@@ -145,6 +143,12 @@ impl Deref for ReplyContext<'_> {
 }
 
 impl IntoRawCtx for &ReplyContext<'_> {
+    fn into_raw(self) -> *mut raw::RedisModuleCtx {
+        self.raw_ctx
+    }
+}
+
+impl IntoRawCtx for &ReplyContext {
     fn into_raw(self) -> *mut raw::RedisModuleCtx {
         self.raw_ctx
     }
