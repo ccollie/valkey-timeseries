@@ -12,6 +12,7 @@ well as provide a superset of the _RedisTimeSeries_ API.
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
 - Advanced [Label and Metric Discovery](docs/topics/label-discovery.md) with fuzzy matching and server-side filtering
 - Anomaly detection using multiple algorithms, including [ZScore](https://en.wikipedia.org/wiki/Standard_score), [IQR](https://en.wikipedia.org/wiki/Interquartile_range), [MAD](https://crispinagar.github.io/blogs/mad-anomaly-detection.html), and [Random Cut Forest](https://christianalexander.com/2023/08/06/random-cut-forests-in-elixir/)
+- Feature extraction for time series data, such as [autocorrelation](https://en.wikipedia.org/wiki/Autocorrelation) and [periodicity](https://en.wikipedia.org/wiki/Periodicity)
 - Compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
 ## Scaling
@@ -50,6 +51,7 @@ The following commands are supported
 - [`TS.ADD`](docs/commands/ts.add.md)
 - [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
 - [`TS.ALTER`](docs/commands/ts.alter.md)
+- [`TS.AUTOCORRELATION`](docs/commands/ts.autocorrelation.md)
 - [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md)
 - [`TS.CARD`](docs/commands/ts.card.md)
 - [`TS.CREATE`](docs/commands/ts.create.md)
