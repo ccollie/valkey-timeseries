@@ -247,16 +247,18 @@ pub fn create_or_update_series_with_samples<'a>(
     creation_options: Option<TimeSeriesOptions>,
     samples: &[Sample],
     policy_override: Option<DuplicatePolicy>,
-) -> ValkeyResult<SeriesGuardMut<'a>> {
+) -> ValkeyResult<(SeriesGuardMut<'a>, Vec<SampleAddResult>)> {
     let mut series = get_or_create_series(ctx, key, creation_options)?;
 
-    if !samples.is_empty() {
+    let merge_results = if !samples.is_empty() {
         let mut sorted_samples = samples.to_vec();
         sorted_samples.sort_by_key(|sample| sample.timestamp);
-        series.merge_samples(&sorted_samples, policy_override)?;
-    }
+        series.merge_samples(&sorted_samples, policy_override)?
+    } else {
+        Vec::new()
+    };
 
-    Ok(series)
+    Ok((series, merge_results))
 }
 
 fn add_default_compactions(
