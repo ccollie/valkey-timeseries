@@ -159,3 +159,5 @@ pub const UNKNOWN_QUERY_LABELS_SUBTYPE: &str =
     "TSDB: unknown subtype, must be one of LABELS|VALUES";
 pub const QUERY_LABELS_EXPECTED_FILTER: &str = "TSDB: unknown argument, expected FILTER";
 pub const FILTER_WITH_NO_EXPRESSIONS: &str = "TSDB: FILTER given with no filter expressions";
+
+pub const WRONG_SLOT: &str = "TSDB: key does not belong to a slot owned by the current node";
