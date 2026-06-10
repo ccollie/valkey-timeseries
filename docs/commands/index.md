@@ -6,6 +6,7 @@ The following commands are supported
 - [`TS.ADDBULK`](ts.addbulk.md)
 - [`TS.ALTER`](ts.alter.md)
 - [`TS.AUTOFORECAST`](ts.autoforcast.md)
+- [`TS.AUTOTREND`](ts.autotrend.md)
 - [`TS.CARD`](ts.card.md)
 - [`TS.CREATE`](ts.create.md)
 - [`TS.CREATERULE`](ts.createrule.md)
