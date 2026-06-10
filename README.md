@@ -53,6 +53,7 @@ The following commands are supported
 - [`TS.ALTER`](docs/commands/ts.alter.md)
 - [`TS.AUTOCORRELATION`](docs/commands/ts.autocorrelation.md)
 - [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md)
+- [`TS.AUTOTREND`](docs/commands/ts.autotrend.md)
 - [`TS.CARD`](docs/commands/ts.card.md)
 - [`TS.CREATE`](docs/commands/ts.create.md)
 - [`TS.CREATERULE`](docs/commands/ts.createrule.md)
