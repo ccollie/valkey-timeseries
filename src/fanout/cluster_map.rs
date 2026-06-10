@@ -2,7 +2,7 @@ use crate::common::hash::DeterministicHasher;
 use crate::common::threads::LockGil;
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::calculate_hash_slot;
+use crate::fanout::{calculate_hash_slot, key_hash_slot};
 use ahash::{AHashMap, HashSet, HashSetExt};
 use rand::{Rng, RngExt, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
@@ -559,13 +559,16 @@ impl ClusterMap {
         &self.shards
     }
 
+    /// Get the local shard — the shard whose slots are owned by the current node.
+    /// Returns `None` if no local shard is registered (e.g. the cluster map
+    /// hasn't been built yet or the node doesn't own any slots).
+    pub fn get_local_shard(&self) -> Option<&ShardInfo> {
+        self.shards.iter().find(|&shard| shard.is_local)
+    }
+
     /// Get cluster level slot fingerprint
     pub fn cluster_slots_fingerprint(&self) -> u64 {
         self.cluster_slots_fingerprint
-    }
-
-    pub fn get_local_shard(&self) -> Option<&ShardInfo> {
-        self.shards.get(&self.local_node_id)
     }
 
     /// Helper function to refresh targets in CreateNewClusterMap
