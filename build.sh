@@ -74,11 +74,13 @@ else
 fi
 
 REQUIREMENTS_FILE="requirements.txt"
+USE_UV=false
 
 # Check if uv is available
 if command -v uv > /dev/null 2>&1; then
     echo "Using uv to install packages..."
     uv sync
+    USE_UV=true
     # Check if pip is available
 elif command -v pip > /dev/null 2>&1; then
     echo "Using pip to install packages..."
@@ -92,6 +94,13 @@ else
     exit 1
 fi
 
+run_pytest() {
+    if [ "$USE_UV" = "true" ]; then
+        uv run python3 -m pytest "$@"
+    else
+        python3 -m pytest "$@"
+    fi
+}
 
 os_type=$(uname)
 MODULE_EXT=".so"
@@ -112,10 +121,10 @@ echo "Running the integration tests..."
 if [ ! -z "${ASAN_BUILD}" ]; then
     # TEST_PATTERN can be used to run specific tests or test patterns.
     if [[ -n "$TEST_PATTERN" ]]; then
-        python3 -m pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN 2>&1 | tee test_output.tmp
+        run_pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN 2>&1 | tee test_output.tmp
     else
         echo "TEST_PATTERN is not set. Running all integration tests."
-        python3 -m pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" 2>&1 | tee test_output.tmp
+        run_pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" 2>&1 | tee test_output.tmp
     fi
 
     # Check for memory leaks in the output
@@ -141,10 +150,10 @@ if [ ! -z "${ASAN_BUILD}" ]; then
 else
     # TEST_PATTERN can be used to run specific tests or test patterns.
     if [[ -n "$TEST_PATTERN" ]]; then
-        python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN
+        run_pytest --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN
     else
         echo "TEST_PATTERN is not set. Running all integration tests."
-        python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/"
+        run_pytest --cache-clear -v "$SCRIPT_DIR/tests/"
     fi
 fi
 
