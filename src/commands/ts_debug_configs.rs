@@ -1,6 +1,7 @@
 use crate::commands::CommandArgIterator;
 use crate::common::context::replies::*;
 use crate::common::humanize::{humanize_bytes, humanize_duration};
+use crate::common::replies::reply_with_integer;
 use crate::common::rounding::RoundingStrategy;
 use crate::config::{
     CHUNK_ENCODING_DEFAULT_STRING, CHUNK_SIZE_MAX, CHUNK_SIZE_MIN, CLUSTER_MAP_EXPIRATION_MAX_MS,
@@ -16,7 +17,6 @@ use std::convert::Into;
 use std::fmt::Display;
 use std::time::Duration;
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
-use crate::common::replies::reply_with_integer;
 
 /// The type of value a config holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
