@@ -134,7 +134,7 @@ pub trait Chunk: Sized {
 
     fn debug_digest(&self, dig: &mut Digest)
     where
-        Self: Hash
+        Self: Hash,
     {
         // Default implementation for Chunk types that implement Hash + GetSize.
 
