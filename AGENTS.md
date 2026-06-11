@@ -24,7 +24,7 @@ Key ENV and behavior (from `./build.sh`)
 
 Setup & Environment Notes
 
-- Rust version: The project requires a minimum Rust version of `1.86`.
+- Rust version: The project requires a minimum Rust version of `1.92`.
 - Python tests: Integration tests use Python. Dependencies are in `requirements.txt` (or via `uv sync`). The `build.sh`
   script handles this, but if running `pytest` manually, ensure packages are installed.
 - Running manually: To manually start a server with the module loaded, run
@@ -56,7 +56,8 @@ Project-specific conventions & patterns
 
 Testing & debugging notes
 
-- Unit tests: `cargo test` (build.sh runs them with `--features enable-system-alloc`).
+- Unit tests: `cargo test --features enable-system-alloc`.
+- Doc tests: `cargo test --doc --features enable-system-alloc`.
 - Integration tests: Python pytest under `tests/` and rely on a built `valkey-server` and `tests/valkeytestframework`
   helper files (populated by `./build.sh`).
 - To reproduce integration runs locally: run `SERVER_VERSION=unstable ./build.sh` — this will clone/build Valkey and

@@ -1,9 +1,11 @@
+use crate::common::hash::DeterministicHasher;
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use get_size2::GetSize;
 use std::fmt::Display;
+use std::hash::{BuildHasher, Hash, Hasher};
 use valkey_module::digest::Digest;
 use valkey_module::{ValkeyError, ValkeyResult, raw};
 
@@ -17,7 +19,9 @@ pub enum ChunkEncoding {
     Uncompressed = 1,
     #[default]
     Gorilla = 2,
+    TsXor = 3,
     Pco = 4,
+    Xor2 = 5,
 }
 
 impl ChunkEncoding {
@@ -25,6 +29,8 @@ impl ChunkEncoding {
         match self {
             ChunkEncoding::Uncompressed => "uncompressed",
             ChunkEncoding::Gorilla => "gorilla",
+            ChunkEncoding::TsXor => "tsxor",
+            ChunkEncoding::Xor2 => "xor2",
             ChunkEncoding::Pco => "pco",
         }
     }
@@ -46,7 +52,9 @@ impl TryFrom<u8> for ChunkEncoding {
         match value {
             1 => Ok(ChunkEncoding::Uncompressed),
             2 => Ok(ChunkEncoding::Gorilla),
+            3 => Ok(ChunkEncoding::TsXor),
             4 => Ok(ChunkEncoding::Pco),
+            5 => Ok(ChunkEncoding::Xor2),
             _ => Err(ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING)),
         }
     }
@@ -75,6 +83,8 @@ fn parse_encoding(encoding: &str) -> Option<ChunkEncoding> {
         "compressed" => ChunkEncoding::default(),
         "uncompressed" => ChunkEncoding::Uncompressed,
         "gorilla" => ChunkEncoding::Gorilla,
+        "tsxor" => ChunkEncoding::TsXor,
+        "xor2" => ChunkEncoding::Xor2,
         "pco" => ChunkEncoding::Pco,
     }
 }
@@ -122,7 +132,22 @@ pub trait Chunk: Sized {
 
     fn deserialize(buf: &[u8]) -> TsdbResult<Self>;
 
-    fn debug_digest(&self, dig: &mut Digest);
+    fn debug_digest(&self, dig: &mut Digest)
+    where
+        Self: Hash,
+    {
+        // Default implementation for Chunk types that implement Hash + GetSize.
+
+        // Include type name to differentiate implementations
+        dig.add_string_buffer(std::any::type_name::<Self>().as_bytes());
+
+        // Compute a deterministic hash of the chunk's contents and add it to the digest.
+        // Use DeterministicHasher (wraps ahash RandomState with fixed seeds) so the hash is deterministic across runs.
+        let mut hasher = DeterministicHasher::default().build_hasher();
+        Hash::hash(self, &mut hasher);
+        let h = hasher.finish();
+        dig.add_string_buffer(h.to_le_bytes().as_ref());
+    }
 }
 
 pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
@@ -145,4 +170,33 @@ pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::ChunkEncoding;
+
+    #[test]
+    fn chunk_encoding_u8_roundtrip() {
+        let encodings = [
+            ChunkEncoding::Uncompressed,
+            ChunkEncoding::Gorilla,
+            ChunkEncoding::TsXor,
+            ChunkEncoding::Pco,
+            ChunkEncoding::Xor2,
+        ];
+
+        for &enc in &encodings {
+            let b = enc as u8;
+            let decoded = ChunkEncoding::try_from(b).expect("valid encoding byte");
+            assert_eq!(decoded, enc, "roundtrip failed for encoding {:?}", enc);
+        }
+    }
+
+    #[test]
+    fn chunk_encoding_invalid_u8_returns_err() {
+        // Pick a value outside the defined range (1..=5)
+        let invalid: u8 = 0u8;
+        assert!(ChunkEncoding::try_from(invalid).is_err());
+
+        let invalid2: u8 = 255u8;
+        assert!(ChunkEncoding::try_from(invalid2).is_err());
+    }
+}

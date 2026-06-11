@@ -16,7 +16,7 @@ pub fn rdb_save_series(series: &TimeSeries, rdb: *mut raw::RedisModuleIO) {
     series.sample_duplicates.rdb_save(rdb);
 
     // chunk related
-    let tmp = series.chunk_compression.name();
+    let tmp = series.chunk_encoding.name();
     raw::save_string(rdb, tmp);
     rdb_save_usize(rdb, series.chunk_size_bytes);
     rdb_save_usize(rdb, series.chunks.len());
@@ -43,7 +43,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     let sample_duplicates = SampleDuplicatePolicy::rdb_load(rdb)?;
 
     // chunk related
-    let chunk_compression = ChunkEncoding::try_from(rdb_load_string(rdb)?)?;
+    let chunk_encoding = ChunkEncoding::try_from(rdb_load_string(rdb)?)?;
     let chunk_size_bytes = rdb_load_usize(rdb)?;
     let chunks_len = rdb_load_usize(rdb)?;
     let mut chunks = Vec::with_capacity(chunks_len);
@@ -78,7 +78,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
         id,
         labels,
         retention,
-        chunk_compression,
+        chunk_encoding,
         sample_duplicates,
         rounding,
         chunk_size_bytes,

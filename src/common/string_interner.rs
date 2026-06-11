@@ -27,12 +27,12 @@
 //!
 //! # Example
 //! ```rust
-//! use string_interner::InternedString;
+//! use valkey_timeseries::common::string_interner::InternedString;
 //! let x = InternedString::new("hello");
 //! let y: InternedString = "world".into();
 //! assert_ne!(x, y);
 //! assert_eq!(x, InternedString::new("hello"));
-//! assert_eq!(*x, "hello"); // dereference an InternedString like a pointer
+//! assert_eq!(&*x, "hello"); // dereference an InternedString like a pointer
 //! ```
 
 use ahash::RandomState;
@@ -185,13 +185,13 @@ pub struct Stats {
 ///
 /// # Example
 /// ```rust
-/// use string_interner::InternedString;
+/// use valkey_timeseries::common::string_interner::InternedString;
 ///
 /// let x = InternedString::new("hello");
 /// let y: InternedString = "world".into();
 /// assert_ne!(x, y);
 /// assert_eq!(x, InternedString::new("hello"));
-/// assert_eq!(*x, "hello"); // dereference an InternedString like a pointer
+/// assert_eq!(&*x, "hello"); // dereference an InternedString like a pointer
 /// ```
 #[derive(Debug, GetSize)]
 pub struct InternedString {
@@ -453,6 +453,12 @@ impl From<String> for InternedString {
 impl From<&[u8]> for InternedString {
     fn from(s: &[u8]) -> Self {
         Self::from_arc(Arc::from(s))
+    }
+}
+
+impl From<&str> for InternedString {
+    fn from(s: &str) -> Self {
+        Self::new(s)
     }
 }
 

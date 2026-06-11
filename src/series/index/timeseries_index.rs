@@ -162,18 +162,20 @@ impl TimeSeriesIndex {
     ///
     /// we can retrieve its series ID by passing the appropriate labels to this function.
     ///
-    /// ```
+    /// ```no_run
+    /// use valkey_timeseries::Label;
     /// let labels = vec![
     ///     Label::new("__name__", "http_requests_total"),
     ///     Label::new("status", "200"),
     ///     Label::new("method", "GET"),
-    ///     Label::new("service", "inference")
+    ///     Label::new("service", "inference"),
     /// ];
-    /// if let Some(series_id) = index.series_id_by_labels(&labels) {
-    ///     println!("Found series ID: {:?}", series_id);
-    /// } else {
-    ///    println!("No series found with the given labels.");
-    /// }
+    /// // `index` would be a TimeSeriesIndex obtained via the public API (omitted here).
+    /// // if let Some(series_id) = index.series_id_by_labels(&labels) {
+    /// //     println!("Found series ID: {:?}", series_id);
+    /// // } else {
+    /// //    println!("No series found with the given labels.");
+    /// // }
     /// ```
     /// # Arguments
     ///

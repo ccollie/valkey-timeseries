@@ -69,6 +69,11 @@ pub(crate) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
     buf.push(value as u8);
 }
 
+/// Writes a single u8 byte to the buffer.
+pub(crate) fn write_u8(buf: &mut Vec<u8>, value: u8) {
+    buf.push(value);
+}
+
 /// Writes a signed varint using zigzag encoding
 pub(crate) fn write_signed_varint(buf: &mut Vec<u8>, value: i64) {
     // Use zigzag encoding for signed values
@@ -136,6 +141,16 @@ pub(crate) fn try_read_uvarint(buf: &mut &[u8]) -> DecodeResult<u64> {
     Ok(value)
 }
 
+/// Reads a single u8 byte from the buffer.
+pub(crate) fn try_read_u8(buf: &mut &[u8]) -> DecodeResult<u8> {
+    if buf.is_empty() {
+        return Err(DecodeError::insufficient_data(buf.len(), 1));
+    }
+    let val = buf[0];
+    *buf = &buf[1..];
+    Ok(val)
+}
+
 /// Reads a signed varint from the buffer using zigzag encoding
 pub(crate) fn try_read_signed_varint(buf: &mut &[u8]) -> DecodeResult<i64> {
     try_read_uvarint(buf).map(zigzag_decode)
@@ -178,4 +193,22 @@ pub(crate) fn zigzag_decode(from: u64) -> i64 {
 #[inline]
 pub(crate) fn zigzag_encode(from: i64) -> u64 {
     ((from << 1) ^ (from >> 63)) as u64
+}
+
+const BYTE_WIDTH: usize = size_of::<u64>();
+const BIT_WIDTH: usize = BYTE_WIDTH * 8;
+
+// from bitter crate
+#[inline]
+pub(crate) fn sign_extend(val: u64, bits: u32) -> i64 {
+    // Branchless sign extension from bit twiddling hacks:
+    // https://graphics.stanford.edu/~seander/bithacks.html#VariableSignExtend
+    //
+    // The 3 operation approach with division turned out to be significantly slower,
+    // and so was not used.
+    debug_assert!(val.leading_zeros() as usize >= (BIT_WIDTH - bits as usize));
+    let m = 1i64.wrapping_shl(bits.wrapping_sub(1));
+    #[allow(clippy::cast_possible_wrap)]
+    let val = val as i64;
+    (val ^ m) - m
 }

@@ -1,7 +1,9 @@
 use crate::common::Sample;
 use crate::iterators::TimeSeriesRangeIterator;
 use crate::iterators::vec_sample_iterator::VecSampleIterator;
-use crate::series::chunks::{GorillaChunkIterator, PcoSampleIterator};
+use crate::series::chunks::{
+    GorillaChunkIterator, PcoSampleIterator, TsXorChunkIterator, Xor2Iterator,
+};
 
 #[derive(Default)]
 pub enum SampleIter<'a> {
@@ -9,7 +11,9 @@ pub enum SampleIter<'a> {
     Vec(VecSampleIterator),
     Gorilla(GorillaChunkIterator<'a>),
     Pco(Box<PcoSampleIterator<'a>>),
+    TSXor(TsXorChunkIterator<'a>),
     Range(TimeSeriesRangeIterator<'a>),
+    XOR2(Box<Xor2Iterator<'a>>),
     #[default]
     Empty,
 }
@@ -29,6 +33,12 @@ impl<'a> SampleIter<'a> {
     pub fn pco(iter: PcoSampleIterator<'a>) -> Self {
         SampleIter::Pco(Box::new(iter))
     }
+    pub fn tsxor(iter: TsXorChunkIterator<'a>) -> Self {
+        SampleIter::TSXor(iter)
+    }
+    pub fn xor2(iter: Xor2Iterator<'a>) -> Self {
+        SampleIter::XOR2(Box::new(iter))
+    }
 }
 
 impl Iterator for SampleIter<'_> {
@@ -40,8 +50,10 @@ impl Iterator for SampleIter<'_> {
             SampleIter::Vec(iter) => iter.next(),
             SampleIter::Gorilla(iter) => iter.next(),
             SampleIter::Pco(iter) => iter.next(),
+            SampleIter::TSXor(iter) => iter.next(),
             SampleIter::Range(range) => range.next(),
             SampleIter::Empty => None,
+            SampleIter::XOR2(iter) => iter.next(),
         }
     }
 }
@@ -61,6 +73,12 @@ impl From<Vec<Sample>> for SampleIter<'_> {
 impl<'a> From<GorillaChunkIterator<'a>> for SampleIter<'a> {
     fn from(value: GorillaChunkIterator<'a>) -> Self {
         Self::Gorilla(value)
+    }
+}
+
+impl<'a> From<TsXorChunkIterator<'a>> for SampleIter<'a> {
+    fn from(value: TsXorChunkIterator<'a>) -> Self {
+        Self::TSXor(value)
     }
 }
 

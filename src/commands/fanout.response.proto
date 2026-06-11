@@ -16,6 +16,8 @@ enum CompressionType {
   UNCOMPRESSED = 0;
   GORILLA = 1;
   PCO = 2;
+  TSXOR = 3;
+  XOR2 = 4;
 }
 
 message SampleData {

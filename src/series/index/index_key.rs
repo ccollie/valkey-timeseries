@@ -35,6 +35,11 @@ impl IndexKey {
     pub fn len(&self) -> usize {
         self.0.len() - 1
     }
+
+    pub fn is_empty(&self) -> bool {
+        // The inner buffer is always NUL-terminated, so an "empty" key is `[0]`.
+        self.0.len() <= 1
+    }
 }
 
 impl Display for IndexKey {

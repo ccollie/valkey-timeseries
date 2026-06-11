@@ -183,7 +183,7 @@ fn add_default_compactions(
     };
 
     let mut base_config = TimeSeriesOptions::from_config();
-    base_config.chunk_compression = ChunkEncoding::Uncompressed;
+    base_config.chunk_encoding = ChunkEncoding::Uncompressed;
 
     // create a new series for each compaction rule
     let mut rules = Vec::with_capacity(compaction_rules.len());

@@ -58,7 +58,7 @@ fn options_from_series(series: &TimeSeries) -> TimeSeriesOptions {
         chunk_size: Some(series.chunk_size_bytes),
         labels,
         sample_duplicate_policy: sample_duplicates,
-        chunk_compression: series.chunk_compression,
+        chunk_encoding: series.chunk_encoding,
         rounding: series.rounding,
         ..Default::default()
     }

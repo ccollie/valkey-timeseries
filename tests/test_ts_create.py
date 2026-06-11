@@ -59,6 +59,31 @@ class TestTimeSeriesBasic(ValkeyTimeSeriesTestCaseBase):
             else:
                 assert info['chunkType'] == 'compressed'
 
+    def test_info_reflects_encoding(self):
+        """Test that TS.INFO reflects the chunk encoding and compression type."""
+        client = self.server.get_new_client()
+
+        # Cases: (ENCODING arg, expected encoding name in TS.INFO, expected chunkType)
+        cases = [
+            ("UNCOMPRESSED", "uncompressed", "uncompressed"),
+            # COMPRESSED maps to the default compressed encoding (currently gorilla)
+            ("COMPRESSED", "gorilla", "compressed"),
+            ("GORILLA", "gorilla", "compressed"),
+            ("PCO", "pco", "compressed"),
+            ("tsxor", "tsxor", "compressed"),
+            ("xor2", "xor2", "compressed"),
+        ]
+
+        for i, (encoding, expected_name, expected_chunk_type) in enumerate(cases):
+            key = f"ts_info_encoding_{i}"
+            # Create time series with the requested encoding
+            assert client.execute_command("TS.CREATE", key, "ENCODING", encoding) == b'OK'
+
+            # Retrieve info and assert the encoding fields
+            info = self.ts_info(key)
+            assert info['encoding'] == expected_name
+            assert info['chunkType'] == expected_chunk_type
+
     def test_create_with_chunk_size(self):
         """Test creating time series with different chunk sizes"""
         client = self.server.get_new_client()

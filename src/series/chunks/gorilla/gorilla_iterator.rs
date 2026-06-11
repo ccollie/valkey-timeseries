@@ -1,12 +1,12 @@
 use super::GorillaEncoder;
-use super::buffered_read::BufferedReader;
-use super::varbit::read_varbit_int;
 use super::varbit_xor::read_varbit_xor;
 use crate::common::Sample;
 use crate::error::{TsdbError, TsdbResult};
+use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
+use crate::series::chunks::stream::varbit::read_varbit_int;
 
 pub struct GorillaIterator<'a> {
-    reader: BufferedReader<'a>,
+    reader: BitStreamReader<'a>,
     idx: usize,
     num_samples: usize,
     leading_bits: u8,
@@ -25,7 +25,7 @@ impl GorillaIterator<'_> {
         let num_samples = encoder.num_samples;
         let last_timestamp = encoder.last_ts;
         let last_value = encoder.last_value;
-        let reader = BufferedReader::new(buf);
+        let reader = BitStreamReader::new(buf);
         let last_idx = num_samples - 1;
 
         GorillaIterator {
