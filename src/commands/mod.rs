@@ -43,6 +43,7 @@ mod ts_querylabels;
 mod ts_querylabels_fanout_command;
 mod ts_range;
 mod ts_read;
+mod ts_stationarity;
 mod ts_trend;
 mod utils;
 
@@ -61,6 +62,7 @@ pub use ts_decompose::*;
 pub use ts_features::*;
 pub use ts_mget::*;
 pub use ts_periods::*;
+pub use ts_stationarity::*;
 pub use ts_trend::*;
 use valkey_module::ValkeyResult;
 

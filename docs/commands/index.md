@@ -37,5 +37,6 @@ The following commands are supported
 - [`TS.RANGE`](ts.range.md)
 - [`TS.READ`](ts.read.md)
 - [`TS.REVRANGE`](ts.revrange.md)
+- [`TS.STATIONARITY`](ts.stationarity.md)
 - [`TS.TREND`](ts.trend.md)
 - [`TS._DEBUG`](ts._debug.md)

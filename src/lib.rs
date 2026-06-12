@@ -274,6 +274,7 @@ valkey_module! {
         ["ts.autocorrelation", commands::ts_autocorrelation_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
         ["ts.trend", commands::ts_trend_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
         ["ts.features", commands::ts_features_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
+        ["ts.stationarity", commands::ts_stationarity_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
