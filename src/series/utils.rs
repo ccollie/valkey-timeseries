@@ -2,6 +2,7 @@ use crate::common::Sample;
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{create_key_string, get_current_db, notify_keyspace_event};
 use crate::error_consts;
+use crate::fanout::key_belongs_to_local_node;
 use crate::labels::{InternedLabel, Label};
 use crate::series::acl::{KeyAccess, check_key_permissions};
 use crate::series::chunks::ChunkEncoding;
@@ -142,7 +143,7 @@ pub fn create_series(
     if !key_belongs_to_local_node(ctx, key.as_slice()) {
         return Err(ValkeyError::Str(error_consts::WRONG_SLOT));
     }
-    
+
     let mut ts = TimeSeries::with_options(options)?;
     if ts.id == 0 {
         ts.id = next_timeseries_id();
