@@ -53,7 +53,6 @@ The following commands are supported
 - [`TS.ALTER`](docs/commands/ts.alter.md)
 - [`TS.AUTOCORRELATION`](docs/commands/ts.autocorrelation.md)
 - [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md)
-- [`TS.AUTOTREND`](docs/commands/ts.autotrend.md)
 - [`TS.CARD`](docs/commands/ts.card.md)
 - [`TS.CREATE`](docs/commands/ts.create.md)
 - [`TS.CREATERULE`](docs/commands/ts.createrule.md)
@@ -61,6 +60,7 @@ The following commands are supported
 - [`TS.DELETERULE`](docs/commands/ts.deleterule.md)
 - [`TS.DECRBY`](docs/commands/ts.decrby.md)
 - [`TS.DEL`](docs/commands/ts.del.md)
+- [`TS.FEATURES`](docs/commands/ts.features.md)
 - [`TS.GET`](docs/commands/ts.get.md)
 - [`TS.INCRBY`](docs/commands/ts.incrby.md)
 - [`TS.INFO`](docs/commands/ts.info.md)
@@ -83,6 +83,7 @@ The following commands are supported
 - [`TS.RANGE`](docs/commands/ts.range.md)
 - [`TS.READ`](docs/commands/ts.read.md)
 - [`TS.REVRANGE`](docs/commands/ts.revrange.md)
+- [`TS.TREND`](docs/commands/ts.trend.md)
 - [`TS._DEBUG`](docs/commands/ts._debug.md)
 
 

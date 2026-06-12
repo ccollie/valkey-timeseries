@@ -272,7 +272,8 @@ valkey_module! {
         ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["ts._restore", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
         ["ts.autocorrelation", commands::ts_autocorrelation_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.autotrend", commands::ts_autotrend_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
+        ["ts.trend", commands::ts_trend_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
+        ["ts.features", commands::ts_features_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
