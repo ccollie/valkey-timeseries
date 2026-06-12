@@ -3,12 +3,14 @@ use crate::commands::fanout_codec::MGetValue;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::replies::{
     IntoRawCtx, is_resp3_client, reply_label_ex, reply_with_array, reply_with_bulk_string,
-    reply_with_labels, reply_with_labels_map, reply_with_map, reply_with_multi_samples,
-    reply_with_sample_ex, reply_with_samples, reply_with_slice,
+    reply_with_double, reply_with_labels, reply_with_labels_map, reply_with_map,
+    reply_with_multi_samples, reply_with_sample_ex, reply_with_samples, reply_with_slice,
+    reply_with_str,
 };
 use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fanout_mode};
 use crate::labels::Label;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, SeriesResultData};
+use anofox_forecast::utils::AccuracyMetrics;
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue, raw};
 
 pub(super) fn reply_with_fanout_label<C: IntoRawCtx>(ctx: C, label: &FanoutLabel) {
@@ -212,4 +214,37 @@ pub(super) fn get_multi_command_targets(context: &Context, tags: &[String]) -> F
     } else {
         FanoutTarget::HashTagsPrimary(tags.to_vec())
     }
+}
+
+pub fn reply_with_accuracy_metrics(ctx: &Context, metrics: &AccuracyMetrics) {
+    reply_with_map(ctx, 7);
+
+    reply_with_str(ctx, "mae");
+    reply_with_double(ctx, metrics.mae);
+
+    reply_with_str(ctx, "mse");
+    reply_with_double(ctx, metrics.mse);
+
+    reply_with_str(ctx, "rmse");
+    reply_with_double(ctx, metrics.rmse);
+
+    reply_with_str(ctx, "mape");
+    if let Some(v) = metrics.mape {
+        reply_with_double(ctx, v);
+    } else {
+        crate::common::replies::reply_with_null(ctx);
+    }
+
+    reply_with_str(ctx, "smape");
+    reply_with_double(ctx, metrics.smape);
+
+    reply_with_str(ctx, "mase");
+    if let Some(v) = metrics.mase {
+        reply_with_double(ctx, v);
+    } else {
+        crate::common::replies::reply_with_null(ctx);
+    }
+
+    reply_with_str(ctx, "r_squared");
+    reply_with_double(ctx, metrics.r_squared);
 }
