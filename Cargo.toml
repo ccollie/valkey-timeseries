@@ -60,6 +60,7 @@ valkey-timeseries = { path = ".", features = ["test-utils"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 strum = { version = "0.28", features = ["derive"] }
 strum_macros = "0.28"
+approx = "0.5"
 test-case = "3.3"
 serial_test = { version = "4.0.1", default-features = false }
 proptest = "1"
