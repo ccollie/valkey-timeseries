@@ -25,6 +25,8 @@ use valkey_module::{
 };
 use valkey_module_macros::config_changed_event_handler;
 
+use crate::promql::engine::config::PROMQL_CONFIG;
+
 /// Minimal Valkey version that supports the TimeSeries Module
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
 pub const SPLIT_FACTOR: f64 = 1.2;
@@ -324,6 +326,12 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
     }
     if modified {
         log_notice(format!("Configuration updated: {cfg:?}"));
+        // Sync PromQL config with the updated Valkey config
+        let promql_cfg = &cfg;
+        if let Ok(mut prom_guard) = PROMQL_CONFIG.write() {
+            prom_guard.apply_ts_config(promql_cfg.is_debug_mode_enabled);
+        }
+
         let mut guard = write_lock(&SETTINGS);
         *guard = cfg;
     }
@@ -860,6 +868,12 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
 
     // Initialize config settings
     unsafe { RedisModule_LoadConfigs.unwrap()(ctx.ctx) };
+
+    // Initialize PROMQL_CONFIG from the freshly loaded Valkey config
+    let ts_config = SETTINGS.read().expect("config lock poisoned");
+    if let Ok(mut prom_guard) = PROMQL_CONFIG.write() {
+        prom_guard.apply_ts_config(ts_config.is_debug_mode_enabled);
+    }
 
     Ok(())
 }
