@@ -1,7 +1,6 @@
 use crate::common::constants::MILLIS_PER_YEAR;
 use crate::common::humanize::humanize_duration_ms;
 use crate::common::rounding::RoundingStrategy;
-use crate::common::sync::{lock, read_lock, write_lock};
 use crate::error_consts;
 use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
@@ -10,6 +9,7 @@ use crate::series::{
     DuplicatePolicy, SampleDuplicatePolicy, add_compaction_policies_from_config,
     clear_compaction_policy_config,
 };
+use lazy_static::lazy_static;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
@@ -25,7 +25,7 @@ use valkey_module::{
 };
 use valkey_module_macros::config_changed_event_handler;
 
-use crate::promql::engine::config::PROMQL_CONFIG;
+use crate::promql::engine::promql_config::update_prom_config;
 
 /// Minimal Valkey version that supports the TimeSeries Module
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
@@ -76,14 +76,28 @@ pub(crate) const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.na
 pub(crate) const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 pub(crate) const DEFAULT_COMPACTION_POLICY: &str = "";
 
-pub const INDEX_BUILD_MAX_MEMORY_MIN: i64 = 0; // 0 = unlimited
-pub const INDEX_BUILD_MAX_MEMORY_MAX: i64 = i64::MAX;
-pub const INDEX_BUILD_MAX_MEMORY_DEFAULT: i64 = 256 * 1024 * 1024; // 256 MiB
-
 pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 750; // default: 0.25 second
 pub(crate) const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
 pub(crate) const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
 pub const CLUSTER_MAP_EXPIRATION_DEFAULT_STRING: &str = "750";
+
+// PromQL config constants
+const PROMQL_MAX_QUERY_LEN_MIN: i64 = 1024; // 1 kb
+const PROMQL_MAX_QUERY_LEN_MAX: i64 = 16 * 1024; // 16 kb
+const PROMQL_MAX_QUERY_LEN_DEFAULT: i64 = 4 * 1024;
+const PROMQL_MAX_RESPONSE_SERIES_MIN: i64 = 0;
+const PROMQL_MAX_RESPONSE_SERIES_MAX: i64 = i64::MAX;
+const PROMQL_MAX_RESPONSE_SERIES_DEFAULT: i64 = 1000;
+const PROMQL_MAX_POINTS_PER_TIMESERIES_MIN: i64 = 0;
+const PROMQL_MAX_POINTS_PER_TIMESERIES_MAX: i64 = i64::MAX;
+const PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT: i64 = 0;
+const PROMQL_LOOKBACK_DELTA_DEFAULT_STRING: &str = "5m";
+const PROMQL_MAX_LOOKBACK_DEFAULT_STRING: &str = "0";
+const PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING: &str = "30s";
+const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
+const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
+const PROMQL_MAX_QUERY_DURATION_MIN_MS: i64 = 1;
+const PROMQL_MAX_QUERY_DURATION_MAX_MS: i64 = ONE_YEAR_MS;
 
 #[derive(Clone, Debug)]
 pub struct ConfigSettings {
@@ -117,95 +131,69 @@ impl Default for ConfigSettings {
 }
 
 pub static CHUNK_SIZE: AtomicI64 = AtomicI64::new(CHUNK_SIZE_DEFAULT);
-
-/// Size of the module's global rayon thread pool (`ts-num-threads`).
-///
-/// This is the single source of truth for pool size: `init_thread_pool()` reads it directly
-/// when building the global rayon pool, and heuristics that scale work by thread count
-/// (`multi_del.rs`, `rcf_outlier_detector.rs`) read it too.
-///
-/// Rayon's global thread pool cannot be resized once built (`ThreadPoolBuilder::build_global`
-/// has no counterpart to shrink/grow an already-initialized `Registry`), so this config is
-/// registered with `ConfigurationFlags::IMMUTABLE`: it can only be set at startup (`valkey.conf`
-/// or `MODULE LOAD` args), and `CONFIG SET ts-num-threads` is rejected by the server itself
-/// rather than silently no-op-ing.
 pub static NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
-
-pub fn num_threads() -> usize {
-    NUM_THREADS.load(Ordering::Relaxed) as usize
-}
+static PROMQL_MAX_QUERY_LEN: AtomicI64 = AtomicI64::new(PROMQL_MAX_QUERY_LEN_DEFAULT);
+static PROMQL_MAX_RESPONSE_SERIES: AtomicI64 = AtomicI64::new(PROMQL_MAX_RESPONSE_SERIES_DEFAULT);
+static PROMQL_MAX_POINTS_PER_TIMESERIES: AtomicI64 =
+    AtomicI64::new(PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT);
 
 pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
-pub static ROUNDING_STRATEGY: LazyLock<Mutex<Option<RoundingStrategy>>> =
-    LazyLock::new(|| Mutex::new(None));
-pub static DECIMAL_DIGITS: LazyLock<AtomicI64> =
-    LazyLock::new(|| AtomicI64::new(DECIMAL_DIGITS_MAX));
-pub static SIGNIFICANT_DIGITS: LazyLock<AtomicI64> =
-    LazyLock::new(|| AtomicI64::new(SIGNIFICANT_DIGITS_MAX));
-pub static IGNORE_MAX_TIME_DIFF: LazyLock<AtomicI64> =
-    LazyLock::new(|| AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT));
-pub static IGNORE_MAX_VALUE_DIFF: LazyLock<Mutex<f64>> = LazyLock::new(|| Mutex::new(0.0));
-pub static RETENTION_PERIOD: LazyLock<Mutex<Duration>> =
-    LazyLock::new(|| Mutex::new(DEFAULT_RETENTION_PERIOD));
-pub static CHUNK_ENCODING: LazyLock<Mutex<ChunkEncoding>> =
-    LazyLock::new(|| Mutex::new(DEFAULT_CHUNK_ENCODING));
-pub static FANOUT_COMMAND_TIMEOUT: LazyLock<AtomicU64> =
-    LazyLock::new(|| AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS));
-pub static DUPLICATE_POLICY: LazyLock<Mutex<DuplicatePolicy>> =
-    LazyLock::new(|| Mutex::new(DEFAULT_DUPLICATE_POLICY));
-pub static CLUSTER_MAP_EXPIRATION_MS: LazyLock<AtomicU64> =
-    LazyLock::new(|| AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT));
-static CHUNK_SIZE_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
-    LazyLock::new(|| ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING)));
-static CHUNK_ENCODING_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()))
-});
-static DUPLICATE_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(
-        None,
-        DEFAULT_DUPLICATE_POLICY.as_str(),
-    ))
-});
-static RETENTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING))
-});
-static COMPACTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING))
-});
-static IGNORE_MAX_TIME_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(
-        None,
-        IGNORE_MAX_TIME_DIFF_DEFAULT_STRING,
-    ))
-});
-static IGNORE_MAX_VALUE_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(
-        None,
-        IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING,
-    ))
-});
-static DECIMAL_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING))
-});
-static SIGNIFICANT_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
-    ValkeyGILGuard::new(ValkeyString::create(
-        None,
-        SIGNIFICANT_DIGITS_DEFAULT_STRING,
-    ))
-});
-static FANOUT_COMMAND_TIMEOUT_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
-    LazyLock::new(|| {
-        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT))
-    });
-static CLUSTER_MAP_EXPIRATION_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
-    LazyLock::new(|| {
-        ValkeyGILGuard::new(ValkeyString::create(
-            None,
-            CLUSTER_MAP_EXPIRATION_DEFAULT_STRING,
-        ))
-    });
-static IS_DEBUG_MODE: LazyLock<AtomicBool> = LazyLock::new(AtomicBool::default);
+lazy_static! {
+    pub static ref ROUNDING_STRATEGY: Mutex<Option<RoundingStrategy>> = Mutex::new(None);
+    pub static ref DECIMAL_DIGITS: AtomicI64 = AtomicI64::new(DECIMAL_DIGITS_MAX);
+    pub static ref SIGNIFICANT_DIGITS: AtomicI64 = AtomicI64::new(SIGNIFICANT_DIGITS_MAX);
+    pub static ref IGNORE_MAX_TIME_DIFF: AtomicI64 = AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT);
+    pub static ref IGNORE_MAX_VALUE_DIFF: Mutex<f64> = Mutex::new(0.0);
+    pub static ref RETENTION_PERIOD: Mutex<Duration> = Mutex::new(DEFAULT_RETENTION_PERIOD);
+    pub static ref CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
+    pub static ref FANOUT_COMMAND_TIMEOUT: AtomicU64 =
+        AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS);
+    pub static ref DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
+    pub static ref CLUSTER_MAP_EXPIRATION_MS: AtomicU64 =
+        AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT);
+    static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
+    static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()));
+    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, DEFAULT_DUPLICATE_POLICY.as_str())
+    );
+    static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
+    static ref COMPACTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING));
+    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING)
+    );
+    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING)
+    );
+    static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING));
+    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
+    );
+    static ref FANOUT_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT));
+    static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
+        ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING)
+    );
+    static ref IS_DEBUG_MODE: AtomicBool = AtomicBool::default();
+    // PromQL config statics
+    static ref PROMQL_SET_LOOKBACK_TO_STEP: AtomicBool = AtomicBool::new(false);
+    static ref PROMQL_OPTIMIZE_QUERIES: AtomicBool = AtomicBool::new(false);
+    static ref PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS: AtomicBool = AtomicBool::new(true);
+    static ref PROMQL_LOOKBACK_DELTA_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, PROMQL_LOOKBACK_DELTA_DEFAULT_STRING));
+    static ref PROMQL_MAX_LOOKBACK_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, PROMQL_MAX_LOOKBACK_DEFAULT_STRING));
+    static ref PROMQL_MAX_QUERY_DURATION_STRING: ValkeyGILGuard<ValkeyString> =
+        ValkeyGILGuard::new(ValkeyString::create(None, PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING));
+    static ref PROMQL_LOOKBACK_DELTA_MS: AtomicI64 = AtomicI64::new(5 * 60 * 1000);
+    static ref PROMQL_MAX_LOOKBACK_MS: AtomicI64 = AtomicI64::new(0);
+    static ref PROMQL_MAX_QUERY_DURATION_MS: AtomicI64 = AtomicI64::new(30 * 1000);
+}
 
 /// Runtime toggle for shard-side aggregation push-down in MRANGE fanout
 /// (`ts-fanout-aggregation-pushdown`, default on). Consulted by the
@@ -227,34 +215,11 @@ pub fn is_fanout_aggregation_pushdown_enabled() -> bool {
     FANOUT_AGGREGATION_PUSHDOWN.load(Ordering::Relaxed)
 }
 
-/// Runtime toggle for persisting the postings index as an RDB aux field
-/// (`ts-index-persist`, default on; see docs/postings-index-persistence.md).
-/// Gates both save and load: with it off, BGSAVE writes no aux payload and
-/// load discards any payload found in the RDB (the payload is still consumed
-/// to keep the RDB stream in sync) and rebuilds the index per key. Loading a
-/// payload-bearing RDB is always tolerated regardless of this setting.
-pub static INDEX_PERSIST: AtomicBool = AtomicBool::new(true);
-
-pub fn is_index_persist_enabled() -> bool {
-    INDEX_PERSIST.load(Ordering::Relaxed)
-}
-
-/// Cap on the transient buffer used by the sorted bulk index build during RDB/replication
-/// loads (`ts-index-build-max-memory`, bytes, 0 = unlimited; default 256MiB). The buffer holds `(id, key, label-keys)`
-/// tuples at exactly the moment the loading dataset's own footprint peaks, so it must be
-/// bounded: crossing the cap drains the buffer with one sorted bulk build and degrades to
-/// per-key indexing for the remainder of the load window (`bulk_build.rs`).
-pub static INDEX_BUILD_MAX_MEMORY: AtomicI64 = AtomicI64::new(INDEX_BUILD_MAX_MEMORY_DEFAULT);
-
-pub fn index_build_max_memory() -> i64 {
-    INDEX_BUILD_MAX_MEMORY.load(Ordering::Relaxed)
-}
-
 static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
     LazyLock::new(|| RwLock::from(ConfigSettings::default()));
 
 pub fn get_config() -> ConfigSettings {
-    read_lock(&SETTINGS).clone()
+    SETTINGS.read().expect("config lock poisoned").clone()
 }
 
 #[config_changed_event_handler]
@@ -265,6 +230,7 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
     let mut cfg: ConfigSettings = get_config();
 
     let mut modified = false;
+    let mut promql_config_modified = false;
     for &name in changed_configs {
         hashify::fnc_map_ignore_case!(name.as_bytes(),
             "ts-chunk-size" => {
@@ -272,22 +238,19 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-duplicate-policy" => {
-                cfg.duplicate_policy.policy = Some(*lock(&DUPLICATE_POLICY));
+                cfg.duplicate_policy.policy = Some(*DUPLICATE_POLICY.lock().unwrap());
                 modified = true;
             },
             "ts-encoding" => {
-                cfg.chunk_encoding = *lock(&CHUNK_ENCODING);
+                cfg.chunk_encoding = *CHUNK_ENCODING.lock().unwrap();
                 modified = true;
             },
             "ts-num-threads" => {
-                // `ts-num-threads` is IMMUTABLE, so this only fires once at startup (if set via
-                // `valkey.conf`); keep the cached snapshot in sync with the value the thread
-                // pool was actually built with.
-                cfg.num_threads = num_threads();
-                modified = true;
+                // nothing to do here
+                cfg.num_threads = NUM_THREADS.load(Ordering::Relaxed) as usize;
             },
             "ts-retention-policy" => {
-                let period = *lock(&RETENTION_PERIOD);
+                let period = *RETENTION_PERIOD.lock().unwrap();
                 cfg.retention_period = if period.is_zero() { None } else { Some(period) };
                 modified = true;
             },
@@ -296,15 +259,15 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-ignore-max-value-diff" => {
-                cfg.duplicate_policy.max_value_delta = *lock(&IGNORE_MAX_VALUE_DIFF);
+                cfg.duplicate_policy.max_value_delta = *IGNORE_MAX_VALUE_DIFF.lock().unwrap();
                 modified = true;
             },
             "ts-decimal-digits" => {
-                cfg.rounding = *lock(&ROUNDING_STRATEGY);
+                cfg.rounding = *ROUNDING_STRATEGY.lock().unwrap();
                 modified = true;
             },
             "ts-significant-digits" => {
-                cfg.rounding = *lock(&ROUNDING_STRATEGY);
+                cfg.rounding = *ROUNDING_STRATEGY.lock().unwrap();
                 modified = true;
             },
             "ts-compaction-policy" => {
@@ -317,22 +280,69 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 cfg.is_debug_mode_enabled = IS_DEBUG_MODE.load(Ordering::Relaxed);
                 modified = true;
             },
-             "ts-cluster-map-expiration-ms" => {
+            "ts-promql-set-lookback-to-step" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-optimize-queries" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-enable-experimental-functions" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-max-query-len" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-max-response-series" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-max-points-per-timeseries" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-lookback-delta" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-max-lookback" => {
+                promql_config_modified = true;
+            },
+            "ts-promql-max-query-duration" => {
+                promql_config_modified = true;
+            },
+            "ts-cluster-map-expiration-ms" => {
                 cfg.cluster_map_expiration = Duration::from_millis(CLUSTER_MAP_EXPIRATION_MS.load(Ordering::Relaxed));
                 modified = true;
             },
             _ => {}
         );
+        // if modified {
+        //     break;
+        // }
     }
+
+    if promql_config_modified {
+        log_notice(format!("PromQL configuration updated: {cfg:?}"));
+        // Sync PromQL config with the updated Valkey config
+        update_prom_config(|cfg| {
+            cfg.max_query_duration =
+                Duration::from_millis(PROMQL_MAX_QUERY_DURATION_MS.load(Ordering::Relaxed) as u64);
+            cfg.max_query_len = PROMQL_MAX_QUERY_LEN.load(Ordering::Relaxed) as usize;
+            cfg.max_response_series = PROMQL_MAX_RESPONSE_SERIES.load(Ordering::Relaxed) as usize;
+            cfg.max_points_per_timeseries =
+                PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
+            cfg.lookback_delta =
+                Duration::from_millis(PROMQL_LOOKBACK_DELTA_MS.load(Ordering::Relaxed) as u64);
+            cfg.max_lookback =
+                Duration::from_millis(PROMQL_MAX_LOOKBACK_MS.load(Ordering::Relaxed) as u64);
+            cfg.set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
+            cfg.optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
+            cfg.enable_experimental_functions =
+                PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS.load(Ordering::Relaxed);
+        });
+    }
+
     if modified {
         log_notice(format!("Configuration updated: {cfg:?}"));
-        // Sync PromQL config with the updated Valkey config
-        let promql_cfg = &cfg;
-        if let Ok(mut prom_guard) = PROMQL_CONFIG.write() {
-            prom_guard.apply_ts_config(promql_cfg.is_debug_mode_enabled);
-        }
 
-        let mut guard = write_lock(&SETTINGS);
+        let mut guard = SETTINGS.write().expect("config lock poisoned");
         *guard = cfg;
     }
 }
@@ -419,7 +429,7 @@ fn update_compaction_policy(v: &str) -> ValkeyResult<()> {
     // but this is not ideal.
     // mutable reference to the ValkeyGILGuard, which we don't have.
 
-    let mut guard = write_lock(&SETTINGS);
+    let mut guard = SETTINGS.write().expect("write lock poisoned");
     guard.compaction_policy = v.to_string();
 
     Ok(())
@@ -489,6 +499,39 @@ fn update_fanout_command_timeout(val: &str) -> ValkeyResult<()> {
     Ok(())
 }
 
+fn update_promql_lookback_delta(val: &str) -> ValkeyResult<()> {
+    let ms = parse_duration_in_range(
+        "ts-promql-lookback-delta",
+        val,
+        PROMQL_LOOKBACK_DELTA_MIN_MS,
+        PROMQL_LOOKBACK_DELTA_MAX_MS,
+    )?;
+    PROMQL_LOOKBACK_DELTA_MS.store(ms, Ordering::SeqCst);
+    Ok(())
+}
+
+fn update_promql_max_lookback(val: &str) -> ValkeyResult<()> {
+    let ms = parse_duration_in_range(
+        "ts-promql-max-lookback",
+        val,
+        PROMQL_LOOKBACK_DELTA_MIN_MS,
+        PROMQL_LOOKBACK_DELTA_MAX_MS,
+    )?;
+    PROMQL_MAX_LOOKBACK_MS.store(ms, Ordering::SeqCst);
+    Ok(())
+}
+
+fn update_promql_max_query_duration(val: &str) -> ValkeyResult<()> {
+    let ms = parse_duration_in_range(
+        "ts-promql-max-query-duration",
+        val,
+        PROMQL_MAX_QUERY_DURATION_MIN_MS,
+        PROMQL_MAX_QUERY_DURATION_MAX_MS,
+    )?;
+    PROMQL_MAX_QUERY_DURATION_MS.store(ms, Ordering::SeqCst);
+    Ok(())
+}
+
 fn update_cluster_map_expiration(val: &str) -> ValkeyResult<()> {
     let duration = parse_duration_in_range(
         "ts-cluster-map-expiration-ms",
@@ -543,6 +586,15 @@ fn on_config_set(
         },
         "ts-fanout-command-timeout" => {
             return update_fanout_command_timeout(&v)
+        },
+        "ts-promql-lookback-delta" => {
+            return update_promql_lookback_delta(&v)
+        },
+        "ts-promql-max-lookback" => {
+            return update_promql_max_lookback(&v)
+        },
+        "ts-promql-max-query-duration" => {
+            return update_promql_max_query_duration(&v)
         },
         _ => {
         }
@@ -625,9 +677,7 @@ fn on_thread_config_set(
 ) -> Result<(), ValkeyError> {
     let threads = atomic.load(Ordering::SeqCst);
     log_notice(format!("Setting number of threads to {threads}"));
-    // `ts-num-threads` is IMMUTABLE (see its registration), so this only ever runs once at
-    // startup, before `init_thread_pool()` builds the global rayon pool from this same value.
-    // There is nothing to resize here: rayon's global pool has no runtime resize API.
+    // todo: reset thread pool size
     Ok(())
 }
 
@@ -647,11 +697,15 @@ fn on_bool_config_set(
     val: &'static AtomicBool,
 ) -> Result<(), ValkeyError> {
     let v = val.get(config_ctx);
-    if name.eq_ignore_ascii_case("debug-mode") {
-        log_notice(format!("Setting debug mode to {v}"));
-    } else {
-        log_notice(format!("Setting {name} to {v}"));
-    }
+    log_notice(format!("Setting {name} to {v}"));
+    Ok(())
+}
+
+fn on_promql_i64_config_set(
+    _config_ctx: &ConfigurationContext,
+    _name: &str,
+    _atomic: &'static AtomicI64,
+) -> Result<(), ValkeyError> {
     Ok(())
 }
 
@@ -732,9 +786,7 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         num_threads_default,
         1,
         MAX_THREADS,
-        // Rayon's global thread pool cannot be resized after `build_global()`, so this can
-        // only be set at startup; runtime `CONFIG SET` is rejected by the server itself.
-        ConfigurationFlags::IMMUTABLE,
+        ConfigurationFlags::DEFAULT,
         None,
         Some(Box::new(on_thread_config_set)),
     );
@@ -837,43 +889,120 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         Some(Box::new(on_bool_config_set)),
     );
 
-    let index_persist_default = get_bool_default_config_value(args, "ts-index-persist", true)?;
-
+    // PromQL bool configs
+    let promql_set_lookback_to_step_default =
+        get_bool_default_config_value(args, "ts-promql-set-lookback-to-step", false)?;
     register_bool_configuration(
         ctx,
-        "ts-index-persist",
-        &INDEX_PERSIST,
-        index_persist_default,
+        "ts-promql-set-lookback-to-step",
+        &*PROMQL_SET_LOOKBACK_TO_STEP,
+        promql_set_lookback_to_step_default,
         ConfigurationFlags::DEFAULT,
         None,
         Some(Box::new(on_bool_config_set)),
     );
 
-    let bulk_build_max_memory_default = get_i64_default(
+    let promql_optimize_queries_default =
+        get_bool_default_config_value(args, "ts-promql-optimize-queries", false)?;
+    register_bool_configuration(
+        ctx,
+        "ts-promql-optimize-queries",
+        &*PROMQL_OPTIMIZE_QUERIES,
+        promql_optimize_queries_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
+
+    let promql_enable_experimental_functions_default =
+        get_bool_default_config_value(args, "ts-promql-enable-experimental-functions", true)?;
+    register_bool_configuration(
+        ctx,
+        "ts-promql-enable-experimental-functions",
+        &*PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS,
+        promql_enable_experimental_functions_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
+
+    // PromQL i64 configs
+    let promql_max_query_len_default = get_i64_default(
         args,
-        "ts-index-build-max-memory",
-        INDEX_BUILD_MAX_MEMORY_DEFAULT,
+        "ts-promql-max-query-len",
+        PROMQL_MAX_QUERY_LEN_DEFAULT,
     )?;
     register_i64_configuration(
         ctx,
-        "ts-index-build-max-memory",
-        &INDEX_BUILD_MAX_MEMORY,
-        bulk_build_max_memory_default,
-        INDEX_BUILD_MAX_MEMORY_MIN,
-        INDEX_BUILD_MAX_MEMORY_MAX,
+        "ts-promql-max-query-len",
+        &PROMQL_MAX_QUERY_LEN,
+        promql_max_query_len_default,
+        PROMQL_MAX_QUERY_LEN_MIN,
+        PROMQL_MAX_QUERY_LEN_MAX,
         ConfigurationFlags::DEFAULT,
         None,
         None,
     );
 
+    let promql_max_response_series_default = get_i64_default(
+        args,
+        "ts-promql-max-response-series",
+        PROMQL_MAX_RESPONSE_SERIES_DEFAULT,
+    )?;
+    register_i64_configuration(
+        ctx,
+        "ts-promql-max-response-series",
+        &PROMQL_MAX_RESPONSE_SERIES,
+        promql_max_response_series_default,
+        PROMQL_MAX_RESPONSE_SERIES_MIN,
+        PROMQL_MAX_RESPONSE_SERIES_MAX,
+        ConfigurationFlags::DEFAULT,
+        None,
+        None,
+    );
+
+    let promql_max_points_per_timeseries_default = get_i64_default(
+        args,
+        "ts-promql-max-points-per-timeseries",
+        PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT,
+    )?;
+    register_i64_configuration(
+        ctx,
+        "ts-promql-max-points-per-timeseries",
+        &PROMQL_MAX_POINTS_PER_TIMESERIES,
+        promql_max_points_per_timeseries_default,
+        PROMQL_MAX_POINTS_PER_TIMESERIES_MIN,
+        PROMQL_MAX_POINTS_PER_TIMESERIES_MAX,
+        ConfigurationFlags::DEFAULT,
+        None,
+        None,
+    );
+
+    // PromQL duration (string) configs
+    register_string_config(
+        ctx,
+        args,
+        "ts-promql-lookback-delta",
+        &PROMQL_LOOKBACK_DELTA_STRING,
+        PROMQL_LOOKBACK_DELTA_DEFAULT_STRING,
+    )?;
+    register_string_config(
+        ctx,
+        args,
+        "ts-promql-max-lookback",
+        &PROMQL_MAX_LOOKBACK_STRING,
+        PROMQL_MAX_LOOKBACK_DEFAULT_STRING,
+    )?;
+    register_string_config(
+        ctx,
+        args,
+        "ts-promql-max-query-duration",
+        &PROMQL_MAX_QUERY_DURATION_STRING,
+        PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING,
+    )?;
+
     // Initialize config settings
     unsafe { RedisModule_LoadConfigs.unwrap()(ctx.ctx) };
-
-    // Initialize PROMQL_CONFIG from the freshly loaded Valkey config
-    let ts_config = SETTINGS.read().expect("config lock poisoned");
-    if let Ok(mut prom_guard) = PROMQL_CONFIG.write() {
-        prom_guard.apply_ts_config(ts_config.is_debug_mode_enabled);
-    }
 
     Ok(())
 }
