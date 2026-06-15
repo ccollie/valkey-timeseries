@@ -15,7 +15,7 @@ use crate::parser::{
     ParseError, metric_name::parse_metric_name as parse_metric, parse_nonnegative_duration_value,
     timestamp::parse_timestamp as parse_timestamp_internal, timestamp::timestamp_error,
 };
-use crate::promql::engine::config::PromqlConfig;
+use crate::promql::engine::promql_config::PromqlConfig;
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
     AggregationOptions, AggregatorConfig, MAX_AGGREGATIONS, MRangeOptions, MatchFilterOptions,
