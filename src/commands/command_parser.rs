@@ -1,10 +1,10 @@
 use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
-use crate::common::{Sample, Timestamp};
 use crate::common::binop::ComparisonOperator;
 use crate::common::rounding::{
     MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, MIN_SIGNIFICANT_DIGITS, RoundingStrategy,
 };
 use crate::common::time::current_time_millis;
+use crate::common::{Sample, Timestamp};
 use crate::config::is_strict_rts_compat;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
@@ -290,7 +290,10 @@ pub fn parse_timestamp_range(args: &mut CommandArgIterator) -> ValkeyResult<Time
 /// 1. Key of the time series
 /// 2. Start timestamp
 /// 3. End timestamp
-pub(super) fn parse_series_range_samples(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<Vec<Sample>> {
+pub(super) fn parse_series_range_samples(
+    ctx: &Context,
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<Vec<Sample>> {
     let key = args.next_arg()?;
     let date_range = parse_timestamp_range(args)?;
     match get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), false) {
@@ -1767,23 +1770,22 @@ fn parse_limit_value(val: &str) -> ValkeyResult<Option<usize>> {
     Ok(Some(limit as usize))
 }
 
-pub(super) fn parse_forecast_horizon_value(
-    args: &mut CommandArgIterator,
-) -> ValkeyResult<usize> {
+pub(super) fn parse_forecast_horizon_value(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     if args.peek().is_none() {
         return Err(ValkeyError::Str("TSDB: missing forecast horizon value"));
     }
     let next = args.next_i64()?;
     if next <= 0 {
-        return Err(ValkeyError::Str("TSDB: forecast horizon must be greater than 0"));
+        return Err(ValkeyError::Str(
+            "TSDB: forecast horizon must be greater than 0",
+        ));
     }
     Ok(next as usize)
 }
 
-pub(super) fn parse_forecast_confidence_level(
-    args: &mut CommandArgIterator,
-) -> ValkeyResult<f64> {
-    let value = args.next_f64()
+pub(super) fn parse_forecast_confidence_level(args: &mut CommandArgIterator) -> ValkeyResult<f64> {
+    let value = args
+        .next_f64()
         .map_err(|_| ValkeyError::Str("TSDB: missing forecast confidence level"))?;
     if value <= 0.0 || value >= 100.0 {
         return Err(ValkeyError::Str("TSDB: LEVEL must be between 0 and 100"));
