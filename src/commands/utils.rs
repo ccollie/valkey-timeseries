@@ -2,14 +2,15 @@ use super::fanout_codec::generated::{Label as FanoutLabel, Sample as FanoutSampl
 use crate::commands::fanout_codec::MGetValue;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::replies::{
-    IntoRawCtx, is_resp3_client, reply_label_ex, reply_with_array, reply_with_bulk_string,
-    reply_with_double, reply_with_labels, reply_with_labels_map, reply_with_map,
-    reply_with_multi_samples, reply_with_sample_ex, reply_with_samples, reply_with_str,
+    IntoRawCtx, ThreadSafeReplyContext, is_resp3_client, reply_label_ex, reply_with_array,
+    reply_with_bulk_string, reply_with_double, reply_with_labels, reply_with_labels_map,
+    reply_with_map, reply_with_multi_samples, reply_with_sample_ex, reply_with_samples,
+    reply_with_str,
 };
 use crate::labels::Label;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, SeriesResultData};
 use anofox_forecast::utils::AccuracyMetrics;
-use valkey_module::{Context, Status, ValkeyResult, ValkeyValue, raw};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue, raw};
 
 pub(super) fn reply_with_fanout_label<C: IntoRawCtx>(ctx: C, label: &FanoutLabel) {
     let raw_ctx = ctx.into_raw();
@@ -232,4 +233,23 @@ pub fn reply_with_accuracy_metrics(ctx: &Context, metrics: &AccuracyMetrics) {
 
     reply_with_str(ctx, "r_squared");
     reply_with_double(ctx, metrics.r_squared);
+}
+
+pub(super) fn reply_with_double_array(ctx: &ThreadSafeReplyContext, values: &[f64]) {
+    reply_with_array(ctx, values.len());
+    for value in values {
+        reply_with_double(ctx, *value);
+    }
+}
+
+pub(super) fn get_store_key_pos(args: &[ValkeyString]) -> ValkeyResult<Option<usize>> {
+    for (i, arg) in args.iter().enumerate() {
+        if arg.eq_ignore_ascii_case(b"store") {
+            if i + 1 >= args.len() {
+                return Err(ValkeyError::Str("TSDB: Missing value for STORE argument"));
+            }
+            return Ok(Some(i + 1));
+        }
+    }
+    Ok(None)
 }
