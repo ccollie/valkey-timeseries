@@ -61,6 +61,7 @@ The following commands are supported
 - [`TS.DECRBY`](docs/commands/ts.decrby.md)
 - [`TS.DEL`](docs/commands/ts.del.md)
 - [`TS.FEATURES`](docs/commands/ts.features.md)
+- [`TS.FILLGAPS`](docs/commands/ts.fillgaps.md)
 - [`TS.GET`](docs/commands/ts.get.md)
 - [`TS.INCRBY`](docs/commands/ts.incrby.md)
 - [`TS.INFO`](docs/commands/ts.info.md)
