@@ -74,9 +74,12 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
     `rdb_save` and emits the internal `TS._RESTORE key <blob>` command instead of `DUMP`/normal
     commands; the destination replays it like a replication feed (`src/commands/ts_restore.rs`).
     Indexing is deferred mid-import (`src/series/index/server_events.rs`).
-- Other command surfaces beyond RTS: `TS.JOIN` (`src/join/`), `TS.OUTLIERS` + statistical machinery
-  (`src/analysis/` — ESD/CUSUM/EWMA/IQR/MAD/z-score/RCF), `TS.ADDBULK`, `TS.LABELSTATS`,
-  `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
+- Other command surfaces beyond RTS: `TS.JOIN` (`src/join/`), the analysis commands
+  (`TS.OUTLIERS`, `TS.AUTOFORECAST`, `TS.DECOMPOSE`, `TS.PERIODS`, `TS.AUTOCORRELATION`, `TS.TREND`,
+  `TS.SANITIZE`, `TS.STATIONARITY`, `TS.FEATURES`, `TS.STATS`) backed by `src/analysis/`
+  (`forecasting`, `outliers`, `seasonality`, `math`, `quantile_estimators`; sources in
+  `src/analysis/README.md`; shared helpers in `src/commands/forecast_utils.rs`), `TS.ADDBULK`,
+  `TS.LABELSTATS`, `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
 - Supporting: `src/aggregators/` (range-query aggregation), `src/common/` (encoding, logging, thread
   pools, RDB, interning), `src/labels/`, `src/iterators/`, `src/server_events.rs` (keyspace event →
   index sync for FLUSHDB/SWAPDB/RENAME/RESTORE/load).
