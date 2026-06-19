@@ -74,9 +74,12 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
 - `src/fanout/` + `src/commands/*_fanout_command.rs` — cluster fanout over the protobuf contract in
   `proto/v1/`, registered via `register_fanout_operations` (8 ops: LabelStats, Card, LabelSearch,
   MDel, MGet, MRange, QueryIndex, QueryLabels).
-- Other command surfaces beyond RTS: `TS.JOIN` (`src/join/`), `TS.OUTLIERS` + statistical machinery
-  (`src/analysis/` — ESD/CUSUM/EWMA/IQR/MAD/z-score/RCF), `TS.ADDBULK`, `TS.LABELSTATS`,
-  `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
+- Other command surfaces beyond RTS: `TS.JOIN` (`src/join/`), the analysis commands
+  (`TS.OUTLIERS`, `TS.AUTOFORECAST`, `TS.DECOMPOSE`, `TS.PERIODS`, `TS.AUTOCORRELATION`, `TS.TREND`,
+  `TS.SANITIZE`, `TS.STATIONARITY`, `TS.FEATURES`, `TS.STATS`) backed by `src/analysis/`
+  (`forecasting`, `outliers`, `seasonality`, `math`, `quantile_estimators`; sources in
+  `src/analysis/README.md`; shared helpers in `src/commands/forecast_utils.rs`), `TS.ADDBULK`,
+  `TS.LABELSTATS`, `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
 - Supporting: `src/aggregators/` (range-query aggregation), `src/common/` (encoding, logging, thread
   pools, RDB, interning), `src/labels/`, `src/iterators/`, `src/server_events.rs` (keyspace event →
   index sync for FLUSHDB/SWAPDB/RENAME/RESTORE/load).
