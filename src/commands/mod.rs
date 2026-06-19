@@ -47,7 +47,9 @@ mod ts_querylabels_fanout_command;
 mod ts_range;
 mod ts_read;
 mod ts_restore;
+mod ts_sanitize;
 mod ts_stationarity;
+mod ts_stats;
 mod ts_trend;
 mod utils;
 
@@ -67,7 +69,9 @@ pub use ts_fillgaps_cmd::*;
 pub use ts_mget::*;
 pub use ts_restore::*;
 pub use ts_periods::*;
+pub use ts_sanitize::*;
 pub use ts_stationarity::*;
+pub use ts_stats::*;
 pub use ts_trend::*;
 use valkey_module::ValkeyResult;
 
