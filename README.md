@@ -84,6 +84,7 @@ The following commands are supported
 - [`TS.RANGE`](docs/commands/ts.range.md)
 - [`TS.READ`](docs/commands/ts.read.md)
 - [`TS.REVRANGE`](docs/commands/ts.revrange.md)
+- [`TS.SANITIZE`](docs/commands/ts.sanitize.md)
 - [`TS.STATIONARITY`](docs/commands/ts.stationarity.md)
 - [`TS.TREND`](docs/commands/ts.trend.md)
 - [`TS._DEBUG`](docs/commands/ts._debug.md)
