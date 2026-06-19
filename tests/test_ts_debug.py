@@ -126,7 +126,7 @@ class TestTimeSeriesDebug(ValkeyTimeSeriesTestCaseDebugMode):
             # Validate type values
             config_type = config_dict['type'].decode() if isinstance(config_dict['type'], bytes) else config_dict[
                 'type']
-            assert config_type in ['integer', 'float', 'string', 'duration', 'enum']
+            assert config_type in ['integer', 'float', 'string', 'duration', 'enum', 'boolean']
 
     def test_debug_list_configs_verbose_case_insensitive(self):
         """Test TS._DEBUG LIST_CONFIGS with case-insensitive VERBOSE keyword"""
@@ -162,6 +162,15 @@ class TestTimeSeriesDebug(ValkeyTimeSeriesTestCaseDebugMode):
             'ts-num-threads',
             'ts-fanout-command-timeout',
             'ts-cluster-map-expiration-ms',
+            'ts-promql-set-lookback-to-step',
+            'ts-promql-optimize-queries',
+            'ts-promql-enable-experimental-functions',
+            'ts-promql-max-query-len',
+            'ts-promql-max-response-series',
+            'ts-promql-max-points-per-timeseries',
+            'ts-promql-lookback-delta',
+            'ts-promql-max-lookback',
+            'ts-promql-max-query-duration',
         ]
 
         for expected in expected_configs:

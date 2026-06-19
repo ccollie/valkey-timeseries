@@ -10,8 +10,15 @@ use crate::config::{
     DEFAULT_THREADS, FANOUT_COMMAND_TIMEOUT_DEFAULT, FANOUT_COMMAND_TIMEOUT_MAX,
     FANOUT_COMMAND_TIMEOUT_MIN, IGNORE_MAX_TIME_DIFF_DEFAULT, IGNORE_MAX_TIME_DIFF_MAX,
     IGNORE_MAX_TIME_DIFF_MIN, IGNORE_MAX_VALUE_DIFF_MAX, IGNORE_MAX_VALUE_DIFF_MIN, MAX_THREADS,
-    MIN_THREADS, RETENTION_POLICY_MAX, RETENTION_POLICY_MIN, SIGNIFICANT_DIGITS_DEFAULT,
-    SIGNIFICANT_DIGITS_MAX, get_config,
+    MIN_THREADS, PROMQL_LOOKBACK_DELTA_DEFAULT_MS, PROMQL_LOOKBACK_DELTA_MAX_MS,
+    PROMQL_LOOKBACK_DELTA_MIN_MS, PROMQL_MAX_LOOKBACK_DEFAULT_MS,
+    PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT, PROMQL_MAX_POINTS_PER_TIMESERIES_MAX,
+    PROMQL_MAX_POINTS_PER_TIMESERIES_MIN, PROMQL_MAX_QUERY_DURATION_DEFAULT_MS,
+    PROMQL_MAX_QUERY_DURATION_MAX_MS, PROMQL_MAX_QUERY_DURATION_MIN_MS,
+    PROMQL_MAX_QUERY_LEN_DEFAULT, PROMQL_MAX_QUERY_LEN_MAX, PROMQL_MAX_QUERY_LEN_MIN,
+    PROMQL_MAX_RESPONSE_SERIES_DEFAULT, PROMQL_MAX_RESPONSE_SERIES_MAX,
+    PROMQL_MAX_RESPONSE_SERIES_MIN, RETENTION_POLICY_MAX, RETENTION_POLICY_MIN,
+    SIGNIFICANT_DIGITS_DEFAULT, SIGNIFICANT_DIGITS_MAX, get_config,
 };
 use std::convert::Into;
 use std::fmt::Display;
@@ -26,6 +33,7 @@ pub enum ConfigType {
     String,
     Duration,
     Enum,
+    Boolean,
 }
 
 impl ConfigType {
@@ -36,6 +44,7 @@ impl ConfigType {
             ConfigType::String => "string",
             ConfigType::Duration => "duration",
             ConfigType::Enum => "enum",
+            ConfigType::Boolean => "boolean",
         }
     }
 }
@@ -47,6 +56,7 @@ enum ConfigValue {
     String(String),
     Duration(Duration),
     Enum(String),
+    Boolean(bool),
 }
 
 impl ConfigValue {
@@ -61,6 +71,7 @@ impl ConfigValue {
             ConfigValue::String(s) => reply_with_bulk_string(ctx, s),
             ConfigValue::Duration(d) => reply_with_duration(ctx, *d),
             ConfigValue::Enum(s) => reply_with_bulk_string(ctx, s),
+            ConfigValue::Boolean(b) => reply_with_str(ctx, if *b { "yes" } else { "no" }),
         };
     }
 }
@@ -73,7 +84,14 @@ impl Display for ConfigValue {
             ConfigValue::String(s) => write!(f, "{}", s),
             ConfigValue::Duration(d) => write!(f, "{}", humanize_duration(d)),
             ConfigValue::Enum(s) => write!(f, "{}", s),
+            ConfigValue::Boolean(b) => write!(f, "{}", if *b { "yes" } else { "no" }),
         }
+    }
+}
+
+impl From<bool> for ConfigValue {
+    fn from(value: bool) -> Self {
+        ConfigValue::Boolean(value)
     }
 }
 
@@ -245,6 +263,82 @@ fn get_registry() -> Vec<ConfigMeta> {
             max: Some(ConfigValue::from_duration_ms(CLUSTER_MAP_EXPIRATION_MAX_MS)),
             description: "How long (ms) cluster slot-map entries are cached (0 = no cache)",
         },
+        ConfigMeta {
+            name: "ts-promql-set-lookback-to-step",
+            config_type: ConfigType::Boolean,
+            default: ConfigValue::Boolean(false),
+            min: None,
+            max: None,
+            description: "Fix the PromQL lookback interval to step query arg value",
+        },
+        ConfigMeta {
+            name: "ts-promql-optimize-queries",
+            config_type: ConfigType::Boolean,
+            default: ConfigValue::Boolean(false),
+            min: None,
+            max: None,
+            description: "Whether to optimize PromQL queries before execution",
+        },
+        ConfigMeta {
+            name: "ts-promql-enable-experimental-functions",
+            config_type: ConfigType::Boolean,
+            default: ConfigValue::Boolean(true),
+            min: None,
+            max: None,
+            description: "Whether to enable experimental PromQL functions",
+        },
+        ConfigMeta {
+            name: "ts-promql-max-query-len",
+            config_type: ConfigType::Integer,
+            default: ConfigValue::Integer(PROMQL_MAX_QUERY_LEN_DEFAULT),
+            min: Some(ConfigValue::Integer(PROMQL_MAX_QUERY_LEN_MIN)),
+            max: Some(ConfigValue::Integer(PROMQL_MAX_QUERY_LEN_MAX)),
+            description: "Maximum PromQL query length in bytes",
+        },
+        ConfigMeta {
+            name: "ts-promql-max-response-series",
+            config_type: ConfigType::Integer,
+            default: ConfigValue::Integer(PROMQL_MAX_RESPONSE_SERIES_DEFAULT),
+            min: Some(ConfigValue::Integer(PROMQL_MAX_RESPONSE_SERIES_MIN)),
+            max: Some(ConfigValue::Integer(PROMQL_MAX_RESPONSE_SERIES_MAX)),
+            description: "Maximum number of unique time series returned from PromQL queries",
+        },
+        ConfigMeta {
+            name: "ts-promql-max-points-per-timeseries",
+            config_type: ConfigType::Integer,
+            default: ConfigValue::Integer(PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT),
+            min: Some(ConfigValue::Integer(PROMQL_MAX_POINTS_PER_TIMESERIES_MIN)),
+            max: Some(ConfigValue::Integer(PROMQL_MAX_POINTS_PER_TIMESERIES_MAX)),
+            description: "Maximum number of points per time series for PromQL queries (0 = unlimited)",
+        },
+        ConfigMeta {
+            name: "ts-promql-lookback-delta",
+            config_type: ConfigType::Duration,
+            default: ConfigValue::from_duration_ms(PROMQL_LOOKBACK_DELTA_DEFAULT_MS),
+            min: Some(ConfigValue::from_duration_ms(PROMQL_LOOKBACK_DELTA_MIN_MS)),
+            max: Some(ConfigValue::from_duration_ms(PROMQL_LOOKBACK_DELTA_MAX_MS)),
+            description: "Default lookback delta for PromQL queries",
+        },
+        ConfigMeta {
+            name: "ts-promql-max-lookback",
+            config_type: ConfigType::Duration,
+            default: ConfigValue::from_duration_ms(PROMQL_MAX_LOOKBACK_DEFAULT_MS),
+            min: Some(ConfigValue::from_duration_ms(PROMQL_LOOKBACK_DELTA_MIN_MS)),
+            max: Some(ConfigValue::from_duration_ms(PROMQL_LOOKBACK_DELTA_MAX_MS)),
+            description: "Maximum lookback for PromQL queries (0 = unlimited)",
+        },
+        ConfigMeta {
+            name: "ts-promql-max-query-duration",
+            config_type: ConfigType::Duration,
+            default: ConfigValue::from_duration_ms(PROMQL_MAX_QUERY_DURATION_DEFAULT_MS),
+            min: Some(ConfigValue::from_duration_ms(
+                PROMQL_MAX_QUERY_DURATION_MIN_MS,
+            )),
+            max: Some(ConfigValue::from_duration_ms(
+                PROMQL_MAX_QUERY_DURATION_MAX_MS,
+            )),
+            description: "Maximum duration for PromQL query execution",
+        },
     ]
 }
 
@@ -264,7 +358,7 @@ fn reply_with_size(ctx: &Context, size: usize) -> Status {
 }
 
 fn reply_with_config_value(ctx: &Context, cfg: &ConfigMeta, settings: &ConfigSettings) {
-    hashify::fnc_map_ignore_case!(cfg.name.as_bytes(),
+    hashify::fnc_map!(cfg.name.as_bytes(),
         "ts-chunk-size" => { let _ = reply_with_usize(ctx, settings.chunk_size_bytes); },
         "ts-encoding" => { let _ = reply_with_bulk_string(ctx, settings.chunk_encoding.name()); },
         "ts-duplicate-policy" => {
@@ -304,6 +398,21 @@ fn reply_with_config_value(ctx: &Context, cfg: &ConfigMeta, settings: &ConfigSet
         "ts-num-threads" => { let _ = reply_with_usize(ctx, settings.num_threads); },
         "ts-fanout-command-timeout" => { let _ = reply_with_duration(ctx, settings.fanout_command_timeout); },
         "ts-cluster-map-expiration-ms" => { let _ = reply_with_duration(ctx, settings.cluster_map_expiration); },
+        "ts-promql-set-lookback-to-step" => {
+            let _ = reply_with_str(ctx, if settings.promql_set_lookback_to_step { "yes" } else { "no" });
+        },
+        "ts-promql-optimize-queries" => {
+            let _ = reply_with_str(ctx, if settings.promql_optimize_queries { "yes" } else { "no" });
+        },
+        "ts-promql-enable-experimental-functions" => {
+            let _ = reply_with_str(ctx, if settings.promql_enable_experimental_functions { "yes" } else { "no" });
+        },
+        "ts-promql-max-query-len" => { let _ = reply_with_usize(ctx, settings.promql_max_query_len); },
+        "ts-promql-max-response-series" => { let _ = reply_with_usize(ctx, settings.promql_max_response_series); },
+        "ts-promql-max-points-per-timeseries" => { let _ = reply_with_usize(ctx, settings.promql_max_points_per_timeseries); },
+        "ts-promql-lookback-delta" => { let _ = reply_with_duration(ctx, settings.promql_lookback_delta); },
+        "ts-promql-max-lookback" => { let _ = reply_with_duration(ctx, settings.promql_max_lookback); },
+        "ts-promql-max-query-duration" => { let _ = reply_with_duration(ctx, settings.promql_max_query_duration); },
          _ => { let _ = reply_with_str(ctx, "<unknown>"); }
     );
 }

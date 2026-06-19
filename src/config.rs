@@ -82,22 +82,25 @@ pub(crate) const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
 pub const CLUSTER_MAP_EXPIRATION_DEFAULT_STRING: &str = "750";
 
 // PromQL config constants
-const PROMQL_MAX_QUERY_LEN_MIN: i64 = 1024; // 1 kb
-const PROMQL_MAX_QUERY_LEN_MAX: i64 = 16 * 1024; // 16 kb
-const PROMQL_MAX_QUERY_LEN_DEFAULT: i64 = 4 * 1024;
-const PROMQL_MAX_RESPONSE_SERIES_MIN: i64 = 0;
-const PROMQL_MAX_RESPONSE_SERIES_MAX: i64 = i64::MAX;
-const PROMQL_MAX_RESPONSE_SERIES_DEFAULT: i64 = 1000;
-const PROMQL_MAX_POINTS_PER_TIMESERIES_MIN: i64 = 0;
-const PROMQL_MAX_POINTS_PER_TIMESERIES_MAX: i64 = i64::MAX;
-const PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT: i64 = 0;
-const PROMQL_LOOKBACK_DELTA_DEFAULT_STRING: &str = "5m";
-const PROMQL_MAX_LOOKBACK_DEFAULT_STRING: &str = "0";
-const PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING: &str = "30s";
-const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
-const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
-const PROMQL_MAX_QUERY_DURATION_MIN_MS: i64 = 1;
-const PROMQL_MAX_QUERY_DURATION_MAX_MS: i64 = ONE_YEAR_MS;
+pub(crate) const PROMQL_MAX_QUERY_LEN_MIN: i64 = 1024; // 1 kb
+pub(crate) const PROMQL_MAX_QUERY_LEN_MAX: i64 = 16 * 1024; // 16 kb
+pub(crate) const PROMQL_MAX_QUERY_LEN_DEFAULT: i64 = 4 * 1024;
+pub(crate) const PROMQL_MAX_RESPONSE_SERIES_MIN: i64 = 0;
+pub(crate) const PROMQL_MAX_RESPONSE_SERIES_MAX: i64 = i64::MAX;
+pub(crate) const PROMQL_MAX_RESPONSE_SERIES_DEFAULT: i64 = 1000;
+pub(crate) const PROMQL_MAX_POINTS_PER_TIMESERIES_MIN: i64 = 0;
+pub(crate) const PROMQL_MAX_POINTS_PER_TIMESERIES_MAX: i64 = i64::MAX;
+pub(crate) const PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT: i64 = 0;
+pub(crate) const PROMQL_LOOKBACK_DELTA_DEFAULT_STRING: &str = "5m";
+pub(crate) const PROMQL_MAX_LOOKBACK_DEFAULT_STRING: &str = "0";
+pub(crate) const PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING: &str = "30s";
+pub(crate) const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
+pub(crate) const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
+pub(crate) const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
+pub(crate) const PROMQL_MAX_LOOKBACK_DEFAULT_MS: i64 = 0;
+pub(crate) const PROMQL_MAX_QUERY_DURATION_DEFAULT_MS: i64 = 30 * 1000; // 30s
+pub(crate) const PROMQL_MAX_QUERY_DURATION_MIN_MS: i64 = 1;
+pub(crate) const PROMQL_MAX_QUERY_DURATION_MAX_MS: i64 = ONE_YEAR_MS;
 
 #[derive(Clone, Debug)]
 pub struct ConfigSettings {
@@ -111,6 +114,15 @@ pub struct ConfigSettings {
     pub cluster_map_expiration: Duration,
     pub is_debug_mode_enabled: bool,
     pub num_threads: usize,
+    pub promql_set_lookback_to_step: bool,
+    pub promql_optimize_queries: bool,
+    pub promql_enable_experimental_functions: bool,
+    pub promql_max_query_len: usize,
+    pub promql_max_response_series: usize,
+    pub promql_max_points_per_timeseries: usize,
+    pub promql_lookback_delta: Duration,
+    pub promql_max_lookback: Duration,
+    pub promql_max_query_duration: Duration,
 }
 
 impl Default for ConfigSettings {
@@ -126,6 +138,17 @@ impl Default for ConfigSettings {
             cluster_map_expiration: Duration::from_millis(CLUSTER_MAP_EXPIRATION_MS_DEFAULT),
             is_debug_mode_enabled: false,
             num_threads: DEFAULT_THREADS as usize,
+            promql_set_lookback_to_step: false,
+            promql_optimize_queries: false,
+            promql_enable_experimental_functions: true,
+            promql_max_query_len: PROMQL_MAX_QUERY_LEN_DEFAULT as usize,
+            promql_max_response_series: PROMQL_MAX_RESPONSE_SERIES_DEFAULT as usize,
+            promql_max_points_per_timeseries: PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT as usize,
+            promql_lookback_delta: Duration::from_millis(PROMQL_LOOKBACK_DELTA_DEFAULT_MS as u64),
+            promql_max_lookback: Duration::from_millis(PROMQL_MAX_LOOKBACK_DEFAULT_MS as u64),
+            promql_max_query_duration: Duration::from_millis(
+                PROMQL_MAX_QUERY_DURATION_DEFAULT_MS as u64,
+            ),
         }
     }
 }
@@ -281,31 +304,49 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-promql-set-lookback-to-step" => {
+                cfg.promql_set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-optimize-queries" => {
+                cfg.promql_optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-enable-experimental-functions" => {
+                cfg.promql_enable_experimental_functions = PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS.load(Ordering::Relaxed);
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-max-query-len" => {
+                cfg.promql_max_query_len = PROMQL_MAX_QUERY_LEN.load(Ordering::Relaxed) as usize;
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-max-response-series" => {
+                cfg.promql_max_response_series = PROMQL_MAX_RESPONSE_SERIES.load(Ordering::Relaxed) as usize;
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-max-points-per-timeseries" => {
+                cfg.promql_max_points_per_timeseries = PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-lookback-delta" => {
+                cfg.promql_lookback_delta = Duration::from_millis(PROMQL_LOOKBACK_DELTA_MS.load(Ordering::Relaxed) as u64);
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-max-lookback" => {
+                cfg.promql_max_lookback = Duration::from_millis(PROMQL_MAX_LOOKBACK_MS.load(Ordering::Relaxed) as u64);
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-promql-max-query-duration" => {
+                cfg.promql_max_query_duration = Duration::from_millis(PROMQL_MAX_QUERY_DURATION_MS.load(Ordering::Relaxed) as u64);
                 promql_config_modified = true;
+                modified = true;
             },
             "ts-cluster-map-expiration-ms" => {
                 cfg.cluster_map_expiration = Duration::from_millis(CLUSTER_MAP_EXPIRATION_MS.load(Ordering::Relaxed));
