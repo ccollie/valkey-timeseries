@@ -49,8 +49,7 @@ Project-specific conventions & patterns
 - Command files follow `ts_<command>.rs` naming and export `ts_<command>_cmd` functions (see `src/commands/mod.rs`).
 - Fanout pattern: synchronous local implementation + `*_fanout_command.rs` files which marshal/unmarshal protobuf
   messages for cluster aggregation.
-- Feature flags: `valkey_8_0` controls compatibility with Valkey 8.0 (build with `--features valkey_8_0` or set
-  `SERVER_VERSION=8.0.0` in `./build.sh`).
+
 - Allocator in tests: tests compile with `enable-system-alloc` feature in unit runs (see `build.sh`), and the crate
   switches allocators under `#[cfg(test)]`.
 

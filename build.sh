@@ -36,7 +36,7 @@ if [ -z "$SERVER_VERSION" ]; then
     export SERVER_VERSION="unstable"
 fi
 
-if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.0" ] && [ "$SERVER_VERSION" != "8.1" ]; then
+if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.1" ]; then
   echo "ERROR: Unsupported version - $SERVER_VERSION"
   exit 1
 fi

@@ -82,10 +82,7 @@ curl https://sh.rustup.rs -sSf | sh
 sudo yum install clang
 git clone https://github.com/ccollie/valkey-timeseries.git
 cd valkey-timeseries
-# Building for Valkey 8.1 and above:
 cargo build --release
-# Building for Valkey 8.0 specifically:
-cargo build --release --features valkey_8_0
 valkey-server --loadmodule ./target/release/libvalkey_timeseries.so
 ```
 **Note**: This library requires a minimum rust version of `1.86`.
@@ -100,9 +97,6 @@ To run all unit tests, follow these steps:
 ```
 # Builds the valkey-server (unstable) for integration testing.
 SERVER_VERSION=unstable
-./build.sh
-# Same as above, but uses valkey-server (8.0.0) for integration testing.
-SERVER_VERSION=8.0.0
 ./build.sh
 # Build with asan, you may need to remove the old valkey binary if you have used ./build.sh before. You can do this by deleting the `.build` folder in the `tests` folder 
 ASAN_BUILD=true
@@ -133,15 +127,5 @@ valkey-server --loadmodule /path/to/libvalkey_timeseries.so
 2. Execute Valkey command:
     MODULE LOAD /path/to/libvalkey_timeseries.so
 ```
-## Feature Flags
-
-* valkey_8_0: valkey-timeseries is intended to be loaded on server versions >= Valkey 8.1 and by default it is built this way (unless this flag is provided). It is however compatible with Valkey version 8.0 if the user explicitly provides this feature flag in their cargo build command.
-```
-cargo build --release --features valkey_8_0
-```
-
-This can also be done by specifying SERVER_VERSION=8.0.0 and then running `./build.sh`
-
-
 ## License
 valkey-timeseries is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).

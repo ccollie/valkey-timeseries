@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_version: ["unstable", "8.0", "8.1"]
+        server_version: ["unstable", "8.1"]
     steps:
       - uses: actions/checkout@v4
 
@@ -34,12 +34,7 @@ jobs:
           cargo clippy --profile release --all-targets -- -D clippy::all
 
       - name: Release Build
-        run: |
-          if [ "${{ matrix.server_version }}" = "8.0" ]; then
-            RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-          else
-            RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-          fi
+        run: RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
 
       - name: Run unit tests
         run: cargo test --features enable-system-alloc
@@ -102,7 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_version: ["unstable", "8.0", "8.1"]
+        server_version: ["unstable", "8.1"]
     steps:
       - uses: actions/checkout@v4
 
@@ -120,12 +115,7 @@ jobs:
           cargo clippy --profile release --all-targets -- -D clippy::all
 
       - name: Release Build
-        run: |
-          if [ "${{ matrix.server_version }}" = "8.0" ]; then
-            RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-          else
-            RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-          fi
+        run: RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
 
       - name: Run unit tests
         run: cargo test --features enable-system-alloc
