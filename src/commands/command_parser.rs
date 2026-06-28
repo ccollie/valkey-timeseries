@@ -1,6 +1,7 @@
 use crate::aggregators::{AggregationType, BucketAlignment, BucketTimestamp};
 use crate::common::Timestamp;
 use crate::common::binop::ComparisonOperator;
+use crate::common::logging::log_debug;
 use crate::common::rounding::{MAX_DECIMAL_DIGITS, MAX_SIGNIFICANT_DIGITS, RoundingStrategy};
 use crate::common::time::{current_time_millis, timestamp_to_system_time};
 use crate::error::{TsdbError, TsdbResult};
@@ -24,7 +25,6 @@ use crate::series::types::{DuplicatePolicy, ValueFilter};
 use crate::series::{TimestampRange, TimestampValue};
 use ahash::AHashMap;
 use smallvec::SmallVec;
-use logger_rust::log_debug;
 use promql_parser::parser::{EvalStmt, Expr};
 use std::collections::BTreeSet;
 use std::fmt::Display;
@@ -1349,7 +1349,7 @@ fn parse_promql_query(query: &str, config: &PromqlConfig) -> ValkeyResult<Expr> 
     }
     // TODO: it may be helpful to return the exact error
     let expr = promql_parser::parser::parse(query).map_err(|_e| {
-        log_debug!("TSDB: failed to parse query {_e:?}");
+        log_debug(format!("TSDB: failed to parse query {_e:?}"));
         ValkeyError::Str(error_consts::INVALID_QUERY)
     })?;
 
