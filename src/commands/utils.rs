@@ -12,7 +12,7 @@ use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fa
 use crate::labels::Label;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, SeriesResultData};
 use anofox_forecast::utils::AccuracyMetrics;
-use valkey_module::{raw, Context, Status, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue, raw};
 
 pub(super) fn reply_with_fanout_label<C: IntoRawCtx>(ctx: C, label: &FanoutLabel) {
     let raw_ctx = ctx.into_raw();
