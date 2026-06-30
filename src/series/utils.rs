@@ -265,7 +265,8 @@ pub fn create_or_update_series_with_samples(
             .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
     }
 
-    let policy_override = if policy_override.is_none() && write_mode == DestinationWriteMode::Merge {
+    let policy_override = if policy_override.is_none() && write_mode == DestinationWriteMode::Merge
+    {
         Some(DuplicatePolicy::KeepLast)
     } else {
         policy_override
