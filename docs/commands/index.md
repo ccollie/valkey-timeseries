@@ -16,6 +16,7 @@ The following commands are supported
 - [`TS.DELETERULE`](ts.deleterule.md)
 - [`TS.FEATURES`](ts.features.md)
 - [`TS.FILLGAPS`](ts.fillgaps.md)
+- [`TS.FORECAST`](ts.forecast.md)
 - [`TS.GET`](ts.get.md)
 - [`TS.INCRBY`](ts.incrby.md)
 - [`TS.INFO`](ts.info.md)
