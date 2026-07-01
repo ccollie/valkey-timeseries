@@ -11,7 +11,6 @@ use crate::commands::register_fanout_operations;
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
-use logger_rust::{LogLevel, set_log_level};
 use std::sync::atomic::AtomicBool;
 use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
@@ -91,8 +90,6 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
 
 fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
-
-    set_log_level(LogLevel::Console);
 
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");
