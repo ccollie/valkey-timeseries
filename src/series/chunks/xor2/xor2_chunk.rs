@@ -66,6 +66,7 @@ use crate::common::encoding::{
     try_read_f64_le, try_read_signed_varint, try_read_u8, try_read_uvarint, write_f64_le,
     write_signed_varint, write_u8, write_uvarint,
 };
+use crate::common::hash::IntSet;
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_u8, rdb_load_usize, rdb_save_bool, rdb_save_u8,
     rdb_save_usize,
@@ -74,11 +75,10 @@ use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
 use crate::series::chunks::chunk::Chunk;
-use crate::series::chunks::merge::merge_samples;
 use crate::series::chunks::stream::bitstream::{BitStream, ONE, ZERO};
 use crate::series::chunks::stream::varbit::put_varbit_int_fast;
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use ahash::AHashSet;
+use ahash::HashSetExt;
 use get_size2::GetSize;
 use std::cmp;
 use valkey_module::{ValkeyError, ValkeyResult, raw};
@@ -776,15 +776,15 @@ impl Chunk for Xor2Chunk {
             return Ok(result);
         }
 
-        // Materialize the XOR2 iterator into a Vec<Sample> and create a SampleIter::Vec
-        let left = SampleIter::vec(self.iterator().collect::<Vec<Sample>>());
+        // Stream existing chunk samples directly from the XOR2 iterator.
+        let left = self.iterator();
         let right = SampleIter::Slice(samples.iter());
 
         let mut new_chunk = Xor2Chunk::with_max_size(self.max_size);
 
         // Build a set of input timestamps so we only produce a single result per unique
         // input timestamp. This mirrors the behavior of the Uncompressed chunk.
-        let mut sample_set: AHashSet<Timestamp> = AHashSet::with_capacity(samples.len());
+        let mut sample_set: IntSet<Timestamp> = IntSet::with_capacity(samples.len());
         for sample in samples.iter() {
             sample_set.insert(sample.timestamp);
         }
@@ -796,8 +796,8 @@ impl Chunk for Xor2Chunk {
             right,
             dp_policy,
             &mut state_res,
-            |state: &mut Vec<SampleAddResult>, sample: Sample, is_duplicate: bool| {
-                new_chunk.append(0, sample.timestamp, sample.value);
+            |state: &mut Vec<SampleAddResult>, sample: Sample, st: i64, is_duplicate: bool| {
+                new_chunk.append(st, sample.timestamp, sample.value);
                 let is_new = sample_set.remove(&sample.timestamp);
                 if is_new {
                     if is_duplicate {
@@ -932,6 +932,71 @@ fn read_i64(buf: &mut &[u8]) -> TsdbResult<i64> {
 
 fn read_f64_le(buf: &mut &[u8]) -> TsdbResult<f64> {
     try_read_f64_le(buf).map_err(|_| TsdbError::ChunkDecoding)
+}
+
+fn merge_samples<'a, F, STATE>(
+    mut left: Xor2Iterator<'a>,
+    right: SampleIter<'a>,
+    dp_policy: Option<DuplicatePolicy>,
+    state: &mut STATE,
+    mut f: F,
+) -> TsdbResult<()>
+where
+    F: FnMut(&mut STATE, Sample, i64, bool) -> TsdbResult<()>,
+{
+    let dp_policy = dp_policy.unwrap_or(DuplicatePolicy::KeepLast);
+    let mut right = right.peekable();
+
+    let mut left_item = left.next().map(|sample| (sample, left.at_st()));
+
+    while left_item.is_some() || right.peek().is_some() {
+        let mut blocked = false;
+
+        let (sample, st) = match (left_item, right.peek().copied()) {
+            (Some((left_sample, left_st)), Some(right_sample)) => {
+                if left_sample.timestamp == right_sample.timestamp {
+                    let ts = left_sample.timestamp;
+                    if let Ok(val) =
+                        dp_policy.duplicate_value(ts, left_sample.value, right_sample.value)
+                    {
+                        right.next();
+                        left_item = left.next().map(|sample| (sample, left.at_st()));
+                        (
+                            Sample {
+                                timestamp: ts,
+                                value: val,
+                            },
+                            left_st,
+                        )
+                    } else {
+                        blocked = true;
+                        right.next();
+                        left_item = left.next().map(|sample| (sample, left.at_st()));
+                        (left_sample, left_st)
+                    }
+                } else if left_sample < right_sample {
+                    left_item = left.next().map(|sample| (sample, left.at_st()));
+                    (left_sample, left_st)
+                } else {
+                    right.next();
+                    (right_sample, 0)
+                }
+            }
+            (Some((left_sample, left_st)), None) => {
+                left_item = left.next().map(|sample| (sample, left.at_st()));
+                (left_sample, left_st)
+            }
+            (None, Some(right_sample)) => {
+                right.next();
+                (right_sample, 0)
+            }
+            (None, None) => break,
+        };
+
+        f(state, sample, st, blocked)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
