@@ -1,20 +1,19 @@
 use super::GorillaIterator;
-use super::buffered_writer::BufferedWriter;
-use super::serialization::{load_bitwriter_from_rdb, save_bitwriter_to_rdb};
-use super::varbit::write_varbit;
 use super::varbit_xor::write_varbit_xor;
 use crate::common::Sample;
 use crate::common::encoding::{
-    try_read_byte_slice, try_read_f64_le, try_read_signed_varint as read_varint, try_read_uvarint,
-    write_byte_slice, write_f64_le, write_uvarint,
+    try_read_f64_le, try_read_signed_varint as read_varint, try_read_uvarint, write_f64_le,
+    write_uvarint,
 };
 use crate::common::hash::hash_f64;
 use crate::common::logging::log_warning;
 use crate::common::rdb::{
-    rdb_load_timestamp, rdb_load_u8, rdb_load_usize, rdb_save_timestamp, rdb_save_u8,
-    rdb_save_usize,
+    RdbSerializable, rdb_load_timestamp, rdb_load_u8, rdb_load_usize, rdb_save_timestamp,
+    rdb_save_u8, rdb_save_usize,
 };
 use crate::error::{TsdbError, TsdbResult};
+use crate::series::chunks::stream::bitstream::BitStream;
+use crate::series::chunks::stream::varbit::write_varbit;
 use get_size2::GetSize;
 use std::ffi::c_longlong;
 use std::hash::Hash;
@@ -25,7 +24,7 @@ use valkey_module::raw;
 
 #[derive(Debug, Clone)]
 pub struct GorillaEncoder {
-    writer: BufferedWriter,
+    writer: BitStream,
     leading_bits: u8,
     trailing_bits: u8,
     timestamp_delta: i64,
@@ -61,9 +60,15 @@ impl Hash for GorillaEncoder {
     }
 }
 
+impl Default for GorillaEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GorillaEncoder {
     pub fn new() -> GorillaEncoder {
-        let writer = BufferedWriter::new();
+        let writer = BitStream::new();
 
         GorillaEncoder {
             writer,
@@ -148,7 +153,7 @@ impl GorillaEncoder {
         }
         let delta_of_delta = timestamp_delta - self.timestamp_delta;
 
-        write_varbit(delta_of_delta, &mut self.writer)?;
+        write_varbit(&mut self.writer, delta_of_delta)?;
 
         let (leading_bits, trailing_bits) = write_varbit_xor(
             value,
@@ -189,7 +194,7 @@ impl GorillaEncoder {
         raw::save_signed(rdb, self.timestamp_delta);
         rdb_save_u8(rdb, self.leading_bits);
         rdb_save_u8(rdb, self.trailing_bits);
-        save_bitwriter_to_rdb(rdb, &self.writer);
+        self.writer.rdb_save(rdb);
     }
 
     pub fn rdb_load(rdb: *mut raw::RedisModuleIO) -> Result<GorillaEncoder, ValkeyError> {
@@ -200,7 +205,7 @@ impl GorillaEncoder {
         let timestamp_delta = raw::load_signed(rdb)?;
         let leading_bits = rdb_load_u8(rdb)?;
         let trailing_bits = rdb_load_u8(rdb)?;
-        let writer = load_bitwriter_from_rdb(rdb)?;
+        let writer = BitStream::rdb_load(rdb)?;
 
         Ok(GorillaEncoder {
             writer,
@@ -227,11 +232,7 @@ impl GorillaEncoder {
         buf.push(self.leading_bits);
         buf.push(self.trailing_bits);
 
-        // Serialize buffered writer data
-        write_byte_slice(buf, self.writer.get_ref());
-
-        // Serialize writer position
-        write_uvarint(buf, self.writer.position() as u64);
+        self.writer.serialize(buf);
     }
 
     pub fn deserialize(buf: &[u8]) -> TsdbResult<GorillaEncoder> {
@@ -254,13 +255,7 @@ impl GorillaEncoder {
         buf = &buf[2..];
 
         // Deserialize buffered writer data
-        let writer_buf = try_read_byte_slice(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
-
-        // Deserialize the writer position
-        let writer_pos = read_usize(&mut buf)?;
-
-        // Reconstruct the buffered writer
-        let writer = BufferedWriter::hydrate(writer_buf.to_vec(), writer_pos as u32);
+        let writer = BitStream::deserialize(&mut buf).map_err(|_| TsdbError::ChunkDecoding)?;
 
         Ok(GorillaEncoder {
             writer,

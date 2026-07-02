@@ -9,7 +9,7 @@ mod tests {
         DuplicatePolicy, SampleAddResult,
         chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
     };
-    use crate::tests::generators::DataGenerator;
+    use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;
 
     /// A test helper function for asserting floating point numbers are within the
@@ -19,9 +19,11 @@ mod tests {
         (f1 - f2).abs() < f64::EPSILON
     }
 
-    const CHUNK_TYPES: [ChunkEncoding; 3] = [
+    const CHUNK_TYPES: [ChunkEncoding; 5] = [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
+        ChunkEncoding::Xor2,
+        ChunkEncoding::TsXor,
         ChunkEncoding::Pco,
     ];
 
@@ -29,6 +31,7 @@ mod tests {
         DataGenerator::builder()
             .samples(count)
             .start(1000)
+            .algorithm(RandAlgo::StdNorm)
             .interval(Duration::from_millis(1000))
             .build()
             .generate()
@@ -275,7 +278,6 @@ mod tests {
             chunk.set_data(&samples).unwrap();
 
             assert_eq!(chunk.len(), 4);
-
             chunk.remove_range(20, 30).unwrap();
 
             assert_eq!(chunk.len(), 2);
@@ -1189,17 +1191,17 @@ mod tests {
     #[test]
     fn test_encode() {
         struct Test {
-            name: String,
+            name: &'static str,
             input: Vec<f64>,
         }
 
         let tests = [
             Test {
-                name: String::from("from reference paper"),
+                name: "from reference paper",
                 input: vec![12.0, 12.0, 24.0, 13.0, 24.0, 24.0, 24.0, 23.0],
             },
             Test {
-                name: String::from("random"),
+                name: "random",
                 input: vec![
                     -3.8970913068231994e+307,
                     -9.036931257783943e+307,
@@ -1226,7 +1228,7 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("previous example as natural numbers"),
+                name: "previous example as natural numbers",
                 input: vec![
                     -38970913068231994.0,
                     -9036931257783943.0,
@@ -1253,7 +1255,7 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("similar values"),
+                name: "similar values",
                 input: vec![
                     6.00065e+06,
                     6.000656e+06,
@@ -1263,7 +1265,7 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("two hours data"),
+                name: "two hours data",
                 input: vec![
                     761.0, 727.0, 763.0, 706.0, 700.0, 679.0, 757.0, 708.0, 739.0, 707.0, 699.0,
                     740.0, 729.0, 766.0, 730.0, 715.0, 705.0, 693.0, 765.0, 724.0, 799.0, 761.0,
@@ -1279,11 +1281,11 @@ mod tests {
                 ],
             },
             Test {
-                name: String::from("identical values"),
+                name: "identical values",
                 input: vec![12123.1234; 1000],
             },
             Test {
-                name: String::from("1000 real CPU values"),
+                name: "1000 real CPU values",
                 input: vec![
                     11.286653185035389,
                     3.7310629773381745,
@@ -2319,7 +2321,7 @@ mod tests {
         let src: Vec<f64> = vec![
             100.0,
             222.12,
-            f64::from_bits(0x7ff8000000000001), // Go representation of signalling NaN
+            f64::from_bits(0x7ff8000000000001), // Go representation of signaling NaN
             45.324,
             f64::NAN,
             2453.023,
@@ -2488,11 +2490,7 @@ mod tests {
     #[test]
     fn test_has_samples_in_range_different_encodings() {
         // Test with different chunk encodings to ensure behavior is consistent
-        for encoding in [
-            ChunkEncoding::Uncompressed,
-            ChunkEncoding::Gorilla,
-            ChunkEncoding::Pco,
-        ] {
+        for encoding in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
                 Sample {
@@ -2513,11 +2511,7 @@ mod tests {
 
     #[test]
     fn test_has_samples_in_range_edge_cases() {
-        for encoding in [
-            ChunkEncoding::Uncompressed,
-            ChunkEncoding::Gorilla,
-            ChunkEncoding::Pco,
-        ] {
+        for encoding in CHUNK_TYPES {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
                 Sample {
@@ -2551,9 +2545,26 @@ mod tests {
         data
     }
 
-    /// Deserializes TimeSeriesChunk coming from a cluster node.
+    /// Deserializes TimeSeriesChunk.
     pub fn deserialize_chunk(data: &[u8]) -> TimeSeriesChunk {
-        TimeSeriesChunk::deserialize(data).unwrap()
+        match TimeSeriesChunk::deserialize(data) {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                eprintln!("[deserialize_chunk] Failed to deserialize chunk: {:?}", e);
+                eprintln!(
+                    "[deserialize_chunk] data_len={}, first_byte={:?}",
+                    data.len(),
+                    data.first()
+                );
+                if !data.is_empty() {
+                    eprintln!(
+                        "[deserialize_chunk] data (hex, up to 128 bytes): {:02x?}",
+                        &data[..data.len().min(128)]
+                    );
+                }
+                panic!("ChunkDecoding");
+            }
+        }
     }
 
     #[test]
@@ -2625,8 +2636,15 @@ mod tests {
     #[test]
     fn test_timeseries_chunk_serialization_large_dataset() {
         for &encoding in CHUNK_TYPES.iter() {
-            let mut chunk = TimeSeriesChunk::new(encoding, 8192); // Larger chunk size
-            let samples = generate_random_samples(500); // Large dataset
+            let mut chunk = TimeSeriesChunk::new(encoding, 16384); // Larger chunk size
+            let samples = DataGenerator::builder()
+                .samples(2000)
+                .start(1000)
+                .algorithm(RandAlgo::MackeyGlass)
+                .interval(Duration::from_millis(1000))
+                .decimal_digits(3)
+                .build()
+                .generate();
 
             for sample in &samples {
                 if let Err(TsdbError::CapacityFull(_)) = chunk.add_sample(sample) {
@@ -2639,6 +2657,7 @@ mod tests {
             }
 
             let serialized = serialize_chunk(chunk.clone());
+
             let deserialized = deserialize_chunk(&serialized);
 
             assert_eq!(chunk, deserialized);

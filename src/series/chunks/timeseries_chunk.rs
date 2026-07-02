@@ -1,10 +1,13 @@
+use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_u8, rdb_save_u8};
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::{FilteredSampleIterator, SampleIter};
+use crate::series::chunks::tsxor::TsXorChunk;
 use crate::series::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
+use crate::series::chunks::xor2::Xor2Chunk;
 use crate::series::types::ValueFilter;
 use crate::series::{
     DuplicatePolicy, SampleAddResult,
@@ -20,6 +23,8 @@ use valkey_module::{RedisModuleIO, ValkeyResult};
 pub enum TimeSeriesChunk {
     Uncompressed(UncompressedChunk),
     Gorilla(GorillaChunk),
+    TsXor(TsXorChunk),
+    Xor(Xor2Chunk),
     Pco(PcoChunk),
 }
 
@@ -35,6 +40,14 @@ impl TimeSeriesChunk {
                 let chunk = GorillaChunk::with_max_size(chunk_size);
                 Gorilla(chunk)
             }
+            ChunkEncoding::TsXor => {
+                let chunk = TsXorChunk::with_max_size(chunk_size);
+                TsXor(chunk)
+            }
+            ChunkEncoding::Xor2 => {
+                let chunk = Xor2Chunk::with_max_size(chunk_size);
+                Xor(chunk)
+            }
             ChunkEncoding::Pco => Pco(PcoChunk::with_max_size(chunk_size)),
         }
     }
@@ -44,6 +57,8 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.is_full(),
             Gorilla(chunk) => chunk.is_full(),
+            TsXor(chunk) => chunk.is_full(),
+            Xor(chunk) => chunk.is_full(),
             Pco(chunk) => chunk.is_full(),
         }
     }
@@ -52,6 +67,8 @@ impl TimeSeriesChunk {
         match self {
             TimeSeriesChunk::Uncompressed(_) => ChunkEncoding::Uncompressed,
             TimeSeriesChunk::Gorilla(_) => ChunkEncoding::Gorilla,
+            TimeSeriesChunk::TsXor(_) => ChunkEncoding::TsXor,
+            TimeSeriesChunk::Xor(_) => ChunkEncoding::Xor2,
             TimeSeriesChunk::Pco(_) => ChunkEncoding::Pco,
         }
     }
@@ -61,6 +78,8 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.bytes_per_sample(),
             Gorilla(chunk) => chunk.bytes_per_sample(),
+            TsXor(chunk) => chunk.bytes_per_sample(),
+            Xor(chunk) => chunk.bytes_per_sample(),
             Pco(chunk) => chunk.bytes_per_sample(),
         }
     }
@@ -91,6 +110,8 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.clear(),
             Gorilla(chunk) => chunk.clear(),
+            TsXor(chunk) => chunk.clear(),
+            Xor(chunk) => chunk.clear(),
             Pco(chunk) => chunk.clear(),
         }
     }
@@ -127,6 +148,13 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => Box::new(chunk.iter()),
             Gorilla(chunk) => Box::new(chunk.iter()),
+            TsXor(chunk) => Box::new(crate::series::chunks::TsXorChunkIterator::new(
+                chunk.buf(),
+                chunk.len(),
+                i64::MIN,
+                i64::MAX,
+            )),
+            Xor(chunk) => Box::new(chunk.iterator()),
             Pco(chunk) => Box::new(chunk.iter()),
         }
     }
@@ -136,6 +164,21 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.range_iter(start, end),
             Gorilla(chunk) => chunk.range_iter(start, end),
+            TsXor(chunk) => SampleIter::from(crate::series::chunks::TsXorChunkIterator::new(
+                chunk.buf(),
+                chunk.len(),
+                start,
+                end,
+            )),
+            Xor(chunk) => match chunk.get_range(start, end) {
+                Ok(samples) => SampleIter::vec(samples),
+                Err(e) => {
+                    log_warning(format!(
+                        "Xor2Chunk range_iter failed (start={start}, end={end}): {e:?}",
+                    ));
+                    SampleIter::Empty
+                }
+            },
             Pco(chunk) => chunk.range_iter(start, end),
         }
     }
@@ -166,14 +209,25 @@ impl TimeSeriesChunk {
                     index += 1;
                 }
                 Ordering::Greater => {
-                    while first_ts < sample.timestamp && index < timestamps.len() {
+                    // Advance the index while ensuring we don't go out of bounds.
+                    // Use a flag to avoid pushing the same sample twice (when we break out of the loop
+                    // after a match and then perform the post-loop equality check).
+                    let mut matched = false;
+                    while index + 1 < timestamps.len() && first_ts < sample.timestamp {
                         index += 1;
                         first_ts = timestamps[index];
                         if first_ts == sample.timestamp {
                             samples.push(sample);
                             index += 1;
+                            matched = true;
                             break;
                         }
+                    }
+                    // If we reached the last timestamp (or didn't match in the loop), check equality once more
+                    // without advancing past bounds. Only push if we haven't already matched above.
+                    if !matched && index < timestamps.len() && first_ts == sample.timestamp {
+                        samples.push(sample);
+                        index += 1;
                     }
                 }
             }
@@ -213,6 +267,8 @@ impl TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.set_data(samples),
             Gorilla(chunk) => chunk.set_data(samples),
+            TsXor(chunk) => chunk.set_data(samples),
+            Xor(chunk) => chunk.set_data(samples),
             Pco(chunk) => chunk.set_data(samples),
         }
     }
@@ -311,6 +367,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(uncompressed) => uncompressed.first_timestamp(),
             Gorilla(gorilla) => gorilla.first_timestamp(),
+            TsXor(tsxor) => tsxor.first_timestamp(),
+            Xor(xor) => xor.first_timestamp(),
             Pco(compressed) => compressed.first_timestamp(),
         }
     }
@@ -320,6 +378,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.last_timestamp(),
             Gorilla(chunk) => chunk.last_timestamp(),
+            TsXor(chunk) => chunk.last_timestamp(),
+            Xor(chunk) => chunk.last_timestamp(),
             Pco(chunk) => chunk.last_timestamp(),
         }
     }
@@ -329,6 +389,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.len(),
             Gorilla(chunk) => chunk.len(),
+            TsXor(chunk) => chunk.len(),
+            Xor(chunk) => chunk.len(),
             Pco(chunk) => chunk.len(),
         }
     }
@@ -338,6 +400,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.last_value(),
             Gorilla(chunk) => chunk.last_value(),
+            TsXor(chunk) => chunk.last_value(),
+            Xor(chunk) => chunk.last_value(),
             Pco(chunk) => chunk.last_value(),
         }
     }
@@ -347,6 +411,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.size(),
             Gorilla(chunk) => chunk.size(),
+            TsXor(chunk) => chunk.size(),
+            Xor(chunk) => chunk.size(),
             Pco(chunk) => chunk.size(),
         }
     }
@@ -356,6 +422,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.max_size(),
             Gorilla(chunk) => chunk.max_size(),
+            TsXor(chunk) => chunk.max_size(),
+            Xor(chunk) => chunk.max_size(),
             Pco(chunk) => chunk.max_size(),
         }
     }
@@ -365,6 +433,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.remove_range(start_ts, end_ts),
             Gorilla(chunk) => chunk.remove_range(start_ts, end_ts),
+            TsXor(chunk) => chunk.remove_range(start_ts, end_ts),
+            Xor(chunk) => chunk.remove_range(start_ts, end_ts),
             Pco(chunk) => chunk.remove_range(start_ts, end_ts),
         }
     }
@@ -374,6 +444,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.add_sample(sample),
             Gorilla(chunk) => chunk.add_sample(sample),
+            TsXor(chunk) => chunk.add_sample(sample),
+            Xor(chunk) => chunk.add_sample(sample),
             Pco(chunk) => chunk.add_sample(sample),
         }
     }
@@ -384,6 +456,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.get_range(start, end),
             Gorilla(chunk) => chunk.get_range(start, end),
+            TsXor(chunk) => chunk.get_range(start, end),
+            Xor(chunk) => chunk.get_range(start, end),
             Pco(chunk) => chunk.get_range(start, end),
         }
     }
@@ -393,6 +467,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.upsert_sample(sample, dp_policy),
             Gorilla(chunk) => chunk.upsert_sample(sample, dp_policy),
+            TsXor(chunk) => chunk.upsert_sample(sample, dp_policy),
+            Xor(chunk) => chunk.upsert_sample(sample, dp_policy),
             Pco(chunk) => chunk.upsert_sample(sample, dp_policy),
         }
     }
@@ -409,6 +485,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.merge_samples(samples, dp_policy),
             Gorilla(chunk) => chunk.merge_samples(samples, dp_policy),
+            TsXor(chunk) => chunk.merge_samples(samples, dp_policy),
+            Xor(chunk) => chunk.merge_samples(samples, dp_policy),
             Pco(chunk) => chunk.merge_samples(samples, dp_policy),
         }
     }
@@ -421,6 +499,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => Ok(Uncompressed(chunk.split()?)),
             Gorilla(chunk) => Ok(Gorilla(chunk.split()?)),
+            TsXor(chunk) => Ok(TsXor(chunk.split()?)),
+            Xor(chunk) => Ok(Xor(chunk.split()?)),
             Pco(chunk) => Ok(Pco(chunk.split()?)),
         }
     }
@@ -430,6 +510,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.optimize(),
             Gorilla(chunk) => chunk.optimize(),
+            TsXor(chunk) => chunk.optimize(),
+            Xor(chunk) => chunk.optimize(),
             Pco(chunk) => chunk.optimize(),
         }
     }
@@ -440,6 +522,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.save_rdb(rdb),
             Gorilla(chunk) => chunk.save_rdb(rdb),
+            TsXor(chunk) => chunk.save_rdb(rdb),
+            Xor(chunk) => chunk.save_rdb(rdb),
             Pco(chunk) => chunk.save_rdb(rdb),
         }
     }
@@ -451,6 +535,8 @@ impl Chunk for TimeSeriesChunk {
         let chunk = match chunk_type {
             ChunkEncoding::Uncompressed => Uncompressed(UncompressedChunk::load_rdb(rdb, enc_ver)?),
             ChunkEncoding::Gorilla => Gorilla(GorillaChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::TsXor => TsXor(TsXorChunk::load_rdb(rdb, enc_ver)?),
+            ChunkEncoding::Xor2 => Xor(Xor2Chunk::load_rdb(rdb, enc_ver)?),
             ChunkEncoding::Pco => Pco(PcoChunk::load_rdb(rdb, enc_ver)?),
         };
         Ok(chunk)
@@ -465,6 +551,14 @@ impl Chunk for TimeSeriesChunk {
             }
             Gorilla(chunk) => {
                 dest.push(ChunkEncoding::Gorilla as u8);
+                chunk.serialize(dest)
+            }
+            TsXor(chunk) => {
+                dest.push(ChunkEncoding::TsXor as u8);
+                chunk.serialize(dest)
+            }
+            Xor(chunk) => {
+                dest.push(ChunkEncoding::Xor2 as u8);
                 chunk.serialize(dest)
             }
             Pco(chunk) => {
@@ -492,6 +586,14 @@ impl Chunk for TimeSeriesChunk {
                 let chunk = GorillaChunk::deserialize(&buf[1..])?;
                 Ok(Gorilla(chunk))
             }
+            ChunkEncoding::TsXor => {
+                let chunk = TsXorChunk::deserialize(&buf[1..])?;
+                Ok(TsXor(chunk))
+            }
+            ChunkEncoding::Xor2 => {
+                let chunk = Xor2Chunk::deserialize(&buf[1..])?;
+                Ok(Xor(chunk))
+            }
             ChunkEncoding::Pco => {
                 let chunk = PcoChunk::deserialize(&buf[1..])?;
                 Ok(Pco(chunk))
@@ -504,6 +606,8 @@ impl Chunk for TimeSeriesChunk {
         match self {
             Uncompressed(chunk) => chunk.debug_digest(dig),
             Gorilla(chunk) => chunk.debug_digest(dig),
+            TsXor(chunk) => chunk.debug_digest(dig),
+            Xor(chunk) => chunk.debug_digest(dig),
             Pco(chunk) => chunk.debug_digest(dig),
         }
     }

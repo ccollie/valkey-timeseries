@@ -45,8 +45,8 @@ pub struct TimeSeries {
     pub retention: Duration,
     /// Policy for handling duplicate samples
     pub sample_duplicates: SampleDuplicatePolicy,
-    /// The chunk compression algorithm used (Uncompressed, Gorilla, or Pco)
-    pub chunk_compression: ChunkEncoding,
+    /// The chunk encoding algorithm used (Uncompressed, Gorilla, xor2, tsxor, or Pco)
+    pub chunk_encoding: ChunkEncoding,
     /// Optional strategy for rounding values (either by significant or decimal digits)
     pub rounding: Option<RoundingStrategy>,
     /// Target size for chunks in bytes
@@ -80,7 +80,7 @@ impl TimeSeries {
             res.chunk_size_bytes = chunk_size;
         }
 
-        res.chunk_compression = options.chunk_compression;
+        res.chunk_encoding = options.chunk_encoding;
         res.retention = options.retention.unwrap_or_else(|| {
             let retention = config::RETENTION_PERIOD
                 .lock()
@@ -112,7 +112,7 @@ impl TimeSeries {
     pub(crate) fn from_chunk(chunk: TimeSeriesChunk) -> TsdbResult<Self> {
         let mut ts = TimeSeries::with_options(TimeSeriesOptions {
             chunk_size: Some(chunk.max_size()),
-            chunk_compression: chunk.get_encoding(),
+            chunk_encoding: chunk.get_encoding(),
             ..Default::default()
         })?;
         ts.total_samples = chunk.len();
@@ -141,7 +141,7 @@ impl TimeSeries {
     }
 
     pub fn is_compressed(&self) -> bool {
-        self.chunk_compression != ChunkEncoding::Uncompressed
+        self.chunk_encoding != ChunkEncoding::Uncompressed
     }
 
     /// Get the full metric name of the time series, including labels in Prometheus format.
@@ -259,7 +259,7 @@ impl TimeSeries {
     }
 
     pub(super) fn create_chunk(&mut self) -> TimeSeriesChunk {
-        TimeSeriesChunk::new(self.chunk_compression, self.chunk_size_bytes)
+        TimeSeriesChunk::new(self.chunk_encoding, self.chunk_size_bytes)
     }
 
     fn handle_full_chunk(&mut self, sample: Sample) -> SampleAddResult {
@@ -878,7 +878,7 @@ impl TimeSeries {
         // Handle sample_duplicates
         calc_duplicate_policy_digest(&self.sample_duplicates, digest);
 
-        digest.add_string_buffer(self.chunk_compression.name().as_bytes());
+        digest.add_string_buffer(self.chunk_encoding.name().as_bytes());
 
         if let Some(rounding) = &self.rounding {
             calc_rounding_digest(rounding, digest);
@@ -924,7 +924,7 @@ impl Default for TimeSeries {
             labels: Default::default(),
             retention: Default::default(),
             sample_duplicates: Default::default(),
-            chunk_compression: Default::default(),
+            chunk_encoding: Default::default(),
             chunk_size_bytes: DEFAULT_CHUNK_SIZE_BYTES,
             chunks: vec![],
             total_samples: 0,

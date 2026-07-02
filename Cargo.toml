@@ -58,8 +58,10 @@ serial_test = { version = "3.3", default-features = false }
 prost-build = "0.14"
 
 [lib]
-name="valkey_timeseries"
-crate-type=["cdylib"]
+name = "valkey_timeseries"
+# Produce both a cdylib for embedding into Valkey and an rlib so the crate
+# can be linked against by Rust integration tests and examples.
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]

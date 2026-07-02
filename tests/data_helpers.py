@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime
 
 PIPELINE_SIZE = 1000
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 
 PC_Timestamp = 'timestamp'
 PC_Region = 'region'
@@ -114,129 +114,6 @@ class PowerConsumptionRecord:
                 .format(self.region, self.location_type))
 
 
-class AmazonWebTrafficRecord:
-    """Data class representing a single row from the Amazon web traffic dataset.
-
-    CSV columns:
-    Country, Timestamp, Device Category, Key Actions, Page Path, Source,
-    Avg Session Duration, Bounce Rate, Conversions, New Users, Page Views,
-    Returning Users, Unique Page Views, Average time on home page (min),
-    Website, Date, Time, Day
-    """
-
-    def __init__(self, country, timestamp_str, device_category, key_actions,
-                 page_path, source, avg_session_duration, bounce_rate,
-                 conversions, new_users, page_views, returning_users,
-                 unique_page_views, avg_time_on_home_page, website, date_str,
-                 time_str, day):
-        self.country = country
-        self.timestamp = self._parse_timestamp(timestamp_str)
-        self.device_category = device_category
-        self.key_actions = key_actions
-        self.page_path = page_path
-        self.source = source
-        self.avg_session_duration = int(avg_session_duration)
-        self.bounce_rate = int(bounce_rate)
-        self.conversions = int(conversions)
-        self.new_users = int(new_users)
-        self.page_views = int(page_views)
-        self.returning_users = int(returning_users)
-        self.unique_page_views = int(unique_page_views)
-        self.avg_time_on_home_page = float(avg_time_on_home_page)
-        self.website = website
-        self.date_str = date_str
-        self.time_str = time_str
-        self.day = day
-
-    def __repr__(self):
-        return (f"AmazonWebTrafficRecord(country={self.country}, "
-                f"timestamp={self.timestamp}, device_category={self.device_category}, "
-                f"key_actions={self.key_actions}, page_path={self.page_path}, "
-                f"source={self.source}, page_views={self.page_views}, "
-                f"website={self.website}, day={self.day})")
-
-    def key(self):
-        """Return a unique time series key based on country, website, and device category."""
-        return 'web_traffic:{}:{}:{}'.format(
-            self.country.lower().replace(' ', '_'),
-            self.website.lower().replace(' ', '_'),
-            self.device_category.lower().replace(' ', '_'))
-
-    def metric(self):
-        """Return a Prometheus-style metric string with labels."""
-        return ('web_traffic{{country="{}",website="{}",device_category="{}",'
-                'page_path="{}",source="{}",key_actions="{}"}}'
-                .format(self.country, self.website, self.device_category,
-                        self.page_path, self.source, self.key_actions))
-
-    @staticmethod
-    def _parse_timestamp(timestamp_str):
-        """Parse 'DD-MM-YYYY HH:MM' format into a Unix timestamp in milliseconds."""
-        dt = datetime.strptime(timestamp_str, '%d-%m-%Y %H:%M')
-        return calendar.timegm(dt.timetuple()) * 1000
-
-
-def load_amazon_web_traffic_data():
-    """Generator function to load rows from the Amazon web traffic CSV dataset.
-
-    Yields:
-        AmazonWebTrafficRecord: One record per CSV row (header skipped).
-    """
-    # Column indexes matching the CSV header:
-    # Country, Timestamp, Device Category, Key Actions, Page Path, Source,
-    # Avg Session Duration, Bounce Rate, Conversions, New Users, Page Views,
-    # Returning Users, Unique Page Views, Average time on home page (min),
-    # Website, Date, Time, Day
-    country_idx = 0
-    timestamp_idx = 1
-    device_category_idx = 2
-    key_actions_idx = 3
-    page_path_idx = 4
-    source_idx = 5
-    avg_session_duration_idx = 6
-    bounce_rate_idx = 7
-    conversions_idx = 8
-    new_users_idx = 9
-    page_views_idx = 10
-    returning_users_idx = 11
-    unique_page_views_idx = 12
-    avg_time_on_home_page_idx = 13
-    website_idx = 14
-    date_idx = 15
-    time_idx = 16
-    day_idx = 17
-
-    data_path = os.path.join(DATA_DIR, 'amazon-web-traffic-dataset.csv')
-
-    with open(data_path, 'r') as csv_file:
-        csv_reader = csv.reader(csv_file)
-        for row in csv_reader:
-            if row[country_idx] == 'Country':
-                continue
-
-            record = AmazonWebTrafficRecord(
-                country=row[country_idx],
-                timestamp_str=row[timestamp_idx],
-                device_category=row[device_category_idx],
-                key_actions=row[key_actions_idx],
-                page_path=row[page_path_idx],
-                source=row[source_idx],
-                avg_session_duration=row[avg_session_duration_idx],
-                bounce_rate=row[bounce_rate_idx],
-                conversions=row[conversions_idx],
-                new_users=row[new_users_idx],
-                page_views=row[page_views_idx],
-                returning_users=row[returning_users_idx],
-                unique_page_views=row[unique_page_views_idx],
-                avg_time_on_home_page=row[avg_time_on_home_page_idx],
-                website=row[website_idx],
-                date_str=row[date_idx],
-                time_str=row[time_idx],
-                day=row[day_idx],
-            )
-            yield record
-
-
 def load_json_rows(file_path):
     """
     Generator function to load rows from a JSON file.
@@ -272,7 +149,7 @@ def load_json_rows(file_path):
 
 
 def load_power_consumption_data():
-    data_path = os.path.join(DATA_DIR, 'power_consumption_data.json')
+    data_path = os.path.join(DATA_DIR, 'power_consumption.json')
     with open(data_path, 'r') as f:
         data = json.load(f)
         res = {}
@@ -381,7 +258,7 @@ def ingest_temperature_data(valkey_conn):
     r.execute()
 
 
-def ingest_power_consumption_data(valkey_conn):
+def ingest_power_consumption_data(valkey_conn, encoding='COMPRESSED', chunk_size_bytes='8ki'):
     print("Loading data into valkey...")
     r = valkey_conn.pipeline(transaction=False)
     count = 0
@@ -391,7 +268,7 @@ def ingest_power_consumption_data(valkey_conn):
     for key, values in load_power_consumption_data().items():
         region, location_type = key.split(':')
         metric = 'power_consumption{{region="{}",location_type="{}"}}'.format(region, location_type)
-        valkey_conn.execute_command('TS.CREATE', key, metric, 'DECIMAL_DIGITS', 1, 'LABELS', 'region', region, 'location_type', location_type)
+        valkey_conn.execute_command('TS.CREATE', key, metric, 'ENCODING', encoding, 'CHUNK_SIZE_BYTES', chunk_size_bytes, 'DECIMAL_DIGITS', 1, 'LABELS', 'region', region, 'location_type', location_type)
         print(f"Created series: {key}, metric={metric}")
 
         for ts, consumption in values:
@@ -404,95 +281,3 @@ def ingest_power_consumption_data(valkey_conn):
             count += 1
 
     r.execute()
-
-
-# --- Amazon Web Traffic helpers ---
-
-def _sanitize_label_value(value):
-    """Normalize a label value for use in a time-series key."""
-    return value.lower().replace(' ', '_').replace('/', '_')
-
-
-def _make_web_traffic_key(country, device_category, page_path, source,
-                          website, key_actions, metric_name):
-    """Build a deterministic time-series key from label values + metric name."""
-    parts = [country, device_category, page_path, source, website, key_actions]
-    sanitized = [_sanitize_label_value(p) for p in parts]
-    return 'web_traffic:aws:{}:{}'.format(metric_name, ':'.join(sanitized))
-
-
-def ingest_amazon_web_traffic_data(valkey_conn):
-    """Ingest the Amazon web traffic CSV dataset into Valkey time series.
-
-    Creates 8 time series per unique combination of the shared label dimensions
-    (country, device_category, page_path, source, website, key_actions):
-
-    ================================  ==============================
-    Metric name                        Source column
-    ================================  ==============================
-    page_views_total                   Page Views
-    unique_page_views_total            Unique Page Views
-    new_users_total                    New Users
-    returning_users_total              Returning Users
-    session_duration_avg_seconds       Avg Session Duration
-    home_page_dwell_avg_minutes        Average time on home page
-    bounce_rate_percent                Bounce Rate
-    conversions_total                  Conversions
-    ================================  ==============================
-
-    Sample timestamps are derived from the ``timestamp_str`` CSV column
-    (parsed by :class:`AmazonWebTrafficRecord`).
-    """
-    # (metric_name, record_attr, is_float)
-    metrics = [
-        ('page_views_total',             'page_views',             False),
-        ('unique_page_views_total',      'unique_page_views',      False),
-        ('new_users_total',              'new_users',              False),
-        ('returning_users_total',        'returning_users',        False),
-        ('session_duration_avg_seconds', 'avg_session_duration',   False),
-        ('home_page_dwell_avg_minutes',  'avg_time_on_home_page',  True),
-        ('bounce_rate_percent',          'bounce_rate',            False),
-        ('conversions_total',            'conversions',            False),
-    ]
-
-    print("Loading Amazon web traffic data into valkey...")
-    pipeline = valkey_conn.pipeline(transaction=False)
-    cmd_count = 0
-    created_keys = set()
-
-    for record in load_amazon_web_traffic_data():
-        if cmd_count > PIPELINE_SIZE:
-            pipeline.execute()
-            cmd_count = 0
-            pipeline = valkey_conn.pipeline(transaction=False)
-
-        for metric_name, attr, is_float in metrics:
-            key = _make_web_traffic_key(
-                record.country, record.device_category, record.page_path,
-                record.source, record.website, record.key_actions,
-                metric_name,
-            )
-
-            # Create the series once per unique key
-            if key not in created_keys:
-                created_keys.add(key)
-                create_args = ['TS.CREATE', key, "CHUNK_SIZE", 512]
-                if is_float:
-                    create_args.extend(['DECIMAL_DIGITS', 2])
-                create_args.extend([
-                    'LABELS',
-                    'country',          record.country,
-                    'device_category',  record.device_category,
-                    'page_path',        record.page_path,
-                    'source',           record.source,
-                    'website',          record.website,
-                    'key_actions',      record.key_actions,
-                ])
-                valkey_conn.execute_command(*create_args)
-
-            value = getattr(record, attr)
-            pipeline.execute_command('TS.ADD', key, record.timestamp, value)
-            cmd_count += 1
-
-    pipeline.execute()
-    print(f"Ingested {cmd_count} data points into {len(created_keys)} time series.")

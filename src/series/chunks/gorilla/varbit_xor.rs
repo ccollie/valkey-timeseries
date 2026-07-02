@@ -1,5 +1,5 @@
-use super::traits::{BitRead, BitWrite};
-use super::utils::{read_bits, read_bool};
+use crate::series::chunks::stream::traits::{BitRead, BitWrite};
+use crate::series::chunks::stream::utils::{read_bits, read_bool};
 
 /// Writes a f64 as a Prometheus varbit xor encoded number.
 ///
@@ -129,8 +129,8 @@ pub fn read_varbit_xor<R: BitRead>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::series::chunks::gorilla::buffered_read::BufferedReader;
-    use crate::series::chunks::gorilla::buffered_writer::BufferedWriter;
+    use crate::series::chunks::stream::bitstream::BitStream;
+    use crate::series::chunks::stream::bitstream_reader::BitStreamReader;
     use rand::{RngExt, SeedableRng};
 
     fn generate_random_test_data(seed: u64) -> Vec<Vec<f64>> {
@@ -166,7 +166,7 @@ mod tests {
 
         for test_case in test_cases {
             // Writing first
-            let mut bit_writer = BufferedWriter::new();
+            let mut bit_writer = BitStream::new();
 
             let mut value = 0.0;
             let mut leading = 0xff;
@@ -188,7 +188,7 @@ mod tests {
             trailing = 0;
 
             let buffer = bit_writer.get_ref();
-            let mut reader = BufferedReader::new(buffer);
+            let mut reader = BitStreamReader::new(buffer);
 
             for (i, number) in test_case.iter().enumerate() {
                 let (new_value, new_leading, new_trailing) =

@@ -28,8 +28,8 @@ impl FanoutMessageHeader {
         // Start with the marker
         write_marker(buf);
 
-        // Encode the version as 2 bytes (u16)
-        write_uvarint(buf, self.version as u64);
+        // version is stored as a little-endian u16
+        write_u16_le(buf, self.version);
 
         // Encode request_id as uvarint
         write_uvarint(buf, self.request_id);
@@ -40,7 +40,7 @@ impl FanoutMessageHeader {
         // Encode handler as a string
         write_byte_slice(buf, self.handler.as_bytes());
 
-        write_uvarint(buf, self.reserved as u64);
+        write_u16_le(buf, self.reserved);
     }
 
     /// Deserializes a MessageHeader from the beginning of the buffer.
@@ -49,9 +49,8 @@ impl FanoutMessageHeader {
         // Read and validate the marker
         let mut buf = skip_marker(buf)?;
 
-        let version = read_uvarint(&mut buf)
-            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?
-            as u16;
+        let version =
+            read_u16_le(&mut buf).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
 
         // Decode request_id as uvarint
         let request_id = read_uvarint(&mut buf)?;
@@ -64,8 +63,8 @@ impl FanoutMessageHeader {
         let handler = try_read_string(&mut buf)
             .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
 
-        // Read msg_type and reserved as direct bytes
-        let reserved = read_uvarint(&mut buf)? as u16;
+        // Read reserved as a little-endian u16
+        let reserved = read_u16_le(&mut buf)?;
 
         Ok((
             FanoutMessageHeader {
@@ -82,6 +81,25 @@ impl FanoutMessageHeader {
 
 fn read_uvarint(input: &mut &[u8]) -> FanoutResult<u64> {
     try_read_uvarint(input).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))
+}
+
+fn write_u16_le(slice: &mut Vec<u8>, v: u16) {
+    let bytes = v.to_le_bytes();
+    slice.extend_from_slice(bytes.as_ref());
+}
+
+fn read_u16_le(input: &mut &[u8]) -> FanoutResult<u16> {
+    if input.len() < 2 {
+        return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
+    }
+    let (int_bytes, rest) = input.split_at(2);
+    *input = rest;
+    let val = u16::from_le_bytes(
+        int_bytes
+            .try_into()
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?,
+    );
+    Ok(val)
 }
 
 fn write_marker(slice: &mut Vec<u8>) {

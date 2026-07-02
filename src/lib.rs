@@ -27,7 +27,9 @@ pub mod iterators;
 mod join;
 mod labels;
 mod parser;
-mod series;
+pub mod series;
+
+pub use labels::Label;
 mod server_events;
 mod tests;
 
@@ -128,14 +130,14 @@ fn deinitialize(ctx: &Context) -> Status {
     Status::Ok
 }
 
-#[cfg(not(test))]
+#[cfg(not(all(test, doctest)))]
 macro_rules! get_allocator {
     () => {
         valkey_module::alloc::ValkeyAlloc
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, doctest))]
 macro_rules! get_allocator {
     () => {
         std::alloc::System
