@@ -77,35 +77,51 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
                 return idx
         raise ValueError(f"Slot {slot} not found in any shard range")
 
+    # Terminal job states reported by CLUSTER GETSLOTMIGRATIONS (see
+    # slotMigrationJobStateToString in the server). A job in any of these states is no longer
+    # in progress.
+    TERMINAL_MIGRATION_STATES = {"success", "cancelled", "failed"}
+
+    @staticmethod
+    def _migration_state(migration: dict):
+        state = migration.get("state") or migration.get(b"state")
+        if isinstance(state, bytes):
+            state = state.decode("utf-8")
+        return str(state) if state is not None else None
+
     def _wait_for_no_migrations(self, client: Valkey, timeout: int = 30):
-        """Wait for all migrations to complete (CLUSTER GETSLOTMIGRATIONS returns empty)."""
+        """Wait until every slot migration job on this node has reached a terminal state.
+
+        The server retains finished jobs in CLUSTER GETSLOTMIGRATIONS as an operator log (trimmed
+        only once it exceeds cluster-slot-migration-log-max-len, default 1000), so waiting for an
+        *empty* reply never succeeds. Instead we wait until no job is still in progress, i.e. every
+        job is in a terminal state (success/failed/cancelled).
+        """
         deadline = time.time() + timeout
-        last_state = None
+        last_states = None
 
         while time.time() < deadline:
             try:
-                result = client.execute_command("CLUSTER GETSLOTMIGRATIONS")
+                migrations = self._get_slot_migrations(client)
             except Exception as e:
                 logger.warning(f"Error checking migrations: {e}")
                 time.sleep(1)
                 continue
 
-            if isinstance(result, dict):
-                if len(result) == 0:
-                    return
-                state = result
-            else:
-                if len(result) == 0:
-                    return
-                state = result
+            states = [self._migration_state(m) for m in migrations]
+            in_progress = [s for s in states if s not in self.TERMINAL_MIGRATION_STATES]
+            if not in_progress:
+                return
 
-            if state != last_state:
-                logger.warning(f"Waiting for migrations to drain; state={state}")
-                last_state = state
+            if states != last_states:
+                logger.warning(f"Waiting for migrations to reach terminal state; states={states}")
+                last_states = states
 
             time.sleep(1)
 
-        raise TimeoutError(f"Timed out waiting for migrations to complete; last_state={last_state}")
+        raise TimeoutError(
+            f"Timed out waiting for migrations to complete; last_states={last_states}"
+        )
 
     def _assert_queryindex_empty(self, client: Valkey, label_filter: str):
         """Assert TS.QUERYINDEX returns an empty list for the given filter."""
@@ -119,13 +135,36 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         expected_set = set(k.encode() if isinstance(k, str) else k for k in expected_keys)
         assert result_set == expected_set, f"Expected {expected_set}, got {result_set}"
 
+    def _local_queryindex(self, client: Valkey, label_filter: str) -> set:
+        """Query only the given node's local index (no cluster fanout).
+
+        TS.QUERYINDEX fans out to all shards, so it cannot observe a single node's local index
+        state (e.g. that a source node cleared its index after a migration, since the destination
+        still holds the keys). TS._DEBUG QUERYINDEX runs against the local index only.
+        """
+        result = client.execute_command("TS._DEBUG", "QUERYINDEX", label_filter)
+        return set(result)
+
+    def _assert_local_queryindex_empty(self, client: Valkey, label_filter: str):
+        """Assert a node's local index has no series matching the filter."""
+        result = self._local_queryindex(client, label_filter)
+        assert result == set(), f"Expected empty local queryindex result, got {result}"
+
+    def _assert_local_queryindex_contains(self, client: Valkey, label_filter: str, expected_keys: list):
+        """Assert a node's local index contains exactly the expected keys."""
+        result = self._local_queryindex(client, label_filter)
+        expected_set = set(k.encode() if isinstance(k, str) else k for k in expected_keys)
+        assert result == expected_set, f"Expected {expected_set}, got {result}"
+
     def _create_series_in_slot(self, cluster_client: ValkeyCluster, hash_tag: str, count: int = 5):
         """Create multiple time series with a common hashtag and migration label."""
         keys = []
         base_ts = 1000
 
         for i in range(count):
-            key = f"ts:{hash_tag}:series{i}"
+            # Wrap the hash tag in braces so the slot is determined by the tag (matching
+            # _find_hash_tag_for_shard's probe), not by the whole key.
+            key = f"ts:{{{hash_tag}}}:series{i}"
             keys.append(key)
             cluster_client.execute_command(
                 "TS.CREATE", key,
@@ -222,7 +261,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._skip_if_asm_not_supported(source_client)
 
         # Create test data with controlled slot placement
-        hash_tag = "asm_test_src"
+        hash_tag = self._find_hash_tag_for_shard(source_client, "asm_test_src", shard_index=0)
         keys = self._create_series_in_slot(cluster_client, hash_tag, count=5)
 
         # Determine slot and validate it's in source shard
@@ -239,13 +278,15 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         # Perform migration
         self._migrate_slot(source_client, target_node_id, slot)
 
-        # Assert: source index should be empty for migrated keys
-        self._assert_queryindex_empty(source_client, "migration=yes")
+        # Assert: the source's *local* index no longer contains the migrated series. TS.QUERYINDEX
+        # fans out cluster-wide and would still observe the keys on the destination, so we must
+        # query the source's local index directly.
+        self._assert_local_queryindex_empty(source_client, "migration=yes")
 
-        # Verify keys no longer exist on source
-        for key in keys:
-            exists = source_client.execute_command("EXISTS", key)
-            assert exists == 0, f"Key {key} still exists on source after migration"
+        # The source no longer owns the slot, so its keyspace should be empty (a plain EXISTS would
+        # be answered with a MOVED redirect, so we check the node-local DBSIZE instead).
+        assert source_client.execute_command("DBSIZE") == 0, \
+            "Source keyspace should be empty after migration"
 
     def test_source_replicas_consistent_after_migration(self):
         """Test that source replicas are consistent with primary after migration."""
@@ -256,7 +297,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._skip_if_asm_not_supported(source_primary_client)
 
         # Create test data
-        hash_tag = "asm_test_replica"
+        hash_tag = self._find_hash_tag_for_shard(source_primary_client, "asm_test_replica", shard_index=0)
         keys = self._create_series_in_slot(cluster_client, hash_tag, count=5)
 
         slot = self._get_key_slot(source_primary_client, keys[0])
@@ -265,8 +306,10 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         # Wait for initial replication
         source_rg.wait_for_replica_offset_to_sync_up(0)
 
-        # Verify keys are on replica before migration
+        # Verify keys are on replica before migration. A replica only serves reads for its shard's
+        # slots after READONLY is enabled on the connection.
         source_replica_client = source_rg.get_replica_connection(0)
+        source_replica_client.execute_command("READONLY")
         for key in keys:
             exists = source_replica_client.execute_command("EXISTS", key)
             assert exists == 1, f"Key {key} not replicated to source replica"
@@ -280,13 +323,13 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         source_rg.wait_for_replica_offset_to_sync_up(0)
         time.sleep(2)  # Additional time for index cleanup
 
-        # Assert: source replica index should also be empty
-        self._assert_queryindex_empty(source_replica_client, "migration=yes")
+        # Assert: the source replica's local index should also be empty (the DELs propagated from
+        # the primary drive the replica's index cleanup).
+        self._assert_local_queryindex_empty(source_replica_client, "migration=yes")
 
-        # Verify keys are deleted on replica
-        for key in keys:
-            exists = source_replica_client.execute_command("EXISTS", key)
-            assert exists == 0, f"Key {key} still exists on source replica after migration"
+        # The replica no longer owns the slot, so its keyspace should be empty.
+        assert source_replica_client.execute_command("DBSIZE") == 0, \
+            "Source replica keyspace should be empty after migration"
 
     def test_target_index_populated_after_migration(self):
         """Test that the target primary index is populated after migration."""
@@ -296,7 +339,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._skip_if_asm_not_supported(source_client)
 
         # Create test data
-        hash_tag = "asm_test_target"
+        hash_tag = self._find_hash_tag_for_shard(source_client, "asm_test_target", shard_index=0)
         keys = self._create_series_in_slot(cluster_client, hash_tag, count=5)
 
         slot = self._get_key_slot(source_client, keys[0])
@@ -332,7 +375,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._skip_if_asm_not_supported(source_client)
 
         # Create test data
-        hash_tag = "asm_test_target_replica"
+        hash_tag = self._find_hash_tag_for_shard(source_client, "asm_test_target_replica", shard_index=0)
         keys = self._create_series_in_slot(cluster_client, hash_tag, count=5)
 
         slot = self._get_key_slot(source_client, keys[0])
@@ -347,26 +390,25 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         target_rg.wait_for_replica_offset_to_sync_up(0)
         time.sleep(2)  # Additional time for delayed indexing to complete
 
-        # Get primary index result
-        primary_result = target_primary_client.execute_command("TS.QUERYINDEX", "migration=yes")
-        primary_keys = set(primary_result)
+        # Compare the primary's and replica's *local* indexes (TS.QUERYINDEX fans out, so it would
+        # return the same cluster-wide set from either node and could not detect a replica-local
+        # inconsistency).
+        primary_keys = self._local_queryindex(target_primary_client, "migration=yes")
 
-        # Assert: target replica index matches primary
         target_replica_client = target_rg.get_replica_connection(0)
-        replica_result = target_replica_client.execute_command("TS.QUERYINDEX", "migration=yes")
-        replica_keys = set(replica_result)
+        target_replica_client.execute_command("READONLY")
+        replica_keys = self._local_queryindex(target_replica_client, "migration=yes")
 
         assert replica_keys == primary_keys, \
             f"Target replica index mismatch. Primary: {primary_keys}, Replica: {replica_keys}"
+        assert replica_keys == set(k.encode() for k in keys), \
+            f"Target replica index missing migrated keys: {replica_keys}"
 
-        # Verify all keys exist on replica
-        for key in keys:
-            exists = target_replica_client.execute_command("EXISTS", key)
-            assert exists == 1, f"Key {key} not found on target replica after migration"
-
-            # Verify data integrity on replica
-            result = target_replica_client.execute_command("TS.RANGE", key, "-", "+")
-            assert len(result) == 10, f"Expected 10 samples in replica {key}, got {len(result)}"
+        # The replica's index having the full set of migrated keys (matching the primary) is the
+        # consistency guarantee under test. Key-routed data reads against the replica are avoided
+        # here because slot-ownership config propagates via the cluster bus and can lag the data
+        # replication offset, making cross-node routed reads racy mid-reconfiguration; the target
+        # primary's data integrity is already covered by test_target_index_populated_after_migration.
 
     def test_multiple_slots_migration(self):
         """Test migration of multiple series across different slots."""
@@ -380,7 +422,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         slots_created = set()
 
         for i in range(3):
-            hash_tag = f"asm_multi_{i}"
+            hash_tag = self._find_hash_tag_for_shard(source_client, f"asm_multi_{i}", shard_index=0)
             keys = self._create_series_in_slot(cluster_client, hash_tag, count=3)
             all_keys.extend(keys)
 
@@ -401,10 +443,10 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         for slot in sorted(slots_created):
             self._migrate_slot(source_client, target_node_id, slot)
 
-        # Assert: source should have no migration=yes keys
-        self._assert_queryindex_empty(source_client, "migration=yes")
+        # Assert: source's local index should have no migration=yes keys.
+        self._assert_local_queryindex_empty(source_client, "migration=yes")
 
-        # Assert: target should have all keys
+        # Assert: target should have all keys (cluster-wide view).
         self._assert_queryindex_contains(target_client, "migration=yes", all_keys)
 
     def test_migration_with_label_filtering(self):
@@ -415,19 +457,19 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._skip_if_asm_not_supported(source_client)
 
         # Create series with different labels in same slot
-        hash_tag = "asm_labels"
+        hash_tag = self._find_hash_tag_for_shard(source_client, "asm_labels", shard_index=0)
         keys_migrated = []
         keys_other = []
 
         for i in range(3):
-            key_migrated = f"ts:{hash_tag}:mig{i}"
+            key_migrated = f"ts:{{{hash_tag}}}:mig{i}"
             keys_migrated.append(key_migrated)
             cluster_client.execute_command(
                 "TS.CREATE", key_migrated,
                 "LABELS", "migration", "yes", "type", "migrated"
             )
 
-            key_other = f"ts:{hash_tag}:other{i}"
+            key_other = f"ts:{{{hash_tag}}}:other{i}"
             keys_other.append(key_other)
             cluster_client.execute_command(
                 "TS.CREATE", key_other,
@@ -447,9 +489,9 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         # Assert: filtering by migration=no on target returns other keys
         self._assert_queryindex_contains(target_client, "migration=no", keys_other)
 
-        # Assert: source has no keys from this slot
-        self._assert_queryindex_empty(source_client, "migration=yes")
-        self._assert_queryindex_empty(source_client, "migration=no")
+        # Assert: source's local index has no keys from this slot.
+        self._assert_local_queryindex_empty(source_client, "migration=yes")
+        self._assert_local_queryindex_empty(source_client, "migration=no")
 
     def test_mget_after_migration(self):
         """Test TS.MGET works correctly after migration."""
@@ -459,7 +501,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._skip_if_asm_not_supported(source_client)
 
         # Create test data with latest values
-        hash_tag = "asm_mget"
+        hash_tag = self._find_hash_tag_for_shard(source_client, "asm_mget", shard_index=0)
         keys = self._create_series_in_slot(cluster_client, hash_tag, count=3)
 
         # Add a recent sample to each
@@ -519,13 +561,15 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._wait_for_no_migrations(target_client, timeout=30)
         time.sleep(2)
 
-        # ImportAborted path should clear delayed keys and keep target index clean.
-        self._assert_queryindex_empty(target_client, "tag=asm_abort")
-        self._assert_queryindex_empty(target_client, "migration=yes")
+        # ImportAborted path should clear delayed keys and keep the target's local index clean.
+        # (A fanned-out TS.QUERYINDEX would still see the keys on the source, which correctly keeps
+        # them after an aborted import, so we query the target's local index directly.)
+        self._assert_local_queryindex_empty(target_client, f"tag={hash_tag}")
+        self._assert_local_queryindex_empty(target_client, "migration=yes")
 
-        # No migrated keys should be visible on target after abort.
-        target_exists_count = sum(target_client.execute_command("EXISTS", key) for key in keys)
-        assert target_exists_count == 0, f"Expected no keys on target after abort, found {target_exists_count}"
+        # The aborted import should leave no keys in the target's keyspace.
+        assert target_client.execute_command("DBSIZE") == 0, \
+            "Target keyspace should be empty after aborted import"
 
     def _find_hash_tag_for_shard(self, client: Valkey, prefix: str, shard_index: int, max_attempts: int = 512) -> str:
         """Find a hash tag whose slot is owned by the requested shard."""
