@@ -1,15 +1,8 @@
-use std::ffi::{CString, c_char};
-use valkey_module::{
-    CallOptionResp, CallOptionsBuilder, CallReply, CallResult, RedisModuleIO,
-    RedisModuleTypeMethods, logging, raw,
-};
+use std::ffi::CString;
+use valkey_module::{RedisModuleIO, RedisModuleTypeMethods, logging, raw};
 use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
-use valkey_module::{
-    RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString, ValkeyString,
-    native_types::ValkeyType,
-};
+use valkey_module::{RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString, native_types::ValkeyType};
 
-use crate::common::context::get_current_db;
 use crate::common::logging::log_debug;
 use crate::series::TimeSeries;
 use crate::series::defrag_series;
@@ -124,21 +117,20 @@ unsafe extern "C" fn copy(
     to_key: *mut RedisModuleString,
     value: *const c_void,
 ) -> *mut c_void {
-    let guard = valkey_module::MODULE_CONTEXT.lock();
-    let db = get_current_db(&guard);
-
+    // NOTE: this callback runs on the main thread, which already holds the module GIL. It must
+    // therefore NOT lock a thread-safe/detached context (that would deadlock) and must not invoke
+    // commands. We only clone the value here and defer index maintenance to the `copy_to`
+    // keyspace-notification handler, which runs with a valid context and the destination db
+    // already selected.
     let old_series = unsafe { &*value.cast::<TimeSeries>() };
     let mut new_series = old_series.clone();
-    new_series._db = Some(db);
+    // The destination is a brand-new series: assign a fresh id and drop rule/source linkage.
+    // `_db` is intentionally left unset; the `copy_to` handler assigns it while indexing.
+    new_series._db = None;
     new_series.id = next_timeseries_id();
     new_series.src_series = None;
     new_series.rules.clear();
-    let key = ValkeyString::from_redis_module_string(guard.ctx, to_key);
-
-    let index = get_db_index(db);
-    index.index_timeseries(&new_series, key.as_slice());
-    let boxed = Box::new(new_series);
-    Box::into_raw(boxed).cast::<c_void>()
+    Box::into_raw(Box::new(new_series)).cast::<c_void>()
 }
 
 unsafe extern "C" fn unlink(_key: *mut RedisModuleString, value: *const c_void) {
@@ -177,43 +169,37 @@ unsafe extern "C" fn series_digest(md: *mut RedisModuleDigest, value: *mut c_voi
 unsafe extern "C" fn aof_rewrite(
     aof: *mut RedisModuleIO,
     key: *mut RedisModuleString,
-    _value: *mut c_void,
+    value: *mut c_void,
 ) {
-    let guard = valkey_module::MODULE_CONTEXT.lock();
-    let ctx = Context::new(guard.ctx);
-    let key_string = ValkeyString::from_redis_module_string(guard.ctx, key);
-
-    // Use DUMP command to serialize the TimeSeries data
-    let call_options = CallOptionsBuilder::new()
-        .script_mode()
-        .resp(CallOptionResp::Resp3)
-        .errors_as_replies()
-        .build();
-
-    let res = ctx.call_ext::<_, CallResult>("DUMP", &call_options, &[&key_string]);
-
-    if let Ok(CallReply::String(val)) = res {
-        // Emit RESTORE command to AOF
-        let restore_cmd = CString::new("RESTORE").unwrap();
-        let format_str = CString::new("slb").unwrap(); // string, long, binary
-        let dump_data = val.as_bytes();
-
-        unsafe {
-            raw::RedisModule_EmitAOF.unwrap()(
-                aof,
-                restore_cmd.as_ptr(),
-                format_str.as_ptr(),
-                key,
-                0i64, // TTL = 0 (no expiration)
-                dump_data.as_ptr().cast::<c_char>(),
-                dump_data.len(),
-            );
-        }
-    } else {
+    // IMPORTANT: this callback may run inside a forked snapshot child (both for ordinary AOF
+    // rewrites and for atomic slot migration). In the child the module GIL mutex is inherited in a
+    // locked state, so we must NOT lock a context or invoke commands (e.g. `DUMP`). Instead we
+    // serialize the value directly through the type's own `rdb_save` callback, which needs no lock,
+    // and emit `TS._RESTORE key <payload>` — reconstructed by `ts_asm_restore_cmd` on replay.
+    let raw_type = *VK_TIME_SERIES_TYPE.raw_type.borrow();
+    let payload =
+        unsafe { raw::RedisModule_SaveDataTypeToString.unwrap()(std::ptr::null_mut(), value, raw_type) };
+    if payload.is_null() {
         log_io_error(
             aof,
             ValkeyLogLevel::Warning,
-            &format!("Failed to DUMP key: {res:?}"),
+            "Failed to serialize series for AOF rewrite",
         );
+        return;
+    }
+
+    let restore_cmd = CString::new("TS._RESTORE").unwrap();
+    let format_str = CString::new("ss").unwrap(); // two RedisModuleString arguments
+    unsafe {
+        raw::RedisModule_EmitAOF.unwrap()(
+            aof,
+            restore_cmd.as_ptr(),
+            format_str.as_ptr(),
+            key,
+            payload,
+        );
+        // We passed a NULL context to SaveDataTypeToString, so the string is not auto-managed;
+        // release the reference we own.
+        raw::RedisModule_FreeString.unwrap()(std::ptr::null_mut(), payload);
     }
 }
