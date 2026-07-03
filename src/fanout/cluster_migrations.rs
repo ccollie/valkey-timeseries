@@ -2,7 +2,6 @@ use crate::fanout::cluster_map::NUM_SLOTS;
 use crate::fanout::is_clustered;
 use range_set_blaze::RangeSetBlaze;
 use std::ffi::{c_char, c_int, c_void};
-use std::sync::atomic::AtomicBool;
 use std::sync::{LazyLock, RwLock};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, Version, raw,
@@ -42,9 +41,14 @@ pub fn supports_atomic_slot_migration(ctx: &Context) -> bool {
             false
         }
         Ok(ver) => {
-            ver.major >= ASM_MINIMUM_VERSION.major
-                && ver.minor >= ASM_MINIMUM_VERSION.minor
-                && ver.patch >= ASM_MINIMUM_VERSION.patch
+            // Compare lexicographically; comparing each component independently would, for
+            // example, reject 10.0.0 against a 9.1.0 minimum.
+            (ver.major, ver.minor, ver.patch)
+                >= (
+                    ASM_MINIMUM_VERSION.major,
+                    ASM_MINIMUM_VERSION.minor,
+                    ASM_MINIMUM_VERSION.patch,
+                )
         }
     }
 }
@@ -242,7 +246,6 @@ pub type AtomicSlotMigrationEventHandler =
     fn(event: AtomicSlotMigrationEvent, slots: RangeSetBlaze<u16>);
 pub type PostMigrationCleanupFn = fn(slots: RangeSetBlaze<u16>);
 
-static IN_SLOT_IMPORT: AtomicBool = AtomicBool::new(false);
 static EVENT_HANDLER_FN: LazyLock<RwLock<Option<AtomicSlotMigrationEventHandler>>> =
     LazyLock::new(|| RwLock::new(None));
 
@@ -315,15 +318,12 @@ unsafe extern "C" fn on_atomic_slot_migration_event(
 
     match sub_event {
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_STARTED => {
-            IN_SLOT_IMPORT.store(true, std::sync::atomic::Ordering::SeqCst);
             raise_event(AtomicSlotMigrationEvent::ImportStarted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_COMPLETED => {
-            IN_SLOT_IMPORT.store(false, std::sync::atomic::Ordering::SeqCst);
             raise_event(AtomicSlotMigrationEvent::ImportCompleted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_ABORTED => {
-            IN_SLOT_IMPORT.store(false, std::sync::atomic::Ordering::SeqCst);
             raise_event(AtomicSlotMigrationEvent::ImportAborted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_EXPORT_COMPLETED => {
