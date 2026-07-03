@@ -14,10 +14,9 @@ use crate::labels::{Label, SeriesLabel};
 use crate::series::acl::{clone_permissions, has_all_keys_permissions};
 use crate::series::index::IndexKey;
 use crate::series::{SeriesRef, TimeSeries};
-use blart::AsBytes;
 use croaring::Bitmap64;
 use std::mem::size_of;
-use std::ops::{ControlFlow, Deref, DerefMut};
+use std::ops::{Bound, ControlFlow, Deref, DerefMut};
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// A read-only guard for accessing Postings data.
@@ -574,21 +573,19 @@ impl<'a> BatchIterator<'a> {
 
         let mut processed_in_batch = 0usize;
 
-        let cursor_bytes = self.cursor.as_ref().map(|k| k.as_bytes());
-        let owned_prefix: Vec<u8>;
-        let prefix_bytes: &[u8] = match cursor_bytes {
-            Some(bytes) => {
-                owned_prefix = bytes.to_vec();
-                &owned_prefix
-            }
-            None => &[],
-        };
-
         let inner = self.index.inner.read().unwrap();
         let has_stale_ids = !inner.stale_ids.is_empty();
         let mut cursor: Option<&IndexKey> = None;
 
-        for (key, bitmap) in inner.label_index.prefix(prefix_bytes) {
+        // Resume from the cursor key using an ordered range rather than a prefix scan (a full key
+        // used as a prefix only matches itself and its extensions). The cursor key itself is
+        // skipped below to guarantee forward progress.
+        let range: (Bound<&IndexKey>, Bound<&IndexKey>) = match self.cursor.as_ref() {
+            Some(k) => (Bound::Included(k), Bound::Unbounded),
+            None => (Bound::Unbounded, Bound::Unbounded),
+        };
+
+        for (key, bitmap) in inner.label_index.range::<IndexKey, _>(range) {
             // Skip the cursor key to ensure forward progress
             if let Some(ref cursor_key) = self.cursor
                 && key == cursor_key
