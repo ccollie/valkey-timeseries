@@ -28,9 +28,9 @@ mod label_filter;
 mod label_querier;
 #[cfg(test)]
 mod postings_query_tests;
+pub(crate) mod server_events;
 #[cfg(test)]
 mod timeseries_index_tests;
-mod server_events;
 
 pub(crate) use label_filter::*;
 pub use label_querier::*;
@@ -165,8 +165,30 @@ pub fn get_series_key_by_id(ctx: &Context, id: SeriesRef) -> Option<ValkeyString
 }
 
 pub fn remove_series_from_index(ts: &TimeSeries) {
-    let guard = get_db_index(ts._db);
+    let Some(db) = ts._db else {
+        log_warning(format!(
+            "Skipping index removal for series id {} because _db is unassigned",
+            ts.id
+        ));
+        return;
+    };
+    let guard = get_db_index(db);
     guard.remove_timeseries(ts);
+}
+
+/// Index a timeseries by its key. Looks up the series from the key, assigns the current
+/// database, and inserts it into the index if not already present.
+pub fn index_series_by_key(ctx: &Context, key: &[u8]) {
+    let db = get_current_db(ctx);
+    let valkey_key = ctx.create_string(key);
+    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
+        return;
+    };
+    series._db = Some(db);
+    let index = get_db_index(db);
+    if !index.has_id(series.id) {
+        index.index_timeseries(&series, key);
+    }
 }
 
 pub fn clear_timeseries_index(ctx: &Context) {
