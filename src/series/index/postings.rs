@@ -7,8 +7,8 @@ use crate::labels::filters::{
 };
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::{SeriesRef, TimeSeries};
-use blart::map::Entry as ARTEntry;
 use blart::TreeMap;
+use blart::map::Entry as ARTEntry;
 use croaring::Bitmap64;
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -1690,7 +1690,10 @@ mod tests {
             cursor = Some(next);
         }
 
-        assert!(!postings.has_stale_ids(), "stale ids should be fully drained");
+        assert!(
+            !postings.has_stale_ids(),
+            "stale ids should be fully drained"
+        );
 
         // The shared `job=web` bitmap sorts after all the `host=*` keys, so with the old
         // prefix-based resume it was never cleaned. Inspect the raw bitmap directly (queries mask

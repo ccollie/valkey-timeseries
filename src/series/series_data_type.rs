@@ -1,7 +1,9 @@
 use std::ffi::CString;
-use valkey_module::{RedisModuleIO, RedisModuleTypeMethods, logging, raw};
 use valkey_module::{Context, REDISMODULE_AUX_BEFORE_RDB};
-use valkey_module::{RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString, native_types::ValkeyType};
+use valkey_module::{
+    RedisModuleDefragCtx, RedisModuleDigest, RedisModuleString, native_types::ValkeyType,
+};
+use valkey_module::{RedisModuleIO, RedisModuleTypeMethods, logging, raw};
 
 use crate::common::logging::log_debug;
 use crate::series::TimeSeries;
@@ -177,8 +179,9 @@ unsafe extern "C" fn aof_rewrite(
     // serialize the value directly through the type's own `rdb_save` callback, which needs no lock,
     // and emit `TS._RESTORE key <payload>` — reconstructed by `ts_asm_restore_cmd` on replay.
     let raw_type = *VK_TIME_SERIES_TYPE.raw_type.borrow();
-    let payload =
-        unsafe { raw::RedisModule_SaveDataTypeToString.unwrap()(std::ptr::null_mut(), value, raw_type) };
+    let payload = unsafe {
+        raw::RedisModule_SaveDataTypeToString.unwrap()(std::ptr::null_mut(), value, raw_type)
+    };
     if payload.is_null() {
         log_io_error(
             aof,

@@ -35,9 +35,8 @@ pub fn ts_asm_restore_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     // Reconstruct the series via the type's `rdb_load`. This mirrors `RESTORE` but reads the
     // buffer produced by `RedisModule_SaveDataTypeToString` (no version/CRC footer).
     let raw_type = *VK_TIME_SERIES_TYPE.raw_type.borrow();
-    let series_ptr: *mut c_void = unsafe {
-        raw::RedisModule_LoadDataTypeFromString.unwrap()(payload.inner, raw_type)
-    };
+    let series_ptr: *mut c_void =
+        unsafe { raw::RedisModule_LoadDataTypeFromString.unwrap()(payload.inner, raw_type) };
     if series_ptr.is_null() {
         return Err(ValkeyError::Str("TSDB: failed to deserialize series"));
     }
