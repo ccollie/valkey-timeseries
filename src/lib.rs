@@ -197,6 +197,7 @@ valkey_module! {
         ["TS.DELETERULE", commands::ts_deleterule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.OUTLIERS", commands::ts_outliers_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["TS._DEBUG", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
+        ["TS._RESTORE", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
