@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 def get_server_version(client: Valkey) -> tuple:
     """Extract the server version as (major, minor, patch) from INFO server."""
-    info = client.info("server")
-    version_str = info.get("valkey_version") or info.get("redis_version", "0.0.0")
+    info = client.info("server")  # type: ignore[union-attr]
+    version_str = info.get("valkey_version") or info.get("redis_version", "0.0.0")  # type: ignore[union-attr]
     parts = version_str.split(".")
     return tuple(int(p.split("-")[0]) for p in parts[:3])
 
@@ -46,9 +46,9 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
     def _skip_if_asm_commands_not_supported(self, client: Valkey):
         """Skip when this server binary does not expose ASM cluster migration commands."""
-        help_reply = client.execute_command("CLUSTER", "HELP")
+        help_reply = client.execute_command("CLUSTER", "HELP")  # type: ignore[union-attr]
         lines = []
-        for item in help_reply:
+        for item in help_reply:  # type: ignore[union-attr]
             if isinstance(item, bytes):
                 lines.append(item.decode("utf-8"))
             else:
@@ -61,13 +61,13 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
     def _get_node_id(self, client: Valkey) -> str:
         """Get the cluster node ID for a client."""
-        node_id = client.execute_command("CLUSTER MYID")
-        return node_id.decode("utf-8") if isinstance(node_id, bytes) else node_id
+        node_id = client.execute_command("CLUSTER MYID")  # type: ignore[union-attr]
+        return node_id.decode("utf-8") if isinstance(node_id, bytes) else node_id  # type: ignore[union-attr,return-type]
 
     def _get_key_slot(self, client: Valkey, key: str) -> int:
         """Get the hash slot for a key."""
-        slot = client.execute_command("CLUSTER KEYSLOT", key)
-        return int(slot)
+        slot = client.execute_command("CLUSTER KEYSLOT", key)  # type: ignore[union-attr]
+        return int(slot)  # type: ignore[arg-type]
 
     def _shard_index_for_slot(self, slot: int) -> int:
         """Determine which shard owns a given slot."""
@@ -125,13 +125,13 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
     def _assert_queryindex_empty(self, client: Valkey, label_filter: str):
         """Assert TS.QUERYINDEX returns an empty list for the given filter."""
-        result = client.execute_command("TS.QUERYINDEX", label_filter)
+        result = client.execute_command("TS.QUERYINDEX", label_filter)  # type: ignore[union-attr]
         assert result == [], f"Expected empty queryindex result, got {result}"
 
     def _assert_queryindex_contains(self, client: Valkey, label_filter: str, expected_keys: list):
         """Assert TS.QUERYINDEX returns exactly the expected keys."""
-        result = client.execute_command("TS.QUERYINDEX", label_filter)
-        result_set = set(result)
+        result = client.execute_command("TS.QUERYINDEX", label_filter)  # type: ignore[union-attr]
+        result_set = set(result)  # type: ignore[arg-type]
         expected_set = set(k.encode() if isinstance(k, str) else k for k in expected_keys)
         assert result_set == expected_set, f"Expected {expected_set}, got {result_set}"
 
@@ -142,8 +142,8 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         state (e.g. that a source node cleared its index after a migration, since the destination
         still holds the keys). TS._DEBUG QUERYINDEX runs against the local index only.
         """
-        result = client.execute_command("TS._DEBUG", "QUERYINDEX", label_filter)
-        return set(result)
+        result = client.execute_command("TS._DEBUG", "QUERYINDEX", label_filter)  # type: ignore[union-attr]
+        return set(result)  # type: ignore[arg-type]
 
     def _assert_local_queryindex_empty(self, client: Valkey, label_filter: str):
         """Assert a node's local index has no series matching the filter."""
@@ -358,14 +358,14 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
             assert exists == 1, f"Key {key} not found on target after migration"
 
             # Verify data integrity
-            result = target_client.execute_command("TS.RANGE", key, "-", "+")
-            assert len(result) == 10, f"Expected 10 samples in {key}, got {len(result)}"
+            result = target_client.execute_command("TS.RANGE", key, "-", "+")  # type: ignore[union-attr]
+            assert len(result) == 10, f"Expected 10 samples in {key}, got {len(result)}"  # type: ignore[arg-type]
 
         # Verify MRANGE works across the migrated keys
-        mrange_result = target_client.execute_command(
+        mrange_result = target_client.execute_command(  # type: ignore[union-attr]
             "TS.MRANGE", "-", "+", "FILTER", "migration=yes"
         )
-        assert len(mrange_result) == 5, f"Expected 5 series in MRANGE, got {len(mrange_result)}"
+        assert len(mrange_result) == 5, f"Expected 5 series in MRANGE, got {len(mrange_result)}"  # type: ignore[arg-type]
 
     def test_target_replicas_index_consistent(self):
         """Test that target replica indexes are consistent with primary after migration."""
@@ -433,8 +433,8 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         logger.info(f"Created series in slots: {slots_created}")
 
         # Verify all keys indexed on source
-        source_result = source_client.execute_command("TS.QUERYINDEX", "migration=yes")
-        assert len(source_result) == 9, f"Expected 9 keys on source, got {len(source_result)}"
+        source_result = source_client.execute_command("TS.QUERYINDEX", "migration=yes")  # type: ignore[union-attr]
+        assert len(source_result) == 9, f"Expected 9 keys on source, got {len(source_result)}"  # type: ignore[arg-type]
 
         # Migrate all slots to target
         target_client = self.new_client_for_primary(1)
@@ -517,10 +517,10 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         self._migrate_slot(source_client, target_node_id, slot)
 
         # Assert: MGET on target returns correct latest values
-        result = target_client.execute_command("TS.MGET", "FILTER", "migration=yes")
-        assert len(result) == 3, f"Expected 3 results from MGET, got {len(result)}"
+        result = target_client.execute_command("TS.MGET", "FILTER", "migration=yes")  # type: ignore[union-attr]
+        assert len(result) == 3, f"Expected 3 results from MGET, got {len(result)}"  # type: ignore[arg-type]
 
-        for series_result in result:
+        for series_result in result:  # type: ignore[union-attr]
             key = series_result[0]
             labels = series_result[1]
             latest = series_result[2]
