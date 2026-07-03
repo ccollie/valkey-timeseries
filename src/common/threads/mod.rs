@@ -1,5 +1,6 @@
 mod batch_worker;
 
+use crate::common::context::{get_current_db, set_current_db};
 use crate::is_main_thread;
 #[allow(unused_imports)]
 pub(crate) use batch_worker::{
@@ -11,7 +12,6 @@ use std::os::raw::c_void;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicUsize;
 use valkey_module::{Context, MODULE_CONTEXT, raw};
-use crate::common::context::{get_current_db, set_current_db};
 
 pub const DEFAULT_NUM_CPUS: usize = 4;
 
@@ -89,15 +89,30 @@ where
     callback();
 }
 
+/// Runs `callback` with a module [`Context`] while already on the main thread.
+///
+/// The caller must be on the main thread with the module GIL held (true for command handlers,
+/// server-event callbacks, and event-loop one-shot callbacks). We therefore must NOT lock a
+/// thread-safe/detached context — that re-acquires the GIL and self-deadlocks. Instead we obtain a
+/// throwaway thread-safe context (which does no locking) and use it directly.
+fn with_main_thread_context<F>(callback: F)
+where
+    F: FnOnce(&Context),
+{
+    let raw_ctx = unsafe { raw::RedisModule_GetThreadSafeContext.unwrap()(std::ptr::null_mut()) };
+    let ctx = Context::new(raw_ctx);
+    let saved_db = get_current_db(&ctx);
+    callback(&ctx);
+    set_current_db(&ctx, saved_db);
+    unsafe { raw::RedisModule_FreeThreadSafeContext.unwrap()(raw_ctx) };
+}
+
 extern "C" fn event_loop_callback_wrapper_with_context<F>(data: *mut c_void)
 where
     F: FnOnce(&Context) + 'static,
 {
     let callback: Box<F> = unsafe { Box::from_raw(data as *mut F) };
-    let ctx = MODULE_CONTEXT.lock();
-    let saved_db = get_current_db(&ctx);
-    callback(&ctx);
-    set_current_db(&ctx, saved_db);
+    with_main_thread_context(|ctx| callback(ctx));
 }
 
 /// Executes a given closure on the Valkey main thread. The provided closure will be executed as a one-shot operation.
@@ -156,8 +171,7 @@ where
     F: FnOnce(&Context) + Send + 'static,
 {
     if is_main_thread() && !force_async {
-        let ctx = MODULE_CONTEXT.lock();
-        callback(&ctx);
+        with_main_thread_context(callback);
         return;
     }
 
@@ -171,4 +185,3 @@ where
         raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
     }
 }
-
