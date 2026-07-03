@@ -3,24 +3,23 @@
 use crate::common::context::{get_current_db, register_server_event_handler, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::{log_debug, log_notice};
-use crate::common::threads::run_on_main_thread_with_context;
 use crate::fanout::cluster_migrations::{
-    register_atomic_slot_migration_event_handler, supports_atomic_slot_migration,
-    AtomicSlotMigrationEvent,
+    AtomicSlotMigrationEvent, register_atomic_slot_migration_event_handler,
+    supports_atomic_slot_migration,
 };
 use crate::series::index::{
-    clear_all_timeseries_indexes, clear_timeseries_index, get_db_index, get_timeseries_index,
-    get_timeseries_index_for_db, index_series_by_key, TIMESERIES_INDEX,
+    TIMESERIES_INDEX, clear_all_timeseries_indexes, clear_timeseries_index, get_db_index,
+    get_timeseries_index, get_timeseries_index_for_db, index_series_by_key,
 };
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::tasks::remove_all_stale_series_internal;
-use crate::series::{get_timeseries, get_timeseries_mut, SeriesRef, TimeSeries};
+use crate::series::{SeriesRef, TimeSeries, get_timeseries, get_timeseries_mut};
 use range_set_blaze::RangeSetBlaze;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use valkey_module::server_events::PersistenceSubevent;
-use valkey_module::{logging, raw, Context, NotifyEvent, ValkeyResult, MODULE_CONTEXT};
+use valkey_module::{Context, MODULE_CONTEXT, NotifyEvent, ValkeyResult, logging, raw};
 use valkey_module_macros::persistence_event_handler;
 
 const BATCH_SIZE: usize = 256;
@@ -64,11 +63,12 @@ pub fn add_delayed_indexing_key(db: i32, key: &[u8]) {
     }
 }
 
-fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> Vec<Box<[u8]>> {
-    // Returns skipped keys that could not be indexed so the caller can retry later.
-    let mut skipped: Vec<Box<[u8]>> = Vec::new();
+/// Indexes a batch of imported keys. Returns the number of keys that had no timeseries value at
+/// index time (already deleted, wrong type, or import aborted).
+fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> usize {
+    let mut skipped = 0usize;
 
-    log_notice(format!(
+    log_debug(format!(
         "ASM indexing batch: db={}, batch_size={}",
         db,
         batch.len()
@@ -85,21 +85,11 @@ fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> Vec<Box<[u8]>> {
         let valkey_key = ctx.create_string(key_name.as_ref());
         let writeable_key = ctx.open_key_writable(&valkey_key);
         let Ok(Some(series)) = writeable_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) else {
-            skipped.push(key_name.clone());
-            log_notice(format!(
-                "ASM skip indexing key db={} key={}",
-                db,
-                String::from_utf8_lossy(key_name)
-            ));
+            skipped += 1;
             continue;
         };
         series._db = Some(db);
         postings.index_timeseries(series, valkey_key.as_slice());
-        log_notice(format!(
-            "ASM indexed key db={} key={}",
-            db,
-            String::from_utf8_lossy(key_name)
-        ));
     }
 
     set_current_db(&ctx, save_db);
@@ -109,43 +99,35 @@ fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> Vec<Box<[u8]>> {
 // todo: guard against panic mid-process. Maybe store status in aux
 fn process_delayed_keys_for_db(db: i32) {
     let pending_keys = DELAYED_KEYS_MAP.pin();
-    let lock = match pending_keys.get(&db) {
-        Some(l) => l,
-        None => return,
+    let Some(lock) = pending_keys.get(&db) else {
+        return;
     };
 
-    // Take ownership of the pending keys for this db so we can process without holding the write lock
-    let mut guard = lock.write().unwrap();
-    let keys_vec = std::mem::take(&mut *guard);
-    drop(guard);
+    // Take ownership of the queued keys so we can index without holding the write lock. Keys that
+    // are appended concurrently (e.g. by an overlapping import) stay in the map and are handled by
+    // a later drain; we intentionally leave the (now-empty) entry in place to avoid a race where a
+    // concurrent append is dropped. Empty entries are reused on the next import and cleared on
+    // flush/abort.
+    let keys_vec = {
+        let mut guard = lock.write().unwrap();
+        std::mem::take(&mut *guard)
+    };
 
     if keys_vec.is_empty() {
-        pending_keys.remove(&db);
         return;
     }
 
-    // Collect keys that couldn't be indexed in this pass
-    let mut retry_keys: Vec<Box<[u8]>> = Vec::new();
+    let mut skipped = 0usize;
     for batch in keys_vec.chunks(BATCH_SIZE) {
-        let skipped = index_timeseries_in_batch(db, batch);
-        retry_keys.extend(skipped);
+        skipped += index_timeseries_in_batch(db, batch);
     }
 
-    if !retry_keys.is_empty() {
-        // Re-insert the skipped keys for a later attempt
-        pending_keys
-            .get_or_insert_with(db, || RwLock::new(Vec::with_capacity(64)))
-            .write()
-            .unwrap()
-            .extend(retry_keys);
-    }
-
-    // If there are no more pending keys for this DB, remove the entry
-    if pending_keys
-        .get(&db)
-        .is_none_or(|l| l.read().unwrap().is_empty())
-    {
-        pending_keys.remove(&db);
+    if skipped > 0 {
+        // A skipped key had no timeseries value at drain time; this is terminal (retrying would
+        // never succeed), so we drop it rather than re-queueing it forever.
+        log_debug(format!(
+            "ASM delayed indexing dropped {skipped} key(s) with no series value in db={db}"
+        ));
     }
 }
 
@@ -249,7 +231,7 @@ fn remove_non_owned_keys(db: i32, source_slots: &RangeSetBlaze<u16>) -> usize {
         drop(postings_read);
 
         if batch.len() >= BATCH_SIZE {
-            log_notice(format!(
+            log_debug(format!(
                 "ASM flush (batch full) db={} batch_len={} cursor={} deleted_so_far={}",
                 db,
                 batch.len(),
@@ -262,7 +244,7 @@ fn remove_non_owned_keys(db: i32, source_slots: &RangeSetBlaze<u16>) -> usize {
         }
 
         if !batch.is_empty() {
-            log_notice(format!(
+            log_debug(format!(
                 "ASM flush (final) db={} batch_len={} cursor={} deleted_so_far={}",
                 db,
                 batch.len(),
@@ -301,27 +283,14 @@ fn remove_non_owned_keys(db: i32, source_slots: &RangeSetBlaze<u16>) -> usize {
 /// Check if the source_slots covers all slots the current node is responsible for (or a full reshard) and if so, we can just clear
 /// the entire index instead.
 fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
-    // Log that the cleanup has been scheduled and include a compact slot count snapshot.
+    let slots_count = source_slots.iter().count();
     log_notice(format!(
-        "ASM post-migration cleanup scheduled: source_slots_count={}",
-        source_slots.iter().count()
+        "ASM post-migration cleanup scheduled: source_slots_count={slots_count}"
     ));
 
-    // spawn a background task to clean up the index so we don't block the main thread, this can take a while if there are a lot of keys to clean up
+    // Spawn a background task so we don't block the main thread; this can take a while if there are
+    // a lot of keys to clean up.
     std::thread::spawn(move || {
-        // Write a diagnostic file (best-effort but attempt atomic write) so operators can find details even if logs are lost.
-        let diag_dir =
-            std::env::var("VALKEY_MODULE_DIAG_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        let pid = std::process::id();
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        // Collect a compact representation of the slots for diagnostics
-        let slots_snapshot: Vec<u16> = source_slots.iter().collect();
-        let slots_count = slots_snapshot.len();
-
         let index = TIMESERIES_INDEX.pin();
         let mut dbs: Vec<i32> = index.keys().copied().collect();
         dbs.sort_unstable();
@@ -329,8 +298,7 @@ fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
         drop(index);
 
         log_notice(format!(
-            "ASM post-migration cleanup starting: db_count={} slots_count={}",
-            db_count, slots_count
+            "ASM post-migration cleanup starting: db_count={db_count} slots_count={slots_count}"
         ));
 
         let mut deleted_count = 0usize;
@@ -342,61 +310,8 @@ fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
             remove_all_stale_series_internal();
         }
 
-        // Prepare diagnostic content
-        let diag_content = format!(
-            "timestamp={} pid={} db_count={} slots_count={} deleted_count={} slots={:?}\n",
-            ts, pid, db_count, slots_count, deleted_count, slots_snapshot
-        );
-
-        // Attempt atomic write: write to tmp then rename. Fall back to direct write on error.
-        let filename = format!("valkey-tslib-asm-post-migration-{}-{}.log", pid, ts);
-        let tmp_path = std::path::Path::new(&diag_dir).join(format!("{}.tmp", &filename));
-        let final_path = std::path::Path::new(&diag_dir).join(&filename);
-
-        let write_result = std::fs::write(&tmp_path, diag_content.as_bytes());
-        if let Ok(()) = write_result {
-            if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
-                // rename failed, try direct write. Use stderr to avoid calling into the module logging
-                eprintln!(
-                    "ASM diagnostics: failed to rename tmp file {} -> {}: {}. Attempting direct write.",
-                    tmp_path.display(),
-                    final_path.display(),
-                    e
-                );
-                if let Err(e2) = std::fs::write(&final_path, diag_content.as_bytes()) {
-                    eprintln!(
-                        "ASM diagnostics: direct write failed to {}: {}",
-                        final_path.display(),
-                        e2
-                    );
-                } else {
-                    log_notice(format!("ASM diagnostics written: {}", final_path.display()));
-                }
-            } else {
-                log_notice(format!("ASM diagnostics written: {}", final_path.display()));
-            }
-        } else {
-            // tmp write failed; try direct write and log warnings
-            eprintln!(
-                "ASM diagnostics: failed to write tmp diagnostics file {}: {}. Attempting direct write.",
-                tmp_path.display(),
-                write_result.err().unwrap()
-            );
-            if let Err(e) = std::fs::write(&final_path, diag_content.as_bytes()) {
-                eprintln!(
-                    "ASM diagnostics: direct write failed to {}: {}",
-                    final_path.display(),
-                    e
-                );
-            } else {
-                log_notice(format!("ASM diagnostics written: {}", final_path.display()));
-            }
-        }
-
-        // Final notice about completion
         log_notice(format!(
-            "ASM post-migration cleanup finished: deleted_count={} db_count={} slots_count={}",
-            deleted_count, db_count, slots_count
+            "ASM post-migration cleanup finished: deleted_count={deleted_count} db_count={db_count} slots_count={slots_count}"
         ));
     });
 }
@@ -526,6 +441,22 @@ fn handle_key_restore(ctx: &Context, key: &[u8]) {
     index_series_by_key(ctx, key);
 }
 
+/// Indexes the destination of a `COPY` command. The type `copy` callback cannot maintain the index
+/// itself, so this runs from the `copy_to` keyspace notification. `COPY` fires this event for every
+/// key type, so non-timeseries keys are ignored quietly.
+fn handle_key_copy(ctx: &Context, key: &[u8]) {
+    let db = get_current_db(ctx);
+    let valkey_key = ctx.create_string(key);
+    let Ok(Some(mut series)) = get_timeseries_mut(ctx, &valkey_key, false, None) else {
+        return;
+    };
+    series._db = Some(db);
+    let index = get_db_index(db);
+    if !index.has_id(series.id) {
+        index.index_timeseries(&series, key);
+    }
+}
+
 static RENAME_FROM_KEY: Mutex<Vec<u8>> = Mutex::new(vec![]);
 static MOVE_FROM_DB: Mutex<i32> = Mutex::new(-1);
 
@@ -563,6 +494,12 @@ pub(crate) fn generic_key_events_handler(
         },
         "restore" => {
             handle_key_restore(ctx, key);
+        },
+        "copy_to" => {
+            // The type `copy` callback cannot touch the index (it runs on the main thread with the
+            // GIL held). Index the freshly-copied destination key here, where we have a valid
+            // context with the destination db selected.
+            handle_key_copy(ctx, key);
         },
         _ => {}
     );
