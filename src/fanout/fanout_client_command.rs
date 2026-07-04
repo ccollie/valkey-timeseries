@@ -2,8 +2,9 @@ use crate::common::replies::ReplyContext;
 use crate::fanout::FanoutCommandResult;
 use crate::fanout::blocked_client::FanoutBlockedClient;
 use crate::fanout::serialization::Serializable;
-use crate::fanout::{FanoutCommand, FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
-use ahash::HashSet;
+use crate::fanout::{
+    FanoutCommand, FanoutResult, FanoutTargetMode, FanoutTargets, NodeInfo, get_fanout_targets,
+};
 use std::sync::{Arc, Mutex};
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue};
 
@@ -17,9 +18,10 @@ pub trait FanoutClientCommand: Default + Send + 'static {
 
     fn name() -> &'static str;
 
-    /// Get the list of target nodes for the fanout operation.
+    /// Get the target nodes for the fanout operation, bound to the cluster-map
+    /// fingerprint of the snapshot they were selected from.
     /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> Arc<HashSet<NodeInfo>> {
+    fn get_targets(&self, ctx: &Context) -> FanoutTargets {
         get_fanout_targets(ctx, FanoutTargetMode::Random)
     }
 
@@ -83,9 +85,10 @@ impl<T: FanoutClientCommand> FanoutCommand for T {
         T::get_local_response(ctx, req)
     }
 
-    /// Get the list of target nodes for the fanout operation.
+    /// Get the target nodes for the fanout operation, bound to the cluster-map
+    /// fingerprint of the snapshot they were selected from.
     /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> Arc<HashSet<NodeInfo>> {
+    fn get_targets(&self, ctx: &Context) -> FanoutTargets {
         FanoutClientCommand::get_targets(self, ctx)
     }
 

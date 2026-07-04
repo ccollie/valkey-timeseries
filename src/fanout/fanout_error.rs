@@ -39,6 +39,12 @@ pub enum ErrorKind {
 
     Internal = 8,
 
+    /// The cluster topology changed between the sending of a request and its
+    /// receipt: the requester's cluster-map fingerprint did not match the
+    /// receiver's. The aggregate result would be inconsistent, so the fanout
+    /// fails fast, and the requester invalidates its cluster map.
+    ClusterMapMismatch = 9,
+
     Custom = 255,
 }
 
@@ -52,6 +58,8 @@ pub(super) const NODE_UNREACHABLE_ERROR: &str = "Cluster node unreachable";
 pub(super) const NO_CLUSTER_NODES_AVAILABLE: &str = "No cluster nodes available";
 pub(super) const INTERNAL_ERROR: &str = "Internal error";
 pub(super) const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
+pub(super) const CLUSTER_MAP_MISMATCH_ERROR: &str =
+    "A multi-shard command failed because the cluster topology has changed";
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
@@ -65,6 +73,7 @@ impl ErrorKind {
             Self::Timeout => TIMEOUT_ERROR,
             Self::NodeUnreachable => NODE_UNREACHABLE_ERROR,
             Self::Internal => INTERNAL_ERROR,
+            Self::ClusterMapMismatch => CLUSTER_MAP_MISMATCH_ERROR,
             Self::Custom => "Custom error",
         }
     }
@@ -93,6 +102,10 @@ impl FanoutError {
 
     pub fn invalid_message() -> Self {
         ErrorKind::InvalidMessage.into()
+    }
+
+    pub fn cluster_map_mismatch() -> Self {
+        ErrorKind::ClusterMapMismatch.into()
     }
 
     pub fn custom<S: Into<String>>(description: S) -> Self {
@@ -149,6 +162,7 @@ impl TryFrom<u8> for ErrorKind {
             6 => Ok(ErrorKind::Serialization),
             7 => Ok(ErrorKind::BadRequestId),
             8 => Ok(ErrorKind::Internal),
+            9 => Ok(ErrorKind::ClusterMapMismatch),
             255 => Ok(ErrorKind::Custom),
             _ => {
                 let msg = format!("Invalid error kind: {value}");
@@ -208,6 +222,7 @@ fn convert_from_string(err: &str) -> FanoutError {
         KEY_PERMISSIONS_ERROR => ErrorKind::KeyPermissions.into(),
         PERMISSIONS_ERROR => ErrorKind::Permissions.into(),
         INTERNAL_ERROR => ErrorKind::Internal.into(),
+        CLUSTER_MAP_MISMATCH_ERROR => ErrorKind::ClusterMapMismatch.into(),
         NODE_UNREACHABLE_ERROR => ErrorKind::NodeUnreachable.into(),
         UNKNOWN_MESSAGE_TYPE_ERROR => ErrorKind::UnknownMessageType.into(),
         SERIALIZATION_ERROR => FanoutError::serialization(String::new()),
@@ -325,6 +340,7 @@ mod tests {
             ErrorKind::Serialization,
             ErrorKind::BadRequestId,
             ErrorKind::Internal,
+            ErrorKind::ClusterMapMismatch,
             ErrorKind::Custom,
         ];
 
@@ -474,6 +490,7 @@ mod tests {
         assert_eq!(ErrorKind::Serialization as u8, 6);
         assert_eq!(ErrorKind::BadRequestId as u8, 7);
         assert_eq!(ErrorKind::Internal as u8, 8);
+        assert_eq!(ErrorKind::ClusterMapMismatch as u8, 9);
         assert_eq!(ErrorKind::Custom as u8, 255);
     }
 }
