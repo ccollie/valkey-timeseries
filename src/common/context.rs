@@ -6,6 +6,8 @@ use valkey_module::{
     ValkeyModuleServerInfoData, ValkeyResult,
 };
 
+use crate::fanout::{FANOUT_ACL_USER, fanout_acl_scope_active, is_clustered};
+
 // Safety: RedisModule_GetSelectedDb is safe to call
 pub fn get_current_db(ctx: &Context) -> i32 {
     unsafe { RedisModule_GetSelectedDb.unwrap()(ctx.ctx) }
@@ -36,6 +38,28 @@ pub fn is_real_user_client(ctx: &Context) -> bool {
         return false;
     }
     true
+}
+
+#[inline]
+pub fn is_acl_enforced(ctx: &Context) -> bool {
+    // Replicated (master-link) and AOF-applied commands must not trigger ACL checks:
+    // the originating primary already enforced ACLs on the real client, and the
+    // replication/AOF apply context has no current user. Enforcing here would call
+    // the ACL API with a NULL username string, dereferencing a null pointer inside
+    // `RedisModule_GetModuleUserFromUserName` and crashing the server. `is_real_user_client`
+    // already excludes client_id == 0 (internal/module contexts), the AOF sentinel,
+    // and the REPLICATED flag.
+    is_real_user_client(ctx) || fanout_acl_scope_active()
+}
+
+pub fn get_acl_user(ctx: &Context) -> valkey_module::ValkeyString {
+    if is_clustered(ctx) {
+        let fanout_user = FANOUT_ACL_USER.with(|u| u.borrow().clone());
+        if let Some(user) = fanout_user {
+            return ctx.create_string(user.as_str());
+        }
+    }
+    ctx.get_current_user()
 }
 
 pub fn get_server_info(ctx: &Context, section: &str) -> *mut ValkeyModuleServerInfoData {

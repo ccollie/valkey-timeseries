@@ -25,11 +25,11 @@
 use super::postings::{EMPTY_BITMAP, KeyType, Postings};
 use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
-use crate::common::context::get_current_db;
+use crate::common::context::{get_acl_user, get_current_db, is_acl_enforced};
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
-use crate::series::acl::{check_key_read_permission, has_all_keys_permissions};
+use crate::series::acl::has_all_keys_permissions;
 use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{SeriesGuard, SeriesRef, TimeSeries, get_timeseries};
 use blart::AsBytes;
@@ -109,14 +109,24 @@ fn collect_series_keys(
         return Ok(keys);
     }
 
+    let acl_user = if is_acl_enforced(ctx) {
+        Some(get_acl_user(ctx))
+    } else {
+        None
+    };
+
     let keys = ids
         .filter_map(|id| {
             let key = postings.get_key_by_id(id)?;
             let real_key = ctx.create_string(key.as_bytes());
-            if check_key_read_permission(ctx, &real_key) {
+            if let Some(user) = &acl_user
+                && ctx
+                    .acl_check_key_permission(user, &real_key, &AclPermissions::ACCESS)
+                    .is_ok()
+            {
                 Some(real_key)
             } else {
-                None
+                Some(real_key)
             }
         })
         .collect();
@@ -250,7 +260,7 @@ pub fn count_matched_series(
         (None, true) => {
             // check to see if the user can read all keys, otherwise error
             // a bare TS.CARD is a request for the cardinality of the entire index
-            let current_user = ctx.get_current_user();
+            let current_user = get_acl_user(ctx);
             let can_access_all_keys =
                 has_all_keys_permissions(ctx, &current_user, Some(AclPermissions::ACCESS));
             if !can_access_all_keys {

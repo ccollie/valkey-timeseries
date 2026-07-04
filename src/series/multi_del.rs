@@ -1,5 +1,5 @@
 use crate::common::Timestamp;
-use crate::common::context::is_real_user_client;
+use crate::common::context::{get_acl_user, is_acl_enforced};
 use crate::common::threads::NUM_THREADS;
 use crate::labels::filters::SeriesSelector;
 use crate::series::index::{PostingsBitmap, get_timeseries_index, with_timeseries_postings};
@@ -140,8 +140,8 @@ fn fetch_series_batch<'a>(
     cursor: &mut Bitmap64Iterator<'_>,
     batch_size: usize,
 ) -> (Vec<SeriesGuardMut<'a>>, Vec<ValkeyString>) {
-    let user = ctx.get_current_user();
-    let is_user_client = is_real_user_client(ctx);
+    let user = get_acl_user(ctx);
+    let is_user_client = is_acl_enforced(ctx);
     let has_all_keys_permission = if !is_user_client {
         true
     } else {

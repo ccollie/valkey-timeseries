@@ -1,4 +1,4 @@
-use crate::common::context::is_real_user_client;
+use crate::common::context::{get_acl_user, is_acl_enforced};
 use crate::error_consts;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -18,10 +18,10 @@ pub fn clone_permissions(permissions: &AclPermissions) -> AclPermissions {
 
 #[inline]
 fn has_key_permissions(ctx: &Context, key: &ValkeyString, permissions: AclPermissions) -> bool {
-    if !is_real_user_client(ctx) {
+    if !is_acl_enforced(ctx) {
         return true;
     }
-    let user = ctx.get_current_user();
+    let user = get_acl_user(ctx);
     ctx.acl_check_key_permission(&user, key, &permissions)
         .is_ok()
 }
@@ -31,7 +31,7 @@ pub fn has_all_keys_permissions(
     user: &ValkeyString,
     permissions: Option<AclPermissions>,
 ) -> bool {
-    if !is_real_user_client(ctx) {
+    if !is_acl_enforced(ctx) {
         return true;
     }
     let all_keys = ctx.create_string("*");
@@ -51,10 +51,10 @@ pub fn check_key_permissions(
     key: &ValkeyString,
     permissions: &AclPermissions,
 ) -> ValkeyResult<()> {
-    if !is_real_user_client(ctx) {
+    if !is_acl_enforced(ctx) {
         return Ok(());
     }
-    let user = ctx.get_current_user();
+    let user = get_acl_user(ctx);
     if ctx
         .acl_check_key_permission(&user, key, permissions)
         .is_ok()

@@ -1,3 +1,4 @@
+use super::acl::{get_fanout_user, with_fanout_user};
 use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::threads::spawn;
@@ -109,6 +110,7 @@ where
 
     let req = op.generate_request();
     let outstanding = targets.len();
+    let fanout_user = get_fanout_user(ctx);
 
     let local_node = targets.iter().find(|x| x.is_local());
 
@@ -125,7 +127,7 @@ where
                 .operation
                 .generate_request();
             let local_state = state.clone();
-            spawn_local_request(local_state, req_local, *local);
+            spawn_local_request(local_state, req_local, *local, fanout_user.clone());
         } else {
             state.handle_local_request(ctx, req, local);
             return Ok(());
@@ -234,6 +236,19 @@ where
         // aggregate result is unreliable, so abort the whole fanout immediately
         // and surface the mismatch error to the client.
         if error.kind == ErrorKind::ClusterMapMismatch {
+            self.abort_error = Some(error);
+            self.on_completion();
+            return;
+        }
+        // A read/key-permission denial on any shard fails the whole multi-shard
+        // command closed: data-returning commands (MGET/MRANGE/MREVRANGE) must not
+        // silently drop keys the caller cannot read. Surface the shard's permission
+        // error to the client verbatim (bypassing the generic aggregate error) and
+        // stop waiting on the remaining shards.
+        if matches!(
+            error.kind,
+            ErrorKind::KeyPermissions | ErrorKind::Permissions
+        ) {
             self.abort_error = Some(error);
             self.on_completion();
             return;
@@ -367,8 +382,12 @@ where
 }
 
 /// Spawn a local request handler in a separate thread.
-fn spawn_local_request<OP, F>(state: Arc<FanoutState<OP, F>>, req: OP::Request, target: NodeInfo)
-where
+fn spawn_local_request<OP, F>(
+    state: Arc<FanoutState<OP, F>>,
+    req: OP::Request,
+    target: NodeInfo,
+    user: Option<String>,
+) where
     OP: FanoutCommand,
     OP::Request: Send + 'static,
     OP::Response: Send + 'static,
@@ -378,7 +397,9 @@ where
         // Minimize the scope of GIL locking, avoiding re-entering the GIL which is non-reentrant.
         let result = {
             let ctx = MODULE_CONTEXT.lock();
-            OP::get_local_response(&ctx, req)
+            with_fanout_user(&ctx, user.as_deref(), |ctx| {
+                OP::get_local_response(ctx, req)
+            })
         };
         match result {
             Ok(response) => state.on_response(response, &target),

@@ -8,6 +8,7 @@ use crate::fanout::{FanoutError, FanoutResult};
 pub const FANOUT_MESSAGE_VERSION: u16 = 1;
 pub const FANOUT_MESSAGE_MARKER: u32 = 0xBADCAB;
 const HEADER_SIZE: usize = size_of::<u32>();
+const MAX_USERNAME_LEN: usize = 1024;
 
 /// Header for messages exchanged between cluster nodes.
 #[derive(Debug, Clone)]
@@ -19,6 +20,9 @@ pub(super) struct FanoutMessageHeader {
     pub db: i32,
     /// The name of the handler to process this message.
     pub handler: String,
+    /// ACL user propagated by requester for shard-side enforcement.
+    /// `None` means no user context should be enforced.
+    pub user: Option<String>,
     /// Hash of the sender's cluster map (hash of all shard fingerprints) at the
     /// time the request was generated. `0` means "no fingerprint", which
     /// disables the receiver-side topology check.
@@ -35,6 +39,7 @@ impl FanoutMessageHeader {
             self.request_id,
             self.db,
             &self.handler,
+            self.user.as_deref(),
             self.cluster_fingerprint,
             self.reserved,
         );
@@ -49,6 +54,10 @@ impl FanoutMessageHeader {
         let version =
             read_u16_le(&mut buf).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
 
+        if version != FANOUT_MESSAGE_VERSION {
+            return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
+        }
+
         // Decode request_id as uvarint
         let request_id = read_uvarint(&mut buf)?;
 
@@ -59,6 +68,14 @@ impl FanoutMessageHeader {
         // Read handler as a string
         let handler = try_read_string(&mut buf)
             .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
+
+        // Read ACL user as a string (empty = no user).
+        let user = try_read_string(&mut buf)
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
+        if user.len() > MAX_USERNAME_LEN {
+            return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
+        }
+        let user = if user.is_empty() { None } else { Some(user) };
 
         // Cluster-map fingerprint, fixed 8-byte little-endian.
         let cluster_fingerprint = try_read_u64_le(&mut buf)
@@ -72,6 +89,7 @@ impl FanoutMessageHeader {
                 version,
                 request_id,
                 handler,
+                user,
                 db,
                 cluster_fingerprint,
                 reserved,
@@ -86,12 +104,14 @@ impl FanoutMessageHeader {
 /// (serialization) path, where the handler is always available as a borrowed `&str`.
 ///
 /// The wire layout here must stay in lockstep with [`FanoutMessageHeader::deserialize`].
+#[allow(clippy::too_many_arguments)]
 fn write_message_header(
     buf: &mut Vec<u8>,
     version: u16,
     request_id: u64,
     db: i32,
     handler: &str,
+    user: Option<&str>,
     cluster_fingerprint: u64,
     reserved: u16,
 ) {
@@ -109,6 +129,9 @@ fn write_message_header(
 
     // Encode handler as a string
     write_byte_slice(buf, handler.as_bytes());
+
+    // Encode user as a string (empty = no user).
+    write_byte_slice(buf, user.unwrap_or_default().as_bytes());
 
     // Cluster-map fingerprint, fixed 8-byte little-endian.
     write_u64_le(buf, cluster_fingerprint);
@@ -169,6 +192,8 @@ pub(super) struct FanoutMessage<'a> {
     pub request_id: u64,
     /// The name of the handler to process this message.
     pub handler: String,
+    /// ACL user propagated by requester for shard-side enforcement.
+    pub user: Option<String>,
     /// The database to use for this request.
     pub db: i32,
     /// Sender's cluster-map fingerprint (0 if unavailable / v1 sender).
@@ -196,6 +221,7 @@ impl<'a> FanoutMessage<'a> {
             request_id,
             db,
             handler,
+            user,
             cluster_fingerprint,
             ..
         } = header;
@@ -204,6 +230,7 @@ impl<'a> FanoutMessage<'a> {
             buf,
             request_id,
             handler,
+            user,
             db,
             cluster_fingerprint,
         })
@@ -215,6 +242,7 @@ pub(super) fn serialize_request_message(
     request_id: u64,
     db: i32,
     handler: &str,
+    user: Option<&str>,
     cluster_fingerprint: u64,
     serialized_request: &[u8],
 ) {
@@ -224,6 +252,7 @@ pub(super) fn serialize_request_message(
         request_id,
         db,
         handler,
+        user,
         cluster_fingerprint,
         0,
     );
@@ -242,6 +271,7 @@ mod tests {
             request_id: 12345,
             db: 0,
             handler: "test_handler".to_string(),
+            user: None,
             cluster_fingerprint: 0xABCD_1234_5678_9F00,
             reserved: 0,
         };
@@ -255,6 +285,7 @@ mod tests {
         assert_eq!(deserialized_header.request_id, 12345);
         assert_eq!(deserialized_header.db, 0);
         assert_eq!(deserialized_header.handler, "test_handler");
+        assert_eq!(deserialized_header.user, None);
         assert_eq!(deserialized_header.reserved, 0);
         assert_eq!(
             deserialized_header.cluster_fingerprint,
@@ -270,6 +301,7 @@ mod tests {
             request_id: u64::MAX,
             db: -15,
             handler: "negative_db_handler".to_string(),
+            user: Some("alice".to_string()),
             cluster_fingerprint: u64::MAX,
             reserved: 42,
         };
@@ -283,6 +315,7 @@ mod tests {
         assert_eq!(deserialized_header.request_id, u64::MAX);
         assert_eq!(deserialized_header.db, -15);
         assert_eq!(deserialized_header.handler, "negative_db_handler");
+        assert_eq!(deserialized_header.user.as_deref(), Some("alice"));
         assert_eq!(deserialized_header.cluster_fingerprint, u64::MAX);
         assert_eq!(deserialized_header.reserved, 42);
         assert_eq!(remaining_buf.len(), 0);
@@ -295,6 +328,7 @@ mod tests {
             request_id: 999,
             db: 5,
             handler: "handler_with_extra".to_string(),
+            user: Some("bob".to_string()),
             cluster_fingerprint: 7,
             reserved: 1,
         };
@@ -310,6 +344,8 @@ mod tests {
         assert_eq!(deserialized_header.db, 5);
         assert_eq!(deserialized_header.reserved, 1);
         assert_eq!(deserialized_header.handler, "handler_with_extra");
+        assert_eq!(deserialized_header.user.as_deref(), Some("bob"));
+        assert_eq!(deserialized_header.cluster_fingerprint, 7);
         assert_eq!(remaining_buf, b"extra_data");
     }
 
@@ -407,7 +443,7 @@ mod tests {
         buf.push(1); // version as varint
         buf.push(42); // request_id as varint
         buf.push(0); // db as signed varint (0 encodes as 0)
-        // Missing reserved field
+        // Missing handler, user, cluster_fingerprint, and reserved field
 
         let result = FanoutMessageHeader::deserialize(&buf);
         assert_serialization_error(result);
@@ -478,7 +514,15 @@ mod tests {
         let mut buf = Vec::new();
         let request_data = b"test_request_data";
 
-        serialize_request_message(&mut buf, 123, 5, "handler", 0xDEAD_BEEF, request_data);
+        serialize_request_message(
+            &mut buf,
+            123,
+            5,
+            "handler",
+            Some("alice"),
+            0xDEAD_BEEF,
+            request_data,
+        );
 
         // Verify we can deserialize the header
         let (header, remaining) = FanoutMessageHeader::deserialize(&buf).unwrap();
@@ -488,6 +532,7 @@ mod tests {
         assert_eq!(header.db, 5);
         assert_eq!(header.reserved, 0);
         assert_eq!(header.handler, "handler");
+        assert_eq!(header.user.as_deref(), Some("alice"));
         assert_eq!(header.cluster_fingerprint, 0xDEAD_BEEF);
         assert_eq!(remaining, request_data);
     }
@@ -497,15 +542,49 @@ mod tests {
         let mut buf = Vec::new();
         let request_data = b"test_payload";
 
-        serialize_request_message(&mut buf, 456, -3, "test_handler", 99, request_data);
+        serialize_request_message(&mut buf, 456, -3, "test_handler", None, 99, request_data);
 
         let request_message = FanoutMessage::new(&buf).unwrap();
 
         assert_eq!(request_message.request_id, 456);
         assert_eq!(request_message.db, -3);
         assert_eq!(request_message.handler, "test_handler");
+        assert_eq!(request_message.user, None);
         assert_eq!(request_message.cluster_fingerprint, 99);
         assert_eq!(request_message.buf, request_data);
+    }
+
+    #[test]
+    fn test_cluster_message_header_deserialize_rejects_version_mismatch() {
+        let mut buf = Vec::new();
+        write_marker(&mut buf);
+        write_u16_le(&mut buf, FANOUT_MESSAGE_VERSION - 1);
+        write_uvarint(&mut buf, 1);
+        write_signed_varint(&mut buf, 0);
+        write_byte_slice(&mut buf, b"handler");
+        write_byte_slice(&mut buf, b"");
+        write_u64_le(&mut buf, 0);
+        write_u16_le(&mut buf, 0);
+
+        let result = FanoutMessageHeader::deserialize(&buf);
+        assert_serialization_error(result);
+    }
+
+    #[test]
+    fn test_cluster_message_header_deserialize_rejects_oversized_user() {
+        let mut buf = Vec::new();
+        write_marker(&mut buf);
+        write_u16_le(&mut buf, FANOUT_MESSAGE_VERSION);
+        write_uvarint(&mut buf, 1);
+        write_signed_varint(&mut buf, 0);
+        write_byte_slice(&mut buf, b"handler");
+        let oversized_user = vec![b'a'; MAX_USERNAME_LEN + 1];
+        write_byte_slice(&mut buf, &oversized_user);
+        write_u64_le(&mut buf, 0);
+        write_u16_le(&mut buf, 0);
+
+        let result = FanoutMessageHeader::deserialize(&buf);
+        assert_serialization_error(result);
     }
 
     #[test]
@@ -535,6 +614,7 @@ mod tests {
                 request_id,
                 db,
                 handler: handler.to_string(),
+                user: Some("user".to_string()),
                 reserved,
                 cluster_fingerprint,
             };
@@ -550,6 +630,7 @@ mod tests {
             assert_eq!(deserialized_header.db, original_header.db);
             assert_eq!(deserialized_header.reserved, original_header.reserved);
             assert_eq!(deserialized_header.handler, original_header.handler);
+            assert_eq!(deserialized_header.user, original_header.user);
             assert_eq!(
                 deserialized_header.cluster_fingerprint,
                 original_header.cluster_fingerprint

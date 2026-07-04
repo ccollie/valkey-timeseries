@@ -8,13 +8,14 @@ use crate::common::hash::BuildNoHashHasher;
 use crate::common::pool::get_pooled_buffer;
 use crate::common::threads::spawn_with_context;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
+use crate::fanout::acl::get_fanout_user;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddress};
 use crate::fanout::fanout_command::FanoutResponseCallback;
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
 use crate::fanout::serialization::Serializable;
 use crate::fanout::{
     FanoutResult, NodeInfo, get_cluster_map, get_or_refresh_cluster_map, mark_cluster_map_stale,
-    refresh_cluster_map,
+    refresh_cluster_map, with_fanout_user,
 };
 use ahash::HashSet;
 use core::time::Duration;
@@ -233,9 +234,18 @@ pub(super) fn send_cluster_request(
 
     let id = generate_id();
     let db = get_current_db(ctx);
+    let user = get_fanout_user(ctx);
 
     let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
-    serialize_request_message(&mut buf, id, db, handler, cluster_fingerprint, request_buf);
+    serialize_request_message(
+        &mut buf,
+        id,
+        db,
+        handler,
+        user.as_deref(),
+        cluster_fingerprint,
+        request_buf,
+    );
 
     let remote_targets: Vec<NodeInfo> = targets
         .iter()
@@ -294,9 +304,9 @@ fn send_message_internal(
     buf: &[u8],
 ) -> Status {
     let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
-    // Responses and errors don't carry a meaningful cluster-map fingerprint; the
-    // requester matches them by request id and reacts to the error kind. Send 0.
-    serialize_request_message(&mut dest, request_id, db, handler, 0, buf);
+    // Responses and errors don't carry a meaningful cluster-map fingerprint or
+    // ACL user; the requester matches them by request id and reacts to the error kind.
+    serialize_request_message(&mut dest, request_id, db, handler, None, 0, buf);
     send_cluster_message(ctx, sender_id, msg_type, dest.as_slice())
 }
 
@@ -427,11 +437,14 @@ fn process_request_message(
     let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
     let _ = set_current_db(ctx, db);
 
-    let res = handler(ctx, request_buf, &mut dest);
+    let user = header.user.as_deref();
+    let res = with_fanout_user(ctx, user, |ctx| {
+        handler(ctx, request_buf, &mut dest).map_err(ValkeyError::from)
+    });
 
     if let Err(e) = res {
         let msg = e.to_string();
-        send_error_response(ctx, request_id, db, sender_id.raw_ptr(), e);
+        send_error_response(ctx, request_id, db, sender_id.raw_ptr(), e.into());
         ctx.log_warning(&msg);
         return;
     };
@@ -519,6 +532,7 @@ extern "C" fn on_request_received(
         request_id: message.request_id,
         db: message.db,
         handler: std::mem::take(&mut message.handler),
+        user: message.user.take(),
         cluster_fingerprint: message.cluster_fingerprint,
     };
 
