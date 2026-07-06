@@ -1,6 +1,6 @@
-use crate::aggregators::AggregateIterator;
+use crate::aggregators::{AggregateIterator, MultiAggregateIterator};
 use crate::common::hash::IntSet;
-use crate::common::{Sample, Timestamp};
+use crate::common::{MultiSample, Sample, Timestamp};
 use crate::iterators::{ReduceIterator, TimestampFilterIterator};
 use crate::series::request_types::{AggregationOptions, RangeGroupingOptions, RangeOptions};
 use crate::series::{SeriesSampleIterator, TimeSeries};
@@ -76,7 +76,7 @@ pub fn create_range_iterator<'a>(
             date_range: options.date_range,
             count: options.count,
             latest: false,
-            aggregation: options.aggregation,
+            aggregation: options.aggregation.clone(),
             value_filter: options.value_filter,
             timestamp_filter: None,
         };
@@ -99,6 +99,80 @@ pub fn create_range_iterator<'a>(
             should_reverse_aggr,
             is_reverse,
         )
+    }
+}
+
+/// Pre-aggregation composition for one series: base reader (ts-filter variant
+/// when FILTER_BY_TS is present) + LATEST chaining + value filter. The output
+/// is always ascending — multi-aggregation consumes ascending input and
+/// reverses rows post-aggregation.
+fn create_filtered_sample_iterator<'a>(
+    series: &'a TimeSeries,
+    options: &RangeOptions,
+    latest_sample: Option<Sample>,
+) -> Box<dyn Iterator<Item = Sample> + 'a> {
+    let base_iter: Box<dyn Iterator<Item = Sample> + 'a> =
+        if let Some(ts_filter) = options.timestamp_filter.as_ref() {
+            // The base iterator applies the timestamp filter; no re-filtering needed.
+            Box::new(TimestampFilterIterator::new(series, ts_filter, false))
+        } else {
+            Box::new(SeriesSampleIterator::from_range_options(
+                series, options, false,
+            ))
+        };
+
+    let base_iter: Box<dyn Iterator<Item = Sample> + 'a> = if let Some(sample) = latest_sample {
+        // A partial compaction sample is beyond the last stored sample, so it
+        // is chained at the end of the ascending stream.
+        Box::new(base_iter.chain(std::iter::once(sample)))
+    } else {
+        base_iter
+    };
+
+    if let Some(val_filter) = options.value_filter {
+        Box::new(base_iter.filter(move |sample| val_filter.is_match(sample.value)))
+    } else {
+        base_iter
+    }
+}
+
+/// Create the multi-aggregation row pipeline for one series:
+/// filtered samples -> MultiAggregateIterator -> optional reverse -> take(COUNT).
+/// Only valid when `options.aggregation` is present (typically multi).
+pub fn create_row_iterator<'a>(
+    series: &'a TimeSeries,
+    options: &RangeOptions,
+    latest_sample: Option<Sample>,
+    is_reverse: bool,
+) -> Box<dyn Iterator<Item = MultiSample> + 'a> {
+    let aggregation = options
+        .aggregation
+        .as_ref()
+        .expect("create_row_iterator requires aggregation options");
+
+    let filtered = create_filtered_sample_iterator(series, options, latest_sample);
+
+    let (start_ts, end_ts) = options.get_timestamp_range();
+    let aligned_timestamp = aggregation
+        .alignment
+        .get_aligned_timestamp(start_ts, end_ts);
+    let aggr_iter = MultiAggregateIterator::new(filtered, aggregation, aligned_timestamp);
+
+    finalize_row_iterator(aggr_iter, is_reverse, options.count)
+}
+
+/// Apply reversal and COUNT to a row stream (COUNT limits output buckets,
+/// exactly like the sample path).
+pub(crate) fn finalize_row_iterator<'a, I: Iterator<Item = MultiSample> + 'a>(
+    iter: I,
+    is_reverse: bool,
+    count: Option<usize>,
+) -> Box<dyn Iterator<Item = MultiSample> + 'a> {
+    if is_reverse {
+        let rev = ReverseIter::new(iter);
+        apply_iter_limit!(rev, count)
+    } else {
+        apply_iter_limit!(iter, count)
     }
 }
 
@@ -143,7 +217,7 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
         count: Option<usize>,
     ) -> Box<dyn Iterator<Item = Sample> + 'a> {
         if is_reverse {
-            let rev = ReverseSampleIter::new(iter);
+            let rev = ReverseIter::new(iter);
             apply_iter_limit!(rev, count)
         } else {
             apply_iter_limit!(iter, count)
@@ -170,16 +244,16 @@ pub fn create_sample_iterator_adapter<'a, T: Iterator<Item = Sample> + 'a>(
     }
 }
 
-pub(crate) struct ReverseSampleIter<I>
-where
-    I: Iterator<Item = Sample>,
-{
+/// Buffers the inner iterator and yields its items in reverse order.
+/// Used to reverse aggregation output (samples or multi-aggregation rows),
+/// which buffers bucket count, not raw sample count.
+pub(crate) struct ReverseIter<I: Iterator> {
     inner: I,
-    buf: Vec<Sample>,
+    buf: Vec<I::Item>,
     loaded: bool,
 }
 
-impl<I: Iterator<Item = Sample>> ReverseSampleIter<I> {
+impl<I: Iterator> ReverseIter<I> {
     pub fn new(inner: I) -> Self {
         let buf = Vec::new();
         Self {
@@ -202,8 +276,8 @@ impl<I: Iterator<Item = Sample>> ReverseSampleIter<I> {
     }
 }
 
-impl<I: Iterator<Item = Sample>> Iterator for ReverseSampleIter<I> {
-    type Item = Sample;
+impl<I: Iterator> Iterator for ReverseIter<I> {
+    type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         if !self.loaded {

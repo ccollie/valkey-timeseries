@@ -1,18 +1,23 @@
 use super::fanout::generated::{
     GroupPartialSeries, MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse,
 };
+use crate::aggregators::MultiAggregateIterator;
 use crate::aggregators::{PartialReducer, PartialState};
 use crate::commands::utils::reply_with_mrange_series_results;
 use crate::common::Sample;
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
-use crate::iterators::{MultiSeriesSampleIter, create_sample_iterator_adapter};
+use crate::iterators::{
+    MultiSeriesRowIter, MultiSeriesSampleIter, RowReducer, create_sample_iterator_adapter,
+};
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
 use crate::series::mrange::{
-    SampleLimit, build_mrange_grouped_labels, process_mrange_group_partials, process_mrange_query,
-    sort_mrange_results,
+    SampleLimit, build_mrange_grouped_labels, collect_rows, process_mrange_group_partials,
+    process_mrange_query, sort_mrange_results,
 };
-use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, RangeGroupingOptions};
+use crate::series::request_types::{
+    MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, SeriesResultData,
+};
 use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
 use orx_parallel::{IntoParIter, IterIntoParIter};
@@ -42,13 +47,28 @@ pub struct MRangeFanoutCommand {
 impl MRangeFanoutCommand {
     pub fn new(options: MRangeOptions) -> Self {
         let config_enabled = crate::config::is_fanout_aggregation_pushdown_enabled();
-        let pushdown = config_enabled && options.range.aggregation.is_some();
+        // Multi-aggregation buckets are rows, which the response transport
+        // (sample chunks) cannot carry, so push-down is disabled and the
+        // coordinator aggregates the raw samples itself.
+        let is_multi = options
+            .range
+            .aggregation
+            .as_ref()
+            .is_some_and(|a| a.is_multi());
+        let pushdown = config_enabled && options.range.aggregation.is_some() && !is_multi;
         let pushdown_group = config_enabled
+            && !is_multi
             && options
                 .grouping
                 .as_ref()
                 .is_some_and(|g| PartialReducer::for_config(&g.aggregation).is_some());
-        let pushdown_count = config_enabled && options.range.count.is_some();
+        // COUNT can only be pre-applied shard-side when the shard streams the
+        // same unit the coordinator counts: raw samples (no aggregation) or
+        // pushed-down buckets. Under coordinator-side aggregation (multi),
+        // truncating raw samples would corrupt partial buckets.
+        let pushdown_count = config_enabled
+            && options.range.count.is_some()
+            && (options.range.aggregation.is_none() || pushdown);
         Self {
             options,
             series: Vec::with_capacity(8),
@@ -72,10 +92,17 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         ctx: &Context,
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
-        let apply_aggregation = req.apply_aggregation;
-        let apply_group_reduce = req.apply_group_reduce;
+        let mut apply_aggregation = req.apply_aggregation;
+        let mut apply_group_reduce = req.apply_group_reduce;
         let apply_count = req.apply_count;
         let mut options: MRangeOptions = req.try_into()?;
+        // Multi-aggregation is never pushed down (rows cannot be shipped as
+        // sample chunks); ignore the flags if a peer sets them anyway and
+        // fall back to the raw-sample flow.
+        if is_multi_aggregation(&options) {
+            apply_aggregation = false;
+            apply_group_reduce = false;
+        }
         // COUNT push-down: capture the requested direction and count before
         // they are reset below. The shard streams ascending, so a reverse
         // query keeps the tail (= first `count` in requested order); the
@@ -296,7 +323,9 @@ fn handle_group_partials(
                 key: format!("{}={}", group_options.group_label, label),
                 group_label_value: Some(label),
                 labels,
-                data: TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(samples)),
+                data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
+                    UncompressedChunk::from_vec(samples),
+                )),
             }
         })
         .collect())
@@ -320,14 +349,71 @@ fn construct_group_map(series: Vec<MRangeSeriesResult>) -> BTreeMap<String, Grou
     grouped
 }
 
+fn is_multi_aggregation(options: &MRangeOptions) -> bool {
+    options
+        .range
+        .aggregation
+        .as_ref()
+        .is_some_and(|a| a.is_multi())
+}
+
+/// Coordinator-side multi-aggregation of one series' raw (already filtered,
+/// ascending) samples into rows. Reverse/COUNT are NOT applied here; callers
+/// decide per context.
+fn aggregate_rows_ascending<'a>(
+    samples: impl Iterator<Item = Sample> + 'a,
+    options: &MRangeOptions,
+) -> MultiAggregateIterator<impl Iterator<Item = Sample> + 'a> {
+    let aggregation = options
+        .range
+        .aggregation
+        .as_ref()
+        .expect("multi-aggregation requires aggregation options");
+    let (start_ts, end_ts) = options.range.get_timestamp_range();
+    let aligned_timestamp = aggregation
+        .alignment
+        .get_aligned_timestamp(start_ts, end_ts);
+    MultiAggregateIterator::new(samples, aggregation, aligned_timestamp)
+}
+
 fn process_group(
     label: String,
     data: GroupData,
     options: &MRangeOptions,
     group_options: &RangeGroupingOptions,
 ) -> MRangeSeriesResult {
-    let samples = process_series_list(&data.series, options);
-    let chunk = UncompressedChunk::from_vec(samples);
+    let result_data = if is_multi_aggregation(options) {
+        // Column-wise reduce: per-series bucket rows, merged by bucket
+        // timestamp, reduced independently per aggregation column.
+        let columns = options
+            .range
+            .aggregation
+            .as_ref()
+            .map(|a| a.aggregations.len())
+            .unwrap_or(1);
+        let row_iters = data
+            .series
+            .iter()
+            .map(|s| aggregate_rows_ascending(s.data.sample_iter(), options))
+            .collect::<Vec<_>>();
+        let merged = MultiSeriesRowIter::new(row_iters);
+        let reducer = RowReducer::new(
+            merged,
+            group_options.aggregation.create_aggregator(),
+            columns,
+        );
+        SeriesResultData::Rows(collect_rows(
+            reducer,
+            options.is_reverse,
+            options.range.count,
+        ))
+    } else {
+        let samples = process_series_list(&data.series, options);
+        SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(
+            samples,
+        )))
+    };
+
     // Grouped replies report the group label, __reducer__ and __source__ only
     // under WITHLABELS; by default the label array is empty (matches the
     // standalone path, see group_series_by_label).
@@ -346,7 +432,7 @@ fn process_group(
         key: format!("{}={}", group_options.group_label, label),
         group_label_value: Some(label),
         labels,
-        data: TimeSeriesChunk::Uncompressed(chunk),
+        data: result_data,
     }
 }
 
@@ -354,8 +440,16 @@ fn process_series_samples(
     mut series: MRangeSeriesResult,
     options: &MRangeOptions,
 ) -> MRangeSeriesResult {
+    if is_multi_aggregation(options) {
+        let rows = aggregate_rows_ascending(series.data.sample_iter(), options);
+        let rows = collect_rows(rows, options.is_reverse, options.range.count);
+        series.data = SeriesResultData::Rows(rows);
+        return series;
+    }
     let samples = process_series_list(std::slice::from_ref(&series), options);
-    series.data = TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(samples));
+    series.data = SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
+        UncompressedChunk::from_vec(samples),
+    ));
     series
 }
 
@@ -363,7 +457,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
     let (reverse_iter, reverse_aggr) = validate_reverse(options);
 
     if reverse_iter {
-        let mut samples: Vec<_> = series.iter().flat_map(|s| s.data.iter()).collect();
+        let mut samples: Vec<_> = series.iter().flat_map(|s| s.data.sample_iter()).collect();
         samples.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
         create_sample_iterator_adapter(
             samples.into_iter(),
@@ -374,14 +468,17 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
         .collect()
     } else if series.len() == 1 {
         create_sample_iterator_adapter(
-            series[0].data.iter(),
+            series[0].data.sample_iter(),
             &options.range,
             &options.grouping,
             reverse_aggr,
         )
         .collect()
     } else {
-        let iters = series.iter().map(|s| s.data.iter()).collect::<Vec<_>>();
+        let iters = series
+            .iter()
+            .map(|s| s.data.sample_iter())
+            .collect::<Vec<_>>();
         create_sample_iterator_adapter(
             MultiSeriesSampleIter::new(iters),
             &options.range,
@@ -427,7 +524,9 @@ mod tests {
             key: key.into(),
             group_label_value: group.map(String::from),
             labels: Vec::new(),
-            data: TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(data)),
+            data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
+                UncompressedChunk::from_vec(data),
+            )),
         }
     }
 
@@ -437,7 +536,9 @@ mod tests {
 
     fn avg_aggregation(bucket_duration: u64) -> AggregationOptions {
         AggregationOptions {
-            aggregation: AggregatorConfig::new(AggregationType::Avg, None).unwrap(),
+            aggregations: smallvec::smallvec![
+                AggregatorConfig::new(AggregationType::Avg, None).unwrap()
+            ],
             bucket_duration,
             timestamp_output: Default::default(),
             alignment: Default::default(),
@@ -453,7 +554,7 @@ mod tests {
     }
 
     fn result_samples(result: &MRangeSeriesResult) -> Vec<Sample> {
-        result.data.iter().collect()
+        result.data.sample_iter().collect()
     }
 
     /// Simulate what a push-down shard returns: the per-series aggregation
@@ -857,5 +958,197 @@ mod tests {
         let command = MRangeFanoutCommand::new(options);
         assert!(command.pushdown_count);
         assert!(command.generate_request().apply_count);
+    }
+
+    fn multi_aggregation(bucket_duration: u64) -> AggregationOptions {
+        AggregationOptions {
+            aggregations: smallvec::smallvec![
+                AggregationType::Avg.into(),
+                AggregationType::Max.into(),
+                AggregationType::Count.into(),
+            ],
+            bucket_duration,
+            timestamp_output: Default::default(),
+            alignment: Default::default(),
+            report_empty: false,
+        }
+    }
+
+    fn result_rows(result: &MRangeSeriesResult) -> Vec<crate::common::MultiSample> {
+        match &result.data {
+            SeriesResultData::Rows(rows) => rows.clone(),
+            SeriesResultData::Chunk(_) => panic!("expected multi-aggregation rows"),
+        }
+    }
+
+    /// Multi-aggregation disables every push-down: buckets are rows, which
+    /// the chunk transport cannot carry, and pre-truncating raw samples would
+    /// corrupt coordinator-side buckets.
+    #[test]
+    fn test_multi_aggregation_disables_pushdown() {
+        let mut options = mrange_options(0, 1000);
+        options.range.aggregation = Some(multi_aggregation(100));
+        options.range.count = Some(5);
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+            group_label: "region".into(),
+        });
+
+        let command = MRangeFanoutCommand::new(options.clone());
+        assert!(!command.pushdown);
+        assert!(!command.pushdown_group);
+        assert!(!command.pushdown_count);
+        let request = command.generate_request();
+        assert!(!request.apply_aggregation);
+        assert!(!request.apply_group_reduce);
+        assert!(!request.apply_count);
+
+        // single aggregation with the same shape keeps push-down
+        options.range.aggregation = Some(avg_aggregation(100));
+        let command = MRangeFanoutCommand::new(options);
+        assert!(command.pushdown);
+        assert!(command.pushdown_group);
+        assert!(command.pushdown_count);
+    }
+
+    /// Coordinator multi-aggregation of shard raw samples: column i of the
+    /// rows equals a single-aggregation run of that aggregator; reverse and
+    /// COUNT apply to rows.
+    #[test]
+    fn test_multi_aggregation_basic() {
+        let raw = samples(&[(0, 1.0), (10, 3.0), (110, 5.0), (120, 7.0), (250, 9.0)]);
+
+        for (is_reverse, count) in [(false, None), (true, None), (true, Some(2))] {
+            let mut options = mrange_options(0, 1000);
+            options.range.aggregation = Some(multi_aggregation(100));
+            options.range.count = count;
+            options.is_reverse = is_reverse;
+
+            let results = handle_basic(
+                vec![to_response(series_result("a", None, raw.clone()))],
+                &options,
+            )
+            .unwrap();
+            assert_eq!(results.len(), 1);
+            let rows = result_rows(&results[0]);
+
+            // compare each column against the single-aggregation flow
+            for (column, ty) in [
+                AggregationType::Avg,
+                AggregationType::Max,
+                AggregationType::Count,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut single_options = options.clone();
+                single_options.range.aggregation = Some(AggregationOptions {
+                    aggregations: smallvec::smallvec![ty.into()],
+                    ..multi_aggregation(100)
+                });
+                let single = handle_basic(
+                    vec![to_response(series_result("a", None, raw.clone()))],
+                    &single_options,
+                )
+                .unwrap();
+                let singles = result_samples(&single[0]);
+
+                assert_eq!(
+                    rows.len(),
+                    singles.len(),
+                    "reverse={is_reverse} count={count:?}"
+                );
+                for (row, sample) in rows.iter().zip(singles.iter()) {
+                    assert_eq!(row.timestamp, sample.timestamp);
+                    assert_eq!(
+                        row.values[column], sample.value,
+                        "column {column} ({ty:?}) reverse={is_reverse} count={count:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Grouped multi-aggregation: column-wise reduce across the group's
+    /// series. Hand-computed fixture: two series, avg,max buckets, REDUCE sum.
+    #[test]
+    fn test_multi_aggregation_grouped_column_reduce() {
+        let mut options = mrange_options(0, 1000);
+        options.with_labels = true;
+        options.range.aggregation = Some(AggregationOptions {
+            aggregations: smallvec::smallvec![
+                AggregationType::Avg.into(),
+                AggregationType::Max.into(),
+            ],
+            bucket_duration: 100,
+            timestamp_output: Default::default(),
+            alignment: Default::default(),
+            report_empty: false,
+        });
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+            group_label: "region".into(),
+        });
+
+        // series a buckets: [0,100): avg 2, max 3; [100,200): avg 5, max 5
+        // series b buckets: [0,100): avg 10, max 12; [200,300): avg 7, max 7
+        let responses = vec![
+            to_response(series_result(
+                "a",
+                Some("us"),
+                samples(&[(0, 1.0), (10, 3.0), (110, 5.0)]),
+            )),
+            to_response(series_result(
+                "b",
+                Some("us"),
+                samples(&[(0, 8.0), (20, 12.0), (250, 7.0)]),
+            )),
+        ];
+
+        let results = handle_grouping(responses, &options).unwrap();
+        assert_eq!(results.len(), 1);
+        let group = &results[0];
+        assert_eq!(group.key, "region=us");
+        let rows = result_rows(group);
+
+        // column-wise sum across series per bucket timestamp:
+        // ts 0:   avg: 2+10=12, max: 3+12=15
+        // ts 100: only a       -> 5, 5
+        // ts 200: only b       -> 7, 7
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].timestamp, 0);
+        assert_eq!(rows[0].values.as_slice(), &[12.0, 15.0]);
+        assert_eq!(rows[1].timestamp, 100);
+        assert_eq!(rows[1].values.as_slice(), &[5.0, 5.0]);
+        assert_eq!(rows[2].timestamp, 200);
+        assert_eq!(rows[2].values.as_slice(), &[7.0, 7.0]);
+
+        let source = group
+            .labels
+            .iter()
+            .find(|l| l.name == SOURCE_KEY)
+            .expect("__source__ label present");
+        assert_eq!(source.value, "a,b");
+
+        // MREVRANGE ordering + COUNT on rows
+        options.is_reverse = true;
+        options.range.count = Some(2);
+        let responses = vec![
+            to_response(series_result(
+                "a",
+                Some("us"),
+                samples(&[(0, 1.0), (10, 3.0), (110, 5.0)]),
+            )),
+            to_response(series_result(
+                "b",
+                Some("us"),
+                samples(&[(0, 8.0), (20, 12.0), (250, 7.0)]),
+            )),
+        ];
+        let results = handle_grouping(responses, &options).unwrap();
+        let rows = result_rows(&results[0]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].timestamp, 200);
+        assert_eq!(rows[1].timestamp, 100);
     }
 }

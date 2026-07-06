@@ -259,7 +259,9 @@ enum BucketAlignmentType {
 }
 
 message AggregationOptions {
-  AggregatorConfig aggregator = 1;
+  // Aggregator list in output column order; must contain at least one entry.
+  // A single-aggregator query is simply a one-element list.
+  repeated AggregatorConfig aggregators = 1;
   uint32 bucket_duration = 2;
   int64 alignment_timestamp = 3;
   BucketTimestampType bucket_timestamp_type = 4;

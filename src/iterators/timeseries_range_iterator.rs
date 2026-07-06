@@ -1,8 +1,47 @@
-use crate::common::Sample;
-use crate::iterators::create_range_iterator;
+use crate::common::{MultiSample, Sample};
+use crate::iterators::{create_range_iterator, create_row_iterator};
 use crate::series::request_types::RangeOptions;
 use crate::series::{TimeSeries, get_latest_compaction_sample};
 use valkey_module::Context;
+
+/// Determines and retrieves the latest compaction sample if needed
+/// (aggregation-agnostic; shared by the sample and row range iterators).
+fn get_range_latest_sample(
+    ctx: Option<&Context>,
+    series: &TimeSeries,
+    options: &RangeOptions,
+) -> Option<Sample> {
+    let needs_latest = options.latest && series.is_compaction();
+    if !needs_latest {
+        return None;
+    }
+
+    let context = ctx.expect("Context is required when LATEST option is used");
+    let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
+
+    if !series.retention.is_zero() {
+        let min_ts = series.get_min_timestamp();
+        start_ts = start_ts.max(min_ts);
+        end_ts = start_ts.max(end_ts);
+    }
+
+    // a partial compaction sample, if it exists, is beyond the last stored sample
+    if end_ts > series.last_timestamp() {
+        get_latest_compaction_sample(context, series)
+            .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
+            .filter(|sample| {
+                // validate timestamp filter
+                if let Some(ts_filter) = options.timestamp_filter.as_ref()
+                    && !ts_filter.contains(&sample.timestamp)
+                {
+                    return false;
+                }
+                true
+            })
+    } else {
+        None
+    }
+}
 
 /// An iterator over a TimeSeries based on RangeOptions.
 /// This iterator handles various filters (timestamp, value) and aggregations, as well as the
@@ -23,49 +62,11 @@ impl<'a> TimeSeriesRangeIterator<'a> {
         options: &RangeOptions,
         is_reverse: bool,
     ) -> Self {
-        let latest = Self::get_latest_sample(ctx, series, options);
+        let latest = get_range_latest_sample(ctx, series, options);
         let size_hint = Self::calculate_size_hint(options, latest.is_some());
         let inner = create_range_iterator(series, options, &None, latest, is_reverse);
 
         Self { inner, size_hint }
-    }
-
-    /// Determines and retrieves the latest compaction sample if needed.
-    fn get_latest_sample(
-        ctx: Option<&'a Context>,
-        series: &'a TimeSeries,
-        options: &RangeOptions,
-    ) -> Option<Sample> {
-        let needs_latest = options.latest && series.is_compaction();
-        if !needs_latest {
-            return None;
-        }
-
-        let context = ctx.expect("Context is required when LATEST option is used");
-        let (mut start_ts, mut end_ts) = options.date_range.get_timestamps(None);
-
-        if !series.retention.is_zero() {
-            let min_ts = series.get_min_timestamp();
-            start_ts = start_ts.max(min_ts);
-            end_ts = start_ts.max(end_ts);
-        }
-
-        // a partial compaction sample, if it exists, is beyond the last stored sample
-        if end_ts > series.last_timestamp() {
-            get_latest_compaction_sample(context, series)
-                .filter(|sample| sample.timestamp >= start_ts && sample.timestamp <= end_ts)
-                .filter(|sample| {
-                    // validate timestamp filter
-                    if let Some(ts_filter) = options.timestamp_filter.as_ref()
-                        && !ts_filter.contains(&sample.timestamp)
-                    {
-                        return false;
-                    }
-                    true
-                })
-        } else {
-            None
-        }
     }
 
     /// Calculates the size hint based on options and whether a latest sample exists.
@@ -91,6 +92,33 @@ impl<'a> TimeSeriesRangeIterator<'a> {
 
 impl<'a> Iterator for TimeSeriesRangeIterator<'a> {
     type Item = Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+/// Row-yielding sibling of [`TimeSeriesRangeIterator`] for multi-aggregation
+/// queries: each item is one bucket with a value per aggregator.
+pub struct TimeSeriesRangeRowIterator<'a> {
+    inner: Box<dyn Iterator<Item = MultiSample> + 'a>,
+}
+
+impl<'a> TimeSeriesRangeRowIterator<'a> {
+    pub fn new(
+        ctx: Option<&'a Context>,
+        series: &'a TimeSeries,
+        options: &RangeOptions,
+        is_reverse: bool,
+    ) -> Self {
+        let latest = get_range_latest_sample(ctx, series, options);
+        let inner = create_row_iterator(series, options, latest, is_reverse);
+        Self { inner }
+    }
+}
+
+impl<'a> Iterator for TimeSeriesRangeRowIterator<'a> {
+    type Item = MultiSample;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
@@ -308,7 +336,7 @@ mod tests {
             date_range: date_range(0, 10000),
             count: None,
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Avg.into(),
+                aggregations: smallvec::smallvec![AggregationType::Avg.into()],
                 bucket_duration: 2000,
                 timestamp_output: Default::default(),
                 alignment: Default::default(),
@@ -353,7 +381,7 @@ mod tests {
                 date_range: date_range(0, 4000),
                 count: None,
                 aggregation: Some(AggregationOptions {
-                    aggregation: aggregation.into(),
+                    aggregations: smallvec::smallvec![aggregation.into()],
                     bucket_duration: 2000,
                     timestamp_output: Default::default(),
                     alignment: Default::default(),
@@ -401,7 +429,7 @@ mod tests {
             date_range: date_range(0, 4000),
             count: None,
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Last.into(),
+                aggregations: smallvec::smallvec![AggregationType::Last.into()],
                 bucket_duration: 2000,
                 timestamp_output: Default::default(),
                 alignment: Default::default(),
@@ -439,7 +467,7 @@ mod tests {
             date_range: date_range(0, 4000),
             count: None,
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Last.into(),
+                aggregations: smallvec::smallvec![AggregationType::Last.into()],
                 bucket_duration: 2000,
                 timestamp_output: Default::default(),
                 alignment: Default::default(),
@@ -477,7 +505,7 @@ mod tests {
             date_range: date_range(0, 4000),
             count: None,
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Last.into(),
+                aggregations: smallvec::smallvec![AggregationType::Last.into()],
                 bucket_duration: 2000,
                 timestamp_output: Default::default(),
                 alignment: Default::default(),
@@ -512,7 +540,7 @@ mod tests {
             date_range: date_range(0, 2000),
             count: None,
             aggregation: Some(AggregationOptions {
-                aggregation: AggregationType::Last.into(),
+                aggregations: smallvec::smallvec![AggregationType::Last.into()],
                 bucket_duration: 2000,
                 timestamp_output: Default::default(),
                 alignment: Default::default(),

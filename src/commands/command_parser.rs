@@ -16,12 +16,13 @@ use crate::parser::{
 };
 use crate::series::chunks::{ChunkEncoding, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use crate::series::request_types::{
-    AggregationOptions, AggregatorConfig, MRangeOptions, MatchFilterOptions, MetaDateRangeFilter,
-    RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
+    AggregationOptions, AggregatorConfig, MAX_AGGREGATIONS, MRangeOptions, MatchFilterOptions,
+    MetaDateRangeFilter, RangeGroupingOptions, RangeOptions, ValueComparisonFilter,
 };
 use crate::series::types::{DuplicatePolicy, ValueFilter};
 use crate::series::{TimestampRange, TimestampValue};
 use ahash::AHashMap;
+use smallvec::SmallVec;
 use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::iter::{Peekable, Skip};
@@ -528,6 +529,29 @@ pub fn parse_label_value_pairs(
     Ok(labels)
 }
 
+/// Parse the comma-separated aggregator list of an AGGREGATION clause,
+/// e.g. `avg` or `avg,max,count`. Order is preserved (it defines the output
+/// column order), duplicates are rejected, and the list is capped at
+/// [`MAX_AGGREGATIONS`].
+fn parse_aggregation_type_list(agg_str: &str) -> ValkeyResult<SmallVec<AggregationType, 2>> {
+    let mut types: SmallVec<AggregationType, 2> = SmallVec::new();
+    for part in agg_str.split(',') {
+        if part.is_empty() {
+            return Err(ValkeyError::Str(error_consts::INVALID_AGGREGATION_LIST));
+        }
+        let aggregation = AggregationType::try_from(part)?;
+        if types.contains(&aggregation) {
+            let msg = format!("TSDB: duplicate aggregation '{}'", aggregation.name());
+            return Err(ValkeyError::String(msg));
+        }
+        types.push(aggregation);
+    }
+    if types.len() > MAX_AGGREGATIONS {
+        return Err(ValkeyError::Str(error_consts::TOO_MANY_AGGREGATIONS));
+    }
+    Ok(types)
+}
+
 pub fn parse_aggregation_options(
     args: &mut CommandArgIterator,
 ) -> ValkeyResult<AggregationOptions> {
@@ -535,7 +559,7 @@ pub fn parse_aggregation_options(
     let agg_str = args
         .next_str()
         .map_err(|_e| ValkeyError::Str(error_consts::UNKNOWN_AGGREGATION_TYPE))?;
-    let aggregator = AggregationType::try_from(agg_str)?;
+    let aggregators = parse_aggregation_type_list(agg_str)?;
     let mut value_filter: Option<ValueComparisonFilter> = None;
     let bucket_duration = parse_duration_arg(&args.next_arg()?)
         .map_err(|_e| ValkeyError::Str("TSDB: Couldn't parse bucket duration"))?;
@@ -578,9 +602,41 @@ pub fn parse_aggregation_options(
         _ => Ok(()),
     })?;
 
-    aggr.aggregation = AggregatorConfig::new(aggregator, value_filter)?;
+    aggr.aggregations = build_aggregator_configs(aggregators, value_filter)?;
 
     Ok(aggr)
+}
+
+/// Build the per-aggregator configs of an AGGREGATION clause, distributing an
+/// optional CONDITION to every aggregator that requires or optionally accepts
+/// one; plain aggregators ignore it. A CONDITION with no capable aggregator,
+/// or a condition-requiring aggregator without one, is an error (the latter
+/// falls out of `AggregatorConfig::new`).
+fn build_aggregator_configs(
+    aggregators: SmallVec<AggregationType, 2>,
+    value_filter: Option<ValueComparisonFilter>,
+) -> ValkeyResult<SmallVec<AggregatorConfig, 2>> {
+    if value_filter.is_some()
+        && !aggregators
+            .iter()
+            .any(|ty| ty.is_filtered() || ty.has_filtered_variant())
+    {
+        return Err(ValkeyError::Str(
+            "TSDB: aggregation type does not support a filter condition",
+        ));
+    }
+
+    aggregators
+        .into_iter()
+        .map(|ty| {
+            let condition = if ty.is_filtered() || ty.has_filtered_variant() {
+                value_filter
+            } else {
+                None
+            };
+            AggregatorConfig::new(ty, condition)
+        })
+        .collect()
 }
 
 pub(super) fn parse_aggregator_value_filter(
@@ -989,7 +1045,15 @@ pub(super) fn parse_join_args(
     while let Some(arg) = args.next() {
         let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
         match token {
-            Aggregation => options.aggregation = Some(parse_aggregation_options(args)?),
+            Aggregation => {
+                let aggregation = parse_aggregation_options(args)?;
+                if aggregation.is_multi() {
+                    return Err(ValkeyError::Str(
+                        error_consts::MULTI_AGGREGATION_UNSUPPORTED,
+                    ));
+                }
+                options.aggregation = Some(aggregation)
+            }
             Anti => {
                 check_join_type_set(&mut join_type_set)?;
                 options.join_type = JoinType::Anti;
@@ -1199,6 +1263,91 @@ pub(super) fn find_last_token_instance(
 mod tests {
     use super::*;
     use strum::IntoEnumIterator;
+
+    #[test]
+    fn test_aggregation_list_single_and_order() {
+        let single = parse_aggregation_type_list("avg").unwrap();
+        assert_eq!(single.as_slice(), &[AggregationType::Avg]);
+
+        let list = parse_aggregation_type_list("avg,min,max").unwrap();
+        assert_eq!(
+            list.as_slice(),
+            &[
+                AggregationType::Avg,
+                AggregationType::Min,
+                AggregationType::Max
+            ]
+        );
+
+        // case-insensitive
+        let list = parse_aggregation_type_list("AVG,Max").unwrap();
+        assert_eq!(
+            list.as_slice(),
+            &[AggregationType::Avg, AggregationType::Max]
+        );
+    }
+
+    #[test]
+    fn test_aggregation_list_errors() {
+        // empty elements: leading/trailing/double commas
+        assert!(parse_aggregation_type_list("avg,,max").is_err());
+        assert!(parse_aggregation_type_list("avg,max,").is_err());
+        assert!(parse_aggregation_type_list(",avg").is_err());
+        assert!(parse_aggregation_type_list("").is_err());
+        // unknown type
+        assert!(parse_aggregation_type_list("avg,bogus").is_err());
+        // duplicates, including differing case
+        let err = parse_aggregation_type_list("avg,AVG").unwrap_err();
+        assert!(err.to_string().contains("duplicate aggregation 'avg'"));
+        // over the cap: 17 distinct entries
+        let too_many = "all,any,avg,count,countall,countif,countnan,first,increase,\
+                        irate,last,max,min,none,range,rate,share";
+        let err = parse_aggregation_type_list(too_many).unwrap_err();
+        assert_eq!(err.to_string(), error_consts::TOO_MANY_AGGREGATIONS);
+        // exactly 16 is allowed (condition-requiring types validated later)
+        let sixteen = "all,any,avg,count,countall,countif,countnan,first,increase,\
+                       irate,last,max,min,none,range,rate";
+        assert_eq!(parse_aggregation_type_list(sixteen).unwrap().len(), 16);
+    }
+
+    #[test]
+    fn test_condition_distribution() {
+        let condition = ValueComparisonFilter {
+            operator: ComparisonOperator::GreaterThan,
+            value: 5.0,
+        };
+
+        // countif and sum accept the condition, avg does not
+        let configs = build_aggregator_configs(
+            parse_aggregation_type_list("countif,avg,sum").unwrap(),
+            Some(condition),
+        )
+        .unwrap();
+        assert_eq!(configs.len(), 3);
+        assert!(configs[0].filter().is_some()); // countif
+        assert!(configs[1].filter().is_none()); // avg
+        assert!(configs[2].filter().is_some()); // sum
+
+        // CONDITION with zero capable aggregators is an error
+        let err = build_aggregator_configs(
+            parse_aggregation_type_list("avg,max").unwrap(),
+            Some(condition),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not support a filter"));
+
+        // condition-requiring aggregator in a list without CONDITION
+        let err =
+            build_aggregator_configs(parse_aggregation_type_list("countif,avg").unwrap(), None)
+                .unwrap_err();
+        assert!(err.to_string().contains("missing condition"));
+
+        // plain list without CONDITION is fine
+        let configs =
+            build_aggregator_configs(parse_aggregation_type_list("avg,max,count").unwrap(), None)
+                .unwrap();
+        assert!(configs.iter().all(|c| c.filter().is_none()));
+    }
 
     #[test]
     fn test_parse_command_arg_token_case_insensitive() {

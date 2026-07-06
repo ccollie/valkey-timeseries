@@ -14,7 +14,7 @@ TS.REVRANGE key fromTimestamp toTimestamp
   [FILTER_BY_VALUE min max]
   [COUNT count]
   [
-      [ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION operator value] [BUCKETTIMESTAMP bt] [EMPTY]
+      [ALIGN align] AGGREGATION aggregator[,aggregator...] bucketDuration [CONDITION operator value] [BUCKETTIMESTAMP bt] [EMPTY]
   ]
 ```
 
@@ -61,7 +61,7 @@ TS.REVRANGE key fromTimestamp toTimestamp
 
 | Option            | Arguments                   | Description                                                                                                               |
 |-------------------|-----------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| `AGGREGATION`     | `aggregator bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply `aggregator` per bucket.                            |
+| `AGGREGATION`     | `aggregator[,aggregator...] bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply each `aggregator` per bucket. A comma-separated list (up to 16 distinct aggregators) yields one value per aggregator per bucket, in the order specified. |
 | `ALIGN`           | `align`                     | Bucket alignment anchor. May appear before `AGGREGATION` (`ALIGN … AGGREGATION …`) or after it (`AGGREGATION … ALIGN …`). |
 | `BUCKETTIMESTAMP` | `bt`                        | Controls the timestamp emitted for each bucket. Default: `start`.                                                         |
 | `EMPTY`           | (none)                      | Include empty buckets (buckets with no samples).                                                                          |

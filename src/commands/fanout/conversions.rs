@@ -17,9 +17,9 @@ use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
 use crate::series::mrange::GroupPartialsResult;
 use crate::series::request_types::{
-    AggregationOptions, AggregationType, AggregatorConfig, BucketAlignment, MGetSeriesData,
-    MRangeOptions, MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions, RangeOptions,
-    ValueComparisonFilter,
+    AggregationOptions, AggregationType, AggregatorConfig, BucketAlignment, MAX_AGGREGATIONS,
+    MGetSeriesData, MRangeOptions, MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions,
+    RangeOptions, ValueComparisonFilter,
 };
 use crate::series::{TimestampRange, ValueFilter};
 use crate::{
@@ -27,6 +27,7 @@ use crate::{
     error_consts,
     series::index::{PostingStat, PostingsStats},
 };
+use smallvec::SmallVec;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyValue};
 
 impl From<ComparisonOperator> for FanoutComparisonOperator {
@@ -462,9 +463,14 @@ impl From<AggregatorConfig> for FanoutAggregatorConfig {
     }
 }
 
-impl From<AggregationOptions> for FanoutAggregationOptions {
-    fn from(value: AggregationOptions) -> Self {
-        let aggregator: FanoutAggregatorConfig = value.aggregation.into();
+impl From<&AggregationOptions> for FanoutAggregationOptions {
+    fn from(value: &AggregationOptions) -> Self {
+        // A single-aggregator query is simply a one-element list.
+        let aggregators: Vec<FanoutAggregatorConfig> = value
+            .aggregations
+            .iter()
+            .map(|config| (*config).into())
+            .collect();
         let bucket_timestamp_type: BucketTimestampType = value.timestamp_output.into();
 
         let (bucket_alignment, alignment_timestamp) = match value.alignment {
@@ -475,7 +481,7 @@ impl From<AggregationOptions> for FanoutAggregationOptions {
         };
 
         FanoutAggregationOptions {
-            aggregator: Some(aggregator),
+            aggregators,
             bucket_duration: value.bucket_duration as u32,
             bucket_timestamp_type: bucket_timestamp_type.into(),
             bucket_alignment: bucket_alignment.into(),
@@ -485,15 +491,36 @@ impl From<AggregationOptions> for FanoutAggregationOptions {
     }
 }
 
+impl From<AggregationOptions> for FanoutAggregationOptions {
+    fn from(value: AggregationOptions) -> Self {
+        (&value).into()
+    }
+}
+
 impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
     type Error = ValkeyError;
 
     fn try_from(value: FanoutAggregationOptions) -> Result<Self, Self::Error> {
-        let aggregation: AggregatorConfig = if let Some(agg) = value.aggregator {
-            agg.try_into()?
-        } else {
+        // Re-validate the list bounds and duplicates as a defense against
+        // corrupt/malicious peers.
+        if value.aggregators.is_empty() {
             return Err(ValkeyError::Str("TSDB: aggregation config is required"));
-        };
+        }
+        if value.aggregators.len() > MAX_AGGREGATIONS {
+            return Err(ValkeyError::Str(error_consts::TOO_MANY_AGGREGATIONS));
+        }
+        let aggregations = value
+            .aggregators
+            .into_iter()
+            .map(AggregatorConfig::try_from)
+            .collect::<Result<SmallVec<AggregatorConfig, 2>, _>>()?;
+        let mut seen: SmallVec<AggregationType, 2> = SmallVec::new();
+        for config in aggregations.iter() {
+            if seen.contains(&config.aggregation_type()) {
+                return Err(ValkeyError::Str(error_consts::DUPLICATE_AGGREGATION));
+            }
+            seen.push(config.aggregation_type());
+        }
         let bucket_duration = value.bucket_duration as u64;
         if bucket_duration == 0 {
             return Err(ValkeyError::Str("TSDB: bucket duration must be positive"));
@@ -516,7 +543,7 @@ impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
         let report_empty = value.report_empty;
 
         Ok(AggregationOptions {
-            aggregation,
+            aggregations,
             bucket_duration,
             timestamp_output: timestamp_output.into(),
             alignment,
@@ -550,7 +577,7 @@ impl TryFrom<&RangeRequest> for RangeOptions {
             Some(value.count as usize)
         };
 
-        let aggregation = if let Some(aggregation) = value.aggregation {
+        let aggregation = if let Some(aggregation) = value.aggregation.clone() {
             let options = aggregation.try_into()?;
             Some(options)
         } else {
@@ -590,12 +617,10 @@ impl From<&RangeOptions> for RangeRequest {
             None => 0,
         };
 
-        let aggregation = if let Some(aggregation) = value.aggregation {
-            let options: FanoutAggregationOptions = aggregation.into();
-            Some(options)
-        } else {
-            None
-        };
+        let aggregation = value
+            .aggregation
+            .as_ref()
+            .map(FanoutAggregationOptions::from);
 
         let timestamp_filter = match value.timestamp_filter {
             Some(ref ts) => ts.clone(),
@@ -781,14 +806,16 @@ mod tests {
     #[test]
     fn test_aggregation_options_to_fanout_full() {
         let options = AggregationOptions {
-            aggregation: AggregatorConfig::new(
-                AggregationType::CountIf,
-                Some(ValueComparisonFilter {
-                    operator: ComparisonOperator::GreaterThan,
-                    value: 10.0,
-                }),
-            )
-            .unwrap(),
+            aggregations: smallvec::smallvec![
+                AggregatorConfig::new(
+                    AggregationType::CountIf,
+                    Some(ValueComparisonFilter {
+                        operator: ComparisonOperator::GreaterThan,
+                        value: 10.0,
+                    }),
+                )
+                .unwrap()
+            ],
             bucket_duration: 1000,
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Timestamp(555),
@@ -797,7 +824,8 @@ mod tests {
 
         let fanout: FanoutAggregationOptions = options.into();
 
-        let f_aggr = fanout.aggregator.unwrap();
+        assert_eq!(fanout.aggregators.len(), 1);
+        let f_aggr = fanout.aggregators.into_iter().next().unwrap();
         assert_eq!(
             f_aggr.aggregator_type,
             FanoutAggregationType::CountIf as i32
@@ -821,6 +849,88 @@ mod tests {
     }
 
     #[test]
+    fn test_aggregation_options_multi_round_trip() {
+        // multi list survives the round trip in column order
+        let options = AggregationOptions {
+            aggregations: smallvec::smallvec![
+                AggregationType::Avg.into(),
+                AggregationType::Max.into(),
+                AggregationType::Count.into(),
+            ],
+            bucket_duration: 500,
+            timestamp_output: BucketTimestamp::Start,
+            alignment: BucketAlignment::Default,
+            report_empty: false,
+        };
+
+        let fanout: FanoutAggregationOptions = (&options).into();
+        assert_eq!(fanout.aggregators.len(), 3);
+        assert_eq!(
+            fanout.aggregators[0].aggregator_type,
+            FanoutAggregationType::Avg as i32
+        );
+
+        let back: AggregationOptions = fanout.try_into().unwrap();
+        assert_eq!(back, options);
+    }
+
+    #[test]
+    fn test_aggregation_options_single_decode() {
+        // a single-aggregator query is a one-element list
+        let fanout = FanoutAggregationOptions {
+            aggregators: vec![FanoutAggregationType::Sum.into()],
+            bucket_duration: 10,
+            bucket_timestamp_type: BucketTimestampType::Start as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+        let options: AggregationOptions = fanout.try_into().unwrap();
+        assert!(!options.is_multi());
+        assert_eq!(options.primary().aggregation_type(), AggregationType::Sum);
+
+        // empty list => error
+        let fanout = FanoutAggregationOptions {
+            aggregators: vec![],
+            bucket_duration: 10,
+            bucket_timestamp_type: BucketTimestampType::Start as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+        let result: Result<AggregationOptions, _> = fanout.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aggregation_options_wire_validation() {
+        let make = |aggregators: Vec<FanoutAggregatorConfig>| FanoutAggregationOptions {
+            aggregators,
+            bucket_duration: 10,
+            bucket_timestamp_type: BucketTimestampType::Start as i32,
+            bucket_alignment: BucketAlignmentType::Default as i32,
+            alignment_timestamp: 0,
+            report_empty: false,
+        };
+
+        // duplicates from the wire are rejected
+        let dup = make(vec![
+            FanoutAggregationType::Avg.into(),
+            FanoutAggregationType::Avg.into(),
+        ]);
+        let result: Result<AggregationOptions, _> = dup.try_into();
+        assert!(result.is_err());
+
+        // > MAX_AGGREGATIONS rejected
+        let too_many = make(vec![
+            FanoutAggregationType::Avg.into();
+            MAX_AGGREGATIONS + 1
+        ]);
+        let result: Result<AggregationOptions, _> = too_many.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_fanout_to_aggregation_options_alignments() {
         let alignments = vec![
             (BucketAlignmentType::Default, BucketAlignment::Default),
@@ -834,7 +944,7 @@ mod tests {
                 value_filter: None,
             };
             let fanout = FanoutAggregationOptions {
-                aggregator: Some(aggregator),
+                aggregators: vec![aggregator],
                 bucket_duration: 10,
                 bucket_timestamp_type: BucketTimestampType::End as i32,
                 bucket_alignment: fanout_type as i32,
@@ -854,7 +964,7 @@ mod tests {
             value_filter: None,
         };
         let fanout = FanoutAggregationOptions {
-            aggregator: Some(aggregator),
+            aggregators: vec![aggregator],
             bucket_duration: 0, // Invalid duration
             bucket_timestamp_type: BucketTimestampType::Mid as i32,
             bucket_alignment: BucketAlignmentType::Default as i32,
@@ -878,7 +988,7 @@ mod tests {
             }),
             count: 10,
             aggregation: Some(FanoutAggregationOptions {
-                aggregator: Some(FanoutAggregationType::Avg.into()),
+                aggregators: vec![FanoutAggregationType::Avg.into()],
                 bucket_duration: 60,
                 bucket_timestamp_type: BucketTimestampType::Mid.into(),
                 bucket_alignment: BucketAlignmentType::AlignStart.into(),
@@ -901,7 +1011,7 @@ mod tests {
         assert_eq!(options.count, Some(10));
 
         let agg = options.aggregation.unwrap();
-        assert_eq!(agg.aggregation.aggregation_type(), AggregationType::Avg);
+        assert_eq!(agg.primary().aggregation_type(), AggregationType::Avg);
         assert_eq!(agg.bucket_duration, 60);
         assert_eq!(agg.timestamp_output, BucketTimestamp::Mid);
         assert_eq!(agg.alignment, BucketAlignment::Start);
@@ -964,7 +1074,7 @@ mod tests {
             date_range: TimestampRange::from_timestamps(100, 200).unwrap(),
             count: Some(5),
             aggregation: Some(AggregationOptions {
-                aggregation,
+                aggregations: smallvec::smallvec![aggregation],
                 bucket_duration: 10,
                 timestamp_output: BucketTimestamp::End,
                 alignment: BucketAlignment::Timestamp(123),

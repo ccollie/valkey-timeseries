@@ -4,7 +4,7 @@ use crate::error_consts;
 use crate::labels::Label;
 use crate::series::TimeSeries;
 use crate::series::chunks::{Chunk, ChunkEncoding, ChunkOps, TimeSeriesChunk};
-use crate::series::request_types::MRangeSeriesResult;
+use crate::series::request_types::{MRangeSeriesResult, SeriesResultData};
 use valkey_module::{ValkeyError, ValkeyResult};
 
 // for future compatibility
@@ -88,8 +88,20 @@ impl TryFrom<MRangeSeriesResult> for SeriesRangeResponse {
     fn try_from(value: MRangeSeriesResult) -> Result<Self, Self::Error> {
         let group_label_value = value.group_label_value.unwrap_or_default();
 
+        // Fanout responses only ever carry raw/single-aggregation samples;
+        // multi-aggregation rows are produced coordinator-side and can never
+        // occur on the wire.
+        let chunk = match value.data {
+            SeriesResultData::Chunk(chunk) => chunk,
+            SeriesResultData::Rows(_) => {
+                return Err(ValkeyError::Str(
+                    "TSDB: internal error: multi-aggregation rows cannot be serialized for fanout",
+                ));
+            }
+        };
+
         let labels = convert_labels(value.labels);
-        let data = serialize_chunk(value.data)
+        let data = serialize_chunk(chunk)
             .map_err(|e| ValkeyError::String(format!("Failed to serialize sample data: {e}")))?;
 
         Ok(SeriesRangeResponse {
@@ -117,11 +129,11 @@ impl TryFrom<SeriesRangeResponse> for MRangeSeriesResult {
     fn try_from(value: SeriesRangeResponse) -> Result<Self, Self::Error> {
         let key = value.key;
         let group_label_value = Some(value.group_label_value);
-        let data = if let Some(data) = &value.samples {
+        let data = SeriesResultData::Chunk(if let Some(data) = &value.samples {
             deserialize_chunk(data)?
         } else {
             TimeSeriesChunk::default()
-        };
+        });
 
         let labels: Vec<Label> = value
             .labels

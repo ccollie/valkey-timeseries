@@ -10,7 +10,7 @@ TS.RANGE key fromTimestamp toTimestamp
   [FILTER_BY_TS timestamp ...]
   [FILTER_BY_VALUE min max]
   [COUNT count]
-  [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+  [[ALIGN align] AGGREGATION aggregator[,aggregator...] bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
 ```
 
 ---
@@ -49,8 +49,15 @@ Include only samples with values in `[min, max]`. Both bounds are inclusive. App
 Limit output to the first `count` samples or buckets. When used with aggregation, limits bucket
 count (not samples per bucket).
 </details>
-<details open><summary><code>AGGREGATION aggregator bucketDuration</code></summary>
+<details open><summary><code>AGGREGATION aggregator[,aggregator...] bucketDuration</code></summary>
 Aggregate raw samples into fixed-size time buckets. See [Aggregators](#aggregators) for supported aggregation functions.
+
+`aggregator` may be a comma-separated list of up to 16 distinct aggregators (e.g. `avg,max,count`).
+All aggregators share the bucket parameters (`bucketDuration`, `ALIGN`, `BUCKETTIMESTAMP`, `EMPTY`).
+Each bucket then produces one row containing the bucket timestamp followed by one value per
+aggregator, in the order specified. With a single aggregator the output shape is unchanged
+(`[timestamp, value]`). A `CONDITION` clause applies to every aggregator in the list that accepts
+one (`countif`, `sumif`, `all`, `any`, `none`, `share`, `count`, `sum`); plain aggregators ignore it.
 </details>
 <details open><summary><code>ALIGN align</code></summary> 
 Control bucket alignment:
@@ -76,8 +83,9 @@ Only samples satisfying the condition are included in the aggregation.
 
 ### Aggregation
 
-- **`AGGREGATION aggregator bucketDuration`** — Aggregate raw samples into fixed-size time buckets
-  - **`aggregator`** — Aggregation function to apply (see [Aggregators](#aggregators))
+- **`AGGREGATION aggregator[,aggregator...] bucketDuration`** — Aggregate raw samples into fixed-size time buckets
+  - **`aggregator`** — Aggregation function(s) to apply (see [Aggregators](#aggregators)); a
+    comma-separated list produces one output column per aggregator, in the order specified
   - **`bucketDuration`** — Bucket size in milliseconds (must be positive)
 ---
 
@@ -178,6 +186,20 @@ Compute average per hour:
 
 ```
 TS.RANGE requests 1609459200000 1609545600000 AGGREGATION avg 3600000
+```
+
+### Multiple Aggregations in One Pass
+
+Compute the average, maximum, and sample count per minute in a single scan. Each returned row is
+`[bucketTimestamp, avg, max, count]`, with values in the order the aggregators were specified:
+
+```
+TS.RANGE temp:tlv - + AGGREGATION avg,max,count 60000
+1) 1) (integer) 1652419200000
+   2) (double) 22.4
+   3) (double) 31.0
+   4) (double) 12
+2) ...
 ```
 
 ### 5-Minute Sums with Empty Buckets

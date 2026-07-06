@@ -11,7 +11,7 @@ TS.MRANGE fromTimestamp toTimestamp
     [FILTER_BY_VALUE min max]
     [WITHLABELS | SELECTED_LABELS label...]
     [COUNT count]
-    [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+    [[ALIGN align] AGGREGATION aggregator[,aggregator...] bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
     FILTER selector...
     [GROUPBY label REDUCE reducer]
 ```
@@ -131,9 +131,13 @@ ALIGN 1609459200000 AGGREGATION sum 5m
 - Cannot use `start` align with `-` range start timestamp
 - Cannot use `end` align with `+` range end timestamp
 
-### AGGREGATION aggregator bucketDuration
+### AGGREGATION aggregator[,aggregator...] bucketDuration
 
-Aggregate samples into time buckets using the specified aggregator and bucket size.
+Aggregate samples into time buckets using the specified aggregator(s) and bucket size. A
+comma-separated list of up to 16 distinct aggregators produces one row per bucket containing the
+bucket timestamp followed by one value per aggregator, in the order specified. All aggregators
+share the bucket parameters. With `GROUPBY`/`REDUCE`, each aggregation column is reduced
+independently across the series of a group.
 
 **Supported aggregators:**
 

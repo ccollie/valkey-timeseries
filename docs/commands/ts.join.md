@@ -10,6 +10,9 @@ TS.JOIN leftKey rightKey fromTimestamp toTimestamp
     [AGGREGATION aggregator bucketDuration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
 ```
 
+> Note: unlike the RANGE command family, `TS.JOIN` accepts a single aggregator only; a
+> comma-separated aggregation list is rejected.
+
 Join two time series on sample timestamps. Performs an INNER join by default.
 
 [Examples](#examples)
