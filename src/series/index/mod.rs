@@ -62,11 +62,11 @@ pub(crate) static TIMESERIES_INDEX: LazyLock<TimeSeriesIndexMap> =
 pub(crate) static TIMESERIES_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn next_timeseries_id() -> u64 {
-    TIMESERIES_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    TIMESERIES_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn reset_timeseries_id(id: u64) {
-    TIMESERIES_ID.store(id, std::sync::atomic::Ordering::SeqCst);
+    TIMESERIES_ID.store(id, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn get_db_index(db: i32) -> TimeSeriesIndexGuard<'static> {
