@@ -214,6 +214,48 @@ impl<I: Iterator<Item = Sample>> Iterator for ReverseSampleIter<I> {
     }
 }
 
+/// Yields the last `capacity` items of `inner` in their original order,
+/// buffering at most `capacity` items (ring buffer). Used by COUNT push-down
+/// to take the tail of an ascending shard stream for reverse queries without
+/// disturbing the ascending pipeline.
+pub struct TailIter<I: Iterator> {
+    inner: I,
+    capacity: usize,
+    buf: std::collections::VecDeque<I::Item>,
+    loaded: bool,
+}
+
+impl<I: Iterator> TailIter<I> {
+    pub fn new(inner: I, capacity: usize) -> Self {
+        Self {
+            inner,
+            capacity,
+            buf: std::collections::VecDeque::with_capacity(capacity.min(64)),
+            loaded: false,
+        }
+    }
+}
+
+impl<I: Iterator> Iterator for TailIter<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.loaded {
+            self.loaded = true;
+            if self.capacity == 0 {
+                return None;
+            }
+            for item in self.inner.by_ref() {
+                if self.buf.len() == self.capacity {
+                    self.buf.pop_front();
+                }
+                self.buf.push_back(item);
+            }
+        }
+        self.buf.pop_front()
+    }
+}
+
 const TIMESTAMP_FILTER_INLINE_THRESHOLD: usize = 16;
 
 // this may be overkill, but we'll try optimizing memory for a
@@ -237,5 +279,26 @@ impl TimestampFilter {
             TimestampFilter::Set(set) => set.contains(&ts),
             TimestampFilter::List(list) => list.contains(&ts),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TailIter;
+
+    #[test]
+    fn test_tail_iter() {
+        let tail = |n: usize, items: &[i32]| -> Vec<i32> {
+            TailIter::new(items.iter().copied(), n).collect()
+        };
+
+        // shorter, equal and longer than capacity; order preserved
+        assert_eq!(tail(5, &[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(tail(3, &[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(tail(2, &[1, 2, 3, 4, 5]), vec![4, 5]);
+        assert_eq!(tail(1, &[1, 2, 3]), vec![3]);
+        // degenerate cases
+        assert_eq!(tail(0, &[1, 2, 3]), Vec::<i32>::new());
+        assert_eq!(tail(3, &[]), Vec::<i32>::new());
     }
 }

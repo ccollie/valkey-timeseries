@@ -199,6 +199,7 @@ TS._DEBUG LIST_CONFIGS [VERBOSE]
 | `ts-num-threads`               | integer  | 8               | Number of worker threads for parallel query processing                                  |
 | `ts-fanout-command-timeout`    | duration | —               | Timeout (ms) for fanout (cluster scatter/gather) commands                               |
 | `ts-cluster-map-expiration-ms` | duration | —               | How long (ms) cluster slot-map entries are cached; `0` disables caching                 |
+| `ts-fanout-aggregation-pushdown` | boolean | `yes`          | Shard-side aggregation/reduce push-down for clustered MRANGE; disable during rolling upgrades across this feature boundary |
 
 ### Examples
 

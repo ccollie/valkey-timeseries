@@ -157,6 +157,15 @@ lazy_static! {
     static ref IS_DEBUG_MODE: AtomicBool = AtomicBool::default();
 }
 
+/// Kill switch for shard-side aggregation push-down in MRANGE fanout
+/// (`ts-fanout-aggregation-pushdown`). Consulted by the coordinator only;
+/// shards obey the request flag.
+pub static FANOUT_AGGREGATION_PUSHDOWN: AtomicBool = AtomicBool::new(true);
+
+pub fn is_fanout_aggregation_pushdown_enabled() -> bool {
+    FANOUT_AGGREGATION_PUSHDOWN.load(Ordering::Relaxed)
+}
+
 static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
     LazyLock::new(|| RwLock::from(ConfigSettings::default()));
 
@@ -716,6 +725,19 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         "debug-mode",
         &*IS_DEBUG_MODE,
         debug_mode_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
+
+    let fanout_pushdown_default =
+        get_bool_default_config_value(args, "ts-fanout-aggregation-pushdown", true)?;
+
+    register_bool_configuration(
+        ctx,
+        "ts-fanout-aggregation-pushdown",
+        &FANOUT_AGGREGATION_PUSHDOWN,
+        fanout_pushdown_default,
         ConfigurationFlags::DEFAULT,
         None,
         Some(Box::new(on_bool_config_set)),

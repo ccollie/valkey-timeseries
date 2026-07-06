@@ -10,10 +10,12 @@ mod handlers;
 #[cfg(test)]
 mod handlers_tests;
 mod kahan;
+mod partial_reducer;
 
 pub use aggregate_iterator::*;
 pub use filtered::*;
 pub use handlers::*;
+pub use partial_reducer::*;
 
 #[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketTimestamp {

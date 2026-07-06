@@ -3,17 +3,19 @@ use super::generated::{
     AggregationOptions as FanoutAggregationOptions, AggregationType as FanoutAggregationType,
     AggregatorConfig as FanoutAggregatorConfig, BucketAlignmentType, BucketTimestampType,
     ComparisonOperator as FanoutComparisonOperator, CompressionType as FanoutChunkEncoding,
-    DateRange, GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel,
+    DateRange, GroupPartialSeries, GroupingOptions as FanoutGroupingOptions, Label as FanoutLabel,
     MetaDateRangeFilter as FanoutMetaDateRangeFilter, MultiRangeRequest,
-    PostingStat as FanoutPostingStat, RangeRequest, Sample as FanoutSample,
+    PostingStat as FanoutPostingStat, RangeRequest, ReducePartialState, Sample as FanoutSample,
     SeriesSelector as FanoutSeriesSelector, StatsResponse,
     ValueComparisonFilter as FanoutValueComparisonFilter, ValueRange as FanoutValueFilter,
 };
+use crate::aggregators::PartialState;
 use crate::commands::fanout::MGetValue;
 use crate::common::binop::ComparisonOperator;
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::ChunkEncoding;
+use crate::series::mrange::GroupPartialsResult;
 use crate::series::request_types::{
     AggregationOptions, AggregationType, AggregatorConfig, BucketAlignment, MGetSeriesData,
     MRangeOptions, MatchFilterOptions, MetaDateRangeFilter, RangeGroupingOptions, RangeOptions,
@@ -704,6 +706,9 @@ impl TryFrom<&MRangeOptions> for MultiRangeRequest {
             selected_labels,
             grouping,
             is_reverse: value.is_reverse,
+            apply_aggregation: false,
+            apply_group_reduce: false,
+            apply_count: false,
         })
     }
 }
@@ -726,7 +731,43 @@ impl TryFrom<MRangeOptions> for MultiRangeRequest {
             selected_labels,
             grouping,
             is_reverse: value.is_reverse,
+            apply_aggregation: false,
+            apply_group_reduce: false,
+            apply_count: false,
         })
+    }
+}
+
+impl From<&ReducePartialState> for PartialState {
+    fn from(value: &ReducePartialState) -> Self {
+        Self {
+            count: value.count,
+            acc1: value.acc1,
+            acc2: value.acc2,
+            ts: value.ts,
+        }
+    }
+}
+
+impl From<PartialState> for ReducePartialState {
+    fn from(value: PartialState) -> Self {
+        Self {
+            count: value.count,
+            acc1: value.acc1,
+            acc2: value.acc2,
+            ts: value.ts,
+        }
+    }
+}
+
+impl From<GroupPartialsResult> for GroupPartialSeries {
+    fn from(value: GroupPartialsResult) -> Self {
+        Self {
+            group_label_value: value.group_label_value,
+            source_keys: value.source_keys,
+            bucket_timestamps: value.timestamps,
+            states: value.states.into_iter().map(Into::into).collect(),
+        }
     }
 }
 

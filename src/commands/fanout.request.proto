@@ -274,4 +274,18 @@ message MultiRangeRequest {
   bool with_labels = 4;
   repeated string selected_labels = 5;
   bool is_reverse = 6;
+  // When set, the shard applies range.aggregation per series and returns
+  // buckets instead of raw samples. Never set when range.aggregation is
+  // absent. Absent/false (including requests from older coordinators)
+  // preserves the legacy raw-sample flow.
+  bool apply_aggregation = 7;
+  // When set, the shard pre-reduces its local group members per bucket and
+  // returns group_partials instead of per-series results. Implies
+  // apply_aggregation semantics for the per-series stage. Only set when
+  // grouping is present and the reducer is decomposable.
+  bool apply_group_reduce = 8;
+  // Shard applies range.count as a head/tail pre-filter (direction taken
+  // from is_reverse). The coordinator always re-applies COUNT, so this is
+  // purely a transfer optimization and carries no version hazard.
+  bool apply_count = 9;
 }

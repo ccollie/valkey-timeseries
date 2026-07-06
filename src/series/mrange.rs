@@ -1,9 +1,11 @@
-use crate::common::Sample;
+use crate::aggregators::{PartialReducer, PartialSampleReducer, PartialState};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
+use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::iterators::create_sample_iterator_adapter;
-use crate::iterators::{MultiSeriesSampleIter, SampleReducer, create_range_iterator};
+use crate::iterators::{MultiSeriesSampleIter, SampleReducer, TailIter, create_range_iterator};
 use crate::labels::Label;
+use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{ChunkOps, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
@@ -21,10 +23,125 @@ struct MRangeSeriesMeta<'a> {
     group_label_value: Option<String>,
 }
 
+/// Head/tail pre-filter applied shard-side under COUNT push-down
+/// (`apply_count`). Tail is used for reverse queries: shards stream
+/// ascending, so the last `n` items are the first `n` in requested order.
+/// The coordinator always re-applies COUNT, so this only bounds transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SampleLimit {
+    Head(usize),
+    Tail(usize),
+}
+
+impl SampleLimit {
+    pub(crate) fn apply<'a, I>(self, iter: I) -> Box<dyn Iterator<Item = I::Item> + 'a>
+    where
+        I: Iterator + 'a,
+    {
+        match self {
+            SampleLimit::Head(n) => Box::new(iter.take(n)),
+            SampleLimit::Tail(n) => Box::new(TailIter::new(iter, n)),
+        }
+    }
+}
+
+/// One (group, shard) partial series produced by GROUPBY/REDUCE push-down:
+/// the shard's local members of the group, pre-reduced per bucket timestamp
+/// into mergeable partial states.
+pub(crate) struct GroupPartialsResult {
+    pub group_label_value: String,
+    pub source_keys: Vec<String>,
+    /// Ascending, parallel to `states`.
+    pub timestamps: Vec<Timestamp>,
+    pub states: Vec<PartialState>,
+}
+
+/// Shard-side handler for `apply_group_reduce`: per-series bucket aggregation
+/// (when `AGGREGATION` is present), then a per-group k-way merge and partial
+/// reduce. The caller must have stripped `count` and `is_reverse`.
+pub(crate) fn process_mrange_group_partials(
+    ctx: &Context,
+    options: MRangeOptions,
+    limit: Option<SampleLimit>,
+) -> ValkeyResult<Vec<GroupPartialsResult>> {
+    check_metadata_permissions(ctx)?;
+
+    if options.filters.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+
+    let Some(grouping) = options.grouping.clone() else {
+        return Err(ValkeyError::Str(
+            "TSDB: internal error: group reduce requested without grouping",
+        ));
+    };
+
+    let Some(reducer) = PartialReducer::for_config(&grouping.aggregation) else {
+        // The coordinator only sets apply_group_reduce for decomposable
+        // reducers; reject rather than silently produce wrong results.
+        return Err(ValkeyError::Str(
+            "TSDB: internal error: reducer does not support partial reduce",
+        ));
+    };
+
+    let series_guards = series_by_selectors(ctx, &options.filters, None)?;
+
+    let mut series_metas: Vec<MRangeSeriesMeta> = series_guards
+        .iter()
+        .map(|(guard, key)| MRangeSeriesMeta {
+            series: guard,
+            source_key: key.to_string(),
+            group_label_value: None,
+            latest: get_latest(&options.range, ctx, guard),
+        })
+        .collect();
+
+    collect_group_label_values(&mut series_metas, &grouping);
+    let grouped = group_series_by_label(series_metas, &grouping, false);
+
+    Ok(grouped
+        .into_iter()
+        .iter_into_par()
+        .map(|(label_value, group_data)| {
+            let mut source_keys: Vec<String> = group_data
+                .series
+                .iter()
+                .map(|m| m.source_key.clone())
+                .collect();
+            source_keys.sort();
+
+            // Per-series pipeline (aggregation included when present),
+            // ascending; the group reducer runs once, across series, below.
+            let iterators = group_data
+                .series
+                .iter()
+                .map(|meta| {
+                    create_range_iterator(meta.series, &options.range, &None, meta.latest, false)
+                })
+                .collect::<Vec<_>>();
+
+            let multi_iter = MultiSeriesSampleIter::new(iterators);
+            let rows = PartialSampleReducer::new(multi_iter, reducer.clone());
+            let (timestamps, states) = match limit {
+                Some(limit) => limit.apply(rows).unzip(),
+                None => rows.unzip(),
+            };
+
+            GroupPartialsResult {
+                group_label_value: label_value,
+                source_keys,
+                timestamps,
+                states,
+            }
+        })
+        .collect())
+}
+
 pub(crate) fn process_mrange_query(
     ctx: &Context,
     options: MRangeOptions,
     clustered: bool,
+    limit: Option<SampleLimit>,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
     if options.filters.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
@@ -50,13 +167,14 @@ pub(crate) fn process_mrange_query(
         })
         .collect();
 
-    Ok(process_mrange(series_metas, options, clustered))
+    Ok(process_mrange(series_metas, options, clustered, limit))
 }
 
 fn process_mrange(
     metas: Vec<MRangeSeriesMeta>,
     options: MRangeOptions,
     is_clustered: bool,
+    limit: Option<SampleLimit>,
 ) -> Vec<MRangeSeriesResult> {
     let mut options = options;
     let mut metas = metas;
@@ -77,13 +195,13 @@ fn process_mrange(
     let is_grouped = options.grouping.is_some();
 
     if is_clustered {
-        return handle_non_grouped(metas, options, true);
+        return handle_non_grouped(metas, options, true, limit);
     }
 
     let mut items = if is_grouped {
         handle_grouping(metas, options)
     } else {
-        handle_non_grouped(metas, options, false)
+        handle_non_grouped(metas, options, false, None)
     };
 
     sort_mrange_results(&mut items, is_grouped);
@@ -145,11 +263,16 @@ fn handle_non_grouped(
     metas: Vec<MRangeSeriesMeta>,
     options: MRangeOptions,
     clustered: bool,
+    limit: Option<SampleLimit>,
 ) -> Vec<MRangeSeriesResult> {
     metas
         .into_par()
         .map(|meta| {
             let iter = create_iter(meta.series, &options, meta.latest);
+            let iter = match limit {
+                Some(limit) => limit.apply(iter),
+                None => iter,
+            };
             // if we're clustered, we use gorilla chunks to reduce network usage
             let data = if clustered {
                 let mut chunk = GorillaChunk::with_max_size(16 * 1024); // 16KB - todo: make configurable?
@@ -229,9 +352,20 @@ fn get_grouped_samples(
     // todo(perf): with sufficient memory, we could parallel load all samples into memory first,
     // and construct the MultiSeriesSampleIter from those. In low memory, we could use the code
     // below which iterates sequentially
+    //
+    // Per-series iterators must not apply the group reducer: reduction happens once,
+    // across series, in the SampleReducer below.
     let iterators = series_metas
         .iter()
-        .map(|meta| create_iter(meta.series, options, meta.latest))
+        .map(|meta| {
+            create_range_iterator(
+                meta.series,
+                &options.range,
+                &None,
+                meta.latest,
+                options.is_reverse,
+            )
+        })
         .collect::<Vec<_>>();
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);

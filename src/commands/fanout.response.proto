@@ -54,8 +54,29 @@ message MDelResponse {
   uint64 deleted_count = 1;
 }
 
+// Reducer state for one bucket; field meaning depends on the reducer type
+// (carried in the request). count is the number of accepted (non-rejected)
+// values; acc1/acc2 hold sums, extrema or the selected value; ts is the
+// contributing sample timestamp for first/last.
+message ReducePartialState {
+  uint64 count = 1;
+  double acc1 = 2;
+  double acc2 = 3;
+  int64 ts = 4;
+}
+
+// One (group, shard) partial series. Parallel arrays, ascending timestamps.
+message GroupPartialSeries {
+  string group_label_value = 1;
+  repeated string source_keys = 2;
+  repeated int64 bucket_timestamps = 3;
+  repeated ReducePartialState states = 4;
+}
+
 message MultiRangeResponse {
   repeated SeriesRangeResponse series = 1;
+  // Populated instead of `series` when the request set apply_group_reduce.
+  repeated GroupPartialSeries group_partials = 2;
 }
 
 message IndexQueryResponse {
