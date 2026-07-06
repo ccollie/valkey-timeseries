@@ -9,7 +9,9 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use valkey_module::digest::Digest;
 use valkey_module::{ValkeyError, ValkeyResult, raw};
 
+/// Smallest allowed chunk size in bytes for `CHUNK_SIZE`.
 pub const MIN_CHUNK_SIZE: usize = 48;
+/// Largest allowed chunk size in bytes for `CHUNK_SIZE`.
 pub const MAX_CHUNK_SIZE: usize = 1048576;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, GetSize, Hash)]
@@ -150,6 +152,11 @@ pub trait Chunk: Sized {
     }
 }
 
+/// Validates a configured chunk size (in bytes).
+///
+/// The size must be in the inclusive range [`MIN_CHUNK_SIZE`, `MAX_CHUNK_SIZE`]
+/// and be a multiple of 8. The multiple-of-8 requirement preserves word alignment
+/// expected by bit-packed chunk encoders.
 pub(crate) fn validate_chunk_size(chunk_size_bytes: usize) -> TsdbResult<()> {
     fn get_error_result() -> TsdbResult<()> {
         let msg = format!(
