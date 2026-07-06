@@ -81,8 +81,10 @@ pub trait FanoutCommand: Default + Send + 'static {
     }
 
     fn generate_error_reply(&self) -> FanoutError {
-        let message = "Internal error found.";
-        FanoutError::custom(message)
+        FanoutError::custom(format!(
+            "Internal error in fanout operation '{}'",
+            Self::name()
+        ))
     }
 }
 
