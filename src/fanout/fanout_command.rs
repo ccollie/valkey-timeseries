@@ -190,6 +190,9 @@ where
         self.error_count += 1;
         if error.kind == ErrorKind::Timeout {
             self.timed_out = true;
+            // Zero out outstanding so that any late-arriving responses become
+            // no-ops — rpc_done saturates at 0 and won't retrigger completion.
+            self.outstanding = 0;
             self.on_completion();
             return;
         }
@@ -217,7 +220,9 @@ where
                     // Allow the operation to run its error handler for diagnostics
                     self.operation.on_error(err.clone(), target);
                     self.error_count += 1;
-                    // Immediately complete the fanout (do not wait for other shards)
+                    // Zero out outstanding so late responses are no-ops, then
+                    // immediately complete the fanout (do not wait for other shards).
+                    self.outstanding = 0;
                     self.on_completion();
                 } else {
                     self.on_error(err, target);
