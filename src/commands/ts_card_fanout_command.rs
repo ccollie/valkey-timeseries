@@ -1,9 +1,11 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse};
-use crate::commands::fanout::filters::{deserialize_matchers_list, serialize_matchers_list};
+use crate::commands::fanout::{
+    deserialize_match_filter_options, serialize_match_filter_options,
+};
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::count_matched_series;
-use crate::series::request_types::{MatchFilterOptions, MetaDateRangeFilter};
+use crate::series::request_types::MatchFilterOptions;
 use valkey_module::{Context, Status, ValkeyResult};
 
 #[derive(Default)]
@@ -30,18 +32,14 @@ impl FanoutClientCommand for CardFanoutCommand {
         ctx: &Context,
         req: CardinalityRequest,
     ) -> ValkeyResult<CardinalityResponse> {
-        let date_range: Option<MetaDateRangeFilter> = req.range.map(|r| r.into());
-        let matchers = deserialize_matchers_list(Some(req.filters))?;
-        let count = count_matched_series(ctx, date_range, &matchers)? as u64;
+        let options = deserialize_match_filter_options(req.range, Some(req.filters))?;
+        let count = count_matched_series(ctx, options.date_range, &options.matchers)? as u64;
         Ok(CardinalityResponse { cardinality: count })
     }
 
     fn generate_request(&self) -> CardinalityRequest {
-        let filters = serialize_matchers_list(&self.options.matchers).expect("serialize matchers");
-        CardinalityRequest {
-            range: self.options.date_range.map(|r| r.into()),
-            filters,
-        }
+        let (range, filters) = serialize_match_filter_options(&self.options);
+        CardinalityRequest { range, filters }
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {

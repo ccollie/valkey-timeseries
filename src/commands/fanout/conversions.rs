@@ -382,6 +382,17 @@ pub fn deserialize_match_filter_options(
     })
 }
 
+/// Serialize local [`MatchFilterOptions`] into the protobuf-compatible fields
+/// needed by fanout request messages.  Returns `(range, filters)` suitable for
+/// direct assignment into the generated protobuf request struct.
+pub fn serialize_match_filter_options(
+    options: &MatchFilterOptions,
+) -> (Option<FanoutMetaDateRangeFilter>, Vec<FanoutSeriesSelector>) {
+    let filters = serialize_matchers_list(&options.matchers).expect("serialize matchers list");
+    let range = options.date_range.map(|r| r.into());
+    (range, filters)
+}
+
 impl From<FanoutLabel> for Label {
     fn from(value: FanoutLabel) -> Self {
         let name = value.name.to_string();

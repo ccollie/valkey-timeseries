@@ -1,5 +1,7 @@
-use super::fanout::filters::serialize_matchers_list;
-use super::fanout::{IndexQueryRequest, IndexQueryResponse, deserialize_match_filter_options};
+use super::fanout::{
+    deserialize_match_filter_options, serialize_match_filter_options,
+};
+use super::fanout::{IndexQueryRequest, IndexQueryResponse};
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::series_keys_by_selectors;
@@ -41,9 +43,7 @@ impl FanoutClientCommand for QueryIndexFanoutCommand {
     }
 
     fn generate_request(&self) -> IndexQueryRequest {
-        let filters =
-            serialize_matchers_list(&self.options.matchers).expect("serialize matchers list");
-        let range = self.options.date_range.map(|r| r.into());
+        let (range, filters) = serialize_match_filter_options(&self.options);
         IndexQueryRequest { range, filters }
     }
 
