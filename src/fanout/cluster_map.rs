@@ -15,7 +15,7 @@ use std::sync::{Arc, LazyLock, OnceLock};
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
     CallOptionResp, CallOptionsBuilder, CallReply, CallResult, Context, VALKEYMODULE_NODE_ID_LEN,
-    ValkeyModule_GetMyClusterID,
+    ValkeyError, ValkeyModule_GetMyClusterID,
 };
 
 // Constants
@@ -206,10 +206,7 @@ impl NodeId {
         // SAFETY: caller guarantees node_id_ptr is non-null and points to at
         // least VALKEYMODULE_NODE_ID_LEN bytes of initialized memory.
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                node_id_ptr as *const u8,
-                VALKEYMODULE_NODE_ID_LEN as usize,
-            )
+            std::slice::from_raw_parts(node_id_ptr as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
         };
 
         // In debug builds, verify the bytes look like a hex node ID.
@@ -313,8 +310,7 @@ impl Default for NodeId {
 /// Static buffer holding the current node's ID
 pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(|| {
     let node_id = unsafe {
-        ValkeyModule_GetMyClusterID
-            .expect("ValkeyModule_GetMyClusterID function is unavailable")()
+        ValkeyModule_GetMyClusterID.expect("ValkeyModule_GetMyClusterID function is unavailable")()
     };
     NodeId::from_raw(node_id)
 });
@@ -620,8 +616,11 @@ impl ClusterMap {
     }
 
     /// Build a new ClusterMap by calling CLUSTER SLOTS through the provided API
-    /// implementation. Returns a ClusterMap.
-    pub fn create(ctx: &Context) -> Self {
+    /// implementation. Returns a ClusterMap on success, or a `ValkeyError`
+    /// describing why the map could not be built. Callers are expected to
+    /// handle the error gracefully (e.g. keep the previous, possibly stale map)
+    /// rather than crash the module thread.
+    pub fn create(ctx: &Context) -> Result<Self, ValkeyError> {
         let mut new_map = ClusterMap {
             is_consistent: true,
             ..Default::default()
@@ -639,17 +638,21 @@ impl ClusterMap {
 
         let reply = match res {
             Err(e) => {
-                panic!("Error calling CLUSTER SLOTS: {e}");
+                return Err(ValkeyError::String(format!(
+                    "Error calling CLUSTER SLOTS: {e}"
+                )));
             }
             Ok(CallReply::Array(arr)) => arr,
             _ => {
-                panic!("CLUSTER SLOTS did not return an array");
+                return Err(ValkeyError::Str("CLUSTER SLOTS did not return an array"));
             }
         };
 
         let my_node_id = *CURRENT_NODE_ID;
 
-        assert!(!my_node_id.is_empty(), "Current node id is empty");
+        if my_node_id.is_empty() {
+            return Err(ValkeyError::Str("Current node id is empty"));
+        }
 
         let mut socket_addr_to_node_map: AHashMap<SocketAddress, NodeId> =
             AHashMap::with_capacity(reply.len() / 2 + 1);
@@ -703,7 +706,7 @@ impl ClusterMap {
         let expiration_ms = CLUSTER_MAP_EXPIRATION_MS.load(std::sync::atomic::Ordering::Relaxed);
         new_map.expiration_ts = current_time_millis() + expiration_ms as i64;
 
-        new_map
+        Ok(new_map)
     }
 
     /// Convenience: is the cluster map expired?
