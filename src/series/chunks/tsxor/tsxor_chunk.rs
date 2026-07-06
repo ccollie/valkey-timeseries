@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::mem::size_of;
 
 use crate::common::encoding::{
     try_read_f64_le, try_read_signed_varint, try_read_uvarint, write_f64_le, write_signed_varint,
@@ -17,7 +18,7 @@ use crate::error_consts;
 use crate::iterators::SampleIter;
 use crate::series::chunks::stream::bitstream::BitStream;
 use crate::series::chunks::tsxor::tsxor_decompressor::TsXorDecompressor;
-use crate::series::chunks::{Chunk, merge_samples};
+use crate::series::chunks::{Chunk, ChunkOps, merge_samples};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
@@ -192,42 +193,6 @@ impl TsXorChunk {
         Self::new_encoder(max_size)
     }
 
-    pub fn is_full(&self) -> bool {
-        self.buf().len() >= self.max_size
-    }
-
-    pub fn clear(&mut self) {
-        self.writer.clear();
-        self.window = CacheWindow::new();
-        self.stored_timestamp = 0;
-        self.stored_delta = 0;
-        self.block_timestamp = 0;
-        self.count = 0;
-        self.reset_state();
-    }
-
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
-        if samples.is_empty() {
-            self.clear();
-            return Ok(());
-        }
-        // Invariant: samples are sorted.
-        let first = samples.first().unwrap();
-        let last = samples.last().unwrap();
-        self.first_timestamp = first.timestamp;
-        self.last_timestamp = last.timestamp;
-        self.last_value = last.value;
-        let mut c = Self::new_encoder(self.max_size);
-        for s in samples.iter() {
-            c.append_sample(*s);
-        }
-        *self = c;
-        self.first_timestamp = first.timestamp;
-        self.last_timestamp = last.timestamp;
-        self.last_value = last.value;
-        Ok(())
-    }
-
     pub fn data_size(&self) -> usize {
         self.get_size()
     }
@@ -235,14 +200,6 @@ impl TsXorChunk {
     /// Borrow the internal encoded buffer
     pub fn buf(&self) -> &[u8] {
         self.writer.get_ref()
-    }
-
-    pub fn bytes_per_sample(&self) -> usize {
-        let count = self.len();
-        if count == 0 {
-            return size_of::<Sample>() / 2;
-        }
-        self.data_size() / count
     }
 
     pub fn get_iter(&self, start: Timestamp, end: Timestamp) -> TsXorChunkIterator<'_> {
@@ -438,7 +395,7 @@ impl<'a> Iterator for TsXorChunkIterator<'a> {
     }
 }
 
-impl Chunk for TsXorChunk {
+impl ChunkOps for TsXorChunk {
     fn first_timestamp(&self) -> Timestamp {
         self.first_timestamp
     }
@@ -705,6 +662,56 @@ impl Chunk for TsXorChunk {
         Ok(merge_state.result)
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.buf().len() >= self.max_size
+    }
+
+    fn bytes_per_sample(&self) -> usize {
+        let count = self.len();
+        if count == 0 {
+            return size_of::<Sample>() / 2;
+        }
+        self.data_size() / count
+    }
+
+    fn clear(&mut self) {
+        self.writer.clear();
+        self.window = CacheWindow::new();
+        self.stored_timestamp = 0;
+        self.stored_delta = 0;
+        self.block_timestamp = 0;
+        self.count = 0;
+        self.reset_state();
+    }
+
+    fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+        if samples.is_empty() {
+            self.clear();
+            return Ok(());
+        }
+        // Invariant: samples are sorted.
+        let first = samples.first().unwrap();
+        let last = samples.last().unwrap();
+        self.first_timestamp = first.timestamp;
+        self.last_timestamp = last.timestamp;
+        self.last_value = last.value;
+        let mut c = Self::new_encoder(self.max_size);
+        for s in samples.iter() {
+            c.append_sample(*s);
+        }
+        *self = c;
+        self.first_timestamp = first.timestamp;
+        self.last_timestamp = last.timestamp;
+        self.last_value = last.value;
+        Ok(())
+    }
+}
+
+impl Chunk for TsXorChunk {
     fn split(&mut self) -> TsdbResult<Self>
     where
         Self: Sized,
@@ -747,10 +754,6 @@ impl Chunk for TsXorChunk {
             self.last_value = last.value;
         }
         Ok(right_chunk)
-    }
-
-    fn optimize(&mut self) -> TsdbResult<()> {
-        Ok(())
     }
 
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {

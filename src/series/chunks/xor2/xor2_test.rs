@@ -25,11 +25,11 @@ const MAX_FIRST_ST_CHANGE_ON: usize = 127;
 mod tests {
     use super::*;
     use crate::common::Sample;
-    use crate::series::chunks::Chunk;
     use crate::series::chunks::ChunkEncoding;
     use crate::series::chunks::stream::bitstream::BitStream;
     use crate::series::chunks::timeseries_chunk::TimeSeriesChunk;
     use crate::series::chunks::xor2::xor2_chunk::{STALE_NAN, Xor2Chunk, is_stale_nan};
+    use crate::series::chunks::{Chunk, ChunkOps};
 
     fn write_xor2_new_window_payload(bs: &mut BitStream, delta: u64) -> (u8, u8) {
         let (leading, trailing, sigbits) = xor2_delta_window(delta);

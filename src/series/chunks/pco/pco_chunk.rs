@@ -13,13 +13,13 @@ use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::Chunk;
 use crate::series::chunks::merge::merge_samples;
 use crate::series::chunks::pco::PcoSampleIterator;
 use crate::series::chunks::pco::pco_utils::{
     compress_timestamps, compress_values, decompress_timestamps, decompress_values,
 };
 use crate::series::chunks::utils::get_timestamp_index_bounds;
+use crate::series::chunks::{Chunk, ChunkOps};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use get_size2::GetSize;
@@ -74,38 +74,6 @@ impl PcoChunk {
             max_size,
             ..Self::default()
         }
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.data_size() >= self.max_size
-    }
-
-    pub fn clear(&mut self) {
-        self.count = 0;
-        self.timestamps.clear();
-        self.values.clear();
-        self.min_time = 0;
-        self.max_time = 0;
-        self.last_value = f64::NAN; // todo - use option instead
-    }
-
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
-        if samples.is_empty() {
-            self.clear();
-            return Ok(());
-        }
-        let mut timestamps = get_pooled_vec_i64(samples.len());
-        let mut values = get_pooled_vec_f64(samples.len());
-
-        for sample in samples {
-            timestamps.push(sample.timestamp);
-            values.push(sample.value);
-        }
-
-        self.compress(&timestamps, &values)?;
-        self.min_time = samples[0].timestamp;
-        // todo: complain if size > max_size
-        Ok(())
     }
 
     fn compress(&mut self, timestamps: &[Timestamp], values: &[f64]) -> TsdbResult {
@@ -222,16 +190,6 @@ impl PcoChunk {
         self.timestamps.get_heap_size() + self.values.get_heap_size() + 2 * VEC_BASE_SIZE
     }
 
-    pub fn bytes_per_sample(&self) -> usize {
-        let count = if self.count == 0 {
-            // estimate 50%
-            2
-        } else {
-            self.count
-        };
-        self.data_size() / count
-    }
-
     /// estimate remaining capacity based on the current data size and chunk max_size
     pub fn remaining_capacity(&self) -> usize {
         self.max_size - self.data_size()
@@ -330,7 +288,7 @@ impl PcoChunk {
     }
 }
 
-impl Chunk for PcoChunk {
+impl ChunkOps for PcoChunk {
     fn first_timestamp(&self) -> Timestamp {
         self.min_time
     }
@@ -492,6 +450,56 @@ impl Chunk for PcoChunk {
         Ok(result)
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        self.timestamps.shrink_to_fit();
+        self.values.shrink_to_fit();
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.data_size() >= self.max_size
+    }
+
+    fn bytes_per_sample(&self) -> usize {
+        let count = if self.count == 0 {
+            // estimate 50%
+            2
+        } else {
+            self.count
+        };
+        self.data_size() / count
+    }
+
+    fn clear(&mut self) {
+        self.count = 0;
+        self.timestamps.clear();
+        self.values.clear();
+        self.min_time = 0;
+        self.max_time = 0;
+        self.last_value = f64::NAN; // todo - use option instead
+    }
+
+    fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+        if samples.is_empty() {
+            self.clear();
+            return Ok(());
+        }
+        let mut timestamps = get_pooled_vec_i64(samples.len());
+        let mut values = get_pooled_vec_f64(samples.len());
+
+        for sample in samples {
+            timestamps.push(sample.timestamp);
+            values.push(sample.value);
+        }
+
+        self.compress(&timestamps, &values)?;
+        self.min_time = samples[0].timestamp;
+        // todo: complain if size > max_size
+        Ok(())
+    }
+}
+
+impl Chunk for PcoChunk {
     fn split(&mut self) -> TsdbResult<Self>
     where
         Self: Sized,
@@ -520,12 +528,6 @@ impl Chunk for PcoChunk {
         }
 
         Ok(result)
-    }
-
-    fn optimize(&mut self) -> TsdbResult<()> {
-        self.timestamps.shrink_to_fit();
-        self.values.shrink_to_fit();
-        Ok(())
     }
 
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
@@ -695,9 +697,8 @@ fn remove_values_in_range(
 #[cfg(test)]
 mod tests {
     use crate::common::{Sample, Timestamp};
-    use crate::series::chunks::Chunk;
-    use crate::series::chunks::PcoChunk;
     use crate::series::chunks::pco::pco_chunk::remove_values_in_range;
+    use crate::series::chunks::{Chunk, ChunkOps, PcoChunk};
     use crate::series::{DuplicatePolicy, SampleAddResult};
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;

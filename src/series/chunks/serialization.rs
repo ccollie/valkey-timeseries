@@ -1,5 +1,5 @@
 use crate::common::Sample;
-use crate::series::chunks::{GorillaChunk, PcoChunk, TimeSeriesChunk, UncompressedChunk};
+use crate::series::chunks::{ChunkOps, GorillaChunk, PcoChunk, TimeSeriesChunk, UncompressedChunk};
 use valkey_module::{ValkeyError, ValkeyResult};
 
 // for future compatibility

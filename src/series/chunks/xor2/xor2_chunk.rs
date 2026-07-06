@@ -74,7 +74,7 @@ use crate::common::rdb::{
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::chunk::Chunk;
+use crate::series::chunks::chunk::{Chunk, ChunkOps};
 use crate::series::chunks::stream::bitstream::{BitStream, ONE, ZERO};
 use crate::series::chunks::stream::varbit::put_varbit_int_fast;
 use crate::series::{DuplicatePolicy, SampleAddResult};
@@ -229,41 +229,6 @@ impl Xor2Chunk {
 
     pub fn reset(&mut self, stream: Vec<u8>) {
         self.stream.reset(stream);
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.size() >= self.max_size
-    }
-
-    pub fn bytes_per_sample(&self) -> usize {
-        // conservative constant estimate
-        crate::common::SAMPLE_SIZE
-    }
-
-    pub fn clear(&mut self) {
-        let stream = vec![0u8; CHUNK_HEADER_SIZE + ST_HEADER_SIZE];
-        self.stream.reset(stream);
-        self.st = 0;
-        self.ts = i64::MIN;
-        self.v = 0.0;
-        self.t_delta = 0;
-        self.st_diff = 0;
-        self.leading = 0xFF;
-        self.trailing = 0;
-        self.num_total = 0;
-        self.first_st_change_on = 0;
-        self.first_st_known = false;
-        self.first_timestamp = 0;
-        self.last_timestamp = 0;
-        self.last_value = f64::NAN;
-    }
-
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
-        self.clear();
-        for sample in samples.iter() {
-            self.add_sample(sample)?;
-        }
-        Ok(())
     }
 
     fn write_v_delta(&mut self, v: f64) {
@@ -621,7 +586,7 @@ pub(super) fn is_stale_nan(v: f64) -> bool {
     v.to_bits() == STALE_NAN
 }
 
-impl Chunk for Xor2Chunk {
+impl ChunkOps for Xor2Chunk {
     fn first_timestamp(&self) -> Timestamp {
         self.first_timestamp
     }
@@ -815,6 +780,48 @@ impl Chunk for Xor2Chunk {
         Ok(state_res)
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        self.compact();
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.size() >= self.max_size
+    }
+
+    fn bytes_per_sample(&self) -> usize {
+        // conservative constant estimate
+        crate::common::SAMPLE_SIZE
+    }
+
+    fn clear(&mut self) {
+        let stream = vec![0u8; CHUNK_HEADER_SIZE + ST_HEADER_SIZE];
+        self.stream.reset(stream);
+        self.st = 0;
+        self.ts = i64::MIN;
+        self.v = 0.0;
+        self.t_delta = 0;
+        self.st_diff = 0;
+        self.leading = 0xFF;
+        self.trailing = 0;
+        self.num_total = 0;
+        self.first_st_change_on = 0;
+        self.first_st_known = false;
+        self.first_timestamp = 0;
+        self.last_timestamp = 0;
+        self.last_value = f64::NAN;
+    }
+
+    fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+        self.clear();
+        for sample in samples.iter() {
+            self.add_sample(sample)?;
+        }
+        Ok(())
+    }
+}
+
+impl Chunk for Xor2Chunk {
     fn split(&mut self) -> TsdbResult<Self> {
         let mut left_chunk = Xor2Chunk::with_max_size(self.max_size);
         let mut right_chunk = Xor2Chunk::with_max_size(self.max_size);
@@ -839,11 +846,6 @@ impl Chunk for Xor2Chunk {
 
         *self = left_chunk;
         Ok(right_chunk)
-    }
-
-    fn optimize(&mut self) -> TsdbResult<()> {
-        self.compact();
-        Ok(())
     }
 
     fn save_rdb(&self, rdb: *mut raw::RedisModuleIO) {

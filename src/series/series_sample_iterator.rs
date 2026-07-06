@@ -1,7 +1,7 @@
 use crate::common::{Sample, Timestamp};
 use crate::iterators::SampleIter;
 use crate::series::TimeSeries;
-use crate::series::chunks::{Chunk, TimeSeriesChunk};
+use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
 use crate::series::request_types::RangeOptions;
 
 /// An iterator over samples in a TimeSeries within a specified timestamp range.

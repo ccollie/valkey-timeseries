@@ -8,7 +8,7 @@ use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::labels::{InternedLabel, MetricName};
 use crate::series::DuplicatePolicy;
-use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk, validate_chunk_size};
+use crate::series::chunks::{Chunk, ChunkEncoding, ChunkOps, TimeSeriesChunk, validate_chunk_size};
 use crate::series::compaction::CompactionRule;
 use crate::series::digest::{
     calc_compaction_digest, calc_duplicate_policy_digest, calc_metric_name_digest,

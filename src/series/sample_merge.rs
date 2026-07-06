@@ -2,7 +2,7 @@ use crate::common::hash::IntMap;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
 use crate::error_consts;
-use crate::series::chunks::{Chunk, TimeSeriesChunk};
+use crate::series::chunks::{Chunk, ChunkOps, TimeSeriesChunk};
 use crate::series::index::get_series_key_by_id;
 use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, find_last_ge_index};
 use orx_parallel::ParIterResult;

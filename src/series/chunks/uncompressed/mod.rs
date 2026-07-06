@@ -4,8 +4,8 @@ use crate::common::rdb::{rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usiz
 use crate::common::{SAMPLE_SIZE, Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::Chunk;
 use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::{Chunk, ChunkOps};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
 use core::mem::size_of;
@@ -82,20 +82,6 @@ impl UncompressedChunk {
         }
     }
 
-    pub fn is_full(&self) -> bool {
-        self.len() >= self.max_elements
-    }
-
-    pub fn clear(&mut self) {
-        self.samples.clear();
-    }
-
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
-        self.samples = samples.to_vec();
-        // todo: complain if size > max_size
-        Ok(())
-    }
-
     fn handle_insert(&mut self, sample: Sample, policy: DuplicatePolicy) -> TsdbResult<()> {
         let ts = sample.timestamp;
 
@@ -110,10 +96,6 @@ impl UncompressedChunk {
             self.samples.push(sample);
         }
         Ok(())
-    }
-
-    pub fn bytes_per_sample(&self) -> usize {
-        SAMPLE_SIZE
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Sample> + '_ {
@@ -284,7 +266,7 @@ fn get_sample_index(samples: &[Sample], ts: Timestamp) -> (usize, bool) {
     }
 }
 
-impl Chunk for UncompressedChunk {
+impl ChunkOps for UncompressedChunk {
     fn first_timestamp(&self) -> Timestamp {
         if self.samples.is_empty() {
             return 0;
@@ -425,6 +407,31 @@ impl Chunk for UncompressedChunk {
         Ok(state.res)
     }
 
+    fn optimize(&mut self) -> TsdbResult<()> {
+        self.samples.shrink_to_fit();
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.len() >= self.max_elements
+    }
+
+    fn bytes_per_sample(&self) -> usize {
+        SAMPLE_SIZE
+    }
+
+    fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+        self.samples = samples.to_vec();
+        // todo: complain if size > max_size
+        Ok(())
+    }
+}
+
+impl Chunk for UncompressedChunk {
     fn split(&mut self) -> TsdbResult<Self>
     where
         Self: Sized,
@@ -449,11 +456,6 @@ impl Chunk for UncompressedChunk {
             samples: right.to_vec(),
             max_elements: self.max_elements,
         })
-    }
-
-    fn optimize(&mut self) -> TsdbResult<()> {
-        self.samples.shrink_to_fit();
-        Ok(())
     }
 
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
@@ -518,7 +520,7 @@ impl Chunk for UncompressedChunk {
 #[cfg(test)]
 mod tests {
     use crate::common::{SAMPLE_SIZE, Sample};
-    use crate::series::chunks::{Chunk, UncompressedChunk};
+    use crate::series::chunks::{Chunk, ChunkOps, UncompressedChunk};
     use crate::series::{DuplicatePolicy, SampleAddResult};
 
     #[test]

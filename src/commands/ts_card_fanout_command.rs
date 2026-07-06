@@ -1,7 +1,5 @@
 use super::fanout::generated::{CardinalityRequest, CardinalityResponse};
-use crate::commands::fanout::{
-    deserialize_match_filter_options, serialize_match_filter_options,
-};
+use crate::commands::fanout::{deserialize_match_filter_options, serialize_match_filter_options};
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::count_matched_series;

@@ -3,7 +3,7 @@ mod tests {
     use crate::common::rounding::RoundingStrategy;
     use crate::common::time::current_time_millis;
     use crate::common::{Sample, Timestamp};
-    use crate::series::chunks::{Chunk, ChunkEncoding, GorillaChunk, TimeSeriesChunk};
+    use crate::series::chunks::{ChunkEncoding, ChunkOps, GorillaChunk, TimeSeriesChunk};
     use crate::series::{
         DuplicatePolicy, SampleAddResult, TimeSeries, TimeSeriesOptions, ValueFilter,
     };

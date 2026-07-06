@@ -7,7 +7,7 @@ use crate::aggregators::{AggregationHandler, Aggregator};
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
 use crate::error_consts;
-use crate::series::chunks::{Chunk, TimeSeriesChunk};
+use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
 use crate::series::compaction::get_destination_series;
 use crate::series::index::with_timeseries_postings;
 use crate::series::{CompactionRule, DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};

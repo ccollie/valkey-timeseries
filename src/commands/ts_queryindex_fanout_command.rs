@@ -1,7 +1,5 @@
-use super::fanout::{
-    deserialize_match_filter_options, serialize_match_filter_options,
-};
 use super::fanout::{IndexQueryRequest, IndexQueryResponse};
+use super::fanout::{deserialize_match_filter_options, serialize_match_filter_options};
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::series_keys_by_selectors;

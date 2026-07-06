@@ -3,7 +3,7 @@ use crate::common::logging::log_warning;
 use crate::error_consts;
 use crate::labels::Label;
 use crate::series::TimeSeries;
-use crate::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
+use crate::series::chunks::{Chunk, ChunkEncoding, ChunkOps, TimeSeriesChunk};
 use crate::series::request_types::MRangeSeriesResult;
 use valkey_module::{ValkeyError, ValkeyResult};
 

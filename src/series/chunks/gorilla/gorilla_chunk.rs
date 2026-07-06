@@ -7,7 +7,7 @@ use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::error_consts;
 use crate::iterators::SampleIter;
-use crate::series::chunks::chunk::Chunk;
+use crate::series::chunks::chunk::{Chunk, ChunkOps};
 use crate::series::chunks::merge::merge_samples;
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use ahash::AHashSet;
@@ -37,22 +37,6 @@ impl GorillaChunk {
         }
     }
 
-    pub fn is_full(&self) -> bool {
-        let data_size = self.encoder.buf().len();
-        data_size >= self.max_size
-    }
-
-    pub fn clear(&mut self) {
-        self.encoder.clear();
-    }
-
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult {
-        debug_assert!(!samples.is_empty());
-        self.compress(samples)?;
-        // todo: complain if size > max_size
-        Ok(())
-    }
-
     fn compress(&mut self, samples: &[Sample]) -> TsdbResult {
         let mut encoder = GorillaEncoder::new();
         for sample in samples {
@@ -73,15 +57,6 @@ impl GorillaChunk {
 
     pub fn data_size(&self) -> usize {
         self.encoder.get_size()
-    }
-
-    pub fn bytes_per_sample(&self) -> usize {
-        let count = self.len();
-        if count == 0 {
-            // estimate 50%
-            return size_of::<Sample>() / 2;
-        }
-        self.data_size() / count
     }
 
     /// estimate remaining capacity based on the current data size and chunk max_size
@@ -111,7 +86,7 @@ impl GorillaChunk {
     }
 }
 
-impl Chunk for GorillaChunk {
+impl ChunkOps for GorillaChunk {
     fn first_timestamp(&self) -> Timestamp {
         self.encoder.first_ts
     }
@@ -298,6 +273,38 @@ impl Chunk for GorillaChunk {
         Ok(merge_state.result)
     }
 
+    fn optimize(&mut self) -> TsdbResult {
+        self.encoder.shrink_to_fit();
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        let data_size = self.encoder.buf().len();
+        data_size >= self.max_size
+    }
+
+    fn bytes_per_sample(&self) -> usize {
+        let count = self.len();
+        if count == 0 {
+            // estimate 50%
+            return size_of::<Sample>() / 2;
+        }
+        self.data_size() / count
+    }
+
+    fn clear(&mut self) {
+        self.encoder.clear();
+    }
+
+    fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
+        debug_assert!(!samples.is_empty());
+        self.compress(samples)?;
+        // todo: complain if size > max_size
+        Ok(())
+    }
+}
+
+impl Chunk for GorillaChunk {
     fn split(&mut self) -> TsdbResult<Self>
     where
         Self: Sized,
@@ -321,11 +328,6 @@ impl Chunk for GorillaChunk {
         }
         self.encoder = left_chunk;
         Ok(right_chunk)
-    }
-
-    fn optimize(&mut self) -> TsdbResult {
-        self.encoder.shrink_to_fit();
-        Ok(())
     }
 
     fn save_rdb(&self, rdb: *mut RedisModuleIO) {
@@ -435,6 +437,7 @@ impl Iterator for GorillaChunkIterator<'_> {
 mod tests {
     use crate::common::Sample;
     use crate::series::DuplicatePolicy;
+    use crate::series::chunks::ChunkOps;
     use crate::series::chunks::chunk::Chunk;
     use crate::series::chunks::gorilla::gorilla_chunk::GorillaChunk;
     use crate::tests::generators::DataGenerator;

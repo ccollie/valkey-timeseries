@@ -1,9 +1,10 @@
 use crate::common::{Sample, Timestamp};
 use crate::iterators::SampleIter;
 use crate::series::TimeSeries;
-use crate::series::chunks::{Chunk, TimeSeriesChunk};
+use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
 use smallvec::SmallVec;
 use std::borrow::Cow;
+use logos::Source;
 
 /// Specialized iterator to handle timestamp filtering for a time series. For each timestamp it
 /// returns a `sample` if a sample with an exact timestamp match exists in the series,

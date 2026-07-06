@@ -1,4 +1,4 @@
-use super::chunks::{Chunk, merge_by_capacity};
+use super::chunks::{ChunkOps, merge_by_capacity};
 use super::time_series::TimeSeries;
 use crate::error::TsdbResult;
 

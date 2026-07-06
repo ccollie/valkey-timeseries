@@ -5,7 +5,7 @@ use crate::iterators::create_sample_iterator_adapter;
 use crate::iterators::{MultiSeriesSampleIter, SampleReducer, create_range_iterator};
 use crate::labels::Label;
 use crate::series::acl::check_metadata_permissions;
-use crate::series::chunks::{Chunk, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
+use crate::series::chunks::{ChunkOps, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
     MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions,

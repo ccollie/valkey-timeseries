@@ -7,7 +7,7 @@ mod tests {
     use crate::series::chunks::merge::merge_by_capacity;
     use crate::series::{
         DuplicatePolicy, SampleAddResult,
-        chunks::{Chunk, ChunkEncoding, TimeSeriesChunk},
+        chunks::{Chunk, ChunkEncoding, ChunkOps, TimeSeriesChunk},
     };
     use crate::tests::generators::{DataGenerator, RandAlgo};
     use std::time::Duration;

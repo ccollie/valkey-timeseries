@@ -1,3 +1,4 @@
+use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_u8, rdb_save_u8};
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
@@ -10,15 +11,17 @@ use crate::series::chunks::xor2::Xor2Chunk;
 use crate::series::types::ValueFilter;
 use crate::series::{
     DuplicatePolicy, SampleAddResult,
-    chunks::{Chunk, ChunkEncoding, GorillaChunk, PcoChunk, UncompressedChunk},
+    chunks::{Chunk, ChunkEncoding, ChunkOps, GorillaChunk, PcoChunk, UncompressedChunk},
 };
 use core::mem::size_of;
+use enum_dispatch::enum_dispatch;
 use get_size2::GetSize;
 use std::cmp::Ordering;
 use valkey_module::digest::Digest;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
 #[derive(Debug, Clone, Hash, PartialEq, GetSize)]
+#[enum_dispatch(ChunkOps)]
 pub enum TimeSeriesChunk {
     Uncompressed(UncompressedChunk),
     Gorilla(GorillaChunk),
@@ -51,17 +54,6 @@ impl TimeSeriesChunk {
         }
     }
 
-    pub fn is_full(&self) -> bool {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.is_full(),
-            Gorilla(chunk) => chunk.is_full(),
-            TsXor(chunk) => chunk.is_full(),
-            Xor(chunk) => chunk.is_full(),
-            Pco(chunk) => chunk.is_full(),
-        }
-    }
-
     pub fn get_encoding(&self) -> ChunkEncoding {
         match self {
             TimeSeriesChunk::Uncompressed(_) => ChunkEncoding::Uncompressed,
@@ -72,20 +64,11 @@ impl TimeSeriesChunk {
         }
     }
 
-    pub fn bytes_per_sample(&self) -> usize {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.bytes_per_sample(),
-            Gorilla(chunk) => chunk.bytes_per_sample(),
-            TsXor(chunk) => chunk.bytes_per_sample(),
-            Xor(chunk) => chunk.bytes_per_sample(),
-            Pco(chunk) => chunk.bytes_per_sample(),
-        }
-    }
-
     pub fn utilization(&self) -> f64 {
         let total = self.max_size();
-        if total == 0 { return 0.0; }
+        if total == 0 {
+            return 0.0;
+        }
         self.size() as f64 / total as f64
     }
 
@@ -102,17 +85,6 @@ impl TimeSeriesChunk {
             return 0;
         }
         remaining / bytes_per_sample
-    }
-
-    pub fn clear(&mut self) {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.clear(),
-            Gorilla(chunk) => chunk.clear(),
-            TsXor(chunk) => chunk.clear(),
-            Xor(chunk) => chunk.clear(),
-            Pco(chunk) => chunk.clear(),
-        }
     }
 
     pub fn is_timestamp_in_range(&self, ts: Timestamp) -> bool {
@@ -169,7 +141,15 @@ impl TimeSeriesChunk {
                 start,
                 end,
             )),
-            Xor(chunk) => SampleIter::xor2(chunk.range_iter(start, end)),
+            Xor(chunk) => match chunk.get_range(start, end) {
+                Ok(samples) => SampleIter::vec(samples),
+                Err(e) => {
+                    log_warning(format!(
+                        "Xor2Chunk range_iter failed (start={start}, end={end}): {e:?}",
+                    ));
+                    SampleIter::Empty
+                }
+            },
             Pco(chunk) => chunk.range_iter(start, end),
         }
     }
@@ -236,10 +216,15 @@ impl TimeSeriesChunk {
     ) -> Vec<Sample> {
         let mut samples = if let Some(ts_filter) = timestamp_filter {
             let filtered_ts = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
-            self.samples_by_timestamps(&filtered_ts).unwrap_or_default()
+            self.samples_by_timestamps(&filtered_ts)
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
         } else {
             self.get_range(start_timestamp, end_timestamp)
                 .unwrap_or_default()
+                .into_iter()
+                .collect()
         };
 
         if let Some(value_filter) = value_filter {
@@ -248,15 +233,23 @@ impl TimeSeriesChunk {
         samples
     }
 
-    pub fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()> {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.set_data(samples),
-            Gorilla(chunk) => chunk.set_data(samples),
-            TsXor(chunk) => chunk.set_data(samples),
-            Xor(chunk) => chunk.set_data(samples),
-            Pco(chunk) => chunk.set_data(samples),
+    /// Merge a range of samples into this chunk.
+    /// If the chunk is full or the other chunk is empty, it returns 0.
+    /// Duplicate values are handled according to `duplicate_policy`.
+    /// Samples with timestamps before `retention_threshold` will be ignored, whether
+    /// they fall with the given range [start_ts..end_ts].
+    /// Returns the number of samples merged.
+    pub fn merge_range(
+        &mut self,
+        sample_iter: impl Iterator<Item = Sample>,
+        duplicate_policy: Option<DuplicatePolicy>,
+    ) -> TsdbResult<usize> {
+        if self.is_full() {
+            return Ok(0);
         }
+        let samples = sample_iter.collect::<Vec<Sample>>();
+        let res = self.merge_samples(&samples, duplicate_policy)?;
+        Ok(res.iter().filter(|s| s.is_ok()).count())
     }
 
     pub fn memory_usage(&self) -> usize {
@@ -329,135 +322,6 @@ impl Default for TimeSeriesChunk {
 }
 
 impl Chunk for TimeSeriesChunk {
-    fn first_timestamp(&self) -> Timestamp {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(uncompressed) => uncompressed.first_timestamp(),
-            Gorilla(gorilla) => gorilla.first_timestamp(),
-            TsXor(tsxor) => tsxor.first_timestamp(),
-            Xor(xor) => xor.first_timestamp(),
-            Pco(compressed) => compressed.first_timestamp(),
-        }
-    }
-
-    fn last_timestamp(&self) -> Timestamp {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.last_timestamp(),
-            Gorilla(chunk) => chunk.last_timestamp(),
-            TsXor(chunk) => chunk.last_timestamp(),
-            Xor(chunk) => chunk.last_timestamp(),
-            Pco(chunk) => chunk.last_timestamp(),
-        }
-    }
-
-    fn len(&self) -> usize {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.len(),
-            Gorilla(chunk) => chunk.len(),
-            TsXor(chunk) => chunk.len(),
-            Xor(chunk) => chunk.len(),
-            Pco(chunk) => chunk.len(),
-        }
-    }
-
-    fn last_value(&self) -> f64 {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.last_value(),
-            Gorilla(chunk) => chunk.last_value(),
-            TsXor(chunk) => chunk.last_value(),
-            Xor(chunk) => chunk.last_value(),
-            Pco(chunk) => chunk.last_value(),
-        }
-    }
-
-    fn size(&self) -> usize {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.size(),
-            Gorilla(chunk) => chunk.size(),
-            TsXor(chunk) => chunk.size(),
-            Xor(chunk) => chunk.size(),
-            Pco(chunk) => chunk.size(),
-        }
-    }
-
-    fn max_size(&self) -> usize {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.max_size(),
-            Gorilla(chunk) => chunk.max_size(),
-            TsXor(chunk) => chunk.max_size(),
-            Xor(chunk) => chunk.max_size(),
-            Pco(chunk) => chunk.max_size(),
-        }
-    }
-
-    fn remove_range(&mut self, start_ts: Timestamp, end_ts: Timestamp) -> TsdbResult<usize> {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.remove_range(start_ts, end_ts),
-            Gorilla(chunk) => chunk.remove_range(start_ts, end_ts),
-            TsXor(chunk) => chunk.remove_range(start_ts, end_ts),
-            Xor(chunk) => chunk.remove_range(start_ts, end_ts),
-            Pco(chunk) => chunk.remove_range(start_ts, end_ts),
-        }
-    }
-
-    fn add_sample(&mut self, sample: &Sample) -> TsdbResult<()> {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.add_sample(sample),
-            Gorilla(chunk) => chunk.add_sample(sample),
-            TsXor(chunk) => chunk.add_sample(sample),
-            Xor(chunk) => chunk.add_sample(sample),
-            Pco(chunk) => chunk.add_sample(sample),
-        }
-    }
-
-    fn get_range(&self, start: Timestamp, end: Timestamp) -> TsdbResult<Vec<Sample>> {
-        debug_assert!(start <= end);
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.get_range(start, end),
-            Gorilla(chunk) => chunk.get_range(start, end),
-            TsXor(chunk) => chunk.get_range(start, end),
-            Xor(chunk) => chunk.get_range(start, end),
-            Pco(chunk) => chunk.get_range(start, end),
-        }
-    }
-
-    fn upsert_sample(&mut self, sample: Sample, dp_policy: DuplicatePolicy) -> TsdbResult<usize> {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.upsert_sample(sample, dp_policy),
-            Gorilla(chunk) => chunk.upsert_sample(sample, dp_policy),
-            TsXor(chunk) => chunk.upsert_sample(sample, dp_policy),
-            Xor(chunk) => chunk.upsert_sample(sample, dp_policy),
-            Pco(chunk) => chunk.upsert_sample(sample, dp_policy),
-        }
-    }
-
-    fn merge_samples(
-        &mut self,
-        samples: &[Sample],
-        dp_policy: Option<DuplicatePolicy>,
-    ) -> TsdbResult<Vec<SampleAddResult>> {
-        use TimeSeriesChunk::*;
-
-        debug_assert!(!samples.is_empty());
-
-        match self {
-            Uncompressed(chunk) => chunk.merge_samples(samples, dp_policy),
-            Gorilla(chunk) => chunk.merge_samples(samples, dp_policy),
-            TsXor(chunk) => chunk.merge_samples(samples, dp_policy),
-            Xor(chunk) => chunk.merge_samples(samples, dp_policy),
-            Pco(chunk) => chunk.merge_samples(samples, dp_policy),
-        }
-    }
-
     fn split(&mut self) -> TsdbResult<Self>
     where
         Self: Sized,
@@ -469,17 +333,6 @@ impl Chunk for TimeSeriesChunk {
             TsXor(chunk) => Ok(TsXor(chunk.split()?)),
             Xor(chunk) => Ok(Xor(chunk.split()?)),
             Pco(chunk) => Ok(Pco(chunk.split()?)),
-        }
-    }
-
-    fn optimize(&mut self) -> TsdbResult {
-        use TimeSeriesChunk::*;
-        match self {
-            Uncompressed(chunk) => chunk.optimize(),
-            Gorilla(chunk) => chunk.optimize(),
-            TsXor(chunk) => chunk.optimize(),
-            Xor(chunk) => chunk.optimize(),
-            Pco(chunk) => chunk.optimize(),
         }
     }
 

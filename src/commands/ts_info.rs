@@ -3,7 +3,7 @@ use crate::common::rounding::RoundingStrategy;
 use crate::series::index::get_timeseries_index;
 use crate::series::{
     SeriesRef, TimeSeries,
-    chunks::{Chunk, TimeSeriesChunk},
+    chunks::{ChunkOps, TimeSeriesChunk},
     get_timeseries,
 };
 use blart::AsBytes;
