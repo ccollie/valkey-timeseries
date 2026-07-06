@@ -59,7 +59,6 @@ impl InFlightRequest {
     }
 
     fn get_target_node_opt(&self, sender_id: *const c_char) -> Option<&NodeInfo> {
-        // SAFETY: sender_id is expected to be a valid pointer to a 40-byte node ID
         let sender = NodeId::from_raw(sender_id);
         self.targets.get(&sender)
     }

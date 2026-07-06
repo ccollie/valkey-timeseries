@@ -171,19 +171,53 @@ pub type NodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for nu
 pub struct NodeId(NodeIdBuf);
 
 impl NodeId {
+    /// Construct a [`NodeId`] from a raw `*const c_char` pointer returned by the
+    /// Valkey C API (e.g., [`ValkeyModule_GetMyClusterID`], cluster-message
+    /// sender IDs, or `CLUSTER SLOTS` reply fields).
+    ///
+    /// This is the **only** place in the codebase that converts a raw pointer
+    /// into a [`NodeId`].  All other code should obtain [`NodeId`] values
+    /// through this constructor or via [`NodeId::from_bytes`].
+    ///
+    /// # Null pointers
+    ///
+    /// If `node_id_ptr` is null, an empty (all-zero) [`NodeId`] is returned
+    /// silently.  This is intentional: several call-sites receive possibly-null
+    /// pointers from Valkey and rely on the resulting empty [`NodeId`] to
+    /// represent "no node" without an additional null-check at every call-site.
+    ///
+    /// # Safety
+    ///
+    /// When `node_id_ptr` is **non-null**, the caller must ensure it points to
+    /// a buffer of at least [`VALKEYMODULE_NODE_ID_LEN`] bytes (40) holding a
+    /// hex-encoded, null-terminated node ID string, e.g.
+    /// `"07c37dfeb235213a872192d90877d0cd55635b91"`.  The pointer is only read;
+    /// the bytes are copied into an owned buffer and the pointer is not retained.
+    ///
+    /// This function is safe to call from any thread — it performs no
+    /// synchronisation and only reads from the caller-provided pointer.
     pub fn from_raw(node_id_ptr: *const std::os::raw::c_char) -> Self {
         let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
-        // SAFETY: node_id_ptr is expected to be a valid pointer to a 40-byte node ID
-        let bytes = if node_id_ptr.is_null() {
-            &[]
-        } else {
-            unsafe {
-                std::slice::from_raw_parts(
-                    node_id_ptr as *const u8,
-                    VALKEYMODULE_NODE_ID_LEN as usize,
-                )
-            }
+
+        if node_id_ptr.is_null() {
+            return NodeId(buf);
+        }
+
+        // SAFETY: caller guarantees node_id_ptr is non-null and points to at
+        // least VALKEYMODULE_NODE_ID_LEN bytes of initialized memory.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                node_id_ptr as *const u8,
+                VALKEYMODULE_NODE_ID_LEN as usize,
+            )
         };
+
+        // In debug builds, verify the bytes look like a hex node ID.
+        debug_assert!(
+            bytes.iter().all(|b| b.is_ascii_hexdigit() || *b == 0),
+            "NodeId::from_raw: non-null pointer contains non-hex bytes"
+        );
+
         let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
         buf[..len].copy_from_slice(&bytes[..len]);
         NodeId(buf)
@@ -277,13 +311,13 @@ impl Default for NodeId {
 }
 
 /// Static buffer holding the current node's ID
-pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(||
-    // Safety: We ensure that the buffer is properly initialized with the current node ID
-    unsafe {
-        let node_id = ValkeyModule_GetMyClusterID
-            .expect("ValkeyModule_GetMyClusterID function is unavailable")();
-        NodeId::from_raw(node_id)
-    });
+pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(|| {
+    let node_id = unsafe {
+        ValkeyModule_GetMyClusterID
+            .expect("ValkeyModule_GetMyClusterID function is unavailable")()
+    };
+    NodeId::from_raw(node_id)
+});
 
 /// Information about a cluster node
 #[derive(Copy, Clone, PartialEq, Eq)]
