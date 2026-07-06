@@ -51,12 +51,23 @@ pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> Arc<HashSet<
     CLUSTER_MAP.load().get_targets(mode)
 }
 
-// Refresh the cluster map by creating a new one from the current cluster state
+// Refresh the cluster map by creating a new one from the current cluster state.
+// If building the new map fails (e.g. CLUSTER SLOTS returns an error), the
+// previous map is kept in place and a warning is logged so subsequent calls
+// will retry the refresh.
 pub fn refresh_cluster_map(ctx: &Context) {
     ctx.log_notice("Refreshing cluster map...");
-    let new_map = ClusterMap::create(ctx);
-    update_cluster_map(new_map);
-    ctx.log_notice("Cluster map refreshed");
+    match ClusterMap::create(ctx) {
+        Ok(new_map) => {
+            update_cluster_map(new_map);
+            ctx.log_notice("Cluster map refreshed");
+        }
+        Err(e) => {
+            ctx.log_warning(&format!(
+                "Failed to refresh cluster map, keeping previous map: {e}"
+            ));
+        }
+    }
 }
 
 pub fn get_or_refresh_cluster_map(ctx: &Context) -> Arc<ClusterMap> {
