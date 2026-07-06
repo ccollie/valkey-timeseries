@@ -1,3 +1,13 @@
+//! High-level label query APIs layered on top of index postings and selector queriers.
+//!
+//! This module provides label-oriented discovery features (value listing, fuzzy matching,
+//! similarity ranking, cardinality-aware sorting, and bounded result shaping) that are
+//! consumed by label commands.
+//!
+//! Compared with `querier.rs`, which focuses on selector-to-series resolution with ACL and
+//! series materialization, this module is value-centric: it evaluates and ranks label values
+//! using index primitives while reusing selector hints when available.
+
 use super::{
     FuzzyFilter, IndexKey, PostingsBitmap, SimilarityFilter, get_timeseries_index,
     series_by_selectors,

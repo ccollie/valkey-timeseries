@@ -12,6 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Query bridge between command handlers and the low-level postings planner.
+//!
+//! This module is responsible for translating selector-oriented command workflows into
+//! series IDs/keys/guards by delegating bitmap planning to [`Postings`].
+//! It owns cross-cutting concerns that sit above raw index lookups, such as ACL checks,
+//! date-range filtering, and materializing time-series references from posting IDs.
+//!
+//! For label-centric exploration and ranking APIs (for example, fuzzy/similarity label
+//! discovery), see `label_querier.rs`, which composes this module and `Postings`.
+
 use super::postings::{EMPTY_BITMAP, KeyType, Postings};
 use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
