@@ -25,22 +25,14 @@ pub(super) struct FanoutMessageHeader {
 
 impl FanoutMessageHeader {
     pub fn serialize(&self, buf: &mut Vec<u8>) {
-        // Start with the marker
-        write_marker(buf);
-
-        // version is stored as a little-endian u16
-        write_u16_le(buf, self.version);
-
-        // Encode request_id as uvarint
-        write_uvarint(buf, self.request_id);
-
-        // Encode db as signed varint
-        write_signed_varint(buf, self.db as i64);
-
-        // Encode handler as a string
-        write_byte_slice(buf, self.handler.as_bytes());
-
-        write_u16_le(buf, self.reserved);
+        write_message_header(
+            buf,
+            self.version,
+            self.request_id,
+            self.db,
+            &self.handler,
+            self.reserved,
+        );
     }
 
     /// Deserializes a MessageHeader from the beginning of the buffer.
@@ -77,6 +69,25 @@ impl FanoutMessageHeader {
             buf,
         ))
     }
+}
+
+/// Write a message header directly to `buf` without constructing a [`FanoutMessageHeader`].
+/// This avoids an unnecessary `String` allocation for the handler name in the outgoing
+/// (serialization) path, where the handler is always available as a borrowed `&str`.
+fn write_message_header(
+    buf: &mut Vec<u8>,
+    version: u16,
+    request_id: u64,
+    db: i32,
+    handler: &str,
+    reserved: u16,
+) {
+    write_marker(buf);
+    write_u16_le(buf, version);
+    write_uvarint(buf, request_id);
+    write_signed_varint(buf, db as i64);
+    write_byte_slice(buf, handler.as_bytes());
+    write_u16_le(buf, reserved);
 }
 
 fn read_uvarint(input: &mut &[u8]) -> FanoutResult<u64> {
@@ -175,14 +186,7 @@ pub(super) fn serialize_request_message(
     handler: &str,
     serialized_request: &[u8],
 ) {
-    let header = FanoutMessageHeader {
-        version: FANOUT_MESSAGE_VERSION,
-        request_id,
-        db,
-        handler: handler.to_string(),
-        reserved: 0,
-    };
-    header.serialize(dest);
+    write_message_header(dest, FANOUT_MESSAGE_VERSION, request_id, db, handler, 0);
     dest.extend_from_slice(serialized_request);
 }
 
