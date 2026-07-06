@@ -155,6 +155,16 @@ where
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FanoutLifecycleState {
+    /// Fanout state exists but no response/error callback has run yet.
+    Pending,
+    /// At least one callback has run and completion may be needed on drop.
+    Active,
+    /// Completion callback already ran (or was explicitly finalized).
+    Completed,
+}
+
 /// Internal structure to manage the state of an ongoing fanout operation.
 struct FanoutStateInner<OP, F>
 where
@@ -162,9 +172,8 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     operation: OP,
-    /// set tp true if at least one of the on_* callbacks have been invoked. This is to prevent
-    /// on_complete to be called on Drop if there was an error during setup.
-    is_init: bool,
+    /// Explicit lifecycle for drop/completion handling.
+    lifecycle: FanoutLifecycleState,
     outstanding: usize,
     timed_out: bool,
     error_count: usize,
@@ -176,6 +185,12 @@ where
     OP: FanoutCommand + 'static,
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
+    fn activate(&mut self) {
+        if self.lifecycle == FanoutLifecycleState::Pending {
+            self.lifecycle = FanoutLifecycleState::Active;
+        }
+    }
+
     fn rpc_done(&mut self) {
         self.outstanding = self.outstanding.saturating_sub(1);
         if self.outstanding == 0 {
@@ -184,7 +199,7 @@ where
     }
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
-        self.is_init = true;
+        self.activate();
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
         self.error_count += 1;
@@ -200,7 +215,7 @@ where
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
-        self.is_init = true;
+        self.activate();
         if self.timed_out {
             // We already timed out; ignore responses but mark RPC as done.
             self.rpc_done();
@@ -232,6 +247,11 @@ where
     }
 
     fn on_completion(&mut self) {
+        if self.lifecycle == FanoutLifecycleState::Completed {
+            return;
+        }
+        self.lifecycle = FanoutLifecycleState::Completed;
+
         let Some(callback) = self.callback.take() else {
             // we've already responded
             return;
@@ -257,7 +277,7 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     fn drop(&mut self) {
-        if self.is_init {
+        if self.lifecycle == FanoutLifecycleState::Active {
             self.on_completion();
         }
     }
@@ -285,7 +305,7 @@ where
             inner: Mutex::new(FanoutStateInner {
                 operation,
                 outstanding,
-                is_init: false,
+                lifecycle: FanoutLifecycleState::Pending,
                 error_count: 0,
                 timed_out: false,
                 callback: Some(f),
