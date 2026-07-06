@@ -461,13 +461,12 @@ impl ChunkOps for PcoChunk {
     }
 
     fn bytes_per_sample(&self) -> usize {
-        let count = if self.count == 0 {
-            // estimate 50%
-            2
-        } else {
-            self.count
-        };
-        self.data_size() / count
+        use crate::common::SAMPLE_SIZE;
+        use crate::series::chunks::MIN_SAMPLES_FOR_BPS_ESTIMATE;
+        if self.count < MIN_SAMPLES_FOR_BPS_ESTIMATE {
+            return SAMPLE_SIZE / 2;
+        }
+        self.data_size() / self.count
     }
 
     fn clear(&mut self) {

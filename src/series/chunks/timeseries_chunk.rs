@@ -72,7 +72,15 @@ impl TimeSeriesChunk {
         self.size() as f64 / total as f64
     }
 
-    /// Get an estimate of the remaining capacity in number of samples
+    /// Get an estimate of the remaining capacity in the number of samples.
+    ///
+    /// **Accuracy note:** For compressed encodings, this estimate relies on
+    /// `bytes_per_sample()`, which is an amortized ratio of `data_size() / len()`.
+    /// The estimate is unreliable when the chunk contains fewer than
+    /// [`MIN_SAMPLES_FOR_BPS_ESTIMATE`](super::MIN_SAMPLES_FOR_BPS_ESTIMATE) samples
+    /// (header overhead dominates); in that case `bytes_per_sample()` falls back to
+    /// a conservative constant (`SAMPLE_SIZE / 2`). Callers that use this for
+    /// pre-allocation should treat the result as a rough upper bound, not an exact count.
     pub fn estimate_remaining_sample_capacity(&self) -> usize {
         let used = self.size();
         let total = self.max_size();

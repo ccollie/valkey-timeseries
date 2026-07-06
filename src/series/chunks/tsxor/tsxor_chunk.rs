@@ -671,8 +671,9 @@ impl ChunkOps for TsXorChunk {
     }
 
     fn bytes_per_sample(&self) -> usize {
+        use crate::series::chunks::MIN_SAMPLES_FOR_BPS_ESTIMATE;
         let count = self.len();
-        if count == 0 {
+        if count < MIN_SAMPLES_FOR_BPS_ESTIMATE {
             return size_of::<Sample>() / 2;
         }
         self.data_size() / count

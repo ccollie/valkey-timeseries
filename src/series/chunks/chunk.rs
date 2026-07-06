@@ -15,6 +15,12 @@ pub const MIN_CHUNK_SIZE: usize = 48;
 /// Largest allowed chunk size in bytes for `CHUNK_SIZE`.
 pub const MAX_CHUNK_SIZE: usize = 1048576;
 
+/// The minimum number of samples before `bytes_per_sample()` can produce a
+/// reliable amortized estimate for compressed encodings. Below this
+/// threshold, header overhead dominates, and the ratio is inflated;
+/// implementations should fall back to a conservative constant.
+pub const MIN_SAMPLES_FOR_BPS_ESTIMATE: usize = 16;
+
 #[derive(Copy, Clone, Debug, Default, PartialEq, GetSize, Hash)]
 #[non_exhaustive]
 #[repr(u8)]
@@ -132,6 +138,13 @@ pub trait ChunkOps {
     }
 
     fn is_full(&self) -> bool;
+
+    /// Returns the average number of bytes consumed per sample in this chunk.
+    ///
+    /// For compressed encodings this is an amortized estimate (`data_size() / len()`).
+    /// When the chunk contains fewer than [`MIN_SAMPLES_FOR_BPS_ESTIMATE`] samples,
+    /// header overhead dominates, and the ratio is unreliable; implementations
+    /// should fall back to a conservative constant in that case.
     fn bytes_per_sample(&self) -> usize;
     fn clear(&mut self);
     fn set_data(&mut self, samples: &[Sample]) -> TsdbResult<()>;
