@@ -84,9 +84,9 @@ impl TimeSeriesChunk {
     }
 
     pub fn utilization(&self) -> f64 {
-        let used = self.size();
         let total = self.max_size();
-        (used / total) as f64
+        if total == 0 { return 0.0; }
+        self.size() as f64 / total as f64
     }
 
     /// Get an estimate of the remaining capacity in number of samples
