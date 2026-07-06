@@ -240,6 +240,11 @@ impl Postings {
     /// `postings_for_label_values` returns a `PostingsBitmap` for the label pairs.
     /// The postings here contain the ids to the series inside the index.
     pub fn postings_for_label_values(&self, name: &str, values: &[String]) -> PostingsBitmap {
+        if let [value] = values {
+            let key = KeyBuffer::for_label_value(name, value);
+            return self.postings_for_key_owned(key.as_bytes());
+        }
+
         let mut result = PostingsBitmap::new();
 
         for value in values {
