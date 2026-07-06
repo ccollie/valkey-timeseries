@@ -31,6 +31,11 @@ const FANOUT_REQUEST_MESSAGE: u8 = 0x01;
 const FANOUT_RESPONSE_MESSAGE: u8 = 0x02;
 const FANOUT_ERROR_MESSAGE: u8 = 0x03;
 
+/// Default buffer size for serializing fanout request messages (header + small protobuf payload).
+const FANOUT_RPC_BUFFER_SIZE: usize = 512;
+/// Default buffer size for serializing fanout response messages (header + response payload).
+const FANOUT_RPC_RESPONSE_BUFFER_SIZE: usize = 1024;
+
 struct InFlightRequest {
     id: u64,
     targets: Arc<HashSet<NodeInfo>>,
@@ -198,8 +203,7 @@ pub fn invoke_rpc<Request: Serializable>(
     response_handler: FanoutResponseCallback,
     timeout: Duration,
 ) -> ValkeyResult<()> {
-    // Consider using a byte-pool buffer here if serialization size is predictable
-    let mut buf = Vec::with_capacity(512);
+    let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
     req.serialize(&mut buf);
 
     send_cluster_request(ctx, &buf, targets, name, response_handler, Some(timeout))
@@ -218,7 +222,7 @@ pub(super) fn send_cluster_request(
     let id = generate_id();
     let db = get_current_db(ctx);
 
-    let mut buf = get_pooled_buffer(512);
+    let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
     serialize_request_message(&mut buf, id, db, handler, request_buf);
 
     let remote_targets: Vec<NodeInfo> = targets
@@ -277,7 +281,7 @@ fn send_message_internal(
     handler: &str,
     buf: &[u8],
 ) -> Status {
-    let mut dest = Vec::with_capacity(1024);
+    let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
     serialize_request_message(&mut dest, request_id, db, handler, buf);
     send_cluster_message(ctx, sender_id, msg_type, &dest)
 }
@@ -308,7 +312,7 @@ fn send_error_response(
     target_node: *const c_char,
     error: FanoutError,
 ) -> Status {
-    let mut buf = get_pooled_buffer(512);
+    let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
     error.serialize(&mut buf);
     send_message_internal(
         ctx,
@@ -360,7 +364,7 @@ fn process_request_message(
     let request_id = header.request_id;
     let db = header.db;
 
-    let mut dest = Vec::with_capacity(1024);
+    let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
     let _ = set_current_db(ctx, db);
 
     let res = handler(ctx, request_buf, &mut dest);
