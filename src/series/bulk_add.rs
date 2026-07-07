@@ -19,7 +19,6 @@ use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
 use simd_json::prelude::ValueObjectAccess;
 use std::ops::RangeInclusive;
-use std::sync::Mutex;
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult};
 
 pub const MAX_SAMPLES_PER_INSERT: usize = 1_000;
@@ -583,31 +582,25 @@ fn get_compacted_samples(
     src_samples: &[Sample],
 ) -> Vec<Sample> {
     let ranges = collect_input_ranges(rule, src_samples);
-    let updated_aggr: Mutex<Option<Aggregator>> = Mutex::new(None);
 
-    let added = ranges
+    // Process each range in parallel. At most one range overlaps the open
+    // bucket, so at most one call returns Some(Aggregator). Collect all
+    // results first and extract the aggregator afterward — no mutex needed.
+    let mut results: Vec<(Vec<Sample>, Option<Aggregator>)> = ranges
         .ranges()
         .iter_into_par()
         .map(|range| aggregate_compaction_range(source, rule, range))
-        .map(|(samples, aggr_opt)| {
-            if let Some(aggr_state) = aggr_opt {
-                let mut aggr = updated_aggr.lock().unwrap();
-                *aggr = Some(aggr_state);
-            }
-            samples
-        })
-        .flatten()
-        .collect::<Vec<_>>();
+        .collect();
 
-    // Update the rule's open bucket state if needed
-    let mut guard = updated_aggr.lock().unwrap();
-    if let Some(updated) = guard.take() {
-        // Update bucket_start to reflect the current open bucket
+    // If any range carried the open-bucket aggregator state, update the rule.
+    if let Some(updated) = results.iter_mut().find_map(|(_, aggr)| aggr.take()) {
         rule.aggregator = updated;
-        // note ! this means we should not emit for this rule !!!!
     }
 
-    added
+    results
+        .into_iter()
+        .flat_map(|(samples, _)| samples)
+        .collect()
 }
 
 fn collect_input_ranges(rule: &CompactionRule, samples: &[Sample]) -> RangeSetBlaze<Timestamp> {
