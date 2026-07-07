@@ -360,7 +360,7 @@ impl TimeSeries {
         let errored: AtomicBool = AtomicBool::new(false);
 
         // todo: track error, but allow partials
-        let new_chunks = if self.is_compressed() {
+        let mut new_chunks = if self.is_compressed() {
             self.chunks
                 .par_mut()
                 .filter(|c| c.is_full())
@@ -386,8 +386,36 @@ impl TimeSeries {
         };
 
         if !new_chunks.is_empty() {
-            self.chunks.extend(new_chunks);
-            self.chunks.sort_by_key(|chunk| chunk.first_timestamp());
+            // Each split leaves the source chunk holding the lower half (first_timestamp
+            // unchanged) and yields the upper half as a new chunk, so `self.chunks` stays
+            // sorted and `new_chunks` forms a second, non-overlapping sorted run. Merge the
+            // two ordered runs in O(n) instead of re-sorting the whole vector (O(n log n)).
+            //
+            // `new_chunks` is produced in source order by the serial path; sort defensively
+            // (k = number of full chunks, tiny) so the parallel path can't violate the
+            // merge precondition.
+            new_chunks.sort_by_key(|chunk| chunk.first_timestamp());
+
+            let existing = std::mem::take(&mut self.chunks);
+            let mut merged = Vec::with_capacity(existing.len() + new_chunks.len());
+
+            let mut a = existing.into_iter().peekable();
+            let mut b = new_chunks.into_iter().peekable();
+            loop {
+                match (a.peek(), b.peek()) {
+                    (Some(x), Some(y)) => {
+                        if x.first_timestamp() <= y.first_timestamp() {
+                            merged.push(a.next().unwrap());
+                        } else {
+                            merged.push(b.next().unwrap());
+                        }
+                    }
+                    (Some(_), None) => merged.push(a.next().unwrap()),
+                    (None, Some(_)) => merged.push(b.next().unwrap()),
+                    (None, None) => break,
+                }
+            }
+            self.chunks = merged;
         }
 
         if errored.load(std::sync::atomic::Ordering::Relaxed) {
