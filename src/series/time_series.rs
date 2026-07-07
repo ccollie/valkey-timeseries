@@ -461,10 +461,7 @@ impl TimeSeries {
         // TODO: propagate errors
         let mut samples = if let Some(ts_filter) = timestamp_filter {
             let timestamps = filter_timestamp_slice(ts_filter, start_timestamp, end_timestamp);
-            self.samples_by_timestamps(&timestamps)
-                .unwrap_or_default()
-                .into_iter()
-                .collect()
+            self.samples_by_timestamps(&timestamps).unwrap_or_default()
         } else {
             self.get_range(start_timestamp, end_timestamp)
         };
