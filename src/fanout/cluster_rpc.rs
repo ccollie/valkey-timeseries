@@ -383,7 +383,7 @@ pub(super) fn abandon_inflight_request(ctx: &Context, id: u64) {
     }
 }
 
-fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
+pub(super) fn validate_cluster_exec(ctx: &Context) -> ValkeyResult<()> {
     if !is_clustered(ctx) {
         return Err(ValkeyError::Str("Cluster mode is not enabled"));
     }
