@@ -43,7 +43,12 @@ message SeriesRangeResponse {
   string key = 1;
   string group_label_value = 2;
   repeated Label labels = 3;
-  SampleData samples = 4;
+  // One chunk of (bucket_ts, value) pairs per aggregation column. Raw samples
+  // and single-aggregation buckets are a one-element list; multi-aggregation
+  // buckets carry one column per aggregator (>= 2 columns). An empty
+  // multi-aggregation series carries zero columns. All columns share identical
+  // timestamps and length by construction.
+  repeated SampleData columns = 4;
 }
 
 message MultiGetResponse {

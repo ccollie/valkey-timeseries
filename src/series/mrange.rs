@@ -277,11 +277,11 @@ fn handle_non_grouped(
     metas
         .into_par()
         .map(|meta| {
-            // Multi-aggregation yields rows, which chunks cannot store. Shards
-            // never take this path: fanout requests either push the (single)
-            // aggregation down or strip it, so `clustered` implies chunks.
+            // Multi-aggregation yields rows, which chunks cannot store. Under
+            // aggregation push-down a shard produces these rows too; they ship
+            // as per-column chunks (SeriesRangeResponse.columns), so the
+            // clustered path is valid here.
             let data = if is_multi {
-                debug_assert!(!clustered, "multi-aggregation is coordinator-side only");
                 let iter = create_row_iterator(
                     meta.series,
                     &options.range,
@@ -416,7 +416,7 @@ fn get_grouped_samples(
 
 /// Multi-aggregation twin of `get_grouped_samples`: per-series row pipeline
 /// (bucket aggregation, ascending), k-way merge by bucket timestamp, then a
-/// column-wise reduce across the group's series (approved decision #1).
+/// column-wise reduce across the group's series.
 fn get_grouped_rows(
     series_metas: &[MRangeSeriesMeta],
     options: &MRangeOptions,
