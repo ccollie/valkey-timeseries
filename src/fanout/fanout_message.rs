@@ -19,12 +19,12 @@ pub(super) struct FanoutMessageHeader {
     pub db: i32,
     /// The name of the handler to process this message.
     pub handler: String,
-    /// Reserved for future use (e.g., for larger payloads, we may compress the data)
-    pub reserved: u16,
     /// Hash of the sender's cluster map (hash of all shard fingerprints) at the
     /// time the request was generated. `0` means "no fingerprint", which
     /// disables the receiver-side topology check.
     pub cluster_fingerprint: u64,
+    /// Reserved for future use (e.g., for larger payloads, we may compress the data)
+    pub reserved: u16,
 }
 
 impl FanoutMessageHeader {
@@ -44,10 +44,11 @@ impl FanoutMessageHeader {
         // Encode handler as a string
         write_byte_slice(buf, self.handler.as_bytes());
 
-        write_u16_le(buf, self.reserved);
-
         // Cluster-map fingerprint, fixed 8-byte little-endian.
         write_u64_le(buf, self.cluster_fingerprint);
+
+        // Reserved for future use (e.g., for larger payloads, we may compress the data)
+        write_u16_le(buf, self.reserved);
     }
 
     /// Deserializes a MessageHeader from the beginning of the buffer.
@@ -70,12 +71,12 @@ impl FanoutMessageHeader {
         let handler = try_read_string(&mut buf)
             .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
 
-        // Read reserved as a little-endian u16
-        let reserved = read_u16_le(&mut buf)?;
-
         // Cluster-map fingerprint, fixed 8-byte little-endian.
         let cluster_fingerprint = try_read_u64_le(&mut buf)
             .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
+
+        // Read reserved as a little-endian u16
+        let reserved = read_u16_le(&mut buf)?;
 
         Ok((
             FanoutMessageHeader {
@@ -83,8 +84,8 @@ impl FanoutMessageHeader {
                 request_id,
                 handler,
                 db,
-                reserved,
                 cluster_fingerprint,
+                reserved,
             },
             buf,
         ))
@@ -216,8 +217,8 @@ pub(super) fn serialize_request_message(
         request_id,
         db,
         handler: handler.to_string(),
-        reserved: 0,
         cluster_fingerprint,
+        reserved: 0,
     };
     header.serialize(dest);
     dest.extend_from_slice(serialized_request);
@@ -235,8 +236,8 @@ mod tests {
             request_id: 12345,
             db: 0,
             handler: "test_handler".to_string(),
-            reserved: 0,
             cluster_fingerprint: 0xABCD_1234_5678_9F00,
+            reserved: 0,
         };
 
         let mut buf = Vec::new();
@@ -247,8 +248,8 @@ mod tests {
         assert_eq!(deserialized_header.version, FANOUT_MESSAGE_VERSION);
         assert_eq!(deserialized_header.request_id, 12345);
         assert_eq!(deserialized_header.db, 0);
-        assert_eq!(deserialized_header.reserved, 0);
         assert_eq!(deserialized_header.handler, "test_handler");
+        assert_eq!(deserialized_header.reserved, 0);
         assert_eq!(
             deserialized_header.cluster_fingerprint,
             0xABCD_1234_5678_9F00
@@ -263,8 +264,8 @@ mod tests {
             request_id: u64::MAX,
             db: -15,
             handler: "negative_db_handler".to_string(),
-            reserved: 42,
             cluster_fingerprint: u64::MAX,
+            reserved: 42,
         };
 
         let mut buf = Vec::new();
@@ -275,9 +276,9 @@ mod tests {
         assert_eq!(deserialized_header.version, FANOUT_MESSAGE_VERSION);
         assert_eq!(deserialized_header.request_id, u64::MAX);
         assert_eq!(deserialized_header.db, -15);
-        assert_eq!(deserialized_header.reserved, 42);
         assert_eq!(deserialized_header.handler, "negative_db_handler");
         assert_eq!(deserialized_header.cluster_fingerprint, u64::MAX);
+        assert_eq!(deserialized_header.reserved, 42);
         assert_eq!(remaining_buf.len(), 0);
     }
 
@@ -288,8 +289,8 @@ mod tests {
             request_id: 999,
             db: 5,
             handler: "handler_with_extra".to_string(),
-            reserved: 1,
             cluster_fingerprint: 7,
+            reserved: 1,
         };
 
         let mut buf = Vec::new();
