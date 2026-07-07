@@ -4,4 +4,4 @@ mod xor2_iterator;
 mod xor2_test;
 
 pub(crate) use xor2_chunk::Xor2Chunk;
-pub(crate) use xor2_iterator::Xor2Iterator;
+pub(crate) use xor2_iterator::{Xor2Iterator, Xor2RangeIterator};

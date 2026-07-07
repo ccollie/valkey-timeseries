@@ -1,4 +1,3 @@
-use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_u8, rdb_save_u8};
 use crate::common::{Sample, Timestamp};
 use crate::config::SPLIT_FACTOR;
@@ -170,15 +169,7 @@ impl TimeSeriesChunk {
                 start,
                 end,
             )),
-            Xor(chunk) => match chunk.get_range(start, end) {
-                Ok(samples) => SampleIter::vec(samples),
-                Err(e) => {
-                    log_warning(format!(
-                        "Xor2Chunk range_iter failed (start={start}, end={end}): {e:?}",
-                    ));
-                    SampleIter::Empty
-                }
-            },
+            Xor(chunk) => SampleIter::xor2(chunk.range_iter(start, end)),
             Pco(chunk) => chunk.range_iter(start, end),
         }
     }

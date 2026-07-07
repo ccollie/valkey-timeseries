@@ -61,7 +61,7 @@
 //! When ST is present, the ST delta (prevT - st) is appended after each
 //! sample's joint timestamp+value encoding using putVarbitIntFast.
 
-use super::Xor2Iterator;
+use super::{Xor2Iterator, Xor2RangeIterator};
 use crate::common::encoding::{
     try_read_f64_le, try_read_signed_varint, try_read_u8, try_read_uvarint, write_f64_le,
     write_signed_varint, write_u8, write_uvarint,
@@ -544,6 +544,10 @@ impl Xor2Chunk {
     pub fn iterator(&self) -> Xor2Iterator<'_> {
         Xor2Iterator::new(self.stream.bytes())
     }
+
+    pub fn range_iter(&'_ self, start: Timestamp, end: Timestamp) -> Xor2RangeIterator<'_> {
+        Xor2RangeIterator::new(self.stream.bytes(), start, end)
+    }
 }
 
 impl RdbSerializable for Xor2Chunk {
@@ -673,10 +677,7 @@ impl Chunk for Xor2Chunk {
             return Ok(vec![]);
         }
 
-        let samples = self
-            .iterator()
-            .filter(|s| s.timestamp >= start && s.timestamp <= end)
-            .collect();
+        let samples = self.range_iter(start, end).collect();
         Ok(samples)
     }
 

@@ -295,6 +295,63 @@ impl<'a> Xor2Iterator<'a> {
     }
 }
 
+/// Range-bounded streaming adapter over [`Xor2Iterator`].
+///
+/// Decodes samples lazily in ascending timestamp order, skipping those before
+/// `start` and terminating as soon as a sample past `end` is seen — so
+/// early-exit consumers (e.g. `has_samples_in_range`) never decode past the
+/// range or allocate the whole result.
+pub struct Xor2RangeIterator<'a> {
+    inner: Xor2Iterator<'a>,
+    start: i64,
+    end: i64,
+    started: bool,
+    done: bool,
+}
+
+impl<'a> Xor2RangeIterator<'a> {
+    pub(super) fn new(buf: &'a [u8], start: i64, end: i64) -> Self {
+        Self {
+            inner: Xor2Iterator::new(buf),
+            start,
+            end,
+            started: false,
+            done: false,
+        }
+    }
+}
+
+impl Iterator for Xor2RangeIterator<'_> {
+    type Item = Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        if !self.started {
+            self.started = true;
+            // Skip samples strictly before `start`; yield the first in-range one.
+            loop {
+                let sample = self.inner.next()?;
+                if sample.timestamp < self.start {
+                    continue;
+                }
+                if sample.timestamp > self.end {
+                    self.done = true;
+                    return None;
+                }
+                return Some(sample);
+            }
+        }
+        let sample = self.inner.next()?;
+        if sample.timestamp > self.end {
+            self.done = true; // early exit — stop decoding the rest of the chunk
+            return None;
+        }
+        Some(sample)
+    }
+}
+
 impl Iterator for Xor2Iterator<'_> {
     type Item = Sample;
 
