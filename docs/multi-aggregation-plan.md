@@ -1,6 +1,6 @@
 # Multi-Aggregation Support for the RANGE Command Family — Implementation Plan
 
-**Status:** Planned (design approved 2026-07-05)
+**Status:** Implemented (2026-07-06)
 **Scope:** `TS.RANGE`, `TS.REVRANGE`, `TS.MRANGE`, `TS.MREVRANGE` (standalone and cluster)
 **Out of scope:** `TS.JOIN` (guarded with a validation error), `TS.CREATERULE` compaction rules, analysis commands.
 
@@ -331,19 +331,19 @@ stay untouched:
 
 ```proto
 message AggregationOptions {
-  // Legacy single-aggregator field. Writers keep populating it with the first
-  // list entry for rolling-upgrade compatibility; readers use it only when
-  // `aggregators` is empty.
-  AggregatorConfig aggregator = 1;
+  // Aggregator list in output column order; must contain at least one entry.
+  // A single-aggregator query is simply a one-element list.
+  repeated AggregatorConfig aggregators = 1;
   uint32 bucket_duration = 2;
   int64 alignment_timestamp = 3;
   BucketTimestampType bucket_timestamp_type = 4;
   BucketAlignmentType bucket_alignment = 5;
   bool report_empty = 6;
-  // Output column order. Replaces `aggregator` when non-empty.
-  repeated AggregatorConfig aggregators = 7;
 }
 ```
+
+> The project is unreleased, so no legacy single-aggregator field is kept; the
+> single-aggregator case is just a one-element list.
 
 No response-proto changes: shards return raw samples (`SeriesRangeResponse.samples`) and the
 coordinator aggregates, exactly as today.
@@ -351,23 +351,47 @@ coordinator aggregates, exactly as today.
 ### 8.2 Conversions (src/commands/fanout/conversions.rs)
 
 - `From<AggregationOptions> for FanoutAggregationOptions` (now `From<&...>` since `Copy` is
-  gone): set `aggregators = all entries` **and** `aggregator = Some(first)`.
-- `TryFrom<FanoutAggregationOptions> for AggregationOptions`: if `aggregators` non-empty,
-  convert each (re-validating count ≤ MAX and duplicates — defense against malicious/corrupt
-  peers); else fall back to the legacy `aggregator` field; error if both absent (preserves the
-  current `"TSDB: aggregation config is required"`).
+  gone): set `aggregators = all entries`.
+- `TryFrom<FanoutAggregationOptions> for AggregationOptions`: convert each entry, re-validating
+  non-empty, count ≤ MAX and duplicates — defense against malicious/corrupt peers; an empty list
+  errors with `"TSDB: aggregation config is required"`.
 
 ### 8.3 Mixed-version cluster analysis
 
-| Coordinator | Shard | Behavior |
-|---|---|---|
-| new | old | Shard ignores the aggregation field entirely (`get_local_response` strips it), returns raw samples. New coordinator aggregates with N columns. **Correct.** |
-| old | new | Old coordinator writes only `aggregator` (single); new shard's fallback reads it — and ignores it anyway for MRANGE. **Correct.** |
-| new | new | `aggregators` used end-to-end. |
+Not applicable: the project is unreleased, so no wire-compatibility with older versions is
+maintained. `aggregators` is the only representation on the wire.
 
-So multi-aggregation MRANGE works even mid-rolling-upgrade; there is no wire hazard because
-aggregation is coordinator-side. The legacy field is still mirrored in case aggregation
-push-down is ever implemented (§11).
+### 8.3.1 Interaction with aggregation push-down (implementation note)
+
+**Updated 2026-07-06:** multi-aggregation now participates in shard-side push-down. The response
+transport was generalized so bucket rows can cross the wire: `SeriesRangeResponse.samples`
+(a single chunk) became `repeated SampleData columns`, one chunk of `(bucket_ts, value_i)` per
+aggregation column. Raw samples and single-aggregation buckets are a one-element list; a
+multi-aggregation series is a list of N ≥ 2 columns (all columns share identical timestamps and
+length by construction); an empty multi-aggregation series is zero columns. `chunks.rs` transposes
+`SeriesResultData::Rows` into columns on the way out and zips them back into rows on the way in
+(validating equal lengths/timestamps as corrupt-peer defense).
+
+Consequences for the three push-down flags (`MRangeFanoutCommand::new`):
+
+- **Per-series `AGGREGATION` push-down** (`pushdown`) — **enabled for multi.** Shards run the
+  per-series row pipeline (`create_row_iterator` → `MultiAggregateIterator`) and ship bucket rows
+  as columns. The coordinator detects already-bucketed rows by the arrived `SeriesResultData`
+  variant (`Rows`) and skips re-aggregation — `series_rows_ascending` yields the shard rows
+  directly, or aggregates raw samples in the legacy/config-off path (`Chunk`). Grouped multi
+  queries reduce these per-series rows column-wise via `MultiSeriesRowIter` + `RowReducer`.
+- **`COUNT` push-down** (`pushdown_count`) — **enabled for multi**, because the shipped unit is
+  now rows (bucket-aligned); the shard truncates head/tail rows and the coordinator re-applies the
+  authoritative COUNT, exactly as for single-aggregation buckets.
+- **GROUPBY/REDUCE partial-state push-down** (`pushdown_group`) — **still disabled for multi.**
+  `ReducePartialState`/`GroupPartialSeries` carry one value per bucket; a per-column form is the
+  remaining follow-up (see `mrange-aggregation-pushdown-plan.md` §10). `get_local_response`
+  defensively ignores `apply_group_reduce` for multi requests. Grouped multi therefore falls back
+  to per-series bucket transport with a coordinator-side column-wise reduce, which already captures
+  most of the network saving (buckets vs. raw samples).
+
+`reply()` clears `aggregation` only for single-aggregation push-down; multi keeps its options
+(needed for the column count and the multi/data-variant branch).
 
 ### 8.4 Fanout command handler (src/commands/ts_mrange_fanout_command.rs)
 

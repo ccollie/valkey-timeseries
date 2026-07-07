@@ -1,10 +1,10 @@
 # Shard-Side Aggregation Push-Down for MRANGE Fanout — Implementation Plan
 
-**Status:** Planned (design approved 2026-07-05)
+**Status:** Implemented (Phases 1 & 2, 2026-07-06; design approved 2026-07-05)
 **Scope:** `TS.MRANGE` / `TS.MREVRANGE` cluster fanout. Phase 1: per-series `AGGREGATION`
 push-down. Phase 2: partial `GROUPBY`/`REDUCE` push-down.
-**Out of scope:** `COUNT` push-down (explicitly deferred), multi-aggregation transport
-(see §10), all other fanout commands (already minimal — see §2).
+**Out of scope (original plan):** `COUNT` push-down (later added), multi-aggregation transport
+(later added — see §10), all other fanout commands (already minimal — see §2).
 
 ---
 
@@ -494,25 +494,27 @@ the header version has no negotiation mechanism to build on.
 
 ## 10. Interaction with the multi-aggregation plan
 
-Per decision #2, push-down lands first, against the single-aggregator
-`AggregationOptions`. When multi-aggregation (`docs/multi-aggregation-plan.md`) lands:
+Per decision #2, push-down landed first, against the single-aggregator
+`AggregationOptions`. Multi-aggregation (`docs/multi-aggregation-plan.md`) then landed and
+was **extended to participate in per-series push-down** (2026-07-06):
 
-- Its coordinator-side design is unaffected in fallback mode: the eligibility check in
-  `MRangeFanoutCommand::new` gains `&& !aggregation.is_multi()`, so multi-agg queries
-  transparently use the raw-sample path (that plan's §8.4 already assumes shards return
-  raw samples).
-- The follow-up that extends push-down to multi-agg needs a multi-column transport:
-  recommended shape is `repeated SampleData agg_columns` on `SeriesRangeResponse`, where
-  column *i* is an ordinary chunk of `(bucket_ts, value_i)` — reusing chunk serialization
-  wholesale and letting the coordinator zip columns into `MultiSample` rows. This is
-  additive proto evolution; nothing in Phase 1/2 needs to be designed around it beyond not
-  reusing field numbers (`SeriesRangeResponse` field 5+, `MultiRangeRequest` field 9+).
-- Phase 2's `ReducePartialState` generalizes per-column (the multi-agg plan's column-wise
-  reduce is independent per column), so no structural conflict there either.
+- **Per-series `AGGREGATION` push-down and `COUNT` push-down now apply to multi-agg.** The
+  multi-column transport was implemented as `SeriesRangeResponse.samples` → `repeated
+  SampleData columns` (column *i* is a chunk of `(bucket_ts, value_i)`); the coordinator zips
+  columns back into `MultiSample` rows and detects already-bucketed rows by the arrived
+  `SeriesResultData::Rows` variant to skip re-aggregation. See multi-aggregation-plan §8.3.1.
+- **Phase 2 (partial `GROUPBY`/`REDUCE` push-down) is still single-aggregation only.** The
+  remaining follow-up generalizes `ReducePartialState` per column (the multi-agg column-wise
+  reduce is independent per column, so no structural conflict) and adds a `PartialRowReducer`
+  (row twin of `PartialSampleReducer`) holding N reducer clones. `GroupPartialSeries` would
+  grow a per-column representation (e.g. `MultiPartialState { repeated ReducePartialState
+  columns }`, or flattened row-major with a `column_count`). Until then, grouped multi queries
+  use per-series bucket transport (Phase 1) with a coordinator-side column-wise reduce
+  (`MultiSeriesRowIter` + `RowReducer`), which already captures most of the network saving;
+  the group-partial step would only further divide grouped payloads by local-series-per-group.
 
-Both plans touch `fanout.request.proto`, `conversions.rs`, and
-`ts_mrange_fanout_command.rs`; whichever lands second rebases mechanically (different
-fields, adjacent code paths).
+Both plans touch `fanout.request.proto`, `fanout.response.proto`, `conversions.rs`,
+`chunks.rs`, and `ts_mrange_fanout_command.rs`.
 
 ---
 

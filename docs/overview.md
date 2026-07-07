@@ -116,3 +116,22 @@ multithreaded architecture.
 Query operations are performed by one node of each shard on its local index, and the results are transparently merged to
 form a full command response. Query operations are subject to increasing overhead as the cluster shard count increases,
 meaning that query operations may scale sub-linearly with increasing shard count.
+
+## Aggregation push-down (TS.MRANGE / TS.MREVRANGE)
+
+Because each time series lives entirely on one shard, per-series `AGGREGATION` for `TS.MRANGE`/`TS.MREVRANGE` is
+computed shard-side: shards return aggregated buckets instead of raw samples, cutting network transfer and coordinator
+CPU roughly by the ratio of samples per bucket. Results are exact for every aggregator type.
+
+`GROUPBY`/`REDUCE` queries are additionally pre-reduced shard-side when the reducer is decomposable (`sum`, `count`,
+`countall`, `countnan`, `min`, `max`, `range`, `avg`, `std.p`, `std.s`, `var.p`, `var.s`, `first`, `last`, including
+`CONDITION` variants): each shard ships one partial-state series per (group, shard), and the coordinator merges and
+finalizes them per bucket. Order-sensitive reducers (`increase`, `irate`) automatically fall back to per-series bucket
+transport. `COUNT` and reversal (`TS.MREVRANGE`) are always applied at the coordinator.
+
+`COUNT` is likewise applied shard-side as a head/tail pre-filter bounding transfer to `O(count)` rows per series (or
+per group partial) — most valuable for `TS.MREVRANGE … COUNT n` ("last n points") queries. The coordinator always
+re-applies `COUNT` as the final authority, so unlike aggregation push-down this carries **no** mixed-version hazard.
+
+Push-down is controlled by the boolean config `ts-fanout-aggregation-pushdown` (default `yes`, changeable at runtime
+via `CONFIG SET`). Only the coordinator consults it; shards obey the request.
