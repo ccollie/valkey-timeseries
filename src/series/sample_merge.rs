@@ -137,10 +137,26 @@ fn group_samples_by_chunk(
     samples: &[Sample],
     results: &mut [SampleAddResult],
     earliest_allowed_timestamp: Timestamp,
+    policy_override: Option<DuplicatePolicy>,
 ) -> TsdbResult<IntMap<usize, GroupedSamples>> {
     let mut chunk_groups: IntMap<usize, GroupedSamples> = IntMap::default();
 
+    // State for the IGNORE filter (`max_time_delta`/`max_value_delta`), applied in order so the
+    // behavior matches single-sample `TimeSeries::add`. Copied out so we don't borrow `series`
+    // while mutating its chunks below.
+    let dup_policy = series.sample_duplicates;
+    let mut running_last = series.last_sample;
+    // Timestamp of the previous input sample; duplicate timestamps within a single batch are
+    // disallowed (the input is sorted, so duplicates are adjacent).
+    let mut prev_ts: Option<Timestamp> = None;
+
     for (index, &sample) in samples.iter().enumerate() {
+        if prev_ts == Some(sample.timestamp) {
+            results[index] = SampleAddResult::Duplicate;
+            continue;
+        }
+        prev_ts = Some(sample.timestamp);
+
         if sample.timestamp < earliest_allowed_timestamp {
             results[index] = SampleAddResult::TooOld;
             continue;
@@ -150,6 +166,19 @@ fn group_samples_by_chunk(
             value: series.adjust_value(sample.value),
             timestamp: sample.timestamp,
         };
+
+        // IGNORE only applies to in-order samples; out-of-order samples are upserts.
+        if let Some(last) = running_last
+            && adjusted_sample.timestamp >= last.timestamp
+            && dup_policy.is_duplicate(&adjusted_sample, &last, policy_override)
+        {
+            results[index] = SampleAddResult::Ignored(last.timestamp);
+            continue;
+        }
+
+        if running_last.is_none_or(|last| adjusted_sample.timestamp >= last.timestamp) {
+            running_last = Some(adjusted_sample);
+        }
 
         let chunk_index = if series.is_empty() || sample.timestamp < series.first_timestamp {
             0
@@ -222,8 +251,20 @@ pub(super) fn merge_samples(
     }
 
     // Group samples by chunk. Map is chunk_idx -> Vec<(original_index, sample)>
-    let chunk_groups =
-        group_samples_by_chunk(series, samples, &mut results, earliest_allowed_timestamp)?;
+    let chunk_groups = group_samples_by_chunk(
+        series,
+        samples,
+        &mut results,
+        earliest_allowed_timestamp,
+        policy_override,
+    )?;
+
+    // Every sample was filtered out (retention/IGNORE); nothing to merge. Returning early also
+    // avoids the empty-`reduce` panic in the parallel branch below.
+    if chunk_groups.is_empty() {
+        series.update_last_sample();
+        return Ok(results);
+    }
 
     let chunk_results = if chunk_groups.len() == 1 {
         // If all samples belong to a single chunk, handle it directly without parallelism

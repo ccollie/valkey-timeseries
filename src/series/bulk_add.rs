@@ -282,6 +282,88 @@ fn disjoint_get_many_mut_with_pos<'a, T>(slice: &'a mut [T], indices: &[usize]) 
     out
 }
 
+/// Result of pre-merge normalization shared by all bulk ingest paths.
+struct NormalizedBatch {
+    /// Samples that should actually be merged into chunks (values already rounded), in ascending
+    /// timestamp order.
+    to_insert: Vec<Sample>,
+    /// Original index (into the caller's `samples`) for each entry in `to_insert`.
+    insert_index: Vec<usize>,
+    /// Per-original-index results, sized to the caller's `samples`. Retention-filtered samples are
+    /// pre-set to `TooOld` and IGNORE-filtered samples to `Ignored`; survivors hold a placeholder
+    /// that the caller overwrites with the merge outcome.
+    results: Vec<SampleAddResult>,
+}
+
+/// Normalizes a sorted batch of samples the same way single-sample [`TimeSeries::add`] does, so the
+/// bulk path stays behaviorally consistent with it:
+/// - drops samples older than the retention window, reporting them as `TooOld`;
+/// - applies the series' value rounding (`SIGNIFICANT_DIGITS`/`DECIMAL_DIGITS`);
+/// - applies the IGNORE filter (`max_time_delta`/`max_value_delta`) to in-order samples, reporting
+///   ignored samples as `Ignored`.
+///
+/// `samples` **must** be sorted by timestamp ascending.
+fn normalize_batch(
+    series: &TimeSeries,
+    samples: &[Sample],
+    policy_override: Option<DuplicatePolicy>,
+) -> NormalizedBatch {
+    let min_allowed_ts = get_min_allowed_timestamp(series);
+    let dup_policy = series.sample_duplicates;
+
+    let mut results = vec![SampleAddResult::Error("Unknown error"); samples.len()];
+    let mut to_insert = Vec::with_capacity(samples.len());
+    let mut insert_index = Vec::with_capacity(samples.len());
+
+    // Running last stored sample, so the IGNORE filter compares against the value that would
+    // actually be present, mirroring single-sample add semantics as the batch is applied in order.
+    let mut running_last = series.last_sample;
+    // Timestamp of the previous input sample; duplicate timestamps within a single batch are
+    // disallowed (the input is sorted, so duplicates are adjacent).
+    let mut prev_ts: Option<Timestamp> = None;
+
+    for (index, sample) in samples.iter().enumerate() {
+        if prev_ts == Some(sample.timestamp) {
+            results[index] = SampleAddResult::Duplicate;
+            continue;
+        }
+        prev_ts = Some(sample.timestamp);
+
+        if sample.timestamp < min_allowed_ts {
+            results[index] = SampleAddResult::TooOld;
+            continue;
+        }
+
+        let adjusted = Sample {
+            timestamp: sample.timestamp,
+            value: series.adjust_value(sample.value),
+        };
+
+        // IGNORE only applies to in-order samples (ts >= last); out-of-order samples are upserts
+        // and are never filtered here, matching `TimeSeries::add`.
+        if let Some(last) = running_last
+            && adjusted.timestamp >= last.timestamp
+            && dup_policy.is_duplicate(&adjusted, &last, policy_override)
+        {
+            results[index] = SampleAddResult::Ignored(last.timestamp);
+            continue;
+        }
+
+        if running_last.is_none_or(|last| adjusted.timestamp >= last.timestamp) {
+            running_last = Some(adjusted);
+        }
+
+        to_insert.push(adjusted);
+        insert_index.push(index);
+    }
+
+    NormalizedBatch {
+        to_insert,
+        insert_index,
+        results,
+    }
+}
+
 /// Parallel merge implementation:
 /// - existing-chunk groups: merge in parallel by taking disjoint `&mut` borrows
 /// - new-chunk groups: create and merge in parallel, then append sequentially
@@ -291,11 +373,31 @@ pub fn bulk_insert_samples(
     samples: &[Sample],
     policy: Option<DuplicatePolicy>,
 ) -> Vec<SampleAddResult> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
     let _saved_sample_count = series.total_samples;
-    let groups = group_samples_by_chunk(series, samples);
+
+    // Resolve the duplicate policy against the series/global defaults so that a `None` override
+    // honors the series' configured policy rather than silently defaulting to KeepLast.
+    let resolved_policy = Some(series.sample_duplicates.resolve_policy(policy));
+
+    // Apply the same retention/rounding/IGNORE normalization as single-sample add.
+    let NormalizedBatch {
+        to_insert,
+        insert_index,
+        mut results,
+    } = normalize_batch(series, samples, policy);
+
+    if to_insert.is_empty() {
+        return results;
+    }
+
+    let groups = group_samples_by_chunk(series, &to_insert);
 
     if groups.is_empty() {
-        return Vec::new();
+        return results;
     }
 
     // separate groups into existing-chunk and new-chunk categories.
@@ -334,7 +436,7 @@ pub fn bulk_insert_samples(
             .zip(existing_groups.iter())
             .iter_into_par()
             .map(|(chunk, &(group_pos, _, samples))| {
-                let res = exec_merge(chunk, samples, policy);
+                let res = exec_merge(chunk, samples, resolved_policy);
                 (group_pos, res)
             })
             .collect();
@@ -352,7 +454,7 @@ pub fn bulk_insert_samples(
             .par()
             .map(|&(group_pos, samples)| {
                 let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
-                let res = exec_merge(&mut chunk, samples, policy);
+                let res = exec_merge(&mut chunk, samples, resolved_policy);
                 (group_pos, chunk, res)
             })
             .collect::<Vec<_>>();
@@ -382,11 +484,21 @@ pub fn bulk_insert_samples(
     // make sure total_samples is accurate
     series.recalculate_total_samples();
 
-    // flatten results in group order.
-    let mut results: Vec<SampleAddResult> = Vec::with_capacity(samples.len());
+    // Merge results arrive in group order, which matches `to_insert` order (groups borrow
+    // contiguous, ascending sub-slices of `to_insert`). Splice each outcome back into `results`
+    // at its original input index so the returned vec has one entry per input sample.
+    let mut cursor = 0usize;
     for opt in group_results.into_iter().flatten() {
-        results.extend(opt);
+        for res in opt {
+            results[insert_index[cursor]] = res;
+            cursor += 1;
+        }
     }
+    debug_assert_eq!(
+        cursor,
+        to_insert.len(),
+        "merge produced a different number of results than samples inserted"
+    );
 
     #[cfg(not(test))]
     if series.total_samples > _saved_sample_count {
@@ -956,5 +1068,142 @@ mod tests {
 
         assert_eq!(series.first_timestamp, 1000);
         assert_eq!(series.last_timestamp(), 3000);
+    }
+
+    // Consistency with single-sample `TimeSeries::add`:
+
+    #[test]
+    fn bulk_insert_applies_value_rounding() {
+        use crate::common::rounding::RoundingStrategy;
+
+        let ctx = Context::dummy();
+        let mut series = TimeSeries::default();
+        series.rounding = Some(RoundingStrategy::DecimalDigits(2));
+
+        let samples = vec![s(1000, 1.23456), s(2000, 2.98765)];
+        let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
+
+        // Results should carry the rounded values.
+        match results[0] {
+            SampleAddResult::Ok(sample) => assert_eq!(sample.value, 1.23),
+            other => panic!("expected Ok, got {other:?}"),
+        }
+        match results[1] {
+            SampleAddResult::Ok(sample) => assert_eq!(sample.value, 2.99),
+            other => panic!("expected Ok, got {other:?}"),
+        }
+
+        // Stored values must be rounded too.
+        let stored: Vec<Sample> = series.iter().collect();
+        assert_eq!(stored, vec![s(1000, 1.23), s(2000, 2.99)]);
+    }
+
+    #[test]
+    fn bulk_insert_reports_too_old_samples_in_results() {
+        let ctx = Context::dummy();
+        let mut series = TimeSeries::default();
+
+        // Establish a retention window.
+        bulk_insert_samples(&ctx, &mut series, &[s(100_000, 1.0)], None);
+        series.retention = Duration::from_millis(1000);
+
+        let min_allowed = get_min_allowed_timestamp(&series);
+        let samples = vec![
+            s(min_allowed - 10, 1.0), // too old
+            s(min_allowed - 1, 2.0),  // too old
+            s(min_allowed + 50, 3.0), // accepted
+        ];
+
+        let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
+
+        // One result per input sample, with TooOld reported (not silently dropped).
+        assert_eq!(results.len(), samples.len());
+        assert!(matches!(results[0], SampleAddResult::TooOld));
+        assert!(matches!(results[1], SampleAddResult::TooOld));
+        assert!(results[2].is_ok());
+    }
+
+    #[test]
+    fn bulk_insert_honors_ignore_filter() {
+        let ctx = Context::dummy();
+
+        // Build two identical series; add the same batch via bulk and via single-add.
+        let mut make_series = || {
+            let mut series = TimeSeries::default();
+            series.sample_duplicates.policy = Some(DuplicatePolicy::KeepLast);
+            series.sample_duplicates.max_time_delta = 5;
+            series.sample_duplicates.max_value_delta = 0.5;
+            series
+        };
+
+        let samples = vec![
+            s(1000, 10.0),
+            s(1003, 10.2), // within both deltas of the last -> ignored
+            s(1010, 20.0), // outside value delta -> accepted
+        ];
+
+        let mut bulk_series = make_series();
+        let bulk_results = bulk_insert_samples(&ctx, &mut bulk_series, &samples, None);
+
+        let mut single_series = make_series();
+        let single_results: Vec<SampleAddResult> = samples
+            .iter()
+            .map(|smp| single_series.add(smp.timestamp, smp.value, None))
+            .collect();
+
+        // Bulk must match single-add: the near-duplicate is ignored in both.
+        assert!(matches!(bulk_results[1], SampleAddResult::Ignored(1000)));
+        assert!(matches!(single_results[1], SampleAddResult::Ignored(1000)));
+
+        let bulk_stored: Vec<Sample> = bulk_series.iter().collect();
+        let single_stored: Vec<Sample> = single_series.iter().collect();
+        assert_eq!(bulk_stored, single_stored);
+        assert_eq!(bulk_stored, vec![s(1000, 10.0), s(1010, 20.0)]);
+    }
+
+    #[test]
+    fn bulk_insert_resolves_series_duplicate_policy_when_no_override() {
+        let ctx = Context::dummy();
+        let mut series = TimeSeries::default();
+        // Configure KeepFirst so an exact-timestamp duplicate keeps the original value.
+        series.sample_duplicates.policy = Some(DuplicatePolicy::KeepFirst);
+
+        // Store the original sample, then re-add the same timestamp with a different value in a
+        // second batch. With no override, the series policy (KeepFirst) — not the chunk merge
+        // default of KeepLast — must decide the winner.
+        bulk_insert_samples(&ctx, &mut series, &[s(1000, 1.0)], None);
+        bulk_insert_samples(&ctx, &mut series, &[s(1000, 2.0)], None);
+
+        let stored: Vec<Sample> = series.iter().collect();
+        assert_eq!(stored, vec![s(1000, 1.0)]);
+    }
+
+    #[test]
+    fn bulk_insert_disallows_duplicate_timestamps_within_batch() {
+        let ctx = Context::dummy();
+        let mut series = TimeSeries::default();
+
+        // Three samples share timestamp 2000; only the first is kept, the rest are rejected.
+        let samples = vec![
+            s(1000, 1.0),
+            s(2000, 2.0),
+            s(2000, 3.0),
+            s(2000, 4.0),
+            s(3000, 5.0),
+        ];
+
+        let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
+
+        assert_eq!(results.len(), samples.len());
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert!(matches!(results[2], SampleAddResult::Duplicate));
+        assert!(matches!(results[3], SampleAddResult::Duplicate));
+        assert!(results[4].is_ok());
+
+        // Only the first sample for each timestamp is stored.
+        let stored: Vec<Sample> = series.iter().collect();
+        assert_eq!(stored, vec![s(1000, 1.0), s(2000, 2.0), s(3000, 5.0)]);
+        assert_eq!(series.total_samples, 3);
     }
 }
