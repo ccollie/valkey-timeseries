@@ -42,12 +42,16 @@ pub(crate) fn merge_by_capacity(
     let first_ts = src.first_timestamp().max(min_timestamp);
     // if there is enough capacity in the previous block, merge the last block into it
     if remaining_capacity >= count {
-        // copy all from last_chunk
-        let iter = src.iter();
-        let res = dest.merge_range(iter, duplicate_policy)?;
+        // merge_samples needs a materialized, multi-pass slice and rebuilds the
+        // destination per call, so one transient buffer is unavoidable — but its
+        // size is known (src.len()), so pre-size it to avoid reallocation churn.
+        let mut samples = Vec::with_capacity(count);
+        samples.extend(src.iter());
+        let res = dest.merge_samples(&samples, duplicate_policy)?;
+        let merged = res.iter().filter(|s| s.is_ok()).count();
         // reuse last block
         src.clear();
-        return Ok(Some(res));
+        return Ok(Some(merged));
     } else if remaining_capacity > count / 4 {
         // do a partial merge
         let samples = src.get_range(first_ts, src.last_timestamp())?;

@@ -259,25 +259,6 @@ impl TimeSeriesChunk {
         }
     }
 
-    /// Merge a range of samples into this chunk.
-    /// If the chunk is full or the other chunk is empty, it returns 0.
-    /// Duplicate values are handled according to `duplicate_policy`.
-    /// Samples with timestamps before `retention_threshold` will be ignored, whether
-    /// they fall with the given range [start_ts..end_ts].
-    /// Returns the number of samples merged.
-    pub fn merge_range(
-        &mut self,
-        sample_iter: impl Iterator<Item = Sample>,
-        duplicate_policy: Option<DuplicatePolicy>,
-    ) -> TsdbResult<usize> {
-        if self.is_full() {
-            return Ok(0);
-        }
-        let samples = sample_iter.collect::<Vec<Sample>>();
-        let res = self.merge_samples(&samples, duplicate_policy)?;
-        Ok(res.iter().filter(|s| s.is_ok()).count())
-    }
-
     pub fn memory_usage(&self) -> usize {
         size_of::<Self>() + self.get_heap_size()
     }
