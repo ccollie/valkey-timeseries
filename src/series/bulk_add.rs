@@ -1077,8 +1077,10 @@ mod tests {
         use crate::common::rounding::RoundingStrategy;
 
         let ctx = Context::dummy();
-        let mut series = TimeSeries::default();
-        series.rounding = Some(RoundingStrategy::DecimalDigits(2));
+        let mut series = TimeSeries {
+            rounding: Some(RoundingStrategy::DecimalDigits(2)),
+            ..Default::default()
+        };
 
         let samples = vec![s(1000, 1.23456), s(2000, 2.98765)];
         let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
@@ -1128,7 +1130,7 @@ mod tests {
         let ctx = Context::dummy();
 
         // Build two identical series; add the same batch via bulk and via single-add.
-        let mut make_series = || {
+        let make_series = || {
             let mut series = TimeSeries::default();
             series.sample_duplicates.policy = Some(DuplicatePolicy::KeepLast);
             series.sample_duplicates.max_time_delta = 5;
