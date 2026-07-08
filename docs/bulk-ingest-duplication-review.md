@@ -203,13 +203,43 @@ Deleted: the ADDBULK bucket-rebuild engine (`run_compactions`,
   descendant compaction series (rule creation already rejects cycles), so `TS.ADD`,
   `TS.MADD` and `TS.ADDBULK` all propagate through arbitrarily deep chains.
 
-### Follow-up observation (pre-existing, not addressed)
+### Follow-up: chained-compaction semantics (resolved)
 
-The incremental engine feeds *source* samples to descendant rules when cascading
-(each level re-aggregates the raw source stream), while recalculations read the
-intermediate series. For SUM/MIN/MAX chains the results agree; for non-additive
-aggregators (AVG, COUNT, STDDEV) "re-aggregate the raw stream" and "aggregate the
-parent's bucket samples" differ. Worth a deliberate decision in a follow-up.
+The observation above is fixed. RedisTimeSeries itself does not support chained
+compaction rules at all (`TS.CREATERULE` rejects a `destKey` that is already a
+source or destination of another rule), so there is no "compatible" cascade
+behavior to match — chaining is a deliberate extension in this codebase. Given
+that, the cascade now aggregates each level over its own declared source, per the
+rule's own definition, rather than re-aggregating the top-level raw stream:
+
+- `process_series_with_compaction` now captures the samples actually **written**
+  to each destination during a rule application (`CompactionContext::written`,
+  populated by `add_dest_bucket`, using the real stored/rounded values) along with
+  that destination's own last timestamp from *before* the write
+  (`RuleOutcome::dest_prev_last`).
+- For `AddNew`/`Upsert`/`AddBatch`, cascading into a destination's own rules now
+  feeds those written samples forward as a fresh `CompactionOp::AddBatch` — so
+  `mid -> dest AVG` averages `mid`'s stored samples, not `src`'s raw stream. A
+  small helper (`dedupe_written_samples`) sorts and dedupes a rule's written
+  samples first, keeping the last (authoritative) value per timestamp, because a
+  single `AddBatch` application can write the same bucket twice (streamed, then
+  corrected by a same-batch historical upsert) — see `handle_batch_compaction`.
+- `RemoveRange` cascades unchanged: it reapplies the same absolute `[start, end]`
+  range at every level, which is already correct at any depth because each
+  level's recalculation reads directly from its own immediate parent (already
+  updated by the level above), never from a value carried across levels.
+
+**Observable consequence:** an in-flight (open) bucket's `LATEST` value at a
+chained series now reflects only its immediate parent's own *closed* (committed)
+contributions, not the parent's own still-open aggregate — because the open
+aggregate is peeked at query time one hop up (`get_latest_compaction_sample`)
+and is never itself committed or cascaded. `TS.GET ... LATEST` on a 2+-level-deep
+destination can therefore differ from the top-level raw total until every
+intermediate bucket in the chain has closed. The ADDBULK nested-compaction tests
+were updated to the corrected (smaller, partial) values, and a new test,
+`test_chained_avg_aggregates_over_intermediate_series_not_raw_source`, pins the
+AVG case where old and new semantics numerically diverge (60 vs. the old
+buggy 40).
 
 ## 6. Chunk-level merge template (step 4)
 
