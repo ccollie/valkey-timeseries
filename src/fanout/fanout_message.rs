@@ -29,26 +29,15 @@ pub(super) struct FanoutMessageHeader {
 
 impl FanoutMessageHeader {
     pub fn serialize(&self, buf: &mut Vec<u8>) {
-        // Start with the marker
-        write_marker(buf);
-
-        // version is stored as a little-endian u16
-        write_u16_le(buf, self.version);
-
-        // Encode request_id as uvarint
-        write_uvarint(buf, self.request_id);
-
-        // Encode db as signed varint
-        write_signed_varint(buf, self.db as i64);
-
-        // Encode handler as a string
-        write_byte_slice(buf, self.handler.as_bytes());
-
-        // Cluster-map fingerprint, fixed 8-byte little-endian.
-        write_u64_le(buf, self.cluster_fingerprint);
-
-        // Reserved for future use (e.g., for larger payloads, we may compress the data)
-        write_u16_le(buf, self.reserved);
+        write_message_header(
+            buf,
+            self.version,
+            self.request_id,
+            self.db,
+            &self.handler,
+            self.cluster_fingerprint,
+            self.reserved,
+        );
     }
 
     /// Deserializes a MessageHeader from the beginning of the buffer.
@@ -95,19 +84,36 @@ impl FanoutMessageHeader {
 /// Write a message header directly to `buf` without constructing a [`FanoutMessageHeader`].
 /// This avoids an unnecessary `String` allocation for the handler name in the outgoing
 /// (serialization) path, where the handler is always available as a borrowed `&str`.
+///
+/// The wire layout here must stay in lockstep with [`FanoutMessageHeader::deserialize`].
 fn write_message_header(
     buf: &mut Vec<u8>,
     version: u16,
     request_id: u64,
     db: i32,
     handler: &str,
+    cluster_fingerprint: u64,
     reserved: u16,
 ) {
+    // Start with the marker
     write_marker(buf);
+
+    // version is stored as a little-endian u16
     write_u16_le(buf, version);
+
+    // Encode request_id as uvarint
     write_uvarint(buf, request_id);
+
+    // Encode db as signed varint
     write_signed_varint(buf, db as i64);
+
+    // Encode handler as a string
     write_byte_slice(buf, handler.as_bytes());
+
+    // Cluster-map fingerprint, fixed 8-byte little-endian.
+    write_u64_le(buf, cluster_fingerprint);
+
+    // Reserved for future use (e.g., for larger payloads, we may compress the data)
     write_u16_le(buf, reserved);
 }
 
@@ -212,15 +218,15 @@ pub(super) fn serialize_request_message(
     cluster_fingerprint: u64,
     serialized_request: &[u8],
 ) {
-    let header = FanoutMessageHeader {
-        version: FANOUT_MESSAGE_VERSION,
+    write_message_header(
+        dest,
+        FANOUT_MESSAGE_VERSION,
         request_id,
         db,
-        handler: handler.to_string(),
+        handler,
         cluster_fingerprint,
-        reserved: 0,
-    };
-    header.serialize(dest);
+        0,
+    );
     dest.extend_from_slice(serialized_request);
 }
 
