@@ -1,7 +1,5 @@
 use super::fanout_error::{ErrorKind, FanoutError, NO_CLUSTER_NODES_AVAILABLE};
-use super::fanout_message::{
-    FANOUT_MESSAGE_VERSION, FanoutMessage, FanoutMessageHeader, serialize_request_message,
-};
+use super::fanout_message::{FanoutMessage, FanoutMessageHeader, serialize_request_message};
 use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
@@ -527,7 +525,7 @@ extern "C" fn on_request_received(
     buf.extend_from_slice(message.buf);
 
     let header = FanoutMessageHeader {
-        version: FANOUT_MESSAGE_VERSION,
+        version: message.version,
         reserved: 0,
         request_id: message.request_id,
         db: message.db,

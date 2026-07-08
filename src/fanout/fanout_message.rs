@@ -188,6 +188,8 @@ fn skip_marker(input: &[u8]) -> FanoutResult<&[u8]> {
 /// Represents a decoded fanout message with its header and payload.
 pub(super) struct FanoutMessage<'a> {
     pub buf: &'a [u8],
+    /// The version of the fanout message protocol.
+    pub version: u16,
     /// Unique ID for this request, used to match responses.
     pub request_id: u64,
     /// The name of the handler to process this message.
@@ -233,6 +235,7 @@ impl<'a> FanoutMessage<'a> {
             user,
             db,
             cluster_fingerprint,
+            version: header.version,
         })
     }
 }
