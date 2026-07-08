@@ -67,8 +67,8 @@ pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> FanoutTarget
     let current_map = CLUSTER_MAP.load();
     // Check if we need to refresh. A stale flag is set when a peer rejected one
     // of our requests due to a topology mismatch.
-    let needs_refresh =
-        !current_map.is_consistent || current_map.is_expired() || take_cluster_map_stale();
+    let stale = take_cluster_map_stale();
+    let needs_refresh = !current_map.is_consistent || current_map.is_expired() || stale;
     if !needs_refresh {
         return FanoutTargets {
             nodes: current_map.get_targets(mode),
@@ -91,17 +91,25 @@ pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> FanoutTarget
 // warning is logged so subsequent calls will retry the refresh.
 pub fn refresh_cluster_map(ctx: &Context) {
     ctx.log_notice("Refreshing cluster map...");
-    let new_map = ClusterMap::create(ctx);
-    update_cluster_map(new_map);
-    ctx.log_notice("Cluster map refreshed");
+    match ClusterMap::create(ctx) {
+        Some(new_map) => {
+            update_cluster_map(new_map);
+            ctx.log_notice("Cluster map refreshed");
+        }
+        None => {
+            ctx.log_warning(
+                "Failed to build cluster map; keeping the previous map and retrying later",
+            );
+        }
+    }
 }
 
 pub fn get_or_refresh_cluster_map(ctx: &Context) -> Arc<ClusterMap> {
     let current_map = get_cluster_map();
+    let stale = take_cluster_map_stale();
 
     // Check if we need to refresh
-    let needs_refresh =
-        !current_map.is_consistent || current_map.is_expired() || take_cluster_map_stale();
+    let needs_refresh = !current_map.is_consistent || current_map.is_expired() || stale;
 
     if needs_refresh {
         drop(current_map);
