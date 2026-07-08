@@ -1,7 +1,7 @@
 use super::fanout_error::INVALID_MESSAGE_ERROR;
 use crate::common::encoding::{
-    try_read_signed_varint, try_read_string, try_read_u64_le, try_read_uvarint, write_byte_slice,
-    write_signed_varint, write_u64_le, write_uvarint,
+    try_read_byte_slice, try_read_signed_varint, try_read_u64_le, try_read_uvarint,
+    write_byte_slice, write_signed_varint, write_u64_le, write_uvarint,
 };
 use crate::fanout::{FanoutError, FanoutResult};
 
@@ -9,6 +9,27 @@ pub const FANOUT_MESSAGE_VERSION: u16 = 1;
 pub const FANOUT_MESSAGE_MARKER: u32 = 0xBADCAB;
 const HEADER_SIZE: usize = size_of::<u32>();
 const MAX_USERNAME_LEN: usize = 1024;
+/// Registered fanout handler names are short internal identifiers (e.g. "mget",
+/// "queryindex"); this cap bounds the allocation for the handler field while
+/// leaving generous headroom.
+const MAX_HANDLER_LEN: usize = 128;
+
+/// Reads a length-prefixed UTF-8 string from `buf`, enforcing `max_len` on the
+/// raw byte length BEFORE allocating, so an oversized length from a malicious or
+/// buggy peer cannot force a large allocation that is only rejected afterwards.
+///
+/// [`try_read_byte_slice`] merely borrows from the already-received buffer (and
+/// errors if the claimed length exceeds the remaining data), so the length cap is
+/// the only gate before the caller allocates. Returns a borrowed `&str` and leaves
+/// the empty-vs-present decision (and any allocation) to the caller.
+fn read_bounded_str<'a>(buf: &mut &'a [u8], max_len: usize) -> FanoutResult<&'a str> {
+    let bytes =
+        try_read_byte_slice(buf).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
+    if bytes.len() > max_len {
+        return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
+    }
+    std::str::from_utf8(bytes).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))
+}
 
 /// Header for messages exchanged between cluster nodes.
 #[derive(Debug, Clone)]
@@ -65,17 +86,16 @@ impl FanoutMessageHeader {
             .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?
             as i32;
 
-        // Read handler as a string
-        let handler = try_read_string(&mut buf)
-            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
+        // Read the handler name, capping the raw length before allocating.
+        let handler = read_bounded_str(&mut buf, MAX_HANDLER_LEN)?.to_owned();
 
-        // Read ACL user as a string (empty = no user).
-        let user = try_read_string(&mut buf)
-            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
-        if user.len() > MAX_USERNAME_LEN {
-            return Err(FanoutError::serialization(INVALID_MESSAGE_ERROR));
-        }
-        let user = if user.is_empty() { None } else { Some(user) };
+        // Read the ACL user, capping the raw length before allocating (empty = no user).
+        let user_str = read_bounded_str(&mut buf, MAX_USERNAME_LEN)?;
+        let user = if user_str.is_empty() {
+            None
+        } else {
+            Some(user_str.to_owned())
+        };
 
         // Cluster-map fingerprint, fixed 8-byte little-endian.
         let cluster_fingerprint = try_read_u64_le(&mut buf)
@@ -583,6 +603,23 @@ mod tests {
         write_byte_slice(&mut buf, b"handler");
         let oversized_user = vec![b'a'; MAX_USERNAME_LEN + 1];
         write_byte_slice(&mut buf, &oversized_user);
+        write_u64_le(&mut buf, 0);
+        write_u16_le(&mut buf, 0);
+
+        let result = FanoutMessageHeader::deserialize(&buf);
+        assert_serialization_error(result);
+    }
+
+    #[test]
+    fn test_cluster_message_header_deserialize_rejects_oversized_handler() {
+        let mut buf = Vec::new();
+        write_marker(&mut buf);
+        write_u16_le(&mut buf, FANOUT_MESSAGE_VERSION);
+        write_uvarint(&mut buf, 1);
+        write_signed_varint(&mut buf, 0);
+        let oversized_handler = vec![b'a'; MAX_HANDLER_LEN + 1];
+        write_byte_slice(&mut buf, &oversized_handler);
+        write_byte_slice(&mut buf, b"");
         write_u64_le(&mut buf, 0);
         write_u16_le(&mut buf, 0);
 
