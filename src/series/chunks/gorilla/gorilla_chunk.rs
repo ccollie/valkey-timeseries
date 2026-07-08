@@ -5,12 +5,10 @@ use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
-use crate::error_consts;
 use crate::iterators::SampleIter;
 use crate::series::chunks::chunk::{Chunk, ChunkOps};
-use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::merge::{append_samples, merge_chunk_samples};
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use ahash::AHashSet;
 use get_size2::GetSize;
 use std::mem::size_of;
 use valkey_module::digest::Digest;
@@ -201,76 +199,24 @@ impl ChunkOps for GorillaChunk {
         samples: &[Sample],
         dp_policy: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
-        fn add_sample(
-            chunk: &mut GorillaChunk,
-            sample: &Sample,
-            res: &mut Vec<SampleAddResult>,
-        ) -> TsdbResult<()> {
-            match chunk.add_sample(sample) {
-                Ok(_) => {
-                    res.push(SampleAddResult::Ok(*sample));
-                    Ok(())
-                }
-                err @ Err(TsdbError::CapacityFull(_)) => Err(err.unwrap_err()),
-                Err(e) => {
-                    log_warning(format!("error in gorilla chunk merge : {e:?}"));
-                    res.push(SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE));
-                    Ok(())
-                }
-            }
+        if samples.is_empty() {
+            return Ok(Vec::new());
         }
-
-        let mut result = Vec::with_capacity(samples.len());
 
         // We assume that samples are sorted. Try to optimize by seeing if all samples are past the
         // current chunk's last timestamp.
         let first = samples[0];
         if self.is_empty() || first.timestamp > self.last_timestamp() {
-            // set_data
-            for sample in samples.iter() {
-                add_sample(self, sample, &mut result)?;
-            }
-            return Ok(result);
+            return append_samples(self, samples);
         }
 
-        let mut sample_set: AHashSet<Timestamp> = AHashSet::with_capacity(samples.len());
-        for sample in samples.iter() {
-            sample_set.insert(sample.timestamp);
-        }
+        let mut encoder = GorillaEncoder::new();
+        let result = merge_chunk_samples(self.iter(), samples, dp_policy, |sample| {
+            push_sample(&mut encoder, &sample)
+        })?;
 
-        struct MergeState {
-            xor_encoder: GorillaEncoder,
-            result: Vec<SampleAddResult>,
-        }
-
-        let mut merge_state = MergeState {
-            xor_encoder: GorillaEncoder::new(),
-            result: Vec::with_capacity(samples.len()),
-        };
-
-        let left = self.iter();
-        let right = SampleIter::Slice(samples.iter());
-
-        merge_samples(
-            left,
-            right,
-            dp_policy,
-            &mut merge_state,
-            |state, sample, is_duplicate| {
-                push_sample(&mut state.xor_encoder, &sample)?;
-                if sample_set.remove(&sample.timestamp) {
-                    if is_duplicate {
-                        state.result.push(SampleAddResult::Duplicate);
-                    } else {
-                        state.result.push(SampleAddResult::Ok(sample));
-                    }
-                }
-                Ok(())
-            },
-        )?;
-
-        self.encoder = merge_state.xor_encoder;
-        Ok(merge_state.result)
+        self.encoder = encoder;
+        Ok(result)
     }
 
     fn optimize(&mut self) -> TsdbResult {

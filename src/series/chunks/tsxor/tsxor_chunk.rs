@@ -14,13 +14,11 @@ use crate::common::rdb::{
 };
 use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
-use crate::error_consts;
 use crate::iterators::SampleIter;
 use crate::series::chunks::stream::bitstream::BitStream;
 use crate::series::chunks::tsxor::tsxor_decompressor::TsXorDecompressor;
-use crate::series::chunks::{Chunk, ChunkOps, merge_samples};
+use crate::series::chunks::{Chunk, ChunkOps, append_samples, merge_chunk_samples};
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use ahash::AHashSet;
 use get_size2::GetSize;
 use valkey_module::{RedisModuleIO, ValkeyResult};
 
@@ -564,92 +562,39 @@ impl ChunkOps for TsXorChunk {
         samples: &[Sample],
         dp_policy: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
-        fn add_sample(
-            chunk: &mut TsXorChunk,
-            sample: &Sample,
-            res: &mut Vec<SampleAddResult>,
-        ) -> TsdbResult<()> {
-            match chunk.add_sample(sample) {
-                Ok(_) => {
-                    res.push(SampleAddResult::Ok(*sample));
-                    Ok(())
-                }
-                err @ Err(TsdbError::CapacityFull(_)) => Err(err.unwrap_err()),
-                Err(e) => {
-                    log_warning(format!("error in gorilla chunk merge : {e:?}"));
-                    res.push(SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE));
-                    Ok(())
-                }
-            }
+        if samples.is_empty() {
+            return Ok(Vec::new());
         }
-
-        let mut result = Vec::with_capacity(samples.len());
 
         // We assume that samples are sorted. Try to optimize by seeing if all samples are past the
         // current chunk's last timestamp.
         let first = samples[0];
         if self.is_empty() || first.timestamp > self.last_timestamp() {
-            // set_data
-            for sample in samples.iter() {
-                add_sample(self, sample, &mut result)?;
-            }
-            return Ok(result);
+            return append_samples(self, samples);
         }
 
-        // todo: halfbrown
-        let mut sample_set: AHashSet<Timestamp> = AHashSet::with_capacity(samples.len());
-        for sample in samples.iter() {
-            sample_set.insert(sample.timestamp);
-        }
-
-        struct MergeState {
-            encoder: TsXorChunk,
-            result: Vec<SampleAddResult>,
-        }
-
-        let mut merge_state = MergeState {
-            encoder: TsXorChunk::new_encoder(self.max_size),
-            result: Vec::with_capacity(samples.len()),
-        };
+        let mut encoder = TsXorChunk::new_encoder(self.max_size);
         // Track first and last samples seen so we can set the resulting chunk's metadata
         // (first_timestamp, last_timestamp and last_value) after the merge.
         let mut first_ts: Option<Timestamp> = None;
         let mut last_sample: Option<Sample> = None;
 
         let left = SampleIter::TSXor(self.get_iter(0, self.last_timestamp() + 1));
-        let right = SampleIter::Slice(samples.iter());
+        let result = merge_chunk_samples(left, samples, dp_policy, |sample| {
+            encoder.append(sample.timestamp as u64, sample.value);
+            if first_ts.is_none() {
+                first_ts = Some(sample.timestamp);
+            }
+            last_sample = Some(sample);
+            Ok(())
+        })?;
 
-        merge_samples(
-            left,
-            right,
-            dp_policy,
-            &mut merge_state,
-            |state, sample, is_duplicate| {
-                // append to encoder
-                state.encoder.append(sample.timestamp as u64, sample.value);
-                // record first seen timestamp and last sample
-                if first_ts.is_none() {
-                    first_ts = Some(sample.timestamp);
-                }
-                last_sample = Some(sample);
-
-                if sample_set.remove(&sample.timestamp) {
-                    if is_duplicate {
-                        state.result.push(SampleAddResult::Duplicate);
-                    } else {
-                        state.result.push(SampleAddResult::Ok(sample));
-                    }
-                }
-                Ok(())
-            },
-        )?;
-
-        self.writer = merge_state.encoder.writer;
-        self.window = merge_state.encoder.window;
-        self.stored_timestamp = merge_state.encoder.stored_timestamp;
-        self.stored_delta = merge_state.encoder.stored_delta;
-        self.block_timestamp = merge_state.encoder.block_timestamp;
-        self.count = merge_state.encoder.count;
+        self.writer = encoder.writer;
+        self.window = encoder.window;
+        self.stored_timestamp = encoder.stored_timestamp;
+        self.stored_delta = encoder.stored_delta;
+        self.block_timestamp = encoder.block_timestamp;
+        self.count = encoder.count;
         // Update first/last metadata from tracked samples
         if let Some(first) = first_ts {
             self.first_timestamp = first;
@@ -659,7 +604,7 @@ impl ChunkOps for TsXorChunk {
             self.last_value = last.value;
         }
 
-        Ok(merge_state.result)
+        Ok(result)
     }
 
     fn optimize(&mut self) -> TsdbResult<()> {

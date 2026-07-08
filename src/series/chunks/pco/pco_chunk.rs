@@ -13,7 +13,7 @@ use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::merge::merge_chunk_samples;
 use crate::series::chunks::pco::PcoSampleIterator;
 use crate::series::chunks::pco::pco_utils::{
     compress_timestamps, compress_values, decompress_timestamps, decompress_values,
@@ -21,7 +21,6 @@ use crate::series::chunks::pco::pco_utils::{
 use crate::series::chunks::utils::get_timestamp_index_bounds;
 use crate::series::chunks::{Chunk, ChunkOps};
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use ahash::AHashSet;
 use get_size2::GetSize;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -237,54 +236,26 @@ impl PcoChunk {
         samples: &[Sample],
         dp_policy: DuplicatePolicy,
     ) -> TsdbResult<Vec<SampleAddResult>> {
-        struct MergeState {
-            values: PooledVecF64,
-            timestamps: PooledVecI64,
-            result: Vec<SampleAddResult>,
-        }
-
         // we don't do streaming compression, so we have to accumulate all the samples
         // in a new chunk and then swap it with the old one
         let capacity = current.len() + samples.len();
+        let mut values: PooledVecF64 = get_pooled_vec_f64(capacity);
+        let mut timestamps: PooledVecI64 = get_pooled_vec_i64(capacity);
 
-        let mut merge_state = MergeState {
-            values: get_pooled_vec_f64(capacity),
-            timestamps: get_pooled_vec_i64(capacity),
-            result: Vec::with_capacity(samples.len()),
-        };
-
-        // eliminate results not related to the new samples
-        let mut sample_set: AHashSet<Timestamp> = AHashSet::with_capacity(samples.len());
-        for sample in samples.iter() {
-            sample_set.insert(sample.timestamp);
-        }
-
-        let left = SampleIter::Slice(current.iter());
-        let right = SampleIter::Slice(samples.iter());
-
-        merge_samples(
-            left,
-            right,
+        let result = merge_chunk_samples(
+            SampleIter::Slice(current.iter()),
+            samples,
             Some(dp_policy),
-            &mut merge_state,
-            |state, sample, is_duplicate| {
-                let is_new = sample_set.remove(&sample.timestamp);
-                state.values.push(sample.value);
-                state.timestamps.push(sample.timestamp);
-                if is_new {
-                    if is_duplicate {
-                        state.result.push(SampleAddResult::Duplicate);
-                    } else {
-                        state.result.push(SampleAddResult::Ok(sample));
-                    }
-                }
+            |sample| {
+                timestamps.push(sample.timestamp);
+                values.push(sample.value);
                 Ok(())
             },
         )?;
 
-        self.compress(&merge_state.timestamps, &merge_state.values)?;
+        self.compress(&timestamps, &values)?;
 
-        Ok(merge_state.result)
+        Ok(result)
     }
 }
 
@@ -398,9 +369,7 @@ impl ChunkOps for PcoChunk {
             return Ok(Vec::new());
         }
         let first = samples[0];
-        let dp_policy = dp_policy.unwrap_or(DuplicatePolicy::Block);
-
-        let mut result = Vec::with_capacity(samples.len());
+        let dp_policy = dp_policy.unwrap_or(DuplicatePolicy::KeepLast);
 
         if self.is_empty() || first.timestamp > self.last_timestamp() {
             // we don't do streaming compression, so we have to accumulate all the samples
@@ -412,6 +381,7 @@ impl ChunkOps for PcoChunk {
                 self.decompress_internal(&mut timestamps, &mut values)?;
             }
 
+            let mut result = Vec::with_capacity(samples.len());
             for sample in samples {
                 timestamps.push(sample.timestamp);
                 values.push(sample.value);
@@ -422,21 +392,7 @@ impl ChunkOps for PcoChunk {
             return Ok(result);
         }
 
-        if let Some((mut timestamps, mut values)) = self.decompress()? {
-            let first = samples[0];
-
-            if first.timestamp > self.last_timestamp() {
-                timestamps.reserve(samples.len());
-                values.reserve(samples.len());
-                for sample in samples {
-                    timestamps.push(sample.timestamp);
-                    values.push(sample.value);
-                    result.push(SampleAddResult::Ok(*sample));
-                }
-                self.compress(&timestamps, &values)?;
-                return Ok(result);
-            }
-
+        if let Some((timestamps, values)) = self.decompress()? {
             let current: Vec<Sample> = timestamps
                 .iter()
                 .cloned()
@@ -447,7 +403,7 @@ impl ChunkOps for PcoChunk {
             return self.merge_internal(&current, samples, dp_policy);
         }
 
-        Ok(result)
+        Ok(Vec::new())
     }
 
     fn optimize(&mut self) -> TsdbResult<()> {

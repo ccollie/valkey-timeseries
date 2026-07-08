@@ -785,6 +785,74 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_single_sample_honors_duplicate_policy() {
+        // A single-sample merge must honor the duplicate policy like the multi-sample path
+        // (the Uncompressed chunk used to hardcode KeepLast here).
+        for chunk_type in CHUNK_TYPES {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 100);
+            chunk
+                .set_data(&[
+                    Sample {
+                        timestamp: 20,
+                        value: 5.0,
+                    },
+                    Sample {
+                        timestamp: 50,
+                        value: 6.0,
+                    },
+                ])
+                .unwrap();
+
+            // Block: the duplicate is rejected and the stored value is unchanged.
+            let result = chunk
+                .merge_samples(
+                    &[Sample {
+                        timestamp: 20,
+                        value: 9.0,
+                    }],
+                    Some(DuplicatePolicy::Block),
+                )
+                .unwrap();
+            assert_eq!(
+                result,
+                vec![SampleAddResult::Duplicate],
+                "{chunk_type}: Block must reject a single-sample duplicate"
+            );
+            assert_eq!(
+                chunk.get_range(20, 20).unwrap(),
+                vec![Sample {
+                    timestamp: 20,
+                    value: 5.0
+                }],
+                "{chunk_type}: Block must leave the stored value unchanged"
+            );
+
+            // KeepLast: the duplicate overwrites the stored value.
+            let result = chunk
+                .merge_samples(
+                    &[Sample {
+                        timestamp: 20,
+                        value: 9.0,
+                    }],
+                    Some(DuplicatePolicy::KeepLast),
+                )
+                .unwrap();
+            assert!(
+                result.len() == 1 && result[0].is_ok(),
+                "{chunk_type}: KeepLast must accept a single-sample duplicate, got {result:?}"
+            );
+            assert_eq!(
+                chunk.get_range(20, 20).unwrap(),
+                vec![Sample {
+                    timestamp: 20,
+                    value: 9.0
+                }],
+                "{chunk_type}: KeepLast must overwrite the stored value"
+            );
+        }
+    }
+
+    #[test]
     fn test_merge_samples_outside_range() {
         let samples = vec![
             Sample {

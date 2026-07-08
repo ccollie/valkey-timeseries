@@ -4,10 +4,9 @@ use crate::common::rdb::{rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usiz
 use crate::common::{SAMPLE_SIZE, Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
-use crate::series::chunks::merge::merge_samples;
+use crate::series::chunks::merge::merge_chunk_samples;
 use crate::series::chunks::{Chunk, ChunkOps};
 use crate::series::{DuplicatePolicy, SampleAddResult};
-use ahash::AHashSet;
 use core::mem::size_of;
 use get_size2::GetSize;
 use std::hash::Hash;
@@ -345,15 +344,22 @@ impl ChunkOps for UncompressedChunk {
         samples: &[Sample],
         dp_policy: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
+        if samples.is_empty() {
+            return Ok(Vec::new());
+        }
         let first = samples[0];
 
         if samples.len() == 1 {
             if self.is_empty() {
                 self.add_sample(&first)?;
-            } else {
-                self.upsert_sample(first, DuplicatePolicy::KeepLast)?;
+                return Ok(vec![SampleAddResult::Ok(first)]);
             }
-            return Ok(vec![SampleAddResult::Ok(first)]);
+            let policy = dp_policy.unwrap_or(DuplicatePolicy::KeepLast);
+            return match self.upsert_sample(first, policy) {
+                Ok(_) => Ok(vec![SampleAddResult::Ok(first)]),
+                Err(TsdbError::DuplicateSample(_)) => Ok(vec![SampleAddResult::Duplicate]),
+                Err(e) => Err(e),
+            };
         }
 
         if self.is_empty() || first.timestamp > self.last_timestamp() {
@@ -365,46 +371,19 @@ impl ChunkOps for UncompressedChunk {
             return Ok(result);
         }
 
-        struct State {
-            dest: Vec<Sample>,
-            res: Vec<SampleAddResult>,
-        }
-
-        let mut state = State {
-            dest: Vec::with_capacity(self.samples.len() + samples.len()),
-            res: Vec::with_capacity(samples.len()),
-        };
-
-        // eliminate results not related to the new samples
-        let mut sample_set: AHashSet<Timestamp> = AHashSet::with_capacity(samples.len());
-        for sample in samples.iter() {
-            sample_set.insert(sample.timestamp);
-        }
-
-        let left_iter = SampleIter::Slice(self.samples.iter());
-        let right_iter = SampleIter::Slice(samples.iter());
-
-        merge_samples(
-            left_iter,
-            right_iter,
+        let mut dest: Vec<Sample> = Vec::with_capacity(self.samples.len() + samples.len());
+        let result = merge_chunk_samples(
+            SampleIter::Slice(self.samples.iter()),
+            samples,
             dp_policy,
-            &mut state,
-            |state, sample, duplicate| {
-                let is_new = sample_set.remove(&sample.timestamp);
-                state.dest.push(sample);
-                if is_new {
-                    if duplicate {
-                        state.res.push(SampleAddResult::Duplicate);
-                    } else {
-                        state.res.push(SampleAddResult::Ok(sample));
-                    }
-                }
+            |sample| {
+                dest.push(sample);
                 Ok(())
             },
         )?;
 
-        self.samples = state.dest;
-        Ok(state.res)
+        self.samples = dest;
+        Ok(result)
     }
 
     fn optimize(&mut self) -> TsdbResult<()> {

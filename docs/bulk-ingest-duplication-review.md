@@ -103,7 +103,7 @@ Only the "append one sample" line differs per encoding. Drifted details:
   that owns the timestamp-set bookkeeping and `Ok`/`Duplicate` result logic; each
   encoding implements only "append one sample" and "commit rebuilt state". Fold in
   drift fixes: one default policy, honor `dp_policy` on the uncompressed
-  single-sample path, `IntSet` everywhere, correct log messages. *(Not yet done.)*
+  single-sample path, `IntSet` everywhere, correct log messages. *(Done — see §6.)*
 
 ## 4. Changes applied on this branch (steps 1 & 2)
 
@@ -210,3 +210,37 @@ The incremental engine feeds *source* samples to descendant rules when cascading
 intermediate series. For SUM/MIN/MAX chains the results agree; for non-additive
 aggregators (AVG, COUNT, STDDEV) "re-aggregate the raw stream" and "aggregate the
 parent's bucket samples" differ. Worth a deliberate decision in a follow-up.
+
+## 6. Chunk-level merge template (step 4)
+
+`chunks/merge.rs` now owns the shared merge machinery:
+
+- **`merge_chunk_samples(existing, samples, dp_policy, append)`** — runs the
+  two-way merge iterator, feeds every winning sample to the encoding-specific
+  `append` closure, and produces one `Ok`/`Duplicate` result per unique input
+  timestamp (default policy `KeepLast`).
+- **`append_samples(chunk, samples)`** — the shared fast path for batches that lie
+  entirely past the chunk's last timestamp: per-sample append with `CapacityFull`
+  aborting the group and other errors reported per sample.
+
+Each encoding's `ChunkOps::merge_samples` is now a fast-path check plus a one-line
+appender closure and a state commit. XOR2 keeps a private
+`merge_samples_with_st` variant (its iterator carries a per-sample sub-timestamp
+that must be preserved when rewriting), but its result bookkeeping now matches the
+shared helper exactly.
+
+Drift fixes folded in:
+
+- **Uncompressed single-sample merges honor the duplicate policy.** The path
+  hardcoded `KeepLast` and unconditionally reported `Ok`, so `Block` did not block.
+  It now maps a blocked duplicate to `SampleAddResult::Duplicate`, consistent with
+  the multi-sample path (covered by a new cross-encoding test).
+- **One default duplicate policy.** Pco defaulted to `Block` where every other
+  encoding and the shared helper default to `KeepLast`; pco now matches. (The
+  series layer always passes an explicitly resolved policy, so this only affects
+  direct chunk-level callers.)
+- **Empty-input safety**: every encoding returns an empty result instead of
+  indexing `samples[0]`.
+- Removed pco's unreachable duplicate append branch, tsxor's copy-pasted
+  "gorilla" log message, and the per-encoding `AHashSet` bookkeeping (the template
+  uses `IntSet`).
