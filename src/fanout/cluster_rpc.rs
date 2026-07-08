@@ -234,7 +234,7 @@ pub(super) fn send_cluster_request(
     let id = generate_id();
     let db = get_current_db(ctx);
 
-    let mut buf = get_pooled_buffer(512);
+    let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
     serialize_request_message(&mut buf, id, db, handler, cluster_fingerprint, request_buf);
 
     let remote_targets: Vec<NodeInfo> = targets
@@ -293,11 +293,11 @@ fn send_message_internal(
     handler: &str,
     buf: &[u8],
 ) -> Status {
-    let mut dest = Vec::with_capacity(1024);
+    let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
     // Responses and errors don't carry a meaningful cluster-map fingerprint; the
     // requester matches them by request id and reacts to the error kind. Send 0.
     serialize_request_message(&mut dest, request_id, db, handler, 0, buf);
-    send_cluster_message(ctx, sender_id, msg_type, &dest)
+    send_cluster_message(ctx, sender_id, msg_type, dest.as_slice())
 }
 
 fn send_response_message(
