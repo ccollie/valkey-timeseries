@@ -34,7 +34,7 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// The request type.
     type Request: Serializable + Send + 'static;
     /// The response type.
-    type Response: Serializable + Default + Send;
+    type Response: Serializable + Send;
 
     /// Return the name of the fanout operation.
     fn name() -> &'static str;
@@ -82,13 +82,6 @@ pub trait FanoutCommand: Default + Send + 'static {
         exec_command(ctx, self, targets, started, timeout, f)
     }
 
-    /// Execute the fanout operation across nodes and wait synchronously for the response.
-    fn exec_sync(self, ctx: &Context) -> FanoutResult<Self::Response> {
-        let timeout = self.get_timeout();
-        let targets = self.get_targets(ctx);
-        exec_command_sync(ctx, self, targets, timeout)
-    }
-
     /// Generate the request to be sent to each target node.
     fn generate_request(&self) -> Self::Request;
 
@@ -131,6 +124,7 @@ fn describe_target(target: &NodeInfo) -> String {
 ///
 /// Returns, for an operation that may be abandoned ([`FanoutCommand::cancellable`]), the
 /// [`FanoutCancel`] that ends it once nobody is waiting for its result.
+/// todo: pass in nodes to target instead of letting the command decide, for better separation of concerns.
 pub fn exec_command<OP: FanoutCommand, F>(
     ctx: &Context,
     command: OP,
