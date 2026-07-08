@@ -1,88 +1,12 @@
-use crate::common::hash::IntMap;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
-use crate::error_consts;
-use crate::series::chunks::{Chunk, ChunkOps, TimeSeriesChunk};
+use crate::series::bulk_add::merge_samples_into_series;
 use crate::series::index::get_series_key_by_id;
-use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, find_last_ge_index};
+use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
 use orx_parallel::ParIterResult;
 use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::{SmallVec, smallvec};
 use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
-
-/// Appending to a GorillaChunk is a streaming operation, but adding out-of-order samples is an O(n) operation.
-/// For every insert of a sample with a timestamp prior to the last timestamp, the chunk data is rewritten to insert
-/// the sample in the correct location.
-///
-/// To optimize this process, we group samples by the chunk they belong to, then merge them in a single write operation.
-/// Represents a collection of samples for a single timeseries, grouped by chunk index.
-struct GroupedSamples {
-    chunk_index: usize,
-    samples: SmallVec<Sample, 8>,
-    indices: SmallVec<usize, 8>,
-}
-
-impl GroupedSamples {
-    fn new(chunk_index: usize) -> Self {
-        Self {
-            chunk_index,
-            samples: SmallVec::new(),
-            indices: SmallVec::new(),
-        }
-    }
-
-    /// Sorts samples by timestamp in ascending order, maintaining the relationship with their original indices.
-    fn sort_by_timestamp(&mut self) {
-        // Create a vector of (index, sample) pairs
-        let mut pairs: SmallVec<(usize, Sample), 8> = self
-            .indices
-            .iter()
-            .copied()
-            .zip(self.samples.iter().copied())
-            .collect();
-
-        // Sort the pairs by sample timestamp
-        pairs.sort_unstable_by_key(|(_, sample)| sample.timestamp);
-
-        // Clear the existing SmallVecs
-        self.indices.clear();
-        self.samples.clear();
-
-        // Push sorted elements back into the SmallVecs
-        for (idx, sample) in pairs {
-            self.indices.push(idx);
-            self.samples.push(sample);
-        }
-    }
-
-    fn add_sample(&mut self, sample: Sample, index: usize) {
-        self.samples.push(sample);
-        self.indices.push(index);
-    }
-
-    fn handle_merge(
-        &self,
-        chunk: &mut TimeSeriesChunk,
-        policy: DuplicatePolicy,
-    ) -> SmallVec<(usize, SampleAddResult), 8> {
-        // Merge samples into this chunk
-        match chunk.merge_samples(&self.samples, Some(policy)) {
-            Ok(chunk_results) => chunk_results
-                .iter()
-                .zip(self.indices.iter().cloned())
-                .map(|(res, index)| (index, *res))
-                .collect::<SmallVec<_, 8>>(),
-            Err(_e) => {
-                let err = SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE);
-                self.indices
-                    .iter()
-                    .cloned()
-                    .map(|index| (index, err))
-                    .collect::<SmallVec<_, 8>>()
-            }
-        }
-    }
-}
 
 pub struct IndexedSample {
     pub index: usize,
@@ -129,94 +53,15 @@ impl<'a> PerSeriesSamples<'a> {
     }
 }
 
-/// Groups samples by the chunk they belong to, while filtering out old samples.
-///
-/// NOTE: `samples` **must** be sorted by timestamp before calling this function.
-fn group_samples_by_chunk(
-    series: &mut TimeSeries,
-    samples: &[Sample],
-    results: &mut [SampleAddResult],
-    earliest_allowed_timestamp: Timestamp,
-    policy_override: Option<DuplicatePolicy>,
-) -> TsdbResult<IntMap<usize, GroupedSamples>> {
-    let mut chunk_groups: IntMap<usize, GroupedSamples> = IntMap::default();
-
-    // State for the IGNORE filter (`max_time_delta`/`max_value_delta`), applied in order so the
-    // behavior matches single-sample `TimeSeries::add`. Copied out so we don't borrow `series`
-    // while mutating its chunks below.
-    let dup_policy = series.sample_duplicates;
-    let mut running_last = series.last_sample;
-    // Timestamp of the previous input sample; duplicate timestamps within a single batch are
-    // disallowed (the input is sorted, so duplicates are adjacent).
-    let mut prev_ts: Option<Timestamp> = None;
-
-    for (index, &sample) in samples.iter().enumerate() {
-        if prev_ts == Some(sample.timestamp) {
-            results[index] = SampleAddResult::Duplicate;
-            continue;
-        }
-        prev_ts = Some(sample.timestamp);
-
-        if sample.timestamp < earliest_allowed_timestamp {
-            results[index] = SampleAddResult::TooOld;
-            continue;
-        }
-
-        let adjusted_sample = Sample {
-            value: series.adjust_value(sample.value),
-            timestamp: sample.timestamp,
-        };
-
-        // IGNORE only applies to in-order samples; out-of-order samples are upserts.
-        if let Some(last) = running_last
-            && adjusted_sample.timestamp >= last.timestamp
-            && dup_policy.is_duplicate(&adjusted_sample, &last, policy_override)
-        {
-            results[index] = SampleAddResult::Ignored(last.timestamp);
-            continue;
-        }
-
-        if running_last.is_none_or(|last| adjusted_sample.timestamp >= last.timestamp) {
-            running_last = Some(adjusted_sample);
-        }
-
-        let chunk_index = if series.is_empty() || sample.timestamp < series.first_timestamp {
-            0
-        } else {
-            loop {
-                let (index, _) = find_last_ge_index(&series.chunks, sample.timestamp);
-
-                debug_assert!(index < series.chunks.len());
-                let chunk = &mut series.chunks[index];
-
-                if chunk.should_split() {
-                    chunk.split()?;
-                    continue;
-                }
-
-                break index;
-            }
-        };
-
-        chunk_groups
-            .entry(chunk_index)
-            .or_insert_with(|| GroupedSamples::new(chunk_index))
-            .add_sample(adjusted_sample, index);
-    }
-
-    for group in chunk_groups.values_mut() {
-        group.sort_by_timestamp();
-    }
-
-    Ok(chunk_groups)
-}
-
 /// Merges a collection of samples into a time series.
 ///
-/// This function efficiently groups samples by the chunks they would belong to
-/// and applies the appropriate duplicate policy when merging. If samples are split across
-/// multiple chunks, they are possibly processed in parallel to optimize performance.
+/// Delegates to the shared bulk-merge core ([`merge_samples_into_series`]) used by
+/// `TS.ADDBULK`, so normalization (retention/rounding/IGNORE), chunk grouping and
+/// parallel merging behave identically on both ingest paths.
 ///
+/// ## Note
+///
+/// `samples` **must** be sorted by timestamp.
 ///
 /// ### Arguments
 ///
@@ -236,91 +81,8 @@ pub(super) fn merge_samples(
         return Ok(Vec::new());
     }
 
-    let policy = series.sample_duplicates.resolve_policy(policy_override);
-    let earliest_allowed_timestamp = if series.retention.is_zero() {
-        0
-    } else {
-        series.get_min_timestamp()
-    };
-
-    let mut results = vec![SampleAddResult::Error("Unknown error"); samples.len()];
-
-    // Ensure there's at least one chunk to work with
-    if series.chunks.is_empty() {
-        series.append_chunk();
-    }
-
-    // Group samples by chunk. Map is chunk_idx -> Vec<(original_index, sample)>
-    let chunk_groups = group_samples_by_chunk(
-        series,
-        samples,
-        &mut results,
-        earliest_allowed_timestamp,
-        policy_override,
-    )?;
-
-    // Every sample was filtered out (retention/IGNORE); nothing to merge. Returning early also
-    // avoids the empty-`reduce` panic in the parallel branch below.
-    if chunk_groups.is_empty() {
-        series.update_last_sample();
-        return Ok(results);
-    }
-
-    let chunk_results = if chunk_groups.len() == 1 {
-        // If all samples belong to a single chunk, handle it directly without parallelism
-        let (chunk_idx, group) = chunk_groups.into_iter().next().unwrap();
-        let chunk = &mut series.chunks[chunk_idx];
-        group.handle_merge(chunk, policy)
-    } else {
-        let mut chunks = std::mem::take(&mut series.chunks);
-
-        // Build a stable lookup once (first_timestamp is guaranteed unique)
-        let idx_by_first_ts: std::collections::HashMap<Timestamp, usize> = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.first_timestamp(), i))
-            .collect();
-
-        let result = chunks
-            .par_mut()
-            .filter_map(|chunk| {
-                let chunk_idx = *idx_by_first_ts
-                    .get(&chunk.first_timestamp())
-                    .expect("chunk index lookup failed");
-
-                chunk_groups
-                    .get(&chunk_idx)
-                    .map(|group| group.handle_merge(chunk, policy))
-            })
-            .reduce(|mut acc, items| {
-                acc.extend(items);
-                acc
-            })
-            .expect("error unwrapping results in merge_samples");
-
-        series.chunks = chunks;
-        result
-    };
-
-    // Map results back to original indices
-    for (orig_idx, result) in chunk_results.into_iter() {
-        results[orig_idx] = result;
-
-        // Update metadata for successful additions
-        if let SampleAddResult::Ok(sample) = result {
-            // The first timestamp might need updating
-            if sample.timestamp < series.first_timestamp || series.is_empty() {
-                series.first_timestamp = sample.timestamp;
-            }
-
-            // Update sample count
-            series.total_samples += 1;
-        }
-    }
-
-    // Update last_sample
-    series.update_last_sample();
-
+    let results = merge_samples_into_series(series, samples, policy_override);
+    series.split_chunks_if_needed()?;
     Ok(results)
 }
 
