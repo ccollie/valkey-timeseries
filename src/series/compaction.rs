@@ -127,11 +127,21 @@ impl<'a> CompactionContext<'a> {
 
 /// Single entry point for all compaction-related mutations.
 #[derive(Debug, Clone, Copy)]
-pub enum CompactionOp {
+pub enum CompactionOp<'a> {
     /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
     AddNew(Sample),
     /// Handle compaction for an upsert (timestamp <= last sample timestamp)
     Upsert(Sample),
+    /// Propagate a batch of samples that were already merged into the source series.
+    ///
+    /// `samples` must be sorted by timestamp ascending with unique timestamps and hold the
+    /// stored (rounded) values. `prev_last` is the source series' last timestamp from before
+    /// the batch was merged: samples above it are guaranteed fresh appends, samples at or
+    /// below it may have replaced existing values and are treated as upserts.
+    AddBatch {
+        samples: &'a [Sample],
+        prev_last: Option<Timestamp>,
+    },
     /// Remove a range from source and reflect it into destinations (and ongoing aggregation state)
     RemoveRange { start: Timestamp, end: Timestamp },
 }
@@ -155,10 +165,63 @@ fn apply_op(ctx: &mut CompactionContext<'_>, op: CompactionOp) -> TsdbResult<()>
     match op {
         CompactionOp::AddNew(sample) => handle_sample_compaction(ctx, sample),
         CompactionOp::Upsert(sample) => handle_compaction_upsert(ctx, sample),
+        CompactionOp::AddBatch { samples, prev_last } => {
+            handle_batch_compaction(ctx, samples, prev_last)
+        }
         CompactionOp::RemoveRange { start, end } => {
             handle_compaction_range_removal(ctx, start, end)
         }
     }
+}
+
+/// Propagate a batch of samples (already merged into the source) through one rule.
+///
+/// Samples newer than `prev_last` are guaranteed fresh appends and stream through the
+/// open-bucket aggregator in O(1) each, exactly like sequential single-sample adds. Samples at
+/// or below `prev_last` may have replaced existing values, so their buckets are deduplicated
+/// and each affected bucket is recalculated from the source once.
+///
+/// Appends are processed first: a bucket recalculation reads the source, which already
+/// contains this batch's appends, so recalculating first and then streaming the appends would
+/// count them twice. If an append closes a bucket that a pending upsert also touched, the
+/// destination value is first written from the (stale) aggregator and then overwritten by the
+/// recalculation (destination adds use KeepLast), keeping the batch self-correcting.
+fn handle_batch_compaction(
+    ctx: &mut CompactionContext,
+    samples: &[Sample],
+    prev_last: Option<Timestamp>,
+) -> TsdbResult<()> {
+    debug_assert!(
+        samples.is_sorted_by_key(|s| s.timestamp),
+        "batch compaction requires samples sorted by timestamp"
+    );
+
+    let split = prev_last.map_or(0, |last| samples.partition_point(|s| s.timestamp <= last));
+    let (upserts, appends) = samples.split_at(split);
+
+    for sample in appends {
+        handle_sample_compaction(ctx, *sample)?;
+    }
+
+    // One recalculation per affected bucket (samples are sorted, so same-bucket entries are
+    // adjacent).
+    let mut prev_bucket: Option<Timestamp> = None;
+    for sample in upserts {
+        let bucket_start = ctx.rule.calc_bucket_start(sample.timestamp);
+        if prev_bucket == Some(bucket_start) {
+            continue;
+        }
+        prev_bucket = Some(bucket_start);
+
+        let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+        if ctx.rule.bucket_start == Some(bucket_start) {
+            recalculate_current_bucket(ctx, bucket_start, bucket_end)?;
+        } else {
+            recalculate_bucket(ctx, bucket_start, bucket_end, null_ts_filter)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
@@ -383,7 +446,11 @@ fn adjust_current_bucket_after_removal(
     }
 }
 
-/// Iterates through compaction rules (possibly in parallel) and applies the specified operation.
+/// Iterates through compaction rules (possibly in parallel) and applies the specified operation,
+/// cascading through chained compaction series (a destination that itself has rules).
+///
+/// Rule creation rejects circular chains (`check_new_rule_circular_dependency`), but the
+/// traversal keeps a `visited` guard anyway so a corrupted topology cannot loop forever.
 fn process_series_with_compaction(
     ctx: &Context,
     series: &mut TimeSeries,
@@ -395,22 +462,30 @@ fn process_series_with_compaction(
     if destinations.is_empty() {
         return Ok(());
     }
+
+    let mut visited: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
+    visited.push(series.id);
+    let mut pending: SmallVec<SeriesRef, TEMP_VEC_LEN> =
+        destinations.iter().map(|dest| dest.id).collect();
+
     // Process current series compaction rules
     apply_rules_on_destinations(series, destinations, op, &mut added)?;
 
-    // Collect child series (one level deep)
-    let child_series = series.rules.iter_mut().filter_map(|rule| {
-        let mut child = get_destination_series(ctx, rule.dest_id)?;
+    // Cascade into descendant compaction series.
+    while let Some(id) = pending.pop() {
+        if visited.contains(&id) {
+            continue;
+        }
+        visited.push(id);
+
+        let Some(mut child) = get_destination_series(ctx, id) else {
+            continue;
+        };
         let destinations = get_compaction_series(ctx, &mut child);
         if destinations.is_empty() {
-            None
-        } else {
-            Some((child, destinations))
+            continue;
         }
-    });
-
-    // Process child series
-    for (mut child, destinations) in child_series {
+        pending.extend(destinations.iter().map(|dest| dest.id));
         apply_rules_on_destinations(&mut child, destinations, op, &mut added)?;
     }
 
@@ -642,6 +717,23 @@ impl TimeSeries {
             return Ok(());
         }
         apply_compaction(ctx, self, CompactionOp::Upsert(value))
+    }
+
+    /// Propagate a batch of samples that were already merged into this series.
+    ///
+    /// `samples` must be sorted by timestamp ascending (unique timestamps) and `prev_last`
+    /// must be this series' last timestamp from before the batch was merged. See
+    /// [`CompactionOp::AddBatch`].
+    pub fn batch_compaction(
+        &mut self,
+        ctx: &Context,
+        samples: &[Sample],
+        prev_last: Option<Timestamp>,
+    ) -> TsdbResult<()> {
+        if self.rules.is_empty() || samples.is_empty() {
+            return Ok(());
+        }
+        apply_compaction(ctx, self, CompactionOp::AddBatch { samples, prev_last })
     }
 }
 

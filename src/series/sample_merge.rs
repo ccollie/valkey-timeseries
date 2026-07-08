@@ -6,7 +6,7 @@ use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
 use orx_parallel::ParIterResult;
 use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::{SmallVec, smallvec};
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub struct IndexedSample {
     pub index: usize,
@@ -18,6 +18,12 @@ pub struct IndexedSample {
 pub struct PerSeriesSamples<'a> {
     series: &'a mut TimeSeries,
     samples: SmallVec<IndexedSample, 6>,
+    /// Samples accepted by the merge, ascending by timestamp; consumed by the post-merge
+    /// compaction pass.
+    added: SmallVec<Sample, 8>,
+    /// The series' last timestamp before the merge: batch compaction uses it to tell
+    /// guaranteed-fresh appends apart from samples that may have replaced existing values.
+    prev_last: Option<Timestamp>,
 }
 
 impl<'a> PerSeriesSamples<'a> {
@@ -26,6 +32,8 @@ impl<'a> PerSeriesSamples<'a> {
         Self {
             series,
             samples: SmallVec::new(),
+            added: SmallVec::new(),
+            prev_last: None,
         }
     }
 
@@ -88,8 +96,14 @@ pub(super) fn merge_samples(
 
 /// Merges samples across multiple series, supporting parallel processing when applicable.
 ///
+/// The merge phase may run on worker threads, but compaction propagation runs afterwards,
+/// sequentially on the calling (command) thread: it acquires destination-series guards and
+/// must not lock the global context from inside the parallel section (the command thread
+/// already holds the GIL, so a `ThreadSafeContext` lock there deadlocks the server).
+///
 /// ### Parameters
 /// - `groups`: A slice of series with their related samples.
+/// - `ctx`: Command context; when present, compaction rules are propagated after the merge.
 ///
 /// ### Returns
 /// Returns a `ValkeyResult` containing a `SmallVec` of tuples (group index, SampleAddResult) on success.:
@@ -103,35 +117,41 @@ pub fn multi_series_merge_samples(
     if groups.is_empty() {
         return Ok(smallvec![]);
     }
-    let thread_ctx = ctx.map(|ctx| ThreadSafeContext::with_blocked_client(ctx.block_client()));
     let mut groups = groups;
 
-    if groups.len() == 1 {
-        return add_samples_internal(&mut groups[0], &thread_ctx);
-    }
+    let res = if groups.len() == 1 {
+        add_samples_internal(&mut groups[0])?
+    } else {
+        groups
+            .par_mut()
+            .map(add_samples_internal)
+            .into_fallible_result()
+            .reduce(|mut acc, item| {
+                acc.extend(item);
+                acc
+            })?
+            .unwrap()
+    };
 
-    let res = groups
-        .par_mut()
-        .map(|group| add_samples_internal(group, &thread_ctx))
-        .into_fallible_result()
-        .reduce(|mut acc, item| {
-            acc.extend(item);
-            acc
-        })?
-        .unwrap();
+    if let Some(ctx) = ctx {
+        run_group_compactions(ctx, &mut groups);
+    }
 
     Ok(res)
 }
 
 fn add_samples_internal(
     input: &mut PerSeriesSamples,
-    ctx: &Option<ThreadSafeContext<BlockedClient>>,
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
+    input.prev_last = input.series.last_sample.map(|s| s.timestamp);
+
     if input.samples.len() == 1 {
         let sample = input.samples.pop().unwrap();
         let index = sample.index;
         let result = input.series.add(sample.timestamp, sample.value, None);
-        handle_compaction(ctx, input.series, &[result]);
+        if let SampleAddResult::Ok(added) = result {
+            input.added.push(added);
+        }
 
         return Ok(smallvec![(index, result)]);
     }
@@ -148,8 +168,18 @@ fn add_samples_internal(
         .merge_samples(&samples, None)
         .map_err(|e| ValkeyError::String(format!("{e}")))?;
 
-    // run compaction if needed
-    handle_compaction(ctx, input.series, &add_results);
+    // `add_results` follow the sorted input order, so the accepted samples are ascending —
+    // exactly what batch compaction requires.
+    input.added = add_results
+        .iter()
+        .filter_map(|res| {
+            if let SampleAddResult::Ok(s) = res {
+                Some(*s)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results
@@ -163,43 +193,23 @@ fn add_samples_internal(
     Ok(result)
 }
 
-fn handle_compaction(
-    thread_ctx: &Option<ThreadSafeContext<BlockedClient>>,
-    series: &mut TimeSeries,
-    results: &[SampleAddResult],
-) {
-    if series.rules.is_empty() {
-        return;
-    }
-
-    let Some(thread_ctx) = thread_ctx else {
-        return;
-    };
-
-    let last_timestamp = series.last_sample.map(|last_sample| last_sample.timestamp);
-
-    for sample in results {
-        let SampleAddResult::Ok(sample) = sample else {
+/// Propagate each group's merged batch to its compaction destinations, one batch per series
+/// (the old per-sample path locked the context once per sample and rebuilt the open bucket
+/// for every in-order sample).
+fn run_group_compactions(ctx: &Context, groups: &mut [PerSeriesSamples]) {
+    for group in groups.iter_mut() {
+        if group.series.rules.is_empty() || group.added.is_empty() {
             continue;
-        };
-        let ctx = thread_ctx.lock();
-        let result = if is_upsert(sample.timestamp, last_timestamp) {
-            series.upsert_compaction(&ctx, *sample)
-        } else {
-            series.run_compaction(&ctx, *sample)
-        };
-        if let Err(e) = result {
-            let key = get_series_key_by_id(&ctx, series.id)
+        }
+
+        if let Err(e) = group
+            .series
+            .batch_compaction(ctx, &group.added, group.prev_last)
+        {
+            let key = get_series_key_by_id(ctx, group.series.id)
                 .unwrap_or_else(|| ctx.create_string("Unknown"));
-            let msg = format!("TSDB: error running compaction upsert for key '{key}': {e}",);
+            let msg = format!("TSDB: error running compaction for key '{key}': {e}");
             ctx.log_warning(&msg);
         }
     }
-}
-
-fn is_upsert(timestamp: Timestamp, last_timestamp: Option<Timestamp>) -> bool {
-    if let Some(last_timestamp) = last_timestamp {
-        return timestamp <= last_timestamp;
-    }
-    false
 }

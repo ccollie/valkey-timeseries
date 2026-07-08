@@ -98,7 +98,7 @@ Only the "append one sample" line differs per encoding. Drifted details:
   *(Done — see below.)*
 - **Step 3 — unify compaction propagation.** Decide whether incremental
   (`upsert_compaction`/`run_compaction`) or bucket-rebuild (`run_compactions`) is
-  authoritative and route both entry points through it. *(Not yet done.)*
+  authoritative and route both entry points through it. *(Done — see §5.)*
 - **Step 4 — a chunk-merge template.** Add a generic helper in `chunks/merge.rs`
   that owns the timestamp-set bookkeeping and `Ok`/`Duplicate` result logic; each
   encoding implements only "append one sample" and "commit rebuilt state". Fold in
@@ -143,3 +143,70 @@ Only the "append one sample" line differs per encoding. Drifted details:
   `last_sample`.
 - The redundant retention re-scan in `bulk_add::group_samples_by_chunk` was removed
   (normalization is the single retention filter for both pipelines).
+
+## 5. Compaction propagation unification (step 3)
+
+Both ingest paths now propagate to compaction destinations through the incremental
+engine in `compaction.rs` via a new batch operation, `CompactionOp::AddBatch
+{ samples, prev_last }` (`TimeSeries::batch_compaction`). Per rule (parallel,
+destination guards fetched once per batch):
+
+- samples with `ts > prev_last` (the source's last timestamp before the merge) are
+  guaranteed fresh appends and stream through the open-bucket aggregator in O(1)
+  each, exactly like sequential `TS.ADD`s;
+- samples with `ts <= prev_last` may have replaced existing values; their buckets are
+  deduplicated and each affected bucket is recalculated from the source **once**.
+  Appends run first so recalculations (which read the already-merged source) cannot
+  double-count streamed samples.
+
+Deleted: the ADDBULK bucket-rebuild engine (`run_compactions`,
+`get_compacted_samples`, `collect_input_ranges`, `range_affects_open_bucket`,
+`aggregate_compaction_range`) and MADD's `handle_compaction` per-sample lock loop.
+
+### Bugs this fixes
+
+1. **Open-bucket double count (ADDBULK mixed with TS.ADD):** the rebuild engine
+   cloned the live open-bucket aggregator without resetting it, then re-read the
+   same samples from source — previously added samples were counted twice for
+   sum/count/avg, and the inflated value could be written to the destination.
+2. **Open-bucket contamination:** when a batch moved past the open bucket, the
+   rebuild engine neither finalized nor reset it, folding the open bucket's samples
+   into the next bucket's aggregate.
+3. **`TS.GET … LATEST` after ADDBULK:** the rebuild engine never maintained
+   `rule.bucket_start`/`rule.aggregator`, so LATEST returned nothing for
+   ADDBULK-fed rules. It now works on every ingest path.
+4. **MADD per-sample degeneracy:** `is_upsert` compared against the *post-merge*
+   last timestamp, so every batch sample (including pure appends) triggered a full
+   open-bucket rebuild from source under its own `ThreadSafeContext` lock. Now:
+   one lock per series batch, O(1) per append, one recalculation per affected
+   historical bucket.
+5. **Stale-rule pruning:** rules whose destination series was deleted are now
+   pruned on the ADDBULK path too (`get_compaction_series` handles it).
+6. **TS.MADD + compaction deadlocked the server.** `TS.MADD` executes synchronously
+   on the command thread, which already holds the GIL, yet the compaction hook
+   (both the old per-sample `handle_compaction` loop and the first cut of the batch
+   version) acquired a `ThreadSafeContext` lock from inside that path — an
+   unconditional deadlock. Zero test coverage existed for MADD with rules, so it
+   was never caught. Compaction now runs *after* the (possibly parallel) merge,
+   sequentially on the command thread with the plain `Context`, and
+   `sample_merge.rs` no longer uses `ThreadSafeContext`/`BlockedClient` at all.
+   New integration tests cover MADD and mixed ADD+ADDBULK compaction flows.
+
+### Behavior changes
+
+- **ADDBULK no longer writes the open (partial) bucket to the destination.** The
+  destination holds only closed buckets; the in-flight bucket is served via the
+  `LATEST` flag — matching `TS.ADD` and RedisTimeSeries semantics. The ADDBULK
+  integration tests were updated accordingly.
+- **Chained compaction depth is now consistent.** The incremental engine's cascade
+  was extended from one child level to a visited-guarded worklist over all
+  descendant compaction series (rule creation already rejects cycles), so `TS.ADD`,
+  `TS.MADD` and `TS.ADDBULK` all propagate through arbitrarily deep chains.
+
+### Follow-up observation (pre-existing, not addressed)
+
+The incremental engine feeds *source* samples to descendant rules when cascading
+(each level re-aggregates the raw source stream), while recalculations read the
+intermediate series. For SUM/MIN/MAX chains the results agree; for non-additive
+aggregators (AVG, COUNT, STDDEV) "re-aggregate the raw stream" and "aggregate the
+parent's bucket samples" differ. Worth a deliberate decision in a follow-up.

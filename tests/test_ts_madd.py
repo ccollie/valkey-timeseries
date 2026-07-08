@@ -233,3 +233,27 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         # Verify uncompressed flag in info
         info = self.ts_info('ts_uncompressed')
         assert info['chunkType'] == 'uncompressed'
+
+    def test_madd_runs_compactions(self):
+        """TS.MADD propagates a batch to compaction destinations: closed buckets are
+        written to the destination, the open bucket is served via LATEST."""
+        src = 'ts_madd_compact_src'
+        dest = 'ts_madd_compact_dest'
+
+        self.client.execute_command('TS.CREATE', src)
+        self.client.execute_command('TS.CREATE', dest)
+        self.client.execute_command('TS.CREATERULE', src, dest, 'AGGREGATION', 'SUM', 10)
+
+        # Batch spans buckets [0..9] (1+2=3) and [10..19] (3); bucket 10 stays open.
+        res = self.client.execute_command('TS.MADD', src, 1, 1.0, src, 2, 2.0, src, 11, 3.0)
+        assert res == [1, 2, 11]
+
+        assert self.client.execute_command('TS.RANGE', dest, '-', '+') == [[0, b'3']]
+        assert self.client.execute_command('TS.GET', dest, 'LATEST') == [10, b'3']
+
+        # An out-of-order MADD into the closed bucket recalculates it in the destination.
+        res = self.client.execute_command('TS.MADD', src, 4, 10.0, src, 12, 1.0)
+        assert res == [4, 12]
+
+        assert self.client.execute_command('TS.RANGE', dest, '-', '+') == [[0, b'13']]
+        assert self.client.execute_command('TS.GET', dest, 'LATEST') == [10, b'4']
