@@ -25,7 +25,7 @@
 use super::postings::{EMPTY_BITMAP, KeyType, Postings};
 use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
-use crate::common::context::{get_acl_user, get_current_db, is_acl_enforced};
+use crate::common::context::{get_acl_user, get_current_db};
 use crate::common::hash::IntMap;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
@@ -109,25 +109,14 @@ fn collect_series_keys(
         return Ok(keys);
     }
 
-    let acl_user = if is_acl_enforced(ctx) {
-        Some(get_acl_user(ctx))
-    } else {
-        None
-    };
-
+    // TS.QUERYINDEX is a pure index lookup: it reveals every series matching the
+    // filter regardless of the caller's per-key read access. Command-level ACL
+    // (can the user run TS.QUERYINDEX at all) is already enforced by the server,
+    // so we must NOT drop keys the caller lacks read (ACCESS) permission on here.
     let keys = ids
         .filter_map(|id| {
             let key = postings.get_key_by_id(id)?;
-            let real_key = ctx.create_string(key.as_bytes());
-            if let Some(user) = &acl_user
-                && ctx
-                    .acl_check_key_permission(user, &real_key, &AclPermissions::ACCESS)
-                    .is_ok()
-            {
-                Some(real_key)
-            } else {
-                Some(real_key)
-            }
+            Some(ctx.create_string(key.as_bytes()))
         })
         .collect();
 
