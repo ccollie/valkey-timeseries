@@ -476,7 +476,10 @@ fn dedupe_written_samples(mut samples: Vec<Sample>) -> Vec<Sample> {
     samples.sort_by_key(|s| s.timestamp);
     let mut out: Vec<Sample> = Vec::with_capacity(samples.len());
     for sample in samples {
-        if out.last().is_some_and(|last: &Sample| last.timestamp == sample.timestamp) {
+        if out
+            .last()
+            .is_some_and(|last: &Sample| last.timestamp == sample.timestamp)
+        {
             *out.last_mut().unwrap() = sample;
         } else {
             out.push(sample);
@@ -545,7 +548,8 @@ fn process_series_with_compaction(
                 }
                 pending.extend(child_destinations.iter().map(|d| d.id));
 
-                let child_outcomes = apply_rules_on_destinations(&mut child, child_destinations, op)?;
+                let child_outcomes =
+                    apply_rules_on_destinations(&mut child, child_destinations, op)?;
                 for outcome in child_outcomes {
                     if !outcome.written.is_empty() {
                         notified.push(outcome.dest_id);
