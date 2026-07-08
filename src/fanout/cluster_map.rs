@@ -623,7 +623,10 @@ impl ClusterMap {
     /// when invoked without a real client context (e.g. from a background
     /// thread or the cluster-message callback). Parsing `CLUSTER NODES` lets us
     /// refresh the map safely from any context that holds the module lock.
-    pub fn create(ctx: &Context) -> Self {
+    /// Returns `None` when the `CLUSTER NODES` call fails to produce a usable
+    /// reply, so callers can distinguish a build failure from a successfully
+    /// built (possibly inconsistent) map and avoid clobbering a good map.
+    pub fn create(ctx: &Context) -> Option<Self> {
         let call_options = CallOptionsBuilder::new().errors_as_replies().build();
 
         log_notice("Calling CLUSTER NODES...");
@@ -632,13 +635,13 @@ impl ClusterMap {
 
         let Some(text) = reply_as_string(res) else {
             log_warning("CLUSTER NODES did not return a usable string reply");
-            return Self::default();
+            return None;
         };
 
         let my_node_id = *CURRENT_NODE_ID;
         debug_assert!(!my_node_id.is_empty(), "Current node id is empty");
 
-        Self::from_cluster_nodes(&text, &my_node_id)
+        Some(Self::from_cluster_nodes(&text, &my_node_id))
     }
 
     /// Build a ClusterMap from the raw text of a `CLUSTER NODES` reply.
