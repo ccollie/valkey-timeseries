@@ -211,6 +211,13 @@ where
     }
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
+        // Once the fanout has completed, `self.operation` has been moved out via
+        // `mem::take` and replaced with `OP::default()`, which may not be a
+        // valid accumulator. Ignore any late-arriving callbacks so we never
+        // invoke the operation on that placeholder.
+        if self.lifecycle == FanoutLifecycleState::Completed {
+            return;
+        }
         self.activate();
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
@@ -235,6 +242,11 @@ where
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
+        // See `on_error`: after completion `self.operation` is a `mem::take`
+        // placeholder, so drop late responses instead of accumulating into it.
+        if self.lifecycle == FanoutLifecycleState::Completed {
+            return;
+        }
         self.activate();
         if self.timed_out {
             // We already timed out; ignore responses but mark RPC as done.
