@@ -6,7 +6,7 @@ use std::sync::{RwLock, RwLockReadGuard};
 use super::posting_stats::{PostingStat, PostingsStats, StatsMaxHeap};
 use super::postings::{Postings, PostingsBitmap};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::context::is_real_user_client;
+use crate::common::context::{get_acl_user, is_acl_enforced};
 use crate::common::hash::DeterministicHasher;
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
@@ -243,8 +243,8 @@ impl TimeSeriesIndex {
 
         keys.reserve(expected_count);
 
-        let current_user = ctx.get_current_user();
-        let is_user_client = is_real_user_client(ctx);
+        let current_user = get_acl_user(ctx);
+        let is_user_client = is_acl_enforced(ctx);
 
         let cloned_perms = acl_permissions.as_ref().map(clone_permissions);
         let can_access_all_keys = has_all_keys_permissions(ctx, &current_user, acl_permissions);

@@ -217,6 +217,12 @@ fn convert_from_string(err: &str) -> FanoutError {
         return ErrorKind::Internal.into();
     }
 
+    // `valkey_module`'s blanket `From<E: Error> for ValkeyError` prefixes "ERR ".
+    // A shard-side error round-trips FanoutError -> ValkeyError -> FanoutError, so
+    // strip that prefix before classifying; otherwise a known error string (e.g. a
+    // key-permission denial) would be misclassified as a generic `Custom` error.
+    let err = err.strip_prefix("ERR ").unwrap_or(err);
+
     match err {
         INVALID_MESSAGE_ERROR => ErrorKind::InvalidMessage.into(),
         KEY_PERMISSIONS_ERROR => ErrorKind::KeyPermissions.into(),
@@ -231,6 +237,10 @@ fn convert_from_string(err: &str) -> FanoutError {
         error_consts::COMMAND_DESERIALIZATION_ERROR => ErrorKind::Serialization.into(),
         error_consts::NO_CLUSTER_NODES_AVAILABLE => ErrorKind::NodeUnreachable.into(),
         error_consts::KEY_READ_PERMISSION_ERROR => ErrorKind::KeyPermissions.into(),
+        // A read-permission denial for one of the matched keys. Keep the detailed
+        // message so the client sees *why* the multi-shard command failed closed
+        // instead of a generic aggregate error.
+        error_consts::PERMISSION_DENIED => FanoutError::key_permissions(err.to_string()),
         NO_CLUSTER_NODES_AVAILABLE => ErrorKind::NodeUnreachable.into(),
         _ => FanoutError::custom(err.to_string()),
     }

@@ -4,7 +4,6 @@ use crate::error_consts;
 use crate::iterators::create_sample_iterator_adapter;
 use crate::iterators::{MultiSeriesSampleIter, SampleReducer, create_range_iterator};
 use crate::labels::Label;
-use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{ChunkOps, GorillaChunk, TimeSeriesChunk, UncompressedChunk};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
@@ -27,12 +26,14 @@ pub(crate) fn process_mrange_query(
     options: MRangeOptions,
     clustered: bool,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
-    check_metadata_permissions(ctx)?;
-
     if options.filters.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
 
+    // ACL is enforced per matched key inside `series_by_selectors`: the query
+    // fails closed if the filter matches any series the caller cannot read.
+    // (An all-keys gate here would wrongly reject users who only have access to
+    // the keys they actually match, and is inconsistent with TS.MGET.)
     let series_guards = series_by_selectors(ctx, &options.filters, None)?;
 
     let series_metas: Vec<MRangeSeriesMeta> = series_guards
