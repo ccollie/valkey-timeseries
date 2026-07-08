@@ -424,7 +424,7 @@ fn process_request_message(
         return;
     }
 
-    let mut dest = Vec::with_capacity(1024);
+    let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
     let _ = set_current_db(ctx, db);
 
     let res = handler(ctx, request_buf, &mut dest);
