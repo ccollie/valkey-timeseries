@@ -1,4 +1,4 @@
-use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
+use super::fanout_error::{ErrorKind, FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::fanout_message::{
     FANOUT_MESSAGE_VERSION, FanoutMessage, FanoutMessageHeader, serialize_request_message,
 };
@@ -12,7 +12,10 @@ use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddres
 use crate::fanout::fanout_command::FanoutResponseCallback;
 use crate::fanout::registry::{RequestHandlerCallback, get_fanout_request_handler};
 use crate::fanout::serialization::Serializable;
-use crate::fanout::{FanoutResult, NodeInfo};
+use crate::fanout::{
+    FanoutResult, NodeInfo, get_cluster_map, get_or_refresh_cluster_map, mark_cluster_map_stale,
+    refresh_cluster_map,
+};
 use ahash::HashSet;
 use core::time::Duration;
 use papaya::HashMap;
@@ -199,13 +202,22 @@ pub fn invoke_rpc<Request: Serializable>(
     name: &str,
     req: Request,
     targets: Arc<HashSet<NodeInfo>>,
+    cluster_fingerprint: u64,
     response_handler: FanoutResponseCallback,
     timeout: Duration,
 ) -> ValkeyResult<()> {
     let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
     req.serialize(&mut buf);
 
-    send_cluster_request(ctx, &buf, targets, name, response_handler, Some(timeout))
+    send_cluster_request(
+        ctx,
+        &buf,
+        targets,
+        name,
+        cluster_fingerprint,
+        response_handler,
+        Some(timeout),
+    )
 }
 
 pub(super) fn send_cluster_request(
@@ -213,6 +225,7 @@ pub(super) fn send_cluster_request(
     request_buf: &[u8],
     targets: Arc<HashSet<NodeInfo>>,
     handler: &str,
+    cluster_fingerprint: u64,
     response_handler: FanoutResponseCallback,
     timeout: Option<Duration>,
 ) -> ValkeyResult<()> {
@@ -222,7 +235,7 @@ pub(super) fn send_cluster_request(
     let db = get_current_db(ctx);
 
     let mut buf = get_pooled_buffer(FANOUT_RPC_BUFFER_SIZE);
-    serialize_request_message(&mut buf, id, db, handler, request_buf);
+    serialize_request_message(&mut buf, id, db, handler, cluster_fingerprint, request_buf);
 
     let remote_targets: Vec<NodeInfo> = targets
         .iter()
@@ -281,8 +294,10 @@ fn send_message_internal(
     buf: &[u8],
 ) -> Status {
     let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
-    serialize_request_message(&mut dest, request_id, db, handler, buf);
-    send_cluster_message(ctx, sender_id, msg_type, &dest)
+    // Responses and errors don't carry a meaningful cluster-map fingerprint; the
+    // requester matches them by request id and reacts to the error kind. Send 0.
+    serialize_request_message(&mut dest, request_id, db, handler, 0, buf);
+    send_cluster_message(ctx, sender_id, msg_type, dest.as_slice())
 }
 
 fn send_response_message(
@@ -352,6 +367,32 @@ fn alloc_db_if_needed(ctx: &Context, db: i32) {
     }
 }
 
+/// Checks the requester's cluster-map fingerprint against our own view of the
+/// cluster topology.
+///
+/// A fingerprint of `0` means the sender had no map when it built the request,
+/// so the check is skipped. Otherwise we compare against a fresh local map: if
+/// they disagree, our map may merely be stale, so we force a single refresh and
+/// re-compare before declaring a mismatch. Building the map issues
+/// `CLUSTER NODES` (not `CLUSTER SLOTS`), whose reply does not depend on a
+/// client, so this is safe on the worker thread that runs it.
+///
+/// Returns `true` when the topologies agree (request accepted).
+fn cluster_fingerprint_matches(ctx: &Context, expected: u64) -> bool {
+    if expected == 0 {
+        return true;
+    }
+
+    let local = get_or_refresh_cluster_map(ctx);
+    if local.cluster_slots_fingerprint() == expected {
+        return true;
+    }
+
+    // Our map might just be stale; force one refresh and re-check.
+    refresh_cluster_map(ctx);
+    get_cluster_map().cluster_slots_fingerprint() == expected
+}
+
 /// Processes a valid request by executing the command and sending back the response.
 fn process_request_message(
     ctx: &Context,
@@ -362,6 +403,26 @@ fn process_request_message(
 ) {
     let request_id = header.request_id;
     let db = header.db;
+
+    // Reject the request if the cluster topology changed between the requester
+    // generating it and us receiving it. This runs on the worker thread (not the
+    // cluster-message callback) so the potential `CLUSTER NODES` refresh stays
+    // off the main thread. The aggregate result would otherwise be built from
+    // inconsistent per-node views.
+    if !cluster_fingerprint_matches(ctx, header.cluster_fingerprint) {
+        let msg = format!(
+            "cluster rpc: rejecting request {request_id} from node {sender_id}: cluster-map fingerprint mismatch"
+        );
+        ctx.log_warning(&msg);
+        send_error_response(
+            ctx,
+            request_id,
+            db,
+            sender_id.raw_ptr(),
+            FanoutError::cluster_map_mismatch(),
+        );
+        return;
+    }
 
     let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
     let _ = set_current_db(ctx, db);
@@ -458,6 +519,7 @@ extern "C" fn on_request_received(
         request_id: message.request_id,
         db: message.db,
         handler: std::mem::take(&mut message.handler),
+        cluster_fingerprint: message.cluster_fingerprint,
     };
 
     alloc_db_if_needed(&ctx, message.db);
@@ -523,7 +585,15 @@ extern "C" fn on_error_received(
         let _ = set_current_db(ctx, message.db);
 
         match FanoutError::deserialize(message.buf) {
-            Ok((error, _)) => request.handle_response(ctx, Err(error), sender_id),
+            Ok((error, _)) => {
+                // A peer rejected us because its view of the cluster topology
+                // differs from ours. Invalidate our local map so the next fanout
+                // rebuilds it before targeting nodes.
+                if error.kind == ErrorKind::ClusterMapMismatch {
+                    mark_cluster_map_stale();
+                }
+                request.handle_response(ctx, Err(error), sender_id)
+            }
             Err(_) => {
                 ctx.log_warning("Failed to deserialize error response");
                 let err = FanoutError::invalid_message();

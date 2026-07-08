@@ -2,8 +2,7 @@ use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::threads::spawn;
 use crate::fanout::serialization::{Deserialized, Serializable};
-use crate::fanout::{FanoutResult, FanoutTargetMode, NodeInfo, get_fanout_targets};
-use ahash::HashSet;
+use crate::fanout::{FanoutResult, FanoutTargetMode, FanoutTargets, NodeInfo, get_fanout_targets};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use valkey_module::{Context, MODULE_CONTEXT, ValkeyResult};
@@ -33,9 +32,10 @@ pub trait FanoutCommand: Default + Send + 'static {
         get_cluster_command_timeout()
     }
 
-    /// Get the list of target nodes for the fanout operation.
+    /// Get the target nodes for the fanout operation, bound to the cluster-map
+    /// fingerprint of the snapshot they were selected from.
     /// By default, it retrieves a random replica per shard.
-    fn get_targets(&self, ctx: &Context) -> Arc<HashSet<NodeInfo>> {
+    fn get_targets(&self, ctx: &Context) -> FanoutTargets {
         get_fanout_targets(ctx, FanoutTargetMode::Random)
     }
 
@@ -93,7 +93,7 @@ pub trait FanoutCommand: Default + Send + 'static {
 pub fn exec_command<OP: FanoutCommand, F>(
     ctx: &Context,
     command: OP,
-    targets: Arc<HashSet<NodeInfo>>,
+    targets: FanoutTargets,
     timeout: Duration,
     f: F,
 ) -> FanoutResult
@@ -101,6 +101,11 @@ where
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
     let op = command;
+
+    let FanoutTargets {
+        nodes: targets,
+        cluster_fingerprint,
+    } = targets;
 
     let req = op.generate_request();
     let outstanding = targets.len();
@@ -147,6 +152,7 @@ where
         OP::name(),
         req,
         targets,
+        cluster_fingerprint,
         Box::new(response_handler),
         timeout,
     ) {
@@ -179,6 +185,10 @@ where
     outstanding: usize,
     timed_out: bool,
     error_count: usize,
+    /// When set, the fanout has been aborted fail-fast (e.g. a cluster-map
+    /// mismatch) and this exact error is returned to the client, bypassing the
+    /// per-shard error aggregation.
+    abort_error: Option<FanoutError>,
     callback: Option<F>,
 }
 
@@ -201,6 +211,13 @@ where
     }
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
+        // Once the fanout has completed, `self.operation` has been moved out via
+        // `mem::take` and replaced with `OP::default()`, which may not be a
+        // valid accumulator. Ignore any late-arriving callbacks so we never
+        // invoke the operation on that placeholder.
+        if self.lifecycle == FanoutLifecycleState::Completed {
+            return;
+        }
         self.activate();
         // Invoke the handler's error callback for custom error handling
         self.operation.on_error(error.clone(), target);
@@ -213,10 +230,23 @@ where
             self.on_completion();
             return;
         }
+        // A cluster-map mismatch means the topology moved underneath us; the
+        // aggregate result is unreliable, so abort the whole fanout immediately
+        // and surface the mismatch error to the client.
+        if error.kind == ErrorKind::ClusterMapMismatch {
+            self.abort_error = Some(error);
+            self.on_completion();
+            return;
+        }
         self.rpc_done();
     }
 
     fn on_response(&mut self, resp: OP::Response, target: &NodeInfo) {
+        // See `on_error`: after completion `self.operation` is a `mem::take`
+        // placeholder, so drop late responses instead of accumulating into it.
+        if self.lifecycle == FanoutLifecycleState::Completed {
+            return;
+        }
         self.activate();
         if self.timed_out {
             // We already timed out; ignore responses but mark RPC as done.
@@ -259,7 +289,9 @@ where
             return;
         };
 
-        let result = if self.timed_out {
+        let result = if let Some(err) = self.abort_error.take() {
+            Err(err)
+        } else if self.timed_out {
             Err(FanoutError::timeout())
         } else if self.error_count > 0 {
             Err(self.operation.generate_error_reply())
@@ -310,6 +342,7 @@ where
                 lifecycle: FanoutLifecycleState::Pending,
                 error_count: 0,
                 timed_out: false,
+                abort_error: None,
                 callback: Some(f),
             }),
         }
