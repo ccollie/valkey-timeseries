@@ -822,7 +822,7 @@ impl ClusterMap {
 
         // Build slot-to-shard map
         new_map.build_slot_to_shard_map(&slot_ranges_parsed);
-        new_map.local_node_id = my_node_id;
+        new_map.local_node_id = *my_node_id;
 
         // Check if a cluster map is full
         new_map.is_consistent &= new_map.check_cluster_map_full();
