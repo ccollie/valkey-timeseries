@@ -8,6 +8,7 @@ mod defrag;
 mod digest;
 mod guard;
 pub mod index;
+mod ingest_normalize;
 pub mod mrange;
 mod multi_del;
 pub mod request_types;

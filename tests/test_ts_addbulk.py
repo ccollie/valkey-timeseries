@@ -99,9 +99,39 @@ class TestTimeSeriesIngest(ValkeyTimeSeriesTestCaseBase):
         res = self.client.execute_command("TS.ADDBULK", src, payload)
         assert res == [3, 3]
 
-        # Verify compaction destination series received aggregated samples.
+        # The destination receives only closed buckets: bucket 0 closed when ts=11 arrived,
+        # while bucket 10 is still open and is served via the LATEST flag (same as TS.ADD).
         assert self.get_sample(dest, 0) == [0, b"3"]
-        assert self.get_sample(dest, 10) == [10, b"3"]
+        assert self.client.execute_command("TS.RANGE", dest, "-", "+") == [[0, b"3"]]
+        latest = self.client.execute_command("TS.GET", dest, "LATEST")
+        assert latest == [10, b"3"]
+
+    def test_addbulk_after_add_does_not_double_count_open_bucket(self):
+        src = "series_addbulk_mixed_src"
+        dest = "series_addbulk_mixed_dest"
+
+        self.client.execute_command("TS.CREATE", src)
+        self.client.execute_command("TS.CREATE", dest)
+        self.client.execute_command("TS.CREATERULE", src, dest, "AGGREGATION", "SUM", 10)
+
+        # Seed the open bucket [0..9] via single-sample adds so the rule carries live
+        # open-bucket aggregator state into the bulk insert.
+        self.client.execute_command("TS.ADD", src, 1, 5)
+        self.client.execute_command("TS.ADD", src, 2, 5)
+
+        # Bulk-append into the same open bucket, then into the next bucket to close it.
+        payload = r'{"values":[5,7],"timestamps":[3,11]}'
+        assert self.client.execute_command("TS.ADDBULK", src, payload) == [2, 2]
+
+        # Bucket 0 closed with 5+5+5=15; double-counting the seeded samples would yield 25.
+        assert self.get_sample(dest, 0) == [0, b"15"]
+        assert self.client.execute_command("TS.GET", dest, "LATEST") == [10, b"7"]
+
+        # An out-of-order bulk insert into the already-closed bucket must trigger a
+        # recalculation of that bucket in the destination.
+        payload = r'{"values":[100],"timestamps":[4]}'
+        assert self.client.execute_command("TS.ADDBULK", src, payload) == [1, 1]
+        assert self.get_sample(dest, 0) == [0, b"115"]
 
     def test_runs_nested_compactions(self):
         src = "series_addbulk_nested_compact_src"
@@ -124,13 +154,19 @@ class TestTimeSeriesIngest(ValkeyTimeSeriesTestCaseBase):
         res = self.client.execute_command("TS.ADDBULK", src, payload)
         assert res == [3, 3]
 
-        # First-level compaction results in mid.
+        # First-level compaction results in mid: bucket 0 closed when ts=11 arrived;
+        # bucket 10 is still open and only visible via LATEST.
         assert self.get_sample(mid, 0) == [0, b"3"]
-        assert self.get_sample(mid, 10) == [10, b"3"]
+        assert self.client.execute_command("TS.GET", mid, "LATEST") == [10, b"3"]
 
-        # Second-level compaction results in dest (20-sized bucket):
-        # bucket 0: mid(0)=3 + mid(10)=3 => 6
-        assert self.get_sample(dest, 0) == [0, b"6"]
+        # Second-level compaction (20-sized bucket over mid's own stored samples): bucket 0
+        # spans [0..19] and is still open, so dest holds no closed buckets yet. Its LATEST
+        # reflects only mid's own *closed* contribution so far (mid(0)=3); mid's bucket 10
+        # (value 3) is itself still open and hasn't been committed to mid, so it isn't
+        # visible to dest yet. This is not 1+2+3=6 (the raw src total) — a mid->dest rule
+        # aggregates mid's stored samples, not src's raw stream.
+        assert self.client.execute_command("TS.RANGE", dest, "-", "+") == []
+        assert self.client.execute_command("TS.GET", dest, "LATEST") == [0, b"3"]
 
     def test_large_batch_runs_multi_level_compactions(self):
         src = "series_addbulk_large_compact_src"
@@ -159,14 +195,29 @@ class TestTimeSeriesIngest(ValkeyTimeSeriesTestCaseBase):
         res = self.client.execute_command("TS.ADDBULK", src, payload)
         assert res == [n, n]
 
-        # Level 1: bucket=10, each bucket sum is 10.
+        # The final bucket at each level is still open (source last ts is 999) and is
+        # served via LATEST instead of being written to the destination.
+
+        # Level 1: bucket=10, each closed bucket sum is 10; bucket 990 is open.
         assert self.get_sample(l1, 0) == [0, b"10"]
         assert self.get_sample(l1, 900) == [900, b"10"]
+        assert self.get_sample(l1, 980) == [980, b"10"]
+        assert self.client.execute_command("TS.GET", l1, "LATEST") == [990, b"10"]
 
-        # Level 2: bucket=50, sums over five l1 buckets => 50.
+        # Level 2: bucket=50, each closed bucket sums to 50; bucket 950 is open.
+        # l2's rule aggregates l1's own stored samples: of l1's five 10-sized sub-buckets
+        # in [950,1000) (950,960,970,980,990), only 950/960/970/980 have closed and been
+        # committed to l1 (990 is l1's own open bucket); l2's open-bucket LATEST reflects
+        # just those four closed contributions (4*10=40), not the eventual full 50.
         assert self.get_sample(l2, 0) == [0, b"50"]
-        assert self.get_sample(l2, 950) == [950, b"50"]
+        assert self.get_sample(l2, 900) == [900, b"50"]
+        assert self.client.execute_command("TS.GET", l2, "LATEST") == [950, b"40"]
 
-        # Level 3: bucket=100, sums over two l2 buckets => 100.
+        # Level 3: bucket=100, each closed bucket sums to 100; bucket 900 is open.
+        # l3's rule aggregates l2's own stored samples: of l2's two 50-sized sub-buckets
+        # in [900,1000) (900,950), only 900 has closed and been committed to l2 (950 is
+        # l2's own open bucket, see above); l3's open-bucket LATEST reflects just that one
+        # closed contribution (50), not the eventual full 100.
         assert self.get_sample(l3, 0) == [0, b"100"]
-        assert self.get_sample(l3, 900) == [900, b"100"]
+        assert self.get_sample(l3, 800) == [800, b"100"]
+        assert self.client.execute_command("TS.GET", l3, "LATEST") == [900, b"50"]

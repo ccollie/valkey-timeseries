@@ -97,7 +97,11 @@ struct CompactionContext<'a> {
     parent: &'a TimeSeries,
     dest: &'a mut TimeSeries,
     rule: &'a mut CompactionRule,
-    added: bool,
+    /// Samples actually committed to `dest` during this operation (the stored, rounded
+    /// values), in the order they were written. Used both to decide whether to notify on
+    /// `dest`, and to cascade into `dest`'s own compaction rules — see
+    /// [`process_series_with_compaction`].
+    written: Vec<Sample>,
 }
 
 impl<'a> CompactionContext<'a> {
@@ -106,7 +110,7 @@ impl<'a> CompactionContext<'a> {
             parent,
             dest,
             rule,
-            added: false,
+            written: Vec::new(),
         }
     }
 
@@ -127,11 +131,21 @@ impl<'a> CompactionContext<'a> {
 
 /// Single entry point for all compaction-related mutations.
 #[derive(Debug, Clone, Copy)]
-pub enum CompactionOp {
+pub enum CompactionOp<'a> {
     /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
     AddNew(Sample),
     /// Handle compaction for an upsert (timestamp <= last sample timestamp)
     Upsert(Sample),
+    /// Propagate a batch of samples that were already merged into the source series.
+    ///
+    /// `samples` must be sorted by timestamp ascending with unique timestamps and hold the
+    /// stored (rounded) values. `prev_last` is the source series' last timestamp from before
+    /// the batch was merged: samples above it are guaranteed fresh appends, samples at or
+    /// below it may have replaced existing values and are treated as upserts.
+    AddBatch {
+        samples: &'a [Sample],
+        prev_last: Option<Timestamp>,
+    },
     /// Remove a range from source and reflect it into destinations (and ongoing aggregation state)
     RemoveRange { start: Timestamp, end: Timestamp },
 }
@@ -155,10 +169,63 @@ fn apply_op(ctx: &mut CompactionContext<'_>, op: CompactionOp) -> TsdbResult<()>
     match op {
         CompactionOp::AddNew(sample) => handle_sample_compaction(ctx, sample),
         CompactionOp::Upsert(sample) => handle_compaction_upsert(ctx, sample),
+        CompactionOp::AddBatch { samples, prev_last } => {
+            handle_batch_compaction(ctx, samples, prev_last)
+        }
         CompactionOp::RemoveRange { start, end } => {
             handle_compaction_range_removal(ctx, start, end)
         }
     }
+}
+
+/// Propagate a batch of samples (already merged into the source) through one rule.
+///
+/// Samples newer than `prev_last` are guaranteed fresh appends and stream through the
+/// open-bucket aggregator in O(1) each, exactly like sequential single-sample adds. Samples at
+/// or below `prev_last` may have replaced existing values, so their buckets are deduplicated
+/// and each affected bucket is recalculated from the source once.
+///
+/// Appends are processed first: a bucket recalculation reads the source, which already
+/// contains this batch's appends, so recalculating first and then streaming the appends would
+/// count them twice. If an append closes a bucket that a pending upsert also touched, the
+/// destination value is first written from the (stale) aggregator and then overwritten by the
+/// recalculation (destination adds use KeepLast), keeping the batch self-correcting.
+fn handle_batch_compaction(
+    ctx: &mut CompactionContext,
+    samples: &[Sample],
+    prev_last: Option<Timestamp>,
+) -> TsdbResult<()> {
+    debug_assert!(
+        samples.is_sorted_by_key(|s| s.timestamp),
+        "batch compaction requires samples sorted by timestamp"
+    );
+
+    let split = prev_last.map_or(0, |last| samples.partition_point(|s| s.timestamp <= last));
+    let (upserts, appends) = samples.split_at(split);
+
+    for sample in appends {
+        handle_sample_compaction(ctx, *sample)?;
+    }
+
+    // One recalculation per affected bucket (samples are sorted, so same-bucket entries are
+    // adjacent).
+    let mut prev_bucket: Option<Timestamp> = None;
+    for sample in upserts {
+        let bucket_start = ctx.rule.calc_bucket_start(sample.timestamp);
+        if prev_bucket == Some(bucket_start) {
+            continue;
+        }
+        prev_bucket = Some(bucket_start);
+
+        let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+        if ctx.rule.bucket_start == Some(bucket_start) {
+            recalculate_current_bucket(ctx, bucket_start, bucket_end)?;
+        } else {
+            recalculate_bucket(ctx, bucket_start, bucket_end, null_ts_filter)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
@@ -383,39 +450,166 @@ fn adjust_current_bucket_after_removal(
     }
 }
 
-/// Iterates through compaction rules (possibly in parallel) and applies the specified operation.
+/// Outcome of applying one compaction rule to its destination series.
+struct RuleOutcome {
+    dest_id: SeriesRef,
+    /// `dest`'s last timestamp *before* this operation ran — the `prev_last` a cascaded
+    /// `AddBatch` into `dest`'s own rules must use.
+    dest_prev_last: Option<Timestamp>,
+    /// Samples committed to `dest` by this operation, in commit order (not necessarily
+    /// sorted or unique — see [`dedupe_written_samples`]).
+    written: Vec<Sample>,
+}
+
+/// Sorts and deduplicates a rule's written samples for use as the next cascade level's batch.
+///
+/// A single [`CompactionOp::AddBatch`] application can write the same bucket twice: once from
+/// the streaming append path, then again when a same-batch historical upsert recalculates that
+/// bucket (see `handle_batch_compaction`). The recalculation is authoritative and always runs
+/// after the streaming write, so a stable sort followed by keeping the last of each duplicate
+/// timestamp preserves the correct (final) value while producing the sorted, unique-timestamp
+/// sequence `AddBatch` requires downstream.
+fn dedupe_written_samples(mut samples: Vec<Sample>) -> Vec<Sample> {
+    if samples.len() < 2 {
+        return samples;
+    }
+    samples.sort_by_key(|s| s.timestamp);
+    let mut out: Vec<Sample> = Vec::with_capacity(samples.len());
+    for sample in samples {
+        if out
+            .last()
+            .is_some_and(|last: &Sample| last.timestamp == sample.timestamp)
+        {
+            *out.last_mut().unwrap() = sample;
+        } else {
+            out.push(sample);
+        }
+    }
+    out
+}
+
+/// Iterates through compaction rules (possibly in parallel) and applies the specified operation,
+/// cascading through chained compaction series (a destination that itself has rules).
+///
+/// Rule creation rejects circular chains (`check_new_rule_circular_dependency`), but the
+/// traversal keeps a `visited` guard anyway so a corrupted topology cannot loop forever.
+///
+/// Cascading strategy differs by operation:
+/// - `RemoveRange` reapplies the *same* absolute `[start, end]` range at every level. This is
+///   correct regardless of chain depth because each level's recalculation reads directly from
+///   its own immediate parent (already updated by the level above), never from a value carried
+///   across levels.
+/// - `AddNew`/`Upsert`/`AddBatch` instead feed each destination's own *written* samples — the
+///   values actually committed to it — as an `AddBatch` into that destination's rules. This
+///   makes every rule aggregate over its declared source series, matching a rule's own
+///   definition (e.g. `mid -> dest AVG` averages `mid`'s stored samples, not the top-level raw
+///   stream). Reusing the original op across levels would instead feed the *raw* top-level
+///   samples straight into every descendant's aggregator, which only happens to agree with the
+///   declared semantics for associative aggregators (SUM/MIN/MAX) and silently diverges for
+///   AVG/COUNT/STD/VAR/RANGE.
 fn process_series_with_compaction(
     ctx: &Context,
     series: &mut TimeSeries,
     op: CompactionOp,
 ) -> TsdbResult<()> {
-    let mut added: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
+    let mut notified: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
+    let mut visited: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
+    visited.push(series.id);
 
     let destinations = get_compaction_series(ctx, series);
     if destinations.is_empty() {
         return Ok(());
     }
-    // Process current series compaction rules
-    apply_rules_on_destinations(series, destinations, op, &mut added)?;
 
-    // Collect child series (one level deep)
-    let child_series = series.rules.iter_mut().filter_map(|rule| {
-        let mut child = get_destination_series(ctx, rule.dest_id)?;
-        let destinations = get_compaction_series(ctx, &mut child);
-        if destinations.is_empty() {
-            None
-        } else {
-            Some((child, destinations))
+    let outcomes = apply_rules_on_destinations(series, destinations, op)?;
+
+    match op {
+        CompactionOp::RemoveRange { .. } => {
+            let mut pending: SmallVec<SeriesRef, TEMP_VEC_LEN> =
+                outcomes.iter().map(|o| o.dest_id).collect();
+            for outcome in &outcomes {
+                if !outcome.written.is_empty() {
+                    notified.push(outcome.dest_id);
+                }
+            }
+
+            while let Some(id) = pending.pop() {
+                if visited.contains(&id) {
+                    continue;
+                }
+                visited.push(id);
+
+                let Some(mut child) = get_destination_series(ctx, id) else {
+                    continue;
+                };
+                let child_destinations = get_compaction_series(ctx, &mut child);
+                if child_destinations.is_empty() {
+                    continue;
+                }
+                pending.extend(child_destinations.iter().map(|d| d.id));
+
+                let child_outcomes =
+                    apply_rules_on_destinations(&mut child, child_destinations, op)?;
+                for outcome in child_outcomes {
+                    if !outcome.written.is_empty() {
+                        notified.push(outcome.dest_id);
+                    }
+                }
+            }
         }
-    });
+        _ => {
+            let mut pending: SmallVec<(SeriesRef, Vec<Sample>, Option<Timestamp>), TEMP_VEC_LEN> =
+                SmallVec::new();
+            for outcome in outcomes {
+                if outcome.written.is_empty() {
+                    continue;
+                }
+                notified.push(outcome.dest_id);
+                pending.push((
+                    outcome.dest_id,
+                    dedupe_written_samples(outcome.written),
+                    outcome.dest_prev_last,
+                ));
+            }
 
-    // Process child series
-    for (mut child, destinations) in child_series {
-        apply_rules_on_destinations(&mut child, destinations, op, &mut added)?;
+            while let Some((id, samples, prev_last)) = pending.pop() {
+                if visited.contains(&id) {
+                    continue;
+                }
+                visited.push(id);
+
+                let Some(mut child) = get_destination_series(ctx, id) else {
+                    continue;
+                };
+                let child_destinations = get_compaction_series(ctx, &mut child);
+                if child_destinations.is_empty() {
+                    continue;
+                }
+
+                let batch_op = CompactionOp::AddBatch {
+                    samples: &samples,
+                    prev_last,
+                };
+                let child_outcomes =
+                    apply_rules_on_destinations(&mut child, child_destinations, batch_op)?;
+
+                for outcome in child_outcomes {
+                    if outcome.written.is_empty() {
+                        continue;
+                    }
+                    notified.push(outcome.dest_id);
+                    pending.push((
+                        outcome.dest_id,
+                        dedupe_written_samples(outcome.written),
+                        outcome.dest_prev_last,
+                    ));
+                }
+            }
+        }
     }
 
-    if !added.is_empty() {
-        notify_compaction(ctx, &added);
+    if !notified.is_empty() {
+        notify_compaction(ctx, &notified);
     }
 
     Ok(())
@@ -425,10 +619,9 @@ fn apply_rules_on_destinations(
     series: &mut TimeSeries,
     destinations: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
     op: CompactionOp,
-    added: &mut SmallVec<SeriesRef, TEMP_VEC_LEN>,
-) -> TsdbResult<()> {
+) -> TsdbResult<Vec<RuleOutcome>> {
     let mut rules = std::mem::take(&mut series.rules);
-    let result = apply_rules_internal(series, &mut rules, destinations, op, added);
+    let result = apply_rules_internal(series, &mut rules, destinations, op);
     series.rules = rules;
     result
 }
@@ -439,35 +632,34 @@ fn apply_rules_internal(
     rules: &mut [CompactionRule],
     child_series: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
     op: CompactionOp,
-    added: &mut SmallVec<SeriesRef, TEMP_VEC_LEN>,
-) -> TsdbResult<()> {
+) -> TsdbResult<Vec<RuleOutcome>> {
     if rules.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let len = rules.len();
     let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
-    let results: Vec<Result<Option<SeriesRef>, TsdbError>> = destinations
+    let results: Vec<Result<RuleOutcome, TsdbError>> = destinations
         .par_mut()
         .num_threads(if len < PARALLEL_THRESHOLD { 1 } else { 0 }) // 0 is shorthand for Auto
         .map(|(rule, dest_guard)| {
+            let dest_id = dest_guard.id;
+            let dest_prev_last = dest_guard.last_sample.map(|s| s.timestamp);
             let mut cctx = CompactionContext::new(series, dest_guard, rule);
-            apply_op(&mut cctx, op).map(|_| {
-                if cctx.added {
-                    Some(dest_guard.id)
-                } else {
-                    None
-                }
+            apply_op(&mut cctx, op).map(|_| RuleOutcome {
+                dest_id,
+                dest_prev_last,
+                written: cctx.written,
             })
         })
         .collect();
 
+    let mut outcomes = Vec::with_capacity(results.len());
     let mut first_error: Option<TsdbError> = None;
 
     for r in results {
         match r {
-            Ok(Some(id)) => added.push(id),
-            Ok(None) => {}
+            Ok(outcome) => outcomes.push(outcome),
             Err(error) => {
                 if first_error.is_none() {
                     first_error = Some(error.clone());
@@ -481,7 +673,7 @@ fn apply_rules_internal(
     if let Some(err) = first_error {
         Err(err)
     } else {
-        Ok(())
+        Ok(outcomes)
     }
 }
 
@@ -546,8 +738,8 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
         .dest
         .add(bucket_start, value, Some(DuplicatePolicy::KeepLast))
     {
-        SampleAddResult::Ok(_) => {
-            ctx.added = true;
+        SampleAddResult::Ok(sample) => {
+            ctx.written.push(sample);
             Ok(())
         }
         SampleAddResult::Ignored(_) => Ok(()), // duplicate sample, (ignored)
@@ -642,6 +834,23 @@ impl TimeSeries {
             return Ok(());
         }
         apply_compaction(ctx, self, CompactionOp::Upsert(value))
+    }
+
+    /// Propagate a batch of samples that were already merged into this series.
+    ///
+    /// `samples` must be sorted by timestamp ascending (unique timestamps) and `prev_last`
+    /// must be this series' last timestamp from before the batch was merged. See
+    /// [`CompactionOp::AddBatch`].
+    pub fn batch_compaction(
+        &mut self,
+        ctx: &Context,
+        samples: &[Sample],
+        prev_last: Option<Timestamp>,
+    ) -> TsdbResult<()> {
+        if self.rules.is_empty() || samples.is_empty() {
+            return Ok(());
+        }
+        apply_compaction(ctx, self, CompactionOp::AddBatch { samples, prev_last })
     }
 }
 

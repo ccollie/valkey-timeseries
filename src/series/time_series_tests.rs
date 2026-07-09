@@ -665,6 +665,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_merge_samples_upsert_does_not_inflate_total_samples() {
+        let mut ts = TimeSeries::new();
+        ts.add(100, 1.0, None);
+        ts.add(200, 2.0, None);
+        ts.add(300, 3.0, None);
+        assert_eq!(ts.total_samples, 3);
+
+        // One sample updates an existing timestamp (upsert), one is genuinely new.
+        // The upsert must not be counted as an added sample.
+        let samples = vec![
+            Sample {
+                timestamp: 200,
+                value: 20.0,
+            },
+            Sample {
+                timestamp: 400,
+                value: 4.0,
+            },
+        ];
+        let results = ts
+            .merge_samples(&samples, Some(DuplicatePolicy::KeepLast))
+            .unwrap();
+
+        assert!(results.iter().all(|r| r.is_ok()));
+        assert_eq!(ts.total_samples, 4);
+        assert_eq!(
+            ts.get_range(0, 500),
+            vec![
+                Sample {
+                    timestamp: 100,
+                    value: 1.0
+                },
+                Sample {
+                    timestamp: 200,
+                    value: 20.0
+                },
+                Sample {
+                    timestamp: 300,
+                    value: 3.0
+                },
+                Sample {
+                    timestamp: 400,
+                    value: 4.0
+                },
+            ]
+        );
+    }
+
     // #[test]
     fn test_merge_samples_spanning_multiple_chunks() {
         // Force small chunks

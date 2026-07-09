@@ -435,3 +435,48 @@ class TestCompactionAdd(ValkeyTimeSeriesTestCaseBase):
 
         assert float(dest_samples[0][1]) == 75.0
         assert float(dest_samples[1][1]) == 65.0
+
+    def test_chained_avg_aggregates_over_intermediate_series_not_raw_source(self):
+        """A chained rule aggregates its own declared source series, not the top-level
+        raw stream. For a non-associative aggregator like AVG this is only observable
+        with a chain: mid->dest AVG must average mid's own stored bucket values, not
+        recompute an average directly over src's raw samples (those two differ unless
+        every mid sub-bucket happens to have the same sample count)."""
+        src = "test:chained_avg:src"
+        mid = "test:chained_avg:mid"
+        dest = "test:chained_avg:dest"
+
+        self.client.execute_command("TS.CREATE", src)
+        self.client.execute_command("TS.CREATE", mid)
+        self.client.execute_command("TS.CREATE", dest)
+
+        # src --AVG(10)--> mid --AVG(20)--> dest
+        self.add_compaction_rule(src, mid, "avg", 10)
+        self.add_compaction_rule(mid, dest, "avg", 20)
+
+        # mid bucket [0,10): 3 samples (10,20,30) -> avg 20; closes when ts=11 arrives.
+        self.add_sample(src, 1, 10.0)
+        self.add_sample(src, 2, 20.0)
+        self.add_sample(src, 3, 30.0)
+
+        # mid bucket [10,20): 1 sample (100) -> avg 100; closes when ts=21 arrives.
+        self.add_sample(src, 11, 100.0)
+
+        # Closes mid bucket [10,20) and starts mid's next bucket; dest's bucket [0,20)
+        # still open at this point (needs mid's *next* closure to finalize).
+        self.add_sample(src, 21, 1.0)
+
+        # Closes mid bucket [20,30), which closes dest's bucket [0,20).
+        self.add_sample(src, 31, 5.0)
+
+        # mid must hold its own two closed sub-bucket averages: avg(10,20,30)=20 and
+        # avg(100)=100 -- not raw sums/counts from src. (ts=31 also closed mid's third
+        # bucket [20,30) with avg(1)=1, irrelevant to this assertion, hence the range cap.)
+        mid_samples = self.get_samples(mid, 0, 19)
+        assert mid_samples == [[0, b"20"], [10, b"100"]]
+
+        # dest's rule (mid->dest AVG) must average mid's own two stored values (20, 100)
+        # = 60. The old (buggy) behavior fed src's raw samples straight into dest's
+        # aggregator, which would instead compute avg(10,20,30,100) = 40.
+        dest_samples = self.get_samples(dest, 0, 19)
+        assert dest_samples == [[0, b"60"]]

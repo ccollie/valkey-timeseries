@@ -1023,11 +1023,10 @@ pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (
             .rposition(|x| ts >= x.first_timestamp())
             .map_or((0, false), |idx| {
                 let chunk = &chunks[idx];
-                if chunk.is_timestamp_in_range(ts) {
-                    (idx, true)
-                } else {
-                    (idx.saturating_sub(1), false)
-                }
+                // `ts >= first_timestamp` here, so "not in range" means `ts` is past the
+                // chunk's last timestamp. The chunk is still the last one whose first
+                // timestamp is <= ts, so it must be included in any inclusive end bound.
+                (idx, chunk.is_timestamp_in_range(ts))
             }),
         _ => binary_search_chunks_by_timestamp(chunks, ts),
     }

@@ -75,6 +75,7 @@ use crate::common::{Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
 use crate::series::chunks::chunk::{Chunk, ChunkOps};
+use crate::series::chunks::merge::append_samples;
 use crate::series::chunks::stream::bitstream::{BitStream, ONE, ZERO};
 use crate::series::chunks::stream::varbit::put_varbit_int_fast;
 use crate::series::{DuplicatePolicy, SampleAddResult};
@@ -724,60 +725,25 @@ impl ChunkOps for Xor2Chunk {
         samples: &[Sample],
         dp_policy: Option<DuplicatePolicy>,
     ) -> TsdbResult<Vec<SampleAddResult>> {
-        let mut result = Vec::with_capacity(samples.len());
+        if samples.is_empty() {
+            return Ok(Vec::new());
+        }
 
-        if self.is_empty() || (!samples.is_empty() && samples[0].timestamp > self.last_timestamp())
-        {
-            for sample in samples.iter() {
-                match self.add_sample(sample) {
-                    Ok(_) => result.push(SampleAddResult::Ok(*sample)),
-                    Err(TsdbError::CapacityFull(_)) => {
-                        return Err(TsdbError::CapacityFull(self.max_size));
-                    }
-                    Err(_) => result.push(SampleAddResult::Error(
-                        crate::error_consts::CANNOT_ADD_SAMPLE,
-                    )),
-                }
-            }
-            return Ok(result);
+        if self.is_empty() || samples[0].timestamp > self.last_timestamp() {
+            return append_samples(self, samples);
         }
 
         // Stream existing chunk samples directly from the XOR2 iterator.
         let left = self.iterator();
-        let right = SampleIter::Slice(samples.iter());
-
         let mut new_chunk = Xor2Chunk::with_max_size(self.max_size);
 
-        // Build a set of input timestamps so we only produce a single result per unique
-        // input timestamp. This mirrors the behavior of the Uncompressed chunk.
-        let mut sample_set: IntSet<Timestamp> = IntSet::with_capacity(samples.len());
-        for sample in samples.iter() {
-            sample_set.insert(sample.timestamp);
-        }
-
-        let mut state_res: Vec<SampleAddResult> = Vec::with_capacity(samples.len());
-
-        merge_samples(
-            left,
-            right,
-            dp_policy,
-            &mut state_res,
-            |state: &mut Vec<SampleAddResult>, sample: Sample, st: i64, is_duplicate: bool| {
-                new_chunk.append(st, sample.timestamp, sample.value);
-                let is_new = sample_set.remove(&sample.timestamp);
-                if is_new {
-                    if is_duplicate {
-                        state.push(SampleAddResult::Duplicate);
-                    } else {
-                        state.push(SampleAddResult::Ok(sample));
-                    }
-                }
-                Ok(())
-            },
-        )?;
+        let result = merge_samples_with_st(left, samples, dp_policy, |sample, st| {
+            new_chunk.append(st, sample.timestamp, sample.value);
+            Ok(())
+        })?;
 
         *self = new_chunk;
-        Ok(state_res)
+        Ok(result)
     }
 
     fn optimize(&mut self) -> TsdbResult<()> {
@@ -937,18 +903,29 @@ fn read_f64_le(buf: &mut &[u8]) -> TsdbResult<f64> {
     try_read_f64_le(buf).map_err(|_| TsdbError::ChunkDecoding)
 }
 
-fn merge_samples<'a, F, STATE>(
+/// XOR2-specific variant of [`crate::series::chunks::merge_chunk_samples`]: the left
+/// iterator carries a per-sample `st` (sub-timestamp) that must be preserved when
+/// rewriting the chunk, so the shared helper (which only yields `Sample`s) cannot be used.
+/// The result bookkeeping — one `Ok`/`Duplicate` per unique input timestamp — matches the
+/// shared helper exactly.
+fn merge_samples_with_st<'a, F>(
     mut left: Xor2Iterator<'a>,
-    right: SampleIter<'a>,
+    samples: &'a [Sample],
     dp_policy: Option<DuplicatePolicy>,
-    state: &mut STATE,
-    mut f: F,
-) -> TsdbResult<()>
+    mut append: F,
+) -> TsdbResult<Vec<SampleAddResult>>
 where
-    F: FnMut(&mut STATE, Sample, i64, bool) -> TsdbResult<()>,
+    F: FnMut(Sample, i64) -> TsdbResult<()>,
 {
     let dp_policy = dp_policy.unwrap_or(DuplicatePolicy::KeepLast);
-    let mut right = right.peekable();
+
+    let mut sample_set: IntSet<Timestamp> = IntSet::with_capacity(samples.len());
+    for sample in samples {
+        sample_set.insert(sample.timestamp);
+    }
+
+    let mut results = Vec::with_capacity(samples.len());
+    let mut right = SampleIter::Slice(samples.iter()).peekable();
 
     let mut left_item = left.next().map(|sample| (sample, left.at_st()));
 
@@ -996,10 +973,17 @@ where
             (None, None) => break,
         };
 
-        f(state, sample, st, blocked)?;
+        append(sample, st)?;
+        if sample_set.remove(&sample.timestamp) {
+            if blocked {
+                results.push(SampleAddResult::Duplicate);
+            } else {
+                results.push(SampleAddResult::Ok(sample));
+            }
+        }
     }
 
-    Ok(())
+    Ok(results)
 }
 
 #[cfg(test)]

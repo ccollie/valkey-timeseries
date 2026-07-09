@@ -1,88 +1,12 @@
-use crate::common::hash::IntMap;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
-use crate::error_consts;
-use crate::series::chunks::{Chunk, ChunkOps, TimeSeriesChunk};
+use crate::series::bulk_add::merge_samples_into_series;
 use crate::series::index::get_series_key_by_id;
-use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries, find_last_ge_index};
+use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
 use orx_parallel::ParIterResult;
 use orx_parallel::{ParIter, ParallelizableCollectionMut};
 use smallvec::{SmallVec, smallvec};
-use valkey_module::{BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult};
-
-/// Appending to a GorillaChunk is a streaming operation, but adding out-of-order samples is an O(n) operation.
-/// For every insert of a sample with a timestamp prior to the last timestamp, the chunk data is rewritten to insert
-/// the sample in the correct location.
-///
-/// To optimize this process, we group samples by the chunk they belong to, then merge them in a single write operation.
-/// Represents a collection of samples for a single timeseries, grouped by chunk index.
-struct GroupedSamples {
-    chunk_index: usize,
-    samples: SmallVec<Sample, 8>,
-    indices: SmallVec<usize, 8>,
-}
-
-impl GroupedSamples {
-    fn new(chunk_index: usize) -> Self {
-        Self {
-            chunk_index,
-            samples: SmallVec::new(),
-            indices: SmallVec::new(),
-        }
-    }
-
-    /// Sorts samples by timestamp in ascending order, maintaining the relationship with their original indices.
-    fn sort_by_timestamp(&mut self) {
-        // Create a vector of (index, sample) pairs
-        let mut pairs: SmallVec<(usize, Sample), 8> = self
-            .indices
-            .iter()
-            .copied()
-            .zip(self.samples.iter().copied())
-            .collect();
-
-        // Sort the pairs by sample timestamp
-        pairs.sort_unstable_by_key(|(_, sample)| sample.timestamp);
-
-        // Clear the existing SmallVecs
-        self.indices.clear();
-        self.samples.clear();
-
-        // Push sorted elements back into the SmallVecs
-        for (idx, sample) in pairs {
-            self.indices.push(idx);
-            self.samples.push(sample);
-        }
-    }
-
-    fn add_sample(&mut self, sample: Sample, index: usize) {
-        self.samples.push(sample);
-        self.indices.push(index);
-    }
-
-    fn handle_merge(
-        &self,
-        chunk: &mut TimeSeriesChunk,
-        policy: DuplicatePolicy,
-    ) -> SmallVec<(usize, SampleAddResult), 8> {
-        // Merge samples into this chunk
-        match chunk.merge_samples(&self.samples, Some(policy)) {
-            Ok(chunk_results) => chunk_results
-                .iter()
-                .zip(self.indices.iter().cloned())
-                .map(|(res, index)| (index, *res))
-                .collect::<SmallVec<_, 8>>(),
-            Err(_e) => {
-                let err = SampleAddResult::Error(error_consts::CANNOT_ADD_SAMPLE);
-                self.indices
-                    .iter()
-                    .cloned()
-                    .map(|index| (index, err))
-                    .collect::<SmallVec<_, 8>>()
-            }
-        }
-    }
-}
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub struct IndexedSample {
     pub index: usize,
@@ -94,6 +18,12 @@ pub struct IndexedSample {
 pub struct PerSeriesSamples<'a> {
     series: &'a mut TimeSeries,
     samples: SmallVec<IndexedSample, 6>,
+    /// Samples accepted by the merge, ascending by timestamp; consumed by the post-merge
+    /// compaction pass.
+    added: SmallVec<Sample, 8>,
+    /// The series' last timestamp before the merge: batch compaction uses it to tell
+    /// guaranteed-fresh appends apart from samples that may have replaced existing values.
+    prev_last: Option<Timestamp>,
 }
 
 impl<'a> PerSeriesSamples<'a> {
@@ -102,6 +32,8 @@ impl<'a> PerSeriesSamples<'a> {
         Self {
             series,
             samples: SmallVec::new(),
+            added: SmallVec::new(),
+            prev_last: None,
         }
     }
 
@@ -129,94 +61,15 @@ impl<'a> PerSeriesSamples<'a> {
     }
 }
 
-/// Groups samples by the chunk they belong to, while filtering out old samples.
-///
-/// NOTE: `samples` **must** be sorted by timestamp before calling this function.
-fn group_samples_by_chunk(
-    series: &mut TimeSeries,
-    samples: &[Sample],
-    results: &mut [SampleAddResult],
-    earliest_allowed_timestamp: Timestamp,
-    policy_override: Option<DuplicatePolicy>,
-) -> TsdbResult<IntMap<usize, GroupedSamples>> {
-    let mut chunk_groups: IntMap<usize, GroupedSamples> = IntMap::default();
-
-    // State for the IGNORE filter (`max_time_delta`/`max_value_delta`), applied in order so the
-    // behavior matches single-sample `TimeSeries::add`. Copied out so we don't borrow `series`
-    // while mutating its chunks below.
-    let dup_policy = series.sample_duplicates;
-    let mut running_last = series.last_sample;
-    // Timestamp of the previous input sample; duplicate timestamps within a single batch are
-    // disallowed (the input is sorted, so duplicates are adjacent).
-    let mut prev_ts: Option<Timestamp> = None;
-
-    for (index, &sample) in samples.iter().enumerate() {
-        if prev_ts == Some(sample.timestamp) {
-            results[index] = SampleAddResult::Duplicate;
-            continue;
-        }
-        prev_ts = Some(sample.timestamp);
-
-        if sample.timestamp < earliest_allowed_timestamp {
-            results[index] = SampleAddResult::TooOld;
-            continue;
-        }
-
-        let adjusted_sample = Sample {
-            value: series.adjust_value(sample.value),
-            timestamp: sample.timestamp,
-        };
-
-        // IGNORE only applies to in-order samples; out-of-order samples are upserts.
-        if let Some(last) = running_last
-            && adjusted_sample.timestamp >= last.timestamp
-            && dup_policy.is_duplicate(&adjusted_sample, &last, policy_override)
-        {
-            results[index] = SampleAddResult::Ignored(last.timestamp);
-            continue;
-        }
-
-        if running_last.is_none_or(|last| adjusted_sample.timestamp >= last.timestamp) {
-            running_last = Some(adjusted_sample);
-        }
-
-        let chunk_index = if series.is_empty() || sample.timestamp < series.first_timestamp {
-            0
-        } else {
-            loop {
-                let (index, _) = find_last_ge_index(&series.chunks, sample.timestamp);
-
-                debug_assert!(index < series.chunks.len());
-                let chunk = &mut series.chunks[index];
-
-                if chunk.should_split() {
-                    chunk.split()?;
-                    continue;
-                }
-
-                break index;
-            }
-        };
-
-        chunk_groups
-            .entry(chunk_index)
-            .or_insert_with(|| GroupedSamples::new(chunk_index))
-            .add_sample(adjusted_sample, index);
-    }
-
-    for group in chunk_groups.values_mut() {
-        group.sort_by_timestamp();
-    }
-
-    Ok(chunk_groups)
-}
-
 /// Merges a collection of samples into a time series.
 ///
-/// This function efficiently groups samples by the chunks they would belong to
-/// and applies the appropriate duplicate policy when merging. If samples are split across
-/// multiple chunks, they are possibly processed in parallel to optimize performance.
+/// Delegates to the shared bulk-merge core ([`merge_samples_into_series`]) used by
+/// `TS.ADDBULK`, so normalization (retention/rounding/IGNORE), chunk grouping and
+/// parallel merging behave identically on both ingest paths.
 ///
+/// ## Note
+///
+/// `samples` **must** be sorted by timestamp.
 ///
 /// ### Arguments
 ///
@@ -236,98 +89,21 @@ pub(super) fn merge_samples(
         return Ok(Vec::new());
     }
 
-    let policy = series.sample_duplicates.resolve_policy(policy_override);
-    let earliest_allowed_timestamp = if series.retention.is_zero() {
-        0
-    } else {
-        series.get_min_timestamp()
-    };
-
-    let mut results = vec![SampleAddResult::Error("Unknown error"); samples.len()];
-
-    // Ensure there's at least one chunk to work with
-    if series.chunks.is_empty() {
-        series.append_chunk();
-    }
-
-    // Group samples by chunk. Map is chunk_idx -> Vec<(original_index, sample)>
-    let chunk_groups = group_samples_by_chunk(
-        series,
-        samples,
-        &mut results,
-        earliest_allowed_timestamp,
-        policy_override,
-    )?;
-
-    // Every sample was filtered out (retention/IGNORE); nothing to merge. Returning early also
-    // avoids the empty-`reduce` panic in the parallel branch below.
-    if chunk_groups.is_empty() {
-        series.update_last_sample();
-        return Ok(results);
-    }
-
-    let chunk_results = if chunk_groups.len() == 1 {
-        // If all samples belong to a single chunk, handle it directly without parallelism
-        let (chunk_idx, group) = chunk_groups.into_iter().next().unwrap();
-        let chunk = &mut series.chunks[chunk_idx];
-        group.handle_merge(chunk, policy)
-    } else {
-        let mut chunks = std::mem::take(&mut series.chunks);
-
-        // Build a stable lookup once (first_timestamp is guaranteed unique)
-        let idx_by_first_ts: std::collections::HashMap<Timestamp, usize> = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.first_timestamp(), i))
-            .collect();
-
-        let result = chunks
-            .par_mut()
-            .filter_map(|chunk| {
-                let chunk_idx = *idx_by_first_ts
-                    .get(&chunk.first_timestamp())
-                    .expect("chunk index lookup failed");
-
-                chunk_groups
-                    .get(&chunk_idx)
-                    .map(|group| group.handle_merge(chunk, policy))
-            })
-            .reduce(|mut acc, items| {
-                acc.extend(items);
-                acc
-            })
-            .expect("error unwrapping results in merge_samples");
-
-        series.chunks = chunks;
-        result
-    };
-
-    // Map results back to original indices
-    for (orig_idx, result) in chunk_results.into_iter() {
-        results[orig_idx] = result;
-
-        // Update metadata for successful additions
-        if let SampleAddResult::Ok(sample) = result {
-            // The first timestamp might need updating
-            if sample.timestamp < series.first_timestamp || series.is_empty() {
-                series.first_timestamp = sample.timestamp;
-            }
-
-            // Update sample count
-            series.total_samples += 1;
-        }
-    }
-
-    // Update last_sample
-    series.update_last_sample();
-
+    let results = merge_samples_into_series(series, samples, policy_override);
+    series.split_chunks_if_needed()?;
     Ok(results)
 }
 
 /// Merges samples across multiple series, supporting parallel processing when applicable.
 ///
+/// The merge phase may run on worker threads, but compaction propagation runs afterwards,
+/// sequentially on the calling (command) thread: it acquires destination-series guards and
+/// must not lock the global context from inside the parallel section (the command thread
+/// already holds the GIL, so a `ThreadSafeContext` lock there deadlocks the server).
+///
 /// ### Parameters
 /// - `groups`: A slice of series with their related samples.
+/// - `ctx`: Command context; when present, compaction rules are propagated after the merge.
 ///
 /// ### Returns
 /// Returns a `ValkeyResult` containing a `SmallVec` of tuples (group index, SampleAddResult) on success.:
@@ -341,35 +117,41 @@ pub fn multi_series_merge_samples(
     if groups.is_empty() {
         return Ok(smallvec![]);
     }
-    let thread_ctx = ctx.map(|ctx| ThreadSafeContext::with_blocked_client(ctx.block_client()));
     let mut groups = groups;
 
-    if groups.len() == 1 {
-        return add_samples_internal(&mut groups[0], &thread_ctx);
-    }
+    let res = if groups.len() == 1 {
+        add_samples_internal(&mut groups[0])?
+    } else {
+        groups
+            .par_mut()
+            .map(add_samples_internal)
+            .into_fallible_result()
+            .reduce(|mut acc, item| {
+                acc.extend(item);
+                acc
+            })?
+            .unwrap()
+    };
 
-    let res = groups
-        .par_mut()
-        .map(|group| add_samples_internal(group, &thread_ctx))
-        .into_fallible_result()
-        .reduce(|mut acc, item| {
-            acc.extend(item);
-            acc
-        })?
-        .unwrap();
+    if let Some(ctx) = ctx {
+        run_group_compactions(ctx, &mut groups);
+    }
 
     Ok(res)
 }
 
 fn add_samples_internal(
     input: &mut PerSeriesSamples,
-    ctx: &Option<ThreadSafeContext<BlockedClient>>,
 ) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
+    input.prev_last = input.series.last_sample.map(|s| s.timestamp);
+
     if input.samples.len() == 1 {
         let sample = input.samples.pop().unwrap();
         let index = sample.index;
         let result = input.series.add(sample.timestamp, sample.value, None);
-        handle_compaction(ctx, input.series, &[result]);
+        if let SampleAddResult::Ok(added) = result {
+            input.added.push(added);
+        }
 
         return Ok(smallvec![(index, result)]);
     }
@@ -386,8 +168,18 @@ fn add_samples_internal(
         .merge_samples(&samples, None)
         .map_err(|e| ValkeyError::String(format!("{e}")))?;
 
-    // run compaction if needed
-    handle_compaction(ctx, input.series, &add_results);
+    // `add_results` follow the sorted input order, so the accepted samples are ascending —
+    // exactly what batch compaction requires.
+    input.added = add_results
+        .iter()
+        .filter_map(|res| {
+            if let SampleAddResult::Ok(s) = res {
+                Some(*s)
+            } else {
+                None
+            }
+        })
+        .collect();
 
     let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
     for item in add_results
@@ -401,43 +193,23 @@ fn add_samples_internal(
     Ok(result)
 }
 
-fn handle_compaction(
-    thread_ctx: &Option<ThreadSafeContext<BlockedClient>>,
-    series: &mut TimeSeries,
-    results: &[SampleAddResult],
-) {
-    if series.rules.is_empty() {
-        return;
-    }
-
-    let Some(thread_ctx) = thread_ctx else {
-        return;
-    };
-
-    let last_timestamp = series.last_sample.map(|last_sample| last_sample.timestamp);
-
-    for sample in results {
-        let SampleAddResult::Ok(sample) = sample else {
+/// Propagate each group's merged batch to its compaction destinations, one batch per series
+/// (the old per-sample path locked the context once per sample and rebuilt the open bucket
+/// for every in-order sample).
+fn run_group_compactions(ctx: &Context, groups: &mut [PerSeriesSamples]) {
+    for group in groups.iter_mut() {
+        if group.series.rules.is_empty() || group.added.is_empty() {
             continue;
-        };
-        let ctx = thread_ctx.lock();
-        let result = if is_upsert(sample.timestamp, last_timestamp) {
-            series.upsert_compaction(&ctx, *sample)
-        } else {
-            series.run_compaction(&ctx, *sample)
-        };
-        if let Err(e) = result {
-            let key = get_series_key_by_id(&ctx, series.id)
+        }
+
+        if let Err(e) = group
+            .series
+            .batch_compaction(ctx, &group.added, group.prev_last)
+        {
+            let key = get_series_key_by_id(ctx, group.series.id)
                 .unwrap_or_else(|| ctx.create_string("Unknown"));
-            let msg = format!("TSDB: error running compaction upsert for key '{key}': {e}",);
+            let msg = format!("TSDB: error running compaction for key '{key}': {e}");
             ctx.log_warning(&msg);
         }
     }
-}
-
-fn is_upsert(timestamp: Timestamp, last_timestamp: Option<Timestamp>) -> bool {
-    if let Some(last_timestamp) = last_timestamp {
-        return timestamp <= last_timestamp;
-    }
-    false
 }
