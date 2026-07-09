@@ -36,7 +36,37 @@ pub fn parse_series_selector(s: &str) -> ParseResult<SeriesSelector> {
     let mut lex = Token::lexer(s);
     let result = parse_series_selector_internal(&mut lex)?;
     expect_token(&mut lex, Token::Eof)?;
+    validate_selector(&result)?;
     Ok(result)
+}
+
+/// A selector (or, for an `OR` selector, each of its branches) made up entirely of matchers
+/// that match the empty string — negative matchers, or matchers like `l=""` / `l=~".*"` that
+/// happen to match empty — has nothing to intersect against but the whole keyspace. Reject it,
+/// mirroring Prometheus's requirement that a selector contain at least one matcher that does
+/// not match the empty string.
+fn validate_selector(selector: &SeriesSelector) -> ParseResult<()> {
+    match selector {
+        SeriesSelector::And(filters) => validate_filter_group(filters),
+        SeriesSelector::Or(groups) => groups.iter().try_for_each(validate_filter_group),
+    }
+}
+
+fn validate_filter_group(filters: &FilterList) -> ParseResult<()> {
+    if filters.is_empty() {
+        return Ok(());
+    }
+    let has_positive_matcher = filters
+        .iter()
+        .any(|f| !f.is_negative_matcher() && !f.matches_empty());
+    if has_positive_matcher {
+        Ok(())
+    } else {
+        Err(ParseError::General(
+            "selector must contain at least one matcher that does not match the empty string"
+                .to_string(),
+        ))
+    }
 }
 
 fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<SeriesSelector> {

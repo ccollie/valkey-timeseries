@@ -766,11 +766,7 @@ pub fn parse_series_selector_list(
             return Err(ValkeyError::Str(error_consts::INVALID_SERIES_SELECTOR));
         }
 
-        if let Ok(selector) = parse_series_selector(arg) {
-            matchers.push(selector);
-        } else {
-            return Err(ValkeyError::Str(error_consts::INVALID_SERIES_SELECTOR));
-        }
+        matchers.push(parse_series_selector(arg)?);
     }
 
     if matchers.is_empty() {
