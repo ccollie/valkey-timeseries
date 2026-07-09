@@ -7,9 +7,7 @@ use crate::common::Sample;
 use crate::error_consts;
 use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
 use crate::series::index::with_timeseries_postings;
-use crate::series::ingest_normalize::{
-    NormalizedBatch, get_min_allowed_timestamp, normalize_batch,
-};
+use crate::series::ingest_normalize::{NormalizedBatch, normalize_batch};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
 use orx_parallel::{IterIntoParIter, ParIter, ParallelizableCollection};
 use simd_json::base::{ValueAsArray, ValueAsScalar};
@@ -153,10 +151,15 @@ fn add_chunks_for_remaining_samples<'a>(
 /// Groups a sorted `samples` slice into the chunk they would belong to if inserted.
 ///
 /// Rules:
-/// - `samples` must be sorted by `timestamp` ascending.
-/// - Samples older than the retention window are ignored.
-/// - Samples newer than the series' current last timestamp are pinned to the series' last chunk.
-/// - If a chunk is at capacity, splits the samples and uses pre-created chunks for overflow.
+/// - `samples` must be sorted by `timestamp` ascending, already normalized (retention
+///   filtering happens in [`normalize_batch`], not here).
+/// - Samples older than the first existing chunk go to new chunk(s), consumed strictly
+///   below the first chunk's start so the new chunks cannot overlap existing ones.
+/// - Each existing chunk consumes every remaining sample up to its last timestamp. This
+///   also routes samples falling in the gap *before* a chunk into that chunk (as upserts),
+///   so a new chunk is never created overlapping an existing one.
+/// - Samples newer than the last chunk are appended to the last chunk while it has
+///   (estimated) remaining capacity; overflow goes to new chunk(s).
 /// - Returns groups in ascending chunk order, each group borrowing from the input slice.
 ///
 /// # Arguments
@@ -170,32 +173,21 @@ fn group_samples_by_chunk<'a>(
         return Vec::new();
     }
 
-    let min_allowed_ts = get_min_allowed_timestamp(series);
-
-    // Skip samples older than retention (drop them).
-    let mut start_idx = 0usize;
-    while start_idx < samples.len() && samples[start_idx].timestamp < min_allowed_ts {
-        start_idx += 1;
-    }
-    if start_idx >= samples.len() {
-        return Vec::new();
-    }
-    let samples = &samples[start_idx..];
-
     // Pre-allocate based on chunk count + potential new chunks
     let estimated_groups = series.chunks.len().saturating_add(2);
     let mut out: Vec<ChunkSampleGroup<'a>> = Vec::with_capacity(estimated_groups);
 
-    // handle samples older than the first existing chunk by creating new chunk(s).
-    let first_chunk_start = series
-        .chunks
-        .first()
-        .map(|c| c.first_timestamp())
-        .unwrap_or(min_allowed_ts);
+    // Empty series: create new chunks from all samples.
+    if series.chunks.is_empty() || series.is_empty() {
+        add_chunks_for_remaining_samples(&mut out, series, samples);
+        return out;
+    }
 
     let mut i = 0usize;
 
-    if i < samples.len() && samples[i].timestamp < first_chunk_start {
+    // Samples older than the first existing chunk go to new chunk(s).
+    let first_chunk_start = series.chunks[0].first_timestamp();
+    if samples[i].timestamp < first_chunk_start {
         let start = i;
         while i < samples.len() && samples[i].timestamp < first_chunk_start {
             i += 1;
@@ -207,20 +199,20 @@ fn group_samples_by_chunk<'a>(
         }
     }
 
-    // Empty series: create new chunks from all remaining samples.
-    if series.is_empty() {
-        add_chunks_for_remaining_samples(&mut out, series, &samples[i..]);
-        return out;
-    }
-
-    let chunk_count = series.chunks.len();
-    let last_index = chunk_count.saturating_sub(1);
+    let last_index = series.chunks.len() - 1;
 
     for (chunk_idx, chunk) in series.chunks.iter().enumerate() {
         let start = i;
 
-        while i < samples.len() && chunk.is_timestamp_in_range(samples[i].timestamp) {
+        let chunk_last = chunk.last_timestamp();
+        while i < samples.len() && samples[i].timestamp <= chunk_last {
             i += 1;
+        }
+
+        // Beyond the last chunk: keep appending into it while it has estimated capacity.
+        if chunk_idx == last_index && i < samples.len() {
+            let take = calculate_capacity(chunk).min(samples.len() - i);
+            i += take;
         }
 
         if start < i {
@@ -229,11 +221,11 @@ fn group_samples_by_chunk<'a>(
                 samples: &samples[start..i],
             });
         }
+    }
 
-        if i < samples.len() && chunk_idx == last_index {
-            add_chunks_for_remaining_samples(&mut out, series, &samples[i..]);
-            return out;
-        }
+    // Whatever the last chunk couldn't absorb goes to new chunk(s).
+    if i < samples.len() {
+        add_chunks_for_remaining_samples(&mut out, series, &samples[i..]);
     }
 
     out
@@ -269,17 +261,18 @@ fn disjoint_get_many_mut_with_pos<'a, T>(slice: &'a mut [T], indices: &[usize]) 
     out
 }
 
-/// The merge core shared by both bulk ingest paths (`TS.ADDBULK` and `TS.MADD`).
+/// Shared bulk-merge core used by both `TS.ADDBULK` (`bulk_insert_samples`) and `TS.MADD`
+/// (`sample_merge::merge_samples`): normalize, group by destination chunk, merge in parallel,
+/// splice results back to input order, and refresh series metadata.
 ///
-/// Normalizes the batch, groups it by destination chunk, then merges each group:
+/// Parallel merge implementation:
 /// - existing-chunk groups: merge in parallel by taking disjoint `&mut` borrows
 /// - new-chunk groups: create and merge in parallel, then append sequentially
 ///
-/// Series metadata (`total_samples`, `first_timestamp`, `last_sample`) is left consistent on
-/// return. Chunk splitting, keyspace notifications and compaction propagation are left to the
-/// caller, since those differ between the ingest paths.
+/// Callers are responsible for post-merge maintenance (`split_chunks_if_needed`),
+/// keyspace notification and compaction propagation.
 ///
-/// Returns one [`SampleAddResult`] per input sample, at that sample's original index.
+/// `samples` **must** be sorted by timestamp ascending. Returns one result per input sample.
 pub(super) fn merge_samples_into_series(
     series: &mut TimeSeries,
     samples: &[Sample],
@@ -383,8 +376,9 @@ pub(super) fn merge_samples_into_series(
         }
     }
 
-    // The merge mutated chunk contents in place, so the cached series-level bounds and sample
-    // count are stale until recomputed from the chunks.
+    // Refresh metadata unconditionally: even without new chunks, a merge can append to the
+    // last chunk or update the value at the current last timestamp, and `total_samples` can
+    // only be derived from chunk lengths (upserts of existing timestamps report `Ok` too).
     series.update_first_last_timestamps();
     series.recalculate_total_samples();
 
@@ -407,8 +401,8 @@ pub(super) fn merge_samples_into_series(
     results
 }
 
-/// `TS.ADDBULK` ingest: merge `samples` into `series`, then split overfull chunks, notify
-/// keyspace listeners and propagate the batch to compaction destinations.
+/// Bulk insert for `TS.ADDBULK`: runs the shared merge core, then performs post-merge
+/// maintenance (chunk splitting), keyspace notification and compaction propagation.
 pub fn bulk_insert_samples(
     ctx: &Context,
     series: &mut TimeSeries,
@@ -420,8 +414,8 @@ pub fn bulk_insert_samples(
     }
 
     let _saved_sample_count = series.total_samples;
-    // Batch compaction needs the last timestamp from *before* the merge to tell guaranteed-fresh
-    // appends apart from samples that may have replaced an existing value.
+    // Last timestamp before the merge: batch compaction uses it to tell guaranteed-fresh
+    // appends apart from samples that may have replaced existing values.
     let prev_last = series.last_sample.map(|s| s.timestamp);
 
     let results = merge_samples_into_series(series, samples, policy);
@@ -443,8 +437,7 @@ pub fn bulk_insert_samples(
         notify_added(ctx, event, &[series.id]);
     }
 
-    // Compactions run sequentially on the calling thread: they acquire destination-series guards
-    // and mutate `series`' rule state.
+    // Propagate the accepted samples to compaction destinations in one batch.
     if !series.rules.is_empty() {
         let mut added: Vec<Sample> = results
             .iter()
@@ -457,8 +450,8 @@ pub fn bulk_insert_samples(
             })
             .collect();
 
-        // `results` follows the caller's input order; `batch_compaction` requires ascending
-        // timestamps. Normalization already rejected in-batch duplicates, so the keys are unique.
+        // `results` follow the caller's input order; batch compaction needs ascending
+        // timestamps. TS.ADDBULK pre-sorts its input, so this is normally a no-op check.
         if !added.is_sorted_by_key(|s| s.timestamp) {
             added.sort_unstable_by_key(|s| s.timestamp);
         }
@@ -489,6 +482,7 @@ fn notify_added(ctx: &Context, event: &str, ids: &[SeriesRef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::series::ingest_normalize::get_min_allowed_timestamp;
     use crate::tests::generators::DataGenerator;
     use std::time::Duration;
 
@@ -544,26 +538,23 @@ mod tests {
     }
 
     #[test]
-    fn group_skips_samples_older_than_retention_min_timestamp() {
+    fn normalize_skips_samples_older_than_retention_min_timestamp() {
         let mut series = TimeSeries::default();
         // Create initial data so the series isn't empty and has retention-derived min timestamp.
         // Insert a sample to establish a baseline.
-        bulk_insert_samples(&Context::dummy(), &mut series, &[s(1_000, 1.0)], None);
+        bulk_insert_samples(&Context::dummy(), &mut series, &[s(100_000, 1.0)], None);
+        series.retention = Duration::from_millis(1_000);
 
         let min_allowed = get_min_allowed_timestamp(&series);
 
-        // One sample below a retention window, one inside.
+        // One sample below the retention window, one inside.
         let samples = vec![s(min_allowed - 1, 1.0), s(min_allowed, 2.0)];
-        let groups = group_samples_by_chunk(&series, &samples);
+        let batch = normalize_batch(&series, &samples, None);
 
-        // All grouped samples must be >= min_allowed.
-        let grouped: Vec<i64> = groups
-            .iter()
-            .flat_map(|g| g.samples.iter().map(|x| x.timestamp))
-            .collect();
-        assert!(grouped.iter().all(|&ts| ts >= min_allowed));
-        assert!(grouped.contains(&min_allowed));
-        assert!(!grouped.contains(&(min_allowed - 1)));
+        // Retention filtering happens in normalization, before grouping.
+        assert!(matches!(batch.results[0], SampleAddResult::TooOld));
+        let kept: Vec<i64> = batch.to_insert.iter().map(|x| x.timestamp).collect();
+        assert_eq!(kept, vec![min_allowed]);
     }
 
     #[test]
@@ -689,18 +680,82 @@ mod tests {
     }
 
     #[test]
-    fn group_filters_all_samples_when_all_are_older_than_retention() {
+    fn normalize_filters_all_samples_when_all_are_older_than_retention() {
         let ctx = Context::dummy();
         let mut series = TimeSeries::default();
 
         // Create baseline data to establish a retention window.
-        bulk_insert_samples(&ctx, &mut series, &[s(1_000, 1.0)], None);
+        bulk_insert_samples(&ctx, &mut series, &[s(100_000, 1.0)], None);
+        series.retention = Duration::from_millis(1_000);
         let min_allowed = get_min_allowed_timestamp(&series);
 
         let samples = vec![s(min_allowed - 100, 1.0), s(min_allowed - 1, 2.0)];
-        let groups = group_samples_by_chunk(&series, &samples);
+        let batch = normalize_batch(&series, &samples, None);
 
-        assert!(groups.is_empty());
+        assert!(batch.to_insert.is_empty());
+        assert!(
+            batch
+                .results
+                .iter()
+                .all(|r| matches!(r, SampleAddResult::TooOld))
+        );
+    }
+
+    #[test]
+    fn bulk_insert_appends_into_last_chunk_when_it_has_capacity() {
+        let ctx = Context::dummy();
+        let mut series = TimeSeries::default();
+
+        // Small seed: the last chunk has plenty of remaining capacity.
+        let seed: Vec<Sample> = (0..100).map(|i| s(i * 10, i as f64)).collect();
+        bulk_insert_samples(&ctx, &mut series, &seed, None);
+        let chunks_before = series.chunks.len();
+        let last_max = series.last_timestamp();
+
+        // A small append batch must reuse the last chunk instead of creating a new one.
+        let samples = vec![s(last_max + 10, 1.0), s(last_max + 20, 2.0)];
+        let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
+
+        assert!(results.iter().all(|r| r.is_ok()));
+        assert_eq!(series.chunks.len(), chunks_before);
+        assert_eq!(series.last_timestamp(), last_max + 20);
+        assert_eq!(series.total_samples, seed.len() + samples.len());
+    }
+
+    #[test]
+    fn bulk_insert_gap_samples_do_not_create_overlapping_chunks() {
+        let ctx = Context::dummy();
+        let mut series = TimeSeries::default();
+
+        // Seed enough data to create multiple chunks.
+        let seed: Vec<Sample> = (0..10_000).map(|i| s(i * 10, i as f64)).collect();
+        bulk_insert_samples(&ctx, &mut series, &seed, None);
+        assert!(series.chunks.len() >= 2);
+        series.retention = Duration::ZERO;
+
+        // One sample in the "gap" just before a chunk's first timestamp, one inside
+        // that same chunk. Both must be routed into the existing chunk rather than
+        // spawning a new chunk whose range overlaps it.
+        let c1_first = series.chunks[1].first_timestamp();
+        let samples = vec![s(c1_first - 5, 123.0), s(c1_first + 5, 456.0)];
+        let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // Chunks must remain sorted and strictly non-overlapping.
+        for pair in series.chunks.windows(2) {
+            assert!(
+                pair[0].last_timestamp() < pair[1].first_timestamp(),
+                "chunks overlap: {}..{} vs {}..{}",
+                pair[0].first_timestamp(),
+                pair[0].last_timestamp(),
+                pair[1].first_timestamp(),
+                pair[1].last_timestamp()
+            );
+        }
+
+        let stored: Vec<i64> = series.iter().map(|smpl| smpl.timestamp).collect();
+        assert!(stored.contains(&(c1_first - 5)));
+        assert!(stored.contains(&(c1_first + 5)));
     }
 
     #[test]
@@ -789,16 +844,11 @@ mod tests {
             .saturating_add((c0.last_timestamp().saturating_sub(c0.first_timestamp())) / 2);
         assert!(c0.is_timestamp_in_range(existing_ts));
 
-        // Pick timestamps that are strictly newer than the last existing timestamp to force creation of new chunk(s).
+        // Append far more samples than the last chunk can absorb so the overflow is
+        // forced into newly created chunk(s).
         let last_max = series.chunks.last().unwrap().last_timestamp();
-        let new_ts_1 = last_max + 10;
-        let new_ts_2 = last_max + 20;
-
-        let samples = vec![
-            s(existing_ts, 123.0),
-            s(new_ts_1, 456.0),
-            s(new_ts_2, 789.0),
-        ];
+        let mut samples = vec![s(existing_ts, 123.0)];
+        samples.extend((1..=20_000).map(|i| s(last_max + i * 10, i as f64)));
 
         let results = bulk_insert_samples(&ctx, &mut series, &samples, None);
 
@@ -812,11 +862,11 @@ mod tests {
         // Validate the timestamps are present in the series after insertion.
         let stored_ts: Vec<i64> = series.iter().map(|smpl| smpl.timestamp).collect();
         assert!(stored_ts.contains(&existing_ts));
-        assert!(stored_ts.contains(&new_ts_1));
-        assert!(stored_ts.contains(&new_ts_2));
+        assert!(stored_ts.contains(&(last_max + 10)));
+        assert!(stored_ts.contains(&(last_max + 20_000 * 10)));
 
         // Metadata sanity: last timestamp must advance to the newest inserted sample.
-        assert_eq!(series.last_timestamp(), new_ts_2);
+        assert_eq!(series.last_timestamp(), last_max + 20_000 * 10);
     }
 
     #[test]
