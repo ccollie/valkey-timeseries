@@ -6,11 +6,10 @@ use crate::labels::filters::{
     PredicateMatch, PredicateValue, RegexMatcher, validate_contains_value,
     validate_starts_with_value,
 };
-use crate::labels::regex::try_escape_for_repeat_re;
+use crate::labels::regex::build_with_repeat_fallback;
 use crate::parser::{ParseError, ParseResult};
 use regex::Error as RegexError;
 use regex::Regex;
-use regex::RegexBuilder;
 use regex_syntax::hir::Class::{Bytes, Unicode};
 use regex_syntax::hir::{Class, Hir, HirKind, Look};
 use regex_syntax::parse as parse_regex;
@@ -497,11 +496,7 @@ pub fn decompose_regex(expr: &str) -> Result<RegexDecomposition, RegexError> {
 
 pub(crate) fn compile_regex(expr: &str) -> Result<Regex, RegexError> {
     let anchored = format!("^(?:{})$", expr);
-    RegexBuilder::new(&anchored)
-        .size_limit(16 * 1024)
-        .dot_matches_new_line(true)
-        .build()
-        .or_else(|_| Regex::new(&try_escape_for_repeat_re(&anchored)))
+    build_with_repeat_fallback(&anchored)
 }
 
 pub(crate) fn compile_prefixed_regex(
