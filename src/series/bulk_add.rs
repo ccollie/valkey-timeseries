@@ -3,22 +3,18 @@
 //! This module provides bulk insertion of samples into a time series, with support for duplicate
 //! policies and automatic compaction handling. It is optimized for high-throughput data ingestion
 //! scenarios by leveraging parallel processing and efficient sample merging.
-use crate::aggregators::{AggregationHandler, Aggregator};
-use crate::common::{Sample, Timestamp};
-use crate::error::TsdbResult;
+use crate::common::Sample;
 use crate::error_consts;
 use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
-use crate::series::compaction::get_destination_series;
 use crate::series::index::with_timeseries_postings;
-use crate::series::{CompactionRule, DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
-use orx_parallel::{
-    IterIntoParIter, ParIter, ParallelizableCollection, ParallelizableCollectionMut,
+use crate::series::ingest_normalize::{
+    NormalizedBatch, get_min_allowed_timestamp, normalize_batch,
 };
-use range_set_blaze::RangeSetBlaze;
+use crate::series::{DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries};
+use orx_parallel::{IterIntoParIter, ParIter, ParallelizableCollection};
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
 use simd_json::prelude::ValueObjectAccess;
-use std::ops::RangeInclusive;
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult};
 
 pub const MAX_SAMPLES_PER_INSERT: usize = 1_000;
@@ -122,14 +118,6 @@ fn calculate_capacity(chunk: &TimeSeriesChunk) -> usize {
     }
 
     capacity
-}
-
-fn get_min_allowed_timestamp(series: &TimeSeries) -> Timestamp {
-    if series.retention.is_zero() {
-        0
-    } else {
-        series.get_min_timestamp()
-    }
 }
 
 fn add_chunks_for_remaining_samples<'a>(
@@ -281,93 +269,18 @@ fn disjoint_get_many_mut_with_pos<'a, T>(slice: &'a mut [T], indices: &[usize]) 
     out
 }
 
-/// Result of pre-merge normalization shared by all bulk ingest paths.
-struct NormalizedBatch {
-    /// Samples that should actually be merged into chunks (values already rounded), in ascending
-    /// timestamp order.
-    to_insert: Vec<Sample>,
-    /// Original index (into the caller's `samples`) for each entry in `to_insert`.
-    insert_index: Vec<usize>,
-    /// Per-original-index results, sized to the caller's `samples`. Retention-filtered samples are
-    /// pre-set to `TooOld` and IGNORE-filtered samples to `Ignored`; survivors hold a placeholder
-    /// that the caller overwrites with the merge outcome.
-    results: Vec<SampleAddResult>,
-}
-
-/// Normalizes a sorted batch of samples the same way single-sample [`TimeSeries::add`] does, so the
-/// bulk path stays behaviorally consistent with it:
-/// - drops samples older than the retention window, reporting them as `TooOld`;
-/// - applies the series' value rounding (`SIGNIFICANT_DIGITS`/`DECIMAL_DIGITS`);
-/// - applies the IGNORE filter (`max_time_delta`/`max_value_delta`) to in-order samples, reporting
-///   ignored samples as `Ignored`.
+/// The merge core shared by both bulk ingest paths (`TS.ADDBULK` and `TS.MADD`).
 ///
-/// `samples` **must** be sorted by timestamp ascending.
-fn normalize_batch(
-    series: &TimeSeries,
-    samples: &[Sample],
-    policy_override: Option<DuplicatePolicy>,
-) -> NormalizedBatch {
-    let min_allowed_ts = get_min_allowed_timestamp(series);
-    let dup_policy = series.sample_duplicates;
-
-    let mut results = vec![SampleAddResult::Error("Unknown error"); samples.len()];
-    let mut to_insert = Vec::with_capacity(samples.len());
-    let mut insert_index = Vec::with_capacity(samples.len());
-
-    // Running last stored sample, so the IGNORE filter compares against the value that would
-    // actually be present, mirroring single-sample add semantics as the batch is applied in order.
-    let mut running_last = series.last_sample;
-    // Timestamp of the previous input sample; duplicate timestamps within a single batch are
-    // disallowed (the input is sorted, so duplicates are adjacent).
-    let mut prev_ts: Option<Timestamp> = None;
-
-    for (index, sample) in samples.iter().enumerate() {
-        if prev_ts == Some(sample.timestamp) {
-            results[index] = SampleAddResult::Duplicate;
-            continue;
-        }
-        prev_ts = Some(sample.timestamp);
-
-        if sample.timestamp < min_allowed_ts {
-            results[index] = SampleAddResult::TooOld;
-            continue;
-        }
-
-        let adjusted = Sample {
-            timestamp: sample.timestamp,
-            value: series.adjust_value(sample.value),
-        };
-
-        // IGNORE only applies to in-order samples (ts >= last); out-of-order samples are upserts
-        // and are never filtered here, matching `TimeSeries::add`.
-        if let Some(last) = running_last
-            && adjusted.timestamp >= last.timestamp
-            && dup_policy.is_duplicate(&adjusted, &last, policy_override)
-        {
-            results[index] = SampleAddResult::Ignored(last.timestamp);
-            continue;
-        }
-
-        if running_last.is_none_or(|last| adjusted.timestamp >= last.timestamp) {
-            running_last = Some(adjusted);
-        }
-
-        to_insert.push(adjusted);
-        insert_index.push(index);
-    }
-
-    NormalizedBatch {
-        to_insert,
-        insert_index,
-        results,
-    }
-}
-
-/// Parallel merge implementation:
+/// Normalizes the batch, groups it by destination chunk, then merges each group:
 /// - existing-chunk groups: merge in parallel by taking disjoint `&mut` borrows
 /// - new-chunk groups: create and merge in parallel, then append sequentially
-pub fn bulk_insert_samples(
-    ctx: &Context,
+///
+/// Series metadata (`total_samples`, `first_timestamp`, `last_sample`) is left consistent on
+/// return. Chunk splitting, keyspace notifications and compaction propagation are left to the
+/// caller, since those differ between the ingest paths.
+///
+/// Returns one [`SampleAddResult`] per input sample, at that sample's original index.
+pub(super) fn merge_samples_into_series(
     series: &mut TimeSeries,
     samples: &[Sample],
     policy: Option<DuplicatePolicy>,
@@ -375,8 +288,6 @@ pub fn bulk_insert_samples(
     if samples.is_empty() {
         return Vec::new();
     }
-
-    let _saved_sample_count = series.total_samples;
 
     // Resolve the duplicate policy against the series/global defaults so that a `None` override
     // honors the series' configured policy rather than silently defaulting to KeepLast.
@@ -469,18 +380,12 @@ pub fn bulk_insert_samples(
         if series.chunks.len() != chunk_count_before {
             // Sort chunks by the first timestamp to maintain order.
             series.chunks.sort_by_key(|c| c.first_timestamp());
-            series.update_first_last_timestamps();
         }
     }
 
-    series.split_chunks_if_needed().unwrap_or_else(|e| {
-        ctx.log_warning(&format!(
-            "Failed to split chunks after bulk insert samples: {}",
-            e
-        ))
-    });
-
-    // make sure total_samples is accurate
+    // The merge mutated chunk contents in place, so the cached series-level bounds and sample
+    // count are stale until recomputed from the chunks.
+    series.update_first_last_timestamps();
     series.recalculate_total_samples();
 
     // Merge results arrive in group order, which matches `to_insert` order (groups borrow
@@ -499,6 +404,35 @@ pub fn bulk_insert_samples(
         "merge produced a different number of results than samples inserted"
     );
 
+    results
+}
+
+/// `TS.ADDBULK` ingest: merge `samples` into `series`, then split overfull chunks, notify
+/// keyspace listeners and propagate the batch to compaction destinations.
+pub fn bulk_insert_samples(
+    ctx: &Context,
+    series: &mut TimeSeries,
+    samples: &[Sample],
+    policy: Option<DuplicatePolicy>,
+) -> Vec<SampleAddResult> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    let _saved_sample_count = series.total_samples;
+    // Batch compaction needs the last timestamp from *before* the merge to tell guaranteed-fresh
+    // appends apart from samples that may have replaced an existing value.
+    let prev_last = series.last_sample.map(|s| s.timestamp);
+
+    let results = merge_samples_into_series(series, samples, policy);
+
+    series.split_chunks_if_needed().unwrap_or_else(|e| {
+        ctx.log_warning(&format!(
+            "Failed to split chunks after bulk insert samples: {}",
+            e
+        ))
+    });
+
     #[cfg(not(test))]
     if series.total_samples > _saved_sample_count {
         let event = if series.is_compaction() {
@@ -509,9 +443,10 @@ pub fn bulk_insert_samples(
         notify_added(ctx, event, &[series.id]);
     }
 
-    // compactions remain sequential because they mutate `series`.
+    // Compactions run sequentially on the calling thread: they acquire destination-series guards
+    // and mutate `series`' rule state.
     if !series.rules.is_empty() {
-        let added: Vec<Sample> = results
+        let mut added: Vec<Sample> = results
             .iter()
             .filter_map(|res| {
                 if let SampleAddResult::Ok(s) = res {
@@ -522,7 +457,13 @@ pub fn bulk_insert_samples(
             })
             .collect();
 
-        if let Err(e) = run_compactions(ctx, series, &added) {
+        // `results` follows the caller's input order; `batch_compaction` requires ascending
+        // timestamps. Normalization already rejected in-batch duplicates, so the keys are unique.
+        if !added.is_sorted_by_key(|s| s.timestamp) {
+            added.sort_unstable_by_key(|s| s.timestamp);
+        }
+
+        if let Err(e) = series.batch_compaction(ctx, &added, prev_last) {
             ctx.log_warning(&format!(
                 "Failed to run compactions after bulk insert samples: {e:?}"
             ))
@@ -530,179 +471,6 @@ pub fn bulk_insert_samples(
     }
 
     results
-}
-
-/// Run compactions for `series` from a pre-sorted `samples` vec.
-///
-/// This rebuilds each rule's destination series affected by `samples` by computing per-bucket aggregations.
-///
-/// Assumptions:
-/// - `samples` is sorted by `timestamp` ascending.
-/// - Destination series already exist and are compaction series (rules with missing dest series are dropped elsewhere).
-pub fn run_compactions(
-    ctx: &Context,
-    series: &mut TimeSeries,
-    samples: &[Sample],
-) -> TsdbResult<()> {
-    if series.rules.is_empty() || samples.is_empty() {
-        return Ok(());
-    }
-
-    // borrow rules to avoid issues with mutable borrow later
-    let mut rules = std::mem::take(&mut series.rules);
-
-    // get all compactions per rule in parallel
-    let rule_compactions = rules
-        .par_mut()
-        .map(|rule| get_compacted_samples(series, rule, samples))
-        .collect::<Vec<_>>();
-
-    // restore rules
-    series.rules = rules;
-
-    for (compacted_samples, rule) in rule_compactions.into_iter().zip(series.rules.iter()) {
-        let Some(mut dest_series) = get_destination_series(ctx, rule.dest_id) else {
-            continue;
-        };
-
-        bulk_insert_samples(
-            ctx,
-            &mut dest_series,
-            &compacted_samples,
-            Some(DuplicatePolicy::KeepLast),
-        );
-    }
-
-    Ok(())
-}
-
-fn get_compacted_samples(
-    source: &TimeSeries,
-    rule: &mut CompactionRule,
-    src_samples: &[Sample],
-) -> Vec<Sample> {
-    let ranges = collect_input_ranges(rule, src_samples);
-
-    // Process each range in parallel. At most one range overlaps the open
-    // bucket, so at most one call returns Some(Aggregator). Collect all
-    // results first and extract the aggregator afterward — no mutex needed.
-    let mut results: Vec<(Vec<Sample>, Option<Aggregator>)> = ranges
-        .ranges()
-        .iter_into_par()
-        .map(|range| aggregate_compaction_range(source, rule, range))
-        .collect();
-
-    // If any range carried the open-bucket aggregator state, update the rule.
-    if let Some(updated) = results.iter_mut().find_map(|(_, aggr)| aggr.take()) {
-        rule.aggregator = updated;
-    }
-
-    results
-        .into_iter()
-        .flat_map(|(samples, _)| samples)
-        .collect()
-}
-
-fn collect_input_ranges(rule: &CompactionRule, samples: &[Sample]) -> RangeSetBlaze<Timestamp> {
-    let mut ranges = RangeSetBlaze::new();
-    if samples.is_empty() {
-        return ranges;
-    }
-
-    let gap_threshold = rule.bucket_duration as i64;
-    let mut cur = rule.get_bucket_range(samples[0].timestamp);
-
-    let push_cur = |ranges: &mut RangeSetBlaze<Timestamp>, cur: (Timestamp, Timestamp)| {
-        ranges.ranges_insert(cur.0..=cur.1);
-    };
-
-    for s in &samples[1..] {
-        let next = rule.get_bucket_range(s.timestamp);
-        if next.0.saturating_sub(cur.1) <= gap_threshold {
-            cur.1 = next.1;
-        } else {
-            push_cur(&mut ranges, cur);
-            cur = next;
-        }
-    }
-
-    push_cur(&mut ranges, cur);
-    ranges
-}
-
-fn range_affects_open_bucket(rule: &CompactionRule, range: RangeInclusive<Timestamp>) -> bool {
-    let start = *range.start();
-    let _end = *range.end();
-
-    // Check if the range overlaps with the rule's current open bucket
-    let open_bucket_start = rule.bucket_start;
-    let open_bucket_end =
-        open_bucket_start.map(|bs| bs.saturating_add_unsigned(rule.bucket_duration));
-
-    // Determine if we need to preserve the open bucket's state
-    open_bucket_start
-        .and_then(|obs| open_bucket_end.map(|obe| start >= obs && start < obe))
-        .unwrap_or(false)
-}
-
-/// Aggregate samples in `source` over the given `range` according to `rule`.
-fn aggregate_compaction_range(
-    source: &TimeSeries,
-    rule: &CompactionRule,
-    range: RangeInclusive<Timestamp>,
-) -> (Vec<Sample>, Option<Aggregator>) {
-    let (start, end) = (*range.start(), *range.end());
-    let range_starts_in_open_bucket = range_affects_open_bucket(rule, range.clone());
-
-    let mut aggr = rule.aggregator.clone();
-    if !range_starts_in_open_bucket {
-        AggregationHandler::reset(&mut aggr);
-    }
-
-    let mut samples_out = Vec::new();
-    let mut current_bucket_start: Option<Timestamp> = None;
-    let mut has_samples = false;
-
-    for sample in source.range_iter(start, end) {
-        let bucket_start = rule.calc_bucket_start(sample.timestamp);
-
-        // Finalize the previous bucket if we've moved to a new one
-        if let Some(prev_bucket) = current_bucket_start
-            && bucket_start != prev_bucket
-        {
-            let is_open = rule.bucket_start == Some(prev_bucket);
-            if !is_open {
-                if has_samples {
-                    let value = AggregationHandler::finalize(&mut aggr);
-                    samples_out.push(Sample::new(prev_bucket, value));
-                }
-                AggregationHandler::reset(&mut aggr);
-            }
-        }
-
-        current_bucket_start = Some(bucket_start);
-        aggr.update(sample.timestamp, sample.value);
-        has_samples = true;
-    }
-
-    // Handle final (open)  bucket
-    if let Some(bucket) = current_bucket_start {
-        let is_still_open = rule
-            .bucket_start
-            .map(|bs| bucket == bs && end < bs.saturating_add_unsigned(rule.bucket_duration))
-            .unwrap_or(false);
-
-        if is_still_open {
-            return (samples_out, Some(aggr));
-        }
-
-        if has_samples {
-            let value = AggregationHandler::finalize(&mut aggr);
-            samples_out.push(Sample::new(bucket, value));
-        }
-    }
-
-    (samples_out, None)
 }
 
 fn notify_added(ctx: &Context, event: &str, ids: &[SeriesRef]) {
