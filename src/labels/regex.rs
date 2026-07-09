@@ -3,6 +3,8 @@ use regex::{Regex, RegexBuilder};
 
 /// Sets the approximate size limit, in bytes, of the compiled regex.
 const REGEX_SIZE_LIMIT: usize = 16 * 1024;
+/// Sets the approximate size limit, in bytes, of the cache used by the lazy DFA at match time.
+const DFA_SIZE_LIMIT: usize = 16 * 1024;
 
 /// remove_start_end_anchors removes '^' at the start of expr and '$' at the end of the expr.
 pub fn remove_start_end_anchors(expr: &str) -> &str {
@@ -86,16 +88,25 @@ pub fn try_escape_for_repeat_re(re: &str) -> String {
 /// This escapes the opening "{" if it's not followed by a valid repeat pattern (e.g., 4,6).
 ///
 /// Regexes used in PromQL are fully anchored.
+fn build(re: &str) -> Result<Regex, regex::Error> {
+    // flags to match Prometheus' behavior
+    RegexBuilder::new(re)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(DFA_SIZE_LIMIT)
+        .dot_matches_new_line(true)
+        .build()
+}
+
+/// Compiles `re`, retrying with Go-style `{...}` repeats escaped if the first attempt fails to
+/// parse. Both attempts go through `build`, so the size limit applies on the retry too.
+pub(crate) fn build_with_repeat_fallback(re: &str) -> Result<Regex, regex::Error> {
+    build(re).or_else(|_| build(&try_escape_for_repeat_re(re)))
+}
+
 fn try_parse_re(original_re: &str) -> Result<Regex, ParseError> {
     let re = format!("^(?:{original_re})$",);
 
-    // flags to match Prometheus' behavior
-    RegexBuilder::new(&re)
-        .size_limit(REGEX_SIZE_LIMIT)
-        .dot_matches_new_line(true)
-        .build()
-        .or_else(|_| Regex::new(&try_escape_for_repeat_re(&re)))
-        .map_err(|_| ParseError::InvalidRegex(original_re.to_string()))
+    build_with_repeat_fallback(&re).map_err(|_| ParseError::InvalidRegex(original_re.to_string()))
 }
 
 pub fn parse_regex_anchored(value: &str) -> Result<(Regex, &str), ParseError> {
