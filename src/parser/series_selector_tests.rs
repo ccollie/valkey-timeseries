@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_parse_series_selector_multiple_or_conditions() {
         let selector =
-            r#"{job="prometheus",env="prod" or datacenter=~"us-.*" or instance!="localhost"}"#;
+            r#"{job="prometheus",env="prod" or datacenter=~"us-.*" or instance="localhost",role!="standby"}"#;
         let matchers = parse_series_selector(selector).unwrap();
 
         assert!(matchers.get_metric_name().is_none());
@@ -147,7 +147,7 @@ mod tests {
 
             assert_eq!(or_matchers[0].len(), 2);
             assert_eq!(or_matchers[1].len(), 1);
-            assert_eq!(or_matchers[2].len(), 1);
+            assert_eq!(or_matchers[2].len(), 2);
             assert_matcher(&or_matchers[0][0], "job", MatchOp::Equal, "prometheus");
             assert_matcher(&or_matchers[0][1], "env", MatchOp::Equal, "prod");
             assert_matcher(
@@ -159,40 +159,61 @@ mod tests {
             assert_matcher(
                 &or_matchers[2][0],
                 "instance",
-                MatchOp::NotEqual,
+                MatchOp::Equal,
                 "localhost",
             );
+            assert_matcher(&or_matchers[2][1], "role", MatchOp::NotEqual, "standby");
         });
+    }
+
+    #[test]
+    fn test_parse_series_selector_or_branch_without_positive_matcher_is_rejected() {
+        // Each OR branch is evaluated independently, so a branch with only a negative
+        // matcher is just as much a full-keyspace scan as a plain selector would be.
+        let selector = r#"{job="prometheus",env="prod" or instance!="localhost"}"#;
+        let err = parse_series_selector(selector).expect_err("branch has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn test_parse_series_selector_with_regex_not_equal_matchers() {
+        // A selector consisting solely of negative matchers has nothing to intersect against
+        // but the whole keyspace, so it is rejected (mirrors Prometheus).
         let input = r#"{job!~"prom.*",instance!~"local.*"}"#;
-        let matchers = parse_series_selector(input).unwrap();
-
-        assert!(matchers.get_metric_name().is_none());
-
-        with_and_matchers(&matchers, |and_matchers| {
-            assert_eq!(and_matchers.len(), 2);
-            assert_matcher(&and_matchers[0], "job", MatchOp::RegexNotEqual, "prom.*");
-            assert_matcher(
-                &and_matchers[1],
-                "instance",
-                MatchOp::RegexNotEqual,
-                "local.*",
-            );
-        });
+        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn test_parse_series_selector_with_negated_label_matchers() {
+        // Same as above: two negative matchers, no positive matcher.
         let input = r#"{job!="prometheus",instance!="localhost:9090"}"#;
+        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_series_selector_with_negated_label_matchers_and_positive_matcher() {
+        // Pairing a negative matcher with a positive one is still allowed.
+        let input = r#"{job="prometheus",instance!="localhost:9090"}"#;
         let matchers = parse_series_selector(input).unwrap();
 
         assert!(matchers.get_metric_name().is_none());
         with_and_matchers(&matchers, |and_matchers| {
             assert_eq!(and_matchers.len(), 2);
-            assert_matcher(&and_matchers[0], "job", MatchOp::NotEqual, "prometheus");
+            assert_matcher(&and_matchers[0], "job", MatchOp::Equal, "prometheus");
             assert_matcher(
                 &and_matchers[1],
                 "instance",
@@ -343,13 +364,22 @@ mod tests {
 
     #[test]
     fn redis_ts_selector_not_equal_with_lists() {
+        // A bare NotEqual-with-list selector has no positive matcher and is rejected.
         let input = "flavor!=(original,cajun,\"extra spicy\")";
+        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
+
+        let input = "{size=(small,medium,large),flavor!=(original,cajun,\"extra spicy\")}";
         let result = parse_series_selector(input).unwrap();
 
         with_and_matchers(&result, |matchers| {
-            assert_eq!(matchers.len(), 1);
+            assert_eq!(matchers.len(), 2);
 
-            let matcher = &matchers[0];
+            let matcher = &matchers[1];
             assert_list_matcher(
                 matcher,
                 "flavor",
@@ -379,13 +409,22 @@ mod tests {
 
     #[test]
     fn prometheus_selector_not_starts_with_with_lists() {
+        // A bare NotStartsWith-with-list selector has no positive matcher and is rejected.
         let input = r#"{service^~(api,worker)}"#;
+        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
+
+        let input = r#"{env="prod",service^~(api,worker)}"#;
         let result = parse_series_selector(input).unwrap();
 
         with_and_matchers(&result, |matchers| {
-            assert_eq!(matchers.len(), 1);
+            assert_eq!(matchers.len(), 2);
 
-            let matcher = &matchers[0];
+            let matcher = &matchers[1];
             assert_list_matcher(
                 matcher,
                 "service",
@@ -408,16 +447,27 @@ mod tests {
     }
 
     #[test]
-    fn regex_match_all_selector_normalizes_to_match_all() {
+    fn regex_match_all_selector_normalizes_to_match_all_but_is_rejected() {
+        // `l=~".*"` matches the empty string, so a selector consisting only of such matchers
+        // is just as much a full-keyspace scan as `l!="nonexistent"` and is rejected for the
+        // same reason.
         let input = r#"{service=~".*", instance=~"^.*$"}"#;
+        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
+
+        let input = r#"{job="x", service=~".*", instance=~"^.*$"}"#;
         let result = parse_series_selector(input).unwrap();
 
         with_and_matchers(&result, |matchers| {
-            assert_eq!(matchers.len(), 2);
-            assert_eq!(matchers[0].label, "service");
-            assert!(matches!(matchers[0].matcher, PredicateMatch::MatchAll));
-            assert_eq!(matchers[1].label, "instance");
+            assert_eq!(matchers.len(), 3);
+            assert_eq!(matchers[1].label, "service");
             assert!(matches!(matchers[1].matcher, PredicateMatch::MatchAll));
+            assert_eq!(matchers[2].label, "instance");
+            assert!(matches!(matchers[2].matcher, PredicateMatch::MatchAll));
         });
     }
 
@@ -535,7 +585,7 @@ mod tests {
     // OR tests
     #[test]
     fn test_parse_or_with_list_matchers() {
-        let input = r#"{a="b", foo!="bar" or size=(small,medium,large) or flavor!=(original,cajun,"extra spicy")}"#;
+        let input = r#"{a="b", foo!="bar" or size=(small,medium,large) or color="red",flavor!=(original,cajun,"extra spicy")}"#;
         let result = parse_series_selector(input).unwrap();
 
         assert!(result.get_metric_name().is_none());
@@ -557,14 +607,26 @@ mod tests {
             );
 
             // Third OR branch
-            assert_eq!(or_matchers[2].len(), 1);
+            assert_eq!(or_matchers[2].len(), 2);
+            assert_contains_matcher(&or_matchers[2], "color", MatchOp::Equal, "red");
             assert_list_matcher(
-                &or_matchers[2][0],
+                &or_matchers[2][1],
                 "flavor",
                 MatchOp::NotEqual,
                 &["original", "cajun", "extra spicy"],
             );
         });
+    }
+
+    #[test]
+    fn test_parse_or_with_list_matchers_branch_without_positive_matcher_is_rejected() {
+        let input = r#"{a="b", foo!="bar" or flavor!=(original,cajun,"extra spicy")}"#;
+        let err = parse_series_selector(input).expect_err("second branch has no positive matcher");
+        assert!(
+            err.to_string()
+                .contains("at least one matcher that does not match the empty string"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
