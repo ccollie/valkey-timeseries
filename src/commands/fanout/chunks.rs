@@ -124,26 +124,33 @@ fn serialize_rows(rows: &[MultiSample]) -> ValkeyResult<Vec<SampleData>> {
 fn deserialize_rows(columns: &[SampleData]) -> ValkeyResult<Vec<MultiSample>> {
     let cols: Vec<Vec<Sample>> = columns
         .iter()
-        .map(|c| deserialize_chunk(c).map(|chunk| chunk.iter().collect::<Vec<_>>()))
+        .enumerate()
+        .map(|(idx, c)| {
+            deserialize_chunk(c)
+                .map(|chunk| chunk.iter().collect::<Vec<_>>())
+                .map_err(|e| ValkeyError::String(format!("{e} (column {idx})")))
+        })
         .collect::<ValkeyResult<_>>()?;
 
     let n = cols.len();
     let len = cols[0].len();
-    if cols[1..].iter().any(|col| col.len() != len) {
-        return Err(ValkeyError::Str(
-            "TSDB: multi-aggregation columns have mismatched lengths",
-        ));
+    if let Some((idx, col)) = cols.iter().enumerate().find(|(_, col)| col.len() != len) {
+        return Err(ValkeyError::String(format!(
+            "TSDB: multi-aggregation columns have mismatched lengths: column {idx} has {} buckets, expected {len} ({n} columns)",
+            col.len()
+        )));
     }
 
     let mut rows = Vec::with_capacity(len);
     for i in 0..len {
         let timestamp = cols[0][i].timestamp;
         let mut values: SmallVec<f64, 4> = SmallVec::with_capacity(n);
-        for col in &cols {
+        for (idx, col) in cols.iter().enumerate() {
             if col[i].timestamp != timestamp {
-                return Err(ValkeyError::Str(
-                    "TSDB: multi-aggregation columns have mismatched timestamps",
-                ));
+                return Err(ValkeyError::String(format!(
+                    "TSDB: multi-aggregation columns have mismatched timestamps: column {idx} has {} at bucket {i}, expected {timestamp} ({n} columns, {len} buckets)",
+                    col[i].timestamp
+                )));
             }
             values.push(col[i].value);
         }
@@ -196,11 +203,13 @@ impl TryFrom<SeriesRangeResponse> for MRangeSeriesResult {
         let key = value.key;
         let group_label_value = Some(value.group_label_value);
         // 1 column => raw/single-aggregation chunk; >= 2 => multi-aggregation
-        // rows; 0 => an empty multi-aggregation series (no buckets).
+        // rows; 0 => an empty multi-aggregation series (no buckets). Decode
+        // failures name the series so triage can locate the owning shard.
+        let with_key = |e: ValkeyError| ValkeyError::String(format!("{e} (series '{key}')"));
         let data = match value.columns.len() {
             0 => SeriesResultData::Rows(Vec::new()),
-            1 => SeriesResultData::Chunk(deserialize_chunk(&value.columns[0])?),
-            _ => SeriesResultData::Rows(deserialize_rows(&value.columns)?),
+            1 => SeriesResultData::Chunk(deserialize_chunk(&value.columns[0]).map_err(with_key)?),
+            _ => SeriesResultData::Rows(deserialize_rows(&value.columns).map_err(with_key)?),
         };
 
         let labels: Vec<Label> = value
@@ -345,9 +354,35 @@ mod tests {
             key: "a".into(),
             group_label_value: "g".into(),
             labels: Vec::new(),
-            columns: vec![short, long],
+            columns: vec![short.clone(), long.clone()],
         };
         let result: Result<MRangeSeriesResult, _> = wire.try_into();
-        assert!(result.is_err());
+        // The rejection names the offending column, both lengths, and the
+        // series, so an incident log pinpoints the payload directly.
+        let msg = result.unwrap_err().to_string();
+        for needle in ["column 1", "2 buckets", "expected 1", "series 'a'"] {
+            assert!(msg.contains(needle), "missing '{needle}' in: {msg}");
+        }
+
+        // Equal lengths but disagreeing timestamps are likewise rejected
+        // with the bucket position and both timestamps.
+        let shifted = serialize_chunk(TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(
+            vec![Sample {
+                timestamp: 7,
+                value: 1.0,
+            }],
+        )))
+        .unwrap();
+        let wire = SeriesRangeResponse {
+            key: "b".into(),
+            group_label_value: "g".into(),
+            labels: Vec::new(),
+            columns: vec![short, shifted],
+        };
+        let result: Result<MRangeSeriesResult, _> = wire.try_into();
+        let msg = result.unwrap_err().to_string();
+        for needle in ["mismatched timestamps", "column 1", "expected 0", "series 'b'"] {
+            assert!(msg.contains(needle), "missing '{needle}' in: {msg}");
+        }
     }
 }

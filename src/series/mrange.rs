@@ -85,9 +85,10 @@ pub(crate) fn process_mrange_group_partials(
     let Some(reducer) = PartialReducer::for_config(&grouping.aggregation) else {
         // The coordinator only sets apply_group_reduce for decomposable
         // reducers; reject rather than silently produce wrong results.
-        return Err(ValkeyError::Str(
-            "TSDB: internal error: reducer does not support partial reduce",
-        ));
+        return Err(ValkeyError::String(format!(
+            "TSDB: internal error: REDUCE {} does not support partial reduce",
+            grouping.aggregation.aggregation_name()
+        )));
     };
 
     let series_guards = series_by_selectors(ctx, &options.filters, None)?;

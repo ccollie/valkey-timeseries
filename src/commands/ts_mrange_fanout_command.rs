@@ -24,7 +24,6 @@ use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
-use crate::common::logging::log_warning;
 
 #[derive(Default)]
 pub struct MRangeFanoutCommand {
@@ -295,9 +294,10 @@ fn compensate_group_partials(
         .as_ref()
         .expect("Grouping options should be present");
     let Some(reducer) = PartialReducer::for_config(&group_options.aggregation) else {
-        return Err(ValkeyError::Str(
-            "TSDB: internal error: reducer does not support partial reduce",
-        ));
+        return Err(ValkeyError::String(format!(
+            "TSDB: internal error: REDUCE {} does not support partial reduce",
+            group_options.aggregation.aggregation_name()
+        )));
     };
 
     let results = series
@@ -399,6 +399,23 @@ fn handle_grouping(
         .collect())
 }
 
+/// Short, bounded rendering of a partial's source keys for error/log context:
+/// enough to identify the owning shard without flooding the message when a
+/// group has many members.
+fn sources_preview(source_keys: &[String]) -> String {
+    const MAX_SHOWN: usize = 3;
+    let mut preview = source_keys
+        .iter()
+        .take(MAX_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(",");
+    if source_keys.len() > MAX_SHOWN {
+        preview.push_str(&format!(",+{} more", source_keys.len() - MAX_SHOWN));
+    }
+    preview
+}
+
 /// Merge and finalize the per-(group, shard) partial states returned under
 /// GROUPBY/REDUCE push-down: per group, merge states with equal bucket
 /// timestamps across shards (column-wise for multi-aggregation), finalize
@@ -412,9 +429,10 @@ fn handle_group_partials(
         .as_ref()
         .expect("Grouping options should be present");
     let Some(reducer) = PartialReducer::for_config(&group_options.aggregation) else {
-        return Err(ValkeyError::Str(
-            "TSDB: internal error: reducer does not support partial reduce",
-        ));
+        return Err(ValkeyError::String(format!(
+            "TSDB: internal error: REDUCE {} does not support partial reduce",
+            group_options.aggregation.aggregation_name()
+        )));
     };
     let kind = reducer.kind();
     // Multi-aggregation buckets carry one state per aggregation column, all
@@ -436,14 +454,21 @@ fn handle_group_partials(
     let mut groups: BTreeMap<String, MergedGroup> = BTreeMap::new();
     for partial in partials {
         // Corrupt-peer defense: states must be row-major with exactly the
-        // column count this query produces.
+        // column count this query produces. The error carries the shape so an
+        // incident log identifies the group and offending payload directly
+        // (reply() logs it verbatim).
         if partial.column_count as usize != columns
             || partial.states.len() != partial.bucket_timestamps.len() * columns
         {
-            log_warning("Invalid group partial state received from peer");
-            return Err(ValkeyError::Str(
-                "TSDB: invalid group partial states received from peer",
-            ));
+            return Err(ValkeyError::String(format!(
+                "TSDB: invalid group partial states from peer: group '{}', column_count {} (expected {}), {} states for {} buckets, sources [{}]",
+                partial.group_label_value,
+                partial.column_count,
+                columns,
+                partial.states.len(),
+                partial.bucket_timestamps.len(),
+                sources_preview(&partial.source_keys),
+            )));
         }
         let (buckets, sources) = groups.entry(partial.group_label_value).or_default();
         sources.extend(partial.source_keys);
@@ -1575,14 +1600,35 @@ mod tests {
 
         // single-aggregation query expects one column, two states
         assert!(handle_group_partials(vec![partial(1, 2)], &options).is_ok());
-        assert!(handle_group_partials(vec![partial(2, 4)], &options).is_err());
         assert!(handle_group_partials(vec![partial(1, 3)], &options).is_err());
+
+        // The rejection names the group and the offending shape for triage.
+        let err = handle_group_partials(vec![partial(2, 4)], &options).unwrap_err();
+        let msg = err.to_string();
+        for needle in [
+            "group 'us'",
+            "column_count 2 (expected 1)",
+            "4 states for 2 buckets",
+            "sources [a]",
+        ] {
+            assert!(msg.contains(needle), "missing '{needle}' in: {msg}");
+        }
 
         // multi query expects one state per column per bucket
         options.range.aggregation = Some(multi_aggregation(100)); // 3 columns
         assert!(handle_group_partials(vec![partial(3, 6)], &options).is_ok());
         assert!(handle_group_partials(vec![partial(1, 2)], &options).is_err());
         assert!(handle_group_partials(vec![partial(3, 5)], &options).is_err());
+    }
+
+    /// sources_preview stays bounded for large groups.
+    #[test]
+    fn test_sources_preview_bounded() {
+        let keys: Vec<String> = (0..10).map(|i| format!("k{i}")).collect();
+        assert_eq!(sources_preview(&keys[..2]), "k0,k1");
+        assert_eq!(sources_preview(&keys[..3]), "k0,k1,k2");
+        assert_eq!(sources_preview(&keys), "k0,k1,k2,+7 more");
+        assert_eq!(sources_preview(&[]), "");
     }
 
     fn tagged(
