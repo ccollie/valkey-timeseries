@@ -1,9 +1,9 @@
 use crate::aggregators::AggregationHandler;
+use crate::aggregators::kahan::KahanSum;
 use crate::common::binop::{ComparisonOperator, op_eq};
-use crate::common::hash::hash_f64;
 use crate::common::rdb::{
-    RdbSerializable, rdb_load_bool, rdb_load_f64, rdb_load_optional_bool, rdb_load_usize,
-    rdb_save_bool, rdb_save_f64, rdb_save_optional_bool, rdb_save_usize,
+    RdbSerializable, rdb_load_bool, rdb_load_optional_bool, rdb_load_usize, rdb_save_bool,
+    rdb_save_optional_bool, rdb_save_usize,
 };
 use crate::series::request_types::ValueComparisonFilter;
 use get_size2::GetSize;
@@ -14,14 +14,14 @@ use valkey_module::ValkeyResult;
 #[derive(Debug, Clone, Copy, GetSize)]
 pub struct ConditionalCountState {
     pub has_samples: bool, // used a bool since sizeof::<Option<f64>>() is 16 bytes instead of 8
-    pub sum: f64,
+    pub sum: KahanSum,
     pub filter: ValueComparisonFilter,
 }
 
 impl Hash for ConditionalCountState {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.filter.hash(state);
-        hash_f64(self.sum, state);
+        self.sum.hash(state);
         self.has_samples.hash(state);
     }
 }
@@ -29,7 +29,10 @@ impl Hash for ConditionalCountState {
 impl PartialEq for ConditionalCountState {
     fn eq(&self, other: &Self) -> bool {
         self.filter == other.filter
-            && op_eq(self.sum, other.sum)
+            // op_eq for its NaN == NaN semantics; compare both parts so
+            // Eq stays consistent with Hash (which covers the full state).
+            && op_eq(self.sum.value(), other.sum.value())
+            && op_eq(self.sum.err(), other.sum.err())
             && self.has_samples == other.has_samples
     }
 }
@@ -37,7 +40,7 @@ impl PartialEq for ConditionalCountState {
 impl Default for ConditionalCountState {
     fn default() -> Self {
         Self {
-            sum: 0.0,
+            sum: KahanSum::new(),
             has_samples: false,
             filter: ValueComparisonFilter::default(),
         }
@@ -47,7 +50,7 @@ impl Default for ConditionalCountState {
 impl ConditionalCountState {
     pub fn new(op: ComparisonOperator, comparand: f64) -> Self {
         Self {
-            sum: 0.0,
+            sum: KahanSum::new(),
             has_samples: false,
             filter: ValueComparisonFilter {
                 operator: op,
@@ -57,7 +60,7 @@ impl ConditionalCountState {
     }
 
     pub fn reset(&mut self) {
-        self.sum = 0.0;
+        self.sum.reset();
         self.has_samples = false;
     }
 
@@ -82,18 +85,18 @@ impl ConditionalCountState {
             return f64::NAN;
         }
 
-        self.sum
+        self.sum.value()
     }
 
     pub fn save_to_rdb(&self, rdb: *mut RedisModuleIO) {
         self.filter.save_to_rdb(rdb);
-        rdb_save_f64(rdb, self.sum);
+        self.sum.rdb_save(rdb);
         rdb_save_bool(rdb, self.has_samples);
     }
 
     pub fn load_from_rdb(rdb: *mut RedisModuleIO) -> ValkeyResult<Self> {
         let filter = ValueComparisonFilter::load_from_rdb(rdb)?;
-        let sum = rdb_load_f64(rdb)?;
+        let sum = KahanSum::rdb_load(rdb)?;
         let has_samples = rdb_load_bool(rdb)?;
 
         Ok(Self {
