@@ -14,6 +14,7 @@
 //! back to per-series bucket transport (Phase 1).
 
 use crate::aggregators::AggregationType;
+use crate::aggregators::kahan::KahanSum;
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::series::request_types::{AggregatorConfig, ValueComparisonFilter};
 use smallvec::SmallVec;
@@ -39,7 +40,7 @@ pub enum PartialReducerKind {
     Range,
     /// acc1 = sum; finalize sum / count
     Avg,
-    /// acc1 = sum, acc2 = sum of squares; finalize per variant
+    /// acc1 = running mean, acc2 = M2 (Welford); finalize per variant
     StdP,
     StdS,
     VarP,
@@ -58,6 +59,11 @@ pub struct PartialState {
     pub count: u64,
     pub acc1: f64,
     pub acc2: f64,
+    /// Neumaier compensation for `acc1` (Sum/SumIf/Avg only, 0.0 elsewhere).
+    /// Folded into the finalized value; carried separately so merges stay
+    /// compensated. A partial without one (e.g. an older peer) is exactly
+    /// "a sum with no accumulated error".
+    pub acc1_c: f64,
     pub ts: Timestamp,
 }
 
@@ -154,7 +160,9 @@ impl PartialReducer {
         s.count += 1;
         match self.kind {
             PartialReducerKind::Sum | PartialReducerKind::SumIf | PartialReducerKind::Avg => {
-                s.acc1 += value
+                let mut sum = KahanSum::from_parts(s.acc1, s.acc1_c);
+                sum += value;
+                (s.acc1, s.acc1_c) = sum.into_parts();
             }
             PartialReducerKind::Count | PartialReducerKind::CountIf => {}
             PartialReducerKind::Min => {
@@ -184,8 +192,13 @@ impl PartialReducer {
             | PartialReducerKind::StdS
             | PartialReducerKind::VarP
             | PartialReducerKind::VarS => {
-                s.acc1 += value;
-                s.acc2 += value * value;
+                // Welford: acc1 = running mean, acc2 = M2. Unlike the
+                // sum-of-squares form this cannot cancel catastrophically and
+                // M2 is nonnegative by construction. `count` was already
+                // incremented above.
+                let delta = value - s.acc1;
+                s.acc1 += delta / s.count as f64;
+                s.acc2 += delta * (value - s.acc1);
             }
             PartialReducerKind::First => {
                 if first_value || ts < s.ts {
@@ -218,10 +231,13 @@ impl PartialReducer {
             *into = *other;
             return;
         }
+        let (n_a, n_b) = (into.count as f64, other.count as f64);
         into.count += other.count;
         match kind {
             PartialReducerKind::Sum | PartialReducerKind::SumIf | PartialReducerKind::Avg => {
-                into.acc1 += other.acc1
+                let mut sum = KahanSum::from_parts(into.acc1, into.acc1_c);
+                sum += KahanSum::from_parts(other.acc1, other.acc1_c);
+                (into.acc1, into.acc1_c) = sum.into_parts();
             }
             PartialReducerKind::Count | PartialReducerKind::CountIf => {}
             PartialReducerKind::Min => into.acc1 = into.acc1.min(other.acc1),
@@ -234,8 +250,11 @@ impl PartialReducer {
             | PartialReducerKind::StdS
             | PartialReducerKind::VarP
             | PartialReducerKind::VarS => {
-                into.acc1 += other.acc1;
-                into.acc2 += other.acc2;
+                // Chan's parallel combine of two Welford states.
+                let n = n_a + n_b;
+                let delta = other.acc1 - into.acc1;
+                into.acc1 += delta * (n_b / n);
+                into.acc2 += other.acc2 + delta * delta * (n_a * n_b / n);
             }
             PartialReducerKind::First => {
                 if other.ts < into.ts {
@@ -265,40 +284,36 @@ impl PartialReducer {
             };
         }
         let n = state.count as f64;
-        // Same formula as AggStd::variance() in handlers.rs, so push-down
-        // results match the single-node dispersion aggregators.
-        let variance_numer = || {
-            if state.count <= 1 {
-                0.0
-            } else {
-                let avg = state.acc1 / n;
-                state.acc2 - 2.0 * state.acc1 * avg + avg * avg * n
-            }
-        };
         match kind {
-            PartialReducerKind::Sum
-            | PartialReducerKind::SumIf
-            | PartialReducerKind::Min
+            // The Neumaier result is running sum + accumulated compensation.
+            PartialReducerKind::Sum | PartialReducerKind::SumIf => state.acc1 + state.acc1_c,
+            // Selector kinds return acc1 untouched (acc1_c is always 0.0
+            // here, and e.g. min must preserve a -0.0).
+            PartialReducerKind::Min
             | PartialReducerKind::Max
             | PartialReducerKind::First
             | PartialReducerKind::Last => state.acc1,
             PartialReducerKind::Count | PartialReducerKind::CountIf => n,
             PartialReducerKind::Range => state.acc2 - state.acc1,
-            PartialReducerKind::Avg => state.acc1 / n,
-            PartialReducerKind::VarP => variance_numer() / n,
+            PartialReducerKind::Avg => (state.acc1 + state.acc1_c) / n,
+            // acc2 is the Welford M2 — the same statistic AggStd
+            // (handlers.rs) accumulates, so push-down matches the
+            // single-node dispersion aggregators. M2 is 0.0 for count == 1
+            // by construction.
+            PartialReducerKind::VarP => state.acc2 / n,
             PartialReducerKind::VarS => {
                 if state.count == 1 {
                     0.0
                 } else {
-                    variance_numer() / (n - 1.0)
+                    state.acc2 / (n - 1.0)
                 }
             }
-            PartialReducerKind::StdP => (variance_numer() / n).sqrt(),
+            PartialReducerKind::StdP => (state.acc2 / n).sqrt(),
             PartialReducerKind::StdS => {
                 if state.count == 1 {
                     0.0
                 } else {
-                    (variance_numer() / (n - 1.0)).sqrt()
+                    (state.acc2 / (n - 1.0)).sqrt()
                 }
             }
         }
@@ -548,6 +563,61 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Naive per-shard sums are 1e16 and -1e16, so an uncompensated merge
+    /// finalizes to 0.0; the Neumaier compensation carried in `acc1_c`
+    /// recovers the exact 2.0.
+    #[test]
+    fn test_sum_partials_survive_catastrophic_cancellation() {
+        const TS: Timestamp = 1;
+        let config = AggregatorConfig::new(AggregationType::Sum, None).unwrap();
+        let template = PartialReducer::for_config(&config).unwrap();
+        let kind = template.kind();
+
+        let shards: [&[f64]; 2] = [&[1e16, 1.0], &[1.0, -1e16]];
+        let mut merged = PartialState::default();
+        for part in shards {
+            let mut reducer = template.clone();
+            for &value in part {
+                reducer.update(TS, value);
+            }
+            PartialReducer::merge(kind, &mut merged, &reducer.take_state());
+        }
+        assert_eq!(PartialReducer::finalize(kind, &merged), 2.0);
+    }
+
+    /// Tiny variance around a huge mean: the sum-of-squares formula loses the
+    /// variance entirely in Σx² rounding (ulp at 1e18 is 128, the M2 is 2);
+    /// Welford accumulation + Chan merge keep it exact.
+    #[test]
+    fn test_variance_partials_survive_large_offset() {
+        const TS: Timestamp = 1;
+        for (ty, expected) in [
+            (AggregationType::VarP, 2.0 / 3.0),
+            (AggregationType::VarS, 1.0),
+            (AggregationType::StdP, (2.0f64 / 3.0).sqrt()),
+            (AggregationType::StdS, 1.0),
+        ] {
+            let config = AggregatorConfig::new(ty, None).unwrap();
+            let template = PartialReducer::for_config(&config).unwrap();
+            let kind = template.kind();
+
+            let shards: [&[f64]; 2] = [&[1e9, 1e9 + 1.0], &[1e9 + 2.0]];
+            let mut merged = PartialState::default();
+            for part in shards {
+                let mut reducer = template.clone();
+                for &value in part {
+                    reducer.update(TS, value);
+                }
+                PartialReducer::merge(kind, &mut merged, &reducer.take_state());
+            }
+            assert_value_eq(
+                PartialReducer::finalize(kind, &merged),
+                expected,
+                &format!("{ty} around large offset"),
+            );
         }
     }
 

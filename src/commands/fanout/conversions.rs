@@ -769,6 +769,7 @@ impl From<&ReducePartialState> for PartialState {
             count: value.count,
             acc1: value.acc1,
             acc2: value.acc2,
+            acc1_c: value.acc1_compensation,
             ts: value.ts,
         }
     }
@@ -780,6 +781,7 @@ impl From<PartialState> for ReducePartialState {
             count: value.count,
             acc1: value.acc1,
             acc2: value.acc2,
+            acc1_compensation: value.acc1_c,
             ts: value.ts,
         }
     }

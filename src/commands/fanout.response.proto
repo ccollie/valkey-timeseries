@@ -61,13 +61,18 @@ message MDelResponse {
 
 // Reducer state for one bucket; field meaning depends on the reducer type
 // (carried in the request). count is the number of accepted (non-rejected)
-// values; acc1/acc2 hold sums, extrema or the selected value; ts is the
-// contributing sample timestamp for first/last.
+// values; acc1/acc2 hold sums, extrema, the selected value, or (for the
+// std/var family) the Welford running mean and M2; ts is the contributing
+// sample timestamp for first/last.
 message ReducePartialState {
   uint64 count = 1;
   double acc1 = 2;
   double acc2 = 3;
   int64 ts = 4;
+  // Neumaier compensation for acc1 (sum/sumif/avg reducers). Absent decodes
+  // as 0.0 — "a sum carrying no accumulated error" — which the compensated
+  // merge handles exactly.
+  double acc1_compensation = 5;
 }
 
 // One (group, shard) partial series, ascending timestamps. `states` is
