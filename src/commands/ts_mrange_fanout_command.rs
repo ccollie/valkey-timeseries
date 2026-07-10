@@ -262,9 +262,13 @@ fn normalize_response_series(
                 return Ok(response);
             }
             let mut result = MRangeSeriesResult::try_from(response)?;
-            let samples: Vec<Sample> =
-                create_sample_iterator_adapter(result.data.sample_iter(), &shard_range, &None, false)
-                    .collect();
+            let samples: Vec<Sample> = create_sample_iterator_adapter(
+                result.data.sample_iter(),
+                &shard_range,
+                &None,
+                false,
+            )
+            .collect();
             result.data = SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
                 UncompressedChunk::from_vec(samples),
             ));
@@ -1503,11 +1507,7 @@ mod tests {
             group_label_value: "us".into(),
             source_keys: members.iter().map(|(key, _)| key.to_string()).collect(),
             bucket_timestamps,
-            states: buckets
-                .into_iter()
-                .flatten()
-                .map(Into::into)
-                .collect(),
+            states: buckets.into_iter().flatten().map(Into::into).collect(),
             column_count: columns as u32,
         }
     }
@@ -1594,7 +1594,9 @@ mod tests {
             group_label_value: "us".into(),
             source_keys: vec!["a".into()],
             bucket_timestamps: vec![0, 100],
-            states: (0..states).map(|_| PartialState::default().into()).collect(),
+            states: (0..states)
+                .map(|_| PartialState::default().into())
+                .collect(),
             column_count,
         };
 
@@ -1619,6 +1621,132 @@ mod tests {
         assert!(handle_group_partials(vec![partial(3, 6)], &options).is_ok());
         assert!(handle_group_partials(vec![partial(1, 2)], &options).is_err());
         assert!(handle_group_partials(vec![partial(3, 5)], &options).is_err());
+    }
+
+    fn n_column_aggregation(bucket_duration: u64, n: usize) -> AggregationOptions {
+        AggregationOptions {
+            aggregations: (0..n)
+                .map(|_| AggregatorConfig::new(AggregationType::Avg, None).unwrap())
+                .collect(),
+            bucket_duration,
+            timestamp_output: Default::default(),
+            alignment: Default::default(),
+            report_empty: false,
+        }
+    }
+
+    fn partial_with(
+        bucket_count: usize,
+        column_count: u32,
+        state_count: usize,
+    ) -> GroupPartialSeries {
+        GroupPartialSeries {
+            group_label_value: "us".into(),
+            source_keys: vec!["a".into()],
+            bucket_timestamps: (0..bucket_count).map(|i| i as i64 * 100).collect(),
+            states: (0..state_count)
+                .map(|_| PartialState::default().into())
+                .collect(),
+            column_count,
+        }
+    }
+
+    /// Randomized fuzz over the corrupt-peer shape check: a peer that declares
+    /// a `column_count` disagreeing with the query's own aggregation shape
+    /// (single- or multi-aggregation, self-consistent state count for its own
+    /// declared count) must always be rejected, never misdecoded.
+    #[test]
+    fn test_group_partials_column_count_mismatch_randomized() {
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC011_7C0D);
+        for _ in 0..200 {
+            let expected_columns = rng.random_range(1..5);
+            let mut options = mrange_options(0, 1000);
+            options.grouping = Some(RangeGroupingOptions {
+                aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+                group_label: "region".into(),
+            });
+            if expected_columns > 1 {
+                options.range.aggregation = Some(n_column_aggregation(100, expected_columns));
+            }
+
+            let bucket_count = rng.random_range(1..5);
+            // Declared column_count disagrees with what the query expects,
+            // but the state count is internally consistent with what was
+            // declared, isolating the column_count check itself.
+            let bogus_column_count = loop {
+                let c = rng.random_range(1..6);
+                if c != expected_columns as u32 {
+                    break c;
+                }
+            };
+            let partial = partial_with(
+                bucket_count,
+                bogus_column_count,
+                bucket_count * bogus_column_count as usize,
+            );
+
+            let result = handle_group_partials(vec![partial], &options);
+            let err = match result {
+                Ok(_) => panic!(
+                    "expected rejection: expected_columns={expected_columns} bogus_column_count={bogus_column_count} bucket_count={bucket_count}"
+                ),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err.contains(&format!(
+                    "column_count {bogus_column_count} (expected {expected_columns})"
+                )),
+                "expected_columns={expected_columns} bogus_column_count={bogus_column_count} bucket_count={bucket_count}: {err}"
+            );
+        }
+    }
+
+    /// Randomized fuzz over the corrupt-peer shape check: a peer that reports
+    /// the correct `column_count` but appends extra trailing states beyond
+    /// `buckets * columns` (e.g. a partial row from a truncated/duplicated
+    /// send) must be rejected rather than silently ignored or misaligned.
+    #[test]
+    fn test_group_partials_extra_trailing_states_randomized() {
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x7EA1_1EAD);
+        for _ in 0..200 {
+            let expected_columns = rng.random_range(1..5);
+            let mut options = mrange_options(0, 1000);
+            options.grouping = Some(RangeGroupingOptions {
+                aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+                group_label: "region".into(),
+            });
+            if expected_columns > 1 {
+                options.range.aggregation = Some(n_column_aggregation(100, expected_columns));
+            }
+
+            let bucket_count = rng.random_range(1..5);
+            let exact_state_count = bucket_count * expected_columns;
+            let extra = rng.random_range(1..6);
+            let partial = partial_with(
+                bucket_count,
+                expected_columns as u32,
+                exact_state_count + extra,
+            );
+
+            let result = handle_group_partials(vec![partial], &options);
+            let err = match result {
+                Ok(_) => panic!(
+                    "expected rejection: expected_columns={expected_columns} bucket_count={bucket_count} extra={extra}"
+                ),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                err.contains(&format!(
+                    "{} states for {bucket_count} buckets",
+                    exact_state_count + extra
+                )),
+                "expected_columns={expected_columns} bucket_count={bucket_count} extra={extra}: {err}"
+            );
+        }
     }
 
     /// sources_preview stays bounded for large groups.
@@ -1828,7 +1956,10 @@ mod tests {
         let mut command = MRangeFanoutCommand::new(options.clone());
         let mixed_bucketed = command
             .process_responses(
-                vec![(shard_multi_response("c", Some("us"), &raw_c, &options), true)],
+                vec![(
+                    shard_multi_response("c", Some("us"), &raw_c, &options),
+                    true,
+                )],
                 vec![shard_multi_group_partial(
                     &[("a", &raw_a), ("b", &raw_b)],
                     &options,

@@ -381,8 +381,128 @@ mod tests {
         };
         let result: Result<MRangeSeriesResult, _> = wire.try_into();
         let msg = result.unwrap_err().to_string();
-        for needle in ["mismatched timestamps", "column 1", "expected 0", "series 'b'"] {
+        for needle in [
+            "mismatched timestamps",
+            "column 1",
+            "expected 0",
+            "series 'b'",
+        ] {
             assert!(msg.contains(needle), "missing '{needle}' in: {msg}");
+        }
+    }
+
+    fn chunk_of(samples: Vec<Sample>) -> SampleData {
+        serialize_chunk(TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(
+            samples,
+        )))
+        .unwrap()
+    }
+
+    fn wire_with_columns(columns: Vec<SampleData>) -> SeriesRangeResponse {
+        SeriesRangeResponse {
+            key: "a".into(),
+            group_label_value: "g".into(),
+            labels: Vec::new(),
+            columns,
+        }
+    }
+
+    /// Randomized fuzz over `deserialize_rows`'s ragged-column defense: shards
+    /// that are corrupt, buggy, or from an incompatible version can send
+    /// aggregation columns whose bucket counts disagree. Every generated
+    /// mismatch must be rejected, never silently truncated/zipped.
+    #[test]
+    fn ragged_columns_rejected_randomized() {
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC01A_D5EE);
+        for _ in 0..200 {
+            let num_columns = rng.random_range(2..6);
+            let base_len = rng.random_range(1..8);
+            let odd_column = rng.random_range(0..num_columns);
+            // Force a real mismatch: the odd column's length differs from
+            // every other column's length.
+            let odd_len = base_len + rng.random_range(1..5);
+
+            let columns: Vec<SampleData> = (0..num_columns)
+                .map(|c| {
+                    let len = if c == odd_column { odd_len } else { base_len };
+                    let samples = (0..len)
+                        .map(|i| Sample {
+                            timestamp: i as i64 * 60,
+                            value: rng.random(),
+                        })
+                        .collect();
+                    chunk_of(samples)
+                })
+                .collect();
+
+            let wire = wire_with_columns(columns);
+            let result: Result<MRangeSeriesResult, _> = wire.try_into();
+            let msg = match result {
+                Ok(_) => panic!(
+                    "expected rejection: num_columns={num_columns} base_len={base_len} odd_column={odd_column} odd_len={odd_len}"
+                ),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                msg.contains("mismatched lengths"),
+                "num_columns={num_columns} base_len={base_len} odd_column={odd_column} odd_len={odd_len}: {msg}"
+            );
+        }
+    }
+
+    /// Randomized fuzz over `deserialize_rows`'s timestamp-alignment defense:
+    /// columns can agree on length while one bucket in one column drifts to a
+    /// different timestamp than its peers. This must be rejected rather than
+    /// silently paired with the wrong bucket.
+    #[test]
+    fn column_timestamp_drift_rejected_randomized() {
+        use rand::{RngExt, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xD21F_7A5E);
+        for _ in 0..200 {
+            let num_columns = rng.random_range(2..6);
+            let len = rng.random_range(2..8);
+            let drift_column = rng.random_range(0..num_columns);
+            let drift_bucket = rng.random_range(0..len);
+            let drift_delta = loop {
+                let d = rng.random_range(-30i64..=30);
+                if d != 0 {
+                    break d;
+                }
+            };
+
+            let columns: Vec<SampleData> = (0..num_columns)
+                .map(|c| {
+                    let samples = (0..len)
+                        .map(|i| {
+                            let mut timestamp = i as i64 * 60;
+                            if c == drift_column && i == drift_bucket {
+                                timestamp += drift_delta;
+                            }
+                            Sample {
+                                timestamp,
+                                value: rng.random(),
+                            }
+                        })
+                        .collect();
+                    chunk_of(samples)
+                })
+                .collect();
+
+            let wire = wire_with_columns(columns);
+            let result: Result<MRangeSeriesResult, _> = wire.try_into();
+            let msg = match result {
+                Ok(_) => panic!(
+                    "expected rejection: num_columns={num_columns} len={len} drift_column={drift_column} drift_bucket={drift_bucket} drift_delta={drift_delta}"
+                ),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                msg.contains("mismatched timestamps"),
+                "num_columns={num_columns} len={len} drift_column={drift_column} drift_bucket={drift_bucket} drift_delta={drift_delta}: {msg}"
+            );
         }
     }
 }
