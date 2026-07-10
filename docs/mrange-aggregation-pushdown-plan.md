@@ -470,9 +470,10 @@ coordinator aggregates/pre-reduces that shard's data itself before merging. Mixe
 clusters therefore degrade gracefully (extra coordinator CPU and raw transfer for the old
 shard's slice only) instead of corrupting results, and the former operational guidance
 (disable `ts-fanout-aggregation-pushdown` across rolling upgrades) is obsolete; the config
-remains as a diagnostic/emergency toggle. `MultiRangeRequest.required_features` (field 10)
-additionally lets future requests demand semantics the coordinator cannot compensate for,
-which shards reject explicitly rather than mis-serve.
+remains as a diagnostic/emergency toggle. The fanout message header's `required_features`
+field (formerly `reserved`) additionally lets future messages demand semantics the receiver
+cannot compensate for, which nodes reject explicitly rather than mis-serve — for every
+fanout command, not just MRANGE.
 
 `FANOUT_MESSAGE_VERSION` is not bumped — field-level proto evolution is sufficient, and
 the header version has no negotiation mechanism to build on.

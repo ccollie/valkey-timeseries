@@ -26,24 +26,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
 use crate::common::logging::log_warning;
 
-/// Feature bits of `MultiRangeRequest.required_features` this node supports.
-/// None are defined yet: bits are allocated only for future request semantics
-/// the coordinator cannot compensate for per response (see
-/// docs/fanout-compatibility-handshake.md).
-const SUPPORTED_REQUEST_FEATURES: u32 = 0;
-
-/// Shard-side guard for `required_features`: reject requests that demand
-/// semantics this node does not implement, instead of silently mis-serving
-/// them. Coordinators may retry without optional features on this error.
-fn validate_required_features(required_features: u32) -> ValkeyResult<()> {
-    if required_features & !SUPPORTED_REQUEST_FEATURES != 0 {
-        return Err(ValkeyError::Str(
-            crate::error_consts::UNSUPPORTED_FANOUT_FEATURES,
-        ));
-    }
-    Ok(())
-}
-
 #[derive(Default)]
 pub struct MRangeFanoutCommand {
     options: MRangeOptions,
@@ -111,7 +93,6 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         ctx: &Context,
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
-        validate_required_features(req.required_features)?;
         let apply_aggregation = req.apply_aggregation;
         let apply_group_reduce = req.apply_group_reduce;
         let apply_count = req.apply_count;
@@ -1819,23 +1800,6 @@ mod tests {
             result_rows(&reference[0]),
             result_rows(&mixed_bucketed[0]),
             "bucketed-only peer compensated"
-        );
-    }
-
-    /// required_features guard: no bits are defined today, so any set bit is
-    /// rejected shard-side, and the coordinator never demands features.
-    #[test]
-    fn test_required_features_validation() {
-        assert!(validate_required_features(0).is_ok());
-        assert!(validate_required_features(1).is_err());
-        assert!(validate_required_features(1 << 31).is_err());
-
-        let options = mrange_options(0, 1000);
-        assert_eq!(
-            MRangeFanoutCommand::new(options)
-                .generate_request()
-                .required_features,
-            0
         );
     }
 

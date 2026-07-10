@@ -290,14 +290,4 @@ message MultiRangeRequest {
   // from is_reverse). The coordinator always re-applies COUNT, so this is
   // purely a transfer optimization and carries no version hazard.
   bool apply_count = 9;
-  // Forward-compatibility guard (docs/fanout-compatibility-handshake.md):
-  // feature bits the shard MUST understand to process this request. A shard
-  // seeing bits it does not support rejects the request instead of silently
-  // mis-serving it; the coordinator can then retry without optional features.
-  // Bits are allocated only for future semantics the coordinator cannot
-  // compensate for; the apply_* flags above deliberately have NO bits — their
-  // responses are self-describing via the applied_* echo in
-  // MultiRangeResponse. Shards older than this field ignore it entirely, so
-  // it protects boundaries introduced after it, not before.
-  uint32 required_features = 10;
 }

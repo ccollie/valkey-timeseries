@@ -135,7 +135,12 @@ column-wise with the same `REDUCE` type.
 
 `COUNT` is likewise applied shard-side as a head/tail pre-filter bounding transfer to `O(count)` rows per series (or
 per group partial) — most valuable for `TS.MREVRANGE … COUNT n` ("last n points") queries. The coordinator always
-re-applies `COUNT` as the final authority, so unlike aggregation push-down this carries **no** mixed-version hazard.
+re-applies `COUNT` as the final authority.
+
+Mixed-version clusters are handled by a compatibility handshake (`docs/fanout-compatibility-handshake.md`): shards
+echo which push-down flags they honored, and the coordinator compensates per response — data from a peer that did not
+apply push-down is aggregated and pre-reduced coordinator-side before merging. Rolling upgrades therefore need no
+special configuration; a lagging node only costs extra transfer and coordinator CPU for its own slice of each query.
 
 Push-down is controlled by the boolean config `ts-fanout-aggregation-pushdown` (default `yes`, changeable at runtime
 via `CONFIG SET`). Only the coordinator consults it; shards obey the request.
