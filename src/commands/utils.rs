@@ -43,7 +43,7 @@ pub fn reply_with_mrange_series_result(ctx: &Context, series: &MRangeSeriesResul
 
     match &series.data {
         SeriesResultData::Chunk(chunk) => reply_with_samples(ctx, chunk.iter()),
-        SeriesResultData::Rows(rows) => reply_with_multi_samples(ctx, rows.iter().cloned()),
+        SeriesResultData::Rows(rows) => reply_with_multi_samples(ctx, rows.iter()),
     }
 }
 

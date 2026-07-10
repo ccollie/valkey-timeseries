@@ -127,13 +127,16 @@ pub fn reply_with_multi_sample<C: IntoRawCtx>(ctx: C, row: &MultiSample) {
     }
 }
 
-pub fn reply_with_multi_samples<C: IntoRawCtx>(ctx: C, rows: impl Iterator<Item = MultiSample>) {
+pub fn reply_with_multi_samples<C: IntoRawCtx, T: std::borrow::Borrow<MultiSample>>(
+    ctx: C,
+    rows: impl Iterator<Item = T>,
+) {
     let raw_ctx = ctx.into_raw();
     reply_with_postponed_array(raw_ctx);
 
     let mut len = 0;
     for row in rows {
-        reply_with_multi_sample(raw_ctx, &row);
+        reply_with_multi_sample(raw_ctx, row.borrow());
         len += 1;
     }
 
