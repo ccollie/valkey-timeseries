@@ -58,6 +58,13 @@ Each bucket then produces one row containing the bucket timestamp followed by on
 aggregator, in the order specified. With a single aggregator the output shape is unchanged
 (`[timestamp, value]`). A `CONDITION` clause applies to every aggregator in the list that accepts
 one (`countif`, `sumif`, `all`, `any`, `none`, `share`, `count`, `sum`); plain aggregators ignore it.
+
+Any list element may instead carry its own inline condition — `aggregator(op value)`, e.g.
+`countif(>5)` — so different aggregators in the same list can use different conditions. An inline
+condition takes precedence over the shared `CONDITION` clause for that element; elements without
+one still fall back to `CONDITION` if present. Example: `AGGREGATION countif(>5),sumif(<=2),avg
+60000` counts samples over 5, sums samples at or under 2, and averages everything — three
+independent conditions (two inline, one implicit "none") in a single clause.
 </details>
 <details open><summary><code>ALIGN align</code></summary> 
 Control bucket alignment:
@@ -79,6 +86,10 @@ Comparison filter for conditional aggregators (e.g., `countif`, `sumif`, `share`
 - `op` is a comparison operator: `>`, `<`, `>=`, `<=`, `==`, or `!=`
 - `value` is the value to compare against
 Only samples satisfying the condition are included in the aggregation.
+
+Instead of (or alongside) this shared clause, an individual list element can carry its own
+condition inline: `aggregator(op value)`, e.g. `countif(>5)`. No spaces are allowed inside the
+parentheses since it is a single argument token.
 </details>
 
 ### Aggregation

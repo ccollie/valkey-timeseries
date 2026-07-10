@@ -67,6 +67,12 @@ TS.REVRANGE key fromTimestamp toTimestamp
 | `EMPTY`           | (none)                      | Include empty buckets (buckets with no samples).                                                                          |
 | `CONDITION`       | `operator value`            | Comparison filter used by conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`).                    |
 
+Any element of the `aggregator` list can instead carry its own condition inline —
+`aggregator(operator value)`, e.g. `countif(>5)` — letting different aggregators in the same list
+use different conditions. An inline condition takes precedence over the shared `CONDITION` clause
+for that element; elements without one still fall back to `CONDITION` if present. Example:
+`AGGREGATION countif(>5),sumif(<=2) 60000`.
+
 ##### `bucketDuration` format
 
 `bucketDuration` is a duration:

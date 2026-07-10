@@ -180,6 +180,15 @@ Filter samples before aggregation based on a comparison condition.
 AGGREGATION share 1h CONDITION > 20.0
 ```
 
+An individual element of the `aggregator` list may instead carry its own condition inline —
+`aggregator(op value)`, e.g. `countif(>5)` — so different aggregators in the same list can filter
+on different conditions. An inline condition takes precedence over the shared `CONDITION` clause
+for that element; elements without one still fall back to `CONDITION` if present.
+
+```
+AGGREGATION countif(>5),sumif(<=2),avg 1h
+```
+
 #### BUCKETTIMESTAMP bt
 
 Specify which timestamp to use for aggregated buckets.
