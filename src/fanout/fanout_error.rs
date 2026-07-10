@@ -45,6 +45,12 @@ pub enum ErrorKind {
     /// fails fast, and the requester invalidates its cluster map.
     ClusterMapMismatch = 9,
 
+    /// The message header demanded envelope features (required_features bits)
+    /// this node does not support. Rejecting explicitly lets a newer peer fail
+    /// fast (or degrade) instead of this node silently mis-processing the
+    /// message. See docs/fanout-compatibility-handshake.md.
+    UnsupportedFeatures = 10,
+
     Custom = 255,
 }
 
@@ -60,6 +66,8 @@ pub(super) const INTERNAL_ERROR: &str = "Internal error";
 pub(super) const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
 pub(super) const CLUSTER_MAP_MISMATCH_ERROR: &str =
     "A multi-shard command failed because the cluster topology has changed";
+pub(super) const UNSUPPORTED_FEATURES_ERROR: &str =
+    "A multi-shard command failed because a peer requires fanout features this node does not support";
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
@@ -74,6 +82,7 @@ impl ErrorKind {
             Self::NodeUnreachable => NODE_UNREACHABLE_ERROR,
             Self::Internal => INTERNAL_ERROR,
             Self::ClusterMapMismatch => CLUSTER_MAP_MISMATCH_ERROR,
+            Self::UnsupportedFeatures => UNSUPPORTED_FEATURES_ERROR,
             Self::Custom => "Custom error",
         }
     }
@@ -106,6 +115,10 @@ impl FanoutError {
 
     pub fn cluster_map_mismatch() -> Self {
         ErrorKind::ClusterMapMismatch.into()
+    }
+
+    pub fn unsupported_features() -> Self {
+        ErrorKind::UnsupportedFeatures.into()
     }
 
     pub fn custom<S: Into<String>>(description: S) -> Self {
@@ -163,6 +176,7 @@ impl TryFrom<u8> for ErrorKind {
             7 => Ok(ErrorKind::BadRequestId),
             8 => Ok(ErrorKind::Internal),
             9 => Ok(ErrorKind::ClusterMapMismatch),
+            10 => Ok(ErrorKind::UnsupportedFeatures),
             255 => Ok(ErrorKind::Custom),
             _ => {
                 let msg = format!("Invalid error kind: {value}");
@@ -229,6 +243,7 @@ fn convert_from_string(err: &str) -> FanoutError {
         PERMISSIONS_ERROR => ErrorKind::Permissions.into(),
         INTERNAL_ERROR => ErrorKind::Internal.into(),
         CLUSTER_MAP_MISMATCH_ERROR => ErrorKind::ClusterMapMismatch.into(),
+        UNSUPPORTED_FEATURES_ERROR => ErrorKind::UnsupportedFeatures.into(),
         NODE_UNREACHABLE_ERROR => ErrorKind::NodeUnreachable.into(),
         UNKNOWN_MESSAGE_TYPE_ERROR => ErrorKind::UnknownMessageType.into(),
         SERIALIZATION_ERROR => FanoutError::serialization(String::new()),
@@ -351,6 +366,7 @@ mod tests {
             ErrorKind::BadRequestId,
             ErrorKind::Internal,
             ErrorKind::ClusterMapMismatch,
+            ErrorKind::UnsupportedFeatures,
             ErrorKind::Custom,
         ];
 
@@ -501,6 +517,7 @@ mod tests {
         assert_eq!(ErrorKind::BadRequestId as u8, 7);
         assert_eq!(ErrorKind::Internal as u8, 8);
         assert_eq!(ErrorKind::ClusterMapMismatch as u8, 9);
+        assert_eq!(ErrorKind::UnsupportedFeatures as u8, 10);
         assert_eq!(ErrorKind::Custom as u8, 255);
     }
 }

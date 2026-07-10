@@ -47,8 +47,6 @@ pub const INVALID_AGGREGATION_LIST: &str = "TSDB: invalid aggregation list";
 pub const INVALID_AGGREGATION_CONDITION: &str = "TSDB: invalid aggregation condition";
 pub const MULTI_AGGREGATION_UNSUPPORTED: &str =
     "TSDB: multiple aggregations are not supported for TS.JOIN";
-pub const UNSUPPORTED_FANOUT_FEATURES: &str =
-    "TSDB: request requires fanout features this node does not support";
 pub const INVALID_START_TIMESTAMP: &str = "TSDB: invalid start timestamp.";
 pub const INVALID_END_TIMESTAMP: &str = "TSDB: invalid end timestamp.";
 pub const NEGATIVE_TIMESTAMP: &str = "TSDB: timestamps cannot be negative.";

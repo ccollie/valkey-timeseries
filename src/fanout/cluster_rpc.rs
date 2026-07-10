@@ -1,5 +1,7 @@
 use super::fanout_error::{ErrorKind, FanoutError, NO_CLUSTER_NODES_AVAILABLE};
-use super::fanout_message::{FanoutMessage, FanoutMessageHeader, serialize_request_message};
+use super::fanout_message::{
+    FanoutMessage, FanoutMessageHeader, has_unsupported_features, serialize_request_message,
+};
 use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
@@ -508,6 +510,22 @@ extern "C" fn on_request_received(
         return;
     };
 
+    // Feature gate: a newer peer may demand envelope features via the header;
+    // reject explicitly (addressable, fast) rather than mis-process the
+    // request. See docs/fanout-compatibility-handshake.md.
+    if has_unsupported_features(message.required_features) {
+        let e = FanoutError::unsupported_features();
+        send_error_response(&ctx, message.request_id, message.db, sender_id, e);
+        let msg = format!(
+            "Rejecting fanout request {} from node {}: unsupported required_features {:#06x}",
+            message.request_id,
+            NodeId::from_raw(sender_id),
+            message.required_features
+        );
+        ctx.log_warning(&msg);
+        return;
+    }
+
     let Some(handler) = get_fanout_request_handler(&message.handler) else {
         let e = FanoutError::invalid_message();
         send_error_response(&ctx, message.request_id, message.db, sender_id, e);
@@ -526,7 +544,7 @@ extern "C" fn on_request_received(
 
     let header = FanoutMessageHeader {
         version: message.version,
-        reserved: 0,
+        required_features: message.required_features,
         request_id: message.request_id,
         db: message.db,
         handler: std::mem::take(&mut message.handler),
@@ -575,6 +593,14 @@ extern "C" fn on_response_received(
 
     with_inflight_request(&ctx, message.request_id, |ctx, request| {
         let _ = set_current_db(ctx, message.db);
+        // Feature gate: a newer peer's response may demand envelope features
+        // (e.g. a payload encoding) we cannot decode; fail this node's slice
+        // of the request instead of misinterpreting the payload.
+        if has_unsupported_features(message.required_features) {
+            let err = FanoutError::unsupported_features();
+            request.handle_response(ctx, Err(err), sender_id);
+            return;
+        }
         request.handle_response(ctx, Ok(message.buf), sender_id);
     });
 }
@@ -595,6 +621,14 @@ extern "C" fn on_error_received(
 
     with_inflight_request(&ctx, message.request_id, |ctx, request| {
         let _ = set_current_db(ctx, message.db);
+
+        // Feature gate: mirror the response path — an error payload we cannot
+        // decode per the demanded features still fails this node's slice.
+        if has_unsupported_features(message.required_features) {
+            let err = FanoutError::unsupported_features();
+            request.handle_response(ctx, Err(err), sender_id);
+            return;
+        }
 
         match FanoutError::deserialize(message.buf) {
             Ok((error, _)) => {
