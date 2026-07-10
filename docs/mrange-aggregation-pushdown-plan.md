@@ -453,20 +453,26 @@ c. **Standalone grouped path double-reduces**: `get_grouped_samples` builds per-
 
 ## 8. Mixed-version cluster analysis
 
-Per decision #3, correctness is guaranteed only for homogeneous clusters. The residual
-matrix with the request flag in place:
+Per original decision #3, correctness was initially guaranteed only for homogeneous
+clusters, with this residual matrix:
 
 | Coordinator | Shard | Behavior |
 |---|---|---|
 | new (push-down on) | new | Flags honored. **Correct.** |
 | new (push-down **off**) | any | Flag unset → shards strip aggregation → today's flow. **Correct.** |
 | old | new | Old coordinator never sets field 7/8 (decodes as `false` on the shard) → shard strips aggregation → raw samples → old coordinator aggregates. **Correct.** |
-| new (push-down on) | old | Shard ignores unknown fields, returns **raw samples**; coordinator assumes buckets and skips aggregation → **wrong results** (raw samples surfaced as buckets / reduce over raw values). |
+| new (push-down on) | old | ~~Shard ignores unknown fields, returns raw samples; coordinator assumes buckets → wrong results.~~ **Fixed 2026-07-10** by the compatibility handshake (below): the missing `applied_*` echo identifies the payload as raw and the coordinator compensates. |
 
-**Operational guidance (documented in the config's description and release notes):** set
-`ts-fanout-aggregation-pushdown no` before starting a rolling upgrade that crosses this
-feature boundary; re-enable after all nodes run the new module. The default stays `yes`
-for fresh clusters and post-upgrade steady state.
+**Compatibility handshake (2026-07-10, `docs/fanout-compatibility-handshake.md`):** shards
+echo the push-down flags they honored in `MultiRangeResponse.applied_*` (fields 3–5); a
+response without the echo — any pre-handshake peer — is self-identifying as raw, and the
+coordinator aggregates/pre-reduces that shard's data itself before merging. Mixed-version
+clusters therefore degrade gracefully (extra coordinator CPU and raw transfer for the old
+shard's slice only) instead of corrupting results, and the former operational guidance
+(disable `ts-fanout-aggregation-pushdown` across rolling upgrades) is obsolete; the config
+remains as a diagnostic/emergency toggle. `MultiRangeRequest.required_features` (field 10)
+additionally lets future requests demand semantics the coordinator cannot compensate for,
+which shards reject explicitly rather than mis-serve.
 
 `FANOUT_MESSAGE_VERSION` is not bumped — field-level proto evolution is sufficient, and
 the header version has no negotiation mechanism to build on.

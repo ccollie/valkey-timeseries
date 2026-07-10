@@ -734,6 +734,7 @@ impl TryFrom<&MRangeOptions> for MultiRangeRequest {
             apply_aggregation: false,
             apply_group_reduce: false,
             apply_count: false,
+            required_features: 0,
         })
     }
 }
@@ -759,6 +760,7 @@ impl TryFrom<MRangeOptions> for MultiRangeRequest {
             apply_aggregation: false,
             apply_group_reduce: false,
             apply_count: false,
+            required_features: 0,
         })
     }
 }

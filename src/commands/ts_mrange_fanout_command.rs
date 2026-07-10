@@ -24,11 +24,35 @@ use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
+use crate::common::logging::log_warning;
+
+/// Feature bits of `MultiRangeRequest.required_features` this node supports.
+/// None are defined yet: bits are allocated only for future request semantics
+/// the coordinator cannot compensate for per response (see
+/// docs/fanout-compatibility-handshake.md).
+const SUPPORTED_REQUEST_FEATURES: u32 = 0;
+
+/// Shard-side guard for `required_features`: reject requests that demand
+/// semantics this node does not implement, instead of silently mis-serving
+/// them. Coordinators may retry without optional features on this error.
+fn validate_required_features(required_features: u32) -> ValkeyResult<()> {
+    if required_features & !SUPPORTED_REQUEST_FEATURES != 0 {
+        return Err(ValkeyError::Str(
+            crate::error_consts::UNSUPPORTED_FANOUT_FEATURES,
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Default)]
 pub struct MRangeFanoutCommand {
     options: MRangeOptions,
-    series: Vec<SeriesRangeResponse>,
+    /// Accumulated per-series responses, each tagged with the responding
+    /// shard's `applied_aggregation` echo: `true` means the payload is
+    /// aggregated buckets, `false` means raw samples (e.g. a pre-push-down
+    /// peer that ignored the request flag) which the coordinator must
+    /// aggregate itself.
+    series: Vec<(SeriesRangeResponse, bool)>,
     group_partials: Vec<GroupPartialSeries>,
     /// Shard-side aggregation push-down: shards return buckets instead of raw
     /// samples. Latched at construction so a concurrent `CONFIG SET` cannot
@@ -87,6 +111,7 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         ctx: &Context,
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
+        validate_required_features(req.required_features)?;
         let apply_aggregation = req.apply_aggregation;
         let apply_group_reduce = req.apply_group_reduce;
         let apply_count = req.apply_count;
@@ -120,6 +145,11 @@ impl FanoutClientCommand for MRangeFanoutCommand {
             return Ok(MultiRangeResponse {
                 series: Vec::new(),
                 group_partials: partials.into_iter().map(Into::into).collect(),
+                // Compatibility echo: group reduce implies the per-series
+                // aggregation stage ran as part of the partial pipeline.
+                applied_aggregation: true,
+                applied_group_reduce: true,
+                applied_count: apply_count,
             });
         }
 
@@ -138,6 +168,9 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         Ok(MultiRangeResponse {
             series: serialized?,
             group_partials: Vec::new(),
+            applied_aggregation: apply_aggregation,
+            applied_group_reduce: false,
+            applied_count: apply_count,
         })
     }
 
@@ -151,7 +184,11 @@ impl FanoutClientCommand for MRangeFanoutCommand {
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
         let mut resp = resp;
-        self.series.append(&mut resp.series);
+        // Tag each series with the shard's applied_aggregation echo so the
+        // reply path can compensate per response (compatibility handshake).
+        let bucketed = resp.applied_aggregation;
+        self.series
+            .extend(resp.series.into_iter().map(|series| (series, bucketed)));
         self.group_partials.append(&mut resp.group_partials);
         Ok(())
     }
@@ -160,31 +197,12 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         self.options.range.latest = false;
         self.options.range.timestamp_filter = None;
         self.options.range.value_filter = None;
-        if self.pushdown && !is_multi_aggregation(&self.options) {
-            // Single-aggregation push-down: shards already bucketed each
-            // series, so clear aggregation to skip re-aggregation. The
-            // remaining post-processing (GROUPBY reduce, reverse, COUNT)
-            // operates on the received buckets. Multi-aggregation keeps its
-            // options (needed for the column count and the multi/data-variant
-            // branch below); its helpers detect already-bucketed rows and skip
-            // re-aggregation without clearing.
-            self.options.range.aggregation = None;
-        }
 
         let is_grouped = self.options.grouping.is_some();
         let series = std::mem::take(&mut self.series);
         let group_partials = std::mem::take(&mut self.group_partials);
-        let options = &self.options;
 
-        let result = if self.pushdown_group {
-            handle_group_partials(group_partials, options)
-        } else if is_grouped {
-            handle_grouping(series, options)
-        } else {
-            handle_basic(series, options)
-        };
-
-        match result {
+        match self.process_responses(series, group_partials) {
             Ok(mut series) => {
                 sort_mrange_results(&mut series, is_grouped);
                 let _ = reply_with_mrange_series_results(ctx, &series);
@@ -198,6 +216,157 @@ impl FanoutClientCommand for MRangeFanoutCommand {
             }
         }
     }
+}
+
+impl MRangeFanoutCommand {
+    /// Post-process the accumulated shard responses into the final reply
+    /// series, compensating per response for shards that did not honor the
+    /// push-down flags (compatibility handshake): raw series are aggregated
+    /// coordinator-side, and under group-reduce push-down any per-series data
+    /// is pre-reduced locally into partials before the cross-shard merge.
+    fn process_responses(
+        &mut self,
+        series: Vec<(SeriesRangeResponse, bool)>,
+        mut group_partials: Vec<GroupPartialSeries>,
+    ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
+        let series = normalize_response_series(series, &self.options, self.pushdown)?;
+        if self.pushdown && !is_multi_aggregation(&self.options) {
+            // Single-aggregation push-down: every series is bucketed after
+            // normalization, so clear aggregation to skip re-aggregation. The
+            // remaining post-processing (GROUPBY reduce, reverse, COUNT)
+            // operates on the buckets. Multi-aggregation keeps its options
+            // (needed for the column count and the multi/data-variant branch);
+            // its helpers detect already-bucketed rows by the `Rows` variant
+            // and skip re-aggregation without clearing.
+            self.options.range.aggregation = None;
+        }
+
+        if self.pushdown_group {
+            // Shards honoring apply_group_reduce sent partials and no series;
+            // any series present are tagged per-series data from a peer that
+            // did not — pre-reduce them locally into equivalent partials.
+            group_partials.extend(compensate_group_partials(series, &self.options)?);
+            handle_group_partials(group_partials, &self.options)
+        } else if self.options.grouping.is_some() {
+            handle_grouping(series, &self.options)
+        } else {
+            handle_basic(series, &self.options)
+        }
+    }
+}
+
+/// Normalize push-down heterogeneity at the wire boundary: under
+/// single-aggregation push-down, a series tagged as raw (its shard did not
+/// echo `applied_aggregation`) is aggregated coordinator-side so downstream
+/// processing sees buckets for every series — raw and bucketed single-agg
+/// payloads are otherwise indistinguishable. Multi-aggregation needs no eager
+/// step: its handlers detect raw data by the `Chunk` variant and aggregate
+/// lazily. Without push-down the tags are irrelevant and everything is raw.
+fn normalize_response_series(
+    series: Vec<(SeriesRangeResponse, bool)>,
+    options: &MRangeOptions,
+    pushdown: bool,
+) -> ValkeyResult<Vec<SeriesRangeResponse>> {
+    let needs_bucketing = pushdown && !is_multi_aggregation(options);
+    if !needs_bucketing {
+        return Ok(series.into_iter().map(|(response, _)| response).collect());
+    }
+    // Aggregate exactly as the shard would have: ascending, unbounded —
+    // reversal and COUNT are applied downstream by the coordinator.
+    let mut shard_range = options.range.clone();
+    shard_range.count = None;
+    series
+        .into_par()
+        .map(|(response, bucketed)| {
+            if bucketed {
+                return Ok(response);
+            }
+            let mut result = MRangeSeriesResult::try_from(response)?;
+            let samples: Vec<Sample> =
+                create_sample_iterator_adapter(result.data.sample_iter(), &shard_range, &None, false)
+                    .collect();
+            result.data = SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
+                UncompressedChunk::from_vec(samples),
+            ));
+            result.try_into()
+        })
+        .into_fallible_result()
+        .collect()
+}
+
+/// Pre-reduce per-series data from shards that did not honor
+/// `apply_group_reduce` into per-group partials, mirroring the shard-side
+/// pipeline so `handle_group_partials` can merge them with real wire
+/// partials. Input series must already be normalized (bucketed when the
+/// query has AGGREGATION); with no AGGREGATION the reduce domain is raw
+/// timestamps, matching standalone semantics.
+fn compensate_group_partials(
+    series: Vec<SeriesRangeResponse>,
+    options: &MRangeOptions,
+) -> ValkeyResult<Vec<GroupPartialSeries>> {
+    use crate::aggregators::{PartialRowReducer, PartialSampleReducer};
+
+    if series.is_empty() {
+        return Ok(Vec::new());
+    }
+    let group_options = options
+        .grouping
+        .as_ref()
+        .expect("Grouping options should be present");
+    let Some(reducer) = PartialReducer::for_config(&group_options.aggregation) else {
+        return Err(ValkeyError::Str(
+            "TSDB: internal error: reducer does not support partial reduce",
+        ));
+    };
+
+    let results = series
+        .into_par()
+        .map(MRangeSeriesResult::try_from)
+        .into_fallible_result()
+        .collect()?;
+    let grouped = construct_group_map(results);
+
+    Ok(grouped
+        .into_iter()
+        .map(|(label, data)| {
+            let (bucket_timestamps, states, column_count) = if is_multi_aggregation(options) {
+                let columns = options
+                    .range
+                    .aggregation
+                    .as_ref()
+                    .map(|a| a.aggregations.len())
+                    .unwrap_or(1);
+                let row_iters = data
+                    .series
+                    .iter()
+                    .map(|s| series_rows_ascending(s, options))
+                    .collect::<Vec<_>>();
+                let merged = MultiSeriesRowIter::new(row_iters);
+                let (timestamps, buckets): (Vec<i64>, Vec<_>) =
+                    PartialRowReducer::new(merged, reducer.clone(), columns).unzip();
+                let states = buckets.into_iter().flatten().collect::<Vec<_>>();
+                (timestamps, states, columns)
+            } else {
+                let iters = data
+                    .series
+                    .iter()
+                    .map(|s| s.data.sample_iter())
+                    .collect::<Vec<_>>();
+                let merged = MultiSeriesSampleIter::new(iters);
+                let (timestamps, states): (Vec<i64>, Vec<PartialState>) =
+                    PartialSampleReducer::new(merged, reducer.clone()).unzip();
+                (timestamps, states, 1)
+            };
+
+            GroupPartialSeries {
+                group_label_value: label,
+                source_keys: data.keys.to_vec(),
+                bucket_timestamps,
+                states: states.into_iter().map(Into::into).collect(),
+                column_count: column_count as u32,
+            }
+        })
+        .collect())
 }
 
 fn handle_basic(
@@ -290,6 +459,7 @@ fn handle_group_partials(
         if partial.column_count as usize != columns
             || partial.states.len() != partial.bucket_timestamps.len() * columns
         {
+            log_warning("Invalid group partial state received from peer");
             return Err(ValkeyError::Str(
                 "TSDB: invalid group partial states received from peer",
             ));
@@ -1432,6 +1602,241 @@ mod tests {
         assert!(handle_group_partials(vec![partial(3, 6)], &options).is_ok());
         assert!(handle_group_partials(vec![partial(1, 2)], &options).is_err());
         assert!(handle_group_partials(vec![partial(3, 5)], &options).is_err());
+    }
+
+    fn tagged(
+        responses: Vec<SeriesRangeResponse>,
+        bucketed: bool,
+    ) -> Vec<(SeriesRangeResponse, bool)> {
+        responses.into_iter().map(|r| (r, bucketed)).collect()
+    }
+
+    /// Compatibility handshake, non-grouped: a shard that does not echo
+    /// `applied_aggregation` (pre-push-down peer) ships raw samples; the
+    /// coordinator aggregates them itself, so a mixed batch equals the
+    /// all-new result.
+    #[test]
+    fn test_mixed_version_basic_compensation() {
+        let raw_a = samples(&[(0, 1.0), (10, 3.0), (110, 5.0), (250, 9.0)]);
+        let raw_b = samples(&[(5, 2.0), (120, 4.0), (260, 6.0)]);
+
+        for (is_reverse, count) in [(false, None), (true, None), (true, Some(2))] {
+            let mut options = mrange_options(0, 1000);
+            options.range.aggregation = Some(avg_aggregation(100));
+            options.range.count = count;
+            options.is_reverse = is_reverse;
+
+            let bucket = |raw: &[Sample]| {
+                let mut shard_options = options.clone();
+                shard_options.range.count = None;
+                shard_options.is_reverse = false;
+                shard_aggregate(raw.to_vec(), &shard_options)
+            };
+
+            // All-new cluster: both shards echo and ship buckets.
+            let mut command = MRangeFanoutCommand::new(options.clone());
+            assert!(command.pushdown);
+            let mut reference = command
+                .process_responses(
+                    vec![
+                        (to_response(series_result("a", None, bucket(&raw_a))), true),
+                        (to_response(series_result("b", None, bucket(&raw_b))), true),
+                    ],
+                    Vec::new(),
+                )
+                .unwrap();
+            sort_mrange_results(&mut reference, false);
+
+            // Mixed: shard b is a pre-push-down peer (raw samples, no echo).
+            let mut command = MRangeFanoutCommand::new(options.clone());
+            let mut mixed = command
+                .process_responses(
+                    vec![
+                        (to_response(series_result("a", None, bucket(&raw_a))), true),
+                        (to_response(series_result("b", None, raw_b.clone())), false),
+                    ],
+                    Vec::new(),
+                )
+                .unwrap();
+            sort_mrange_results(&mut mixed, false);
+
+            assert_eq!(reference.len(), mixed.len());
+            for (r, m) in reference.iter().zip(mixed.iter()) {
+                assert_eq!(r.key, m.key);
+                assert_eq!(
+                    result_samples(r),
+                    result_samples(m),
+                    "reverse={is_reverse} count={count:?}"
+                );
+            }
+        }
+    }
+
+    /// Compatibility handshake, grouped: a pre-push-down peer returns tagged
+    /// per-series raw data instead of group partials; the coordinator
+    /// aggregates and pre-reduces it locally and merges the result with the
+    /// wire partials of up-to-date shards.
+    #[test]
+    fn test_mixed_version_group_partials_compensation() {
+        use crate::aggregators::PartialSampleReducer;
+
+        let raw_a = samples(&[(0, 1.0), (10, 3.0), (110, 5.0)]);
+        let raw_b = samples(&[(0, 8.0), (20, 12.0), (250, 7.0)]);
+
+        for (is_reverse, count) in [(false, None), (true, Some(2))] {
+            let mut options = mrange_options(0, 1000);
+            options.with_labels = true;
+            options.range.aggregation = Some(avg_aggregation(100));
+            options.range.count = count;
+            options.is_reverse = is_reverse;
+            options.grouping = Some(RangeGroupingOptions {
+                aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+                group_label: "region".into(),
+            });
+
+            let reducer =
+                PartialReducer::for_config(&options.grouping.as_ref().unwrap().aggregation)
+                    .unwrap();
+            let partial_of = |key: &str, raw: &[Sample]| {
+                let mut shard_options = options.clone();
+                shard_options.range.count = None;
+                shard_options.is_reverse = false;
+                let buckets = shard_aggregate(raw.to_vec(), &shard_options);
+                let (bucket_timestamps, states): (Vec<i64>, Vec<PartialState>) =
+                    PartialSampleReducer::new(buckets.into_iter(), reducer.clone()).unzip();
+                GroupPartialSeries {
+                    group_label_value: "us".into(),
+                    source_keys: vec![key.into()],
+                    bucket_timestamps,
+                    states: states.into_iter().map(Into::into).collect(),
+                    column_count: 1,
+                }
+            };
+
+            // All-new: both shards ship partials.
+            let mut command = MRangeFanoutCommand::new(options.clone());
+            assert!(command.pushdown_group);
+            let reference = command
+                .process_responses(
+                    Vec::new(),
+                    vec![partial_of("a", &raw_a), partial_of("b", &raw_b)],
+                )
+                .unwrap();
+
+            // Mixed: shard holding b is pre-push-down (raw tagged series).
+            let mut command = MRangeFanoutCommand::new(options.clone());
+            let mixed = command
+                .process_responses(
+                    tagged(
+                        vec![to_response(series_result("b", Some("us"), raw_b.clone()))],
+                        false,
+                    ),
+                    vec![partial_of("a", &raw_a)],
+                )
+                .unwrap();
+
+            assert_eq!(reference.len(), 1);
+            assert_eq!(mixed.len(), 1);
+            assert_eq!(reference[0].key, mixed[0].key);
+            assert_eq!(
+                result_samples(&reference[0]),
+                result_samples(&mixed[0]),
+                "reverse={is_reverse} count={count:?}"
+            );
+            let source = mixed[0]
+                .labels
+                .iter()
+                .find(|l| l.name == SOURCE_KEY)
+                .expect("__source__ label present");
+            assert_eq!(source.value, "a,b");
+        }
+    }
+
+    /// Compatibility handshake, grouped multi-aggregation: mixes wire
+    /// partials with (a) fully-raw series from a pre-push-down peer and
+    /// (b) bucketed rows from a peer that honored apply_aggregation but not
+    /// apply_group_reduce. Both compensate to the all-partials result.
+    #[test]
+    fn test_mixed_version_multi_group_partials_compensation() {
+        let raw_a = samples(&[(0, 1.0), (10, 3.0), (110, 5.0)]);
+        let raw_b = samples(&[(0, 8.0), (20, 12.0), (250, 7.0)]);
+        let raw_c = samples(&[(0, 4.0), (110, 9.0), (250, 1.0)]);
+
+        let mut options = mrange_options(0, 1000);
+        options.range.aggregation = Some(multi_aggregation(100));
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(AggregationType::Avg, None).unwrap(),
+            group_label: "region".into(),
+        });
+
+        let mut command = MRangeFanoutCommand::new(options.clone());
+        assert!(command.pushdown_group, "multi latches group push-down");
+        let reference = command
+            .process_responses(
+                Vec::new(),
+                vec![
+                    shard_multi_group_partial(&[("a", &raw_a), ("b", &raw_b)], &options),
+                    shard_multi_group_partial(&[("c", &raw_c)], &options),
+                ],
+            )
+            .unwrap();
+
+        // (a) shard holding c is fully pre-push-down: raw samples, no echo.
+        let mut command = MRangeFanoutCommand::new(options.clone());
+        let mixed_raw = command
+            .process_responses(
+                tagged(
+                    vec![to_response(series_result("c", Some("us"), raw_c.clone()))],
+                    false,
+                ),
+                vec![shard_multi_group_partial(
+                    &[("a", &raw_a), ("b", &raw_b)],
+                    &options,
+                )],
+            )
+            .unwrap();
+
+        // (b) shard holding c honored apply_aggregation (bucket rows arrive
+        // as the Rows variant) but not apply_group_reduce.
+        let mut command = MRangeFanoutCommand::new(options.clone());
+        let mixed_bucketed = command
+            .process_responses(
+                vec![(shard_multi_response("c", Some("us"), &raw_c, &options), true)],
+                vec![shard_multi_group_partial(
+                    &[("a", &raw_a), ("b", &raw_b)],
+                    &options,
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(reference.len(), 1);
+        assert_eq!(
+            result_rows(&reference[0]),
+            result_rows(&mixed_raw[0]),
+            "raw peer compensated"
+        );
+        assert_eq!(
+            result_rows(&reference[0]),
+            result_rows(&mixed_bucketed[0]),
+            "bucketed-only peer compensated"
+        );
+    }
+
+    /// required_features guard: no bits are defined today, so any set bit is
+    /// rejected shard-side, and the coordinator never demands features.
+    #[test]
+    fn test_required_features_validation() {
+        assert!(validate_required_features(0).is_ok());
+        assert!(validate_required_features(1).is_err());
+        assert!(validate_required_features(1 << 31).is_err());
+
+        let options = mrange_options(0, 1000);
+        assert_eq!(
+            MRangeFanoutCommand::new(options)
+                .generate_request()
+                .required_features,
+            0
+        );
     }
 
     /// Multi-aggregation push-down round trip (grouped): per-series bucket rows
