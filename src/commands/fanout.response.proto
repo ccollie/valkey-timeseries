@@ -87,9 +87,8 @@ message MultiRangeResponse {
   repeated SeriesRangeResponse series = 1;
   // Populated instead of `series` when the request set apply_group_reduce.
   repeated GroupPartialSeries group_partials = 2;
-  // Compatibility handshake (docs/fanout-compatibility-handshake.md): the
-  // shard echoes which push-down request flags it honored. Absent on
-  // pre-handshake shards (proto3 decodes as false), which is exactly the
+  // Compatibility handshake: the shard echoes which push-down request flags it honored. 
+  // Absent on pre-handshake shards (proto3 decodes as false), which is exactly the
   // correct interpretation — nothing was applied and `series` carries raw
   // samples. The coordinator compensates per response, so mixed-version
   // clusters degrade gracefully instead of corrupting results.

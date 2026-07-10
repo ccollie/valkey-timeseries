@@ -616,15 +616,27 @@ mod tests {
         let (ts, states) = &buckets[0];
         assert_eq!(*ts, 1);
         assert_eq!(states.len(), 2);
-        assert_value_eq(PartialReducer::finalize(kind, &states[0]), 4.0, "col 0 ts=1");
+        assert_value_eq(
+            PartialReducer::finalize(kind, &states[0]),
+            4.0,
+            "col 0 ts=1",
+        );
         assert!(
             PartialReducer::finalize(kind, &states[1]).is_nan(),
             "all-NaN column yields NaN independently"
         );
         let (ts, states) = &buckets[1];
         assert_eq!(*ts, 2);
-        assert_value_eq(PartialReducer::finalize(kind, &states[0]), 5.0, "col 0 ts=2");
-        assert_value_eq(PartialReducer::finalize(kind, &states[1]), 7.0, "col 1 ts=2");
+        assert_value_eq(
+            PartialReducer::finalize(kind, &states[0]),
+            5.0,
+            "col 0 ts=2",
+        );
+        assert_value_eq(
+            PartialReducer::finalize(kind, &states[1]),
+            7.0,
+            "col 1 ts=2",
+        );
     }
 
     /// Column i of `PartialRowReducer` equals `PartialSampleReducer` over that

@@ -731,7 +731,10 @@ mod tests {
             assert_eq!(deserialized_header.version, original_header.version);
             assert_eq!(deserialized_header.request_id, original_header.request_id);
             assert_eq!(deserialized_header.db, original_header.db);
-            assert_eq!(deserialized_header.required_features, original_header.required_features);
+            assert_eq!(
+                deserialized_header.required_features,
+                original_header.required_features
+            );
             assert_eq!(deserialized_header.handler, original_header.handler);
             assert_eq!(deserialized_header.user, original_header.user);
             assert_eq!(

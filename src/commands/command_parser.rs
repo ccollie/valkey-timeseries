@@ -548,10 +548,13 @@ fn split_condition_operator(cond_str: &str) -> Option<(ComparisonOperator, &str)
 /// Parse the parenthesized suffix of an inline per-aggregator condition,
 /// e.g. `>5` or `<=2.5` (the part between the parens in `countif(>5)`).
 fn parse_inline_condition(cond_str: &str) -> ValkeyResult<ValueComparisonFilter> {
-    let (operator, value_str) = split_condition_operator(cond_str)
-        .ok_or(ValkeyError::Str(error_consts::INVALID_AGGREGATION_CONDITION))?;
+    let (operator, value_str) = split_condition_operator(cond_str).ok_or(ValkeyError::Str(
+        error_consts::INVALID_AGGREGATION_CONDITION,
+    ))?;
     if value_str.is_empty() {
-        return Err(ValkeyError::Str(error_consts::INVALID_AGGREGATION_CONDITION));
+        return Err(ValkeyError::Str(
+            error_consts::INVALID_AGGREGATION_CONDITION,
+        ));
     }
     // Plain float parse (no unit suffixes) to match the shared `CONDITION
     // op value` path, which reads its value via `next_f64`.
@@ -1325,9 +1328,8 @@ mod tests {
 
     #[test]
     fn test_aggregation_list_single_and_order() {
-        let types = |list: &[AggregationListElement]| {
-            list.iter().map(|(ty, _)| *ty).collect::<Vec<_>>()
-        };
+        let types =
+            |list: &[AggregationListElement]| list.iter().map(|(ty, _)| *ty).collect::<Vec<_>>();
 
         let single = parse_aggregation_list("avg").unwrap();
         assert_eq!(types(&single), vec![AggregationType::Avg]);
@@ -1336,12 +1338,19 @@ mod tests {
         let list = parse_aggregation_list("avg,min,max").unwrap();
         assert_eq!(
             types(&list),
-            vec![AggregationType::Avg, AggregationType::Min, AggregationType::Max]
+            vec![
+                AggregationType::Avg,
+                AggregationType::Min,
+                AggregationType::Max
+            ]
         );
 
         // case-insensitive
         let list = parse_aggregation_list("AVG,Max").unwrap();
-        assert_eq!(types(&list), vec![AggregationType::Avg, AggregationType::Max]);
+        assert_eq!(
+            types(&list),
+            vec![AggregationType::Avg, AggregationType::Max]
+        );
     }
 
     #[test]
@@ -1435,17 +1444,14 @@ mod tests {
         assert!(configs[2].filter().is_some()); // sum
 
         // CONDITION with zero capable aggregators is an error
-        let err = build_aggregator_configs(
-            parse_aggregation_list("avg,max").unwrap(),
-            Some(condition),
-        )
-        .unwrap_err();
+        let err =
+            build_aggregator_configs(parse_aggregation_list("avg,max").unwrap(), Some(condition))
+                .unwrap_err();
         assert!(err.to_string().contains("does not support a filter"));
 
         // condition-requiring aggregator in a list without CONDITION
-        let err =
-            build_aggregator_configs(parse_aggregation_list("countif,avg").unwrap(), None)
-                .unwrap_err();
+        let err = build_aggregator_configs(parse_aggregation_list("countif,avg").unwrap(), None)
+            .unwrap_err();
         assert!(err.to_string().contains("missing condition"));
 
         // plain list without CONDITION is fine

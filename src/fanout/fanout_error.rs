@@ -66,8 +66,7 @@ pub(super) const INTERNAL_ERROR: &str = "Internal error";
 pub(super) const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
 pub(super) const CLUSTER_MAP_MISMATCH_ERROR: &str =
     "A multi-shard command failed because the cluster topology has changed";
-pub(super) const UNSUPPORTED_FEATURES_ERROR: &str =
-    "A multi-shard command failed because a peer requires fanout features this node does not support";
+pub(super) const UNSUPPORTED_FEATURES_ERROR: &str = "A multi-shard command failed because a peer requires fanout features this node does not support";
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
