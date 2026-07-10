@@ -523,10 +523,15 @@ impl Hash for CountAllAggregator {
     }
 }
 
+/// Welford online accumulator for the std/var family: `mean` is the running
+/// mean, `m2` the sum of squared deviations from it. Unlike the textbook
+/// sum-of-squares form this cannot cancel catastrophically and `m2` is
+/// nonnegative by construction. Mirrors the partial-reducer Std/Var state
+/// (partial_reducer.rs), so push-down matches single-node results.
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
 pub struct AggStd {
-    sum: Value,
-    sum_2: Value,
+    mean: Value,
+    m2: Value,
     count: usize,
 }
 
@@ -535,23 +540,20 @@ impl AggStd {
         if value.is_nan() {
             return false;
         }
-        self.sum += value;
-        self.sum_2 += value * value;
         self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as Value;
+        self.m2 += delta * (value - self.mean);
         true
     }
     fn reset(&mut self) {
-        self.sum = 0.;
-        self.sum_2 = 0.;
+        self.mean = 0.;
+        self.m2 = 0.;
         self.count = 0;
     }
+    /// The variance numerator (M2); callers divide by n or n - 1.
     fn variance(&self) -> Value {
-        if self.count <= 1 {
-            0.
-        } else {
-            let avg = self.sum / self.count as Value;
-            self.sum_2 - 2. * self.sum * avg + avg * avg * self.count as Value
-        }
+        if self.count <= 1 { 0. } else { self.m2 }
     }
 }
 
@@ -559,16 +561,16 @@ impl Display for AggStd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "sum: {}, sum2: {}, count: {}",
-            self.sum, self.sum_2, self.count
+            "mean: {}, m2: {}, count: {}",
+            self.mean, self.m2, self.count
         )
     }
 }
 
 impl RdbSerializable for AggStd {
     fn rdb_save(&self, rdb: *mut RedisModuleIO) {
-        raw::save_double(rdb, self.sum);
-        raw::save_double(rdb, self.sum_2);
+        raw::save_double(rdb, self.mean);
+        raw::save_double(rdb, self.m2);
         rdb_save_usize(rdb, self.count);
     }
 
@@ -576,17 +578,17 @@ impl RdbSerializable for AggStd {
     where
         Self: Sized,
     {
-        let sum = raw::load_double(rdb)?;
-        let sum_2 = raw::load_double(rdb)?;
+        let mean = raw::load_double(rdb)?;
+        let m2 = raw::load_double(rdb)?;
         let count = rdb_load_usize(rdb)?;
-        Ok(Self { sum, sum_2, count })
+        Ok(Self { mean, m2, count })
     }
 }
 
 impl Hash for AggStd {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        hash_f64(self.sum, state);
-        hash_f64(self.sum_2, state);
+        hash_f64(self.mean, state);
+        hash_f64(self.m2, state);
         self.count.hash(state);
     }
 }
