@@ -9,7 +9,7 @@ TS.MREVRANGE fromTimestamp toTimestamp
     [FILTER_BY_VALUE min max]
     [WITHLABELS | SELECTED_LABELS label...]
     [COUNT count]
-    [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
-    [GROUPBY label REDUCE reducer]
+    [[ALIGN align] AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
+    [GROUPBY label REDUCE reducer[(op value)]]
     FILTER selector...
 ```

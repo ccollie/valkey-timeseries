@@ -1,9 +1,9 @@
 use crate::aggregators::{AggregationType, Aggregator};
-use crate::commands::command_parser::parse_aggregator_value_filter;
-use crate::commands::{CommandArgIterator, CommandArgToken, parse_duration};
+use crate::commands::command_parser::{parse_inline_condition, split_aggregator_condition};
+use crate::commands::{CommandArgIterator, parse_duration};
 use crate::error_consts;
 use crate::parser::timestamp::parse_timestamp;
-use crate::series::request_types::{AggregatorConfig, ValueComparisonFilter};
+use crate::series::request_types::AggregatorConfig;
 use crate::series::{
     CompactionRule, SeriesRef, check_new_rule_circular_dependency, get_timeseries_mut,
 };
@@ -99,24 +99,23 @@ fn parse_args(args: &mut CommandArgIterator, dest_id: SeriesRef) -> ValkeyResult
         return Err(ValkeyError::Str(error_consts::CANNOT_PARSE_AGGREGATION));
     }
 
-    let aggregation_type = AggregationType::try_from(args.next_str()?)?;
+    let (agg_name, cond_str) = split_aggregator_condition(args.next_str()?)?;
+    let aggregation_type = AggregationType::try_from(agg_name)?;
+    let value_filter = cond_str.map(parse_inline_condition).transpose()?;
+
     let duration_str = args
         .next_str()
         .map_err(|_| ValkeyError::Str("TSDB: missing bucket duration"))?;
     let duration = parse_duration(duration_str)
         .map_err(|_| ValkeyError::Str("TSDB: invalid bucket duration"))?;
 
-    let mut align_timestamp: i64 = 0;
-
-    let mut value_filter: Option<ValueComparisonFilter> = parse_possible_filter_args(args)?;
-    if value_filter.is_none() {
-        // possible align timestamp
-        if let Ok(align_str) = args.next_str() {
-            align_timestamp = parse_timestamp(align_str, false)
-                .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGNMENT_TIMESTAMP))?;
-        }
-        value_filter = parse_possible_filter_args(args)?;
-    }
+    // possible align timestamp
+    let align_timestamp = if let Ok(align_str) = args.next_str() {
+        parse_timestamp(align_str, false)
+            .map_err(|_| ValkeyError::Str(error_consts::INVALID_ALIGNMENT_TIMESTAMP))?
+    } else {
+        0
+    };
 
     let bucket_duration = duration.as_millis() as u64;
     // Configure the aggregator with the possible value filter
@@ -136,19 +135,4 @@ fn parse_args(args: &mut CommandArgIterator, dest_id: SeriesRef) -> ValkeyResult
         bucket_start: None,
         has_samples: false,
     })
-}
-
-fn parse_possible_filter_args(
-    args: &mut CommandArgIterator,
-) -> ValkeyResult<Option<ValueComparisonFilter>> {
-    let filter = if let Some(token) = super::peek_token(args)
-        && token == CommandArgToken::Condition
-    {
-        args.next(); // consume CONDITION
-        Some(parse_aggregator_value_filter(args)?)
-    } else {
-        None
-    };
-
-    Ok(filter)
 }

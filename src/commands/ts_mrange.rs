@@ -40,6 +40,6 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
         return operation.exec(ctx);
     }
 
-    let result_rows = process_mrange_query(ctx, options, false)?;
+    let result_rows = process_mrange_query(ctx, options, false, None)?;
     reply_with_mrange_series_results(ctx, &result_rows)
 }

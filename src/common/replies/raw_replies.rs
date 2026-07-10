@@ -1,4 +1,4 @@
-use crate::common::{Sample, Timestamp};
+use crate::common::{MultiSample, Sample, Timestamp};
 use crate::labels::Label;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_long};
@@ -110,6 +110,33 @@ pub fn reply_with_samples<C: IntoRawCtx>(ctx: C, samples: impl Iterator<Item = S
     let mut len = 0;
     for sample in samples {
         reply_with_sample(raw_ctx, &sample);
+        len += 1;
+    }
+
+    reply_with_array_len(raw_ctx, len);
+}
+
+/// One multi-aggregation row: `[timestamp, value_1, ..., value_n]` with one
+/// value per aggregator, in the order the aggregators were specified.
+pub fn reply_with_multi_sample<C: IntoRawCtx>(ctx: C, row: &MultiSample) {
+    let raw_ctx = ctx.into_raw();
+    reply_with_array(raw_ctx, 1 + row.values.len());
+    reply_with_integer(raw_ctx, row.timestamp);
+    for value in &row.values {
+        raw::reply_with_double(raw_ctx, *value);
+    }
+}
+
+pub fn reply_with_multi_samples<C: IntoRawCtx, T: std::borrow::Borrow<MultiSample>>(
+    ctx: C,
+    rows: impl Iterator<Item = T>,
+) {
+    let raw_ctx = ctx.into_raw();
+    reply_with_postponed_array(raw_ctx);
+
+    let mut len = 0;
+    for row in rows {
+        reply_with_multi_sample(raw_ctx, row.borrow());
         len += 1;
     }
 

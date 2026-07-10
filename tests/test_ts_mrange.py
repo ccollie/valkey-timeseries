@@ -1,5 +1,6 @@
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 from valkeytestframework.conftest import resource_port_tracker
+from valkey import ResponseError
 import time
 import pytest
 
@@ -136,6 +137,38 @@ class TestTimeSeriesMRange(ValkeyTimeSeriesTestCaseBase):
         for ts, val in result[0][2]:
             val = float(val.decode())
             assert val > 40  # Sum of two temp sensors should be > 40
+
+    def test_mrange_groupby_reduce_with_inline_condition(self):
+        """GROUPBY/REDUCE reducers take the same inline (op value) condition
+        syntax as AGGREGATION, e.g. REDUCE countif(>5)."""
+        self.setup_data()
+
+        result = self.client.execute_command(
+            'TS.MRANGE', self.start_ts, self.start_ts + 100,
+            'FILTER', 'sensor=temp',
+            'GROUPBY', 'sensor',
+            'REDUCE', 'countif(>0)')
+
+        assert len(result) == 1
+        for ts, val in result[0][2]:
+            assert float(val) >= 0
+
+    def test_mrange_groupby_reduce_condition_errors(self):
+        """A condition-requiring reducer without an inline condition, or a
+        condition attached to a reducer that doesn't support one, is an error."""
+        self.setup_data()
+
+        with pytest.raises(ResponseError, match="TSDB: missing condition for aggregator"):
+            self.client.execute_command(
+                'TS.MRANGE', self.start_ts, self.start_ts + 100,
+                'FILTER', 'sensor=temp',
+                'GROUPBY', 'sensor', 'REDUCE', 'countif')
+
+        with pytest.raises(ResponseError, match="TSDB: aggregation type does not support a filter condition"):
+            self.client.execute_command(
+                'TS.MRANGE', self.start_ts, self.start_ts + 100,
+                'FILTER', 'sensor=temp',
+                'GROUPBY', 'sensor', 'REDUCE', 'avg(>0)')
 
     def test_mrange_empty(self):
 

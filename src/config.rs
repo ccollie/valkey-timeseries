@@ -157,6 +157,26 @@ lazy_static! {
     static ref IS_DEBUG_MODE: AtomicBool = AtomicBool::default();
 }
 
+/// Runtime toggle for shard-side aggregation push-down in MRANGE fanout
+/// (`ts-fanout-aggregation-pushdown`, default on). Consulted by the
+/// coordinator only; shards obey the request flag.
+///
+/// This is NOT a mixed-version safety mechanism — the fanout compatibility
+/// handshake (self-describing responses + envelope feature gate, see
+/// `docs/fanout-compatibility-handshake.md`) makes version skew correct
+/// automatically, so no config action is needed across a rolling upgrade.
+///
+/// Its remaining purpose is an emergency/diagnostic escape hatch for the
+/// push-down code path itself: flipping it off at runtime routes every query
+/// back through the older coordinator-side aggregation path without a module
+/// rollback — useful to mitigate a latent push-down bug or a pathological
+/// resource case, or to A/B isolate whether an issue lives in push-down.
+pub static FANOUT_AGGREGATION_PUSHDOWN: AtomicBool = AtomicBool::new(true);
+
+pub fn is_fanout_aggregation_pushdown_enabled() -> bool {
+    FANOUT_AGGREGATION_PUSHDOWN.load(Ordering::Relaxed)
+}
+
 static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
     LazyLock::new(|| RwLock::from(ConfigSettings::default()));
 
@@ -716,6 +736,19 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         "debug-mode",
         &*IS_DEBUG_MODE,
         debug_mode_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
+
+    let fanout_pushdown_default =
+        get_bool_default_config_value(args, "ts-fanout-aggregation-pushdown", true)?;
+
+    register_bool_configuration(
+        ctx,
+        "ts-fanout-aggregation-pushdown",
+        &FANOUT_AGGREGATION_PUSHDOWN,
+        fanout_pushdown_default,
         ConfigurationFlags::DEFAULT,
         None,
         Some(Box::new(on_bool_config_set)),

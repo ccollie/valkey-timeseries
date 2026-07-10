@@ -4,12 +4,13 @@ use crate::aggregators::{
 };
 use crate::common::binop::ComparisonOperator;
 use crate::common::hash::hash_f64;
-use crate::common::{Sample, Timestamp};
+use crate::common::{MultiSample, Sample, Timestamp};
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
 use crate::series::chunks::TimeSeriesChunk;
 use crate::series::{DateRange, TimestampRange, ValueFilter};
 use get_size2::GetSize;
+use smallvec::{SmallVec, smallvec};
 use std::fmt::Display;
 use std::hash::Hash;
 use valkey_module::{RedisModuleIO, ValkeyError, ValkeyResult, ValkeyString};
@@ -154,9 +155,13 @@ impl From<AggregationType> for AggregatorConfig {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+/// Hard cap on the number of aggregators in one AGGREGATION clause.
+pub const MAX_AGGREGATIONS: usize = 16;
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AggregationOptions {
-    pub aggregation: AggregatorConfig,
+    /// 1..=MAX_AGGREGATIONS entries; index = output column order.
+    pub aggregations: SmallVec<AggregatorConfig, 2>,
     pub bucket_duration: u64,
     pub timestamp_output: BucketTimestamp,
     pub alignment: BucketAlignment,
@@ -221,7 +226,7 @@ impl From<TimestampRange> for MetaDateRangeFilter {
 impl Default for AggregationOptions {
     fn default() -> Self {
         Self {
-            aggregation: AggregatorConfig::default(),
+            aggregations: smallvec![AggregatorConfig::default()],
             bucket_duration: 60_000, // default 1 minute
             timestamp_output: BucketTimestamp::Start,
             alignment: BucketAlignment::Default,
@@ -231,8 +236,27 @@ impl Default for AggregationOptions {
 }
 
 impl AggregationOptions {
+    /// The first (or only) aggregator of the clause.
+    pub fn primary(&self) -> &AggregatorConfig {
+        self.aggregations
+            .first()
+            .expect("AggregationOptions.aggregations must contain at least one entry")
+    }
+
+    pub fn is_multi(&self) -> bool {
+        self.aggregations.len() > 1
+    }
+
     pub fn create_aggregator(&self) -> Aggregator {
-        self.aggregation.create_aggregator()
+        self.primary().create_aggregator()
+    }
+
+    /// One stateful aggregator per list entry, in output column order.
+    pub fn create_aggregators(&self) -> SmallVec<Aggregator, 2> {
+        self.aggregations
+            .iter()
+            .map(|config| config.create_aggregator())
+            .collect()
     }
 }
 
@@ -300,12 +324,48 @@ pub struct MRangeOptions {
     pub is_reverse: bool,
 }
 
+/// Per-series MRANGE result data. `TimeSeriesChunk` can only store
+/// `(ts, f64)` pairs, so multi-aggregation output uses a second
+/// representation. Only the `Chunk` variant ever crosses the wire in fanout
+/// responses; `Rows` exists purely on the coordinator/local reply path.
+#[derive(Clone, Debug)]
+pub(crate) enum SeriesResultData {
+    Chunk(TimeSeriesChunk),
+    Rows(Vec<MultiSample>),
+}
+
+impl Default for SeriesResultData {
+    fn default() -> Self {
+        SeriesResultData::Chunk(TimeSeriesChunk::default())
+    }
+}
+
+impl From<TimeSeriesChunk> for SeriesResultData {
+    fn from(chunk: TimeSeriesChunk) -> Self {
+        SeriesResultData::Chunk(chunk)
+    }
+}
+
+impl SeriesResultData {
+    /// Iterate the raw samples of the `Chunk` variant. The coordinator ingest
+    /// paths only ever hold chunks (rows never cross the wire); `Rows` yields
+    /// nothing.
+    pub(crate) fn sample_iter(&self) -> Box<dyn Iterator<Item = Sample> + '_> {
+        match self {
+            SeriesResultData::Chunk(chunk) => Box::new(chunk.iter()),
+            SeriesResultData::Rows(_) => {
+                unreachable!("sample_iter called on multi-aggregation rows")
+            }
+        }
+    }
+}
+
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MRangeSeriesResult {
     pub key: String,
     pub group_label_value: Option<String>,
     pub labels: Vec<Label>,
-    pub data: TimeSeriesChunk,
+    pub data: SeriesResultData,
 }
 
 #[derive(Debug, Default, Clone)]

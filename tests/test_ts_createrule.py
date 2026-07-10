@@ -125,7 +125,7 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
 
             result = self.client.execute_command(
                 "TS.CREATERULE", source_key, key,
-                "AGGREGATION", agg, "60000", "CONDITION", "<", 100
+                "AGGREGATION", f"{agg}(<100)", "60000"
             )
 
             assert result == b"OK"
@@ -139,6 +139,36 @@ class TestTSCreateRule(ValkeyTimeSeriesTestCaseBase):
                     found = True
                     break
             assert found, f"Rule for {key} not found"
+
+    def test_create_rule_missing_required_condition(self):
+        """Filtered aggregators (countif, sumif, all, any, none, share) require
+        an inline (op value) condition; omitting it is an error."""
+        source_key = "test:source_missing_cond"
+        dest_key = "test:dest_missing_cond"
+
+        self.create_test_series(source_key)
+        self.create_test_series(dest_key)
+
+        with pytest.raises(ResponseError, match="TSDB: missing condition for aggregator"):
+            self.client.execute_command(
+                "TS.CREATERULE", source_key, dest_key,
+                "AGGREGATION", "countif", "60000"
+            )
+
+    def test_create_rule_disallowed_condition(self):
+        """Aggregators that don't support conditions (e.g. avg) must not
+        carry an inline (op value)."""
+        source_key = "test:source_bad_cond"
+        dest_key = "test:dest_bad_cond"
+
+        self.create_test_series(source_key)
+        self.create_test_series(dest_key)
+
+        with pytest.raises(ResponseError, match="TSDB: aggregation type does not support a filter condition"):
+            self.client.execute_command(
+                "TS.CREATERULE", source_key, dest_key,
+                "AGGREGATION", "avg(>5)", "60000"
+            )
 
     def test_disallow_replace_existing(self):
         """Test replacing an existing rule"""

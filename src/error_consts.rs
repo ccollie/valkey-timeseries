@@ -41,6 +41,12 @@ pub const INVALID_SERIES_SELECTOR: &str = "TSDB: series selector is invalid";
 pub const INVALID_STEP_DURATION: &str = "TSDB: invalid step duration";
 pub const INVALID_TIMESTAMP: &str = "TSDB: invalid timestamp.";
 pub const UNKNOWN_AGGREGATION_TYPE: &str = "TSDB: unknown aggregation type";
+pub const DUPLICATE_AGGREGATION: &str = "TSDB: duplicate aggregation";
+pub const TOO_MANY_AGGREGATIONS: &str = "TSDB: too many aggregations (max 16)";
+pub const INVALID_AGGREGATION_LIST: &str = "TSDB: invalid aggregation list";
+pub const INVALID_AGGREGATION_CONDITION: &str = "TSDB: invalid aggregation condition";
+pub const MULTI_AGGREGATION_UNSUPPORTED: &str =
+    "TSDB: multiple aggregations are not supported for TS.JOIN";
 pub const INVALID_START_TIMESTAMP: &str = "TSDB: invalid start timestamp.";
 pub const INVALID_END_TIMESTAMP: &str = "TSDB: invalid end timestamp.";
 pub const NEGATIVE_TIMESTAMP: &str = "TSDB: timestamps cannot be negative.";

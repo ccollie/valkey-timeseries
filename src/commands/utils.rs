@@ -2,9 +2,9 @@ use super::fanout::generated::{Label as FanoutLabel, Sample as FanoutSample};
 use crate::commands::fanout::MGetValue;
 use crate::common::replies::{
     IntoRawCtx, reply_label_ex, reply_with_array, reply_with_bulk_string, reply_with_labels,
-    reply_with_sample_ex, reply_with_samples,
+    reply_with_multi_samples, reply_with_sample_ex, reply_with_samples,
 };
-use crate::series::request_types::MRangeSeriesResult;
+use crate::series::request_types::{MRangeSeriesResult, SeriesResultData};
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue, raw};
 
 pub(super) fn reply_with_fanout_label<C: IntoRawCtx>(ctx: C, label: &FanoutLabel) {
@@ -41,7 +41,10 @@ pub fn reply_with_mrange_series_result(ctx: &Context, series: &MRangeSeriesResul
     // series.labels has the same count as selected_labels
     reply_with_labels(ctx, &series.labels);
 
-    reply_with_samples(ctx, series.data.iter());
+    match &series.data {
+        SeriesResultData::Chunk(chunk) => reply_with_samples(ctx, chunk.iter()),
+        SeriesResultData::Rows(rows) => reply_with_multi_samples(ctx, rows.iter()),
+    }
 }
 
 pub(super) fn reply_with_mrange_series_results(

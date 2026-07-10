@@ -116,3 +116,34 @@ multithreaded architecture.
 Query operations are performed by one node of each shard on its local index, and the results are transparently merged to
 form a full command response. Query operations are subject to increasing overhead as the cluster shard count increases,
 meaning that query operations may scale sub-linearly with increasing shard count.
+
+## Aggregation push-down (TS.MRANGE / TS.MREVRANGE)
+
+Because each time series lives entirely on one shard, per-series `AGGREGATION` for `TS.MRANGE`/`TS.MREVRANGE` is
+computed shard-side: shards return aggregated buckets instead of raw samples, cutting network transfer and coordinator
+CPU roughly by the ratio of samples per bucket. Results are exact for every aggregator type.
+
+`GROUPBY`/`REDUCE` queries are additionally pre-reduced shard-side when the reducer is decomposable (`sum`, `count`,
+`countall`, `countnan`, `min`, `max`, `range`, `avg`, `std.p`, `std.s`, `var.p`, `var.s`, `first`, `last`, including
+their filtered variants such as `countif`/`sumif` with an inline condition): each shard ships one partial-state series
+per (group, shard), and the coordinator merges and finalizes them per bucket. Order-sensitive reducers (`increase`,
+`irate`) automatically fall back to per-series bucket transport. `COUNT` and reversal (`TS.MREVRANGE`) are always
+applied at the coordinator.
+
+Multi-aggregation queries (`AGGREGATION avg,max,count …`) participate in both push-downs: per-series buckets travel as
+one compressed chunk per aggregation column, and group partials carry one reducer state per column per bucket, reduced
+column-wise with the same `REDUCE` type.
+
+`COUNT` is likewise applied shard-side as a head/tail pre-filter bounding transfer to `O(count)` rows per series (or
+per group partial) — most valuable for `TS.MREVRANGE … COUNT n` ("last n points") queries. The coordinator always
+re-applies `COUNT` as the final authority.
+
+Mixed-version clusters are handled by a compatibility handshake (`docs/fanout-compatibility-handshake.md`): shards
+echo which push-down flags they honored, and the coordinator compensates per response — data from a peer that did not
+apply push-down is aggregated and pre-reduced coordinator-side before merging. Rolling upgrades therefore need no
+special configuration; a lagging node only costs extra transfer and coordinator CPU for its own slice of each query.
+
+Push-down is controlled by the boolean config `ts-fanout-aggregation-pushdown` (default `yes`, changeable at runtime
+via `CONFIG SET`). Only the coordinator consults it; shards obey the request. It is not a mixed-version safety knob —
+version skew is handled automatically by the handshake above — but an emergency/diagnostic escape hatch: flipping it
+off reverts every query to coordinator-side aggregation without a module rollback.

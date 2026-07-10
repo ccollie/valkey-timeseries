@@ -59,6 +59,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
 
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
+                                        'WITHLABELS',
                                         'FILTER', 'region!=none',
                                         'GROUPBY', 'region',
                                         'REDUCE', 'sum')
@@ -82,6 +83,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
                                         'AGGREGATION', 'avg', 20,
+                                        'WITHLABELS',
                                         'FILTER', 'sensor!=none',
                                         'GROUPBY', 'sensor',
                                         'REDUCE', 'max')
@@ -187,6 +189,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         client = self.new_client_for_primary(0)
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
+                                        'WITHLABELS',
                                         'FILTER', 'sensor=temp',
                                         'GROUPBY', 'sensor',
                                         'REDUCE', 'min')
@@ -205,6 +208,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         client = self.new_client_for_primary(0)
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
+                                        'WITHLABELS',
                                         'FILTER', 'sensor=humid',
                                         'GROUPBY', 'region',
                                         'REDUCE', 'max')

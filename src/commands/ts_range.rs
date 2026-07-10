@@ -1,6 +1,6 @@
 use crate::commands::command_parser::parse_range_options;
-use crate::common::replies::reply_with_samples;
-use crate::iterators::TimeSeriesRangeIterator;
+use crate::common::replies::{reply_with_multi_samples, reply_with_samples};
+use crate::iterators::{TimeSeriesRangeIterator, TimeSeriesRangeRowIterator};
 use crate::series::get_timeseries;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -40,8 +40,13 @@ fn range_internal(ctx: &Context, args: Vec<ValkeyString>, is_reverse: bool) -> V
     // In both cases we pass true for must_exist, meaning that if the series does not exist, we will
     // propagate an error. Because of this, unwrap is safe to use here.
     let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), true)?.unwrap();
-    let iter = TimeSeriesRangeIterator::new(Some(ctx), &series, &options, is_reverse);
 
-    reply_with_samples(ctx, iter);
+    if options.aggregation.as_ref().is_some_and(|a| a.is_multi()) {
+        let iter = TimeSeriesRangeRowIterator::new(Some(ctx), &series, &options, is_reverse);
+        reply_with_multi_samples(ctx, iter);
+    } else {
+        let iter = TimeSeriesRangeIterator::new(Some(ctx), &series, &options, is_reverse);
+        reply_with_samples(ctx, iter);
+    }
     Ok(ValkeyValue::NoReply)
 }

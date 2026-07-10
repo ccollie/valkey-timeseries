@@ -1,5 +1,6 @@
 use crate::common::hash::hash_f64;
 use get_size2::GetSize;
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
@@ -91,6 +92,41 @@ impl From<&Sample> for ValkeyValue {
             ValkeyValue::from(sample.value),
         ];
         ValkeyValue::from(row)
+    }
+}
+
+/// One output bucket of a multi-aggregation query: `values[i]` corresponds to
+/// `AggregationOptions.aggregations[i]`.
+#[derive(Debug, Clone, Default)]
+pub struct MultiSample {
+    pub timestamp: Timestamp,
+    pub values: SmallVec<SampleValue, 4>,
+}
+
+impl MultiSample {
+    pub fn new(timestamp: Timestamp, values: SmallVec<SampleValue, 4>) -> Self {
+        Self { timestamp, values }
+    }
+}
+
+impl PartialEq for MultiSample {
+    fn eq(&self, other: &Self) -> bool {
+        // Mirrors Sample equality: values are equal if both are NaN or numerically equal.
+        self.timestamp == other.timestamp
+            && self.values.len() == other.values.len()
+            && self
+                .values
+                .iter()
+                .zip(other.values.iter())
+                .all(|(a, b)| if a.is_nan() { b.is_nan() } else { a == b })
+    }
+}
+
+impl Eq for MultiSample {}
+
+impl Display for MultiSample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} @ {}", self.values.as_slice(), self.timestamp)
     }
 }
 

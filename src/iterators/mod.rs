@@ -1,6 +1,8 @@
 mod filtered_sample_iterator;
+mod multi_series_row_iter;
 mod multi_series_sample_iter;
 mod reduce_iterator;
+mod row_reducer;
 mod sample_iter;
 mod sample_merge_iterator;
 mod sample_reducer;
@@ -10,11 +12,13 @@ mod utils;
 mod vec_sample_iterator;
 
 pub use filtered_sample_iterator::FilteredSampleIterator;
+pub use multi_series_row_iter::MultiSeriesRowIter;
 pub use multi_series_sample_iter::MultiSeriesSampleIter;
 pub use reduce_iterator::*;
+pub use row_reducer::RowReducer;
 pub use sample_iter::*;
 pub use sample_merge_iterator::*;
 pub use sample_reducer::SampleReducer;
-pub use timeseries_range_iterator::TimeSeriesRangeIterator;
+pub use timeseries_range_iterator::{TimeSeriesRangeIterator, TimeSeriesRangeRowIterator};
 pub use timestamp_filter_iterator::TimestampFilterIterator;
 pub use utils::*;

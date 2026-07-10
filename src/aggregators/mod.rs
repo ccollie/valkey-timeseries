@@ -10,10 +10,12 @@ mod handlers;
 #[cfg(test)]
 mod handlers_tests;
 mod kahan;
+mod partial_reducer;
 
 pub use aggregate_iterator::*;
 pub use filtered::*;
 pub use handlers::*;
+pub use partial_reducer::*;
 
 #[derive(Debug, Default, PartialEq, Clone, Copy, Eq)]
 pub enum BucketTimestamp {
@@ -205,6 +207,45 @@ impl AggregationType {
             }
         } else {
             *self
+        }
+    }
+
+    /// Returns true if the reducer can be pre-reduced shard-side into a
+    /// mergeable partial state, i.e. `finalize(merge(states...))` equals the
+    /// single-node result over the concatenated inputs.
+    ///
+    /// `increase`/`irate` reduce over same-timestamp values in merge order, so
+    /// cross-shard merging cannot reproduce a single interleaving. `rate` and
+    /// the filtered types are not accepted as reducers at all.
+    ///
+    /// Must agree with [`PartialReducer::for_config`], which builds the state.
+    ///
+    /// [`PartialReducer::for_config`]: crate::aggregators::partial_reducer::PartialReducer::for_config
+    pub fn is_decomposable(&self) -> bool {
+        match self {
+            AggregationType::Sum
+            | AggregationType::SumIf
+            | AggregationType::Count
+            | AggregationType::CountIf
+            | AggregationType::CountAll
+            | AggregationType::CountNan
+            | AggregationType::Min
+            | AggregationType::Max
+            | AggregationType::Range
+            | AggregationType::Avg
+            | AggregationType::StdP
+            | AggregationType::StdS
+            | AggregationType::VarP
+            | AggregationType::VarS
+            | AggregationType::First
+            | AggregationType::Last => true,
+            AggregationType::Increase
+            | AggregationType::IRate
+            | AggregationType::Rate
+            | AggregationType::All
+            | AggregationType::Any
+            | AggregationType::None
+            | AggregationType::Share => false,
         }
     }
 }
