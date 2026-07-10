@@ -143,4 +143,6 @@ apply push-down is aggregated and pre-reduced coordinator-side before merging. R
 special configuration; a lagging node only costs extra transfer and coordinator CPU for its own slice of each query.
 
 Push-down is controlled by the boolean config `ts-fanout-aggregation-pushdown` (default `yes`, changeable at runtime
-via `CONFIG SET`). Only the coordinator consults it; shards obey the request.
+via `CONFIG SET`). Only the coordinator consults it; shards obey the request. It is not a mixed-version safety knob —
+version skew is handled automatically by the handshake above — but an emergency/diagnostic escape hatch: flipping it
+off reverts every query to coordinator-side aggregation without a module rollback.
