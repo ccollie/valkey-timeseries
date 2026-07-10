@@ -32,8 +32,22 @@ impl KahanSum {
         self.compensation = new_compensation;
     }
 
+    /// Reconstitutes a sum from its transported parts (see
+    /// `PartialState::acc1`/`acc1_c` in the partial reducer). A plain f64 sum
+    /// round-trips as `from_parts(sum, 0.0)`.
+    pub(crate) fn from_parts(sum: f64, compensation: f64) -> Self {
+        Self { sum, compensation }
+    }
+
+    /// Decomposes into `(sum, compensation)` for transport.
+    pub(crate) fn into_parts(self) -> (f64, f64) {
+        (self.sum, self.compensation)
+    }
+
+    /// The compensated sum. Neumaier's algorithm accumulates the running sum
+    /// and the rounding error separately; the result is their sum.
     pub fn value(&self) -> f64 {
-        self.sum
+        self.sum + self.compensation
     }
 
     /// Returns the current error value
@@ -65,17 +79,14 @@ impl AddAssign<f64> for KahanSum {
 }
 
 impl AddAssign<&KahanSum> for KahanSum {
+    /// Merges two independently accumulated sums (e.g. shard partials):
+    /// two-sums the running sums via `kahan_inc` — which folds the rounding
+    /// error into this side's compensation — then adds the other side's
+    /// compensation. Order-insensitive up to one ulp of the compensation term.
     fn add_assign(&mut self, rhs: &KahanSum) {
-        let mut rhs = *rhs;
-        if self.sum.abs() < rhs.sum.abs() {
-            std::mem::swap(self, &mut rhs);
-        }
-        let combined_errors = rhs.compensation + self.compensation;
-        let y = rhs.sum - combined_errors;
-        let sum = self.sum + y;
-        let err = (sum - self.sum) - y;
+        let (sum, compensation) = kahan_inc(rhs.sum, self.sum, self.compensation);
         self.sum = sum;
-        self.compensation = err;
+        self.compensation = compensation + rhs.compensation;
     }
 }
 
@@ -247,6 +258,38 @@ mod tests {
         let mut combined2 = a;
         combined2 += b;
         assert!((combined2.value() - total_expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_value_applies_compensation() {
+        // Naive summation loses the 1.0s entirely (1e16 + 1.0 == 1e16), so
+        // this only passes if value() folds the Neumaier compensation in.
+        let mut s = KahanSum::new();
+        for inc in [1e16, 1.0, 1.0, -1e16] {
+            s += inc;
+        }
+        assert_eq!(s.value(), 2.0);
+    }
+
+    #[test]
+    fn test_merge_catastrophic_cancellation() {
+        // Split so each side carries a nonzero compensation and the running
+        // sums cancel on merge; the naive merge of running sums yields 0.
+        let mut a = KahanSum::new();
+        a += 1e16;
+        a += 1.0;
+        let mut b = KahanSum::new();
+        b += 1.0;
+        b += -1e16;
+
+        let mut merged = a;
+        merged += &b;
+        assert_eq!(merged.value(), 2.0);
+
+        // merge order must not matter
+        let mut merged2 = b;
+        merged2 += &a;
+        assert_eq!(merged2.value(), 2.0);
     }
 
     #[test]
