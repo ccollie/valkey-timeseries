@@ -4,7 +4,7 @@ use super::fanout::generated::{
 use crate::aggregators::MultiAggregateIterator;
 use crate::aggregators::{PartialReducer, PartialState};
 use crate::commands::utils::reply_with_mrange_series_results;
-use crate::common::Sample;
+use crate::common::{MultiSample, Sample};
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::iterators::{
@@ -47,21 +47,12 @@ pub struct MRangeFanoutCommand {
 impl MRangeFanoutCommand {
     pub fn new(options: MRangeOptions) -> Self {
         let config_enabled = crate::config::is_fanout_aggregation_pushdown_enabled();
-        // Multi-aggregation buckets are rows. Per-series aggregation push-down
-        // ships them as one chunk per aggregation column (SeriesRangeResponse
-        // .columns), so it is enabled for multi. GROUPBY/REDUCE partial-state
-        // push-down (pushdown_group) carries a single value per bucket and has
-        // no multi-column form yet, so it stays disabled for multi; grouped
-        // multi queries fall back to per-series bucket transport with a
-        // coordinator-side column-wise reduce.
-        let is_multi = options
-            .range
-            .aggregation
-            .as_ref()
-            .is_some_and(|a| a.is_multi());
+        // Both push-downs support multi-aggregation: per-series buckets ship
+        // as one chunk per aggregation column (SeriesRangeResponse.columns),
+        // and group partials carry `column_count` states per bucket
+        // (GroupPartialSeries), reduced column-wise with the same REDUCE type.
         let pushdown = config_enabled && options.range.aggregation.is_some();
         let pushdown_group = config_enabled
-            && !is_multi
             && options
                 .grouping
                 .as_ref()
@@ -97,16 +88,9 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         req: MultiRangeRequest,
     ) -> ValkeyResult<MultiRangeResponse> {
         let apply_aggregation = req.apply_aggregation;
-        let mut apply_group_reduce = req.apply_group_reduce;
+        let apply_group_reduce = req.apply_group_reduce;
         let apply_count = req.apply_count;
         let mut options: MRangeOptions = req.try_into()?;
-        // Per-series aggregation push-down supports multi-aggregation (buckets
-        // ship as per-column chunks). GROUPBY/REDUCE partial-state push-down
-        // does not yet, so ignore apply_group_reduce for multi and fall back to
-        // per-series bucket transport (apply_aggregation) if a peer sets it.
-        if is_multi_aggregation(&options) {
-            apply_group_reduce = false;
-        }
         // COUNT push-down: capture the requested direction and count before
         // they are reset below. The shard streams ascending, so a reverse
         // query keeps the tail (= first `count` in requested order); the
@@ -267,8 +251,8 @@ fn handle_grouping(
 
 /// Merge and finalize the per-(group, shard) partial states returned under
 /// GROUPBY/REDUCE push-down: per group, merge states with equal bucket
-/// timestamps across shards, finalize each into a sample, then apply
-/// reversal and COUNT.
+/// timestamps across shards (column-wise for multi-aggregation), finalize
+/// each bucket into a sample/row, then apply reversal and COUNT.
 fn handle_group_partials(
     partials: Vec<GroupPartialSeries>,
     options: &MRangeOptions,
@@ -283,37 +267,81 @@ fn handle_group_partials(
         ));
     };
     let kind = reducer.kind();
+    // Multi-aggregation buckets carry one state per aggregation column, all
+    // reduced with the same REDUCE kind; everything else is one column.
+    let is_multi = is_multi_aggregation(options);
+    let columns = if is_multi {
+        options
+            .range
+            .aggregation
+            .as_ref()
+            .map(|a| a.aggregations.len())
+            .unwrap_or(1)
+    } else {
+        1
+    };
 
-    type MergedGroup = (BTreeMap<i64, PartialState>, BTreeSet<String>);
+    type BucketStates = SmallVec<PartialState, 4>;
+    type MergedGroup = (BTreeMap<i64, BucketStates>, BTreeSet<String>);
     let mut groups: BTreeMap<String, MergedGroup> = BTreeMap::new();
     for partial in partials {
+        // Corrupt-peer defense: states must be row-major with exactly the
+        // column count this query produces.
+        if partial.column_count as usize != columns
+            || partial.states.len() != partial.bucket_timestamps.len() * columns
+        {
+            return Err(ValkeyError::Str(
+                "TSDB: invalid group partial states received from peer",
+            ));
+        }
         let (buckets, sources) = groups.entry(partial.group_label_value).or_default();
         sources.extend(partial.source_keys);
-        for (ts, state) in partial.bucket_timestamps.iter().zip(partial.states.iter()) {
-            let state: PartialState = state.into();
-            buckets
+        for (ts, row) in partial
+            .bucket_timestamps
+            .iter()
+            .zip(partial.states.chunks_exact(columns))
+        {
+            // merge() copies `other` into a count == 0 state, so freshly
+            // inserted default states merge as plain assignment.
+            let merged = buckets
                 .entry(*ts)
-                .and_modify(|existing| PartialReducer::merge(kind, existing, &state))
-                .or_insert(state);
+                .or_insert_with(|| (0..columns).map(|_| PartialState::default()).collect());
+            for (into, state) in merged.iter_mut().zip(row.iter()) {
+                PartialReducer::merge(kind, into, &state.into());
+            }
         }
     }
 
     Ok(groups
         .into_iter()
         .map(|(label, (buckets, sources))| {
-            let mut samples: Vec<Sample> = buckets
-                .into_iter()
-                .map(|(timestamp, state)| Sample {
+            let data = if is_multi {
+                let rows = buckets.into_iter().map(|(timestamp, states)| MultiSample {
                     timestamp,
-                    value: PartialReducer::finalize(kind, &state),
-                })
-                .collect();
-            if options.is_reverse {
-                samples.reverse();
-            }
-            if let Some(count) = options.range.count {
-                samples.truncate(count);
-            }
+                    values: states
+                        .iter()
+                        .map(|state| PartialReducer::finalize(kind, state))
+                        .collect(),
+                });
+                SeriesResultData::Rows(collect_rows(rows, options.is_reverse, options.range.count))
+            } else {
+                let mut samples: Vec<Sample> = buckets
+                    .into_iter()
+                    .map(|(timestamp, states)| Sample {
+                        timestamp,
+                        value: PartialReducer::finalize(kind, &states[0]),
+                    })
+                    .collect();
+                if options.is_reverse {
+                    samples.reverse();
+                }
+                if let Some(count) = options.range.count {
+                    samples.truncate(count);
+                }
+                SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(
+                    samples,
+                )))
+            };
 
             let sources: Vec<String> = sources.into_iter().collect(); // sorted via BTreeSet
             let labels = if options.with_labels {
@@ -331,9 +359,7 @@ fn handle_group_partials(
                 key: format!("{}={}", group_options.group_label, label),
                 group_label_value: Some(label),
                 labels,
-                data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
-                    UncompressedChunk::from_vec(samples),
-                )),
+                data,
             }
         })
         .collect())
@@ -391,7 +417,7 @@ fn aggregate_rows_ascending<'a>(
 fn series_rows_ascending<'a>(
     series: &'a MRangeSeriesResult,
     options: &'a MRangeOptions,
-) -> Box<dyn Iterator<Item = crate::common::MultiSample> + 'a> {
+) -> Box<dyn Iterator<Item = MultiSample> + 'a> {
     match &series.data {
         SeriesResultData::Rows(rows) => Box::new(rows.iter().cloned()),
         SeriesResultData::Chunk(_) => {
@@ -784,6 +810,7 @@ mod tests {
                 source_keys: keys.iter().map(|s| s.to_string()).collect(),
                 bucket_timestamps,
                 states: states.into_iter().map(Into::into).collect(),
+                column_count: 1,
             }
         };
 
@@ -944,6 +971,7 @@ mod tests {
                         source_keys: keys.iter().map(|s| s.to_string()).collect(),
                         bucket_timestamps,
                         states: states.into_iter().map(Into::into).collect(),
+                        column_count: 1,
                     }
                 };
 
@@ -1010,11 +1038,10 @@ mod tests {
         }
     }
 
-    /// Multi-aggregation enables per-series aggregation push-down (buckets ship
-    /// as per-column chunks) and COUNT push-down, but NOT GROUPBY/REDUCE
-    /// partial-state push-down: partial states carry one value per bucket and
-    /// have no multi-column form yet, so grouped multi queries fall back to
-    /// per-series bucket transport with a coordinator-side column-wise reduce.
+    /// Multi-aggregation enables all three push-downs: per-series buckets ship
+    /// as per-column chunks, group partials carry `column_count` states per
+    /// bucket, and COUNT rides on either. Non-decomposable reducers still fall
+    /// back to per-series bucket transport, exactly as for single-aggregation.
     #[test]
     fn test_multi_aggregation_pushdown_flags() {
         let mut options = mrange_options(0, 1000);
@@ -1028,18 +1055,31 @@ mod tests {
         let command = MRangeFanoutCommand::new(options.clone());
         assert!(command.pushdown, "per-series aggregation push-down applies");
         assert!(
-            !command.pushdown_group,
-            "group partial-state push-down has no multi-column form"
+            command.pushdown_group,
+            "group partial-state push-down applies column-wise"
         );
         assert!(command.pushdown_count, "COUNT push-down rides on pushdown");
         let request = command.generate_request();
         assert!(request.apply_aggregation);
-        assert!(!request.apply_group_reduce);
+        assert!(request.apply_group_reduce);
         assert!(request.apply_count);
 
-        // single aggregation with the same shape additionally enables the
-        // group partial-state push-down
+        // non-decomposable reducer: multi falls back to per-series buckets
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(AggregationType::Increase, None).unwrap(),
+            group_label: "region".into(),
+        });
+        let command = MRangeFanoutCommand::new(options.clone());
+        assert!(command.pushdown);
+        assert!(!command.pushdown_group);
+        assert!(!command.generate_request().apply_group_reduce);
+
+        // single aggregation with the same shape behaves identically
         options.range.aggregation = Some(avg_aggregation(100));
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+            group_label: "region".into(),
+        });
         let command = MRangeFanoutCommand::new(options);
         assert!(command.pushdown);
         assert!(command.pushdown_group);
@@ -1246,6 +1286,152 @@ mod tests {
                 "reverse={is_reverse} count={count:?}"
             );
         }
+    }
+
+    /// Simulate a multi-aggregation shard's group-partials response for its
+    /// local members of one group: per-series row pipeline (bucket
+    /// aggregation, ascending), k-way merge, column-wise partial reduce —
+    /// exactly the `process_mrange_group_partials` multi pipeline.
+    fn shard_multi_group_partial(
+        members: &[(&str, &[Sample])],
+        options: &MRangeOptions,
+    ) -> GroupPartialSeries {
+        use crate::aggregators::PartialRowReducer;
+
+        let mut shard_options = options.clone();
+        shard_options.range.count = None; // shard streams ascending, unbounded
+        shard_options.is_reverse = false;
+        let columns = options
+            .range
+            .aggregation
+            .as_ref()
+            .unwrap()
+            .aggregations
+            .len();
+        let reducer =
+            PartialReducer::for_config(&options.grouping.as_ref().unwrap().aggregation).unwrap();
+
+        let row_iters: Vec<_> = members
+            .iter()
+            .map(|(_, raw)| {
+                let rows: Vec<MultiSample> =
+                    aggregate_rows_ascending(raw.iter().copied(), &shard_options).collect();
+                rows.into_iter()
+            })
+            .collect();
+        let merged = MultiSeriesRowIter::new(row_iters);
+        let (bucket_timestamps, buckets): (Vec<i64>, Vec<_>) =
+            PartialRowReducer::new(merged, reducer, columns).unzip();
+
+        GroupPartialSeries {
+            group_label_value: "us".into(),
+            source_keys: members.iter().map(|(key, _)| key.to_string()).collect(),
+            bucket_timestamps,
+            states: buckets
+                .into_iter()
+                .flatten()
+                .map(Into::into)
+                .collect(),
+            column_count: columns as u32,
+        }
+    }
+
+    /// Multi-aggregation group-reduce push-down: shard-side column-wise
+    /// partial states, merged and finalized at the coordinator, must equal
+    /// the per-series bucket transport fallback (itself proven equal to the
+    /// raw flow above). REDUCE avg makes the cross-shard merge nontrivial
+    /// (count+sum accumulate across shards); one shard holds two series
+    /// (pre-merged locally), the other holds one.
+    #[test]
+    fn test_multi_aggregation_group_partials_roundtrip() {
+        let raw_a = samples(&[(0, 1.0), (10, 3.0), (110, 5.0)]);
+        let raw_b = samples(&[(0, 8.0), (20, 12.0), (250, 7.0)]);
+        let raw_c = samples(&[(0, 4.0), (110, 9.0), (250, 1.0)]);
+
+        for (is_reverse, count) in [
+            (false, None),
+            (true, None),
+            (true, Some(2)),
+            (false, Some(1)),
+        ] {
+            let mut options = mrange_options(0, 1000);
+            options.with_labels = true;
+            options.range.aggregation = Some(multi_aggregation(100));
+            options.range.count = count;
+            options.is_reverse = is_reverse;
+            options.grouping = Some(RangeGroupingOptions {
+                aggregation: AggregatorConfig::new(AggregationType::Avg, None).unwrap(),
+                group_label: "region".into(),
+            });
+
+            // Reference: per-series bucket transport with coordinator-side
+            // column-wise reduce (the non-decomposable fallback path).
+            let reference = handle_grouping(
+                vec![
+                    shard_multi_response("a", Some("us"), &raw_a, &options),
+                    shard_multi_response("b", Some("us"), &raw_b, &options),
+                    shard_multi_response("c", Some("us"), &raw_c, &options),
+                ],
+                &options,
+            )
+            .unwrap();
+
+            // Phase 2: shard 1 holds a and b (pre-merged locally), shard 2
+            // holds c; one partial series per (group, shard).
+            let pushed = handle_group_partials(
+                vec![
+                    shard_multi_group_partial(&[("a", &raw_a), ("b", &raw_b)], &options),
+                    shard_multi_group_partial(&[("c", &raw_c)], &options),
+                ],
+                &options,
+            )
+            .unwrap();
+
+            assert_eq!(reference.len(), 1);
+            assert_eq!(pushed.len(), 1);
+            assert_eq!(reference[0].key, pushed[0].key);
+            assert_eq!(
+                result_rows(&reference[0]),
+                result_rows(&pushed[0]),
+                "reverse={is_reverse} count={count:?}"
+            );
+            let source = pushed[0]
+                .labels
+                .iter()
+                .find(|l| l.name == SOURCE_KEY)
+                .expect("__source__ label present");
+            assert_eq!(source.value, "a,b,c");
+        }
+    }
+
+    /// Corrupt-peer defense: partial series whose column_count or state count
+    /// does not match the query's shape are rejected instead of misdecoded.
+    #[test]
+    fn test_group_partials_shape_validation() {
+        let mut options = mrange_options(0, 1000);
+        options.grouping = Some(RangeGroupingOptions {
+            aggregation: AggregatorConfig::new(AggregationType::Sum, None).unwrap(),
+            group_label: "region".into(),
+        });
+
+        let partial = |column_count: u32, states: usize| GroupPartialSeries {
+            group_label_value: "us".into(),
+            source_keys: vec!["a".into()],
+            bucket_timestamps: vec![0, 100],
+            states: (0..states).map(|_| PartialState::default().into()).collect(),
+            column_count,
+        };
+
+        // single-aggregation query expects one column, two states
+        assert!(handle_group_partials(vec![partial(1, 2)], &options).is_ok());
+        assert!(handle_group_partials(vec![partial(2, 4)], &options).is_err());
+        assert!(handle_group_partials(vec![partial(1, 3)], &options).is_err());
+
+        // multi query expects one state per column per bucket
+        options.range.aggregation = Some(multi_aggregation(100)); // 3 columns
+        assert!(handle_group_partials(vec![partial(3, 6)], &options).is_ok());
+        assert!(handle_group_partials(vec![partial(1, 2)], &options).is_err());
+        assert!(handle_group_partials(vec![partial(3, 5)], &options).is_err());
     }
 
     /// Multi-aggregation push-down round trip (grouped): per-series bucket rows

@@ -129,6 +129,10 @@ CPU roughly by the ratio of samples per bucket. Results are exact for every aggr
 finalizes them per bucket. Order-sensitive reducers (`increase`, `irate`) automatically fall back to per-series bucket
 transport. `COUNT` and reversal (`TS.MREVRANGE`) are always applied at the coordinator.
 
+Multi-aggregation queries (`AGGREGATION avg,max,count …`) participate in both push-downs: per-series buckets travel as
+one compressed chunk per aggregation column, and group partials carry one reducer state per column per bucket, reduced
+column-wise with the same `REDUCE` type.
+
 `COUNT` is likewise applied shard-side as a head/tail pre-filter bounding transfer to `O(count)` rows per series (or
 per group partial) — most valuable for `TS.MREVRANGE … COUNT n` ("last n points") queries. The coordinator always
 re-applies `COUNT` as the final authority, so unlike aggregation push-down this carries **no** mixed-version hazard.

@@ -383,12 +383,14 @@ Consequences for the three push-down flags (`MRangeFanoutCommand::new`):
 - **`COUNT` push-down** (`pushdown_count`) — **enabled for multi**, because the shipped unit is
   now rows (bucket-aligned); the shard truncates head/tail rows and the coordinator re-applies the
   authoritative COUNT, exactly as for single-aggregation buckets.
-- **GROUPBY/REDUCE partial-state push-down** (`pushdown_group`) — **still disabled for multi.**
-  `ReducePartialState`/`GroupPartialSeries` carry one value per bucket; a per-column form is the
-  remaining follow-up (see `mrange-aggregation-pushdown-plan.md` §10). `get_local_response`
-  defensively ignores `apply_group_reduce` for multi requests. Grouped multi therefore falls back
-  to per-series bucket transport with a coordinator-side column-wise reduce, which already captures
-  most of the network saving (buckets vs. raw samples).
+- **GROUPBY/REDUCE partial-state push-down** (`pushdown_group`) — **enabled for multi
+  (2026-07-10).** `GroupPartialSeries` carries `column_count` states per bucket, flattened
+  row-major; the shard runs `create_row_iterator` → `MultiSeriesRowIter` → `PartialRowReducer`
+  (N clones of the partial reducer, one per column) and the coordinator merges/finalizes
+  column-wise into `MultiSample` rows. Same decomposability rule as single-aggregation: the
+  REDUCE type must be decomposable, otherwise the query falls back to per-series bucket
+  transport with a coordinator-side column-wise reduce. See
+  `mrange-aggregation-pushdown-plan.md` §10 for the wire layout.
 
 `reply()` clears `aggregation` only for single-aggregation push-down; multi keeps its options
 (needed for the column count and the multi/data-variant branch).
@@ -497,8 +499,13 @@ emits 4-element rows.
   groundwork (repeated `AggregatorConfig` in the request) is already in place.
 - **Intra-series parallel aggregation** for very large `TS.RANGE` scans — requires
   `AggregationHandler::merge()` for partial-bucket state (see §9).
-- **Per-aggregator CONDITION syntax** (`countif(>5),sumif(<=2)`) — the parser decision (#2)
-  keeps room to add this later without breaking the comma-list grammar.
+- ~~**Per-aggregator CONDITION syntax** (`countif(>5),sumif(<=2)`)~~ — **Implemented
+  2026-07-10.** No wire changes were needed: `AggregatorConfig` already carries one
+  `value_filter` per list entry (§8.1). `parse_aggregation_list_element`
+  (`src/commands/command_parser.rs`) parses an optional `(op value)` suffix per element; an
+  inline condition takes precedence over the shared `CONDITION` clause for that element,
+  which still applies to elements without one. A shared `CONDITION` left unused by every
+  element (none filter-capable, or all already have an inline override) is still an error.
 - **TS.JOIN multi-aggregation** — explicitly out of scope; guarded with a clear error.
 - Multi-value transport chunks (compressed row encoding) — only needed if push-down happens.
 

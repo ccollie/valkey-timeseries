@@ -1,4 +1,4 @@
-use crate::aggregators::{PartialReducer, PartialSampleReducer, PartialState};
+use crate::aggregators::{PartialReducer, PartialRowReducer, PartialSampleReducer, PartialState};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::error_consts;
@@ -54,9 +54,12 @@ impl SampleLimit {
 pub(crate) struct GroupPartialsResult {
     pub group_label_value: String,
     pub source_keys: Vec<String>,
-    /// Ascending, parallel to `states`.
+    /// Ascending; `states` holds `column_count` entries per timestamp.
     pub timestamps: Vec<Timestamp>,
+    /// Row-major: bucket i, column j at `states[i * column_count + j]`.
     pub states: Vec<PartialState>,
+    /// 1 unless the query is multi-aggregation (then one state per column).
+    pub column_count: usize,
 }
 
 /// Shard-side handler for `apply_group_reduce`: per-series bucket aggregation
@@ -102,6 +105,15 @@ pub(crate) fn process_mrange_group_partials(
     collect_group_label_values(&mut series_metas, &grouping);
     let grouped = group_series_by_label(series_metas, &grouping, false);
 
+    // Multi-aggregation reduces column-wise: N states per bucket, one per
+    // aggregation column, all with the same REDUCE type.
+    let multi_columns = options
+        .range
+        .aggregation
+        .as_ref()
+        .filter(|a| a.is_multi())
+        .map(|a| a.aggregations.len());
+
     Ok(grouped
         .into_iter()
         .iter_into_par()
@@ -115,19 +127,45 @@ pub(crate) fn process_mrange_group_partials(
 
             // Per-series pipeline (aggregation included when present),
             // ascending; the group reducer runs once, across series, below.
-            let iterators = group_data
-                .series
-                .iter()
-                .map(|meta| {
-                    create_range_iterator(meta.series, &options.range, &None, meta.latest, false)
-                })
-                .collect::<Vec<_>>();
+            let (timestamps, states, column_count) = if let Some(columns) = multi_columns {
+                let iterators = group_data
+                    .series
+                    .iter()
+                    .map(|meta| {
+                        create_row_iterator(meta.series, &options.range, meta.latest, false)
+                    })
+                    .collect::<Vec<_>>();
 
-            let multi_iter = MultiSeriesSampleIter::new(iterators);
-            let rows = PartialSampleReducer::new(multi_iter, reducer.clone());
-            let (timestamps, states) = match limit {
-                Some(limit) => limit.apply(rows).unzip(),
-                None => rows.unzip(),
+                let multi_iter = MultiSeriesRowIter::new(iterators);
+                let rows = PartialRowReducer::new(multi_iter, reducer.clone(), columns);
+                let (timestamps, buckets): (Vec<Timestamp>, Vec<_>) = match limit {
+                    Some(limit) => limit.apply(rows).unzip(),
+                    None => rows.unzip(),
+                };
+                let states = buckets.into_iter().flatten().collect();
+                (timestamps, states, columns)
+            } else {
+                let iterators = group_data
+                    .series
+                    .iter()
+                    .map(|meta| {
+                        create_range_iterator(
+                            meta.series,
+                            &options.range,
+                            &None,
+                            meta.latest,
+                            false,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                let multi_iter = MultiSeriesSampleIter::new(iterators);
+                let rows = PartialSampleReducer::new(multi_iter, reducer.clone());
+                let (timestamps, states) = match limit {
+                    Some(limit) => limit.apply(rows).unzip(),
+                    None => rows.unzip(),
+                };
+                (timestamps, states, 1)
             };
 
             GroupPartialsResult {
@@ -135,6 +173,7 @@ pub(crate) fn process_mrange_group_partials(
                 source_keys,
                 timestamps,
                 states,
+                column_count,
             }
         })
         .collect())

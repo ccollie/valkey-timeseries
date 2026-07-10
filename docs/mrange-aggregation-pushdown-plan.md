@@ -414,7 +414,7 @@ series, run the per-group partial pipeline (§6.1), and return `group_partials` 
 | `AGGREGATION` + `GROUPBY`, decomposable reducer | Phase 2 | partial states per (group, shard) |
 | `GROUPBY` only, decomposable reducer | Phase 2 | partial states (per raw timestamp) |
 | `AGGREGATION` (± `GROUPBY` with non-decomposable reducer) | Phase 1 | per-series buckets |
-| no `AGGREGATION`, no `GROUPBY` (or config off / multi-agg §10) | legacy | raw samples |
+| no `AGGREGATION`, no `GROUPBY` (or config off) | legacy | raw samples |
 
 ---
 
@@ -503,15 +503,17 @@ was **extended to participate in per-series push-down** (2026-07-06):
   SampleData columns` (column *i* is a chunk of `(bucket_ts, value_i)`); the coordinator zips
   columns back into `MultiSample` rows and detects already-bucketed rows by the arrived
   `SeriesResultData::Rows` variant to skip re-aggregation. See multi-aggregation-plan §8.3.1.
-- **Phase 2 (partial `GROUPBY`/`REDUCE` push-down) is still single-aggregation only.** The
-  remaining follow-up generalizes `ReducePartialState` per column (the multi-agg column-wise
-  reduce is independent per column, so no structural conflict) and adds a `PartialRowReducer`
-  (row twin of `PartialSampleReducer`) holding N reducer clones. `GroupPartialSeries` would
-  grow a per-column representation (e.g. `MultiPartialState { repeated ReducePartialState
-  columns }`, or flattened row-major with a `column_count`). Until then, grouped multi queries
-  use per-series bucket transport (Phase 1) with a coordinator-side column-wise reduce
-  (`MultiSeriesRowIter` + `RowReducer`), which already captures most of the network saving;
-  the group-partial step would only further divide grouped payloads by local-series-per-group.
+- **Phase 2 (partial `GROUPBY`/`REDUCE` push-down) applies to multi-agg too (2026-07-10).**
+  `GroupPartialSeries.states` is flattened row-major with a `column_count = 5` field (bucket
+  *i*, column *j* at `states[i * column_count + j]`; single-aggregation is `column_count = 1`).
+  A `PartialRowReducer` (row twin of `PartialSampleReducer`, `src/aggregators/partial_reducer.rs`)
+  holds N clones of the partial reducer and accumulates each aggregation column independently
+  per bucket timestamp; the shard's multi pipeline is `create_row_iterator` →
+  `MultiSeriesRowIter` → `PartialRowReducer` (`process_mrange_group_partials`). The coordinator
+  merges states column-wise per bucket, finalizes each column, and emits `MultiSample` rows,
+  validating the row-major shape against its own expected column count as corrupt-peer defense.
+  Non-decomposable reducers fall back to per-series bucket transport exactly as for
+  single-aggregation.
 
 Both plans touch `fanout.request.proto`, `fanout.response.proto`, `conversions.rs`,
 `chunks.rs`, and `ts_mrange_fanout_command.rs`.

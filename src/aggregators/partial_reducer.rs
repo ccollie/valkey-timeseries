@@ -14,8 +14,9 @@
 //! back to per-series bucket transport (Phase 1).
 
 use crate::aggregators::AggregationType;
-use crate::common::{Sample, Timestamp};
+use crate::common::{MultiSample, Sample, Timestamp};
 use crate::series::request_types::{AggregatorConfig, ValueComparisonFilter};
+use smallvec::SmallVec;
 
 /// Which decomposable reducer a `PartialState` belongs to. Determines the
 /// meaning of the accumulator fields and the merge/finalize formulas.
@@ -91,7 +92,13 @@ impl PartialReducer {
     /// `apply_group_reduce`.
     pub fn for_config(config: &AggregatorConfig) -> Option<Self> {
         use AggregationType as At;
+        let has_filter = config.value_filter.is_some();
         let (kind, acceptance) = match config.aggregation {
+            // count/sum with a CONDITION run as their *if aggregators
+            // (create_aggregator), whose zero-match buckets finalize to 0.0
+            // instead of NaN — the kind must match that.
+            At::Sum if has_filter => (PartialReducerKind::SumIf, NanAcceptance::Reject),
+            At::Count if has_filter => (PartialReducerKind::CountIf, NanAcceptance::Reject),
             At::Sum => (PartialReducerKind::Sum, NanAcceptance::Reject),
             At::SumIf => (PartialReducerKind::SumIf, NanAcceptance::Reject),
             At::Count => (PartialReducerKind::Count, NanAcceptance::Reject),
@@ -351,6 +358,71 @@ where
     }
 }
 
+/// Row twin of [`PartialSampleReducer`] for multi-aggregation GROUPBY/REDUCE
+/// push-down: groups an ascending row stream by timestamp and accumulates each
+/// aggregation column into its own clone of the partial reducer, yielding one
+/// state per column per timestamp — the partial-state analogue of `RowReducer`
+/// (src/iterators/row_reducer.rs). Column-wise NaN/CONDITION acceptance is
+/// per-reducer, so an all-NaN column merges/finalizes to NaN independently.
+pub struct PartialRowReducer<I>
+where
+    I: Iterator<Item = MultiSample>,
+{
+    inner: I,
+    buffer: Option<MultiSample>,
+    /// One reducer per aggregation column.
+    reducers: SmallVec<PartialReducer, 4>,
+}
+
+impl<I> PartialRowReducer<I>
+where
+    I: Iterator<Item = MultiSample>,
+{
+    pub fn new(inner: I, reducer: PartialReducer, columns: usize) -> Self {
+        Self {
+            inner,
+            buffer: None,
+            reducers: (0..columns).map(|_| reducer.clone()).collect(),
+        }
+    }
+}
+
+fn update_columns(reducers: &mut [PartialReducer], row: &MultiSample) {
+    debug_assert_eq!(row.values.len(), reducers.len());
+    for (reducer, value) in reducers.iter_mut().zip(row.values.iter()) {
+        reducer.update(row.timestamp, *value);
+    }
+}
+
+impl<I> Iterator for PartialRowReducer<I>
+where
+    I: Iterator<Item = MultiSample>,
+{
+    type Item = (Timestamp, SmallVec<PartialState, 4>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = match self.buffer.take() {
+            Some(row) => row,
+            None => self.inner.next()?,
+        };
+
+        let timestamp = first.timestamp;
+        update_columns(&mut self.reducers, &first);
+
+        for next in self.inner.by_ref() {
+            if next.timestamp == timestamp {
+                update_columns(&mut self.reducers, &next);
+            } else {
+                self.buffer = Some(next);
+                break;
+            }
+        }
+
+        let states = self.reducers.iter_mut().map(|r| r.take_state()).collect();
+        Some((timestamp, states))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +479,10 @@ mod tests {
         .collect();
         configs.push(AggregatorConfig::new(At::CountIf, Some(filter)).unwrap());
         configs.push(AggregatorConfig::new(At::SumIf, Some(filter)).unwrap());
+        // count/sum + CONDITION run as the *if aggregators; the partial kind
+        // must match their 0.0-on-zero-matches finalization.
+        configs.push(AggregatorConfig::new(At::Count, Some(filter)).unwrap());
+        configs.push(AggregatorConfig::new(At::Sum, Some(filter)).unwrap());
         configs
     }
 
@@ -484,6 +560,113 @@ mod tests {
                 PartialReducer::for_config(&config).is_none(),
                 "{ty} must not be decomposable"
             );
+        }
+    }
+
+    /// `AggregationType::is_decomposable` is the coordinator's cheap
+    /// eligibility test; `for_config` is what actually builds the state. They
+    /// must never disagree, or the coordinator sets `apply_group_reduce` for a
+    /// reducer no shard can pre-reduce (or forgoes push-down for one it can).
+    #[test]
+    fn test_is_decomposable_agrees_with_for_config() {
+        use AggregationType as At;
+
+        for config in decomposable_configs() {
+            assert!(
+                config.aggregation.is_decomposable(),
+                "{} is decomposable but is_decomposable() said no",
+                config.aggregation
+            );
+        }
+
+        for ty in [At::Increase, At::IRate, At::Rate] {
+            let config = AggregatorConfig::new(ty, None).unwrap();
+            assert!(
+                !ty.is_decomposable(),
+                "{ty} is not decomposable but is_decomposable() said yes"
+            );
+            assert!(PartialReducer::for_config(&config).is_none());
+        }
+
+        // Not valid reducers; is_decomposable() must not admit them either.
+        for ty in [At::All, At::Any, At::None, At::Share] {
+            assert!(!ty.is_decomposable(), "{ty} is not a valid reducer");
+        }
+    }
+
+    #[test]
+    fn test_partial_row_reducer_columns_independent() {
+        let row = |ts: Timestamp, values: &[f64]| MultiSample {
+            timestamp: ts,
+            values: values.iter().copied().collect(),
+        };
+        // column 0 accumulates normally; column 1 is all-NaN at ts=1
+        let rows = vec![
+            row(1, &[1.0, f64::NAN]),
+            row(1, &[3.0, f64::NAN]),
+            row(2, &[5.0, 7.0]),
+        ];
+
+        let config = AggregatorConfig::new(AggregationType::Sum, None).unwrap();
+        let reducer = PartialReducer::for_config(&config).unwrap();
+        let kind = reducer.kind();
+        let buckets: Vec<_> = PartialRowReducer::new(rows.into_iter(), reducer, 2).collect();
+
+        assert_eq!(buckets.len(), 2);
+        let (ts, states) = &buckets[0];
+        assert_eq!(*ts, 1);
+        assert_eq!(states.len(), 2);
+        assert_value_eq(PartialReducer::finalize(kind, &states[0]), 4.0, "col 0 ts=1");
+        assert!(
+            PartialReducer::finalize(kind, &states[1]).is_nan(),
+            "all-NaN column yields NaN independently"
+        );
+        let (ts, states) = &buckets[1];
+        assert_eq!(*ts, 2);
+        assert_value_eq(PartialReducer::finalize(kind, &states[0]), 5.0, "col 0 ts=2");
+        assert_value_eq(PartialReducer::finalize(kind, &states[1]), 7.0, "col 1 ts=2");
+    }
+
+    /// Column i of `PartialRowReducer` equals `PartialSampleReducer` over that
+    /// column's (ts, value) stream — the row form adds no cross-column
+    /// coupling, for every decomposable reducer.
+    #[test]
+    fn test_partial_row_reducer_matches_sample_reducer_per_column() {
+        const COLUMNS: usize = 3;
+        let mut rng = Rng(7);
+
+        for config in decomposable_configs() {
+            let rows: Vec<MultiSample> = [1i64, 1, 2, 5, 5, 5, 9]
+                .iter()
+                .map(|&timestamp| MultiSample {
+                    timestamp,
+                    values: (0..COLUMNS).map(|_| rng.next_value()).collect(),
+                })
+                .collect();
+
+            let template = PartialReducer::for_config(&config).unwrap();
+            let kind = template.kind();
+            let row_buckets: Vec<_> =
+                PartialRowReducer::new(rows.iter().cloned(), template.clone(), COLUMNS).collect();
+
+            for column in 0..COLUMNS {
+                let samples = rows.iter().map(|r| Sample {
+                    timestamp: r.timestamp,
+                    value: r.values[column],
+                });
+                let expected: Vec<_> =
+                    PartialSampleReducer::new(samples, template.clone()).collect();
+
+                assert_eq!(row_buckets.len(), expected.len());
+                for ((row_ts, states), (ts, state)) in row_buckets.iter().zip(expected.iter()) {
+                    assert_eq!(row_ts, ts);
+                    assert_value_eq(
+                        PartialReducer::finalize(kind, &states[column]),
+                        PartialReducer::finalize(kind, state),
+                        &format!("{} column {column} ts {ts}", config.aggregation),
+                    );
+                }
+            }
         }
     }
 

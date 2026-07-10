@@ -792,6 +792,7 @@ impl From<GroupPartialsResult> for GroupPartialSeries {
             source_keys: value.source_keys,
             bucket_timestamps: value.timestamps,
             states: value.states.into_iter().map(Into::into).collect(),
+            column_count: value.column_count as u32,
         }
     }
 }
