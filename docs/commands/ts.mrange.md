@@ -11,9 +11,9 @@ TS.MRANGE fromTimestamp toTimestamp
     [FILTER_BY_VALUE min max]
     [WITHLABELS | SELECTED_LABELS label...]
     [COUNT count]
-    [[ALIGN align] AGGREGATION aggregator[,aggregator...] bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+    [[ALIGN align] AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
     FILTER selector...
-    [GROUPBY label REDUCE reducer]
+    [GROUPBY label REDUCE reducer[(op value)]]
 ```
 
 ## Required Arguments
@@ -131,7 +131,7 @@ ALIGN 1609459200000 AGGREGATION sum 5m
 - Cannot use `start` align with `-` range start timestamp
 - Cannot use `end` align with `+` range end timestamp
 
-### AGGREGATION aggregator[,aggregator...] bucketDuration
+### AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration
 
 Aggregate samples into time buckets using the specified aggregator(s) and bucket size. A
 comma-separated list of up to 16 distinct aggregators produces one row per bucket containing the
@@ -168,22 +168,23 @@ AGGREGATION avg 1h
 AGGREGATION sum 5m
 ```
 
-#### CONDITION op value
+#### Inline condition: aggregator(op value)
 
-Filter samples before aggregation based on a comparison condition.
+`all`, `any`, `countif`, `sumif`, `share`, and `none` **require** an inline comparison condition —
+`aggregator(op value)`, e.g. `countif(>5)` — with no spaces inside the parentheses since it is a
+single argument token; omitting it is an error. `count` and `sum` accept the same form
+*optionally*, to count/sum only matching samples. Any other aggregator (`avg`, `max`, ...) does
+not accept a condition; attaching one is an error.
 
-**Supported operators:** `<`, `<=`, `>`, `>=`, `=`, `!=`
+**Supported operators:** `<`, `<=`, `>`, `>=`, `==`, `!=`
 
 **Example:**
 
 ```
-AGGREGATION share 1h CONDITION > 20.0
+AGGREGATION share(>20.0) 1h
 ```
 
-An individual element of the `aggregator` list may instead carry its own condition inline —
-`aggregator(op value)`, e.g. `countif(>5)` — so different aggregators in the same list can filter
-on different conditions. An inline condition takes precedence over the shared `CONDITION` clause
-for that element; elements without one still fall back to `CONDITION` if present.
+Different elements of the `aggregator` list can filter on different conditions:
 
 ```
 AGGREGATION countif(>5),sumif(<=2),avg 1h
@@ -229,14 +230,15 @@ GROUPBY region REDUCE sum
 
 Supports all aggregators except `rate` (e.g., `avg`, `sum`, `count`, `max`, `min`, etc.)
 
-#### CONDITION op value
+#### Inline condition: reducer(op value)
 
-Filter samples before reduction based on a comparison condition (same as aggregation `CONDITION`).
+Same inline condition syntax as `AGGREGATION` (see above): required for `countif`/`sumif`/`share`/
+`all`/`any`/`none`, optional for `count`/`sum`, and disallowed for other reducers.
 
 **Example:**
 
 ```
-GROUPBY region REDUCE countif CONDITION > 20.0
+GROUPBY region REDUCE countif(>20.0)
 ```
 
 ## Return Value
@@ -348,13 +350,13 @@ O(n×m×k) where:
 ### Query with aggregation condition and empty buckets
 
 ```bash
-127.0.0.1:6379> TS.MRANGE - + AGGREGATION avg 1h CONDITION > 23.0 EMPTY FILTER sensor_id=12
+127.0.0.1:6379> TS.MRANGE - + AGGREGATION countif(>23.0) 1h EMPTY FILTER sensor_id=12
 1) 1) "temperature:sensor:12"
    2) (empty array)
    3) 1) 1) (integer) 1609459200000
-         2) "23.8"
+         2) "2"
       2) 1) (integer) 1609462800000
-         2) (empty)
+         2) "0"
 ```
 
 ## Notes

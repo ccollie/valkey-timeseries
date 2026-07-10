@@ -72,13 +72,14 @@ class TestTimeSeriesMultiAggregation(ValkeyTimeSeriesTestCaseBase):
                 assert row[0] == expected[0]
                 assert row[1 + i] == expected[1]
 
-    def test_multi_aggregation_with_condition(self):
-        """CONDITION distributes to capable aggregators; plain ones ignore it."""
+    def test_multi_aggregation_with_inline_condition(self):
+        """Each condition-requiring aggregator carries its own inline
+        condition; plain aggregators in the same list take none."""
         self.setup_data()
 
         result = self.client.execute_command(
             'TS.RANGE', 'ts1', '-', '+',
-            'AGGREGATION', 'countif,avg', 1000, 'CONDITION', '>', 15)
+            'AGGREGATION', 'countif(>15),avg', 1000)
         # bucket [1000,2000): countif(>15)=1 (30), avg=20
         assert result[0] == [1000, b'1', b'20']
 
@@ -97,15 +98,15 @@ class TestTimeSeriesMultiAggregation(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError):
             self.client.execute_command(
                 'TS.RANGE', 'ts1', '-', '+', 'AGGREGATION', 'avg,bogus', 1000)
-        # condition-requiring aggregator without CONDITION
+        # condition-requiring aggregator without an inline condition
         with pytest.raises(ResponseError, match='missing condition'):
             self.client.execute_command(
                 'TS.RANGE', 'ts1', '-', '+', 'AGGREGATION', 'countif,avg', 1000)
-        # CONDITION with no capable aggregator
+        # inline condition on an aggregator that doesn't accept one
         with pytest.raises(ResponseError, match='does not support a filter'):
             self.client.execute_command(
                 'TS.RANGE', 'ts1', '-', '+',
-                'AGGREGATION', 'avg,max', 1000, 'CONDITION', '>', 5)
+                'AGGREGATION', 'avg(>5),max', 1000)
 
     def test_mrange_multi_aggregation(self):
         self.setup_mrange_data()

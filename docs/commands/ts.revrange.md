@@ -14,7 +14,7 @@ TS.REVRANGE key fromTimestamp toTimestamp
   [FILTER_BY_VALUE min max]
   [COUNT count]
   [
-      [ALIGN align] AGGREGATION aggregator[,aggregator...] bucketDuration [CONDITION operator value] [BUCKETTIMESTAMP bt] [EMPTY]
+      [ALIGN align] AGGREGATION aggregator[(operator value)][,aggregator[(operator value)]...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]
   ]
 ```
 
@@ -61,16 +61,17 @@ TS.REVRANGE key fromTimestamp toTimestamp
 
 | Option            | Arguments                   | Description                                                                                                               |
 |-------------------|-----------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| `AGGREGATION`     | `aggregator[,aggregator...] bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply each `aggregator` per bucket. A comma-separated list (up to 16 distinct aggregators) yields one value per aggregator per bucket, in the order specified. |
+| `AGGREGATION`     | `aggregator[(operator value)][,aggregator[(operator value)]...] bucketDuration` | Downsample into fixed time buckets of size `bucketDuration` and apply each `aggregator` per bucket. A comma-separated list (up to 16 distinct aggregators) yields one value per aggregator per bucket, in the order specified. |
 | `ALIGN`           | `align`                     | Bucket alignment anchor. May appear before `AGGREGATION` (`ALIGN … AGGREGATION …`) or after it (`AGGREGATION … ALIGN …`). |
 | `BUCKETTIMESTAMP` | `bt`                        | Controls the timestamp emitted for each bucket. Default: `start`.                                                         |
 | `EMPTY`           | (none)                      | Include empty buckets (buckets with no samples).                                                                          |
-| `CONDITION`       | `operator value`            | Comparison filter used by conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`).                    |
 
-Any element of the `aggregator` list can instead carry its own condition inline —
-`aggregator(operator value)`, e.g. `countif(>5)` — letting different aggregators in the same list
-use different conditions. An inline condition takes precedence over the shared `CONDITION` clause
-for that element; elements without one still fall back to `CONDITION` if present. Example:
+Each element of the `aggregator` list carries its own inline condition —
+`aggregator(operator value)`, e.g. `countif(>5)` — with no spaces inside the parentheses since it
+is a single argument token. `countif`, `sumif`, `share`, and `all`/`any`/`none` **require** one;
+omitting it is an error. `count` and `sum` accept one *optionally*, to count/sum only matching
+samples. Any other aggregator (`avg`, `max`, ...) does not accept a condition; attaching one is an
+error. Different elements in the same list can use different conditions, e.g.
 `AGGREGATION countif(>5),sumif(<=2) 60000`.
 
 ##### `bucketDuration` format
@@ -110,12 +111,12 @@ Supported `aggregator` values for `AGGREGATION`:
 | `increase` | Counter increase over the bucket (handles counter resets).                                             |
 | `rate`     | Counter rate per second over the bucket window (`increase / window_seconds`).                          |
 | `irate`    | Instantaneous per-second rate from the last two samples in the bucket/window (handles counter resets). |
-| `countif`  | Count of samples matching `CONDITION operator value`.                                                  |
-| `sumif`    | Sum of sample values matching `CONDITION operator value`.                                              |
-| `share`    | Fraction of samples matching `CONDITION` (range `[0..1]`), or empty when no samples.                   |
-| `all`      | `1.0` if all samples match `CONDITION`, else `0.0`.                                                    |
-| `any`      | `1.0` if any sample matches `CONDITION`, else `0.0`.                                                   |
-| `none`     | `1.0` if no samples match `CONDITION`, else `0.0`.                                                     |
+| `countif`  | Count of samples matching the inline `(operator value)` condition.                                     |
+| `sumif`    | Sum of sample values matching the inline `(operator value)` condition.                                 |
+| `share`    | Fraction of samples matching the condition (range `[0..1]`), or empty when no samples.                 |
+| `all`      | `1.0` if all samples match the condition, else `0.0`.                                                  |
+| `any`      | `1.0` if any sample matches the condition, else `0.0`.                                                  |
+| `none`     | `1.0` if no samples match the condition, else `0.0`.                                                    |
 
 ---
 
@@ -174,7 +175,7 @@ TS.REVRANGE temperature:office 1700000000000 1700003600000 AGGREGATION max 60000
 Return `1.0` for each 5-minute bucket where any sample exceeds 0.9:
 
 ```plain text
-TS.REVRANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION any 300000 CONDITION > 0.9
+TS.REVRANGE cpu:utilization 1700000000000 1700003600000 AGGREGATION any(>0.9) 300000
 ```
 
 ---

@@ -10,7 +10,7 @@ TS.RANGE key fromTimestamp toTimestamp
   [FILTER_BY_TS timestamp ...]
   [FILTER_BY_VALUE min max]
   [COUNT count]
-  [[ALIGN align] AGGREGATION aggregator[,aggregator...] bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+  [[ALIGN align] AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration [BUCKETTIMESTAMP bt] [EMPTY]]
 ```
 
 ---
@@ -49,22 +49,23 @@ Include only samples with values in `[min, max]`. Both bounds are inclusive. App
 Limit output to the first `count` samples or buckets. When used with aggregation, limits bucket
 count (not samples per bucket).
 </details>
-<details open><summary><code>AGGREGATION aggregator[,aggregator...] bucketDuration</code></summary>
+<details open><summary><code>AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration</code></summary>
 Aggregate raw samples into fixed-size time buckets. See [Aggregators](#aggregators) for supported aggregation functions.
 
 `aggregator` may be a comma-separated list of up to 16 distinct aggregators (e.g. `avg,max,count`).
 All aggregators share the bucket parameters (`bucketDuration`, `ALIGN`, `BUCKETTIMESTAMP`, `EMPTY`).
 Each bucket then produces one row containing the bucket timestamp followed by one value per
 aggregator, in the order specified. With a single aggregator the output shape is unchanged
-(`[timestamp, value]`). A `CONDITION` clause applies to every aggregator in the list that accepts
-one (`countif`, `sumif`, `all`, `any`, `none`, `share`, `count`, `sum`); plain aggregators ignore it.
+(`[timestamp, value]`).
 
-Any list element may instead carry its own inline condition — `aggregator(op value)`, e.g.
-`countif(>5)` — so different aggregators in the same list can use different conditions. An inline
-condition takes precedence over the shared `CONDITION` clause for that element; elements without
-one still fall back to `CONDITION` if present. Example: `AGGREGATION countif(>5),sumif(<=2),avg
-60000` counts samples over 5, sums samples at or under 2, and averages everything — three
-independent conditions (two inline, one implicit "none") in a single clause.
+A [filtered aggregator](#filtered-aggregators) (`countif`, `sumif`, `all`, `any`, `none`, `share`)
+**requires** an inline condition — `aggregator(op value)`, e.g. `countif(>5)` — with no spaces
+inside the parentheses since it is a single argument token; omitting it is an error. `count` and
+`sum` optionally accept the same inline form to filter which samples they count/sum. Any other
+aggregator (`avg`, `max`, ...) does not accept a condition at all; attaching one is an error.
+Different elements in the same list can use different conditions, e.g. `AGGREGATION
+countif(>5),sumif(<=2),avg 60000` counts samples over 5, sums samples at or under 2, and averages
+everything — three independent conditions in a single clause.
 </details>
 <details open><summary><code>ALIGN align</code></summary> 
 Control bucket alignment:
@@ -81,22 +82,14 @@ Control bucket alignment:
 - `mid` — Bucket midpoint
 
 </details>
-<details open><summary><code>CONDITION op value</code></summary>
-Comparison filter for conditional aggregators (e.g., `countif`, `sumif`, `share`, `all/any/none`):
-- `op` is a comparison operator: `>`, `<`, `>=`, `<=`, `==`, or `!=`
-- `value` is the value to compare against
-Only samples satisfying the condition are included in the aggregation.
-
-Instead of (or alongside) this shared clause, an individual list element can carry its own
-condition inline: `aggregator(op value)`, e.g. `countif(>5)`. No spaces are allowed inside the
-parentheses since it is a single argument token.
-</details>
-
 ### Aggregation
 
-- **`AGGREGATION aggregator[,aggregator...] bucketDuration`** — Aggregate raw samples into fixed-size time buckets
+- **`AGGREGATION aggregator[(op value)][,aggregator[(op value)]...] bucketDuration`** — Aggregate raw samples into fixed-size time buckets
   - **`aggregator`** — Aggregation function(s) to apply (see [Aggregators](#aggregators)); a
     comma-separated list produces one output column per aggregator, in the order specified
+  - **`(op value)`** — Inline comparison condition for a filtered aggregator, e.g. `countif(>5)`.
+    `op` is one of `>`, `<`, `>=`, `<=`, `==`, `!=`; `value` is the number to compare against.
+    Only samples satisfying the condition are included in that aggregator's computation.
   - **`bucketDuration`** — Bucket size in milliseconds (must be positive)
 ---
 
@@ -134,7 +127,7 @@ parentheses since it is a single argument token.
 
 ### Filtered Aggregators
 
-> These operate only on samples matching a comparison condition.
+> These require an inline `(op value)` condition, e.g. `countif(>5)`; omitting it is an error.
 
 | Aggregator | Description                                           | Empty Bucket Value |
 |------------|-------------------------------------------------------|--------------------|
@@ -144,6 +137,9 @@ parentheses since it is a single argument token.
 | `all`      | `1.0` if all samples match, `0.0` otherwise           | `NaN`              |
 | `any`      | `1.0` if any sample matches, `0.0` otherwise          | `NaN`              |
 | `none`     | `1.0` if no samples match, `0.0` otherwise            | `NaN`              |
+
+`count` and `sum` also accept an *optional* inline condition (`count(>5)`, `sum(<=2)`) to count or
+sum only matching samples; without one they operate over every sample in the bucket as usual.
 
 ---
 
@@ -233,6 +229,14 @@ TS.RANGE metrics 1609459200000 1609545600000
   COUNT 100
 ```
 
+### Conditional Aggregation
+
+Count samples over 90 and sum samples at or under 10, per hour, in one scan:
+
+```
+TS.RANGE cpu:utilization 1609459200000 1609545600000 AGGREGATION countif(>90),sumif(<=10) 3600000
+```
+
 ---
 
 ## Behavior Notes
@@ -250,6 +254,8 @@ TS.RANGE metrics 1609459200000 1609545600000
 
 - **Wrong arity** — Missing required arguments
 - **invalid AGGREGATION value** — Unrecognized aggregator name
+- **TSDB: missing condition for aggregator** — A filtered aggregator (`countif`, `sumif`, `all`, `any`, `none`, `share`) was given without an inline `(op value)` condition
+- **TSDB: aggregation type does not support a filter condition** — An inline condition was attached to an aggregator that doesn't accept one (anything but `countif`, `sumif`, `all`, `any`, `none`, `share`, `count`, `sum`)
 - **invalid BUCKETTIMESTAMP** — Invalid bucket timestamp option
 - **invalid ALIGN** — Invalid alignment parameter
 - **invalid bucketDuration** — Bucket duration must be a positive integer
