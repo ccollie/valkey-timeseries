@@ -238,9 +238,9 @@ impl Default for AggregationOptions {
 impl AggregationOptions {
     /// The first (or only) aggregator of the clause.
     pub fn primary(&self) -> &AggregatorConfig {
-       self.aggregations
-             .first()
-             .expect("AggregationOptions.aggregations must contain at least one entry")
+        self.aggregations
+            .first()
+            .expect("AggregationOptions.aggregations must contain at least one entry")
     }
 
     pub fn is_multi(&self) -> bool {
@@ -353,7 +353,9 @@ impl SeriesResultData {
     pub(crate) fn sample_iter(&self) -> Box<dyn Iterator<Item = Sample> + '_> {
         match self {
             SeriesResultData::Chunk(chunk) => Box::new(chunk.iter()),
-            SeriesResultData::Rows(_) => unreachable!("sample_iter called on multi-aggregation rows"),
+            SeriesResultData::Rows(_) => {
+                unreachable!("sample_iter called on multi-aggregation rows")
+            }
         }
     }
 }
