@@ -7,7 +7,9 @@ use crate::fanout::cluster_migrations::{
     AtomicSlotMigrationEvent, register_atomic_slot_migration_event_handler,
     supports_atomic_slot_migration,
 };
-use crate::series::index::persistence::{discard_preloaded_indexes, reconcile_preloaded_indexes};
+use crate::series::index::persistence::{
+    on_loading_ended, on_loading_failed, on_loading_started, should_skip_load_indexing,
+};
 use crate::series::index::{
     TIMESERIES_INDEX, clear_timeseries_index, get_db_index, get_timeseries_index,
     get_timeseries_index_for_db, index_series_by_key,
@@ -423,15 +425,19 @@ fn persistence_event_handler(ctx: &Context, persistence_event: PersistenceSubeve
     }
 }
 
-/// Post-load lifecycle for the persisted postings index (see `persistence.rs`): after a
-/// successful load, sweep preloaded indexes for dangling ids; after a failed load, the preloaded
-/// state cannot be trusted, so drop it and let the natural indexing paths rebuild.
+/// Load lifecycle for the persisted postings index (see `persistence.rs`): a `*Started` event
+/// opens the load window (enabling the loaded-series counter and the `loaded`-event fast path);
+/// after a successful load, preloaded indexes are swept for dangling ids and verified against
+/// the loaded count; after a failed load, the preloaded state cannot be trusted, so drop it and
+/// let the natural indexing paths rebuild.
 #[loading_event_handler]
 fn loading_event_handler(_ctx: &Context, loading_event: LoadingSubevent) {
     match loading_event {
-        LoadingSubevent::Ended => reconcile_preloaded_indexes(),
-        LoadingSubevent::Failed => discard_preloaded_indexes(),
-        _ => {}
+        LoadingSubevent::RdbStarted
+        | LoadingSubevent::AofStarted
+        | LoadingSubevent::ReplStarted => on_loading_started(),
+        LoadingSubevent::Ended => on_loading_ended(),
+        LoadingSubevent::Failed => on_loading_failed(),
     }
 }
 
@@ -471,6 +477,13 @@ fn handle_key_restore(ctx: &Context, key: &[u8]) {
     let db = get_current_db(ctx);
     if is_in_asm_slot_import() {
         add_delayed_indexing_key(db, key);
+        return;
+    }
+    // Fast path: during an RDB load whose index for this db was preloaded from the aux payload,
+    // skip the per-key work entirely (string allocation, keyspace lookup, index lock).
+    // `rdb_load` has already assigned `_db` and counted the series; post-load verification in
+    // `persistence.rs` catches any aux/keyspace drift.
+    if should_skip_load_indexing(db) {
         return;
     }
     index_series_by_key(ctx, key);

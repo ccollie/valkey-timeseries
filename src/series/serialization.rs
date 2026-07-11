@@ -74,7 +74,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     }
     rules.shrink_to_fit();
 
-    let ts = TimeSeries {
+    let mut ts = TimeSeries {
         id,
         labels,
         retention,
@@ -91,7 +91,9 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
         rules,
     };
 
-    // ts.update_meta();
-    // add to index
+    // Assign `_db` from the IO context and count the series toward the current load window
+    // (no-op for db-less payloads like RESTORE / TS._RESTORE strings).
+    crate::series::index::persistence::observe_series_rdb_load(rdb, &mut ts);
+
     Ok(ts)
 }
