@@ -153,9 +153,11 @@ where
             item,
             responder: responder_tx,
         };
-        self.sender.send(request).unwrap_or_else(|e| {
+
+        if let Err(e) = self.sender.send(request) {
             eprintln!("Failed to send query request: {}", e);
-        });
+            return None;
+        }
 
         match responder_rx.recv() {
             Ok(res) => match res {
@@ -202,10 +204,16 @@ pub fn submit_task_with_payload<P: Send + 'static>(
     payload: P,
     task_fn: impl Fn(&Context, P) -> Result<(), String> + Send + 'static,
 ) -> Option<Result<(), String>> {
+    let (tx, rx) = mpsc::sync_channel(1);
     let task = Box::new(move |ctx: &Context| {
-        let _ = task_fn(ctx, payload);
+        let res = task_fn(ctx, payload);
+        let _ = tx.send(res);
     }) as ValkeyTask<()>;
-    submit_valkey_task(task)
+
+    match submit_valkey_task(task)? {
+        Ok(()) => rx.recv().ok(),
+        Err(e) => Some(Err(e)),
+    }
 }
 
 pub fn submit_task_no_wait(task: ValkeyTask<()>) {
