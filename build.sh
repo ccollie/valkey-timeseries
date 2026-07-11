@@ -38,7 +38,7 @@ if [ -z "$SERVER_VERSION" ]; then
     export SERVER_VERSION="unstable"
 fi
 
-if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.1" ]; then
+if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "9.1" ]; then
   echo "ERROR: Unsupported version - $SERVER_VERSION"
   exit 1
 fi
@@ -46,10 +46,31 @@ fi
 REPO_URL="https://github.com/valkey-io/valkey.git"
 BINARY_PATH="tests/build/binaries/$SERVER_VERSION/valkey-server"
 
+# Rebuild the "unstable" binary when it is older than this many days; release
+# versions are immutable and are only built when missing.
+UNSTABLE_MAX_AGE_DAYS=${UNSTABLE_MAX_AGE_DAYS:-7}
+
+NEEDS_BUILD=false
 if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
     echo "valkey-server binary '$BINARY_PATH' found."
+    if [ "$SERVER_VERSION" = "unstable" ]; then
+        if [ "$(uname)" = "Darwin" ]; then
+            BINARY_MTIME=$(stat -f %m "$BINARY_PATH")
+        else
+            BINARY_MTIME=$(stat -c %Y "$BINARY_PATH")
+        fi
+        BINARY_AGE_DAYS=$(( ($(date +%s) - BINARY_MTIME) / 86400 ))
+        if [ "$BINARY_AGE_DAYS" -ge "$UNSTABLE_MAX_AGE_DAYS" ]; then
+            echo "Binary is $BINARY_AGE_DAYS days old (max $UNSTABLE_MAX_AGE_DAYS for \"unstable\"); rebuilding."
+            NEEDS_BUILD=true
+        fi
+    fi
 else
     echo "valkey-server binary '$BINARY_PATH' not found."
+    NEEDS_BUILD=true
+fi
+
+if [ "$NEEDS_BUILD" = true ]; then
     mkdir -p "tests/build/binaries/$SERVER_VERSION"
     cd tests/build
     rm -rf valkey
@@ -58,6 +79,7 @@ else
     git checkout "$SERVER_VERSION"
     make -j
     cp src/valkey-server ../binaries/$SERVER_VERSION/
+    cd "$SCRIPT_DIR"
 fi
 
 TEST_FRAMEWORK_REPO="https://github.com/valkey-io/valkey-test-framework"
