@@ -1,227 +1,130 @@
-// MIT License
-//
-// Copyright (c) 2026 Banan Technologies
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-// Original source: https://github.com/banan-tech/banuid
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Timeseries ID generation.
+//!
+//! IDs are 64-bit values laid out as `[ epoch: 24 bits | counter: 40 bits ]`.
+//!
+//! The epoch is drawn at random once per process start; the counter is a
+//! plain atomic increment. This gives:
+//!
+//! - **Cluster-wide uniqueness (probabilistic)**: two nodes collide only if
+//!   they draw the same 24-bit epoch. Collisions are detected and remapped
+//!   at the single point where two ID spaces merge — slot import (see
+//!   `reindex.rs`) — so uniqueness only needs to be rare-failure, not
+//!   absolute.
+//! - **Dense postings bitmaps**: all IDs minted by one process share their
+//!   high 24 bits and increment in the low bits, so roaring containers in
+//!   the postings index fill completely before a new one opens — the same
+//!   compression profile as a bare sequential counter.
+//! - **Trivial "reset" semantics**: nothing is persisted, so there is no
+//!   stale counter to detect after a crash, a copied RDB file, a VM clone,
+//!   or a replica promotion. Every process start is a reset by construction.
+//!
+//! Epoch `0` is never drawn so no generated ID can collide with legacy
+//! dense `AtomicU64`-era IDs (small integers), and no ID is ever `0`
+//! (`id == 0` means "unassigned" elsewhere). Epoch `MAX` is also excluded
+//! so a counter wrap — which carries into the epoch bits — cannot land on
+//! epoch `0`. A wrap requires exhausting 2^40 (~1.1 trillion) IDs in one
+//! process lifetime; the carried epoch is as uniformly random as a fresh
+//! draw, so wrapping is harmless anyway.
+use crate::series::TimeseriesId;
+use rand::{RngExt, rng};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-const CUSTOM_EPOCH: u64 = 1767225600000; // 2026-01-01 00:00:00 UTC
-const SHARD_ID_BITS: u8 = 13;
-const SEQUENCE_BITS: u8 = 10;
+pub const EPOCH_BITS: u32 = 24;
+pub const COUNTER_BITS: u32 = 40;
 
-const MAX_SHARD_ID: u64 = (1 << SHARD_ID_BITS) - 1;
-const MAX_SEQUENCE: u64 = (1 << SEQUENCE_BITS) - 1;
+const EPOCH_MASK: u64 = (1 << EPOCH_BITS) - 1;
+const COUNTER_MASK: u64 = (1 << COUNTER_BITS) - 1;
 
-const SHARD_ID_SHIFT: u8 = SEQUENCE_BITS;
-const TIMESTAMP_SHIFT: u8 = SHARD_ID_BITS + SEQUENCE_BITS;
-
-struct GeneratorState {
-    last_timestamp: u64,
-    sequence: u64,
-}
-
+/// Generates unique timeseries IDs.
+///
+/// The packed `[epoch | counter]` state lives in a single atomic so ID
+/// generation is one wait-free `fetch_add`; a counter wrap carries into the
+/// epoch bits, so there is no epoch/counter tearing under contention.
 pub struct IdGenerator {
-    shard_id: u16,
-    state: Mutex<GeneratorState>,
+    /// The last issued ID; `fetch_add(1)` issues the next one.
+    state: AtomicU64,
 }
 
-// Module-level generator for convenience API
+// Module-level generator for the free-function API
 static DEFAULT_GENERATOR: std::sync::LazyLock<IdGenerator> =
     std::sync::LazyLock::new(IdGenerator::new);
 
 impl IdGenerator {
     pub fn new() -> Self {
-        let shard_id = derive_shard_id();
+        Self::with_epoch(mint_epoch())
+    }
+
+    /// Create a generator with a fixed epoch. The epoch is truncated to
+    /// [EPOCH_BITS]; the counter starts at zero, so the first ID issued is
+    /// `epoch << COUNTER_BITS | 1`.
+    pub fn with_epoch(epoch: u64) -> Self {
         IdGenerator {
-            shard_id,
-            state: Mutex::new(GeneratorState {
-                last_timestamp: 0,
-                sequence: 0,
-            }),
+            state: AtomicU64::new((epoch & EPOCH_MASK) << COUNTER_BITS),
         }
     }
 
-    /// Generate an ID using this instance (new ergonomic method)
-    pub fn generate(&self) -> u64 {
+    #[cfg(test)]
+    fn with_parts(epoch: u64, counter: u64) -> Self {
+        IdGenerator {
+            state: AtomicU64::new(
+                ((epoch & EPOCH_MASK) << COUNTER_BITS) | (counter & COUNTER_MASK),
+            ),
+        }
+    }
+
+    pub fn next_id(&self) -> TimeseriesId {
+        self.state.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn generate(&self) -> TimeseriesId {
         self.next_id()
     }
 
-    pub fn with_shard_id(shard_id: u16) -> Self {
-        let shard_id = shard_id & (MAX_SHARD_ID as u16);
-        IdGenerator {
-            shard_id,
-            state: Mutex::new(GeneratorState {
-                last_timestamp: 0,
-                sequence: 0,
-            }),
-        }
+    pub fn epoch(&self) -> u32 {
+        extract_epoch(self.state.load(Ordering::Relaxed))
     }
 
-    pub fn next_id(&self) -> u64 {
-        loop {
-            let mut state = self.state.lock().unwrap();
-            let timestamp = current_timestamp();
-
-            return if timestamp == state.last_timestamp {
-                if state.sequence >= MAX_SEQUENCE {
-                    drop(state);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                    continue;
-                }
-                state.sequence += 1;
-                let sequence = state.sequence;
-                ((timestamp - CUSTOM_EPOCH) << TIMESTAMP_SHIFT)
-                    | ((self.shard_id as u64) << SHARD_ID_SHIFT)
-                    | sequence
-            } else {
-                state.last_timestamp = timestamp;
-                state.sequence = 0;
-                ((timestamp - CUSTOM_EPOCH) << TIMESTAMP_SHIFT)
-                    | ((self.shard_id as u64) << SHARD_ID_SHIFT)
-            };
-        }
+    pub fn extract_epoch(id: TimeseriesId) -> u32 {
+        extract_epoch(id)
     }
 
-    pub fn extract_timestamp(id: u64) -> u64 {
-        (id >> TIMESTAMP_SHIFT) + CUSTOM_EPOCH
-    }
-
-    pub fn extract_shard_id(id: u64) -> u16 {
-        ((id >> SHARD_ID_SHIFT) & MAX_SHARD_ID) as u16
-    }
-
-    pub fn extract_sequence(id: u64) -> u16 {
-        (id & MAX_SEQUENCE) as u16
-    }
-
-    /// Parse timestamp from ID (new ergonomic method)
-    pub fn parse_timestamp(id: u64) -> u64 {
-        Self::extract_timestamp(id)
-    }
-
-    /// Parse shard ID from ID (new ergonomic method)
-    pub fn parse_shard_id(id: u64) -> u16 {
-        Self::extract_shard_id(id)
-    }
-
-    /// Parse sequence from ID (new ergonomic method)
-    pub fn parse_sequence(id: u64) -> u16 {
-        Self::extract_sequence(id)
-    }
-
-    pub fn shard_id(&self) -> u16 {
-        self.shard_id
+    pub fn extract_counter(id: TimeseriesId) -> u64 {
+        extract_counter(id)
     }
 }
 
-// Convenient free functions for ergonomic API
+impl Default for IdGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Generate a unique ID using the default generator
-pub fn generate() -> u64 {
+pub fn generate() -> TimeseriesId {
     DEFAULT_GENERATOR.next_id()
 }
 
-pub fn next_timeseries_id() -> u64 {
+pub fn next_timeseries_id() -> TimeseriesId {
     generate()
 }
 
-/// Parse timestamp from ID using default generator methods
-pub fn parse_timestamp(id: u64) -> u64 {
-    IdGenerator::extract_timestamp(id)
+pub fn extract_epoch(id: TimeseriesId) -> u32 {
+    (id >> COUNTER_BITS) as u32
 }
 
-/// Parse shard ID from ID using default generator methods
-pub fn parse_shard_id(id: u64) -> u16 {
-    IdGenerator::extract_shard_id(id)
+pub fn extract_counter(id: TimeseriesId) -> u64 {
+    id & COUNTER_MASK
 }
 
-/// Parse sequence from ID using default generator methods
-pub fn parse_sequence(id: u64) -> u16 {
-    IdGenerator::extract_sequence(id)
-}
-
-fn derive_shard_id() -> u16 {
-    let mut hash: u64 = 14695981039346656037; // FNV offset basis
-    const FNV_PRIME: u64 = 1099511628211;
-    let mut has_identifier = false;
-
-    // Try hostname first (most reliable in containerized environments)
-    if let Ok(hostname) = std::env::var("HOSTNAME") {
-        has_identifier = true;
-        for byte in hostname.bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-
-    // Try machine-id (Linux-specific, may fail in containers)
-    if let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") {
-        has_identifier = true;
-        for byte in machine_id.trim().bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-
-    // Always include process ID for uniqueness within the same host
-    let pid = std::process::id();
-    for byte in pid.to_string().bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-
-    // If no reliable host identifier found, add randomness with fallback
-    if !has_identifier {
-        let random_value = get_fallback_random();
-
-        for byte in random_value.to_le_bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-
-    (hash % (MAX_SHARD_ID + 1)) as u16
-}
-
-fn get_fallback_random() -> u32 {
-    // Multi-layer fallback for random number generation
-
-    // Layer 1: System time nanoseconds
-    if let Ok(duration) = SystemTime::now().duration_since(UNIX_EPOCH) {
-        return duration.subsec_nanos();
-    }
-
-    // Layer 2: Memory address of a stack variable (non-deterministic)
-    let stack_var = 0u64;
-    let stack_addr = &stack_var as *const u64 as usize;
-    (stack_addr & 0xFFFFFFFF) as u32
-}
-
-fn current_timestamp() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-        Err(_) => {
-            // Fallback: use combination of fallback random and process start time
-            let base_time = get_fallback_random() as u64;
-            let pid_component = std::process::id() as u64;
-            base_time ^ (pid_component << 16)
+/// Draw the process-lifetime epoch. `0` is reserved (legacy dense IDs and
+/// the unassigned sentinel); `MAX` is excluded so a counter-wrap carry
+/// cannot produce epoch `0`.
+fn mint_epoch() -> u64 {
+    let mut rng = rng();
+    loop {
+        let epoch = rng.random::<u64>() & EPOCH_MASK;
+        if epoch != 0 && epoch != EPOCH_MASK {
+            return epoch;
         }
     }
 }
@@ -232,54 +135,76 @@ mod tests {
 
     #[test]
     fn test_id_generation() {
-        let generator = IdGenerator::with_shard_id(42);
+        let generator = IdGenerator::with_epoch(42);
         let id1 = generator.next_id();
         let id2 = generator.next_id();
 
         assert_ne!(id1, id2, "IDs should be unique");
-        assert!(id2 > id1, "IDs should be orderable");
+        assert!(id2 > id1, "IDs should be strictly increasing");
     }
 
     #[test]
-    fn test_extract_timestamp() {
-        let generator = IdGenerator::with_shard_id(1);
+    fn test_first_id_is_counter_one() {
+        let generator = IdGenerator::with_epoch(7);
         let id = generator.next_id();
-        let extracted = IdGenerator::extract_timestamp(id);
-        let now = current_timestamp();
 
-        assert!(
-            extracted <= now && extracted >= now - 1000,
-            "Extracted timestamp should be recent"
+        assert_eq!(extract_epoch(id), 7);
+        assert_eq!(extract_counter(id), 1);
+        assert_ne!(id, 0, "no generated ID may be the unassigned sentinel");
+    }
+
+    #[test]
+    fn test_epoch_truncation() {
+        let generator = IdGenerator::with_epoch(u64::MAX);
+        assert_eq!(generator.epoch() as u64, EPOCH_MASK);
+    }
+
+    #[test]
+    fn test_extract_roundtrip() {
+        let generator = IdGenerator::with_epoch(0x00AB_CDEF);
+        let id = generator.next_id();
+
+        assert_eq!(extract_epoch(id), 0x00AB_CDEF);
+        assert_eq!(extract_counter(id), 1);
+        assert_eq!(IdGenerator::extract_epoch(id), extract_epoch(id));
+        assert_eq!(IdGenerator::extract_counter(id), extract_counter(id));
+    }
+
+    #[test]
+    fn test_minted_epoch_bounds() {
+        for _ in 0..64 {
+            let epoch = mint_epoch();
+            assert_ne!(epoch, 0, "epoch 0 is reserved for legacy IDs");
+            assert_ne!(epoch, EPOCH_MASK, "epoch MAX would carry into 0");
+            assert!(epoch <= EPOCH_MASK);
+        }
+    }
+
+    #[test]
+    fn test_default_generator_epoch() {
+        let id = generate();
+        let epoch = extract_epoch(id) as u64;
+
+        assert_ne!(epoch, 0);
+        assert_ne!(epoch, EPOCH_MASK);
+    }
+
+    #[test]
+    fn test_counter_wrap_carries_into_epoch() {
+        let generator = IdGenerator::with_parts(5, COUNTER_MASK - 1);
+
+        let id1 = generator.next_id();
+        assert_eq!(extract_epoch(id1), 5);
+        assert_eq!(extract_counter(id1), COUNTER_MASK);
+
+        let id2 = generator.next_id();
+        assert_eq!(
+            extract_epoch(id2),
+            6,
+            "counter wrap should carry into epoch"
         );
-    }
-
-    #[test]
-    fn test_extract_shard_id() {
-        let shard_id: u16 = 42;
-        let generator = IdGenerator::with_shard_id(shard_id);
-        let id = generator.next_id();
-        let extracted = IdGenerator::extract_shard_id(id);
-
-        assert_eq!(extracted, shard_id, "Shard ID should match");
-    }
-
-    #[test]
-    fn test_shard_id_bounds() {
-        let generator = IdGenerator::with_shard_id(8191); // Max 13-bit value
-        assert_eq!(generator.shard_id(), 8191);
-
-        let generator2 = IdGenerator::with_shard_id(10000); // Overflow
-        assert_eq!(generator2.shard_id(), 10000 & (MAX_SHARD_ID as u16));
-    }
-
-    #[test]
-    fn test_auto_derived_shard() {
-        let generator = IdGenerator::new();
-        let id = generator.next_id();
-        let extracted_shard = IdGenerator::extract_shard_id(id);
-
-        assert_eq!(extracted_shard, generator.shard_id());
-        assert!(extracted_shard <= 8191);
+        assert_eq!(extract_counter(id2), 0);
+        assert!(id2 > id1, "IDs remain strictly increasing across a wrap");
     }
 
     #[test]
@@ -287,7 +212,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let generator = Arc::new(IdGenerator::with_shard_id(1));
+        let generator = Arc::new(IdGenerator::with_epoch(1));
         let mut handles = vec![];
         let mut ids = std::collections::HashSet::new();
 
@@ -310,56 +235,16 @@ mod tests {
     }
 
     #[test]
-    fn test_fallback_random() {
-        let random1 = get_fallback_random();
-        let random2 = get_fallback_random();
-
-        // Should produce some variation (not guaranteed, but highly likely)
-        assert!(
-            random1 != 0 || random2 != 0,
-            "At least one value should be non-zero"
-        );
-    }
-
-    #[test]
-    fn test_derive_shard_id_bounds() {
-        let shard1 = derive_shard_id();
-        let shard2 = derive_shard_id();
-
-        // Both should be within valid bounds
-        assert!(shard1 <= MAX_SHARD_ID as u16);
-        assert!(shard2 <= MAX_SHARD_ID as u16);
-    }
-
-    #[test]
-    fn test_ergonomic_api() {
-        // Test free functions
+    fn test_free_functions() {
         let id1 = generate();
-        let id2 = generate();
+        let id2 = next_timeseries_id();
+
         assert_ne!(id1, id2, "Generated IDs should be unique");
-
-        // Test parsing functions
-        let timestamp = parse_timestamp(id1);
-        let shard_id = parse_shard_id(id1);
-        let sequence = parse_sequence(id1);
-
-        // Test instance methods
-        let generator = IdGenerator::with_shard_id(123);
-        let id3 = generator.generate();
-        assert_ne!(id3, 0, "Generated ID should be non-zero");
-
-        // Test associated functions (static methods)
-        let timestamp2 = IdGenerator::parse_timestamp(id3);
-        let shard_id2 = IdGenerator::parse_shard_id(id3);
-        let sequence2 = IdGenerator::parse_sequence(id3);
-
-        // Verify consistency between old and new methods
-        assert_eq!(timestamp, IdGenerator::extract_timestamp(id1));
-        assert_eq!(shard_id, IdGenerator::extract_shard_id(id1));
-        assert_eq!(sequence, IdGenerator::extract_sequence(id1));
-
-        assert_eq!(timestamp2, IdGenerator::extract_timestamp(id3));
-        assert_eq!(shard_id2, IdGenerator::extract_shard_id(id3));
-        assert_eq!(sequence2, IdGenerator::extract_sequence(id3));
+        assert_eq!(
+            extract_epoch(id1),
+            extract_epoch(id2),
+            "default generator epoch is fixed for the process lifetime"
+        );
+        assert!(id2 > id1, "default generator IDs are strictly increasing");
     }
 }
