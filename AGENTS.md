@@ -38,16 +38,35 @@ High-level architecture (big picture)
     - `["TS.ADD", commands::ts_add_cmd, "write deny-oom", 1, 1, 1, "write timeseries"]`
 - Time-series core lives under `src/series` (storage, encoding, background tasks, indexes). Index/init helpers:
   `init_croaring_allocator()` and `init_background_tasks()` are invoked from `src/lib.rs`.
+  - `src/series/chunks/` implements five encoding formats: **Gorilla** (default), **PCO**, **TsXOR**, **Uncompressed**,
+    **XOR2**. The default is controlled by `DEFAULT_CHUNK_ENCODING` in `src/config.rs`.
+  - ACL filtering per series: `src/series/acl.rs`.
 - Cross-node fanout / clustering patterns: `src/fanout` and `src/commands/*_fanout_command.rs` use protobuf (
   `src/commands/fanout.*.proto`) and explicit fanout registration (`register_fanout_operations`) to implement
   cluster-wide queries.
+- Outlier detection: `src/analysis/outliers/` — multiple algorithms (ESD, CUSUM, EWMA, IQR, MAD, modified z-score, RCF
+  variants) exposed via the `TS.OUTLIERS` command.
+- Aggregation: `src/aggregators/` — aggregation handlers and iterators used by range queries.
+- Supporting subsystems (all referenced from `src/lib.rs`):
+  - `src/common/` — shared utilities: encoding, logging, thread pool, RDB helpers, string interning.
+  - `src/labels/` — `Label` type, label filter evaluation, regex helpers.
+  - `src/parser/` — Prometheus-compatible filter syntax, metric name, timestamp, and duration parsing.
+  - `src/iterators/` — sample and row iterators consumed by range and multi-range queries.
+  - `src/join/` — ASOF join logic backing `TS.JOIN`.
 
 Project-specific conventions and patterns
 
 - All Valkey commands are declared in the `valkey_module!` macro in `src/lib.rs`; change there to add/remove commands.
 - Command files follow `ts_<command>.rs` naming and export `ts_<command>_cmd` functions (see `src/commands/mod.rs`).
 - Fanout pattern: synchronous local implementation + `*_fanout_command.rs` files which marshal/unmarshal protobuf
-  messages for cluster aggregation.
+  messages for cluster aggregation. Seven operations are currently registered (see `register_fanout_operations` in
+  `src/commands/mod.rs`): `LabelStatsFanoutCommand`, `CardFanoutCommand`, `LabelSearchFanoutCommand`,
+  `MDelFanoutCommand`, `MGetFanoutCommand`, `MRangeFanoutCommand`, `QueryIndexFanoutCommand`.
+- Initialization sequence (inside `initialize()` in `src/lib.rs`): `init_croaring_allocator` → `register_config` →
+  `init_fanout` + `register_fanout_operations` (cluster only) → `register_server_events` → `init_thread_pool` →
+  `init_background_tasks`.
+- Minimum supported Valkey server version: `[8, 0, 0]` (enforced in `preload()` via
+  `config::TIMESERIES_MIN_SUPPORTED_VERSION`).
 
 - Allocator in tests: tests compile with `enable-system-alloc` feature in unit runs (see `build.sh`), and the crate
   switches allocators under `#[cfg(test)]`.
@@ -69,15 +88,27 @@ Where to look first (key files & directories)
 - `src/commands/` — implementations and command parsing utilities (`command_parser.rs`).
 - `src/series/` — core storage, encodings, indexes, background tasks.
 - `src/fanout/` — cluster communication primitives.
+- `src/analysis/` — outlier detection algorithms (`src/analysis/outliers/`).
+- `src/aggregators/` — aggregation handlers for range queries.
+- `src/common/` — shared utilities (encoding, logging, thread pool, RDB, string interning).
+- `src/labels/` — label types and filter evaluation.
+- `src/parser/` — filter syntax, metric name, timestamp, and duration parsers.
+- `src/iterators/` — sample and row iterators.
+- `src/join/` — ASOF join for TS.JOIN.
+- `src/tests/` — synthetic data generators (mackey_glass, rand) for unit tests.
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
 - `README.md` and `docs/commands/` — human-facing command descriptions and examples.
+- `docs/topics/` — deep-dive topics: `filter-syntax.md`, `label-discovery.md`, `filter-dos-audit.md`.
 
 Quick tips for code changes
 
 - Add new commands: create `src/commands/ts_<name>.rs`, add function `ts_<name>_cmd`, then register in `valkey_module!`
-  in `src/lib.rs`.
+  in `src/lib.rs`. Currently registered commands: TS.CREATE, TS.ALTER, TS.ADD, TS.ADDBULK, TS.GET, TS.MGET, TS.MADD,
+  TS.DEL, TS.DECRBY, TS.INCRBY, TS.JOIN, TS.MDEL, TS.MRANGE, TS.MREVRANGE, TS.RANGE, TS.REVRANGE, TS.INFO,
+  TS.QUERYINDEX, TS.CARD, TS.LABELNAMES, TS.LABELVALUES, TS.METRICNAMES, TS.LABELSTATS, TS.CREATERULE,
+  TS.DELETERULE, TS.OUTLIERS, TS._DEBUG (hidden admin command, no user-facing docs needed).
 - Documentation: When adding or modifying commands, remember to update the human-facing docs in `docs/commands/` and the
-  supported list in `README.md`.
+  supported list in `README.md`. TS._DEBUG is intentionally undocumented.
 - When making cluster changes, search for `*_fanout_command.rs` to copy the fanout pattern and add protobuf messages in
   `src/commands/fanout.*.proto`.
 
@@ -88,4 +119,4 @@ Limitations of this document
 
 If you need more context, inspect:
 
-- `build.sh`, `Cargo.toml`, `src/lib.rs`, `src/commands/*`, `src/series/*`, and `tests/`.
+- `build.sh`, `Cargo.toml`, `src/lib.rs`, `src/commands/*`, `src/series/*`, `src/analysis/*`, and `tests/`.
