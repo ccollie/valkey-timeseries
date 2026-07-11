@@ -177,6 +177,18 @@ pub fn is_fanout_aggregation_pushdown_enabled() -> bool {
     FANOUT_AGGREGATION_PUSHDOWN.load(Ordering::Relaxed)
 }
 
+/// Runtime toggle for persisting the postings index as an RDB aux field
+/// (`ts-index-persist`, default on; see docs/postings-index-persistence.md).
+/// Gates both save and load: with it off, BGSAVE writes no aux payload and
+/// load discards any payload found in the RDB (the payload is still consumed
+/// to keep the RDB stream in sync) and rebuilds the index per key. Loading a
+/// payload-bearing RDB is always tolerated regardless of this setting.
+pub static INDEX_PERSIST: AtomicBool = AtomicBool::new(true);
+
+pub fn is_index_persist_enabled() -> bool {
+    INDEX_PERSIST.load(Ordering::Relaxed)
+}
+
 static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
     LazyLock::new(|| RwLock::from(ConfigSettings::default()));
 
@@ -749,6 +761,18 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         "ts-fanout-aggregation-pushdown",
         &FANOUT_AGGREGATION_PUSHDOWN,
         fanout_pushdown_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
+
+    let index_persist_default = get_bool_default_config_value(args, "ts-index-persist", true)?;
+
+    register_bool_configuration(
+        ctx,
+        "ts-index-persist",
+        &INDEX_PERSIST,
+        index_persist_default,
         ConfigurationFlags::DEFAULT,
         None,
         Some(Box::new(on_bool_config_set)),

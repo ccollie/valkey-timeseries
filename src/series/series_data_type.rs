@@ -8,6 +8,7 @@ use valkey_module::{RedisModuleIO, RedisModuleTypeMethods, logging, raw};
 use crate::common::logging::log_debug;
 use crate::series::TimeSeries;
 use crate::series::defrag_series;
+use crate::series::index::persistence::{load_index_from_rdb, save_index_to_rdb};
 use crate::series::index::{get_db_index, next_timeseries_id};
 use crate::series::serialization::{rdb_load_series, rdb_save_series};
 use std::os::raw::{c_int, c_void};
@@ -31,7 +32,7 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         free: Some(free),
         mem_usage: Some(mem_usage),
         digest: Some(series_digest),
-        aux_load: None,
+        aux_load: Some(aux_load),
         aux_save: None,
         aux_save_triggers: REDISMODULE_AUX_BEFORE_RDB as i32,
         free_effort: None,
@@ -42,7 +43,7 @@ pub static VK_TIME_SERIES_TYPE: ValkeyType = ValkeyType::new(
         free_effort2: None,
         unlink2: None,
         copy2: None,
-        aux_save2: None,
+        aux_save2: Some(aux_save),
     },
 );
 
@@ -97,6 +98,26 @@ unsafe extern "C" fn rdb_load(rdb: *mut RedisModuleIO, enc_ver: c_int) -> *mut c
             std::ptr::null_mut()
         }
     }
+}
+
+/// Persists the postings index as an RDB aux field (`AUX_BEFORE_RDB`). Runs in the BGSAVE fork
+/// child, so all locking inside is non-blocking; on contention nothing is written and the loader
+/// falls back to the per-key rebuild. Registered as `aux_save2`, so writing nothing omits the aux
+/// field from the RDB entirely.
+unsafe extern "C" fn aux_save(rdb: *mut RedisModuleIO, when: c_int) {
+    if when != REDISMODULE_AUX_BEFORE_RDB as c_int {
+        return;
+    }
+    save_index_to_rdb(rdb);
+}
+
+/// Preloads the postings index from the RDB aux field. With `AUX_BEFORE_RDB` this runs before any
+/// key loads; the per-key `loaded` path then reduces to a `has_id` check per series.
+unsafe extern "C" fn aux_load(rdb: *mut RedisModuleIO, _encver: c_int, when: c_int) -> c_int {
+    if when != REDISMODULE_AUX_BEFORE_RDB as c_int {
+        return raw::Status::Ok as c_int;
+    }
+    load_index_from_rdb(rdb)
 }
 
 unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {

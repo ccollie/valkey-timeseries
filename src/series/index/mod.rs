@@ -26,6 +26,7 @@ mod ids;
 mod key_buffer;
 mod label_filter;
 mod label_querier;
+pub(crate) mod persistence;
 #[cfg(test)]
 mod postings_query_tests;
 pub(crate) mod server_events;
