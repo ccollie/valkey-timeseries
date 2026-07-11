@@ -7,6 +7,7 @@ use crate::fanout::cluster_migrations::{
     AtomicSlotMigrationEvent, register_atomic_slot_migration_event_handler,
     supports_atomic_slot_migration,
 };
+use crate::series::index::persistence::{discard_preloaded_indexes, reconcile_preloaded_indexes};
 use crate::series::index::{
     TIMESERIES_INDEX, clear_timeseries_index, get_db_index, get_timeseries_index,
     get_timeseries_index_for_db, index_series_by_key,
@@ -18,9 +19,9 @@ use range_set_blaze::RangeSetBlaze;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
-use valkey_module::server_events::PersistenceSubevent;
+use valkey_module::server_events::{LoadingSubevent, PersistenceSubevent};
 use valkey_module::{Context, MODULE_CONTEXT, NotifyEvent, ValkeyResult, logging, raw};
-use valkey_module_macros::persistence_event_handler;
+use valkey_module_macros::{loading_event_handler, persistence_event_handler};
 
 const BATCH_SIZE: usize = 256;
 
@@ -419,6 +420,18 @@ fn persistence_event_handler(ctx: &Context, persistence_event: PersistenceSubeve
                 clear_delayed_keys_map();
             }
         }
+    }
+}
+
+/// Post-load lifecycle for the persisted postings index (see `persistence.rs`): after a
+/// successful load, sweep preloaded indexes for dangling ids; after a failed load, the preloaded
+/// state cannot be trusted, so drop it and let the natural indexing paths rebuild.
+#[loading_event_handler]
+fn loading_event_handler(_ctx: &Context, loading_event: LoadingSubevent) {
+    match loading_event {
+        LoadingSubevent::Ended => reconcile_preloaded_indexes(),
+        LoadingSubevent::Failed => discard_preloaded_indexes(),
+        _ => {}
     }
 }
 
