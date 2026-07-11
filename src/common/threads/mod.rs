@@ -158,11 +158,12 @@ where
 /// - `callback`: The closure to be executed on the main thread. It receives a reference to the module [`Context`].
 ///
 /// # Example
-/// ```rust
-/// use crate::common::threads::run_on_main_thread_with_context;
+/// ```rust,no_run
+/// use valkey_module::Context;
+/// use valkey_timeseries::common::threads::run_on_main_thread_with_context;
 ///
 /// // A simple closure to be executed on the main thread with access to Context
-/// run_on_main_thread_with_context(false, |ctx| {
+/// run_on_main_thread_with_context(false, |ctx: &Context| {
 ///     ctx.log_notice("This is running on the main thread with context!");
 /// });
 /// ```
