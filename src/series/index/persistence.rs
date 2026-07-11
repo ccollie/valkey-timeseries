@@ -17,6 +17,7 @@ use crate::common::context::{get_current_db, set_current_db};
 use crate::common::encoding::{
     try_read_byte_slice, try_read_u8, try_read_uvarint, write_byte_slice, write_u8, write_uvarint,
 };
+use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::{log_debug, log_notice, log_warning};
 use crate::config::is_index_persist_enabled;
 use crate::series::index::IndexKey;
@@ -26,8 +27,8 @@ use croaring::{Bitmap64, Portable};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::os::raw::c_int;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 use valkey_module::key::ValkeyKey;
 use valkey_module::{Context, KeysCursor, MODULE_CONTEXT, RedisModuleIO, ValkeyString, raw};
 
@@ -40,8 +41,10 @@ const INDEX_AUX_VERSION: u8 = 1;
 
 /// Databases whose index was preloaded from the aux payload during the current load.
 /// Consumed by the post-load reconciliation pass (`LoadingSubevent::Ended`) or discarded
-/// on load failure.
-static PRELOADED_DBS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+/// on load failure. A lock-free set: `should_skip_load_indexing` probes it once per loaded
+/// key, so reads must not contend with each other or with the (rare) inserts from `aux_load`.
+static PRELOADED_DBS: LazyLock<papaya::HashSet<i32, BuildNoHashHasher<i32>>> =
+    LazyLock::new(papaya::HashSet::default);
 
 /// True between a loading `*Started` subevent and the matching `Ended`/`Failed`. Gates the
 /// loaded-series counter and the `loaded`-event short-circuit so neither engages for runtime
@@ -285,14 +288,12 @@ pub(crate) fn load_index_from_rdb(rdb: *mut RedisModuleIO) -> c_int {
 
     match parse_aux_payload(buffer.as_ref()) {
         Ok(sections) => {
-            let mut preloaded = PRELOADED_DBS.lock().unwrap();
+            let preloaded = PRELOADED_DBS.pin();
             for (db, postings) in sections {
                 let series_count = postings.id_to_key.len();
                 let index = get_db_index(db);
                 *index.inner.write().unwrap() = postings;
-                if !preloaded.contains(&db) {
-                    preloaded.push(db);
-                }
+                preloaded.insert(db);
                 log_notice(format!(
                     "Preloaded postings index for db {db} ({series_count} series)"
                 ));
@@ -316,7 +317,7 @@ pub(crate) fn on_loading_started() {
     LOADING_ACTIVE.store(true, Ordering::SeqCst);
     LOADED_SERIES_COUNTS.lock().unwrap().clear();
     // Defensive: any leftover preload state from an earlier load cycle is stale by now.
-    PRELOADED_DBS.lock().unwrap().clear();
+    PRELOADED_DBS.pin().clear();
 }
 
 /// Loading `Ended`: close the load window and kick off reconciliation of preloaded dbs.
@@ -333,13 +334,18 @@ pub(crate) fn on_loading_failed() {
     discard_preloaded_indexes();
 }
 
+#[inline]
+pub(crate) fn is_loading_active() -> bool {
+    LOADING_ACTIVE.load(Ordering::Relaxed)
+}
+
 /// True when the `loaded` keyspace notification for a key in `db` can be skipped outright:
 /// we are inside a load window and this db's index came from the aux payload. `rdb_load` has
 /// already assigned `_db` and counted the series; post-load verification covers any drift.
 /// This is the fast path that avoids the per-key `RedisModuleString` allocation and keyspace
 /// lookup entirely (for every key type — `loaded` fires for non-timeseries keys too).
 pub(crate) fn should_skip_load_indexing(db: i32) -> bool {
-    LOADING_ACTIVE.load(Ordering::Relaxed) && PRELOADED_DBS.lock().unwrap().contains(&db)
+    is_loading_active() && PRELOADED_DBS.pin().contains(&db)
 }
 
 /// Called from `rdb_load_series` for every series deserialized from an RDB stream: assigns
@@ -376,6 +382,16 @@ fn take_loaded_counts() -> Vec<(i32, u64)> {
     std::mem::take(&mut *guard)
 }
 
+/// Drains `PRELOADED_DBS`: snapshot the members, then clear. Not atomic with respect to a
+/// concurrent `aux_load` insert, but that race cannot happen in practice — this is only called
+/// from the loading-event handler, after `aux_load` for the current load window has finished.
+fn take_preloaded_dbs() -> Vec<i32> {
+    let guard = PRELOADED_DBS.pin();
+    let dbs: Vec<i32> = guard.iter().copied().collect();
+    guard.clear();
+    dbs
+}
+
 // ---------------------------------------------------------------------------
 // Post-load reconciliation
 // ---------------------------------------------------------------------------
@@ -387,10 +403,7 @@ fn take_loaded_counts() -> Vec<(i32, u64)> {
 /// a cardinality check against the loaded-series counter (see [`verify_and_repair_db`]) that
 /// catches the reverse direction, since preloaded dbs skip the per-key `has_id` self-heal.
 fn reconcile_preloaded_indexes() {
-    let dbs: Vec<i32> = {
-        let mut guard = PRELOADED_DBS.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let dbs: Vec<i32> = take_preloaded_dbs();
     if dbs.is_empty() {
         return;
     }
@@ -526,10 +539,7 @@ fn reconcile_db(db: i32) {
 /// engine-dependent (startup aborts; a replica may restore its pre-sync dataset), so a preloaded
 /// index cannot be trusted — drop it and let the natural indexing paths rebuild.
 fn discard_preloaded_indexes() {
-    let dbs: Vec<i32> = {
-        let mut guard = PRELOADED_DBS.lock().unwrap();
-        std::mem::take(&mut *guard)
-    };
+    let dbs: Vec<i32> = take_preloaded_dbs();
     for db in dbs {
         let index = get_db_index(db);
         index.inner.write().unwrap().clear();
@@ -763,7 +773,7 @@ mod tests {
         );
 
         // Simulate aux preload of DB_A and some rdb_load traffic.
-        PRELOADED_DBS.lock().unwrap().push(DB_A);
+        PRELOADED_DBS.pin().insert(DB_A);
         note_series_loaded(DB_A);
         note_series_loaded(DB_A);
         note_series_loaded(DB_B);
@@ -788,7 +798,7 @@ mod tests {
             !should_skip_load_indexing(DB_A),
             "no skip outside a load window"
         );
-        assert!(PRELOADED_DBS.lock().unwrap().is_empty());
+        assert!(PRELOADED_DBS.pin().is_empty());
 
         // A new load window starts clean.
         note_series_loaded(DB_A);
