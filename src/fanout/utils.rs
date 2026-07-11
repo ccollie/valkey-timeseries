@@ -121,10 +121,10 @@ mod tests {
         let slot2 = calculate_hash_slot(b"hello{world");
         let slot3 = calculate_hash_slot(b"hello}world");
 
-        // With invalid hash tag, whole key is used
-        assert_eq!(slot1, calculate_hash_slot(b"hello{}world"));
-        assert_eq!(slot2, calculate_hash_slot(b"hello{world"));
-        assert_eq!(slot3, calculate_hash_slot(b"hello}world"));
+        // With invalid/empty hash tag, the whole key should be used.
+        assert_eq!(slot1, slot(b"hello{}world"));
+        assert_eq!(slot2, slot(b"hello{world"));
+        assert_eq!(slot3, slot(b"hello}world"));
     }
 
     #[test]
