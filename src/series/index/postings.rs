@@ -135,6 +135,13 @@ impl Postings {
         debug_assert!(ts.id != 0);
         let id = ts.id;
 
+        // (Re)indexing asserts the series is alive: revoke any pending stale marking, or a later
+        // GC drain would strip the id from the very label bitmaps being filled here (e.g. the
+        // post-load repair scan re-indexing an id the reconciliation sweep just marked stale).
+        if !self.stale_ids.is_empty() {
+            self.stale_ids.remove(id);
+        }
+
         for InternedLabel { name, value } in ts.labels.iter() {
             self.add_posting_for_label_value_internal(id, name, value);
         }
