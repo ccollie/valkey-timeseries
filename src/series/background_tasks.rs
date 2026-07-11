@@ -1,6 +1,7 @@
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::log_debug;
 use crate::is_shutting_down;
+use crate::series::index::persistence::is_loading_active;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX};
 use crate::series::tasks::{
     optimize_indices_for_db, process_series_trim, remove_stale_series_ids_incremental,
@@ -159,7 +160,7 @@ fn dispatch_background_task(task: TaskType) {
 
 #[cron_event_handler]
 fn cron_event_handler(_ctx: &Context, _hz: u64) {
-    if is_shutting_down() {
+    if is_shutting_down() || is_loading_active() {
         return;
     }
 
