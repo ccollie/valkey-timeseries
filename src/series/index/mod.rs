@@ -1,5 +1,4 @@
 use std::ops::Deref;
-use std::sync::atomic::AtomicU64;
 mod index_key;
 mod posting_stats;
 mod postings;
@@ -23,6 +22,7 @@ pub use postings::PostingsBitmap;
 pub use querier::*;
 pub use timeseries_index::*;
 
+mod ids;
 mod key_buffer;
 mod label_filter;
 mod label_querier;
@@ -32,6 +32,7 @@ pub(crate) mod server_events;
 #[cfg(test)]
 mod timeseries_index_tests;
 
+pub use ids::next_timeseries_id;
 pub(crate) use label_filter::*;
 pub use label_querier::*;
 
@@ -59,16 +60,6 @@ impl Deref for TimeSeriesIndexGuard<'_> {
 
 pub(crate) static TIMESERIES_INDEX: LazyLock<TimeSeriesIndexMap> =
     LazyLock::new(TimeSeriesIndexMap::default);
-
-pub(crate) static TIMESERIES_ID: AtomicU64 = AtomicU64::new(1);
-
-pub fn next_timeseries_id() -> u64 {
-    TIMESERIES_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-}
-
-pub fn reset_timeseries_id(id: u64) {
-    TIMESERIES_ID.store(id, std::sync::atomic::Ordering::SeqCst);
-}
 
 pub fn get_db_index(db: i32) -> TimeSeriesIndexGuard<'static> {
     let guard = TIMESERIES_INDEX.guard();
@@ -194,15 +185,10 @@ pub fn index_series_by_key(ctx: &Context, key: &[u8]) {
 pub fn clear_timeseries_index(ctx: &Context) {
     let db = get_current_db(ctx);
     let map = TIMESERIES_INDEX.pin();
-    if map.remove(&db).is_some() && map.is_empty() {
-        // if we removed indices for all dbs, we need to reset the id
-        // to 0 so that we can start from 1 again
-        reset_timeseries_id(0);
-    }
+    map.remove(&db);
 }
 
 pub fn clear_all_timeseries_indexes() {
-    reset_timeseries_id(0);
     TIMESERIES_INDEX.pin().clear();
 }
 

@@ -8,8 +8,8 @@ use crate::fanout::cluster_migrations::{
     supports_atomic_slot_migration,
 };
 use crate::series::index::{
-    TIMESERIES_INDEX, clear_all_timeseries_indexes, clear_timeseries_index, get_db_index,
-    get_timeseries_index, get_timeseries_index_for_db, index_series_by_key,
+    TIMESERIES_INDEX, clear_timeseries_index, get_db_index, get_timeseries_index,
+    get_timeseries_index_for_db, index_series_by_key,
 };
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::tasks::remove_all_stale_series_internal;
@@ -515,7 +515,6 @@ unsafe extern "C" fn on_flush_event(
         let fi: &raw::RedisModuleFlushInfo = unsafe { &*(data as *mut raw::RedisModuleFlushInfo) };
 
         if fi.dbnum == -1 {
-            clear_all_timeseries_indexes();
             clear_delayed_keys_map();
         } else {
             let ctx = Context::new(ctx);

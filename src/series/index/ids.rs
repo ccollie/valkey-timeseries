@@ -133,9 +133,13 @@ impl IdGenerator {
 }
 
 // Convenient free functions for ergonomic API
-/// Generate a unique ID using default generator
+/// Generate a unique ID using the default generator
 pub fn generate() -> u64 {
     DEFAULT_GENERATOR.next_id()
+}
+
+pub fn next_timeseries_id() -> u64 {
+    generate()
 }
 
 /// Parse timestamp from ID using default generator methods
