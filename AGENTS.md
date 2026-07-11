@@ -10,14 +10,13 @@ Quick start (commands you can run)
   `cargo fmt --check && cargo clippy --profile release --all-targets -- -D clippy::all && RUSTFLAGS="-D warnings" cargo build --all --all-targets --release`
 - Local dev script (recommended):
     - `SERVER_VERSION=unstable ./build.sh`  # builds module, builds valkey-server, runs unit & integration tests
-    - To run ASAN integration pass: `ASAN_BUILD=true SERVER_VERSION=9.0.1 ./build.sh`
+    - To run ASAN integration pass: `ASAN_BUILD=true SERVER_VERSION=unstable ./build.sh`
     - Run a subset of Python integration tests: `TEST_PATTERN="test_ts_add" SERVER_VERSION=unstable ./build.sh`
 
 Key ENV and behavior (from `./build.sh`)
 
 - `SERVER_VERSION` (required): controls which valkey-server is cloned/built and stored at
-  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `9.0.1` if not set, which tracks the latest main
-  branch.
+  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `unstable` if not set, which tracks the latest main or branch.
 - `ASAN_BUILD`: when set runs tests with LeakSanitizer checks and fails on leaks.
 - `TEST_PATTERN`: passed to pytest `-k` to select tests.
 - `MODULE_PATH` exported after build: `target/release/libvalkey_timeseries{.so,.dylib}` depending on OS.
