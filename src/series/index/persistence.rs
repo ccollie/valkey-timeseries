@@ -12,7 +12,7 @@
 //! entirely) and the loader falls back to the rebuild path.
 
 use super::postings::{Postings, PostingsBitmap, PostingsIndex};
-use super::{TIMESERIES_INDEX, get_db_index};
+use super::{TIMESERIES_INDEX, get_db_index, index_series_by_key};
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::encoding::{
     try_read_byte_slice, try_read_u8, try_read_uvarint, write_byte_slice, write_u8, write_uvarint,
@@ -23,10 +23,13 @@ use crate::series::index::IndexKey;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
 use crate::series::{SeriesRef, TimeSeries};
 use croaring::{Bitmap64, Portable};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::os::raw::c_int;
 use std::sync::Mutex;
-use valkey_module::{MODULE_CONTEXT, RedisModuleIO, raw};
+use std::sync::atomic::{AtomicBool, Ordering};
+use valkey_module::key::ValkeyKey;
+use valkey_module::{Context, KeysCursor, MODULE_CONTEXT, RedisModuleIO, ValkeyString, raw};
 
 /// Identifies the aux payload; guards against reading garbage from a foreign/corrupt field.
 const INDEX_AUX_MAGIC: &[u8; 4] = b"TSIX";
@@ -39,6 +42,15 @@ const INDEX_AUX_VERSION: u8 = 1;
 /// Consumed by the post-load reconciliation pass (`LoadingSubevent::Ended`) or discarded
 /// on load failure.
 static PRELOADED_DBS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// True between a loading `*Started` subevent and the matching `Ended`/`Failed`. Gates the
+/// loaded-series counter and the `loaded`-event short-circuit so neither engages for runtime
+/// `RESTORE`/`TS._RESTORE` traffic.
+static LOADING_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Per-db count of series that came through `rdb_load` during the current load window.
+/// Compared against the post-sweep index cardinality to detect keyspace-index drift.
+static LOADED_SERIES_COUNTS: Mutex<Vec<(i32, u64)>> = Mutex::new(Vec::new());
 
 const RECONCILE_BATCH_SIZE: usize = 256;
 
@@ -68,12 +80,38 @@ fn serialize_postings_section(buf: &mut Vec<u8>, db: i32, postings: &Postings) {
     write_uvarint(buf, db as u64);
 
     // label_index in tree iteration order (sorted): cache-friendly ART rebuild on load.
-    write_uvarint(buf, postings.label_index.len() as u64);
+    //
+    // Stale ids are subtracted here rather than persisted: `mark_ids_as_stale` already cleans
+    // `id_to_key` and `all_postings` at mark time, so the label bitmaps are the only structures
+    // still carrying stale ids — persisting them would persist a cleanup obligation. Subtracting
+    // yields exactly the state a completed GC drain would produce. A stale id whose key is still
+    // in the RDB (a fork can land mid-ASM-export, before the engine's lazy delete) is
+    // resurrected by the post-load count-verification scan, matching the keyspace either way.
+    // The subtraction only costs anything when `stale_ids` is non-empty (rare: the cron GC
+    // drains continuously); entries that become empty are dropped, so the entry count is
+    // written after the entries are serialized.
+    let stale = &postings.stale_ids;
+    let mut entries: Vec<u8> = Vec::new();
+    let mut entry_count: u64 = 0;
     for (key, bitmap) in postings.label_index.iter() {
+        if bitmap.is_empty() {
+            continue;
+        }
+        let cleaned: Cow<PostingsBitmap> = if stale.is_empty() {
+            Cow::Borrowed(bitmap)
+        } else {
+            Cow::Owned(bitmap.andnot(stale))
+        };
+        if cleaned.is_empty() {
+            continue;
+        }
         // `as_str` strips the NUL sentinel; `IndexKey::from(&[u8])` re-appends it on load.
-        write_byte_slice(buf, key.as_str().as_bytes());
-        write_bitmap(buf, bitmap);
+        write_byte_slice(&mut entries, key.as_str().as_bytes());
+        write_bitmap(&mut entries, &cleaned);
+        entry_count += 1;
     }
+    write_uvarint(buf, entry_count);
+    buf.extend_from_slice(&entries);
 
     // id_to_key in ascending id order: ids share their high epoch bits and increment densely,
     // so varint deltas stay small.
@@ -86,7 +124,6 @@ fn serialize_postings_section(buf: &mut Vec<u8>, db: i32, postings: &Postings) {
     }
 
     write_bitmap(buf, &postings.all_postings);
-    write_bitmap(buf, &postings.stale_ids);
 }
 
 fn deserialize_postings_section(buf: &mut &[u8]) -> PayloadResult<(i32, Postings)> {
@@ -118,14 +155,14 @@ fn deserialize_postings_section(buf: &mut &[u8]) -> PayloadResult<(i32, Postings
     }
 
     let all_postings = read_bitmap(buf)?;
-    let stale_ids = read_bitmap(buf)?;
 
     Ok((
         db,
         Postings {
             label_index,
             id_to_key,
-            stale_ids,
+            // Stale ids were subtracted at save time; the loaded index starts clean.
+            stale_ids: PostingsBitmap::default(),
             all_postings,
         },
     ))
@@ -152,7 +189,9 @@ fn build_aux_payload() -> Option<Vec<u8>> {
             ));
             return None;
         };
-        if postings.id_to_key.is_empty() && postings.stale_ids.is_empty() {
+        // Nothing worth persisting: with no live series, the payload would only carry
+        // stale leftovers that are dropped at save time anyway.
+        if postings.id_to_key.is_empty() {
             continue;
         }
         serialize_postings_section(&mut sections, db, &postings);
@@ -269,15 +308,85 @@ pub(crate) fn load_index_from_rdb(rdb: *mut RedisModuleIO) -> c_int {
 }
 
 // ---------------------------------------------------------------------------
+// Load lifecycle & fast path
+// ---------------------------------------------------------------------------
+
+/// Loading `RdbStarted`/`AofStarted`/`ReplStarted`: open the load window and reset per-load state.
+pub(crate) fn on_loading_started() {
+    LOADING_ACTIVE.store(true, Ordering::SeqCst);
+    LOADED_SERIES_COUNTS.lock().unwrap().clear();
+    // Defensive: any leftover preload state from an earlier load cycle is stale by now.
+    PRELOADED_DBS.lock().unwrap().clear();
+}
+
+/// Loading `Ended`: close the load window and kick off reconciliation of preloaded dbs.
+pub(crate) fn on_loading_ended() {
+    LOADING_ACTIVE.store(false, Ordering::SeqCst);
+    reconcile_preloaded_indexes();
+}
+
+/// Loading `Failed`: close the load window and drop preloaded state (see
+/// [`discard_preloaded_indexes`]).
+pub(crate) fn on_loading_failed() {
+    LOADING_ACTIVE.store(false, Ordering::SeqCst);
+    LOADED_SERIES_COUNTS.lock().unwrap().clear();
+    discard_preloaded_indexes();
+}
+
+/// True when the `loaded` keyspace notification for a key in `db` can be skipped outright:
+/// we are inside a load window and this db's index came from the aux payload. `rdb_load` has
+/// already assigned `_db` and counted the series; post-load verification covers any drift.
+/// This is the fast path that avoids the per-key `RedisModuleString` allocation and keyspace
+/// lookup entirely (for every key type — `loaded` fires for non-timeseries keys too).
+pub(crate) fn should_skip_load_indexing(db: i32) -> bool {
+    LOADING_ACTIVE.load(Ordering::Relaxed) && PRELOADED_DBS.lock().unwrap().contains(&db)
+}
+
+/// Called from `rdb_load_series` for every series deserialized from an RDB stream: assigns
+/// `series._db` from the IO context (previously done by the `loaded` notification handler,
+/// which required opening the key), and counts the series toward the current load window's
+/// per-db total. Payloads with no db context (`RESTORE` / `TS._RESTORE` strings) are skipped;
+/// their callers assign `_db` themselves.
+pub(crate) fn observe_series_rdb_load(rdb: *mut RedisModuleIO, series: &mut TimeSeries) {
+    // `GetDbIdFromIO` may be absent on older servers; fall back to the notification path.
+    let Some(get_db_id) = (unsafe { raw::RedisModule_GetDbIdFromIO }) else {
+        return;
+    };
+    let db = unsafe { get_db_id(rdb) };
+    if db < 0 {
+        return;
+    }
+    series._db = Some(db);
+    if LOADING_ACTIVE.load(Ordering::Relaxed) {
+        note_series_loaded(db);
+    }
+}
+
+fn note_series_loaded(db: i32) {
+    let mut counts = LOADED_SERIES_COUNTS.lock().unwrap();
+    if let Some(entry) = counts.iter_mut().find(|(d, _)| *d == db) {
+        entry.1 += 1;
+    } else {
+        counts.push((db, 1));
+    }
+}
+
+fn take_loaded_counts() -> Vec<(i32, u64)> {
+    let mut guard = LOADED_SERIES_COUNTS.lock().unwrap();
+    std::mem::take(&mut *guard)
+}
+
+// ---------------------------------------------------------------------------
 // Post-load reconciliation
 // ---------------------------------------------------------------------------
 
 /// Runs after a successful load (`LoadingSubevent::Ended`). A preloaded index can contain
 /// "dangling" ids whose key never made it into the keyspace (e.g. its `rdb_load` was skipped);
 /// nothing in the query path stale-marks those (`TS.CARD` would over-count and no-date-filter
-/// `TS.QUERYINDEX` would emit phantom key names), so sweep them here. Ids for keys that loaded
-/// but are missing from the index self-heal via the `has_id == false` path and need no work.
-pub(crate) fn reconcile_preloaded_indexes() {
+/// `TS.QUERYINDEX` would emit phantom key names), so sweep them here. The sweep is followed by
+/// a cardinality check against the loaded-series counter (see [`verify_and_repair_db`]) that
+/// catches the reverse direction, since preloaded dbs skip the per-key `has_id` self-heal.
+fn reconcile_preloaded_indexes() {
     let dbs: Vec<i32> = {
         let mut guard = PRELOADED_DBS.lock().unwrap();
         std::mem::take(&mut *guard)
@@ -285,13 +394,73 @@ pub(crate) fn reconcile_preloaded_indexes() {
     if dbs.is_empty() {
         return;
     }
+    let counts = take_loaded_counts();
 
     // Off the main thread: the sweep opens every indexed key once.
     std::thread::spawn(move || {
         for db in dbs {
             reconcile_db(db);
+            let loaded = counts
+                .iter()
+                .find(|(d, _)| *d == db)
+                .map(|(_, n)| *n)
+                .unwrap_or(0);
+            verify_and_repair_db(db, loaded);
         }
     });
+}
+
+/// Post-sweep verification for a preloaded db. `reconcile_db` has just established that every
+/// id remaining in `id_to_key` maps to a live key with a matching series id — i.e. the index is
+/// a *subset* of the loaded keyspace. Equal cardinality therefore proves set equality, so a
+/// count match means no key was missed by the preload. On mismatch, scan the db's keyspace and
+/// index anything with `has_id == false` (the same per-key path the fast path skipped).
+///
+/// Runtime traffic between load end and this check can legitimately skew the counts (a DEL
+/// removes a key and unindexes it; a TS.CREATE adds an id the loader never counted). That only
+/// makes the scan fire spuriously — `index_series_by_key` is guarded, so the scan is always
+/// safe, just not free.
+fn verify_and_repair_db(db: i32, loaded_count: u64) {
+    let indexed_count = {
+        let index = get_db_index(db);
+        let postings = index.inner.read().unwrap();
+        postings.count() as u64
+    };
+
+    if indexed_count == loaded_count {
+        log_debug(format!(
+            "Postings index verification for db {db}: {indexed_count} indexed series match the loaded count"
+        ));
+        return;
+    }
+
+    log_warning(format!(
+        "Postings index verification for db {db}: {indexed_count} indexed vs {loaded_count} loaded; scanning keyspace to repair"
+    ));
+
+    let scan_callback = |ctx: &Context, key_name: ValkeyString, _key: Option<&ValkeyKey>| {
+        index_series_by_key(ctx, key_name.as_slice());
+    };
+
+    let cursor = KeysCursor::new();
+    let mut more = true;
+    while more {
+        // Lock per scan bucket so the main thread is not starved for the whole scan.
+        let ctx = MODULE_CONTEXT.lock();
+        let save_db = get_current_db(&ctx);
+        set_current_db(&ctx, db);
+        more = cursor.scan(&ctx, &scan_callback);
+        set_current_db(&ctx, save_db);
+    }
+
+    let repaired_count = {
+        let index = get_db_index(db);
+        let postings = index.inner.read().unwrap();
+        postings.count() as u64
+    };
+    log_notice(format!(
+        "Postings index repair scan for db {db} finished: {indexed_count} -> {repaired_count} indexed series"
+    ));
 }
 
 fn reconcile_db(db: i32) {
@@ -356,7 +525,7 @@ fn reconcile_db(db: i32) {
 /// Runs when a load fails (`LoadingSubevent::Failed`). The keyspace state after a failed load is
 /// engine-dependent (startup aborts; a replica may restore its pre-sync dataset), so a preloaded
 /// index cannot be trusted — drop it and let the natural indexing paths rebuild.
-pub(crate) fn discard_preloaded_indexes() {
+fn discard_preloaded_indexes() {
     let dbs: Vec<i32> = {
         let mut guard = PRELOADED_DBS.lock().unwrap();
         std::mem::take(&mut *guard)
@@ -394,7 +563,6 @@ mod tests {
                 .insert(id, key.as_bytes().to_vec().into_boxed_slice());
             postings.all_postings.add(id);
         }
-        postings.stale_ids.add(99);
         postings
     }
 
@@ -430,6 +598,45 @@ mod tests {
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].0, 0);
         assert_postings_eq(&sections[0].1, &postings);
+    }
+
+    /// Stale ids are subtracted at save time: the loaded index must look like the state a
+    /// completed GC drain would produce — clean bitmaps, no stale set, empty entries dropped.
+    #[test]
+    fn save_subtracts_stale_ids() {
+        let mut postings = sample_postings();
+        // A label whose bitmap holds only the id about to go stale: its entry must vanish.
+        let mut only_two = PostingsBitmap::new();
+        only_two.add(2);
+        postings
+            .label_index
+            .try_insert(IndexKey::for_label_value("host", "h2"), only_two)
+            .unwrap();
+        // Removes id 2 from id_to_key/all_postings, leaves it in the label bitmaps.
+        postings.mark_ids_as_stale(&[2]);
+        assert!(postings.stale_ids.contains(2));
+
+        let payload = build_payload(&[(0, &postings)]);
+        let sections = parse_aux_payload(&payload).unwrap();
+        let loaded = &sections[0].1;
+
+        assert!(loaded.stale_ids.is_empty(), "stale set is not persisted");
+        assert!(loaded.get_key_by_id(2).is_none());
+        assert!(!loaded.all_postings.contains(2));
+        for (key, bitmap) in loaded.label_index.iter() {
+            assert!(!bitmap.contains(2), "stale id survived in {key}");
+            assert!(!bitmap.is_empty());
+        }
+        assert!(
+            loaded
+                .label_index
+                .get(&IndexKey::for_label_value("host", "h2"))
+                .is_none(),
+            "entry that became empty must be dropped"
+        );
+        // The live ids are untouched.
+        assert_eq!(loaded.count(), 2);
+        assert!(loaded.all_postings.contains(1) && loaded.all_postings.contains(3));
     }
 
     #[test]
@@ -500,6 +707,94 @@ mod tests {
         write_byte_slice(&mut buf, &[0xFF; 9]);
         let mut slice = buf.as_slice();
         assert!(read_bitmap(&mut slice).is_err());
+    }
+
+    /// The repair-scan scenario: the reconciliation sweep marks an id stale, then the keyspace
+    /// scan re-indexes the same id under its real key. Re-indexing must revoke the stale marking,
+    /// or the next GC drain would strip the id from the label bitmaps while it stays in
+    /// `id_to_key` — and the outcome would depend on GC timing.
+    #[test]
+    fn reindex_revokes_stale_marking() {
+        let mut postings = Postings::default();
+        let mut ts = TimeSeries::new();
+        ts.id = 424242;
+        ts.labels = r#"metric{region="us-east-4"}"#.parse().unwrap();
+
+        postings.index_timeseries(&ts, b"ts:4");
+        postings.mark_ids_as_stale(&[ts.id]);
+        assert!(postings.stale_ids.contains(ts.id));
+
+        postings.index_timeseries(&ts, b"tz:4");
+        assert!(
+            !postings.stale_ids.contains(ts.id),
+            "re-indexing must revoke the stale marking"
+        );
+
+        // A GC drain must now be a no-op for this id.
+        let mut cursor = None;
+        while let Some(next) = postings.remove_stale_ids(cursor.take(), 16) {
+            cursor = Some(next);
+        }
+        let key = IndexKey::for_label_value("region", "us-east-4");
+        let bitmap = postings
+            .label_index
+            .get(&key)
+            .expect("label bitmap must survive the GC drain");
+        assert!(bitmap.contains(ts.id));
+        assert_eq!(
+            postings.get_key_by_id(ts.id).map(|k| k.as_ref().to_vec()),
+            Some(b"tz:4".to_vec())
+        );
+        assert_eq!(postings.count(), 1);
+    }
+
+    /// Single test for the whole load-window lifecycle: the statics involved are process-global,
+    /// so exercising them from one test avoids intra-suite races under parallel test threads.
+    #[test]
+    fn load_window_lifecycle() {
+        // Db numbers chosen to not collide with other tests sharing TIMESERIES_INDEX.
+        const DB_A: i32 = 91;
+        const DB_B: i32 = 92;
+
+        on_loading_started();
+        assert!(
+            !should_skip_load_indexing(DB_A),
+            "no skip before this db's index is preloaded"
+        );
+
+        // Simulate aux preload of DB_A and some rdb_load traffic.
+        PRELOADED_DBS.lock().unwrap().push(DB_A);
+        note_series_loaded(DB_A);
+        note_series_loaded(DB_A);
+        note_series_loaded(DB_B);
+
+        assert!(should_skip_load_indexing(DB_A));
+        assert!(
+            !should_skip_load_indexing(DB_B),
+            "dbs without a preloaded index keep the per-key path"
+        );
+
+        let mut counts = take_loaded_counts();
+        counts.sort_unstable();
+        assert_eq!(counts, vec![(DB_A, 2), (DB_B, 1)]);
+        assert!(
+            take_loaded_counts().is_empty(),
+            "counts are consumed on take"
+        );
+
+        // Failure path: window closes, preloaded state is dropped.
+        on_loading_failed();
+        assert!(
+            !should_skip_load_indexing(DB_A),
+            "no skip outside a load window"
+        );
+        assert!(PRELOADED_DBS.lock().unwrap().is_empty());
+
+        // A new load window starts clean.
+        note_series_loaded(DB_A);
+        on_loading_started();
+        assert!(take_loaded_counts().is_empty());
+        LOADING_ACTIVE.store(false, Ordering::SeqCst);
     }
 
     #[test]
