@@ -23,7 +23,7 @@
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CUSTOM_EPOCH: u64 = 1767225600; // 2026-01-01 00:00:00 UTC
+const CUSTOM_EPOCH: u64 = 1767225600000; // 2026-01-01 00:00:00 UTC
 const SHARD_ID_BITS: u8 = 13;
 const SEQUENCE_BITS: u8 = 10;
 
