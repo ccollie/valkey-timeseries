@@ -155,10 +155,42 @@ impl Default for ConfigSettings {
 
 pub static CHUNK_SIZE: AtomicI64 = AtomicI64::new(CHUNK_SIZE_DEFAULT);
 pub static NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
+pub fn num_threads() -> usize {
+    NUM_THREADS.load(Ordering::Relaxed) as usize
+}
 static PROMQL_MAX_QUERY_LEN: AtomicI64 = AtomicI64::new(PROMQL_MAX_QUERY_LEN_DEFAULT);
 static PROMQL_MAX_RESPONSE_SERIES: AtomicI64 = AtomicI64::new(PROMQL_MAX_RESPONSE_SERIES_DEFAULT);
 static PROMQL_MAX_POINTS_PER_TIMESERIES: AtomicI64 =
     AtomicI64::new(PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT);
+// PromQL config statics
+static PROMQL_SET_LOOKBACK_TO_STEP: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::new(false));
+static PROMQL_OPTIMIZE_QUERIES: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::new(false));
+static PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS: LazyLock<AtomicBool> =
+    LazyLock::new(|| AtomicBool::new(true));
+static PROMQL_LOOKBACK_DELTA_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        PROMQL_LOOKBACK_DELTA_DEFAULT_STRING,
+    ))
+});
+static PROMQL_MAX_LOOKBACK_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        PROMQL_MAX_LOOKBACK_DEFAULT_STRING,
+    ))
+});
+static PROMQL_MAX_QUERY_DURATION_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| {
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING,
+        ))
+    });
+static PROMQL_LOOKBACK_DELTA_MS: LazyLock<AtomicI64> =
+    LazyLock::new(|| AtomicI64::new(5 * 60 * 1000));
+static PROMQL_MAX_LOOKBACK_MS: LazyLock<AtomicI64> = LazyLock::new(|| AtomicI64::new(0));
+static PROMQL_MAX_QUERY_DURATION_MS: LazyLock<AtomicI64> =
+    LazyLock::new(|| AtomicI64::new(30 * 1000));
 
 pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
