@@ -111,7 +111,24 @@ impl Default for ConfigSettings {
 }
 
 pub static CHUNK_SIZE: AtomicI64 = AtomicI64::new(CHUNK_SIZE_DEFAULT);
+
+/// Size of the module's global rayon thread pool (`ts-num-threads`).
+///
+/// This is the single source of truth for pool size: `init_thread_pool()` reads it directly
+/// when building the global rayon pool, and heuristics that scale work by thread count
+/// (`multi_del.rs`, `rcf_outlier_detector.rs`) read it too.
+///
+/// Rayon's global thread pool cannot be resized once built (`ThreadPoolBuilder::build_global`
+/// has no counterpart to shrink/grow an already-initialized `Registry`), so this config is
+/// registered with `ConfigurationFlags::IMMUTABLE`: it can only be set at startup (`valkey.conf`
+/// or `MODULE LOAD` args), and `CONFIG SET ts-num-threads` is rejected by the server itself
+/// rather than silently no-op-ing.
 pub static NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
+
+pub fn num_threads() -> usize {
+    NUM_THREADS.load(Ordering::Relaxed) as usize
+}
+
 pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
 pub static ROUNDING_STRATEGY: LazyLock<Mutex<Option<RoundingStrategy>>> =
@@ -234,8 +251,11 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-num-threads" => {
-                // nothing to do here
-                cfg.num_threads = NUM_THREADS.load(Ordering::Relaxed) as usize;
+                // `ts-num-threads` is IMMUTABLE, so this only fires once at startup (if set via
+                // `valkey.conf`); keep the cached snapshot in sync with the value the thread
+                // pool was actually built with.
+                cfg.num_threads = num_threads();
+                modified = true;
             },
             "ts-retention-policy" => {
                 let period = *lock(&RETENTION_PERIOD);
@@ -570,7 +590,9 @@ fn on_thread_config_set(
 ) -> Result<(), ValkeyError> {
     let threads = atomic.load(Ordering::SeqCst);
     log_notice(format!("Setting number of threads to {threads}"));
-    // todo: reset thread pool size
+    // `ts-num-threads` is IMMUTABLE (see its registration), so this only ever runs once at
+    // startup, before `init_thread_pool()` builds the global rayon pool from this same value.
+    // There is nothing to resize here: rayon's global pool has no runtime resize API.
     Ok(())
 }
 
@@ -675,7 +697,9 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         num_threads_default,
         1,
         MAX_THREADS,
-        ConfigurationFlags::DEFAULT,
+        // Rayon's global thread pool cannot be resized after `build_global()`, so this can
+        // only be set at startup; runtime `CONFIG SET` is rejected by the server itself.
+        ConfigurationFlags::IMMUTABLE,
         None,
         Some(Box::new(on_thread_config_set)),
     );

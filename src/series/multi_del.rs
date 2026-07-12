@@ -1,6 +1,6 @@
 use crate::common::Timestamp;
 use crate::common::context::{get_acl_user, is_acl_enforced};
-use crate::common::threads::NUM_THREADS;
+use crate::config::num_threads;
 use crate::labels::filters::SeriesSelector;
 use crate::series::index::{PostingsBitmap, get_timeseries_index, with_timeseries_postings};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
@@ -13,7 +13,6 @@ use orx_parallel::ParIter;
 use orx_parallel::ParallelizableCollectionMut;
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::Ordering;
 use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
 };
@@ -70,7 +69,7 @@ fn handle_delete_range(
         Ok::<PostingsBitmap, ValkeyError>(ids)
     })?;
 
-    let num_threads = usize::max(NUM_THREADS.load(Ordering::Relaxed), 2);
+    let num_threads = usize::max(num_threads(), 2);
     let mut total_deleted = 0;
     ctx.log_notice(&format!(
         "Starting deletion of range [{start}, {end}] for {} series. Num threads: {num_threads}",

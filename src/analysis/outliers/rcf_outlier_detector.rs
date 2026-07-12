@@ -4,10 +4,9 @@ use crate::analysis::outliers::{
     Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector,
 };
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
-use crate::common::threads::NUM_THREADS;
+use crate::config::num_threads;
 use krcf::{RandomCutForest, RandomCutForestOptions};
 use orx_parallel::{ParIter, ParIterResult, Parallelizable};
-use std::sync::atomic::Ordering;
 use valkey_module::logging::log_warning;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -129,7 +128,7 @@ impl RCFOptions {
     /// - `num_trees >= num_threads`, AND
     /// - `num_trees * dimensions_eff * log2(sample_size) >= 10_000`
     pub fn should_parallelize(&self) -> bool {
-        let num_threads = NUM_THREADS.load(Ordering::Relaxed);
+        let num_threads = num_threads();
 
         // Missing values fall back to the same defaults used elsewhere.
         let num_trees = self.num_trees.unwrap_or(100);
@@ -238,7 +237,7 @@ impl RcfOutlierDetector {
     /// Because this method does not update the model, all points are scored against
     /// the same forest state and the calls are fully independent — safe to parallelize.
     pub fn try_batch_scores(&self, values: &[f64]) -> ValkeyResult<Vec<f64>> {
-        let num_threads = NUM_THREADS.load(Ordering::Relaxed);
+        let num_threads = num_threads();
 
         // Heuristic: only parallelize for large enough batches.
         // Rationale: scoring a single point is relatively small work; thread context switching overhead
