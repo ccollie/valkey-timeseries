@@ -1,7 +1,7 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
 use crate::common::logging::log_warning;
-use crate::error_consts::MISSING_FILTER;
+use crate::error_consts::{INTERNAL_ERROR, MISSING_FILTER};
 use crate::labels::filters::{
     FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
 };
@@ -406,16 +406,19 @@ impl Postings {
         to_remove
     }
 
-    pub fn postings_for_filter(&'_ self, filter: &LabelFilter) -> Cow<'_, PostingsBitmap> {
-        match filter.matcher {
+    pub fn postings_for_filter(
+        &'_ self,
+        filter: &LabelFilter,
+    ) -> ValkeyResult<Cow<'_, PostingsBitmap>> {
+        let result = match filter.matcher {
             PredicateMatch::Equal(ref value) => handle_equal_match(self, &filter.label, value),
             PredicateMatch::NotEqual(ref value) => {
                 handle_not_equal_match(self, &filter.label, value)
             }
             PredicateMatch::MatchAll => Cow::Borrowed(&self.all_postings),
             PredicateMatch::MatchNone => Cow::Borrowed(&*EMPTY_BITMAP),
-            PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter),
-            PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter),
+            PredicateMatch::RegexEqual(_) => handle_regex_equal_match(self, filter)?,
+            PredicateMatch::RegexNotEqual(_) => handle_regex_not_equal_match(self, filter)?,
             PredicateMatch::StartsWith(ref prefix) => {
                 handle_starts_with(self, &filter.label, prefix)
             }
@@ -423,8 +426,9 @@ impl Postings {
                 handle_not_starts_with(self, &filter.label, prefix)
             }
             PredicateMatch::Contains(ref needle) => handle_contains(self, &filter.label, needle),
-            PredicateMatch::NotContains(_) => handle_not_contains(self, filter),
-        }
+            PredicateMatch::NotContains(_) => handle_not_contains(self, filter)?,
+        };
+        Ok(result)
     }
 
     fn inverse_postings_for_filter(&'_ self, filter: &LabelFilter) -> Cow<'_, PostingsBitmap> {
@@ -485,7 +489,7 @@ impl Postings {
             }
             // shortcut the handling of simple equality matchers
             if !filter.is_negative_matcher() && !filter.matches_empty() {
-                let it = self.postings_for_filter(filter);
+                let it = self.postings_for_filter(filter)?;
                 if it.is_empty() {
                     return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
                 }
@@ -595,7 +599,7 @@ impl Postings {
                             // If the label can't be empty and is a Not and the inner matcher
                             // doesn't match empty, then subtract it out at the end.
                             let inverse = filter.clone().inverse();
-                            let it = self.postings_for_filter(&inverse);
+                            let it = self.postings_for_filter(&inverse)?;
                             not_its.push(it);
                         }
                         // l!=""
@@ -612,7 +616,7 @@ impl Postings {
                         // l="a", l=~"a|b", etc.
                         _ => {
                             // Non-Not matcher, use normal postings_for_filter.
-                            let it = self.postings_for_filter(filter);
+                            let it = self.postings_for_filter(filter)?;
                             if it.is_empty() {
                                 return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
                             }
@@ -996,12 +1000,15 @@ fn postings_matching_filter(postings: &Postings, filter: &LabelFilter) -> Postin
 fn handle_regex_equal_match<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
-) -> Cow<'a, PostingsBitmap> {
+) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     if filter.matches_empty() {
-        return postings.postings_without_label(&filter.label);
+        return Ok(postings.postings_without_label(&filter.label));
     }
+    // The caller dispatches on this same enum (`postings_for_filter`), so this arm is only
+    // reached for `RegexEqual` filters; a mismatch means that invariant broke.
     let PredicateMatch::RegexEqual(re) = &filter.matcher else {
-        panic!("unexpected matcher type in handle_regex_equal_match");
+        debug_assert!(false, "unexpected matcher type in handle_regex_equal_match");
+        return Err(ValkeyError::Str(INTERNAL_ERROR));
     };
     let res = if let Some(prefix) = &re.prefix {
         postings.postings_by_prefix_and_predicate(&filter.label, prefix, |v| re.is_match(v))
@@ -1010,23 +1017,29 @@ fn handle_regex_equal_match<'a>(
         postings
             .postings_for_label_matching(&filter.label, &mut state, |value, _| re.is_match(value))
     };
-    Cow::Owned(res)
+    Ok(Cow::Owned(res))
 }
 
 fn handle_regex_not_equal_match<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
-) -> Cow<'a, PostingsBitmap> {
+) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
     if filter.matches_empty() {
-        return with_label(postings, &filter.label);
+        return Ok(with_label(postings, &filter.label));
     }
+    // The caller dispatches on this same enum (`postings_for_filter`), so this arm is only
+    // reached for `RegexNotEqual` filters; a mismatch means that invariant broke.
     let PredicateMatch::RegexNotEqual(re) = &filter.matcher else {
-        panic!("unexpected matcher type in handle_regex_not_equal_match");
+        debug_assert!(
+            false,
+            "unexpected matcher type in handle_regex_not_equal_match"
+        );
+        return Err(ValkeyError::Str(INTERNAL_ERROR));
     };
     let mut state = ();
     let res = postings
         .postings_for_label_matching(&filter.label, &mut state, |value, _| !re.is_match(value));
-    Cow::Owned(res)
+    Ok(Cow::Owned(res))
 }
 
 fn handle_starts_with<'a>(
@@ -1079,9 +1092,12 @@ fn handle_contains<'a>(
 fn handle_not_contains<'a>(
     postings: &'a Postings,
     filter: &LabelFilter,
-) -> Cow<'a, PostingsBitmap> {
+) -> ValkeyResult<Cow<'a, PostingsBitmap>> {
+    // The caller dispatches on this same enum (`postings_for_filter`), so this arm is only
+    // reached for `NotContains` filters; a mismatch means that invariant broke.
     let PredicateMatch::NotContains(value) = &filter.matcher else {
-        panic!("unexpected matcher type in handle_not_contains");
+        debug_assert!(false, "unexpected matcher type in handle_not_contains");
+        return Err(ValkeyError::Str(INTERNAL_ERROR));
     };
     let mut state = value;
     let contains_matches =
@@ -1090,7 +1106,7 @@ fn handle_not_contains<'a>(
         });
     let res = &postings.all_postings;
     let value = res.andnot(&contains_matches);
-    Cow::Owned(value)
+    Ok(Cow::Owned(value))
 }
 
 fn intersection<'a, I>(its: I) -> PostingsBitmap
@@ -1375,7 +1391,7 @@ mod tests {
             matcher: PredicateMatch::NotStartsWith(PredicateValue::String("server".to_string())),
         };
 
-        let result = postings.postings_for_filter(&filter);
+        let result = postings.postings_for_filter(&filter).unwrap();
         // Prometheus-compatible negative matchers include series that do not have the label.
         assert_eq!(result.cardinality(), 2);
         assert!(result.contains(2));
@@ -1414,7 +1430,7 @@ mod tests {
             ])),
         };
 
-        let result = postings.postings_for_filter(&filter);
+        let result = postings.postings_for_filter(&filter).unwrap();
         assert_eq!(result.cardinality(), 2);
         assert!(result.contains(1));
         assert!(result.contains(2));
@@ -1459,7 +1475,7 @@ mod tests {
             matcher: PredicateMatch::Contains(PredicateValue::String("server".to_string())),
         };
 
-        let result = postings.postings_for_filter(&filter);
+        let result = postings.postings_for_filter(&filter).unwrap();
 
         assert_eq!(result.cardinality(), 2);
         assert!(result.contains(1));
@@ -1507,7 +1523,7 @@ mod tests {
             ])),
         };
 
-        let result = postings.postings_for_filter(&filter);
+        let result = postings.postings_for_filter(&filter).unwrap();
         assert_eq!(result.cardinality(), 2);
         assert!(result.contains(1));
         assert!(result.contains(2));

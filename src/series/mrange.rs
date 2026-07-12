@@ -210,7 +210,7 @@ pub(crate) fn process_mrange_query(
         })
         .collect();
 
-    Ok(process_mrange(series_metas, options, clustered, limit))
+    process_mrange(series_metas, options, clustered, limit)
 }
 
 fn process_mrange(
@@ -218,7 +218,7 @@ fn process_mrange(
     options: MRangeOptions,
     is_clustered: bool,
     limit: Option<SampleLimit>,
-) -> Vec<MRangeSeriesResult> {
+) -> ValkeyResult<Vec<MRangeSeriesResult>> {
     let mut options = options;
     let mut metas = metas;
 
@@ -238,18 +238,18 @@ fn process_mrange(
     let is_grouped = options.grouping.is_some();
 
     if is_clustered {
-        return handle_non_grouped(metas, options, true, limit);
+        return Ok(handle_non_grouped(metas, options, true, limit));
     }
 
     let mut items = if is_grouped {
-        handle_grouping(metas, options)
+        handle_grouping(metas, options)?
     } else {
         handle_non_grouped(metas, options, false, None)
     };
 
     sort_mrange_results(&mut items, is_grouped);
 
-    items
+    Ok(items)
 }
 
 fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Option<Sample> {
@@ -368,22 +368,25 @@ fn handle_non_grouped(
 fn handle_grouping(
     metas: Vec<MRangeSeriesMeta>,
     options: MRangeOptions,
-) -> Vec<MRangeSeriesResult> {
+) -> ValkeyResult<Vec<MRangeSeriesResult>> {
+    // Callers only reach this function after confirming `options.grouping.is_some()`
+    // (see `process_mrange`); a `None` here would mean that invariant broke.
     let Some(grouping) = &options.grouping else {
-        panic!("Grouping options should be present");
+        debug_assert!(false, "handle_grouping called without grouping options");
+        return Err(ValkeyError::Str(error_consts::INTERNAL_ERROR));
     };
 
     let grouped_series_map = group_series_by_label(metas, grouping, options.with_labels);
 
     if grouped_series_map.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
 
     let mut options = options;
     let count = options.range.count;
     options.range.count = None;
 
-    grouped_series_map
+    let items = grouped_series_map
         .into_iter()
         .iter_into_par()
         .map(|(label_value, group_data)| {
@@ -414,7 +417,9 @@ fn handle_grouping(
                 data,
             }
         })
-        .collect::<Vec<_>>()
+        .collect::<Vec<_>>();
+
+    Ok(items)
 }
 
 fn get_grouped_samples(
@@ -728,7 +733,7 @@ mod tests {
         });
 
         let metas = vec![meta(&s1, "a", Some("us")), meta(&s2, "b", Some("us"))];
-        let results = handle_grouping(metas, options.clone());
+        let results = handle_grouping(metas, options.clone()).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key, "region=us");
@@ -743,7 +748,7 @@ mod tests {
         options.is_reverse = true;
         options.range.count = Some(2);
         let metas = vec![meta(&s1, "a", Some("us")), meta(&s2, "b", Some("us"))];
-        let results = handle_grouping(metas, options);
+        let results = handle_grouping(metas, options).unwrap();
         let rows = rows_of(&results[0]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].timestamp, 200);
