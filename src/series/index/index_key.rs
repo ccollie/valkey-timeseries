@@ -29,6 +29,10 @@ impl IndexKey {
     pub(crate) fn sub_string(&self, start: usize) -> &str {
         let buf = &self.0[start..self.0.len() - 1];
         // SAFETY: We always ensure that the inner bytes are valid UTF-8 when constructing an IndexKey.
+        debug_assert!(
+            std::str::from_utf8(buf).is_ok(),
+            "IndexKey::sub_string: buffer is not valid UTF-8"
+        );
         unsafe { std::str::from_utf8_unchecked(buf) }
     }
 

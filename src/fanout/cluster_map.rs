@@ -249,7 +249,12 @@ impl NodeId {
             return "";
         }
         // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
-        unsafe { std::str::from_utf8_unchecked(&self.0[..VALKEYMODULE_NODE_ID_LEN as usize]) }
+        let buf = &self.0[..VALKEYMODULE_NODE_ID_LEN as usize];
+        debug_assert!(
+            std::str::from_utf8(buf).is_ok(),
+            "NodeId::as_str: node id bytes are not valid UTF-8"
+        );
+        unsafe { std::str::from_utf8_unchecked(buf) }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -276,7 +281,12 @@ impl NodeId {
 impl AsRef<str> for NodeId {
     fn as_ref(&self) -> &str {
         // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
-        unsafe { std::str::from_utf8_unchecked(&self.0[..VALKEYMODULE_NODE_ID_LEN as usize]) }
+        let buf = &self.0[..VALKEYMODULE_NODE_ID_LEN as usize];
+        debug_assert!(
+            std::str::from_utf8(buf).is_ok(),
+            "NodeId::as_ref: node id bytes are not valid UTF-8"
+        );
+        unsafe { std::str::from_utf8_unchecked(buf) }
     }
 }
 
