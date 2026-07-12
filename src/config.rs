@@ -285,9 +285,6 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
             },
             _ => {}
         );
-        if modified {
-            break;
-        }
     }
     if modified {
         log_notice(format!("Configuration updated: {cfg:?}"));
