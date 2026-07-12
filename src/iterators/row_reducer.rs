@@ -14,8 +14,8 @@ where
     inner: I,
     buffer: Option<MultiSample>,
     /// One reducer per aggregation column.
-    aggregators: SmallVec<Aggregator, 4>,
-    has_samples: SmallVec<bool, 4>,
+    aggregators: SmallVec<[Aggregator; 4]>,
+    has_samples: SmallVec<[bool; 4]>,
     done: bool,
 }
 

@@ -374,7 +374,7 @@ fn serialize_request(request: &MRangeOptions) -> MultiRangeRequest {
 }
 
 struct GroupData {
-    keys: SmallVec<String, 8>,
+    keys: SmallVec<[String; 8]>,
     series: Vec<MRangeSeriesResult>,
 }
 
@@ -453,7 +453,7 @@ fn handle_group_partials(
         1
     };
 
-    type BucketStates = SmallVec<PartialState, 4>;
+    type BucketStates = SmallVec<[PartialState; 4]>;
     type MergedGroup = (BTreeMap<i64, BucketStates>, BTreeSet<String>);
     let mut groups: BTreeMap<String, MergedGroup> = BTreeMap::new();
     for partial in partials {

@@ -513,8 +513,8 @@ impl TryFrom<FanoutAggregationOptions> for AggregationOptions {
             .aggregators
             .into_iter()
             .map(AggregatorConfig::try_from)
-            .collect::<Result<SmallVec<AggregatorConfig, 2>, _>>()?;
-        let mut seen: SmallVec<AggregationType, 2> = SmallVec::new();
+            .collect::<Result<SmallVec<[AggregatorConfig; 2]>, _>>()?;
+        let mut seen: SmallVec<[AggregationType; 2]> = SmallVec::new();
         for config in aggregations.iter() {
             if seen.contains(&config.aggregation_type()) {
                 return Err(ValkeyError::Str(error_consts::DUPLICATE_AGGREGATION));

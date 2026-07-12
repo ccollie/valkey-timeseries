@@ -107,7 +107,7 @@ fn handle_update(
     }
 
     // Merge results overwrite the OK entries with final add results
-    let merged: SmallVec<(usize, SampleAddResult), 8> =
+    let merged: SmallVec<[(usize, SampleAddResult); 8]> =
         multi_series_merge_samples(per_series_samples, Some(ctx))?;
     for (index, res) in merged {
         if let Some(slot) = results.get_mut(index) {
@@ -226,7 +226,7 @@ fn parse_args<'a>(
 }
 
 fn handle_replication(ctx: &Context, inputs: &[ParsedInput]) {
-    let mut replication_args: SmallVec<_, 24> = SmallVec::new();
+    let mut replication_args: SmallVec<[_; 24]> = SmallVec::new();
     for input in inputs.iter() {
         if input.res.is_ok() {
             replication_args.push(input.key);

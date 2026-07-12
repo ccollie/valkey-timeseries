@@ -595,8 +595,8 @@ fn parse_aggregation_list_element(part: &str) -> ValkeyResult<AggregationListEle
 /// `countif(>5),sumif(<=2)`. Order is preserved (it defines the output
 /// column order), duplicate aggregator *types* are rejected regardless of any
 /// inline condition, and the list is capped at [`MAX_AGGREGATIONS`].
-fn parse_aggregation_list(agg_str: &str) -> ValkeyResult<SmallVec<AggregationListElement, 2>> {
-    let mut elements: SmallVec<AggregationListElement, 2> = SmallVec::new();
+fn parse_aggregation_list(agg_str: &str) -> ValkeyResult<SmallVec<[AggregationListElement; 2]>> {
+    let mut elements: SmallVec<[AggregationListElement; 2]> = SmallVec::new();
     for part in agg_str.split(',') {
         if part.is_empty() {
             return Err(ValkeyError::Str(error_consts::INVALID_AGGREGATION_LIST));
@@ -667,8 +667,8 @@ pub fn parse_aggregation_options(
 /// left without one and a condition attached to an aggregator that doesn't
 /// accept one.
 fn build_aggregator_configs(
-    elements: SmallVec<AggregationListElement, 2>,
-) -> ValkeyResult<SmallVec<AggregatorConfig, 2>> {
+    elements: SmallVec<[AggregationListElement; 2]>,
+) -> ValkeyResult<SmallVec<[AggregatorConfig; 2]>> {
     elements
         .into_iter()
         .map(|(ty, condition)| AggregatorConfig::new(ty, condition))

@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 /// so a query performs a single scan with N accumulator updates per sample.
 #[derive(Debug)]
 struct AggregationHelper {
-    aggregators: SmallVec<Aggregator, 2>,
+    aggregators: SmallVec<[Aggregator; 2]>,
     bucket_duration: u64,
     bucket_ts: BucketTimestamp,
     bucket_range_start: Timestamp,
@@ -806,7 +806,7 @@ mod tests {
             ] {
                 for input in &inputs {
                     // one multi clause containing every type at once
-                    let aggregations: SmallVec<AggregatorConfig, 2> =
+                    let aggregations: SmallVec<[AggregatorConfig; 2]> =
                         all_types.iter().map(|&ty| ty.into()).collect();
                     let multi_options = AggregationOptions {
                         aggregations,

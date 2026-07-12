@@ -386,7 +386,7 @@ where
     inner: I,
     buffer: Option<MultiSample>,
     /// One reducer per aggregation column.
-    reducers: SmallVec<PartialReducer, 4>,
+    reducers: SmallVec<[PartialReducer; 4]>,
 }
 
 impl<I> PartialRowReducer<I>
@@ -413,7 +413,7 @@ impl<I> Iterator for PartialRowReducer<I>
 where
     I: Iterator<Item = MultiSample>,
 {
-    type Item = (Timestamp, SmallVec<PartialState, 4>);
+    type Item = (Timestamp, SmallVec<[PartialState; 4]>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let first = match self.buffer.take() {

@@ -522,7 +522,7 @@ impl TimeSeries {
 
         struct ChunkMeta<'a> {
             chunk: &'a TimeSeriesChunk,
-            timestamps: SmallVec<Timestamp, 6>,
+            timestamps: SmallVec<[Timestamp; 6]>,
         }
 
         let mut meta_map: IntMap<usize, ChunkMeta> = Default::default();

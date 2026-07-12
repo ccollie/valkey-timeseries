@@ -42,7 +42,7 @@ pub fn parse_series_selector(s: &str) -> ParseResult<SeriesSelector> {
 fn parse_series_selector_internal(p: &mut Lexer<Token>) -> ParseResult<SeriesSelector> {
     use Token::*;
 
-    let mut selectors: SmallVec<_, 4> = SmallVec::default();
+    let mut selectors: SmallVec<[_; 4]> = SmallVec::default();
 
     loop {
         let (tok, text) = expect_one_of_tokens(p, INITIAL_TOKENS)?;

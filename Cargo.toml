@@ -32,7 +32,7 @@ papaya = "0.2"
 pco = "1.0"
 prost = "0.14"
 rand = { version = "0.10" }
-smallvec = { version = "2.0.0-alpha.12", features = ["std"] }
+smallvec = "1.15.2"
 speedate = "0.17"
 thiserror = "2.0"
 topo_sort = "0.4.0"
