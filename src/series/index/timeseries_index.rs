@@ -8,6 +8,7 @@ use super::postings::{Postings, PostingsBitmap};
 use crate::common::constants::METRIC_NAME_LABEL;
 use crate::common::context::{get_acl_user, is_acl_enforced};
 use crate::common::hash::DeterministicHasher;
+use crate::common::sync::{read_lock, write_lock};
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::labels::{Label, SeriesLabel};
@@ -76,7 +77,7 @@ impl Default for TimeSeriesIndex {
 
 impl Clone for TimeSeriesIndex {
     fn clone(&self) -> Self {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         let new_inner = inner.clone();
         TimeSeriesIndex {
             inner: RwLock::new(new_inner),
@@ -92,53 +93,53 @@ impl TimeSeriesIndex {
 
     #[allow(dead_code)]
     pub fn clear(&self) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         inner.clear();
     }
 
     // swap the inner value with some other value
     // this is specifically to handle the `swapdb` event callback
     pub fn swap(&self, other: &Self) {
-        let mut self_inner = self.inner.write().unwrap();
-        let mut other_inner = other.inner.write().unwrap();
+        let mut self_inner = write_lock(&self.inner);
+        let mut other_inner = write_lock(&other.inner);
         self_inner.swap(&mut other_inner);
     }
 
     pub fn index_timeseries(&self, ts: &TimeSeries, key: &[u8]) {
         debug_assert!(ts.id != 0);
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         inner.index_timeseries(ts, key);
     }
 
     pub fn reindex_timeseries(&self, series: &TimeSeries, key: &[u8]) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         inner.remove_timeseries(series);
         inner.index_timeseries(series, key);
     }
 
     pub fn remove_timeseries(&self, series: &TimeSeries) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         inner.remove_timeseries(series);
     }
 
     pub fn has_id(&self, id: SeriesRef) -> bool {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.has_id(id)
     }
 
     pub fn get_postings(&'_ self) -> PostingsReadGuard<'_> {
-        let guard = self.inner.read().unwrap();
+        let guard = read_lock(&self.inner);
         PostingsReadGuard::new(guard)
     }
 
     pub fn get_postings_mut(&'_ self) -> PostingsWriteGuard<'_> {
-        let guard = self.inner.write().unwrap();
+        let guard = write_lock(&self.inner);
         PostingsWriteGuard::new(guard)
     }
 
     /// Return all series ids corresponding to the given label value pairs
     pub fn postings_by_labels<T: SeriesLabel>(&self, labels: &[T]) -> PostingsBitmap {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.postings_by_labels(labels)
     }
 
@@ -185,7 +186,7 @@ impl TimeSeriesIndex {
     /// * `Option<SeriesRef>` - Returns `Some(SeriesRef)` if a matching series ID is found.
     ///
     pub fn series_id_by_labels(&self, labels: &[Label]) -> Option<SeriesRef> {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.posting_id_by_labels(labels)
     }
 
@@ -202,12 +203,12 @@ impl TimeSeriesIndex {
     }
 
     pub fn get_label_names(&self) -> BTreeSet<String> {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.get_label_names()
     }
 
     pub fn get_label_values(&self, label_name: &str) -> Vec<String> {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.get_label_values(label_name)
     }
 
@@ -227,10 +228,7 @@ impl TimeSeriesIndex {
         let mut keys: Vec<ValkeyString> = Vec::new();
         let mut missing_keys: Vec<SeriesRef> = Vec::new();
 
-        let postings = self
-            .inner
-            .read()
-            .expect("keys_for_selector - TimeSeries lock poisoned");
+        let postings = read_lock(&self.inner);
 
         // get keys from ids
         let ids = postings.postings_for_selectors(filters)?;
@@ -309,10 +307,7 @@ impl TimeSeriesIndex {
             );
             ctx.log_warning(&msg);
 
-            let mut postings = self
-                .inner
-                .write()
-                .expect("keys_for_selector - TimeSeries lock poisoned");
+            let mut postings = write_lock(&self.inner);
 
             for missing_id in missing_keys {
                 postings.mark_id_as_stale(missing_id);
@@ -357,7 +352,7 @@ impl TimeSeriesIndex {
         let mut focus_label_value_counts = StatsMaxHeap::new(limit);
 
         let series_count = {
-            let inner = self.inner.read().unwrap();
+            let inner = read_lock(&self.inner);
             inner.count() as u64
         };
 
@@ -470,13 +465,13 @@ impl TimeSeriesIndex {
     }
 
     pub fn count(&self) -> usize {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.count()
     }
 
     #[allow(dead_code)]
     pub fn label_count(&self) -> usize {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         inner.label_index.len()
     }
 
@@ -488,7 +483,7 @@ impl TimeSeriesIndex {
     where
         F: FnOnce(&Postings, &mut STATE) -> R,
     {
-        let inner = self.inner.read().unwrap();
+        let inner = read_lock(&self.inner);
         f(&inner, state)
     }
 
@@ -496,19 +491,19 @@ impl TimeSeriesIndex {
     where
         F: FnOnce(&mut Postings, &mut STATE) -> R,
     {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         f(&mut inner, state)
     }
 
     pub fn mark_id_as_stale(&self, id: SeriesRef) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         inner.mark_id_as_stale(id);
     }
 
     pub fn remove_stale_ids(&self) -> usize {
         const BATCH_SIZE: usize = 100;
 
-        let mut inner = self.inner.write().expect("TimeSeries lock poisoned");
+        let mut inner = write_lock(&self.inner);
         let old_count = inner.stale_ids.cardinality();
         if old_count == 0 {
             return 0; // No stale IDs to remove
@@ -528,7 +523,7 @@ impl TimeSeriesIndex {
         start_prefix: Option<IndexKey>,
         count: usize,
     ) -> Option<IndexKey> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = write_lock(&self.inner);
         inner.optimize_postings(start_prefix, count)
     }
 }
@@ -573,7 +568,7 @@ impl<'a> BatchIterator<'a> {
 
         let mut processed_in_batch = 0usize;
 
-        let inner = self.index.inner.read().unwrap();
+        let inner = read_lock(&self.index.inner);
         let has_stale_ids = !inner.stale_ids.is_empty();
         let mut cursor: Option<&IndexKey> = None;
 
