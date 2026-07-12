@@ -408,6 +408,10 @@ impl Deref for InternedString {
     type Target = str;
     fn deref(&self) -> &str {
         // SAFETY: we only intern valid UTF-8 strings
+        debug_assert!(
+            std::str::from_utf8(self.arc.as_ref()).is_ok(),
+            "InternedString: interned bytes are not valid UTF-8"
+        );
         unsafe { std::str::from_utf8_unchecked(self.arc.as_ref()) }
     }
 }
