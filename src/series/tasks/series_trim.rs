@@ -30,17 +30,23 @@ pub fn process_series_trim() {
 
 fn process_trim_internal() {
     let mut processed = 0;
-    let (start_db, cursor) = {
+    let start_db = {
         let context = SERIES_TRIM_CURSORS.lock().unwrap();
-        (context.db, context.cursor)
+        context.db
     };
 
     let mut db = start_db;
+    let mut first_iteration = true;
 
     for _ in 0..MAX_TRIM_TURNS {
         if is_shutting_down() {
             break;
         }
+
+        let cursor = {
+            let context = SERIES_TRIM_CURSORS.lock().unwrap();
+            context.cursor
+        };
 
         let ctx = MODULE_CONTEXT.lock();
         let (subtotal, next_db) = trim_series(&ctx, db, cursor);
@@ -51,9 +57,10 @@ fn process_trim_internal() {
         }
 
         db = next_db;
-        if db == start_db {
+        if !first_iteration && db == start_db {
             break;
         }
+        first_iteration = false;
     }
 }
 
