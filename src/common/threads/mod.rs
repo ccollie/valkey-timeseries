@@ -9,26 +9,15 @@ pub(crate) use batch_worker::{
 };
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
-use std::sync::LazyLock;
-use std::sync::atomic::AtomicUsize;
 use valkey_module::{Context, MODULE_CONTEXT, raw};
 
-pub const DEFAULT_NUM_CPUS: usize = 4;
-
-pub static NUM_CPUS: LazyLock<usize> =
-    LazyLock::new(|| match std::thread::available_parallelism() {
-        Err(e) => {
-            let msg = format!("Failed to get available parallelism {e:?}");
-            crate::common::logging::log_warning(msg);
-            DEFAULT_NUM_CPUS
-        }
-        Ok(v) => v.get(),
-    });
-
-pub static NUM_THREADS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(*NUM_CPUS));
-
+/// Builds the module's global rayon thread pool, sized from `config::NUM_THREADS`
+/// (`ts-num-threads`). Config registration runs before this in `initialize()`, so the config
+/// value is already resolved (from `valkey.conf`/`MODULE LOAD` args, or its default) by the
+/// time this reads it. `ts-num-threads` is registered `IMMUTABLE` because rayon's global pool
+/// cannot be resized once built — there is no later point at which this needs to re-run.
 pub fn init_thread_pool() {
-    let threads = NUM_THREADS.load(std::sync::atomic::Ordering::Relaxed);
+    let threads = crate::config::num_threads();
     ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|index| format!("valkey-timeseries-{index}"))
