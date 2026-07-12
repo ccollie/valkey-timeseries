@@ -9,7 +9,6 @@ use crate::series::{
     DuplicatePolicy, SampleDuplicatePolicy, add_compaction_policies_from_config,
     clear_compaction_policy_config,
 };
-use lazy_static::lazy_static;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
@@ -114,48 +113,75 @@ pub static CHUNK_SIZE: AtomicI64 = AtomicI64::new(CHUNK_SIZE_DEFAULT);
 pub static NUM_THREADS: AtomicI64 = AtomicI64::new(DEFAULT_THREADS);
 pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
-lazy_static! {
-    pub static ref ROUNDING_STRATEGY: Mutex<Option<RoundingStrategy>> = Mutex::new(None);
-    pub static ref DECIMAL_DIGITS: AtomicI64 = AtomicI64::new(DECIMAL_DIGITS_MAX);
-    pub static ref SIGNIFICANT_DIGITS: AtomicI64 = AtomicI64::new(SIGNIFICANT_DIGITS_MAX);
-    pub static ref IGNORE_MAX_TIME_DIFF: AtomicI64 = AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT);
-    pub static ref IGNORE_MAX_VALUE_DIFF: Mutex<f64> = Mutex::new(0.0);
-    pub static ref RETENTION_PERIOD: Mutex<Duration> = Mutex::new(DEFAULT_RETENTION_PERIOD);
-    pub static ref CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
-    pub static ref FANOUT_COMMAND_TIMEOUT: AtomicU64 =
-        AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS);
-    pub static ref DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
-    pub static ref CLUSTER_MAP_EXPIRATION_MS: AtomicU64 =
-        AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT);
-    static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
-    static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()));
-    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, DEFAULT_DUPLICATE_POLICY.as_str())
-    );
-    static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
-    static ref COMPACTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING));
-    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING)
-    );
-    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING)
-    );
-    static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING));
-    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
-    );
-    static ref FANOUT_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT));
-    static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING)
-    );
-    static ref IS_DEBUG_MODE: AtomicBool = AtomicBool::default();
-}
+pub static ROUNDING_STRATEGY: LazyLock<Mutex<Option<RoundingStrategy>>> =
+    LazyLock::new(|| Mutex::new(None));
+pub static DECIMAL_DIGITS: LazyLock<AtomicI64> =
+    LazyLock::new(|| AtomicI64::new(DECIMAL_DIGITS_MAX));
+pub static SIGNIFICANT_DIGITS: LazyLock<AtomicI64> =
+    LazyLock::new(|| AtomicI64::new(SIGNIFICANT_DIGITS_MAX));
+pub static IGNORE_MAX_TIME_DIFF: LazyLock<AtomicI64> =
+    LazyLock::new(|| AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT));
+pub static IGNORE_MAX_VALUE_DIFF: LazyLock<Mutex<f64>> = LazyLock::new(|| Mutex::new(0.0));
+pub static RETENTION_PERIOD: LazyLock<Mutex<Duration>> =
+    LazyLock::new(|| Mutex::new(DEFAULT_RETENTION_PERIOD));
+pub static CHUNK_ENCODING: LazyLock<Mutex<ChunkEncoding>> =
+    LazyLock::new(|| Mutex::new(DEFAULT_CHUNK_ENCODING));
+pub static FANOUT_COMMAND_TIMEOUT: LazyLock<AtomicU64> =
+    LazyLock::new(|| AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS));
+pub static DUPLICATE_POLICY: LazyLock<Mutex<DuplicatePolicy>> =
+    LazyLock::new(|| Mutex::new(DEFAULT_DUPLICATE_POLICY));
+pub static CLUSTER_MAP_EXPIRATION_MS: LazyLock<AtomicU64> =
+    LazyLock::new(|| AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT));
+static CHUNK_SIZE_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING)));
+static CHUNK_ENCODING_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()))
+});
+static DUPLICATE_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        DEFAULT_DUPLICATE_POLICY.as_str(),
+    ))
+});
+static RETENTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING))
+});
+static COMPACTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING))
+});
+static IGNORE_MAX_TIME_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        IGNORE_MAX_TIME_DIFF_DEFAULT_STRING,
+    ))
+});
+static IGNORE_MAX_VALUE_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING,
+    ))
+});
+static DECIMAL_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING))
+});
+static SIGNIFICANT_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        SIGNIFICANT_DIGITS_DEFAULT_STRING,
+    ))
+});
+static FANOUT_COMMAND_TIMEOUT_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| {
+        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT))
+    });
+static CLUSTER_MAP_EXPIRATION_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| {
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            CLUSTER_MAP_EXPIRATION_DEFAULT_STRING,
+        ))
+    });
+static IS_DEBUG_MODE: LazyLock<AtomicBool> = LazyLock::new(AtomicBool::default);
 
 /// Runtime toggle for shard-side aggregation push-down in MRANGE fanout
 /// (`ts-fanout-aggregation-pushdown`, default on). Consulted by the
