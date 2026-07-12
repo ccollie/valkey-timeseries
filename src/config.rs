@@ -1,6 +1,7 @@
 use crate::common::constants::MILLIS_PER_YEAR;
 use crate::common::humanize::humanize_duration_ms;
 use crate::common::rounding::RoundingStrategy;
+use crate::common::sync::{lock, read_lock, write_lock};
 use crate::error_consts;
 use crate::parser::number::parse_number;
 use crate::parser::parse_duration_value;
@@ -219,7 +220,7 @@ static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
     LazyLock::new(|| RwLock::from(ConfigSettings::default()));
 
 pub fn get_config() -> ConfigSettings {
-    SETTINGS.read().expect("config lock poisoned").clone()
+    read_lock(&SETTINGS).clone()
 }
 
 #[config_changed_event_handler]
@@ -237,11 +238,11 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-duplicate-policy" => {
-                cfg.duplicate_policy.policy = Some(*DUPLICATE_POLICY.lock().unwrap());
+                cfg.duplicate_policy.policy = Some(*lock(&DUPLICATE_POLICY));
                 modified = true;
             },
             "ts-encoding" => {
-                cfg.chunk_encoding = *CHUNK_ENCODING.lock().unwrap();
+                cfg.chunk_encoding = *lock(&CHUNK_ENCODING);
                 modified = true;
             },
             "ts-num-threads" => {
@@ -249,7 +250,7 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 cfg.num_threads = NUM_THREADS.load(Ordering::Relaxed) as usize;
             },
             "ts-retention-policy" => {
-                let period = *RETENTION_PERIOD.lock().unwrap();
+                let period = *lock(&RETENTION_PERIOD);
                 cfg.retention_period = if period.is_zero() { None } else { Some(period) };
                 modified = true;
             },
@@ -258,15 +259,15 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
                 modified = true;
             },
             "ts-ignore-max-value-diff" => {
-                cfg.duplicate_policy.max_value_delta = *IGNORE_MAX_VALUE_DIFF.lock().unwrap();
+                cfg.duplicate_policy.max_value_delta = *lock(&IGNORE_MAX_VALUE_DIFF);
                 modified = true;
             },
             "ts-decimal-digits" => {
-                cfg.rounding = *ROUNDING_STRATEGY.lock().unwrap();
+                cfg.rounding = *lock(&ROUNDING_STRATEGY);
                 modified = true;
             },
             "ts-significant-digits" => {
-                cfg.rounding = *ROUNDING_STRATEGY.lock().unwrap();
+                cfg.rounding = *lock(&ROUNDING_STRATEGY);
                 modified = true;
             },
             "ts-compaction-policy" => {
@@ -288,7 +289,7 @@ fn config_changed_event_handler(_ctx: &Context, changed_configs: &[&str]) {
     }
     if modified {
         log_notice(format!("Configuration updated: {cfg:?}"));
-        let mut guard = SETTINGS.write().expect("config lock poisoned");
+        let mut guard = write_lock(&SETTINGS);
         *guard = cfg;
     }
 }
@@ -375,7 +376,7 @@ fn update_compaction_policy(v: &str) -> ValkeyResult<()> {
     // but this is not ideal.
     // mutable reference to the ValkeyGILGuard, which we don't have.
 
-    let mut guard = SETTINGS.write().expect("write lock poisoned");
+    let mut guard = write_lock(&SETTINGS);
     guard.compaction_policy = v.to_string();
 
     Ok(())

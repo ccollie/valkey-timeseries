@@ -19,6 +19,7 @@ use crate::common::encoding::{
 };
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::{log_debug, log_notice, log_warning};
+use crate::common::sync::{read_lock, write_lock};
 use crate::config::is_index_persist_enabled;
 use crate::series::index::IndexKey;
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
@@ -294,7 +295,7 @@ pub(crate) fn load_index_from_rdb(rdb: *mut RedisModuleIO) -> c_int {
             for (db, postings) in sections {
                 let series_count = postings.id_to_key.len();
                 let index = get_db_index(db);
-                *index.inner.write().unwrap() = postings;
+                *write_lock(&index.inner) = postings;
                 preloaded.insert(db);
                 log_notice(format!(
                     "Preloaded postings index for db {db} ({series_count} series)"
@@ -440,7 +441,7 @@ fn reconcile_preloaded_indexes() {
 fn verify_and_repair_db(db: i32, loaded_count: u64) {
     let indexed_count = {
         let index = get_db_index(db);
-        let postings = index.inner.read().unwrap();
+        let postings = read_lock(&index.inner);
         postings.count() as u64
     };
 
@@ -472,7 +473,7 @@ fn verify_and_repair_db(db: i32, loaded_count: u64) {
 
     let repaired_count = {
         let index = get_db_index(db);
-        let postings = index.inner.read().unwrap();
+        let postings = read_lock(&index.inner);
         postings.count() as u64
     };
     log_notice(format!(
@@ -490,7 +491,7 @@ fn reconcile_db(db: i32) {
         // touching the keyspace or taking the write lock.
         let window: Vec<(SeriesRef, Box<[u8]>)> = {
             let index = get_db_index(db);
-            let postings = index.inner.read().unwrap();
+            let postings = read_lock(&index.inner);
             postings
                 .id_to_key
                 .range(cursor..)
@@ -523,7 +524,7 @@ fn reconcile_db(db: i32) {
         if !missing.is_empty() {
             dangling += missing.len();
             let index = get_db_index(db);
-            let mut postings = index.inner.write().unwrap();
+            let mut postings = write_lock(&index.inner);
             postings.mark_ids_as_stale(&missing);
         }
     }
@@ -546,7 +547,7 @@ fn discard_preloaded_indexes() {
     let dbs: Vec<i32> = take_preloaded_dbs();
     for db in dbs {
         let index = get_db_index(db);
-        index.inner.write().unwrap().clear();
+        write_lock(&index.inner).clear();
         log_warning(format!(
             "Load failed; discarded preloaded postings index for db {db}"
         ));

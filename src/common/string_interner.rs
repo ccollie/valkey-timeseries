@@ -35,6 +35,7 @@
 //! assert_eq!(&*x, "hello"); // dereference an InternedString like a pointer
 //! ```
 
+use crate::common::sync::{read_lock, write_lock};
 use ahash::RandomState;
 use get_size2::GetSize;
 use min_max_heap::MinMaxHeap;
@@ -217,7 +218,7 @@ impl InternedString {
     fn from_arc(val: Arc<[u8]>) -> InternedString {
         // First, try to get an existing entry with a read lock
         {
-            let pool = STRING_POOL.read().unwrap();
+            let pool = read_lock(&STRING_POOL);
             if let Some(existing) = pool.get(&val) {
                 return InternedString {
                     arc: existing.clone(),
@@ -226,7 +227,7 @@ impl InternedString {
         }
 
         // If not found, acquire write lock and insert
-        let mut pool = STRING_POOL.write().unwrap();
+        let mut pool = write_lock(&STRING_POOL);
 
         // Double-check after acquiring write lock (another thread may have inserted)
         if let Some(existing) = pool.get(&val) {
@@ -269,7 +270,7 @@ impl InternedString {
 
     /// Return the number of unique interned strings.
     pub fn interned_count() -> usize {
-        STRING_POOL.read().unwrap().len()
+        read_lock(&STRING_POOL).len()
     }
 
     /// Return the total memory used by all interned strings.
@@ -283,7 +284,7 @@ impl InternedString {
     /// Passing `k = 0` skips the top-K collection entirely (both `top_k_by_size` and
     /// `top_k_by_ref` will be empty).
     pub fn get_stats_with_top_k(k: usize) -> Stats {
-        let pool = STRING_POOL.read().unwrap();
+        let pool = read_lock(&STRING_POOL);
         let mut stats = Stats::default();
 
         // MinMaxHeap allows us to efficiently track top-K and extract the max values
@@ -426,7 +427,7 @@ impl Drop for InternedString {
             return;
         }
 
-        let mut pool = STRING_POOL.write().unwrap();
+        let mut pool = write_lock(&STRING_POOL);
 
         // Only remove/account if the pool currently contains this arc AND `self` is
         // the last external reference at the moment we hold the write lock.
