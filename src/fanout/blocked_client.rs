@@ -50,8 +50,14 @@ pub(super) struct FanoutBlockedClient<T: FanoutClientCommand> {
     is_blocked: bool,
 }
 
-// We need to be able to send the inner pointer to another thread
-unsafe impl<T: FanoutClientCommand> Send for FanoutBlockedClient<T> {}
+// SAFETY: `inner` is a raw pointer to a `ValkeyModuleBlockedClient`, which is safe to hand off
+// to another thread (that is the whole point of blocking a client: another thread eventually
+// calls `ValkeyModule_UnblockClient` on it). The `T: Send` bound makes the rest of the struct's
+// soundness argument self-contained here: `data: Option<Box<BlockedClientPrivateData<T>>>` owns
+// a `T`, so sending `Self` across threads also sends that `T`. `FanoutClientCommand` already
+// requires `Send` as a supertrait, but that bound lives in a different file — restating it here
+// means this impl stays sound even if that supertrait bound is ever relaxed.
+unsafe impl<T: FanoutClientCommand + Send> Send for FanoutBlockedClient<T> {}
 
 impl<T> FanoutBlockedClient<T>
 where
