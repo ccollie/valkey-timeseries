@@ -144,7 +144,7 @@ fn deserialize_rows(columns: &[SampleData]) -> ValkeyResult<Vec<MultiSample>> {
     let mut rows = Vec::with_capacity(len);
     for i in 0..len {
         let timestamp = cols[0][i].timestamp;
-        let mut values: SmallVec<f64, 4> = SmallVec::with_capacity(n);
+        let mut values: SmallVec<[f64; 4]> = SmallVec::with_capacity(n);
         for (idx, col) in cols.iter().enumerate() {
             if col[i].timestamp != timestamp {
                 return Err(ValkeyError::String(format!(

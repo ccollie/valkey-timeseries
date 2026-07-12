@@ -151,7 +151,7 @@ fn fetch_series_batch<'a>(
     let index = get_timeseries_index(ctx);
     let postings_guard = index.get_postings();
 
-    let mut stale_ids: SmallVec<SeriesRef, 8> = SmallVec::new();
+    let mut stale_ids: SmallVec<[SeriesRef; 8]> = SmallVec::new();
     let mut result: Vec<SeriesGuardMut<'a>> = Vec::with_capacity(batch_size);
     let mut keys: Vec<ValkeyString> = Vec::with_capacity(batch_size);
 

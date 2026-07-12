@@ -17,10 +17,10 @@ pub struct IndexedSample {
 /// A collection of samples for a single timeseries, along with their original indices.
 pub struct PerSeriesSamples<'a> {
     series: &'a mut TimeSeries,
-    samples: SmallVec<IndexedSample, 6>,
+    samples: SmallVec<[IndexedSample; 6]>,
     /// Samples accepted by the merge, ascending by timestamp; consumed by the post-merge
     /// compaction pass.
-    added: SmallVec<Sample, 8>,
+    added: SmallVec<[Sample; 8]>,
     /// The series' last timestamp before the merge: batch compaction uses it to tell
     /// guaranteed-fresh appends apart from samples that may have replaced existing values.
     prev_last: Option<Timestamp>,
@@ -113,7 +113,7 @@ pub(super) fn merge_samples(
 pub fn multi_series_merge_samples(
     groups: Vec<PerSeriesSamples>,
     ctx: Option<&Context>,
-) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
+) -> ValkeyResult<SmallVec<[(usize, SampleAddResult); 8]>> {
     if groups.is_empty() {
         return Ok(smallvec![]);
     }
@@ -142,7 +142,7 @@ pub fn multi_series_merge_samples(
 
 fn add_samples_internal(
     input: &mut PerSeriesSamples,
-) -> ValkeyResult<SmallVec<(usize, SampleAddResult), 8>> {
+) -> ValkeyResult<SmallVec<[(usize, SampleAddResult); 8]>> {
     input.prev_last = input.series.last_sample.map(|s| s.timestamp);
 
     if input.samples.len() == 1 {
@@ -157,7 +157,7 @@ fn add_samples_internal(
     }
 
     input.sort_by_timestamp();
-    let samples: SmallVec<Sample, 8> = input
+    let samples: SmallVec<[Sample; 8]> = input
         .samples
         .iter()
         .map(|s| Sample::new(s.timestamp, s.value))
@@ -181,7 +181,7 @@ fn add_samples_internal(
         })
         .collect();
 
-    let mut result: SmallVec<(usize, SampleAddResult), 8> = SmallVec::new();
+    let mut result: SmallVec<[(usize, SampleAddResult); 8]> = SmallVec::new();
     for item in add_results
         .iter()
         .zip(input.samples.iter())

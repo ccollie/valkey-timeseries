@@ -497,10 +497,10 @@ impl Postings {
             }
         }
 
-        let mut its: SmallVec<_, 4> = SmallVec::new();
-        let mut not_its: SmallVec<Cow<PostingsBitmap>, 4> = SmallVec::new();
+        let mut its: SmallVec<[_; 4]> = SmallVec::new();
+        let mut not_its: SmallVec<[Cow<PostingsBitmap>; 4]> = SmallVec::new();
 
-        let mut sorted_matchers: SmallVec<(&LabelFilter, bool, bool), 4> = SmallVec::new();
+        let mut sorted_matchers: SmallVec<[(&LabelFilter, bool, bool); 4]> = SmallVec::new();
 
         let mut has_subtracting_matchers = false;
         let mut has_intersecting_matchers = false;

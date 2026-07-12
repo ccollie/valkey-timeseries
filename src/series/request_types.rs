@@ -161,7 +161,7 @@ pub const MAX_AGGREGATIONS: usize = 16;
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregationOptions {
     /// 1..=MAX_AGGREGATIONS entries; index = output column order.
-    pub aggregations: SmallVec<AggregatorConfig, 2>,
+    pub aggregations: SmallVec<[AggregatorConfig; 2]>,
     pub bucket_duration: u64,
     pub timestamp_output: BucketTimestamp,
     pub alignment: BucketAlignment,
@@ -252,7 +252,7 @@ impl AggregationOptions {
     }
 
     /// One stateful aggregator per list entry, in output column order.
-    pub fn create_aggregators(&self) -> SmallVec<Aggregator, 2> {
+    pub fn create_aggregators(&self) -> SmallVec<[Aggregator; 2]> {
         self.aggregations
             .iter()
             .map(|config| config.create_aggregator())

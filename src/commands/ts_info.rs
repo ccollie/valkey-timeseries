@@ -187,7 +187,7 @@ fn get_rules_info(ctx: &Context, series: &TimeSeries) -> ValkeyValue {
         return ValkeyValue::Array(vec![]);
     }
 
-    let series_ids: SmallVec<_, 16> = series.rules.iter().map(|rule| rule.dest_id).collect();
+    let series_ids: SmallVec<[_; 16]> = series.rules.iter().map(|rule| rule.dest_id).collect();
     let keys_map = get_keys_by_id(ctx, &series_ids);
 
     let rules_value = series

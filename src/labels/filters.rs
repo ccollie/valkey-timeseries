@@ -72,7 +72,7 @@ impl TryFrom<Token> for MatchOp {
     }
 }
 
-pub type ValueList = SmallVec<String, 4>;
+pub type ValueList = SmallVec<[String; 4]>;
 
 #[derive(Clone, Debug)]
 pub enum PredicateValue {
@@ -282,7 +282,7 @@ pub struct RegexMatcher {
     pub regex: Regex,
     pub prefix: Option<String>,
     pub suffix: Option<String>,
-    pub required_literals: SmallVec<String, 2>,
+    pub required_literals: SmallVec<[String; 2]>,
     pub value: String, // original (possibly unanchored) string
 }
 
@@ -821,7 +821,7 @@ fn get_metric_name(filters: &[LabelFilter]) -> Option<&str> {
 /// We try to minimize allocations by reserving stack space for 3 LabelFilter, which seems reasonable for the common
 /// case. e.g. http_requests_total{job="api",method="GET"}
 #[derive(Debug, Default, Clone, Hash, PartialEq)]
-pub struct FilterList(SmallVec<LabelFilter, 3>);
+pub struct FilterList(SmallVec<[LabelFilter; 3]>);
 
 impl FilterList {
     pub fn new(matchers: Vec<LabelFilter>) -> Self {
@@ -891,7 +891,7 @@ impl From<Vec<LabelFilter>> for FilterList {
 }
 
 /// OrFiltersList is a small vector of FilterList, used for OR combinations of AND filters.
-pub type OrFiltersList = SmallVec<FilterList, 2>;
+pub type OrFiltersList = SmallVec<[FilterList; 2]>;
 
 #[derive(Debug, Clone, Hash, PartialEq)]
 #[allow(clippy::large_enum_variant)]

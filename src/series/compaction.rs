@@ -18,6 +18,9 @@ use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, raw};
 const PARALLEL_THRESHOLD: usize = 2;
 const TEMP_VEC_LEN: usize = 6;
 
+/// (dest_id, written samples, previous last sample) queued for cascading compaction.
+type PendingCompactionWrite = (SeriesRef, Vec<Sample>, Option<Timestamp>);
+
 #[derive(Debug, Clone, Hash, PartialEq)]
 pub struct CompactionRule {
     pub dest_id: SeriesRef,
@@ -512,8 +515,8 @@ fn process_series_with_compaction(
     series: &mut TimeSeries,
     op: CompactionOp,
 ) -> TsdbResult<()> {
-    let mut notified: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
-    let mut visited: SmallVec<SeriesRef, TEMP_VEC_LEN> = SmallVec::new();
+    let mut notified: SmallVec<[SeriesRef; TEMP_VEC_LEN]> = SmallVec::new();
+    let mut visited: SmallVec<[SeriesRef; TEMP_VEC_LEN]> = SmallVec::new();
     visited.push(series.id);
 
     let destinations = get_compaction_series(ctx, series);
@@ -525,7 +528,7 @@ fn process_series_with_compaction(
 
     match op {
         CompactionOp::RemoveRange { .. } => {
-            let mut pending: SmallVec<SeriesRef, TEMP_VEC_LEN> =
+            let mut pending: SmallVec<[SeriesRef; TEMP_VEC_LEN]> =
                 outcomes.iter().map(|o| o.dest_id).collect();
             for outcome in &outcomes {
                 if !outcome.written.is_empty() {
@@ -558,8 +561,7 @@ fn process_series_with_compaction(
             }
         }
         _ => {
-            let mut pending: SmallVec<(SeriesRef, Vec<Sample>, Option<Timestamp>), TEMP_VEC_LEN> =
-                SmallVec::new();
+            let mut pending: SmallVec<[PendingCompactionWrite; TEMP_VEC_LEN]> = SmallVec::new();
             for outcome in outcomes {
                 if outcome.written.is_empty() {
                     continue;
@@ -617,7 +619,7 @@ fn process_series_with_compaction(
 
 fn apply_rules_on_destinations(
     series: &mut TimeSeries,
-    destinations: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
+    destinations: SmallVec<[SeriesGuardMut; TEMP_VEC_LEN]>,
     op: CompactionOp,
 ) -> TsdbResult<Vec<RuleOutcome>> {
     let mut rules = std::mem::take(&mut series.rules);
@@ -630,7 +632,7 @@ fn apply_rules_on_destinations(
 fn apply_rules_internal(
     series: &TimeSeries,
     rules: &mut [CompactionRule],
-    child_series: SmallVec<SeriesGuardMut, TEMP_VEC_LEN>,
+    child_series: SmallVec<[SeriesGuardMut; TEMP_VEC_LEN]>,
     op: CompactionOp,
 ) -> TsdbResult<Vec<RuleOutcome>> {
     if rules.is_empty() {
@@ -693,13 +695,13 @@ pub(super) fn get_destination_series(
 fn get_compaction_series<'a>(
     ctx: &'a Context,
     series: &mut TimeSeries,
-) -> SmallVec<SeriesGuardMut<'a>, TEMP_VEC_LEN> {
+) -> SmallVec<[SeriesGuardMut<'a>; TEMP_VEC_LEN]> {
     if series.rules.is_empty() {
         return SmallVec::new();
     }
 
-    let mut missing: SmallVec<_, TEMP_VEC_LEN> = SmallVec::new();
-    let mut destinations: SmallVec<_, TEMP_VEC_LEN> = SmallVec::new();
+    let mut missing: SmallVec<[_; TEMP_VEC_LEN]> = SmallVec::new();
+    let mut destinations: SmallVec<[_; TEMP_VEC_LEN]> = SmallVec::new();
 
     for rule in series.rules.iter() {
         if let Some(dest_series) = get_destination_series(ctx, rule.dest_id) {

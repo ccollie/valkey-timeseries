@@ -336,7 +336,7 @@ const TIMESTAMP_FILTER_INLINE_THRESHOLD: usize = 16;
 // very common case of a very small number of timestamps
 pub enum TimestampFilter {
     Set(IntSet<Timestamp>),
-    List(SmallVec<Timestamp, TIMESTAMP_FILTER_INLINE_THRESHOLD>),
+    List(SmallVec<[Timestamp; TIMESTAMP_FILTER_INLINE_THRESHOLD]>),
 }
 
 impl TimestampFilter {
@@ -344,7 +344,7 @@ impl TimestampFilter {
         if timestamps.len() > TIMESTAMP_FILTER_INLINE_THRESHOLD {
             Self::Set(IntSet::from_iter(timestamps.iter().copied()))
         } else {
-            Self::List(SmallVec::from_slice_copy(timestamps))
+            Self::List(SmallVec::from_slice(timestamps))
         }
     }
 

@@ -100,11 +100,11 @@ impl From<&Sample> for ValkeyValue {
 #[derive(Debug, Clone, Default)]
 pub struct MultiSample {
     pub timestamp: Timestamp,
-    pub values: SmallVec<SampleValue, 4>,
+    pub values: SmallVec<[SampleValue; 4]>,
 }
 
 impl MultiSample {
-    pub fn new(timestamp: Timestamp, values: SmallVec<SampleValue, 4>) -> Self {
+    pub fn new(timestamp: Timestamp, values: SmallVec<[SampleValue; 4]>) -> Self {
         Self { timestamp, values }
     }
 }
