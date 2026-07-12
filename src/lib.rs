@@ -11,9 +11,10 @@ use crate::commands::register_fanout_operations;
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
+use valkey_module_macros::shutdown_event_handler;
 
 pub mod aggregators;
 mod analysis;
@@ -30,22 +31,29 @@ mod parser;
 pub mod series;
 
 pub use labels::Label;
-mod server_events;
 mod tests;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
+use crate::series::index::server_events::{
+    generic_key_events_handler, register_server_event_handlers,
+};
 use crate::series::series_data_type::VK_TIME_SERIES_TYPE;
-use crate::server_events::{generic_key_events_handler, register_server_events};
 
 pub const VK_TIMESERIES_VERSION: i32 = 1;
 pub const MODULE_NAME: &str = "ts";
 
 static IS_MODULE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static IS_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
 static MAIN_THREAD_ID: OnceLock<ThreadId> = OnceLock::new();
 
 pub fn is_module_initialized() -> bool {
-    IS_MODULE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed)
+    IS_MODULE_INITIALIZED.load(Ordering::Relaxed)
+}
+
+pub fn is_shutting_down() -> bool {
+    IS_SHUTTING_DOWN.load(Ordering::Relaxed)
 }
 
 pub fn is_main_thread() -> bool {
@@ -86,7 +94,6 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
         return Status::Err;
     }
 
-    // respond with either Status::Ok or Status::Err (if you want to prevent module loading)
     Status::Ok
 }
 
@@ -95,6 +102,12 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
 
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");
+        ctx.log_warning(&msg);
+        return Status::Err;
+    }
+
+    if let Err(e) = register_server_event_handlers(ctx) {
+        let msg = format!("Failed to register server event handlers: {e}");
         ctx.log_warning(&msg);
         return Status::Err;
     }
@@ -108,26 +121,26 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         };
     }
 
-    if let Err(e) = register_server_events(ctx) {
-        let msg = format!("Failed to register server events: {e}");
-        ctx.log_warning(&msg);
-        return Status::Err;
-    }
-
     MAIN_THREAD_ID.get_or_init(|| std::thread::current().id());
 
     init_thread_pool();
     init_background_tasks(ctx);
 
     ctx.log_notice("valkey-timeseries module initialized");
-    IS_MODULE_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
+    IS_MODULE_INITIALIZED.store(true, Ordering::Relaxed);
     Status::Ok
 }
 
 fn deinitialize(ctx: &Context) -> Status {
     ctx.log_notice("deinitialize");
-    IS_MODULE_INITIALIZED.store(false, std::sync::atomic::Ordering::Relaxed);
+    IS_MODULE_INITIALIZED.store(false, Ordering::Relaxed);
     Status::Ok
+}
+
+#[shutdown_event_handler]
+fn shutdown_event_handler(ctx: &Context, _event: u64) {
+    ctx.log_notice("Server shutdown callback event ...");
+    IS_SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
 
 #[cfg(not(all(test, doctest)))]
@@ -183,6 +196,7 @@ valkey_module! {
         ["TS.DELETERULE", commands::ts_deleterule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["TS.OUTLIERS", commands::ts_outliers_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["TS._DEBUG", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
+        ["TS._RESTORE", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]

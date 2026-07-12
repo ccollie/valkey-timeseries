@@ -16,8 +16,7 @@ Quick start (commands you can run)
 Key ENV and behavior (from `./build.sh`)
 
 - `SERVER_VERSION` (required): controls which valkey-server is cloned/built and stored at
-  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `unstable` if not set, which tracks the latest main
-  branch.
+  `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `unstable` if not set, which tracks the latest main or branch.
 - `ASAN_BUILD`: when set runs tests with LeakSanitizer checks and fails on leaks.
 - `TEST_PATTERN`: passed to pytest `-k` to select tests.
 - `MODULE_PATH` exported after build: `target/release/libvalkey_timeseries{.so,.dylib}` depending on OS.
@@ -43,7 +42,7 @@ High-level architecture (big picture)
   `src/commands/fanout.*.proto`) and explicit fanout registration (`register_fanout_operations`) to implement
   cluster-wide queries.
 
-Project-specific conventions & patterns
+Project-specific conventions and patterns
 
 - All Valkey commands are declared in the `valkey_module!` macro in `src/lib.rs`; change there to add/remove commands.
 - Command files follow `ts_<command>.rs` naming and export `ts_<command>_cmd` functions (see `src/commands/mod.rs`).

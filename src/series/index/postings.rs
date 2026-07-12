@@ -1,6 +1,5 @@
 use super::index_key::IndexKey;
 use super::key_buffer::KeyBuffer;
-use crate::common::hash::IntMap;
 use crate::common::logging::log_warning;
 use crate::error_consts::MISSING_FILTER;
 use crate::labels::filters::{
@@ -8,13 +7,14 @@ use crate::labels::filters::{
 };
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::{SeriesRef, TimeSeries};
+use blart::TreeMap;
 use blart::map::Entry as ARTEntry;
-use blart::{AsBytes, TreeMap};
 use croaring::Bitmap64;
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 use std::sync::LazyLock;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -35,7 +35,7 @@ pub struct Postings {
     /// Map from label name and (label name, label value) to a set of timeseries ids.
     pub(super) label_index: PostingsIndex,
     /// Map from timeseries id to the key of the timeseries.
-    pub(super) id_to_key: IntMap<SeriesRef, KeyType>,
+    pub(in crate::series) id_to_key: BTreeMap<SeriesRef, KeyType>,
     /// Set of timeseries ids of series that should be removed from the index. This really only
     /// happens when the index is inconsistent (value does not exist in the db but exists in the index)
     /// Keep track and cleanup from the index during a gc pass.
@@ -48,7 +48,7 @@ impl Default for Postings {
     fn default() -> Self {
         Postings {
             label_index: PostingsIndex::new(),
-            id_to_key: IntMap::default(),
+            id_to_key: BTreeMap::new(),
             stale_ids: PostingsBitmap::default(),
             all_postings: PostingsBitmap::default(),
         }
@@ -723,16 +723,25 @@ impl Postings {
         self.id_to_key.get(&id)
     }
 
-    /// Marks an id as stale by adding its ID to the stale IDs set.
-    /// Context: used in the case of possible index sync issues. When the index is queried and an id is returned
-    /// with no corresponding series, we have no access to the series data to do a proper
-    /// cleanup. We remove the key from the index and mark the ID as stale, which will be cleaned up later.
+    pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
+        self.mark_ids_as_stale(&[id]);
+    }
+
+    /// Marks ids as stale by adding its ID to the stale IDs set.
+    /// ## Context
+    /// This is used in the case of possible index sync issues. When the index is queried and an id is returned
+    /// with no corresponding series, we have no access to the series data to do a proper cleanup. Also, at the end
+    /// of cluster migration, the source node needs to remove all series ids corresponding to the migrated slots.
+    ///
+    /// We remove the key from the index and mark the ID as stale, which will be cleaned up later in a background task.
     /// The stale IDs are stored in a bitmap for efficient removal and are checked to ensure that no stale IDs are
     /// returned in queries until they are removed.
-    pub(crate) fn mark_id_as_stale(&mut self, id: SeriesRef) {
-        let _ = self.id_to_key.remove(&id);
-        self.stale_ids.add(id);
-        self.all_postings.remove(id);
+    pub(crate) fn mark_ids_as_stale(&mut self, ids: &[SeriesRef]) {
+        for id in ids {
+            let _ = self.id_to_key.remove(id);
+        }
+        self.stale_ids.add_many(ids);
+        self.all_postings.remove_many(ids);
     }
 
     #[cfg(test)]
@@ -766,10 +775,15 @@ impl Postings {
         let mut keys_to_remove = Vec::new();
         let mut next_key = None;
 
-        // Determine the prefix to use for iteration
-        let prefix_bytes = start_prefix.map_or_else(Vec::new, |k| k.as_bytes().to_vec());
+        // Resume from the cursor key using an ordered range (NOT a prefix scan): a full key used
+        // as a prefix only matches itself and its extensions, which would abandon the remaining
+        // keys and prematurely clear `stale_ids`.
+        let range = match start_prefix {
+            Some(k) => (Bound::Included(k), Bound::Unbounded),
+            None => (Bound::Unbounded, Bound::Unbounded),
+        };
 
-        for (key, bitmap) in self.label_index.prefix_mut(&prefix_bytes) {
+        for (key, bitmap) in self.label_index.range_mut::<IndexKey, _>(range) {
             // Remove stale IDs from the bitmap
             let should_remove = if !bitmap.is_empty() {
                 bitmap.andnot_inplace(&self.stale_ids);
@@ -796,17 +810,11 @@ impl Postings {
             self.label_index.remove(&key);
         }
 
-        // Clean up id_to_key map for all stale IDs
-        // This is done in every batch since we need to ensure consistency
-        if keys_processed > 0 {
-            self.stale_ids.iter().for_each(|id| {
-                let _ = self.id_to_key.remove(&id);
-            });
-
-            // Clear stale_ids if we've processed all keys
-            if next_key.is_none() {
-                self.stale_ids.clear();
-            }
+        // If we processed some keys but didn't reach the end, we can return the next key to continue from.
+        // If we processed keys and there are no more keys to process, it means we've reached the end of the index,
+        // so we can clear the stale IDs as they have been fully processed.
+        if keys_processed > 0 && next_key.is_none() {
+            self.stale_ids.clear();
         }
 
         next_key
@@ -840,11 +848,15 @@ impl Postings {
 
         let mut keys_to_delete = Vec::new();
         let mut keys_processed: usize = 0;
-        // Determine the prefix to use for iteration
-        let prefix_bytes = start_prefix.map_or_else(Vec::new, |k| k.as_bytes().to_vec());
+        // Resume from the cursor key using an ordered range rather than a prefix scan (a full key
+        // as a prefix only matches itself and its extensions).
+        let range = match start_prefix {
+            Some(k) => (Bound::Included(k), Bound::Unbounded),
+            None => (Bound::Unbounded, Bound::Unbounded),
+        };
 
         // Collect keys to process
-        for (key, bitmap) in self.label_index.prefix_mut(&prefix_bytes) {
+        for (key, bitmap) in self.label_index.range_mut::<IndexKey, _>(range) {
             if bitmap.is_empty() {
                 keys_to_delete.push(key.clone());
                 continue;
@@ -1653,6 +1665,53 @@ mod tests {
                 .is_empty()
         );
         assert!(postings.all_postings.is_empty());
+    }
+
+    #[test]
+    fn test_remove_stale_ids_across_multiple_batches() {
+        // Regression test: draining stale ids must visit *every* label key, not just those sharing
+        // a prefix with the resume cursor. Previously the resume used the cursor as a prefix, which
+        // abandoned later keys and cleared `stale_ids` while their bitmaps were still dirty.
+        let mut postings = Postings::default();
+        let n: u64 = 250;
+        for i in 0..n {
+            postings.add_posting_for_label_value(i as SeriesRef, "host", &format!("h{i:04}"));
+            postings.add_posting_for_label_value(i as SeriesRef, "job", "web");
+        }
+
+        // Mark the even ids stale.
+        let stale: Vec<SeriesRef> = (0..n).step_by(2).map(|i| i as SeriesRef).collect();
+        postings.mark_ids_as_stale(&stale);
+        assert!(postings.has_stale_ids());
+
+        // Drain in small batches, like the background maintenance task.
+        let mut cursor = None;
+        while let Some(next) = postings.remove_stale_ids(cursor.take(), 16) {
+            cursor = Some(next);
+        }
+
+        assert!(
+            !postings.has_stale_ids(),
+            "stale ids should be fully drained"
+        );
+
+        // The shared `job=web` bitmap sorts after all the `host=*` keys, so with the old
+        // prefix-based resume it was never cleaned. Inspect the raw bitmap directly (queries mask
+        // stale ids regardless of whether the bitmap was physically cleaned).
+        let key = IndexKey::for_label_value("job", "web");
+        let bmp = postings
+            .label_index
+            .get::<IndexKey>(&key)
+            .expect("job=web posting list should exist");
+        for id in &stale {
+            assert!(
+                !bmp.contains(*id),
+                "stale id {id} should have been removed from the bitmap"
+            );
+        }
+        // Odd (non-stale) ids remain.
+        assert!(bmp.contains(1));
+        assert!(bmp.contains(3));
     }
 
     #[test]

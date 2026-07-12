@@ -16,6 +16,7 @@ mod sample_merge;
 pub mod serialization;
 pub mod series_data_type;
 mod series_sample_iterator;
+mod tasks;
 mod time_series;
 #[cfg(test)]
 mod time_series_tests;

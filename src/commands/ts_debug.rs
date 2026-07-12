@@ -1,7 +1,9 @@
 use super::ts_debug_configs::list_configs_cmd;
 use crate::commands::CommandArgIterator;
+use crate::commands::command_parser::parse_query_index_command_args;
 use crate::common::replies::*;
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
+use crate::series::index::series_keys_by_selectors;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Dumps a bucket's statistics to the reply.
@@ -107,6 +109,24 @@ fn string_pool_stats(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResu
     Ok(())
 }
 
+/// Runs a query against this node's *local* index only, bypassing the cluster fanout that
+/// `TS.QUERYINDEX` performs. This is primarily used by tests to assert per-node index state (for
+/// example, that a source node's index was cleared after an atomic slot migration, which a
+/// fanned-out `TS.QUERYINDEX` cannot observe because peers may still hold the keys).
+///
+/// TS._DEBUG QUERYINDEX <filter> [<filter> ...]
+fn local_query_index(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
+    let options = parse_query_index_command_args(args)?;
+    let mut keys = series_keys_by_selectors(ctx, &options.matchers, options.date_range)?;
+    keys.sort_unstable();
+
+    reply_with_array(ctx, keys.len());
+    for key in keys.iter() {
+        reply_with_valkey_string(ctx, key);
+    }
+    Ok(())
+}
+
 /// Displays help text for the TS._DEBUG command.
 fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
     args.done()?;
@@ -116,6 +136,10 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
         (
             "TS._DEBUG STRINGPOOLSTATS [TOPK]",
             "Show String Interner Stats",
+        ),
+        (
+            "TS._DEBUG QUERYINDEX <filter> [<filter> ...]",
+            "Query this node's local index only (no cluster fanout)",
         ),
         (
             "TS._DEBUG LIST_CONFIGS [VERBOSE] [APP|DEV|HIDDEN]",
@@ -141,6 +165,7 @@ pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<()> 
 
     match keyword.as_str() {
         "STRINGPOOLSTATS" => string_pool_stats(ctx, &mut itr),
+        "QUERYINDEX" => local_query_index(ctx, &mut itr),
         "HELP" => help_cmd(ctx, &mut itr),
         "LIST_CONFIGS" => list_configs_cmd(ctx, &mut itr),
         _ => Err(ValkeyError::String(format!(

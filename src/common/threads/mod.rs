@@ -1,4 +1,12 @@
+mod batch_worker;
+
+use crate::common::context::{get_current_db, set_current_db};
 use crate::is_main_thread;
+#[allow(unused_imports)]
+pub(crate) use batch_worker::{
+    BatchRequest, BatchWorker, global_valkey_task_worker, submit_task_no_wait,
+    submit_task_with_payload,
+};
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
 use std::sync::LazyLock;
@@ -81,6 +89,32 @@ where
     callback();
 }
 
+/// Runs `callback` with a module [`Context`] while already on the main thread.
+///
+/// The caller must be on the main thread with the module GIL held (true for command handlers,
+/// server-event callbacks, and event-loop one-shot callbacks). We therefore must NOT lock a
+/// thread-safe/detached context — that re-acquires the GIL and self-deadlocks. Instead we obtain a
+/// throwaway thread-safe context (which does no locking) and use it directly.
+fn with_main_thread_context<F>(callback: F)
+where
+    F: FnOnce(&Context),
+{
+    let raw_ctx = unsafe { raw::RedisModule_GetThreadSafeContext.unwrap()(std::ptr::null_mut()) };
+    let ctx = Context::new(raw_ctx);
+    let saved_db = get_current_db(&ctx);
+    callback(&ctx);
+    set_current_db(&ctx, saved_db);
+    unsafe { raw::RedisModule_FreeThreadSafeContext.unwrap()(raw_ctx) };
+}
+
+extern "C" fn event_loop_callback_wrapper_with_context<F>(data: *mut c_void)
+where
+    F: FnOnce(&Context) + 'static,
+{
+    let callback: Box<F> = unsafe { Box::from_raw(data as *mut F) };
+    with_main_thread_context(|ctx| callback(ctx));
+}
+
 /// Executes a given closure on the Valkey main thread. The provided closure will be executed as a one-shot operation.
 ///
 /// # Parameters
@@ -110,6 +144,43 @@ where
     let raw_data = Box::into_raw(boxed_callback) as *mut c_void;
 
     let event_loop_callback = event_loop_callback_wrapper::<F>;
+
+    unsafe {
+        raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
+    }
+}
+
+/// Executes a given closure on the Valkey main thread, providing a reference to the module [`Context`].
+/// The provided closure will be executed as a one-shot operation.
+///
+/// # Parameters
+/// - `force_async`: If true, the closure will be executed asynchronously even if it's already on the main thread.
+/// - `callback`: The closure to be executed on the main thread. It receives a reference to the module [`Context`].
+///
+/// # Example
+/// ```rust,no_run
+/// use valkey_module::Context;
+/// use valkey_timeseries::common::threads::run_on_main_thread_with_context;
+///
+/// // A simple closure to be executed on the main thread with access to Context
+/// run_on_main_thread_with_context(false, |ctx: &Context| {
+///     ctx.log_notice("This is running on the main thread with context!");
+/// });
+/// ```
+pub fn run_on_main_thread_with_context<F>(force_async: bool, callback: F)
+where
+    F: FnOnce(&Context) + Send + 'static,
+{
+    if is_main_thread() && !force_async {
+        with_main_thread_context(callback);
+        return;
+    }
+
+    // Move the closure to the heap so it has a stable memory address
+    let boxed_callback = Box::new(callback);
+    let raw_data = Box::into_raw(boxed_callback) as *mut c_void;
+
+    let event_loop_callback = event_loop_callback_wrapper_with_context::<F>;
 
     unsafe {
         raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);

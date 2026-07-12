@@ -1,6 +1,7 @@
 pub mod acl;
 mod blocked_client;
 mod cluster_map;
+pub(crate) mod cluster_migrations;
 mod cluster_rpc;
 mod fanout_client_command;
 mod fanout_command;
@@ -27,6 +28,9 @@ pub use cluster_map::{ClusterMap, FanoutTargetMode, NodeInfo};
 pub use registry::register_fanout_operation;
 
 pub(crate) fn init_fanout(ctx: &Context) {
+    if !is_clustered(ctx) {
+        return;
+    }
     register_cluster_message_handlers(ctx);
 }
 

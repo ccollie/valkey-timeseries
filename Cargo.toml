@@ -11,7 +11,7 @@ description = "A Timeseries data type for Valkey"
 [dependencies]
 ahash = { version = "0.8", features = ["std"] }
 arc-swap = "1.9"
-blart = "0.5.0"
+blart = "0.5"
 bon = "3.9"
 byte-pool = "0.2.4"
 cfg-if = "1.0.4"
@@ -49,6 +49,7 @@ log = "0.4"
 statrs = "0.18"
 welch-sde = "0.1.0"
 regex-syntax = "0.8.10"
+crc16 = "0.4.0"
 
 [dev-dependencies]
 test-case = "3.3"

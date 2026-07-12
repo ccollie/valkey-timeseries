@@ -86,7 +86,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
         total_samples,
         first_timestamp,
         last_sample,
-        _db: 0,
+        _db: None,
         src_series,
         rules,
     };

@@ -107,8 +107,10 @@ pub fn create_series(
         ts.id = next_timeseries_id();
     }
 
-    ts._db = get_current_db(ctx);
-    let guard = get_db_index(ts._db);
+    let db = get_current_db(ctx);
+
+    ts._db = Some(db);
+    let guard = get_db_index(db);
 
     let index = guard.deref();
 
