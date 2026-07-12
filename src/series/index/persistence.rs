@@ -27,8 +27,8 @@ use croaring::{Bitmap64, Portable};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::os::raw::c_int;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex};
 use valkey_module::key::ValkeyKey;
 use valkey_module::{Context, KeysCursor, MODULE_CONTEXT, RedisModuleIO, ValkeyString, raw};
 
@@ -53,7 +53,9 @@ static LOADING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Per-db count of series that came through `rdb_load` during the current load window.
 /// Compared against the post-sweep index cardinality to detect keyspace-index drift.
-static LOADED_SERIES_COUNTS: Mutex<Vec<(i32, u64)>> = Mutex::new(Vec::new());
+/// Lock-free: `note_series_loaded` is called once per series deserialized from the RDB stream.
+static LOADED_SERIES_COUNTS: LazyLock<papaya::HashMap<i32, u64, BuildNoHashHasher<i32>>> =
+    LazyLock::new(papaya::HashMap::default);
 
 const RECONCILE_BATCH_SIZE: usize = 256;
 
@@ -315,7 +317,7 @@ pub(crate) fn load_index_from_rdb(rdb: *mut RedisModuleIO) -> c_int {
 /// Loading `RdbStarted`/`AofStarted`/`ReplStarted`: open the load window and reset per-load state.
 pub(crate) fn on_loading_started() {
     LOADING_ACTIVE.store(true, Ordering::SeqCst);
-    LOADED_SERIES_COUNTS.lock().unwrap().clear();
+    LOADED_SERIES_COUNTS.pin().clear();
     // Defensive: any leftover preload state from an earlier load cycle is stale by now.
     PRELOADED_DBS.pin().clear();
 }
@@ -330,7 +332,7 @@ pub(crate) fn on_loading_ended() {
 /// [`discard_preloaded_indexes`]).
 pub(crate) fn on_loading_failed() {
     LOADING_ACTIVE.store(false, Ordering::SeqCst);
-    LOADED_SERIES_COUNTS.lock().unwrap().clear();
+    LOADED_SERIES_COUNTS.pin().clear();
     discard_preloaded_indexes();
 }
 
@@ -369,17 +371,19 @@ pub(crate) fn observe_series_rdb_load(rdb: *mut RedisModuleIO, series: &mut Time
 }
 
 fn note_series_loaded(db: i32) {
-    let mut counts = LOADED_SERIES_COUNTS.lock().unwrap();
-    if let Some(entry) = counts.iter_mut().find(|(d, _)| *d == db) {
-        entry.1 += 1;
-    } else {
-        counts.push((db, 1));
-    }
+    LOADED_SERIES_COUNTS
+        .pin()
+        .update_or_insert(db, |count| count + 1, 1);
 }
 
+/// Drains `LOADED_SERIES_COUNTS`: snapshot the per-db counts, then clear. Not atomic with
+/// respect to a concurrent `note_series_loaded`, but there is none — this is only called from
+/// the loading-event handler, after the load window (and thus all `rdb_load` traffic) has ended.
 fn take_loaded_counts() -> Vec<(i32, u64)> {
-    let mut guard = LOADED_SERIES_COUNTS.lock().unwrap();
-    std::mem::take(&mut *guard)
+    let guard = LOADED_SERIES_COUNTS.pin();
+    let counts: Vec<(i32, u64)> = guard.iter().map(|(db, count)| (*db, *count)).collect();
+    guard.clear();
+    counts
 }
 
 /// Drains `PRELOADED_DBS`: snapshot the members, then clear. Not atomic with respect to a
