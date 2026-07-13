@@ -100,9 +100,23 @@ impl TimeSeriesIndex {
     // swap the inner value with some other value
     // this is specifically to handle the `swapdb` event callback
     pub fn swap(&self, other: &Self) {
-        let mut self_inner = write_lock(&self.inner);
-        let mut other_inner = write_lock(&other.inner);
-        self_inner.swap(&mut other_inner);
+        // Swapping an index with itself is a no-op; proceeding would deadlock on the
+        // second write_lock (SWAPDB of a db with itself is rejected by the server, but
+        // don't rely on that here).
+        if std::ptr::eq(self, other) {
+            return;
+        }
+        // Acquire the two write locks in address order so concurrent swaps of the same
+        // pair (in opposite argument order) cannot deadlock. `Postings::swap` is
+        // symmetric, so lock order doesn't affect the result.
+        let (first, second) = if std::ptr::from_ref(self) < std::ptr::from_ref(other) {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        let mut first_inner = write_lock(&first.inner);
+        let mut second_inner = write_lock(&second.inner);
+        first_inner.swap(&mut second_inner);
     }
 
     pub fn index_timeseries(&self, ts: &TimeSeries, key: &[u8]) {
@@ -622,4 +636,46 @@ impl<'a> BatchIterator<'a> {
 
 fn get_bitmap_size(bmp: &PostingsBitmap) -> usize {
     bmp.cardinality() as usize * size_of::<SeriesRef>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index_with_posting(id: SeriesRef, label: &str, value: &str) -> TimeSeriesIndex {
+        let index = TimeSeriesIndex::new();
+        index
+            .get_postings_mut()
+            .add_posting_for_label_value(id, label, value);
+        index
+    }
+
+    #[test]
+    fn test_swap_with_self_is_noop() {
+        // SWAPDB with from_db == to_db resolves to the same index twice; without the
+        // identity guard this deadlocks on the second write lock.
+        let index = index_with_posting(1, "host", "a");
+        index.swap(&index);
+        assert!(
+            index
+                .get_postings()
+                .postings_for_label_value("host", "a")
+                .contains(1)
+        );
+    }
+
+    #[test]
+    fn test_swap_exchanges_contents_in_both_argument_orders() {
+        let a = index_with_posting(1, "host", "a");
+        let b = index_with_posting(2, "host", "b");
+
+        // Exercises both lock-acquisition orders (a<b and b<a by address).
+        a.swap(&b);
+        assert!(a.get_postings().postings_for_label_value("host", "b").contains(2));
+        assert!(b.get_postings().postings_for_label_value("host", "a").contains(1));
+
+        b.swap(&a);
+        assert!(a.get_postings().postings_for_label_value("host", "a").contains(1));
+        assert!(b.get_postings().postings_for_label_value("host", "b").contains(2));
+    }
 }
