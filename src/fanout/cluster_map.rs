@@ -2,7 +2,7 @@ use crate::common::hash::DeterministicHasher;
 use crate::common::threads::LockGil;
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
-use crate::fanout::{calculate_hash_slot, key_hash_slot};
+use crate::fanout::calculate_hash_slot;
 use ahash::{AHashMap, HashSet, HashSetExt};
 use rand::{Rng, RngExt, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
