@@ -1,4 +1,5 @@
 use std::ops::Deref;
+pub(crate) mod bulk_build;
 mod index_key;
 mod posting_stats;
 mod postings;

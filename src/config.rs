@@ -74,6 +74,10 @@ pub(crate) const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.na
 pub(crate) const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 pub(crate) const DEFAULT_COMPACTION_POLICY: &str = "";
 
+pub const INDEX_BUILD_MAX_MEMORY_MIN: i64 = 0; // 0 = unlimited
+pub const INDEX_BUILD_MAX_MEMORY_MAX: i64 = i64::MAX;
+pub const INDEX_BUILD_MAX_MEMORY_DEFAULT: i64 = 256 * 1024 * 1024; // 256 MiB
+
 pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 750; // default: 0.25 second
 pub(crate) const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
 pub(crate) const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
@@ -231,6 +235,17 @@ pub static INDEX_PERSIST: AtomicBool = AtomicBool::new(true);
 
 pub fn is_index_persist_enabled() -> bool {
     INDEX_PERSIST.load(Ordering::Relaxed)
+}
+
+/// Cap on the transient buffer used by the sorted bulk index build during RDB/replication
+/// loads (`ts-index-bulk-build-max-memory`, bytes, 0 = unlimited; default 256MiB). The buffer holds `(id, key, label-keys)`
+/// tuples at exactly the moment the loading dataset's own footprint peaks, so it must be
+/// bounded: crossing the cap drains the buffer with one sorted bulk build and degrades to
+/// per-key indexing for the remainder of the load window (`bulk_build.rs`).
+pub static INDEX_BUILD_MAX_MEMORY: AtomicI64 = AtomicI64::new(INDEX_BUILD_MAX_MEMORY_DEFAULT);
+
+pub fn index_build_max_memory() -> i64 {
+    INDEX_BUILD_MAX_MEMORY.load(Ordering::Relaxed)
 }
 
 static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
@@ -824,6 +839,23 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         ConfigurationFlags::DEFAULT,
         None,
         Some(Box::new(on_bool_config_set)),
+    );
+
+    let bulk_build_max_memory_default = get_i64_default(
+        args,
+        "ts-index-build-max-memory",
+        INDEX_BUILD_MAX_MEMORY_DEFAULT,
+    )?;
+    register_i64_configuration(
+        ctx,
+        "ts-index-build-max-memory",
+        &INDEX_BUILD_MAX_MEMORY,
+        bulk_build_max_memory_default,
+        INDEX_BUILD_MAX_MEMORY_MIN,
+        INDEX_BUILD_MAX_MEMORY_MAX,
+        ConfigurationFlags::DEFAULT,
+        None,
+        None,
     );
 
     // Initialize config settings
