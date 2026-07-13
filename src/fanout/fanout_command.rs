@@ -1,6 +1,7 @@
 use super::acl::{get_fanout_user, with_fanout_user};
 use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
+use crate::common::sync::lock;
 use crate::common::threads::spawn;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::{FanoutResult, FanoutTargetMode, FanoutTargets, NodeInfo, get_fanout_targets};
@@ -120,12 +121,7 @@ where
         // when there are multiple outstanding requests, push the local request to the thread pool to avoid blocking.
         if outstanding > 1 {
             // push to the thread pool
-            let req_local = state
-                .inner
-                .lock()
-                .expect(MUTEX_POISONED_MSG)
-                .operation
-                .generate_request();
+            let req_local = lock(&state.inner).operation.generate_request();
             let local_state = state.clone();
             spawn_local_request(local_state, req_local, *local, fanout_user.clone());
         } else {
@@ -342,8 +338,6 @@ where
     inner: Mutex<FanoutStateInner<OP, F>>,
 }
 
-static MUTEX_POISONED_MSG: &str = "FanoutState mutex poisoned";
-
 impl<OP, F> FanoutState<OP, F>
 where
     OP: FanoutCommand + 'static,
@@ -364,12 +358,12 @@ where
     }
 
     fn on_error(&self, error: FanoutError, target: &NodeInfo) {
-        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        let mut inner = lock(&self.inner);
         inner.on_error(error, target);
     }
 
     fn on_response(&self, resp: OP::Response, target: &NodeInfo) {
-        let mut inner = self.inner.lock().expect(MUTEX_POISONED_MSG);
+        let mut inner = lock(&self.inner);
         inner.on_response(resp, target);
     }
 

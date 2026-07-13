@@ -1,6 +1,7 @@
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::logging::{log_debug, log_warning};
 use crate::common::threads::spawn;
+use crate::common::sync::lock;
 use crate::is_shutting_down;
 use crate::series::tasks::utils::{fetch_series_batch, find_next_db};
 use orx_parallel::ParIter;
@@ -31,7 +32,7 @@ pub fn process_series_trim() {
 fn process_trim_internal() {
     let mut processed = 0;
     let start_db = {
-        let context = SERIES_TRIM_CURSORS.lock().unwrap();
+        let context = lock(&SERIES_TRIM_CURSORS);
         context.db
     };
 
@@ -44,7 +45,7 @@ fn process_trim_internal() {
         }
 
         let cursor = {
-            let context = SERIES_TRIM_CURSORS.lock().unwrap();
+            let context = lock(&SERIES_TRIM_CURSORS);
             context.cursor
         };
 
@@ -79,7 +80,7 @@ fn trim_series(ctx: &Context, db: i32, cursor: u64) -> (usize, i32) {
     set_current_db(ctx, save_db);
 
     if batch.is_empty() {
-        let mut context = SERIES_TRIM_CURSORS.lock().unwrap();
+        let mut context = lock(&SERIES_TRIM_CURSORS);
         let db = find_next_db(context.db).unwrap_or(0);
         context.db = db;
         context.cursor = 0;
@@ -103,7 +104,7 @@ fn trim_series(ctx: &Context, db: i32, cursor: u64) -> (usize, i32) {
         })
         .sum();
 
-    let mut context = SERIES_TRIM_CURSORS.lock().unwrap();
+    let mut context = lock(&SERIES_TRIM_CURSORS);
     context.cursor = last_processed;
 
     if processed > 0 {

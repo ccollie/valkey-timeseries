@@ -1,5 +1,6 @@
 use super::utils::find_next_db;
 use crate::is_shutting_down;
+use crate::common::sync::lock;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -25,7 +26,7 @@ impl Drop for StaleIdCleanupGuard {
 }
 
 fn set_stale_id_cleanup_cursor(db: i32, cursor: Option<IndexKey>) {
-    let mut context = STALE_ID_CLEANUP_CONTEXT.lock().unwrap();
+    let mut context = lock(&STALE_ID_CLEANUP_CONTEXT);
     if cursor.is_none() {
         context.db = find_next_db(db).unwrap_or(0);
     } else {
@@ -82,7 +83,7 @@ pub(in crate::series) fn remove_stale_series_internal() {
     };
 
     let (db, cursor) = {
-        let mut context = STALE_ID_CLEANUP_CONTEXT.lock().unwrap();
+        let mut context = lock(&STALE_ID_CLEANUP_CONTEXT);
         (context.db, context.cursor.take())
     };
 
@@ -113,7 +114,7 @@ pub(in crate::series) fn remove_all_stale_series_internal() {
         process_db_until_done(db, None);
     }
 
-    let mut context = STALE_ID_CLEANUP_CONTEXT.lock().unwrap();
+    let mut context = lock(&STALE_ID_CLEANUP_CONTEXT);
     context.db = 0;
     context.cursor = None;
 }
@@ -136,7 +137,7 @@ mod tests {
     fn reset_test_state() {
         TIMESERIES_INDEX.pin().retain(|_, _| false);
 
-        let mut context = STALE_ID_CLEANUP_CONTEXT.lock().unwrap();
+        let mut context = lock(&STALE_ID_CLEANUP_CONTEXT);
         context.db = 0;
         context.cursor = None;
 
@@ -180,7 +181,7 @@ mod tests {
         let cursor = Some(IndexKey::from("host=h1"));
         set_stale_id_cleanup_cursor(2, cursor.clone());
 
-        let context = STALE_ID_CLEANUP_CONTEXT.lock().unwrap();
+        let context = lock(&STALE_ID_CLEANUP_CONTEXT);
         assert_eq!(context.db, 2);
         assert_eq!(context.cursor, cursor);
     }
@@ -195,7 +196,7 @@ mod tests {
 
         set_stale_id_cleanup_cursor(2, None);
 
-        let context = STALE_ID_CLEANUP_CONTEXT.lock().unwrap();
+        let context = lock(&STALE_ID_CLEANUP_CONTEXT);
         assert_eq!(context.db, 4);
         assert_eq!(context.cursor, None);
     }

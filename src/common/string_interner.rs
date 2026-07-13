@@ -604,7 +604,7 @@ mod tests {
     // Helper to reset memory tracking before each test
     fn reset_memory_tracking() {
         STRING_MEMORY_USED.store(0, std::sync::atomic::Ordering::SeqCst);
-        STRING_POOL.write().unwrap().clear();
+        crate::common::sync::write_lock(&STRING_POOL).clear();
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::common::logging::log_debug;
 use crate::common::threads::spawn;
+use crate::common::sync::lock;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX, get_db_index};
 use crate::series::tasks::utils::find_next_db;
 use std::sync::{LazyLock, Mutex};
@@ -17,7 +18,7 @@ static LAZY_OPTIMIZE_CURSOR: LazyLock<Mutex<OptimizeContext>> =
 
 #[inline]
 fn set_optimize_cursor(db: i32, cursor: Option<IndexKey>) {
-    let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+    let mut context = lock(&LAZY_OPTIMIZE_CURSOR);
     if cursor.is_none() {
         context.db = find_next_db(db).unwrap_or(0);
     } else {
@@ -33,7 +34,7 @@ pub fn optimize_indices_for_db() {
 /// Process optimization for a specific database, called by the dispatcher.
 pub(in crate::series) fn optimize_indices_internal() {
     let (db, cursor) = {
-        let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        let mut context = lock(&LAZY_OPTIMIZE_CURSOR);
         (context.db, context.cursor.take())
     };
 
@@ -68,7 +69,7 @@ mod tests {
     fn reset_test_state() {
         TIMESERIES_INDEX.pin().retain(|_, _| false);
 
-        let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        let mut context = lock(&LAZY_OPTIMIZE_CURSOR);
         context.db = 0;
         context.cursor = None;
     }
@@ -93,12 +94,12 @@ mod tests {
     }
 
     fn current_context() -> (i32, Option<IndexKey>) {
-        let context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        let context = lock(&LAZY_OPTIMIZE_CURSOR);
         (context.db, context.cursor.clone())
     }
 
     fn set_context(db: i32, cursor: Option<IndexKey>) {
-        let mut context = LAZY_OPTIMIZE_CURSOR.lock().unwrap();
+        let mut context = lock(&LAZY_OPTIMIZE_CURSOR);
         context.db = db;
         context.cursor = cursor;
     }
