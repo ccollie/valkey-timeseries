@@ -1,6 +1,6 @@
 use super::utils::find_next_db;
-use crate::is_shutting_down;
 use crate::common::sync::lock;
+use crate::is_shutting_down;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};

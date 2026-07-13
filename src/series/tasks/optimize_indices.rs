@@ -1,6 +1,6 @@
 use crate::common::logging::log_debug;
-use crate::common::threads::spawn;
 use crate::common::sync::lock;
+use crate::common::threads::spawn;
 use crate::series::index::{IndexKey, TIMESERIES_INDEX, get_db_index};
 use crate::series::tasks::utils::find_next_db;
 use std::sync::{LazyLock, Mutex};
