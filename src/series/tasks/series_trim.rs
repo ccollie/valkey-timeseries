@@ -1,7 +1,7 @@
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::logging::{log_debug, log_warning};
-use crate::common::threads::spawn;
 use crate::common::sync::lock;
+use crate::common::threads::spawn;
 use crate::is_shutting_down;
 use crate::series::tasks::utils::{fetch_series_batch, find_next_db};
 use orx_parallel::ParIter;

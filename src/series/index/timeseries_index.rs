@@ -671,11 +671,27 @@ mod tests {
 
         // Exercises both lock-acquisition orders (a<b and b<a by address).
         a.swap(&b);
-        assert!(a.get_postings().postings_for_label_value("host", "b").contains(2));
-        assert!(b.get_postings().postings_for_label_value("host", "a").contains(1));
+        assert!(
+            a.get_postings()
+                .postings_for_label_value("host", "b")
+                .contains(2)
+        );
+        assert!(
+            b.get_postings()
+                .postings_for_label_value("host", "a")
+                .contains(1)
+        );
 
         b.swap(&a);
-        assert!(a.get_postings().postings_for_label_value("host", "a").contains(1));
-        assert!(b.get_postings().postings_for_label_value("host", "b").contains(2));
+        assert!(
+            a.get_postings()
+                .postings_for_label_value("host", "a")
+                .contains(1)
+        );
+        assert!(
+            b.get_postings()
+                .postings_for_label_value("host", "b")
+                .contains(2)
+        );
     }
 }
