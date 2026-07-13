@@ -7,8 +7,8 @@ use crate::labels::filters::{
 };
 use crate::labels::{InternedLabel, SeriesLabel};
 use crate::series::{SeriesRef, TimeSeries};
-use blart::TreeMap;
 use blart::map::Entry as ARTEntry;
+use blart::{AsBytes, TreeMap};
 use croaring::Bitmap64;
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -27,6 +27,14 @@ pub type PostingsIndex = TreeMap<IndexKey, PostingsBitmap>;
 
 /// Type for the key of the index.
 pub type KeyType = Box<[u8]>;
+
+/// One series buffered during a load window, consumed by [`Postings::bulk_index`]
+pub(crate) struct BulkIndexEntry {
+    pub id: SeriesRef,
+    pub key: KeyType,
+    /// Precomputed `label=value` index keys for every label of the series.
+    pub label_keys: Vec<IndexKey>,
+}
 
 /// `Postings` is the core in-memory inverted index for time series data. It is designed for efficient
 /// querying and retrieving of time series based on their labels.
@@ -117,6 +125,73 @@ impl Postings {
                 bitmap.add(ts_id);
                 entry.insert(bitmap);
                 true
+            }
+        }
+    }
+
+    /// Indexes a batch of loaded series in one pass. Semantically equivalent to calling
+    /// [`Postings::index_timeseries`] once per entry, but does the work set-at-a-time:
+    /// `all_postings` gets one sorted `add_many`, and the `(label=value, id)` pairs are sorted
+    /// so each posting list is touched once (`add_many` per run) with cache-friendly
+    /// sorted-order ART inserts.
+    ///
+    /// Safe against a non-empty index: existing posting lists are extended (bitmap adds are
+    /// idempotent) and `id_to_key` inserts overwrite.
+    pub(crate) fn bulk_index(&mut self, entries: Vec<BulkIndexEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+
+        // (Re)indexing asserts the series are alive — revoke pending stale markings, same as
+        // `index_timeseries`.
+        if !self.stale_ids.is_empty() {
+            for entry in &entries {
+                self.stale_ids.remove(entry.id);
+            }
+        }
+
+        let mut ids: Vec<SeriesRef> = entries.iter().map(|e| e.id).collect();
+        ids.sort_unstable();
+        self.all_postings.add_many(&ids);
+
+        let total_labels: usize = entries.iter().map(|e| e.label_keys.len()).sum();
+        let mut pairs: Vec<(IndexKey, SeriesRef)> = Vec::with_capacity(total_labels);
+        for entry in entries {
+            for label_key in entry.label_keys {
+                pairs.push((label_key, entry.id));
+            }
+            self.id_to_key.insert(entry.id, entry.key);
+        }
+        pairs.sort_unstable_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()).then(a.1.cmp(&b.1)));
+
+        // Walk the sorted pairs, flushing one add_many per run of equal label keys.
+        let mut run_ids: Vec<SeriesRef> = Vec::new();
+        let mut current_key: Option<IndexKey> = None;
+        for (key, id) in pairs {
+            match &current_key {
+                Some(cur) if *cur == key => run_ids.push(id),
+                _ => {
+                    if let Some(cur) = current_key.take() {
+                        self.add_many_for_key(cur, &run_ids);
+                    }
+                    run_ids.clear();
+                    run_ids.push(id);
+                    current_key = Some(key);
+                }
+            }
+        }
+        if let Some(cur) = current_key.take() {
+            self.add_many_for_key(cur, &run_ids);
+        }
+    }
+
+    fn add_many_for_key(&mut self, key: IndexKey, ids: &[SeriesRef]) {
+        match self.label_index.entry(key) {
+            ARTEntry::Occupied(mut entry) => entry.get_mut().add_many(ids),
+            ARTEntry::Vacant(entry) => {
+                let mut bitmap = PostingsBitmap::new();
+                bitmap.add_many(ids);
+                entry.insert(bitmap);
             }
         }
     }
@@ -1144,6 +1219,124 @@ mod tests {
     use super::*;
     use crate::labels::{Label, MetricName};
     use crate::series::time_series::TimeSeries;
+
+    fn make_series(id: SeriesRef, labels: &[(&str, &str)]) -> TimeSeries {
+        let mut series = TimeSeries::new();
+        series.id = id;
+        let labels: Vec<Label> = labels
+            .iter()
+            .map(|(name, value)| Label::new(*name, *value))
+            .collect();
+        series.labels = MetricName::new(&labels);
+        series
+    }
+
+    fn make_bulk_entry(id: SeriesRef, key: &str, labels: &[(&str, &str)]) -> BulkIndexEntry {
+        BulkIndexEntry {
+            id,
+            key: key.as_bytes().to_vec().into_boxed_slice(),
+            label_keys: labels
+                .iter()
+                .map(|(name, value)| IndexKey::for_label_value(name, value))
+                .collect(),
+        }
+    }
+
+    /// Asserts the two indexes are structurally identical (same label keys, same posting-list
+    /// contents, same id map, same all_postings).
+    fn assert_postings_eq(a: &Postings, b: &Postings) {
+        assert_eq!(a.id_to_key, b.id_to_key);
+        assert_eq!(a.all_postings, b.all_postings, "all_postings differ");
+        let a_entries: Vec<_> = a.label_index.iter().collect();
+        let b_entries: Vec<_> = b.label_index.iter().collect();
+        assert_eq!(a_entries.len(), b_entries.len(), "label key counts differ");
+        for ((ka, va), (kb, vb)) in a_entries.iter().zip(b_entries.iter()) {
+            assert_eq!(ka.as_str(), kb.as_str());
+            assert_eq!(va, vb, "posting list for {} differs", ka.as_str());
+        }
+    }
+
+    type SeriesSpec = (SeriesRef, String, Vec<(String, String)>);
+
+    #[test]
+    fn test_bulk_index_matches_per_key_indexing() {
+        // 40 series over overlapping labels: shared job/env values, unique instance values.
+        let specs: Vec<SeriesSpec> = (1..=40u64)
+            .map(|i| {
+                let key = format!("ts:{i}");
+                let labels = vec![
+                    ("job".to_string(), format!("job{}", i % 3)),
+                    (
+                        "env".to_string(),
+                        if i % 2 == 0 { "prod" } else { "dev" }.to_string(),
+                    ),
+                    ("instance".to_string(), format!("host-{i}")),
+                ];
+                (i, key, labels)
+            })
+            .collect();
+
+        let mut per_key = Postings::default();
+        for (id, key, labels) in &specs {
+            let labels: Vec<(&str, &str)> = labels
+                .iter()
+                .map(|(n, v)| (n.as_str(), v.as_str()))
+                .collect();
+            let series = make_series(*id, &labels);
+            per_key.index_timeseries(&series, key.as_bytes());
+        }
+
+        let mut bulk = Postings::default();
+        let entries: Vec<BulkIndexEntry> = specs
+            .iter()
+            .map(|(id, key, labels)| {
+                let labels: Vec<(&str, &str)> = labels
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_str()))
+                    .collect();
+                make_bulk_entry(*id, key, &labels)
+            })
+            .collect();
+        bulk.bulk_index(entries);
+
+        assert_postings_eq(&per_key, &bulk);
+    }
+
+    #[test]
+    fn test_bulk_index_merges_into_non_empty_index() {
+        // Pre-populate per-key (as in a degraded window: some keys per-key, some bulk).
+        let mut postings = Postings::default();
+        let series = make_series(1, &[("job", "web"), ("host", "a")]);
+        postings.index_timeseries(&series, b"key1");
+
+        postings.bulk_index(vec![
+            make_bulk_entry(2, "key2", &[("job", "web"), ("host", "b")]),
+            make_bulk_entry(3, "key3", &[("job", "batch"), ("host", "a")]),
+        ]);
+
+        let web = postings.postings_for_label_value("job", "web");
+        assert!(web.contains(1) && web.contains(2) && !web.contains(3));
+        let host_a = postings.postings_for_label_value("host", "a");
+        assert!(host_a.contains(1) && host_a.contains(3));
+        assert_eq!(postings.count(), 3);
+        assert!(postings.all_postings.contains(2));
+    }
+
+    #[test]
+    fn test_bulk_index_revokes_stale_marks() {
+        let mut postings = Postings::default();
+        let series = make_series(7, &[("job", "web")]);
+        postings.index_timeseries(&series, b"key7");
+        postings.mark_id_as_stale(7);
+        assert!(postings.has_stale_ids());
+
+        // Re-loading the id asserts it is alive again (same semantics as index_timeseries).
+        postings.bulk_index(vec![make_bulk_entry(7, "key7", &[("job", "web")])]);
+
+        assert!(!postings.stale_ids.contains(7));
+        assert!(postings.all_postings.contains(7));
+        assert!(postings.postings_for_label_value("job", "web").contains(7));
+    }
 
     #[test]
     fn test_memory_postings_add_and_remove() {

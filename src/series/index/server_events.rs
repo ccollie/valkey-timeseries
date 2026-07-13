@@ -8,6 +8,7 @@ use crate::fanout::cluster_migrations::{
     AtomicSlotMigrationEvent, register_atomic_slot_migration_event_handler,
     supports_atomic_slot_migration,
 };
+use crate::series::index::bulk_build;
 use crate::series::index::persistence::{
     on_loading_ended, on_loading_failed, on_loading_started, should_skip_load_indexing,
 };
@@ -431,11 +432,26 @@ fn persistence_event_handler(ctx: &Context, persistence_event: PersistenceSubeve
 #[loading_event_handler]
 fn loading_event_handler(_ctx: &Context, loading_event: LoadingSubevent) {
     match loading_event {
-        LoadingSubevent::RdbStarted
-        | LoadingSubevent::AofStarted
-        | LoadingSubevent::ReplStarted => on_loading_started(),
-        LoadingSubevent::Ended => on_loading_ended(),
-        LoadingSubevent::Failed => on_loading_failed(),
+        LoadingSubevent::RdbStarted | LoadingSubevent::ReplStarted => {
+            on_loading_started();
+            bulk_build::on_load_started(false);
+        }
+        LoadingSubevent::AofStarted => {
+            on_loading_started();
+            // AOF loads keep the per-key indexing path (see bulk_build.rs module docs).
+            bulk_build::on_load_started(true);
+        }
+        LoadingSubevent::Ended => {
+            // Drain the bulk-build buffer first (synchronous — the index must be complete
+            // before serving resumes); the aux-preload reconciliation sweep then runs in the
+            // background for dbs that took the preload fast path instead.
+            bulk_build::on_load_ended();
+            on_loading_ended();
+        }
+        LoadingSubevent::Failed => {
+            bulk_build::on_load_failed();
+            on_loading_failed();
+        }
     }
 }
 
@@ -482,6 +498,13 @@ fn handle_key_restore(ctx: &Context, key: &[u8]) {
     // `rdb_load` has already assigned `_db` and counted the series; post-load verification in
     // `persistence.rs` catches any aux/keyspace drift.
     if should_skip_load_indexing(db) {
+        return;
+    }
+    // Fallback (bulk_build.rs): during an RDB/replication load window whose index was
+    // not preloaded, buffer the series for one sorted bulk build at load end instead of paying
+    // per-label ART inserts per key. Falls through when buffering is inactive for this window
+    // (AOF load, memory cap crossed, or runtime `restore` outside a load window).
+    if bulk_build::try_buffer_loaded_key(ctx, db, key) {
         return;
     }
     index_series_by_key(ctx, key);
