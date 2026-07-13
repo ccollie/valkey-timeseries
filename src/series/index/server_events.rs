@@ -312,7 +312,7 @@ fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
 
     // Spawn a background task so we don't block the main thread; this can take a while if there are
     // a lot of keys to clean up.
-    std::thread::spawn(move || {
+    crate::common::threads::spawn(move || {
         let index = TIMESERIES_INDEX.pin();
         let mut dbs: Vec<i32> = index.keys().copied().collect();
         dbs.sort_unstable();
