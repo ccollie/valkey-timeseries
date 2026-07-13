@@ -1,9 +1,6 @@
 use crate::fanout::FanoutTargetMode;
 use std::sync::atomic::AtomicBool;
-use valkey_module::{
-    Context, ContextFlags, ValkeyModule_ClusterKeySlot, ValkeyModuleString, ValkeyResult,
-    ValkeyString,
-};
+use valkey_module::{Context, ContextFlags, ValkeyResult};
 pub(crate) const SLOT_SIZE: u16 = 16384;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
@@ -89,10 +86,6 @@ fn get_hash_tag(key: &[u8]) -> Option<&[u8]> {
 
     let rv = &key[open + 1..open + close];
     (!rv.is_empty()).then_some(rv)
-}
-
-pub(crate) fn get_cluster_key_slot(key: &ValkeyString) -> u16 {
-    unsafe { ValkeyModule_ClusterKeySlot.unwrap()(key.inner as *mut ValkeyModuleString) as u16 }
 }
 
 #[cfg(test)]
