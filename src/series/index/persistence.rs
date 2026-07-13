@@ -413,9 +413,16 @@ fn reconcile_preloaded_indexes() {
     }
     let counts = take_loaded_counts();
 
-    // Off the main thread: the sweep opens every indexed key once.
-    std::thread::spawn(move || {
+    // Off the main thread: the sweep opens every indexed key once. Runs on the module's
+    // thread pool (not a detached `std::thread`) so it participates in the same thread
+    // lifecycle as every other background job, and checks `is_shutting_down()` between
+    // batches — an aborted sweep is safe, since ids it never reached are either valid or
+    // will be stale-marked by the query path's self-heal.
+    crate::common::threads::spawn(move || {
         for db in dbs {
+            if crate::is_shutting_down() {
+                return;
+            }
             reconcile_db(db);
             let loaded = counts
                 .iter()
@@ -462,6 +469,12 @@ fn verify_and_repair_db(db: i32, loaded_count: u64) {
     let cursor = KeysCursor::new();
     let mut more = true;
     while more {
+        if crate::is_shutting_down() {
+            log_notice(format!(
+                "Postings index repair scan for db {db} aborted by shutdown"
+            ));
+            return;
+        }
         // Lock per scan bucket so the main thread is not starved for the whole scan.
         let ctx = MODULE_CONTEXT.lock();
         let save_db = get_current_db(&ctx);
@@ -486,6 +499,12 @@ fn reconcile_db(db: i32) {
     let mut dangling = 0usize;
 
     loop {
+        if crate::is_shutting_down() {
+            log_notice(format!(
+                "Postings index reconciliation for db {db} aborted by shutdown after {checked} ids"
+            ));
+            return;
+        }
         // Snapshot a window of (id, key) pairs under the read lock, then drop it before
         // touching the keyspace or taking the write lock.
         let window: Vec<(SeriesRef, Box<[u8]>)> = {
