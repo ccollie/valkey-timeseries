@@ -3,6 +3,7 @@
 use crate::common::context::{get_current_db, register_server_event_handler, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::logging::{log_debug, log_notice};
+use crate::common::sync::{lock, read_lock, write_lock};
 use crate::fanout::cluster_migrations::{
     AtomicSlotMigrationEvent, register_atomic_slot_migration_event_handler,
     supports_atomic_slot_migration,
@@ -51,10 +52,7 @@ pub fn add_delayed_indexing_key(db: i32, key: &[u8]) {
     let pending_keys = DELAYED_KEYS_MAP.pin();
 
     let converted_key = key.to_vec().into_boxed_slice();
-    pending_keys
-        .get_or_insert_with(db, || RwLock::new(Vec::with_capacity(64)))
-        .write()
-        .unwrap()
+    write_lock(pending_keys.get_or_insert_with(db, || RwLock::new(Vec::with_capacity(64))))
         .push(converted_key);
 
     let count = DELAYED_KEYS_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -82,7 +80,7 @@ fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> usize {
     set_current_db(&ctx, db);
 
     let index = get_db_index(db);
-    let mut postings = index.inner.write().unwrap();
+    let mut postings = write_lock(&index.inner);
 
     for key_name in batch.iter() {
         let valkey_key = ctx.create_string(key_name.as_ref());
@@ -112,7 +110,7 @@ fn process_delayed_keys_for_db(db: i32) {
     // concurrent append is dropped. Empty entries are reused on the next import and cleared on
     // flush/abort.
     let keys_vec = {
-        let mut guard = lock.write().unwrap();
+        let mut guard = write_lock(lock);
         std::mem::take(&mut *guard)
     };
 
@@ -156,7 +154,7 @@ pub(super) fn process_delayed_indexing() {
     let total_keys: usize = dbs
         .iter()
         .filter_map(|db| pending_keys.get(db))
-        .map(|keys| keys.read().unwrap().len())
+        .map(|keys| read_lock(keys).len())
         .sum();
 
     log_debug(format!(
@@ -184,7 +182,7 @@ fn remove_non_owned_keys(db: i32, source_slots: &RangeSetBlaze<u16>) -> usize {
             return false;
         }
         let index = get_db_index(db);
-        let mut postings = index.inner.write().unwrap();
+        let mut postings = write_lock(&index.inner);
         postings.mark_ids_as_stale(batch);
         batch.clear();
         true
@@ -203,7 +201,7 @@ fn remove_non_owned_keys(db: i32, source_slots: &RangeSetBlaze<u16>) -> usize {
         let index = get_db_index(db);
         // Acquire a read lock to iterate a window of keys starting at `cursor`.
         // We must drop this read lock before acquiring the write lock inside `flush` to avoid deadlocks.
-        let postings_read = index.inner.read().unwrap();
+        let postings_read = read_lock(&index.inner);
 
         let mut processed = 0usize;
         for (id, key) in postings_read.id_to_key.range(cursor..).take(BATCH_SIZE) {
@@ -498,21 +496,21 @@ pub(crate) fn generic_key_events_handler(
             handle_key_restore(ctx, key);
         },
         "move_from" => {
-            *MOVE_FROM_DB.lock().unwrap() = get_current_db(ctx);
+            *lock(&MOVE_FROM_DB) = get_current_db(ctx);
         },
         "move_to" => {
-            let mut lock = MOVE_FROM_DB.lock().unwrap();
-            let old_db = *lock;
-            *lock = -1;
+            let mut guard = lock(&MOVE_FROM_DB);
+            let old_db = *guard;
+            *guard = -1;
             if old_db != -1 {
                  handle_key_move(ctx, key, old_db);
             }
         },
         "rename_from" => {
-            *RENAME_FROM_KEY.lock().unwrap() = key.to_vec();
+            *lock(&RENAME_FROM_KEY) = key.to_vec();
         },
         "rename_to" => {
-            let mut old_key = RENAME_FROM_KEY.lock().unwrap();
+            let mut old_key = lock(&RENAME_FROM_KEY);
             if !old_key.is_empty() {
                 handle_key_rename(ctx, &old_key, key);
                 old_key.clear();

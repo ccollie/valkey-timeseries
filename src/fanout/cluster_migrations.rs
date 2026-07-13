@@ -1,3 +1,4 @@
+use crate::common::sync::{read_lock, write_lock};
 use crate::fanout::cluster_map::NUM_SLOTS;
 use crate::fanout::is_clustered;
 use range_set_blaze::RangeSetBlaze;
@@ -309,7 +310,7 @@ unsafe extern "C" fn on_atomic_slot_migration_event(
     data: *mut c_void,
 ) {
     fn raise_event(event: AtomicSlotMigrationEvent, data: *mut c_void) {
-        if let Some(handler) = *EVENT_HANDLER_FN.read().unwrap() {
+        if let Some(handler) = *read_lock(&EVENT_HANDLER_FN) {
             let info = unsafe { &*(data as *const ValkeyModuleAtomicSlotMigrationInfo) };
             let slots = info.convert_slot_ranges();
             handler(event, slots);
@@ -338,7 +339,7 @@ pub fn register_atomic_slot_migration_event_handler(
     on_event: Option<AtomicSlotMigrationEventHandler>,
 ) {
     {
-        let mut guard = EVENT_HANDLER_FN.write().unwrap();
+        let mut guard = write_lock(&EVENT_HANDLER_FN);
         *guard = on_event;
     }
     let res = unsafe {
