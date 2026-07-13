@@ -96,7 +96,6 @@ fn index_timeseries_in_batch(db: i32, batch: &[Box<[u8]>]) -> usize {
     skipped
 }
 
-// todo: guard against panic mid-process. Maybe store status in aux
 fn process_delayed_keys_for_db(db: i32) {
     let pending_keys = DELAYED_KEYS_MAP.pin();
     let Some(lock) = pending_keys.get(&db) else {
@@ -117,8 +116,22 @@ fn process_delayed_keys_for_db(db: i32) {
         return;
     }
 
+    let total = keys_vec.len();
+    let mut indexed = 0usize;
     let mut skipped = 0usize;
     for batch in keys_vec.chunks(BATCH_SIZE) {
+        // Once dequeued above, a key is only indexed here — bailing out mid-drain leaves the
+        // remaining keys in this db un-indexed. That's acceptable on shutdown (the process is
+        // about to exit; a restart re-derives the index from the RDB/AOF), but not otherwise, so
+        // this only checks the shutdown flag, not e.g. a generic cancellation.
+        if crate::is_shutting_down() {
+            log_debug(format!(
+                "ASM delayed indexing for db={db} aborted by shutdown; {} of {total} key(s) left un-indexed",
+                total - indexed
+            ));
+            return;
+        }
+        indexed += batch.len();
         skipped += index_timeseries_in_batch(db, batch);
     }
 
@@ -162,8 +175,17 @@ pub(super) fn process_delayed_indexing() {
         total_keys
     ));
 
-    std::thread::spawn(move || {
+    // Runs on the module's rayon pool (not a detached `std::thread`) so it participates in the
+    // same thread lifecycle as every other background job, and checks `is_shutting_down()`
+    // between dbs — an aborted drain leaves the remaining dbs' keys un-indexed, which is fine on
+    // shutdown (see `process_delayed_keys_for_db`) but must not happen otherwise.
+    crate::common::threads::spawn(move || {
         for db in dbs {
+            if crate::is_shutting_down() {
+                log_debug("ASM delayed indexing drain aborted by shutdown");
+                PROCESSING_DELAYED_INDEXING.store(false, Ordering::SeqCst);
+                return;
+            }
             process_delayed_keys_for_db(db);
         }
         log_debug("ASM delayed indexing drain finished");
