@@ -2,6 +2,8 @@ mod chunk;
 mod gorilla;
 mod merge;
 mod pco;
+#[cfg(test)]
+mod proptest_roundtrip;
 mod serialization;
 mod stream;
 mod timeseries_chunk;
