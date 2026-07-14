@@ -1,6 +1,6 @@
 """Integration tests for postings-index RDB aux persistence.
 
-Covers the aux payload save/load cycle, the ts-index-persist config gate, the dangling-id 
+Covers the aux payload save/load cycle, the ts-index-persist config gate, the dangling-id
 reconciliation sweep and count-verification repair scan, and the AOF/replication interactions
 called out in that document's "Interaction with other flows" section.
 """
