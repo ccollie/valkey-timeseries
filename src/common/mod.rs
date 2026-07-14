@@ -1,3 +1,4 @@
+pub mod alloc;
 pub mod binary_search;
 pub mod binop;
 pub mod constants;

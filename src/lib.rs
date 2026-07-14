@@ -147,7 +147,9 @@ fn shutdown_event_handler(ctx: &Context, _event: u64) {
 #[cfg(not(all(test, doctest)))]
 macro_rules! get_allocator {
     () => {
-        valkey_module::alloc::ValkeyAlloc
+        // Not `ValkeyAlloc` directly: it ignores `Layout::align()`, returning
+        // misaligned memory for align > 16 (see `common::alloc`).
+        $crate::common::alloc::AlignedValkeyAlloc
     };
 }
 
