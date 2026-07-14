@@ -283,7 +283,6 @@ class TestTsDelCompaction(ValkeyTimeSeriesTestCaseBase):
         assert isinstance(compacted, list)
         assert isinstance(source_samples, list)
 
-    @pytest.mark.skip(reason="Ignored until server events issue is resolved")
     def test_del_multiple_compaction_rules(self):
         """Test deletion with multiple compaction rules on the same source"""
         source_key = 'source:multi_rules'
