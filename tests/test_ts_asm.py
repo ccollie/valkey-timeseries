@@ -16,11 +16,17 @@ import logging
 import time
 import pytest
 from valkey import Valkey, ValkeyCluster
-from valkeytestframework.util.waiters import wait_for_true
+from valkeytestframework.util.waiters import wait_for_true, WaitTimeout
 from valkeytestframework.conftest import resource_port_tracker
 from valkey_timeseries_test_case import ValkeyTimeSeriesClusterTestCase
 
 logger = logging.getLogger(__name__)
+
+# Ceiling for polling the async post-migration index catch-up (the background thread that drains
+# delayed-indexing keys after an ImportCompleted/ExportCompleted event). Polling returns as soon
+# as the condition is met, so this only bounds the failure case rather than adding to happy-path
+# runtime the way the fixed sleeps it replaces did.
+INDEX_CATCHUP_TIMEOUT = 15
 
 
 def get_server_version(client: Valkey) -> tuple:
@@ -123,16 +129,43 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
             f"Timed out waiting for migrations to complete; last_states={last_states}"
         )
 
+    def _poll_until(self, check, timeout: int = INDEX_CATCHUP_TIMEOUT):
+        """Poll `check` (a zero-arg callable) until it returns truthy or `timeout` elapses.
+
+        Swallows the timeout so callers can fall through to one final direct check and raise
+        their own, more informative assertion message instead of a generic WaitTimeout.
+        """
+        try:
+            wait_for_true(check, timeout=timeout)
+        except WaitTimeout:
+            pass
+
+    def _assert_dbsize_zero(self, client: Valkey, message: str):
+        """Assert a node's keyspace is empty, polling first.
+
+        Migration-driven deletes (e.g. the source's post-export cleanup) can lag slightly behind
+        the migration job reaching a terminal state.
+        """
+        self._poll_until(lambda: client.execute_command("DBSIZE") == 0)  # type: ignore[union-attr]
+        actual = client.execute_command("DBSIZE")  # type: ignore[union-attr]
+        assert actual == 0, f"{message} (actual DBSIZE={actual})"
+
     def _assert_queryindex_empty(self, client: Valkey, label_filter: str):
         """Assert TS.QUERYINDEX returns an empty list for the given filter."""
+        self._poll_until(lambda: client.execute_command("TS.QUERYINDEX", label_filter) == [])  # type: ignore[union-attr]
         result = client.execute_command("TS.QUERYINDEX", label_filter)  # type: ignore[union-attr]
         assert result == [], f"Expected empty queryindex result, got {result}"
 
     def _assert_queryindex_contains(self, client: Valkey, label_filter: str, expected_keys: list):
-        """Assert TS.QUERYINDEX returns exactly the expected keys."""
+        """Assert TS.QUERYINDEX returns exactly the expected keys.
+
+        Polls first: TS.QUERYINDEX reflects the cluster-wide index, which catches up to a
+        migration asynchronously (see INDEX_CATCHUP_TIMEOUT).
+        """
+        expected_set = set(k.encode() if isinstance(k, str) else k for k in expected_keys)
+        self._poll_until(lambda: set(client.execute_command("TS.QUERYINDEX", label_filter)) == expected_set)  # type: ignore[union-attr]
         result = client.execute_command("TS.QUERYINDEX", label_filter)  # type: ignore[union-attr]
         result_set = set(result)  # type: ignore[arg-type]
-        expected_set = set(k.encode() if isinstance(k, str) else k for k in expected_keys)
         assert result_set == expected_set, f"Expected {expected_set}, got {result_set}"
 
     def _local_queryindex(self, client: Valkey, label_filter: str) -> set:
@@ -146,14 +179,24 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         return set(result)  # type: ignore[arg-type]
 
     def _assert_local_queryindex_empty(self, client: Valkey, label_filter: str):
-        """Assert a node's local index has no series matching the filter."""
+        """Assert a node's local index has no series matching the filter.
+
+        Polls first: local index catch-up after a migration runs on a background thread (see
+        INDEX_CATCHUP_TIMEOUT).
+        """
+        self._poll_until(lambda: self._local_queryindex(client, label_filter) == set())
         result = self._local_queryindex(client, label_filter)
         assert result == set(), f"Expected empty local queryindex result, got {result}"
 
     def _assert_local_queryindex_contains(self, client: Valkey, label_filter: str, expected_keys: list):
-        """Assert a node's local index contains exactly the expected keys."""
-        result = self._local_queryindex(client, label_filter)
+        """Assert a node's local index contains exactly the expected keys.
+
+        Polls first: local index catch-up after a migration runs on a background thread (see
+        INDEX_CATCHUP_TIMEOUT).
+        """
         expected_set = set(k.encode() if isinstance(k, str) else k for k in expected_keys)
+        self._poll_until(lambda: self._local_queryindex(client, label_filter) == expected_set)
+        result = self._local_queryindex(client, label_filter)
         assert result == expected_set, f"Expected {expected_set}, got {result}"
 
     def _create_series_in_slot(self, cluster_client: ValkeyCluster, hash_tag: str, count: int = 5):
@@ -184,11 +227,10 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         logger.info(f"Migrating slot {slot} to node {target_node_id}")
         self._migrate_slot_range(source_client, target_node_id, slot, slot)
 
-        # Wait for migration to complete
+        # Wait for migration to complete. Background index catch-up (delayed-indexing drain,
+        # post-migration cleanup) continues asynchronously past this point; callers poll for it
+        # via the _assert_*queryindex* / _assert_dbsize_zero helpers rather than sleeping here.
         self._wait_for_no_migrations(source_client, timeout=timeout)
-
-        # Give a bit of time for background index processing
-        time.sleep(10)
 
     def _get_slot_migrations(self, client: Valkey) -> list[dict]:
         """Normalize CLUSTER GETSLOTMIGRATIONS output into list[dict]."""
@@ -285,8 +327,7 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
         # The source no longer owns the slot, so its keyspace should be empty (a plain EXISTS would
         # be answered with a MOVED redirect, so we check the node-local DBSIZE instead).
-        assert source_client.execute_command("DBSIZE") == 0, \
-            "Source keyspace should be empty after migration"
+        self._assert_dbsize_zero(source_client, "Source keyspace should be empty after migration")
 
     def test_source_replicas_consistent_after_migration(self):
         """Test that source replicas are consistent with primary after migration."""
@@ -321,15 +362,16 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
         # Wait for DEL commands to replicate to source replicas
         source_rg.wait_for_replica_offset_to_sync_up(0)
-        time.sleep(2)  # Additional time for index cleanup
 
         # Assert: the source replica's local index should also be empty (the DELs propagated from
-        # the primary drive the replica's index cleanup).
+        # the primary drive the replica's index cleanup). Polls internally for the replica's
+        # index cleanup to catch up with the replicated DELs.
         self._assert_local_queryindex_empty(source_replica_client, "migration=yes")
 
         # The replica no longer owns the slot, so its keyspace should be empty.
-        assert source_replica_client.execute_command("DBSIZE") == 0, \
-            "Source replica keyspace should be empty after migration"
+        self._assert_dbsize_zero(
+            source_replica_client, "Source replica keyspace should be empty after migration"
+        )
 
     def test_target_index_populated_after_migration(self):
         """Test that the target primary index is populated after migration."""
@@ -388,20 +430,28 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
         # Wait for replication to target replicas
         target_rg.wait_for_replica_offset_to_sync_up(0)
-        time.sleep(2)  # Additional time for delayed indexing to complete
 
         # Compare the primary's and replica's *local* indexes (TS.QUERYINDEX fans out, so it would
         # return the same cluster-wide set from either node and could not detect a replica-local
         # inconsistency).
-        primary_keys = self._local_queryindex(target_primary_client, "migration=yes")
-
         target_replica_client = target_rg.get_replica_connection(0)
         target_replica_client.execute_command("READONLY")
+
+        expected_keys = set(k.encode() for k in keys)
+
+        # Poll: the primary's delayed-indexing drain and the replica's own index catch-up (driven
+        # by the replicated writes) both continue asynchronously past the migration completing.
+        self._poll_until(
+            lambda: self._local_queryindex(target_primary_client, "migration=yes") == expected_keys
+            and self._local_queryindex(target_replica_client, "migration=yes") == expected_keys
+        )
+
+        primary_keys = self._local_queryindex(target_primary_client, "migration=yes")
         replica_keys = self._local_queryindex(target_replica_client, "migration=yes")
 
         assert replica_keys == primary_keys, \
             f"Target replica index mismatch. Primary: {primary_keys}, Replica: {replica_keys}"
-        assert replica_keys == set(k.encode() for k in keys), \
+        assert replica_keys == expected_keys, \
             f"Target replica index missing migrated keys: {replica_keys}"
 
         # The replica's index having the full set of migrated keys (matching the primary) is the
@@ -516,8 +566,13 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
         target_node_id = self._get_node_id(target_client)
         self._migrate_slot(source_client, target_node_id, slot)
 
-        # Assert: MGET on target returns correct latest values
-        result = target_client.execute_command("TS.MGET", "FILTER", "migration=yes")  # type: ignore[union-attr]
+        # Assert: MGET on target returns correct latest values. TS.MGET's FILTER resolves through
+        # the same index as TS.QUERYINDEX, so it lags the migration the same way; poll for it.
+        def mget():
+            return target_client.execute_command("TS.MGET", "FILTER", "migration=yes")  # type: ignore[union-attr]
+
+        self._poll_until(lambda: len(mget()) == 3)  # type: ignore[arg-type]
+        result = mget()
         assert len(result) == 3, f"Expected 3 results from MGET, got {len(result)}"  # type: ignore[arg-type]
 
         for series_result in result:  # type: ignore[union-attr]
@@ -559,17 +614,16 @@ class TestAtomicSlotMigration(ValkeyTimeSeriesClusterTestCase):
 
         self._wait_for_no_migrations(source_client, timeout=30)
         self._wait_for_no_migrations(target_client, timeout=30)
-        time.sleep(2)
 
         # ImportAborted path should clear delayed keys and keep the target's local index clean.
         # (A fanned-out TS.QUERYINDEX would still see the keys on the source, which correctly keeps
-        # them after an aborted import, so we query the target's local index directly.)
+        # them after an aborted import, so we query the target's local index directly.) Polls
+        # internally for the abort's delayed-key cleanup to finish.
         self._assert_local_queryindex_empty(target_client, f"tag={hash_tag}")
         self._assert_local_queryindex_empty(target_client, "migration=yes")
 
         # The aborted import should leave no keys in the target's keyspace.
-        assert target_client.execute_command("DBSIZE") == 0, \
-            "Target keyspace should be empty after aborted import"
+        self._assert_dbsize_zero(target_client, "Target keyspace should be empty after aborted import")
 
     def _find_hash_tag_for_shard(self, client: Valkey, prefix: str, shard_index: int, max_attempts: int = 512) -> str:
         """Find a hash tag whose slot is owned by the requested shard."""
