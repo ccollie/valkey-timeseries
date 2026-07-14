@@ -109,7 +109,8 @@ impl TimeSeriesIndex {
         // Acquire the two write locks in address order so concurrent swaps of the same
         // pair (in opposite argument order) cannot deadlock. `Postings::swap` is
         // symmetric, so lock order doesn't affect the result.
-        let (first, second) = if std::ptr::from_ref(self).addr() < std::ptr::from_ref(other).addr()  {
+        let (first, second) = if std::ptr::from_ref(self).addr() < std::ptr::from_ref(other).addr()
+        {
             (self, other)
         } else {
             (other, self)
