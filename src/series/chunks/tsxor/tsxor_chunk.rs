@@ -58,8 +58,10 @@ impl CacheWindow {
         self.buffer.iter().position(|v| *v == val)
     }
 
-    pub fn get(&self, offset: usize) -> u64 {
-        self.buffer[offset]
+    /// Returns `None` if `offset` is out of range, e.g. a corrupt/adversarial encoded stream
+    /// references a cache slot that hasn't been populated yet.
+    pub fn get(&self, offset: usize) -> Option<u64> {
+        self.buffer.get(offset).copied()
     }
 
     fn get_candidate(&self, val: u64) -> u64 {
@@ -899,7 +901,8 @@ mod tests {
         }
 
         assert_eq!(window.len(), WINDOW_SIZE);
-        assert_eq!(window.get(0), (WINDOW_SIZE + 4) as u64);
-        assert_eq!(window.get(WINDOW_SIZE - 1), 5);
+        assert_eq!(window.get(0), Some((WINDOW_SIZE + 4) as u64));
+        assert_eq!(window.get(WINDOW_SIZE - 1), Some(5));
+        assert_eq!(window.get(WINDOW_SIZE), None);
     }
 }

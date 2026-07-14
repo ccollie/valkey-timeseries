@@ -127,7 +127,13 @@ impl<'a> TsXorDecompressor<'a> {
 
         let final_val = if head < 128 {
             // reference
-            self.cache.get(head as usize)
+            match self.cache.get(head as usize) {
+                Some(v) => v,
+                None => {
+                    log_warning("TSXor decode: reference offset out of range for cache window");
+                    return None;
+                }
+            }
         } else if head == 255 {
             // full value
             match self.reader.read_u64() {
@@ -166,7 +172,13 @@ impl<'a> TsXorDecompressor<'a> {
                 // out-of-range shift - treat as zero shift to avoid panic
                 xor_val = 0;
             }
-            xor_val ^ self.cache.get(offset)
+            match self.cache.get(offset) {
+                Some(v) => xor_val ^ v,
+                None => {
+                    log_warning("TSXor decode: xor reference offset out of range for cache window");
+                    return None;
+                }
+            }
         };
 
         self.cache.insert(final_val);
