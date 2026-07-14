@@ -1,6 +1,6 @@
 use super::label::{Label, SeriesLabel};
 use crate::common::constants::METRIC_NAME_LABEL;
-use crate::common::rdb::{rdb_load_string, rdb_load_usize, rdb_save_usize};
+use crate::common::rdb::{rdb_load_len, rdb_load_string, rdb_save_usize};
 use crate::common::string_interner::InternedString;
 use crate::parser::ParseError;
 use crate::parser::metric_name::parse_metric_name;
@@ -168,7 +168,10 @@ impl MetricName {
     }
 
     pub fn from_rdb(rdb: *mut raw::RedisModuleIO) -> ValkeyResult<Self> {
-        let count = rdb_load_usize(rdb)?;
+        // Real series never come close to this many labels; it only rejects a corrupt/hostile
+        // count before it reaches `with_capacity`.
+        const MAX_LABELS_PER_SERIES: usize = 5_000;
+        let count = rdb_load_len(rdb, MAX_LABELS_PER_SERIES)?;
         let mut result = Self::with_capacity(count);
         for _ in 0..count {
             let name = rdb_load_string(rdb)?;

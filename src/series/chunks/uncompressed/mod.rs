@@ -1,11 +1,11 @@
 use crate::common::encoding::write_f64_le;
 use crate::common::encoding::{try_read_f64_le, try_read_uvarint, write_uvarint};
-use crate::common::rdb::{rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usize};
+use crate::common::rdb::{rdb_load_len, rdb_load_u8, rdb_load_usize, rdb_save_u8, rdb_save_usize};
 use crate::common::{SAMPLE_SIZE, Sample, Timestamp};
 use crate::error::{TsdbError, TsdbResult};
 use crate::iterators::SampleIter;
 use crate::series::chunks::merge::merge_chunk_samples;
-use crate::series::chunks::{Chunk, ChunkOps};
+use crate::series::chunks::{Chunk, ChunkOps, MAX_CHUNK_SIZE};
 use crate::series::{DuplicatePolicy, SampleAddResult};
 use core::mem::size_of;
 use get_size2::GetSize;
@@ -454,8 +454,11 @@ impl Chunk for UncompressedChunk {
         // forward compat - read encoding flag
         let _flag = rdb_load_u8(rdb)?;
         let max_size = rdb_load_usize(rdb)?;
-        let max_elements = rdb_load_usize(rdb)?;
-        let len = rdb_load_usize(rdb)?;
+        // No chunk can legitimately declare more elements than the largest allowed chunk size
+        // permits; bounding on that closes off a corrupt/hostile `max_elements` before it's used
+        // as the ceiling for `len` below.
+        let max_elements = rdb_load_len(rdb, MAX_CHUNK_SIZE / SAMPLE_SIZE)?;
+        let len = rdb_load_len(rdb, max_elements)?;
         let mut samples = Vec::with_capacity(len);
         for _ in 0..len {
             let ts = raw::load_signed(rdb)?;

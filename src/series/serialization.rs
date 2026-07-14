@@ -45,7 +45,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     // chunk related
     let chunk_encoding = ChunkEncoding::try_from(rdb_load_string(rdb)?)?;
     let chunk_size_bytes = rdb_load_usize(rdb)?;
-    let chunks_len = rdb_load_usize(rdb)?;
+    let chunks_len = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
     let mut chunks = Vec::with_capacity(chunks_len);
     let mut total_samples: usize = 0;
     let mut first_timestamp = 0;
@@ -66,7 +66,7 @@ pub fn rdb_load_series(rdb: *mut raw::RedisModuleIO, enc_ver: i32) -> ValkeyResu
     let src_id = raw::load_unsigned(rdb)? as TimeseriesId;
     let src_series = if src_id == 0 { None } else { Some(src_id) };
 
-    let rules_len = rdb_load_usize(rdb)?;
+    let rules_len = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
     let mut rules = Vec::with_capacity(rules_len);
     for _ in 0..rules_len {
         let rule = CompactionRule::rdb_load(rdb)?;

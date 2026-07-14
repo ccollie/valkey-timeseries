@@ -116,6 +116,29 @@ pub fn rdb_load_usize(rdb: *mut RedisModuleIO) -> ValkeyResult<usize> {
     Ok(value as usize)
 }
 
+/// Default ceiling for [`rdb_load_len`], used wherever no tighter domain-specific bound applies.
+/// Generous enough that no legitimate payload ever approaches it, but small enough that a
+/// corrupt/hostile length can't drive `Vec::with_capacity`/`HashMap::with_capacity` anywhere near
+/// an allocator abort.
+pub const MAX_RDB_COLLECTION_LEN: usize = 16 * 1024 * 1024;
+
+/// Reads a length prefix for a collection that the caller is about to pre-allocate (e.g. via
+/// `Vec::with_capacity`/`HashMap::with_capacity`) and rejects it if it exceeds `max`.
+///
+/// RDB/AOF/`TS._RESTORE` payloads are untrusted: a corrupt or adversarial length field is
+/// otherwise trusted as-is and handed straight to `with_capacity`, and this crate builds with
+/// `panic = "abort"`, so an oversized value there kills the whole process instead of failing the
+/// load with a clean error.
+pub fn rdb_load_len(rdb: *mut RedisModuleIO, max: usize) -> ValkeyResult<usize> {
+    let len = rdb_load_usize(rdb)?;
+    if len > max {
+        return Err(ValkeyError::String(format!(
+            "RDB: corrupt collection length {len} exceeds maximum {max}"
+        )));
+    }
+    Ok(len)
+}
+
 pub fn rdb_save_optional_usize(rdb: *mut RedisModuleIO, value: Option<usize>) {
     save_optional_unsigned(rdb, value.map(|x| x as u64));
 }
@@ -208,7 +231,7 @@ pub fn rdb_save_string_hashmap(rdb: *mut RedisModuleIO, map: &HashMap<String, St
 }
 
 pub fn rdb_load_string_hashmap(rdb: *mut RedisModuleIO) -> ValkeyResult<HashMap<String, String>> {
-    let len = rdb_load_usize(rdb)?;
+    let len = rdb_load_len(rdb, MAX_RDB_COLLECTION_LEN)?;
     let mut map = HashMap::with_capacity(len);
     for _ in 0..len {
         let key = rdb_load_string(rdb)?;
