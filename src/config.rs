@@ -238,7 +238,7 @@ pub fn is_index_persist_enabled() -> bool {
 }
 
 /// Cap on the transient buffer used by the sorted bulk index build during RDB/replication
-/// loads (`ts-index-bulk-build-max-memory`, bytes, 0 = unlimited; default 256MiB). The buffer holds `(id, key, label-keys)`
+/// loads (`ts-index-build-max-memory`, bytes, 0 = unlimited; default 256MiB). The buffer holds `(id, key, label-keys)`
 /// tuples at exactly the moment the loading dataset's own footprint peaks, so it must be
 /// bounded: crossing the cap drains the buffer with one sorted bulk build and degrades to
 /// per-key indexing for the remainder of the load window (`bulk_build.rs`).
