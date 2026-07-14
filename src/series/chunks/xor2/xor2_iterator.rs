@@ -242,8 +242,17 @@ impl<'a> Xor2Iterator<'a> {
             (new_leading, sig_bits)
         };
 
-        self.leading = new_leading;
         let sigbits = if sig_bits == 0 { 64 } else { sig_bits };
+        // new_leading is 0..=31 and sigbits is 1..=64, so this sum never overflows u8, but a
+        // corrupt/adversarial stream can still claim a combination that exceeds 64 bits total;
+        // reject it here instead of underflowing the subtraction below.
+        if new_leading + sigbits > 64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "corrupt XOR2 chunk: leading + significant bit counts exceed 64",
+            ));
+        }
+        self.leading = new_leading;
         self.trailing = 64 - self.leading - sigbits;
 
         let mask = if sigbits == 64 {

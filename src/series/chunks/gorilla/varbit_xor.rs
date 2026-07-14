@@ -110,8 +110,21 @@ pub fn read_varbit_xor<R: BitRead>(
     if different_leading_and_trailing_bits_count {
         leading_bits_count = read_leading_bits_count(reader)?;
         middle_bits_count = read_middle_bits_count(reader)?;
+        // leading_bits_count is 0..=31 and middle_bits_count is 1..=64, so this sum never
+        // overflows u8, but a corrupt/adversarial stream can still claim a combination that
+        // exceeds 64 bits total; reject it here instead of underflowing the subtraction below.
+        if leading_bits_count + middle_bits_count > 64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "corrupt gorilla chunk: leading + middle bit counts exceed 64",
+            ));
+        }
         trailing_bits_count = 64 - leading_bits_count - middle_bits_count;
     } else {
+        // Safe: `previous_leading_bits_count`/`previous_trailing_bits_count` are either the
+        // caller's initial (0, 0) or a previously-returned `(leading_bits_count,
+        // trailing_bits_count)` pair from this same function, which the check above already
+        // guarantees sums to at most 64.
         leading_bits_count = previous_leading_bits_count;
         trailing_bits_count = previous_trailing_bits_count;
         middle_bits_count = 64 - leading_bits_count - trailing_bits_count;
