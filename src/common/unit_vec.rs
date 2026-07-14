@@ -292,7 +292,7 @@ impl<T> UnitVec<T> {
                 // Shift everything down to fill in that spot.
                 ptr::copy(ptr.add(1), ptr, len - index - 1);
             }
-            self.len += 1;
+            self.len -= 1;
             ret
         }
     }
@@ -338,7 +338,7 @@ impl<T> UnitVec<T> {
             let value = ptr::read(self.as_ptr().add(index));
             let base_ptr = self.as_mut_ptr();
             ptr::copy(base_ptr.add(len - 1), base_ptr.add(index), 1);
-            self.len += 1;
+            self.len -= 1;
             value
         }
     }
