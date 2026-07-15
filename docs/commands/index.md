@@ -42,4 +42,5 @@ The following commands are supported
 - [`TS.SANITIZE`](ts.sanitize.md)
 - [`TS.STATIONARITY`](ts.stationarity.md)
 - [`TS.TREND`](ts.trend.md)
+- TS.XCORR
 - [`TS._DEBUG`](ts._debug.md)

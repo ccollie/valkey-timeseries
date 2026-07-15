@@ -283,6 +283,7 @@ valkey_module! {
         ["ts.stats", commands::ts_stats_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
         ["ts.forecast", commands::ts_forecast_command, "write deny-oom", 1, 1, 1, "write timeseries"],
         ["ts.backtest", commands::ts_backtest_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
+        ["ts.xcorr", commands::ts_xcorr_cmd, "readonly deny-oom", 1, 2, 1, "read timeseries"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
