@@ -93,14 +93,27 @@ pub fn get_fanout_targets(ctx: &Context, mode: FanoutTargetMode) -> FanoutTarget
 }
 
 // Refresh the cluster map by creating a new one from the current cluster state.
-// If building the new map fails, the previous map is kept in place and a
-// warning is logged so subsequent calls will retry the refresh.
+// When the rebuild shows the topology is unchanged, the published map is kept
+// and its expiration extended instead of swapping in an identical copy: this
+// preserves the lazily-computed target caches and the allocations shared by
+// in-flight readers. If building the new map fails, the previous map is kept
+// in place and a warning is logged so subsequent calls will retry the refresh.
 pub fn refresh_cluster_map(ctx: &Context) {
     ctx.log_notice("Refreshing cluster map...");
     match ClusterMap::create(ctx) {
         Some(new_map) => {
-            update_cluster_map(new_map);
-            ctx.log_notice("Cluster map refreshed");
+            let current_map = CLUSTER_MAP.load();
+            if new_map.is_consistent
+                && current_map.is_consistent
+                && new_map.same_topology(&current_map)
+            {
+                current_map.extend_expiration();
+                ctx.log_notice("Cluster map unchanged; extended expiration");
+            } else {
+                drop(current_map);
+                update_cluster_map(new_map);
+                ctx.log_notice("Cluster map refreshed");
+            }
         }
         None => {
             ctx.log_warning(
