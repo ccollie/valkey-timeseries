@@ -36,6 +36,7 @@ mod tests;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
+use crate::series::index::persistence::check_required_module_apis;
 use crate::series::index::server_events::{
     generic_key_events_handler, register_server_event_handlers,
 };
@@ -92,6 +93,13 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
             )
                 .as_str(),
         );
+        return Status::Err;
+    }
+
+    if let Err(symbol) = check_required_module_apis() {
+        ctx.log_warning(&format!(
+            "Required module API {symbol} is unavailable on this server; refusing to load"
+        ));
         return Status::Err;
     }
 
