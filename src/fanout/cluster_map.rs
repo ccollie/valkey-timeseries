@@ -4,6 +4,7 @@ use crate::fanout::calculate_hash_slot;
 use ahash::{AHashMap, HashSet, HashSetExt};
 use rand::{Rng, RngExt, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
+use smallvec::SmallVec;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -12,6 +13,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
@@ -528,8 +530,10 @@ pub struct ClusterMap {
     primary_targets: LazyTargets,
     replica_targets: LazyTargets,
     all_targets: LazyTargets,
-    /// expiration timestamp in ms (since epoch)
-    expiration_ts: i64,
+    /// Expiration timestamp in ms (since epoch). Atomic so a refresh that
+    /// finds the topology unchanged can extend the published map's lifetime
+    /// in place instead of swapping in an identical copy.
+    expiration_ts: AtomicI64,
     /// is the current map consistent (no collisions/inconsistencies found while building)
     pub is_consistent: bool,
     /// Whether the cluster map covers all slots consecutively
@@ -696,8 +700,9 @@ impl ClusterMap {
         };
 
         // Parse every line first so masters and replicas can be assembled in
-        // two passes regardless of the order they appear.
-        let mut records: Vec<ParsedNodeLine> = Vec::new();
+        // two passes regardless of the order they appear. One record per line,
+        // so sizing from the line count avoids growth reallocations.
+        let mut records: Vec<ParsedNodeLine> = Vec::with_capacity(text.lines().count());
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -841,15 +846,34 @@ impl ClusterMap {
         new_map.cluster_slots_fingerprint = new_map.compute_cluster_fingerprint();
 
         // Set expiration time
-        let expiration_ms = CLUSTER_MAP_EXPIRATION_MS.load(std::sync::atomic::Ordering::Relaxed);
-        new_map.expiration_ts = current_time_millis() + expiration_ms as i64;
+        new_map.extend_expiration(CLUSTER_MAP_EXPIRATION_MS.load(AtomicOrdering::Relaxed));
 
         new_map
     }
 
     /// Convenience: is the cluster map expired?
     pub fn is_expired(&self) -> bool {
-        current_time_millis() >= self.expiration_ts
+        current_time_millis() >= self.expiration_ts.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Push the expiration `ttl_ms` forward from now. Called when a rebuild
+    /// confirmed the topology is unchanged, so the published map can be kept
+    /// (along with its lazily-computed target caches) instead of being
+    /// replaced. The caller chooses the TTL: the configured expiration for a
+    /// freshly built map, or the adaptive backoff interval when extending.
+    pub fn extend_expiration(&self, ttl_ms: u64) {
+        self.expiration_ts.store(
+            current_time_millis() + ttl_ms as i64,
+            AtomicOrdering::Relaxed,
+        );
+    }
+
+    /// True when `other` describes the same topology: same shards with the
+    /// same primaries, replicas, addresses, roles, and slot assignments.
+    /// `slot_to_shard_map` and `owned_slots` are derived from the shard set,
+    /// so comparing the shards covers them.
+    pub fn same_topology(&self, other: &ClusterMap) -> bool {
+        self.shards == other.shards
     }
 
     fn check_cluster_map_full(&self) -> bool {
@@ -914,6 +938,11 @@ fn reply_as_string(call_reply: CallResult) -> Option<String> {
     }
 }
 
+/// Inline-capacity buffer for a master's slot ranges: a settled cluster has
+/// one contiguous range per shard, so four covers all but heavily fragmented
+/// topologies without a heap allocation per line.
+type SlotRangeBuf = SmallVec<[(u16, u16); 4]>;
+
 /// A single parsed line of `CLUSTER NODES` output.
 struct ParsedNodeLine {
     id: NodeId,
@@ -925,7 +954,7 @@ struct ParsedNodeLine {
     has_master: bool,
     master_id: NodeId,
     /// Owned slot ranges (masters only); import/export markers are excluded.
-    slot_ranges: Vec<(u16, u16)>,
+    slot_ranges: SlotRangeBuf,
 }
 
 impl ParsedNodeLine {
@@ -944,12 +973,18 @@ impl ParsedNodeLine {
 /// Returns `None` when the line is too malformed to trust (too few fields,
 /// unparseable node id, or no single clear role).
 fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
-    let fields: Vec<&str> = line.split_ascii_whitespace().collect();
-    if fields.len() < 8 {
-        return None;
-    }
+    // Walk the fields without collecting them: only the first four and the
+    // trailing slot specs carry information.
+    let mut fields = line.split_ascii_whitespace();
+    let id_field = fields.next()?;
+    let addr_field = fields.next()?;
+    let flags_field = fields.next()?;
+    let master_field = fields.next()?;
+    // Skip ping-sent/pong-recv/config-epoch and require link-state, so a line
+    // with fewer than 8 fields is rejected just as the indexed form did.
+    let mut fields = fields.skip(3);
+    fields.next()?;
 
-    let id_field = fields[0];
     if id_field.len() != VALKEYMODULE_NODE_ID_LEN as usize {
         return None;
     }
@@ -959,7 +994,7 @@ fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
     let mut is_replica = false;
     let mut is_myself = false;
     let mut noaddr = false;
-    for flag in fields[2].split(',') {
+    for flag in flags_field.split(',') {
         match flag {
             "master" => is_master = true,
             "slave" | "replica" => is_replica = true,
@@ -974,9 +1009,8 @@ fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
     }
     let is_local = is_myself || &id == my_node_id;
 
-    let socket_address = parse_node_address(fields[1], noaddr, is_local);
+    let socket_address = parse_node_address(addr_field, noaddr, is_local);
 
-    let master_field = fields[3];
     let has_master = is_replica && master_field.len() == VALKEYMODULE_NODE_ID_LEN as usize;
     let master_id = if has_master {
         NodeId::from_bytes(master_field.as_bytes())
@@ -984,9 +1018,9 @@ fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
         NodeId::default()
     };
 
-    let mut slot_ranges = Vec::new();
+    let mut slot_ranges = SlotRangeBuf::new();
     if is_master {
-        for spec in &fields[8..] {
+        for spec in fields {
             // Skip importing/migrating markers like "[12000-<-<id>]".
             if spec.starts_with('[') {
                 continue;
@@ -1226,6 +1260,66 @@ mod tests {
         // No clear role flag.
         let line = format!("{M1} 127.0.0.1:7001@17001 handshake - 0 0 1 connected");
         assert!(parse_node_line(&line, &id(M2)).is_none());
+    }
+
+    #[test]
+    fn test_same_topology_independent_of_line_order() {
+        let a = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        let shuffled = format!(
+            "\
+{R3} 127.0.0.1:7103@17103 slave {M3} 0 0 3 connected\n\
+{M2} 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922\n\
+{R1} 127.0.0.1:7101@17101 slave {M1} 0 0 1 connected\n\
+{M3} 127.0.0.1:7003@17003 master - 0 0 3 connected 10923-16383\n\
+{R2} 127.0.0.1:7102@17102 slave {M2} 0 0 2 connected\n\
+{M1} 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n"
+        );
+        let b = ClusterMap::from_cluster_nodes(&shuffled, &id(M1));
+        assert!(a.same_topology(&b));
+        assert!(b.same_topology(&a));
+    }
+
+    #[test]
+    fn test_same_topology_detects_replica_change() {
+        // Removing a replica keeps the slot fingerprint identical but must
+        // still be seen as a topology change.
+        let a = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        let without_r3 = format!(
+            "\
+{M1} 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n\
+{R1} 127.0.0.1:7101@17101 slave {M1} 0 0 1 connected\n\
+{M2} 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922\n\
+{R2} 127.0.0.1:7102@17102 slave {M2} 0 0 2 connected\n\
+{M3} 127.0.0.1:7003@17003 master - 0 0 3 connected 10923-16383\n"
+        );
+        let b = ClusterMap::from_cluster_nodes(&without_r3, &id(M1));
+        assert_eq!(a.cluster_slots_fingerprint(), b.cluster_slots_fingerprint());
+        assert!(!a.same_topology(&b));
+    }
+
+    #[test]
+    fn test_same_topology_detects_slot_move() {
+        let a = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        let moved = format!(
+            "\
+{M1} 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n\
+{R1} 127.0.0.1:7101@17101 slave {M1} 0 0 1 connected\n\
+{M2} 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922 12000\n\
+{R2} 127.0.0.1:7102@17102 slave {M2} 0 0 2 connected\n\
+{M3} 127.0.0.1:7003@17003 master - 0 0 3 connected 10923-11999 12001-16383\n\
+{R3} 127.0.0.1:7103@17103 slave {M3} 0 0 3 connected\n"
+        );
+        let b = ClusterMap::from_cluster_nodes(&moved, &id(M1));
+        assert!(!a.same_topology(&b));
+    }
+
+    #[test]
+    fn test_extend_expiration_unexpires_map() {
+        let map = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        map.expiration_ts.store(0, AtomicOrdering::Relaxed);
+        assert!(map.is_expired());
+        map.extend_expiration(750);
+        assert!(!map.is_expired());
     }
 
     #[test]

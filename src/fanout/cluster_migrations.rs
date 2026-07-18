@@ -1,6 +1,7 @@
 use crate::common::sync::{read_lock, write_lock};
 use crate::fanout::cluster_map::NUM_SLOTS;
 use crate::fanout::is_clustered;
+use crate::fanout::mark_cluster_map_stale;
 use range_set_blaze::RangeSetBlaze;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::{LazyLock, RwLock};
@@ -319,15 +320,19 @@ unsafe extern "C" fn on_atomic_slot_migration_event(
 
     match sub_event {
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_STARTED => {
+            mark_cluster_map_stale();
             raise_event(AtomicSlotMigrationEvent::ImportStarted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_COMPLETED => {
+            mark_cluster_map_stale();
             raise_event(AtomicSlotMigrationEvent::ImportCompleted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_IMPORT_ABORTED => {
+            mark_cluster_map_stale();
             raise_event(AtomicSlotMigrationEvent::ImportAborted, data);
         }
         VALKEYMODULE_SUBEVENT_ATOMIC_SLOT_MIGRATION_EXPORT_COMPLETED => {
+            mark_cluster_map_stale();
             raise_event(AtomicSlotMigrationEvent::ExportCompleted, data);
         }
         _ => {}
