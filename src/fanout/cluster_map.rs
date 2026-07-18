@@ -12,6 +12,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use valkey_module::logging::{log_notice, log_warning};
 use valkey_module::{
@@ -528,8 +529,10 @@ pub struct ClusterMap {
     primary_targets: LazyTargets,
     replica_targets: LazyTargets,
     all_targets: LazyTargets,
-    /// expiration timestamp in ms (since epoch)
-    expiration_ts: i64,
+    /// Expiration timestamp in ms (since epoch). Atomic so a refresh that
+    /// finds the topology unchanged can extend the published map's lifetime
+    /// in place instead of swapping in an identical copy.
+    expiration_ts: AtomicI64,
     /// is the current map consistent (no collisions/inconsistencies found while building)
     pub is_consistent: bool,
     /// Whether the cluster map covers all slots consecutively
@@ -841,15 +844,33 @@ impl ClusterMap {
         new_map.cluster_slots_fingerprint = new_map.compute_cluster_fingerprint();
 
         // Set expiration time
-        let expiration_ms = CLUSTER_MAP_EXPIRATION_MS.load(std::sync::atomic::Ordering::Relaxed);
-        new_map.expiration_ts = current_time_millis() + expiration_ms as i64;
+        new_map.extend_expiration();
 
         new_map
     }
 
     /// Convenience: is the cluster map expired?
     pub fn is_expired(&self) -> bool {
-        current_time_millis() >= self.expiration_ts
+        current_time_millis() >= self.expiration_ts.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Push the expiration forward from now. Called when a rebuild confirmed
+    /// the topology is unchanged, so the published map can be kept (along with
+    /// its lazily-computed target caches) instead of being replaced.
+    pub fn extend_expiration(&self) {
+        let expiration_ms = CLUSTER_MAP_EXPIRATION_MS.load(AtomicOrdering::Relaxed);
+        self.expiration_ts.store(
+            current_time_millis() + expiration_ms as i64,
+            AtomicOrdering::Relaxed,
+        );
+    }
+
+    /// True when `other` describes the same topology: same shards with the
+    /// same primaries, replicas, addresses, roles, and slot assignments.
+    /// `slot_to_shard_map` and `owned_slots` are derived from the shard set,
+    /// so comparing the shards covers them.
+    pub fn same_topology(&self, other: &ClusterMap) -> bool {
+        self.shards == other.shards
     }
 
     fn check_cluster_map_full(&self) -> bool {
@@ -1226,6 +1247,66 @@ mod tests {
         // No clear role flag.
         let line = format!("{M1} 127.0.0.1:7001@17001 handshake - 0 0 1 connected");
         assert!(parse_node_line(&line, &id(M2)).is_none());
+    }
+
+    #[test]
+    fn test_same_topology_independent_of_line_order() {
+        let a = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        let shuffled = format!(
+            "\
+{R3} 127.0.0.1:7103@17103 slave {M3} 0 0 3 connected\n\
+{M2} 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922\n\
+{R1} 127.0.0.1:7101@17101 slave {M1} 0 0 1 connected\n\
+{M3} 127.0.0.1:7003@17003 master - 0 0 3 connected 10923-16383\n\
+{R2} 127.0.0.1:7102@17102 slave {M2} 0 0 2 connected\n\
+{M1} 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n"
+        );
+        let b = ClusterMap::from_cluster_nodes(&shuffled, &id(M1));
+        assert!(a.same_topology(&b));
+        assert!(b.same_topology(&a));
+    }
+
+    #[test]
+    fn test_same_topology_detects_replica_change() {
+        // Removing a replica keeps the slot fingerprint identical but must
+        // still be seen as a topology change.
+        let a = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        let without_r3 = format!(
+            "\
+{M1} 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n\
+{R1} 127.0.0.1:7101@17101 slave {M1} 0 0 1 connected\n\
+{M2} 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922\n\
+{R2} 127.0.0.1:7102@17102 slave {M2} 0 0 2 connected\n\
+{M3} 127.0.0.1:7003@17003 master - 0 0 3 connected 10923-16383\n"
+        );
+        let b = ClusterMap::from_cluster_nodes(&without_r3, &id(M1));
+        assert_eq!(a.cluster_slots_fingerprint(), b.cluster_slots_fingerprint());
+        assert!(!a.same_topology(&b));
+    }
+
+    #[test]
+    fn test_same_topology_detects_slot_move() {
+        let a = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        let moved = format!(
+            "\
+{M1} 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n\
+{R1} 127.0.0.1:7101@17101 slave {M1} 0 0 1 connected\n\
+{M2} 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922 12000\n\
+{R2} 127.0.0.1:7102@17102 slave {M2} 0 0 2 connected\n\
+{M3} 127.0.0.1:7003@17003 master - 0 0 3 connected 10923-11999 12001-16383\n\
+{R3} 127.0.0.1:7103@17103 slave {M3} 0 0 3 connected\n"
+        );
+        let b = ClusterMap::from_cluster_nodes(&moved, &id(M1));
+        assert!(!a.same_topology(&b));
+    }
+
+    #[test]
+    fn test_extend_expiration_unexpires_map() {
+        let map = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
+        map.expiration_ts.store(0, AtomicOrdering::Relaxed);
+        assert!(map.is_expired());
+        map.extend_expiration();
+        assert!(!map.is_expired());
     }
 
     #[test]
