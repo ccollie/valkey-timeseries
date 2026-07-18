@@ -4,6 +4,7 @@ use crate::fanout::calculate_hash_slot;
 use ahash::{AHashMap, HashSet, HashSetExt};
 use rand::{Rng, RngExt, rng};
 use range_set_blaze::{RangeMapBlaze, RangeSetBlaze, RangesIter};
+use smallvec::SmallVec;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -699,8 +700,9 @@ impl ClusterMap {
         };
 
         // Parse every line first so masters and replicas can be assembled in
-        // two passes regardless of the order they appear.
-        let mut records: Vec<ParsedNodeLine> = Vec::new();
+        // two passes regardless of the order they appear. One record per line,
+        // so sizing from the line count avoids growth reallocations.
+        let mut records: Vec<ParsedNodeLine> = Vec::with_capacity(text.lines().count());
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -935,6 +937,11 @@ fn reply_as_string(call_reply: CallResult) -> Option<String> {
     }
 }
 
+/// Inline-capacity buffer for a master's slot ranges: a settled cluster has
+/// one contiguous range per shard, so four covers all but heavily fragmented
+/// topologies without a heap allocation per line.
+type SlotRangeBuf = SmallVec<[(u16, u16); 4]>;
+
 /// A single parsed line of `CLUSTER NODES` output.
 struct ParsedNodeLine {
     id: NodeId,
@@ -946,7 +953,7 @@ struct ParsedNodeLine {
     has_master: bool,
     master_id: NodeId,
     /// Owned slot ranges (masters only); import/export markers are excluded.
-    slot_ranges: Vec<(u16, u16)>,
+    slot_ranges: SlotRangeBuf,
 }
 
 impl ParsedNodeLine {
@@ -965,12 +972,18 @@ impl ParsedNodeLine {
 /// Returns `None` when the line is too malformed to trust (too few fields,
 /// unparseable node id, or no single clear role).
 fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
-    let fields: Vec<&str> = line.split_ascii_whitespace().collect();
-    if fields.len() < 8 {
-        return None;
-    }
+    // Walk the fields without collecting them: only the first four and the
+    // trailing slot specs carry information.
+    let mut fields = line.split_ascii_whitespace();
+    let id_field = fields.next()?;
+    let addr_field = fields.next()?;
+    let flags_field = fields.next()?;
+    let master_field = fields.next()?;
+    // Skip ping-sent/pong-recv/config-epoch and require link-state, so a line
+    // with fewer than 8 fields is rejected just as the indexed form did.
+    let mut fields = fields.skip(3);
+    fields.next()?;
 
-    let id_field = fields[0];
     if id_field.len() != VALKEYMODULE_NODE_ID_LEN as usize {
         return None;
     }
@@ -980,7 +993,7 @@ fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
     let mut is_replica = false;
     let mut is_myself = false;
     let mut noaddr = false;
-    for flag in fields[2].split(',') {
+    for flag in flags_field.split(',') {
         match flag {
             "master" => is_master = true,
             "slave" | "replica" => is_replica = true,
@@ -995,9 +1008,8 @@ fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
     }
     let is_local = is_myself || &id == my_node_id;
 
-    let socket_address = parse_node_address(fields[1], noaddr, is_local);
+    let socket_address = parse_node_address(addr_field, noaddr, is_local);
 
-    let master_field = fields[3];
     let has_master = is_replica && master_field.len() == VALKEYMODULE_NODE_ID_LEN as usize;
     let master_id = if has_master {
         NodeId::from_bytes(master_field.as_bytes())
@@ -1005,9 +1017,9 @@ fn parse_node_line(line: &str, my_node_id: &NodeId) -> Option<ParsedNodeLine> {
         NodeId::default()
     };
 
-    let mut slot_ranges = Vec::new();
+    let mut slot_ranges = SlotRangeBuf::new();
     if is_master {
-        for spec in &fields[8..] {
+        for spec in fields {
             // Skip importing/migrating markers like "[12000-<-<id>]".
             if spec.starts_with('[') {
                 continue;
