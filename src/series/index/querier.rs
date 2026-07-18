@@ -34,8 +34,14 @@ use crate::series::request_types::MetaDateRangeFilter;
 use crate::series::{SeriesGuard, SeriesRef, TimeSeries, get_timeseries};
 use blart::AsBytes;
 use orx_parallel::{IterIntoParIter, ParIter};
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
+
+/// Series IDs found to have no backing key during a query, accumulated under the postings
+/// read lock and flushed once the guard is released. Stale IDs are rare, so the inline
+/// capacity keeps the common (empty) case off the heap.
+type StaleIds = SmallVec<[SeriesRef; 8]>;
 
 pub fn series_by_selectors<'a>(
     ctx: &'a Context,
@@ -50,8 +56,17 @@ pub fn series_by_selectors<'a>(
     let index = get_db_index(db);
     let postings = index.get_postings();
 
-    let series_refs = postings.postings_for_selectors(selectors)?;
-    collect_series_from_postings(ctx, &postings, series_refs.iter(), range)
+    let mut stale = StaleIds::new();
+    // Scoped so the read guard (and the bitmap borrowed from it) is released before we
+    // take the write lock to record stale IDs.
+    let result = {
+        let series_refs = postings.postings_for_selectors(selectors)?;
+        collect_series_from_postings(ctx, &postings, series_refs.iter(), range, &mut stale)
+    };
+
+    drop(postings);
+    index.mark_ids_as_stale(&stale);
+    result
 }
 
 #[allow(dead_code)]
@@ -67,17 +82,23 @@ pub(super) fn series_posting_ids_by_selectors<'a>(
     let index = get_db_index(db);
     let postings = index.get_postings();
 
-    let series_ids = postings.postings_for_selectors(selectors)?;
-    if series_ids.is_empty() {
-        return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
-    }
-    if date_range.is_none() {
-        return Ok(Cow::Owned(series_ids.into_owned()));
-    }
-    let series = collect_series_from_postings(ctx, &postings, series_ids.iter(), date_range)?;
-    let id_iter = series.into_iter().map(|(guard, _)| guard.id);
-    let bitmap = PostingsBitmap::from_iter(id_iter);
-    Ok(Cow::Owned(bitmap))
+    let mut stale = StaleIds::new();
+    let result = {
+        let series_ids = postings.postings_for_selectors(selectors)?;
+        if series_ids.is_empty() {
+            return Ok(Cow::Borrowed(&*EMPTY_BITMAP));
+        }
+        if date_range.is_none() {
+            return Ok(Cow::Owned(series_ids.into_owned()));
+        }
+        collect_series_from_postings(ctx, &postings, series_ids.iter(), date_range, &mut stale)
+    };
+
+    drop(postings);
+    index.mark_ids_as_stale(&stale);
+
+    let id_iter = result?.into_iter().map(|(guard, _)| guard.id);
+    Ok(Cow::Owned(PostingsBitmap::from_iter(id_iter)))
 }
 
 pub fn series_keys_by_selectors(
@@ -93,8 +114,15 @@ pub fn series_keys_by_selectors(
     let index = get_db_index(db);
     let postings = index.get_postings();
 
-    let series_refs = postings.postings_for_selectors(selectors)?;
-    collect_series_keys(ctx, &postings, series_refs.iter(), range)
+    let mut stale = StaleIds::new();
+    let result = {
+        let series_refs = postings.postings_for_selectors(selectors)?;
+        collect_series_keys(ctx, &postings, series_refs.iter(), range, &mut stale)
+    };
+
+    drop(postings);
+    index.mark_ids_as_stale(&stale);
+    result
 }
 
 fn collect_series_keys(
@@ -102,34 +130,40 @@ fn collect_series_keys(
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
     date_range: Option<MetaDateRangeFilter>,
+    stale: &mut StaleIds,
 ) -> ValkeyResult<Vec<ValkeyString>> {
     if let Some(date_range) = date_range {
-        let series = collect_series_from_postings(ctx, postings, ids, Some(date_range))?;
+        let series = collect_series_from_postings(ctx, postings, ids, Some(date_range), stale)?;
         let keys = series.into_iter().map(|g| g.1).collect();
         return Ok(keys);
     }
 
-    // TS.QUERYINDEX is a pure index lookup: it reveals every series matching the
+    // TS.QUERYINDEX is a pure index lookup: it returns every series matching the
     // filter regardless of the caller's per-key read access. Command-level ACL
     // (can the user run TS.QUERYINDEX at all) is already enforced by the server,
     // so we must NOT drop keys the caller lacks read (ACCESS) permission on here.
     let keys = ids
         .filter_map(|id| {
-            let key = postings.get_key_by_id(id)?;
-            Some(ctx.create_string(key.as_bytes()))
+            if let Some(key) = postings.get_key_by_id(id) {
+                Some(ctx.create_string(key.as_bytes()))
+            } else {
+                stale.push(id);
+                None
+            }
         })
         .collect();
 
     Ok(keys)
 }
 
-pub(super) fn collect_series_from_postings<'a>(
+fn collect_series_from_postings<'a>(
     ctx: &'a Context,
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
     date_range: Option<MetaDateRangeFilter>,
+    stale: &mut StaleIds,
 ) -> ValkeyResult<Vec<(SeriesGuard<'a>, ValkeyString)>> {
-    let result = get_multi_series_by_id(ctx, postings, ids)?;
+    let result = get_multi_series_by_id(ctx, postings, ids, stale)?;
 
     if result.is_empty() {
         return Ok(result);
@@ -147,6 +181,7 @@ fn get_multi_series_by_id<'a>(
     ctx: &'a Context,
     postings: &Postings,
     ids: impl Iterator<Item = SeriesRef>,
+    stale: &mut StaleIds,
 ) -> ValkeyResult<Vec<(SeriesGuard<'a>, ValkeyString)>> {
     let capacity_estimate = ids.size_hint().1.unwrap_or(8);
     let mut result = Vec::with_capacity(capacity_estimate);
@@ -158,6 +193,8 @@ fn get_multi_series_by_id<'a>(
         let perms = Some(AclPermissions::ACCESS);
         if let Some(guard) = get_timeseries(ctx, &k, perms, false)? {
             result.push((guard, k));
+        } else {
+            stale.push(id);
         }
     }
     Ok(result)

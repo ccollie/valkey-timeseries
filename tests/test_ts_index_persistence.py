@@ -19,6 +19,7 @@ PRELOADED_LOG = "Preloaded postings index"
 DISABLED_LOG = "ts-index-persist is disabled; discarding persisted postings index and rebuilding"
 DANGLING_LOG = "dangling ids marked stale"
 REPAIR_LOG = "scanning keyspace to repair"
+SKIP_SWEEP_LOG = "skipping reconciliation sweep"
 
 
 class TestIndexPersistenceBasic(ValkeyTimeSeriesTestCaseBase):
@@ -51,10 +52,11 @@ class TestIndexPersistenceBasic(ValkeyTimeSeriesTestCaseBase):
         assert self.server.is_alive()
         wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
 
-        # "none dangling" / "match the loaded count" are log_debug and not visible at the
-        # harness's default loglevel; absence of a repair-scan (log_warning) is the
-        # externally-observable proxy for "reconciliation found no drift".
         assert self.server.verify_string_in_logfile(PRELOADED_LOG)
+        # On a clean load the per-(id, key_name) digests agree, so the O(N) keyspace-probing
+        # sweep is skipped entirely and nothing needs repairing.
+        assert self.server.verify_string_in_logfile(SKIP_SWEEP_LOG)
+        assert not self.server.verify_string_in_logfile(DANGLING_LOG)
         assert not self.server.verify_string_in_logfile(REPAIR_LOG)
 
         post_card = client.execute_command("TS.CARD", "FILTER", "service=api")
@@ -221,6 +223,9 @@ class TestIndexPersistenceDanglingRepair(ValkeyTimeSeriesTestCaseBase):
         wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
 
         assert self.server.verify_string_in_logfile(PRELOADED_LOG)
+        # The renamed key leaves the cardinalities equal (7 loaded, 7 indexed), so a count-only
+        # check would wave this through; the (id, key_name) digest is what forces the sweep.
+        assert not self.server.verify_string_in_logfile(SKIP_SWEEP_LOG)
         assert self.server.verify_string_in_logfile(DANGLING_LOG)
         assert self.server.verify_string_in_logfile(REPAIR_LOG)
 
