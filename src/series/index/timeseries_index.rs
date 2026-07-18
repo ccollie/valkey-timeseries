@@ -515,6 +515,14 @@ impl TimeSeriesIndex {
         inner.mark_id_as_stale(id);
     }
 
+    pub fn mark_ids_as_stale(&self, ids: &[SeriesRef]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut inner = write_lock(&self.inner);
+        inner.mark_ids_as_stale(ids);
+    }
+
     pub fn remove_stale_ids(&self) -> usize {
         const BATCH_SIZE: usize = 100;
 

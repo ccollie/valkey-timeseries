@@ -17,7 +17,7 @@ use crate::common::context::{get_current_db, set_current_db};
 use crate::common::encoding::{
     try_read_byte_slice, try_read_u8, try_read_uvarint, write_byte_slice, write_u8, write_uvarint,
 };
-use crate::common::hash::BuildNoHashHasher;
+use crate::common::hash::{BuildNoHashHasher, DeterministicHasher};
 use crate::common::logging::{log_debug, log_notice, log_warning};
 use crate::common::sync::{read_lock, write_lock};
 use crate::config::is_index_persist_enabled;
@@ -52,11 +52,57 @@ static PRELOADED_DBS: LazyLock<papaya::HashSet<i32, BuildNoHashHasher<i32>>> =
 /// `RESTORE`/`TS._RESTORE` traffic.
 static LOADING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Per-db count of series that came through `rdb_load` during the current load window.
-/// Compared against the post-sweep index cardinality to detect keyspace-index drift.
+/// Per-db summary of the series that came through `rdb_load` during the current load window.
+/// Compared against the same summary computed over the preloaded index, both to gate the
+/// reconciliation sweep and to detect drift after it (see [`reconcile_preloaded_indexes`]).
 /// Lock-free: `note_series_loaded` is called once per series deserialized from the RDB stream.
-static LOADED_SERIES_COUNTS: LazyLock<papaya::HashMap<i32, u64, BuildNoHashHasher<i32>>> =
+static LOADED_SERIES_STATS: LazyLock<papaya::HashMap<i32, LoadStats, BuildNoHashHasher<i32>>> =
     LazyLock::new(papaya::HashMap::default);
+
+/// What the loader observed for one db, in a form comparable against `id_to_key` without
+/// touching the keyspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LoadStats {
+    /// Number of series deserialized for this db.
+    count: u64,
+    /// Order-independent sum of per-entry `(id, key_name)` hashes. Detects the drift that
+    /// `count` alone cannot: an id whose key loaded under a *different name* leaves both
+    /// counts equal but changes the digest.
+    digest: u64,
+    /// Set when any series' key name could not be read, which makes `digest` meaningless.
+    /// Forces the sweep rather than trusting a partial digest.
+    incomplete: bool,
+}
+
+impl LoadStats {
+    fn observe(&self, entry_hash: Option<u64>) -> Self {
+        Self {
+            count: self.count + 1,
+            // Wrapping add rather than XOR: ids are unique within a db, but if a stream ever
+            // did repeat one, XOR would silently cancel the pair out of the digest.
+            digest: self.digest.wrapping_add(entry_hash.unwrap_or(0)),
+            incomplete: self.incomplete || entry_hash.is_none(),
+        }
+    }
+}
+
+/// Shared so the per-series load path does not rebuild the seed state on every call.
+static DIGEST_HASHER: LazyLock<DeterministicHasher> = LazyLock::new(DeterministicHasher::new);
+
+/// Per-entry digest contribution. Fixed-seed so both sides of the comparison agree; the digest
+/// never leaves the process (it is not persisted), so only intra-run consistency is required.
+///
+/// Not collision-resistant against a chosen-input adversary, and deliberately so: the threat
+/// model here is corruption and bugs, not forgery. Engineering a collision would require
+/// controlling key names *and* corrupting the RDB, and would buy only a skipped sweep — an
+/// index entry that stays stale until the query path's self-heal reaches it.
+fn entry_hash(id: SeriesRef, key_name: &[u8]) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = DIGEST_HASHER.build_hasher();
+    hasher.write_u64(id);
+    hasher.write(key_name);
+    hasher.finish()
+}
 
 const RECONCILE_BATCH_SIZE: usize = 256;
 
@@ -318,7 +364,7 @@ pub(crate) fn load_index_from_rdb(rdb: *mut RedisModuleIO) -> c_int {
 /// Loading `RdbStarted`/`AofStarted`/`ReplStarted`: open the load window and reset per-load state.
 pub(crate) fn on_loading_started() {
     LOADING_ACTIVE.store(true, Ordering::SeqCst);
-    LOADED_SERIES_COUNTS.pin().clear();
+    LOADED_SERIES_STATS.pin().clear();
     // Defensive: any leftover preload state from an earlier load cycle is stale by now.
     PRELOADED_DBS.pin().clear();
 }
@@ -333,7 +379,7 @@ pub(crate) fn on_loading_ended() {
 /// [`discard_preloaded_indexes`]).
 pub(crate) fn on_loading_failed() {
     LOADING_ACTIVE.store(false, Ordering::SeqCst);
-    LOADED_SERIES_COUNTS.pin().clear();
+    LOADED_SERIES_STATS.pin().clear();
     discard_preloaded_indexes();
 }
 
@@ -351,40 +397,82 @@ pub(crate) fn should_skip_load_indexing(db: i32) -> bool {
     is_loading_active() && PRELOADED_DBS.pin().contains(&db)
 }
 
+/// Verifies the module APIs this file depends on are present, at load time rather than at
+/// first use. `GetDbIdFromIO` is available on every server version the module supports (see
+/// `TIMESERIES_MIN_SUPPORTED_VERSION`), and the load-reconciliation logic treats its output as
+/// authoritative: `LOADED_SERIES_STATS` gates whether the post-load sweep runs at all, so a
+/// silently absent symbol would mean permanently under-counted loads and a keyspace scan after
+/// every RDB load. Refusing to load beats degrading quietly.
+pub(crate) fn check_required_module_apis() -> Result<(), &'static str> {
+    if unsafe { raw::RedisModule_GetDbIdFromIO }.is_none() {
+        return Err("RedisModule_GetDbIdFromIO");
+    }
+    if unsafe { raw::RedisModule_GetKeyNameFromIO }.is_none() {
+        return Err("RedisModule_GetKeyNameFromIO");
+    }
+    Ok(())
+}
+
+/// Digest contribution for the series currently being deserialized, from the key name the
+/// engine is loading it under. `None` when the name is unavailable, which degrades that db's
+/// digest to `incomplete` and forces the sweep rather than producing a wrong match.
+fn loaded_entry_hash(rdb: *mut RedisModuleIO, id: SeriesRef) -> Option<u64> {
+    // Presence is a load-time invariant (`check_required_module_apis`).
+    let get_key_name = unsafe { raw::RedisModule_GetKeyNameFromIO }
+        .expect("RedisModule_GetKeyNameFromIO unavailable");
+    let key = unsafe { get_key_name(rdb) };
+    if key.is_null() {
+        return None;
+    }
+    let mut len: usize = 0;
+    let ptr = raw::string_ptr_len(key, &mut len);
+    if ptr.is_null() {
+        return None;
+    }
+    // Borrowed for the duration of this call only: the engine owns the string, and we neither
+    // retain nor free it.
+    let name = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+    Some(entry_hash(id, name))
+}
+
 /// Called from `rdb_load_series` for every series deserialized from an RDB stream: assigns
 /// `series._db` from the IO context (previously done by the `loaded` notification handler,
 /// which required opening the key), and counts the series toward the current load window's
 /// per-db total. Payloads with no db context (`RESTORE` / `TS._RESTORE` strings) are skipped;
 /// their callers assign `_db` themselves.
 pub(crate) fn observe_series_rdb_load(rdb: *mut RedisModuleIO, series: &mut TimeSeries) {
-    // `GetDbIdFromIO` may be absent on older servers; fall back to the notification path.
-    let Some(get_db_id) = (unsafe { raw::RedisModule_GetDbIdFromIO }) else {
-        return;
-    };
+    // Presence is a load-time invariant (`check_required_module_apis`).
+    let get_db_id =
+        unsafe { raw::RedisModule_GetDbIdFromIO }.expect("RedisModule_GetDbIdFromIO unavailable");
+    // A negative db means there is no IO context to read it from: a `RESTORE`/`TS._RESTORE`
+    // payload rather than an RDB stream. Not an error — those callers assign `_db` themselves.
     let db = unsafe { get_db_id(rdb) };
     if db < 0 {
         return;
     }
     series._db = Some(db);
     if LOADING_ACTIVE.load(Ordering::Relaxed) {
-        note_series_loaded(db);
+        note_series_loaded(db, loaded_entry_hash(rdb, series.id));
     }
 }
 
-fn note_series_loaded(db: i32) {
-    LOADED_SERIES_COUNTS
-        .pin()
-        .update_or_insert(db, |count| count + 1, 1);
+fn note_series_loaded(db: i32, entry_hash: Option<u64>) {
+    let stats = LOADED_SERIES_STATS.pin();
+    stats.update_or_insert(
+        db,
+        |current| current.observe(entry_hash),
+        LoadStats::default().observe(entry_hash),
+    );
 }
 
-/// Drains `LOADED_SERIES_COUNTS`: snapshot the per-db counts, then clear. Not atomic with
+/// Drains `LOADED_SERIES_STATS`: snapshot the per-db stats, then clear. Not atomic with
 /// respect to a concurrent `note_series_loaded`, but there is none — this is only called from
 /// the loading-event handler, after the load window (and thus all `rdb_load` traffic) has ended.
-fn take_loaded_counts() -> Vec<(i32, u64)> {
-    let guard = LOADED_SERIES_COUNTS.pin();
-    let counts: Vec<(i32, u64)> = guard.iter().map(|(db, count)| (*db, *count)).collect();
+fn take_loaded_stats() -> Vec<(i32, LoadStats)> {
+    let guard = LOADED_SERIES_STATS.pin();
+    let stats: Vec<(i32, LoadStats)> = guard.iter().map(|(db, st)| (*db, *st)).collect();
     guard.clear();
-    counts
+    stats
 }
 
 /// Drains `PRELOADED_DBS`: snapshot the members, then clear. Not atomic with respect to a
@@ -402,17 +490,35 @@ fn take_preloaded_dbs() -> Vec<i32> {
 // ---------------------------------------------------------------------------
 
 /// Runs after a successful load (`LoadingSubevent::Ended`). A preloaded index can contain
-/// "dangling" ids whose key never made it into the keyspace (e.g. its `rdb_load` was skipped);
-/// nothing in the query path stale-marks those (`TS.CARD` would over-count and no-date-filter
-/// `TS.QUERYINDEX` would emit phantom key names), so sweep them here. The sweep is followed by
-/// a cardinality check against the loaded-series counter (see [`verify_and_repair_db`]) that
-/// catches the reverse direction, since preloaded dbs skip the per-key `has_id` self-heal.
+/// "dangling" ids whose key never made it into the keyspace (e.g. its `rdb_load` was skipped
+/// because its TTL had already elapsed); nothing in the query path stale-marks those, because
+/// a dangling id's `id_to_key` entry is intact — that entry is exactly what was serialized —
+/// so `get_key_by_id` still answers `Some`. The index-only commands (`TS.CARD` and
+/// `TS.QUERYINDEX` without a date filter, the label commands) never open a key and so never
+/// self-heal: they would over-count and emit phantom key names indefinitely. Hence the sweep.
+///
+/// The sweep is gated on a digest comparison rather than run unconditionally. A cardinality
+/// check alone would not be sound: it cannot see *identity* drift, where the payload and the
+/// keyspace disagree about a key's *name* (RDB body corruption, a fork landing mid-write),
+/// leaving an id dangling with both counts equal — the case
+/// `test_dangling_id_triggers_reconciliation_and_repair_scan` constructs. So the loader also
+/// accumulates a per-db digest over each series' `(id, key_name)` as it deserializes them
+/// ([`LoadStats`]), and the same digest is recomputed here over `id_to_key`. Agreement means
+/// the index describes exactly the set of series that loaded, under exactly the names they
+/// loaded under, so there is nothing for the sweep to find.
+///
+/// The digest costs one hash per series on each side and touches no keys, versus one keyspace
+/// probe per series (each under the GIL) for the sweep it replaces on a clean load.
+///
+/// Runtime traffic between load end and the digest can skew either side (a `DEL` unindexes a
+/// key, a `TS.CREATE` adds an id the loader never saw). That costs a spurious sweep, which is
+/// safe and bounded — never a spurious skip, since any such change alters the digest.
 fn reconcile_preloaded_indexes() {
     let dbs: Vec<i32> = take_preloaded_dbs();
     if dbs.is_empty() {
         return;
     }
-    let counts = take_loaded_counts();
+    let stats = take_loaded_stats();
 
     // Off the main thread: the sweep opens every indexed key once. Runs on the module's
     // thread pool (not a detached `std::thread`) so it participates in the same thread
@@ -424,15 +530,61 @@ fn reconcile_preloaded_indexes() {
             if crate::is_shutting_down() {
                 return;
             }
-            reconcile_db(db);
-            let loaded = counts
+            // Absent from the map means zero series arrived for this db, not "unknown":
+            // `observe_series_rdb_load` is called for every series in the stream, and neither
+            // its db nor its key-name lookup can be missing (both checked at load time by
+            // `check_required_module_apis`).
+            let loaded = stats
                 .iter()
                 .find(|(d, _)| *d == db)
-                .map(|(_, n)| *n)
-                .unwrap_or(0);
-            verify_and_repair_db(db, loaded);
+                .map(|(_, st)| *st)
+                .unwrap_or_default();
+
+            let indexed = read_indexed_stats(db);
+            if !loaded.incomplete && indexed == loaded {
+                // Notice rather than debug: this is the once-per-db outcome that says the
+                // sweep was skipped, and it is the only externally visible evidence that the
+                // digest fast path is working.
+                log_notice(format!(
+                    "Postings index for db {db}: {} indexed series match the loaded set by digest; skipping reconciliation sweep",
+                    indexed.count
+                ));
+                continue;
+            }
+
+            log_notice(format!(
+                "Postings index for db {db}: index ({} series) does not match the loaded set ({} series{}); reconciling",
+                indexed.count,
+                loaded.count,
+                if loaded.incomplete {
+                    ", digest unavailable"
+                } else {
+                    ""
+                }
+            ));
+            reconcile_db(db);
+            verify_and_repair_db(db, loaded.count);
         }
     });
+}
+
+/// The index side of the [`LoadStats`] comparison, computed over `id_to_key`. Hashing only —
+/// holds the read lock without touching the keyspace or the GIL. Never `incomplete`: every
+/// entry here has both an id and a name by construction.
+fn read_indexed_stats(db: i32) -> LoadStats {
+    let index = get_db_index(db);
+    let postings = read_lock(&index.inner);
+    let mut stats = LoadStats::default();
+    for (id, key) in postings.id_to_key.iter() {
+        stats = stats.observe(Some(entry_hash(*id, key.as_ref())));
+    }
+    stats
+}
+
+fn read_indexed_count(db: i32) -> u64 {
+    let index = get_db_index(db);
+    let postings = read_lock(&index.inner);
+    postings.count() as u64
 }
 
 /// Post-sweep verification for a preloaded db. `reconcile_db` has just established that every
@@ -446,11 +598,7 @@ fn reconcile_preloaded_indexes() {
 /// makes the scan fire spuriously — `index_series_by_key` is guarded, so the scan is always
 /// safe, just not free.
 fn verify_and_repair_db(db: i32, loaded_count: u64) {
-    let indexed_count = {
-        let index = get_db_index(db);
-        let postings = read_lock(&index.inner);
-        postings.count() as u64
-    };
+    let indexed_count = read_indexed_count(db);
 
     if indexed_count == loaded_count {
         log_debug(format!(
@@ -484,11 +632,7 @@ fn verify_and_repair_db(db: i32, loaded_count: u64) {
         set_current_db(&ctx, save_db);
     }
 
-    let repaired_count = {
-        let index = get_db_index(db);
-        let postings = read_lock(&index.inner);
-        postings.count() as u64
-    };
+    let repaired_count = read_indexed_count(db);
     log_notice(format!(
         "Postings index repair scan for db {db} finished: {indexed_count} -> {repaired_count} indexed series"
     ));
@@ -798,9 +942,9 @@ mod tests {
 
         // Simulate aux preload of DB_A and some rdb_load traffic.
         PRELOADED_DBS.pin().insert(DB_A);
-        note_series_loaded(DB_A);
-        note_series_loaded(DB_A);
-        note_series_loaded(DB_B);
+        note_series_loaded(DB_A, Some(entry_hash(1, b"ts:one")));
+        note_series_loaded(DB_A, Some(entry_hash(2, b"ts:two")));
+        note_series_loaded(DB_B, Some(entry_hash(3, b"ts:three")));
 
         assert!(should_skip_load_indexing(DB_A));
         assert!(
@@ -808,13 +952,17 @@ mod tests {
             "dbs without a preloaded index keep the per-key path"
         );
 
-        let mut counts = take_loaded_counts();
-        counts.sort_unstable();
+        let mut stats = take_loaded_stats();
+        stats.sort_unstable_by_key(|(db, _)| *db);
+        let counts: Vec<(i32, u64)> = stats.iter().map(|(db, st)| (*db, st.count)).collect();
         assert_eq!(counts, vec![(DB_A, 2), (DB_B, 1)]);
-        assert!(
-            take_loaded_counts().is_empty(),
-            "counts are consumed on take"
+        // Digest accumulation is order-independent and matches the index-side computation.
+        assert_eq!(
+            stats[0].1.digest,
+            entry_hash(2, b"ts:two").wrapping_add(entry_hash(1, b"ts:one"))
         );
+        assert!(stats.iter().all(|(_, st)| !st.incomplete));
+        assert!(take_loaded_stats().is_empty(), "stats are consumed on take");
 
         // Failure path: window closes, preloaded state is dropped.
         on_loading_failed();
@@ -825,10 +973,59 @@ mod tests {
         assert!(PRELOADED_DBS.pin().is_empty());
 
         // A new load window starts clean.
-        note_series_loaded(DB_A);
+        note_series_loaded(DB_A, Some(entry_hash(1, b"ts:one")));
         on_loading_started();
-        assert!(take_loaded_counts().is_empty());
+        assert!(take_loaded_stats().is_empty());
         LOADING_ACTIVE.store(false, Ordering::SeqCst);
+    }
+
+    /// The property the digest exists for: a key that loads under a different name than the
+    /// index believes leaves the counts equal, so only the digest can catch it. This is the
+    /// unit-level analogue of `test_dangling_id_triggers_reconciliation_and_repair_scan`.
+    #[test]
+    fn digest_detects_rename_that_count_alone_misses() {
+        let indexed = [(1u64, &b"ts:one"[..]), (2, b"ts:two"), (3, b"ts:three")];
+        // Same ids, same cardinality, one key loaded under a different name.
+        let loaded = [(1u64, &b"ts:one"[..]), (2, b"ts:two"), (3, b"tz:three")];
+
+        let summarize = |entries: &[(u64, &[u8])]| {
+            entries.iter().fold(LoadStats::default(), |st, (id, key)| {
+                st.observe(Some(entry_hash(*id, key)))
+            })
+        };
+
+        let a = summarize(&indexed);
+        let b = summarize(&loaded);
+        assert_eq!(a.count, b.count, "cardinality is blind to the rename");
+        assert_ne!(a.digest, b.digest, "digest must catch the rename");
+        assert_ne!(a, b);
+    }
+
+    /// Digest accumulation must not depend on the order entries are observed in: the loader
+    /// walks the RDB stream, the index side walks `id_to_key` in id order.
+    #[test]
+    fn digest_is_order_independent() {
+        let forward = [(1u64, &b"ts:one"[..]), (2, b"ts:two"), (3, b"ts:three")];
+        let mut reversed = forward;
+        reversed.reverse();
+
+        let summarize = |entries: &[(u64, &[u8])]| {
+            entries.iter().fold(LoadStats::default(), |st, (id, key)| {
+                st.observe(Some(entry_hash(*id, key)))
+            })
+        };
+        assert_eq!(summarize(&forward), summarize(&reversed));
+    }
+
+    /// An unreadable key name must poison the digest rather than silently contributing zero,
+    /// so the gate falls back to the sweep instead of comparing an incomplete digest.
+    #[test]
+    fn missing_key_name_marks_stats_incomplete() {
+        let stats = LoadStats::default()
+            .observe(Some(entry_hash(1, b"ts:one")))
+            .observe(None);
+        assert_eq!(stats.count, 2, "the series still counts");
+        assert!(stats.incomplete);
     }
 
     #[test]
