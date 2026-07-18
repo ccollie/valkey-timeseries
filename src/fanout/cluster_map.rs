@@ -846,7 +846,7 @@ impl ClusterMap {
         new_map.cluster_slots_fingerprint = new_map.compute_cluster_fingerprint();
 
         // Set expiration time
-        new_map.extend_expiration();
+        new_map.extend_expiration(CLUSTER_MAP_EXPIRATION_MS.load(AtomicOrdering::Relaxed));
 
         new_map
     }
@@ -856,13 +856,14 @@ impl ClusterMap {
         current_time_millis() >= self.expiration_ts.load(AtomicOrdering::Relaxed)
     }
 
-    /// Push the expiration forward from now. Called when a rebuild confirmed
-    /// the topology is unchanged, so the published map can be kept (along with
-    /// its lazily-computed target caches) instead of being replaced.
-    pub fn extend_expiration(&self) {
-        let expiration_ms = CLUSTER_MAP_EXPIRATION_MS.load(AtomicOrdering::Relaxed);
+    /// Push the expiration `ttl_ms` forward from now. Called when a rebuild
+    /// confirmed the topology is unchanged, so the published map can be kept
+    /// (along with its lazily-computed target caches) instead of being
+    /// replaced. The caller chooses the TTL: the configured expiration for a
+    /// freshly built map, or the adaptive backoff interval when extending.
+    pub fn extend_expiration(&self, ttl_ms: u64) {
         self.expiration_ts.store(
-            current_time_millis() + expiration_ms as i64,
+            current_time_millis() + ttl_ms as i64,
             AtomicOrdering::Relaxed,
         );
     }
@@ -1317,7 +1318,7 @@ mod tests {
         let map = ClusterMap::from_cluster_nodes(&three_shard_nodes(), &id(M1));
         map.expiration_ts.store(0, AtomicOrdering::Relaxed);
         assert!(map.is_expired());
-        map.extend_expiration();
+        map.extend_expiration(750);
         assert!(!map.is_expired());
     }
 
