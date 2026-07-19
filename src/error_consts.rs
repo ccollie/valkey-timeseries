@@ -38,6 +38,8 @@ pub const INVALID_OR_MISSING_METRIC_NAME: &str = "TSDB: invalid or missing metri
 pub const METRIC_ALREADY_SET: &str = "TSDB: metric already set";
 pub const INVALID_NUMBER: &str = "TSDB: invalid number";
 pub const INVALID_SERIES_SELECTOR: &str = "TSDB: series selector is invalid";
+pub const UNBOUNDED_SERIES_FILTERS: &str =
+    "TSDB: filters must contain at least one matcher that does not match the empty string";
 pub const INVALID_STEP_DURATION: &str = "TSDB: invalid step duration";
 pub const INVALID_TIMESTAMP: &str = "TSDB: invalid timestamp.";
 pub const UNKNOWN_AGGREGATION_TYPE: &str = "TSDB: unknown aggregation type";

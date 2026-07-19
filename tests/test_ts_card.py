@@ -94,12 +94,17 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
 
         self.setup_data()
 
-        # Inequality filters
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'sensor!=temp')
+        # A filter list of nothing but negative matchers is unbounded and rejected.
+        self.assert_filters_rejected('TS.CARD', 'FILTER', 'sensor!=temp')
+        self.assert_filters_rejected('TS.CARD', 'FILTER', 'sensor!=temp', 'area!=D')
+
+        # Every series here has a 'sensor' label, so 'sensor=~".+"' bounds the query without
+        # excluding anything -- it just supplies the positive matcher the filter list needs.
+        result = self.client.execute_command('TS.CARD', 'FILTER', 'sensor=~".+"', 'sensor!=temp')
         assert result == 3  # ts3, ts4, ts_nodata
 
         # Multiple inequality filters
-        result = self.client.execute_command('TS.CARD', 'FILTER', 'sensor!=temp', 'area!=D')
+        result = self.client.execute_command('TS.CARD', 'FILTER', 'sensor=~".+"', 'sensor!=temp', 'area!=D')
         assert result == 2  # ts3, ts4
 
         # Mix equality and inequality
@@ -120,7 +125,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         assert result == 1  # Only ts1 has data in this early range
 
         # Filter for data after a specific time
-        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 2600, 3000, 'FILTER', 'sensor!=light')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 2600, 3000, 'FILTER', 'sensor=~".+"', 'sensor!=light')
         assert result == 1  # Only ts4 has data after timestamp 2600
 
         # Filter that matches series but outside their data range
@@ -128,7 +133,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         assert result == 0  # No temp sensors have data after timestamp 3000
 
         # Filter with very wide range
-        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 0, 5000, 'FILTER', 'sensor!=light')
+        result = self.client.execute_command('TS.CARD', 'FILTER_BY_RANGE', 0, 5000, 'FILTER', 'sensor=~".+"', 'sensor!=light')
         assert result == 4  # All except ts_nodata because it has no data points
 
     def test_card_with_negative_date_range(self):
@@ -159,7 +164,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command(
             'TS.CARD',
             'FILTER_BY_RANGE', 'NOT', 0, 5000,
-            'FILTER', 'sensor!=light',
+            'FILTER', 'sensor=~".+"', 'sensor!=light',
         )
         assert result == 0
 
@@ -168,7 +173,7 @@ class TestTsCard(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command(
             'TS.CARD',
             'FILTER_BY_RANGE', 'NOT', 3000, 4000,
-            'FILTER', 'sensor!=light',
+            'FILTER', 'sensor=~".+"', 'sensor!=light',
         )
         assert result == 4
 

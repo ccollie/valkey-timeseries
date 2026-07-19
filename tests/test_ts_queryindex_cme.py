@@ -83,12 +83,17 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
         self.setup_test_data(cluster)
 
-        # Query for all metrics with a name not equal to cpu
-        result = client.execute_command('TS.QUERYINDEX', 'name!=cpu')
+        # A bare negative matcher is unbounded and rejected -- it must be paired with a
+        # filter that cannot be satisfied by a missing label.
+        self.assert_filters_rejected('TS.QUERYINDEX', 'name!=cpu', client=client)
+        self.assert_filters_rejected('TS.QUERYINDEX', 'type!=usage', client=client)
+
+        # Query for all usage metrics with a name not equal to cpu
+        result = client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!=cpu')
         assert result == [TS3, TS4, TS7, TS8]
 
-        # Query for all metrics with type not matching 'usage'
-        result = client.execute_command('TS.QUERYINDEX', 'type!=usage')
+        # Query for all named metrics with type not matching 'usage'
+        result = client.execute_command('TS.QUERYINDEX', 'name=~".+"', 'type!=usage')
         assert result == [TS5, TS6]
 
     def test_prometheus_not_regex_matcher(self):
@@ -97,17 +102,24 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
         self.setup_test_data(cluster)
 
+        # Negative regex matchers are unbounded on their own, so each is paired with
+        # 'type=usage' or 'name=~".+"' to bound the query.
+        self.assert_filters_rejected('TS.QUERYINDEX', 'name!~"c.*"', client=client)
+        self.assert_filters_rejected('TS.QUERYINDEX', 'name!~"cpu|memory"', client=client)
+        self.assert_filters_rejected('TS.QUERYINDEX', 'node!~"node[12]"', client=client)
+
         # Not matching regex
-        result = client.execute_command('TS.QUERYINDEX', 'name!~"c.*"')
+        result = client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!~"c.*"')
         assert result == [TS3, TS4, TS7, TS8]
 
         # Not matching regex alternation
-        result = client.execute_command('TS.QUERYINDEX', 'name!~"cpu|memory"')
+        result = client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!~"cpu|memory"')
         assert result == [TS7, TS8]
 
-        # Not matching using character class
-        result = client.execute_command('TS.QUERYINDEX', 'node!~"node[12]"')
-        assert result == [TS6, TS7, TS8]
+        # Not matching using character class. TS8 has no 'node' label -- it would satisfy the
+        # negative matcher, but it has no 'name' either, so the bounding filter excludes it.
+        result = client.execute_command('TS.QUERYINDEX', 'name=~".+"', 'node!~"node[12]"')
+        assert result == [TS6, TS7]
 
     def test_complex_queries(self):
         """Test more complex query combinations"""
@@ -123,8 +135,8 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         result = client.execute_command('TS.QUERYINDEX', 'name!=cpu', 'type=usage')
         assert result == [TS3, TS4, TS7, TS8]
 
-        # Regex not matching
-        result = client.execute_command('TS.QUERYINDEX', 'name!~"c.*"')
+        # Regex not matching, bounded by the 'type' filter
+        result = client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!~"c.*"')
         assert result == [TS3, TS4, TS7, TS8]
 
     def test_missing_labels(self):
@@ -133,12 +145,17 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
         self.setup_test_data(cluster)
 
-        # Find series without the 'name' label
-        result = client.execute_command('TS.QUERYINDEX', 'name=')
+        # 'label=' matches every series lacking that label, so it cannot bound a query
+        # on its own and must be paired with a bounded filter.
+        self.assert_filters_rejected('TS.QUERYINDEX', 'name=', client=client)
+        self.assert_filters_rejected('TS.QUERYINDEX', 'node=', client=client)
+
+        # Find usage series without the 'name' label
+        result = client.execute_command('TS.QUERYINDEX', 'type=usage', 'name=')
         assert result == [TS8]
 
-        # Find series without the 'node' label
-        result = client.execute_command('TS.QUERYINDEX', 'node=')
+        # Find usage series without the 'node' label
+        result = client.execute_command('TS.QUERYINDEX', 'type=usage', 'node=')
         assert result == [TS8]
 
     def test_combined_operations(self):
@@ -147,8 +164,12 @@ class TestTsQueryIndex(ValkeyTimeSeriesClusterTestCase):
         self.setup_test_data(cluster)
         client = self.new_client_for_primary(0)
 
+        # Both filters here match a missing label -- `.*` matches empty and `!=` is negative --
+        # so the list as a whole is unbounded and rejected. `.+` is the bounded form.
+        self.assert_filters_rejected('TS.QUERYINDEX', 'name=~".*"', 'type!=usage', client=client)
+
         # Find series that match regex but don't match another condition
-        result = client.execute_command('TS.QUERYINDEX', 'name=~".*"', 'type!=usage')
+        result = client.execute_command('TS.QUERYINDEX', 'name=~".+"', 'type!=usage')
         assert result == [TS5, TS6]
 
         # Mix of equals, not equals, and regex

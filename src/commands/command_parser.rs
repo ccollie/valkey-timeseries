@@ -748,6 +748,24 @@ pub(crate) fn parse_ignore_options(args: &mut CommandArgIterator) -> ValkeyResul
     Ok((ignore_max_timediff, ignore_max_val_diff))
 }
 
+/// Rejects a filter set that has nothing to intersect against but the whole keyspace.
+///
+/// Commands take their filters as a list of selectors that are ANDed together, so boundedness
+/// is a property of the list, not of any single selector: `TS.QUERYINDEX n=1 i!=a` is bounded
+/// by `n=1` even though `i!=a` alone is not. One bounded selector anywhere in the list is
+/// therefore enough. This mirrors RedisTimeSeries, whose `FILTER` list is conjunctive and
+/// requires at least one positive matcher across the whole list.
+///
+/// Must be called by every command that assembles a complete filter set — validating a single
+/// selector as it is parsed would reject legitimate multi-argument queries.
+pub fn validate_selector_list(selectors: &[SeriesSelector]) -> ValkeyResult<()> {
+    if selectors.iter().any(SeriesSelector::is_bounded) {
+        Ok(())
+    } else {
+        Err(ValkeyError::Str(error_consts::UNBOUNDED_SERIES_FILTERS))
+    }
+}
+
 pub fn parse_series_selector_list(
     args: &mut CommandArgIterator,
     stop_tokens: &[CommandArgToken],
@@ -772,6 +790,8 @@ pub fn parse_series_selector_list(
     if matchers.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
+
+    validate_selector_list(&matchers)?;
 
     Ok(matchers)
 }
@@ -1203,6 +1223,8 @@ pub(super) fn parse_query_index_command_args(
     if matchers.is_empty() {
         return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
     }
+
+    validate_selector_list(&matchers)?;
 
     Ok(MatchFilterOptions {
         date_range,

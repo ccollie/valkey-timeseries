@@ -7,6 +7,10 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 
 class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
 
+    def assert_query_rejected(self, *filters):
+        """Assert a TS.QUERYINDEX filter list is rejected for lacking a bounded matcher."""
+        self.assert_filters_rejected('TS.QUERYINDEX', *filters)
+
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
         # Create test series with various labels
@@ -63,29 +67,41 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test querying with negation patterns"""
         self.setup_test_data(self.client)
 
-        # Query for all metrics with a name not equal to cpu
-        result = self.client.execute_command('TS.QUERYINDEX', 'name!=cpu')
+        # A bare negative matcher is unbounded and rejected -- it must be paired with a
+        # filter that cannot be satisfied by a missing label.
+        self.assert_query_rejected('name!=cpu')
+        self.assert_query_rejected('type!=usage')
+
+        # Query for all usage metrics with a name not equal to cpu
+        result = self.client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!=cpu')
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
-        # Query for all metrics with type not matching 'usage'
-        result = self.client.execute_command('TS.QUERYINDEX', 'type!=usage')
+        # Query for all named metrics with type not matching 'usage'
+        result = self.client.execute_command('TS.QUERYINDEX', 'name=~".+"', 'type!=usage')
         assert result == [b'ts5', b'ts6']
 
     def test_prometheus_not_regex_matcher(self):
         """Test Prometheus-style regex negation matchers (label!~"regex")"""
         self.setup_test_data(self.client)
 
+        # Negative regex matchers are unbounded on their own, so each is paired with
+        # 'type=usage' (ts1-ts4, ts7, ts8) or 'name=~".+"' (ts1-ts7) to bound the query.
+        self.assert_query_rejected('name!~"c.*"')
+        self.assert_query_rejected('name!~"cpu|memory"')
+        self.assert_query_rejected('node!~"node[12]"')
+
         # Not matching regex
-        result = self.client.execute_command('TS.QUERYINDEX', 'name!~"c.*"')
+        result = self.client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!~"c.*"')
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
         # Not matching regex alternation
-        result = self.client.execute_command('TS.QUERYINDEX', 'name!~"cpu|memory"')
+        result = self.client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!~"cpu|memory"')
         assert result == [b'ts7', b'ts8']
 
-        # Not matching using character class
-        result = self.client.execute_command('TS.QUERYINDEX', 'node!~"node[12]"')
-        assert result == [b'ts6', b'ts7', b'ts8']
+        # Not matching using character class. ts8 has no 'node' label -- it would satisfy the
+        # negative matcher, but it has no 'name' either, so the bounding filter excludes it.
+        result = self.client.execute_command('TS.QUERYINDEX', 'name=~".+"', 'node!~"node[12]"')
+        assert result == [b'ts6', b'ts7']
 
     def test_complex_queries(self):
         """Test more complex query combinations"""
@@ -99,28 +115,37 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         result = self.client.execute_command('TS.QUERYINDEX', 'name!=cpu', 'type=usage')
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
-        # Regex not matching
-        result = self.client.execute_command('TS.QUERYINDEX', 'name!~"c.*"')
+        # Regex not matching, bounded by the 'type' filter
+        result = self.client.execute_command('TS.QUERYINDEX', 'type=usage', 'name!~"c.*"')
         assert result == [b'ts3', b'ts4', b'ts7', b'ts8']
 
     def test_missing_labels(self):
         """Test querying for metrics with missing labels"""
         self.setup_test_data(self.client)
 
-        # Find series without the 'name' label
-        result = self.client.execute_command('TS.QUERYINDEX', 'name=')
+        # 'label=' matches every series lacking that label, so it cannot bound a query
+        # on its own and must be paired with a bounded filter.
+        self.assert_query_rejected('name=')
+        self.assert_query_rejected('node=')
+
+        # Find usage series without the 'name' label
+        result = self.client.execute_command('TS.QUERYINDEX', 'type=usage', 'name=')
         assert result == [b'ts8']
 
-        # Find series without the 'node' label
-        result = self.client.execute_command('TS.QUERYINDEX', 'node=')
+        # Find usage series without the 'node' label
+        result = self.client.execute_command('TS.QUERYINDEX', 'type=usage', 'node=')
         assert result == [b'ts8']
 
     def test_combined_operations(self):
         """Test combination of different operations"""
         self.setup_test_data(self.client)
 
+        # Both filters here match a missing label -- `.*` matches empty and `!=` is negative --
+        # so the list as a whole is unbounded and rejected. `.+` is the bounded form.
+        self.assert_query_rejected('name=~".*"', 'type!=usage')
+
         # Find series that match regex but don't match another condition
-        result = self.client.execute_command('TS.QUERYINDEX', 'name=~".*"', 'type!=usage')
+        result = self.client.execute_command('TS.QUERYINDEX', 'name=~".+"', 'type!=usage')
         assert result == [b'ts5', b'ts6']
 
         # Mix of equals, not equals, and regex

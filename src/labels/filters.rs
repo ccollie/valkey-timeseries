@@ -893,6 +893,13 @@ impl From<Vec<LabelFilter>> for FilterList {
 /// OrFiltersList is a small vector of FilterList, used for OR combinations of AND filters.
 pub type OrFiltersList = SmallVec<[FilterList; 2]>;
 
+/// See [`SeriesSelector::is_bounded`]. An empty group matches every series, so it is unbounded.
+fn filter_group_is_bounded(filters: &FilterList) -> bool {
+    filters
+        .iter()
+        .any(|f| !f.is_negative_matcher() && !f.matches_empty())
+}
+
 #[derive(Debug, Clone, Hash, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum SeriesSelector {
@@ -907,6 +914,23 @@ impl SeriesSelector {
 
     pub fn with_filters(matchers: Vec<LabelFilter>) -> Self {
         SeriesSelector::And(matchers.into())
+    }
+
+    /// True if this selector on its own restricts the search to a bounded set of series,
+    /// rather than requiring a full keyspace scan.
+    ///
+    /// A filter group is bounded when it holds at least one matcher that cannot be satisfied
+    /// by a missing label — i.e. one that is neither negative (`l!=v`, `l!~re`) nor
+    /// empty-matching (`l=""`, `l=~".*"`). `Or` branches are unioned, so an `Or` selector is
+    /// bounded only when *every* branch is; `And` filters are intersected, so one bounded
+    /// matcher anywhere in the group suffices.
+    pub fn is_bounded(&self) -> bool {
+        match self {
+            SeriesSelector::And(filters) => filter_group_is_bounded(filters),
+            SeriesSelector::Or(groups) => {
+                !groups.is_empty() && groups.iter().all(filter_group_is_bounded)
+            }
+        }
     }
 
     pub fn len(&self) -> usize {

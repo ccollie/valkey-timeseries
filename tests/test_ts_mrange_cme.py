@@ -24,6 +24,25 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
             cluster_client.execute_command('TS.ADD', 'ts:{slot2}:humid1', self.start_ts + i, 50 + (i % 20))
             cluster_client.execute_command('TS.ADD', 'ts:{slot2}:humid2', self.start_ts + i, 60 + (i % 15))
 
+    def test_mrange_cme_rejects_unbounded_filter(self):
+        """A 'match everything' filter list must still carry a positive matcher.
+
+        The tests below use 'sensor=~".+"' / 'region=~".+"' to select every series. The
+        older idiom 'sensor!=none' selects the same set but is a negative matcher, so a
+        filter list containing only that has nothing to intersect against but the whole
+        keyspace and is rejected.
+        """
+        self.setup_clustered_data()
+
+        client = self.new_client_for_primary(0)
+        self.assert_filters_rejected('TS.MRANGE', self.start_ts, self.start_ts + 100,
+                                     'FILTER', 'sensor!=none', client=client)
+
+        # The bounded form selects every series, since all of them have a 'sensor' label.
+        result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
+                                        'FILTER', 'sensor=~".+"')
+        assert len(result) == 4
+
     def test_mrange_cme_basic(self):
         """Test TS.MRANGE across series in different hash slots."""
         self.setup_clustered_data()
@@ -60,7 +79,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
                                         'WITHLABELS',
-                                        'FILTER', 'region!=none',
+                                        'FILTER', 'region=~".+"',
                                         'GROUPBY', 'region',
                                         'REDUCE', 'sum')
 
@@ -84,7 +103,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
                                         'AGGREGATION', 'avg', 20,
                                         'WITHLABELS',
-                                        'FILTER', 'sensor!=none',
+                                        'FILTER', 'sensor=~".+"',
                                         'GROUPBY', 'sensor',
                                         'REDUCE', 'max')
 
@@ -120,7 +139,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
                                         'COUNT', 4,
-                                        'FILTER', 'sensor!=none',
+                                        'FILTER', 'sensor=~".+"',
                                         'GROUPBY', 'region',
                                         'REDUCE', 'avg')
 
@@ -150,7 +169,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         client = self.new_client_for_primary(0)
         result = client.execute_command('TS.MRANGE', self.start_ts, self.start_ts + 100,
                                         'SELECTED_LABELS', 'region',
-                                        'FILTER', 'sensor!=none')
+                                        'FILTER', 'sensor=~".+"')
 
         assert len(result) == 4
         for series in result:
@@ -292,7 +311,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
 
         client = self.new_client_for_primary(0)
         result = client.execute_command('TS.MREVRANGE', self.start_ts, self.start_ts + 100,
-                                        'FILTER', 'region!=none',
+                                        'FILTER', 'region=~".+"',
                                         'GROUPBY', 'sensor',
                                         'REDUCE', 'sum')
 
@@ -343,7 +362,7 @@ class TestTimeSeriesMRangeClustered(ValkeyTimeSeriesClusterTestCase):
         result = client.execute_command(
             'TS.MREVRANGE', self.start_ts, self.start_ts + 100,
             'SELECTED_LABELS', 'region',
-            'FILTER', 'sensor!=none'
+            'FILTER', 'sensor=~".+"'
         )
 
         assert len(result) == 4

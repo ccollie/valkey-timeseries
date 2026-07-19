@@ -35,7 +35,11 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         result = client.execute_command('TS.CARD', 'FILTER', 'host=server1')
         assert result == 2
 
-        result = client.execute_command('TS.CARD', 'FILTER', 'type!=memory')
+        # A lone negative matcher is unbounded and rejected; 'host' is on both series, so
+        # 'host=~".+"' supplies the positive matcher without excluding anything.
+        self.assert_filters_rejected('TS.CARD', 'FILTER', 'type!=memory', client=client)
+
+        result = client.execute_command('TS.CARD', 'FILTER', 'host=~".+"', 'type!=memory')
         assert result == 1
 
     def test_cluster_label_filtering(self):
@@ -79,7 +83,13 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         result = node0.execute_command('TS.CARD', 'FILTER', 'cpu{node!="nodeA"}')
         assert result == 2  # CPU metrics on nodeB and nodeC
 
-        result = node0.execute_command('TS.CARD', 'FILTER', '{__name__!="cpu", node!="nodeC"}')
+        # Two negative matchers with nothing positive to intersect against -- rejected.
+        self.assert_filters_rejected(
+            'TS.CARD', 'FILTER', '{__name__!="cpu", node!="nodeC"}', client=node0)
+
+        # Every series has instance="1", so it bounds the query without excluding anything.
+        result = node0.execute_command(
+            'TS.CARD', 'FILTER', '{instance="1", __name__!="cpu", node!="nodeC"}')
         assert result == 2  # memory and disk metrics (not on nodeC)
 
     def test_cluster_date_range_filtering(self):
@@ -104,34 +114,44 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 1500, 'FILTER', 'timing=early')
         assert result == 1  # Only early series in this range
 
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1000, 3000, 'FILTER', 'slot!=slot2')
+        # A date range does not bound a query -- the filter list still needs a positive
+        # matcher. All three series carry type=test, so it bounds without excluding.
+        self.assert_filters_rejected(
+            'TS.CARD', 'FILTER_BY_RANGE', 1000, 3000, 'FILTER', 'slot!=slot2', client=node0)
+
+        result = node0.execute_command(
+            'TS.CARD', 'FILTER_BY_RANGE', 1000, 3000, 'FILTER', 'type=test', 'slot!=slot2')
         assert result == 2  # early and late series
 
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 2500, 3500, 'FILTER', 'timing!=early')
+        self.assert_filters_rejected(
+            'TS.CARD', 'FILTER_BY_RANGE', 2500, 3500, 'FILTER', 'timing!=early', client=node0)
+
+        result = node0.execute_command(
+            'TS.CARD', 'FILTER_BY_RANGE', 2500, 3500, 'FILTER', 'type=test', 'timing!=early')
         assert result == 1  # Only late series in this range
 
         # Test with special timestamp values
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', '-', 2500, 'FILTER', 'slot!=slot3')
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', '-', 2500, 'FILTER', 'type=test', 'slot!=slot3')
         assert result == 2  # early and middle series
 
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1500, '+', 'FILTER', 'timing!=early')
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 1500, '+', 'FILTER', 'type=test', 'timing!=early')
         assert result == 2  # middle and late series
 
         # Test negative date range filtering with NOT
         result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 1000, 1500, 'FILTER', 'type=test')
         assert result == 2  # (excludes early series in range 1000-1500)
 
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 1500, 2500, 'FILTER', 'slot!=slot1')
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 1500, 2500, 'FILTER', 'type=test', 'slot!=slot1')
         assert result == 1  # Only late series (excludes middle series in range 1500-2500)
 
         result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 2500, 3500, 'FILTER', 'type=test')
         assert result == 2  # (excludes middle series)
 
         # Test NOT with special timestamp values
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', '-', 2000, 'FILTER', 'slot!=slot3')
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', '-', 2000, 'FILTER', 'type=test', 'slot!=slot3')
         assert result == 0  # No series excluded (all early/middle data is before/at 2000)
 
-        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 2000, '+', 'FILTER', 'timing!=late')
+        result = node0.execute_command('TS.CARD', 'FILTER_BY_RANGE', 'NOT', 2000, '+', 'FILTER', 'type=test', 'timing!=late')
         assert result == 1  # Only early series (excludes middle and late which have data at/after 2000)
 
     def test_cluster_complex_label_queries(self):
@@ -188,8 +208,13 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         result = node0.execute_command('TS.CARD', 'FILTER', 'latency{env!="dev"}')
         assert result == 2  # latency for service1 and service2 (not service3)
 
-        result = node0.execute_command('TS.CARD', 'FILTER', 'app!=', 'metric!=memory')
-        assert result == 5  # All app metrics (5) + infra CPU metrics (2) - infra memory (1) = 6, but app!= matches all series that don't have app label, so it's all series without app label and not memory metric
+        # 'app!=' ("has an app label") is still a negative matcher, so this list has no
+        # positive matcher and is rejected. Every series has a 'metric' label, so
+        # 'metric=~".+"' bounds the query without excluding anything.
+        self.assert_filters_rejected('TS.CARD', 'FILTER', 'app!=', 'metric!=memory', client=node0)
+
+        result = node0.execute_command('TS.CARD', 'FILTER', 'metric=~".+"', 'app!=', 'metric!=memory')
+        assert result == 5  # the 5 app series; none of them is a memory metric
 
     def test_cluster_edge_cases(self):
         """Test edge cases and error conditions in cluster mode"""
@@ -266,7 +291,12 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         result = client.execute_command('TS.CARD', 'FILTER', 'performance{region="us-east", service="api"}')
         assert result == 3  # 3 API instances in us-east
 
-        result = client.execute_command('TS.CARD', 'FILTER', 'service!=cache', 'region!=eu-central')
+        self.assert_filters_rejected(
+            'TS.CARD', 'FILTER', 'service!=cache', 'region!=eu-central', client=client)
+
+        # Every series has a 'service' label, so 'service=~".+"' bounds without excluding.
+        result = client.execute_command(
+            'TS.CARD', 'FILTER', 'service=~".+"', 'service!=cache', 'region!=eu-central')
         assert result == 12  # API and DB in us-east and us-west (2 regions * 2 services * 3 instances)
 
         # Test date range filtering on large dataset
@@ -362,5 +392,10 @@ class TestTsCardClusterCME(ValkeyTimeSeriesClusterTestCase):
         # assert len(user_sessions) == 0 # 15  # 5 users * 3 metrics each
 
         # Test complex filters combining user and metric dimensions
-        result = client.execute_command('TS.CARD', 'FILTER', 'metric!=purchase', 'user_id!=5')
+        self.assert_filters_rejected(
+            'TS.CARD', 'FILTER', 'metric!=purchase', 'user_id!=5', client=client)
+
+        # Every series is category=user_activity, so it bounds without excluding anything.
+        result = client.execute_command(
+            'TS.CARD', 'FILTER', 'category=user_activity', 'metric!=purchase', 'user_id!=5')
         assert result == 8  # login+pageview for users 1-4 (4 users * 2 metrics)
