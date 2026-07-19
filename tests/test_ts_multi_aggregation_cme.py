@@ -49,6 +49,25 @@ class TestTimeSeriesMultiAggregationClustered(ValkeyTimeSeriesClusterTestCase):
     def series_by_key(result):
         return {series[0]: series[2] for series in result}
 
+    def test_mrange_cme_rejects_unbounded_filter(self):
+        """A 'match everything' filter list must still carry a positive matcher.
+
+        The tests below use 'kind=~".+"' to select every series. The older idiom
+        'kind!=none' selects the same set but is a negative matcher, so a filter list
+        containing only that is rejected as an unbounded keyspace scan.
+        """
+        self.setup_clustered_data()
+        client = self.new_client_for_primary(0)
+
+        self.assert_filters_rejected(
+            'TS.MRANGE', '-', '+', 'AGGREGATION', 'avg', 1000,
+            'FILTER', 'kind!=none', client=client)
+
+        # The bounded form selects every series, since all of them have a 'kind' label.
+        result = client.execute_command(
+            'TS.MRANGE', '-', '+', 'AGGREGATION', 'avg', 1000, 'FILTER', 'kind=~".+"')
+        assert len(result) == 4
+
     def test_mrange_cme_multi_aggregation_basic(self):
         """Per-series multi-aggregation across slots: each bucket row is
         [ts, avg, max, count] in the requested column order."""
@@ -80,14 +99,14 @@ class TestTimeSeriesMultiAggregationClustered(ValkeyTimeSeriesClusterTestCase):
         multi = client.execute_command(
             'TS.MRANGE', '-', '+',
             'AGGREGATION', ','.join(aggregators), 1000,
-            'FILTER', 'kind!=none')
+            'FILTER', 'kind=~".+"')
         multi_by_key = self.series_by_key(multi)
 
         for i, agg in enumerate(aggregators):
             single = client.execute_command(
                 'TS.MRANGE', '-', '+',
                 'AGGREGATION', agg, 1000,
-                'FILTER', 'kind!=none')
+                'FILTER', 'kind=~".+"')
             single_by_key = self.series_by_key(single)
             assert multi_by_key.keys() == single_by_key.keys()
             for key, rows in single_by_key.items():
@@ -190,7 +209,7 @@ class TestTimeSeriesMultiAggregationClustered(ValkeyTimeSeriesClusterTestCase):
 
         queries = [
             ('TS.MRANGE', '-', '+', 'AGGREGATION', 'avg,max,count', 1000,
-             'FILTER', 'kind!=none'),
+             'FILTER', 'kind=~".+"'),
             ('TS.MREVRANGE', '-', '+', 'AGGREGATION', 'sum,min', 1000,
              'COUNT', 2, 'FILTER', 'region=us'),
             ('TS.MRANGE', '-', '+', 'AGGREGATION', 'avg,max', 1000,

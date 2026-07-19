@@ -1,9 +1,26 @@
 #[cfg(test)]
 mod tests {
+    use crate::commands::command_parser::validate_selector_list;
+    use crate::error_consts;
     use crate::labels::filters::{
         FilterList, LabelFilter, MatchOp, PredicateMatch, PredicateValue, SeriesSelector,
     };
     use crate::labels::parse_series_selector;
+
+    /// Asserts that `selector` parses, but is rejected as the sole filter of a command.
+    fn assert_unbounded_alone(selector: &str) -> SeriesSelector {
+        let parsed = parse_series_selector(selector)
+            .unwrap_or_else(|e| panic!("expected {selector} to parse, got {e}"));
+        assert!(!parsed.is_bounded(), "{selector} should not be bounded");
+        let err = validate_selector_list(std::slice::from_ref(&parsed))
+            .expect_err("selector has no positive matcher");
+        assert_eq!(
+            err.to_string(),
+            error_consts::UNBOUNDED_SERIES_FILTERS,
+            "unexpected error for {selector}"
+        );
+        parsed
+    }
 
     fn assert_matcher(matcher: &LabelFilter, label: &str, op: MatchOp, value: &str) {
         let expected = LabelFilter::create(op, label, value).unwrap();
@@ -137,8 +154,7 @@ mod tests {
 
     #[test]
     fn test_parse_series_selector_multiple_or_conditions() {
-        let selector =
-            r#"{job="prometheus",env="prod" or datacenter=~"us-.*" or instance="localhost",role!="standby"}"#;
+        let selector = r#"{job="prometheus",env="prod" or datacenter=~"us-.*" or instance="localhost",role!="standby"}"#;
         let matchers = parse_series_selector(selector).unwrap();
 
         assert!(matchers.get_metric_name().is_none());
@@ -156,52 +172,80 @@ mod tests {
                 MatchOp::RegexEqual,
                 "us-.*",
             );
-            assert_matcher(
-                &or_matchers[2][0],
-                "instance",
-                MatchOp::Equal,
-                "localhost",
-            );
+            assert_matcher(&or_matchers[2][0], "instance", MatchOp::Equal, "localhost");
             assert_matcher(&or_matchers[2][1], "role", MatchOp::NotEqual, "standby");
         });
     }
 
     #[test]
     fn test_parse_series_selector_or_branch_without_positive_matcher_is_rejected() {
-        // Each OR branch is evaluated independently, so a branch with only a negative
-        // matcher is just as much a full-keyspace scan as a plain selector would be.
-        let selector = r#"{job="prometheus",env="prod" or instance!="localhost"}"#;
-        let err = parse_series_selector(selector).expect_err("branch has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        // OR branches are unioned, so an unbounded branch drags the whole selector
+        // unbounded even though the other branch is bounded.
+        assert_unbounded_alone(r#"{job="prometheus",env="prod" or instance!="localhost"}"#);
     }
 
     #[test]
     fn test_parse_series_selector_with_regex_not_equal_matchers() {
-        // A selector consisting solely of negative matchers has nothing to intersect against
-        // but the whole keyspace, so it is rejected (mirrors Prometheus).
-        let input = r#"{job!~"prom.*",instance!~"local.*"}"#;
-        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        // A filter set consisting solely of negative matchers has nothing to intersect
+        // against but the whole keyspace, so it is rejected (mirrors RedisTimeSeries).
+        let matchers = assert_unbounded_alone(r#"{job!~"prom.*",instance!~"local.*"}"#);
+
+        assert!(matchers.get_metric_name().is_none());
+        with_and_matchers(&matchers, |and_matchers| {
+            assert_eq!(and_matchers.len(), 2);
+            assert_matcher(&and_matchers[0], "job", MatchOp::RegexNotEqual, "prom.*");
+            assert_matcher(
+                &and_matchers[1],
+                "instance",
+                MatchOp::RegexNotEqual,
+                "local.*",
+            );
+        });
     }
 
     #[test]
     fn test_parse_series_selector_with_negated_label_matchers() {
         // Same as above: two negative matchers, no positive matcher.
-        let input = r#"{job!="prometheus",instance!="localhost:9090"}"#;
-        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        let matchers = assert_unbounded_alone(r#"{job!="prometheus",instance!="localhost:9090"}"#);
+
+        assert!(matchers.get_metric_name().is_none());
+        with_and_matchers(&matchers, |and_matchers| {
+            assert_eq!(and_matchers.len(), 2);
+            assert_matcher(&and_matchers[0], "job", MatchOp::NotEqual, "prometheus");
+            assert_matcher(
+                &and_matchers[1],
+                "instance",
+                MatchOp::NotEqual,
+                "localhost:9090",
+            );
+        });
+    }
+
+    #[test]
+    fn test_validate_selector_list_accepts_bounded_sibling() {
+        // The filter list is conjunctive, so one bounded selector bounds the whole query:
+        // `TS.QUERYINDEX n=1 i!=a` must be accepted even though `i!=a` alone is not.
+        let bounded = parse_series_selector("n=1").unwrap();
+        let unbounded = parse_series_selector("i!=a").unwrap();
+        assert!(bounded.is_bounded());
+        assert!(!unbounded.is_bounded());
+
+        validate_selector_list(&[bounded.clone(), unbounded.clone()])
+            .expect("bounded sibling should bound the list");
+        validate_selector_list(&[unbounded.clone(), bounded]).expect("order must not matter");
+        validate_selector_list(&[unbounded]).expect_err("no bounded selector in the list");
+    }
+
+    #[test]
+    fn test_validate_selector_list_rejects_empty_and_empty_matching_filters() {
+        // `l=` (label absent) and `l=~".*"` are both satisfied by a missing label, so neither
+        // narrows the search. `l=~".+"` requires a non-empty value, so it does.
+        for selector in [r#"{i=""}"#, r#"{i=~".*"}"#, r#"{i!=""}"#] {
+            assert_unbounded_alone(selector);
+        }
+        let bounded = parse_series_selector(r#"{i=~".+"}"#).unwrap();
+        assert!(bounded.is_bounded());
+        validate_selector_list(&[bounded]).expect("`.+` cannot match a missing label");
     }
 
     #[test]
@@ -365,13 +409,7 @@ mod tests {
     #[test]
     fn redis_ts_selector_not_equal_with_lists() {
         // A bare NotEqual-with-list selector has no positive matcher and is rejected.
-        let input = "flavor!=(original,cajun,\"extra spicy\")";
-        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        assert_unbounded_alone("flavor!=(original,cajun,\"extra spicy\")");
 
         let input = "{size=(small,medium,large),flavor!=(original,cajun,\"extra spicy\")}";
         let result = parse_series_selector(input).unwrap();
@@ -410,13 +448,7 @@ mod tests {
     #[test]
     fn prometheus_selector_not_starts_with_with_lists() {
         // A bare NotStartsWith-with-list selector has no positive matcher and is rejected.
-        let input = r#"{service^~(api,worker)}"#;
-        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        assert_unbounded_alone(r#"{service^~(api,worker)}"#);
 
         let input = r#"{env="prod",service^~(api,worker)}"#;
         let result = parse_series_selector(input).unwrap();
@@ -451,13 +483,7 @@ mod tests {
         // `l=~".*"` matches the empty string, so a selector consisting only of such matchers
         // is just as much a full-keyspace scan as `l!="nonexistent"` and is rejected for the
         // same reason.
-        let input = r#"{service=~".*", instance=~"^.*$"}"#;
-        let err = parse_series_selector(input).expect_err("selector has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        assert_unbounded_alone(r#"{service=~".*", instance=~"^.*$"}"#);
 
         let input = r#"{job="x", service=~".*", instance=~"^.*$"}"#;
         let result = parse_series_selector(input).unwrap();
@@ -620,13 +646,7 @@ mod tests {
 
     #[test]
     fn test_parse_or_with_list_matchers_branch_without_positive_matcher_is_rejected() {
-        let input = r#"{a="b", foo!="bar" or flavor!=(original,cajun,"extra spicy")}"#;
-        let err = parse_series_selector(input).expect_err("second branch has no positive matcher");
-        assert!(
-            err.to_string()
-                .contains("at least one matcher that does not match the empty string"),
-            "unexpected error: {err}"
-        );
+        assert_unbounded_alone(r#"{a="b", foo!="bar" or flavor!=(original,cajun,"extra spicy")}"#);
     }
 
     #[test]

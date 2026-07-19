@@ -240,6 +240,18 @@ class ValkeyTimeSeriesTestCaseCommon(ValkeyTestCase):
             else:
                 assert info_dict[k] == v, f"Expected {k} to be {v}, but got {info_dict[k]}"
 
+    # A filter list must contain at least one matcher that cannot be satisfied by a missing
+    # label, so that a query never degenerates into a full keyspace scan. Filters are
+    # conjunctive, so the requirement applies to the list as a whole: one bounded filter
+    # licenses any number of negative or empty-matching ones alongside it.
+    UNBOUNDED_FILTER_ERROR = "at least one matcher that does not match the empty string"
+
+    def assert_filters_rejected(self, *args, client=None):
+        """Assert a command is rejected because its filter list lacks a bounded matcher."""
+        client = client if client is not None else self.client
+        with pytest.raises(ResponseError, match=self.UNBOUNDED_FILTER_ERROR):
+            client.execute_command(*args)
+
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
             client.execute_command(cmd)

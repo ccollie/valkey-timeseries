@@ -1,4 +1,4 @@
-use crate::commands::command_parser::parse_filter_by_range_options;
+use crate::commands::command_parser::{parse_filter_by_range_options, validate_selector_list};
 use crate::commands::fanout::LabelSearchType;
 use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
 use crate::common::SortDir;
@@ -250,6 +250,7 @@ pub(super) fn parse_label_name_search_args(
                 if filter_count == parsed.series_filter.matchers.len() {
                     return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
                 }
+                validate_selector_list(&parsed.series_filter.matchers)?;
             }
             LabelNameSearchToken::FilterByRange => {
                 let filter = parse_filter_by_range_options(&mut args)?;

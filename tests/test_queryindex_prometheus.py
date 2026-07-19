@@ -11,6 +11,10 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
     used by the Prometheus project for their label matching logic.
     """
 
+    def assert_query_rejected(self, *filters):
+        """Assert a TS.QUERYINDEX filter list is rejected for lacking a bounded matcher."""
+        self.assert_filters_rejected('TS.QUERYINDEX', *filters)
+
     def setup_test_data(self, client):
         """Create a set of time series with different label combinations for testing"""
         # Create test series with various labels
@@ -43,9 +47,13 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test filtering for series with or without specific labels"""
         self.setup_test_data(self.client)
 
-        # Find series without 'i' label
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i='))
-        assert result == [b'ts1', b'ts5', b'ts6', b'ts8']
+        # 'i=' means "series lacking label i" -- satisfied by every series without the label,
+        # so on its own it is unbounded and rejected.
+        self.assert_query_rejected('i=')
+
+        # Paired with a bounded filter it is allowed, and narrows the result.
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i='))
+        assert result == [b'ts1']
 
         # Find series with 'i' label
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~".+"'))
@@ -55,17 +63,15 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test negation matching with TS.QUERYINDEX"""
         self.setup_test_data(self.client)
 
-        # Not equal to n=1
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!=1'))
-        assert result == [b'ts5', b'ts6', b'ts7', b'ts8']
+        # A lone negative matcher is unbounded and rejected.
+        self.assert_query_rejected('n!=1')
 
-        # Combine equality and negation
+        # Combine equality and negation -- 'n=1' bounds the query, so 'i!=a' is allowed.
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=1', 'i!=a'))
         assert result == [b'ts1', b'ts3', b'ts4']
 
-        # Negation of empty value (finds all with the label set)
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i!='))
-        assert result == [b'ts2', b'ts3', b'ts4', b'ts7']
+        # Negation of empty value ("has the label set") is still a negative matcher.
+        self.assert_query_rejected('i!=')
 
     def test_regex_matching(self):
         """Test regex matching capabilities of TS.QUERYINDEX"""
@@ -79,13 +85,11 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~"1|2"'))
         assert result == [b'ts1', b'ts2', b'ts3', b'ts4', b'ts5']
 
-        # Match all with .* pattern
-        # NOTE: Prometheus has a **cough** interesting behavior where `.*` matches all series
-        # regardless of whether they have the label or not. So paradoxically, this matches all series.
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"'))
-        assert len(result) == 8  # All series with label 'n'
+        # `.*` matches the empty string, so `n=~".*"` is satisfied by series that lack 'n'
+        # entirely -- it selects everything and is rejected on its own.
+        self.assert_query_rejected('n=~".*"')
 
-        # Match non-empty values with .+
+        # Match non-empty values with .+ -- this cannot match a missing label, so it is bounded.
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~".+"'))
         assert result == [b'ts2', b'ts3', b'ts4', b'ts7']
 
@@ -93,17 +97,18 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test regex negation matching of TS.QUERYINDEX"""
         self.setup_test_data(self.client)
 
-        # Not matching regex
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~"^1$"'))
-        assert result == [b'ts5', b'ts6', b'ts7', b'ts8']
+        # Negative regex matchers are unbounded on their own.
+        self.assert_query_rejected('n!~"^1$"')
+        self.assert_query_rejected('n!~"1|2"')
 
-        # Not matching OR pattern
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~"1|2"'))
-        assert result == [b'ts6', b'ts7', b'ts8']
-
-        # Not matching anything (should return empty set)
+        # `n!~".*"` is the exception: it normalizes to "match nothing", so it can only ever
+        # return the empty set and is bounded rather than a keyspace scan.
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n!~".*"'))
         assert result == []
+
+        # Paired with a bounded filter they are allowed.
+        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'i=~".+"', 'n!~"^1$"'))
+        assert result == [b'ts7']
 
     def test_complex_combinations(self):
         """Test more complex query combinations"""
@@ -192,11 +197,8 @@ class TestTsQueryIndex(ValkeyTimeSeriesTestCaseBase):
         """Test special patterns that match all or none"""
         self.setup_test_data(self.client)
 
-        # Match all series with a wildcard
-        # NOTE: Prometheus has a **cough** interesting behavior where `.*` matches all series
-        # regardless of whether they have the label or not. So paradoxically, this matches all series.
-        result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"'))
-        assert len(result) == 8  # All series
+        # A bare wildcard selects every series, bounded by nothing, so it is rejected.
+        self.assert_query_rejected('n=~".*"')
 
         # Match all and filter with another condition
         result = sorted(self.client.execute_command('TS.QUERYINDEX', 'n=~".*"', 'i=a'))
