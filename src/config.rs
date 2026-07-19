@@ -9,7 +9,6 @@ use crate::series::{
     DuplicatePolicy, SampleDuplicatePolicy, add_compaction_policies_from_config,
     clear_compaction_policy_config,
 };
-use lazy_static::lazy_static;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 use std::time::Duration;
@@ -75,6 +74,10 @@ pub(crate) const COMPACTION_POLICY_DEFAULT_STRING: &str = "";
 pub(crate) const CHUNK_ENCODING_DEFAULT_STRING: &str = DEFAULT_CHUNK_ENCODING.name();
 pub(crate) const CHUNK_SIZE_DEFAULT_STRING: &str = "4096";
 pub(crate) const DEFAULT_COMPACTION_POLICY: &str = "";
+
+pub const INDEX_BUILD_MAX_MEMORY_MIN: i64 = 0; // 0 = unlimited
+pub const INDEX_BUILD_MAX_MEMORY_MAX: i64 = i64::MAX;
+pub const INDEX_BUILD_MAX_MEMORY_DEFAULT: i64 = 256 * 1024 * 1024; // 256 MiB
 
 pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 750; // default: 0.25 second
 pub(crate) const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
@@ -194,61 +197,67 @@ static PROMQL_MAX_QUERY_DURATION_MS: LazyLock<AtomicI64> =
 
 pub const DEFAULT_FANOUT_COMMAND_TIMEOUT_MS: u64 = 5000;
 
-lazy_static! {
-    pub static ref ROUNDING_STRATEGY: Mutex<Option<RoundingStrategy>> = Mutex::new(None);
-    pub static ref DECIMAL_DIGITS: AtomicI64 = AtomicI64::new(DECIMAL_DIGITS_MAX);
-    pub static ref SIGNIFICANT_DIGITS: AtomicI64 = AtomicI64::new(SIGNIFICANT_DIGITS_MAX);
-    pub static ref IGNORE_MAX_TIME_DIFF: AtomicI64 = AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT);
-    pub static ref IGNORE_MAX_VALUE_DIFF: Mutex<f64> = Mutex::new(0.0);
-    pub static ref RETENTION_PERIOD: Mutex<Duration> = Mutex::new(DEFAULT_RETENTION_PERIOD);
-    pub static ref CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
-    pub static ref FANOUT_COMMAND_TIMEOUT: AtomicU64 =
-        AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS);
-    pub static ref DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
-    pub static ref CLUSTER_MAP_EXPIRATION_MS: AtomicU64 =
-        AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT);
-    static ref CHUNK_SIZE_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING));
-    static ref CHUNK_ENCODING_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()));
-    static ref DUPLICATE_POLICY_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, DEFAULT_DUPLICATE_POLICY.as_str())
-    );
-    static ref RETENTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING));
-    static ref COMPACTION_POLICY_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING));
-    static ref IGNORE_MAX_TIME_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, IGNORE_MAX_TIME_DIFF_DEFAULT_STRING)
-    );
-    static ref IGNORE_MAX_VALUE_DIFF_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING)
-    );
-    static ref DECIMAL_DIGITS_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING));
-    static ref SIGNIFICANT_DIGITS_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, SIGNIFICANT_DIGITS_DEFAULT_STRING)
-    );
-    static ref FANOUT_COMMAND_TIMEOUT_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT));
-    static ref CLUSTER_MAP_EXPIRATION_STRING: ValkeyGILGuard<ValkeyString> = ValkeyGILGuard::new(
-        ValkeyString::create(None, CLUSTER_MAP_EXPIRATION_DEFAULT_STRING)
-    );
-    static ref IS_DEBUG_MODE: AtomicBool = AtomicBool::default();
-    // PromQL config statics
-    static ref PROMQL_SET_LOOKBACK_TO_STEP: AtomicBool = AtomicBool::new(false);
-    static ref PROMQL_OPTIMIZE_QUERIES: AtomicBool = AtomicBool::new(false);
-    static ref PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS: AtomicBool = AtomicBool::new(true);
-    static ref PROMQL_LOOKBACK_DELTA_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, PROMQL_LOOKBACK_DELTA_DEFAULT_STRING));
-    static ref PROMQL_MAX_LOOKBACK_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, PROMQL_MAX_LOOKBACK_DEFAULT_STRING));
-    static ref PROMQL_MAX_QUERY_DURATION_STRING: ValkeyGILGuard<ValkeyString> =
-        ValkeyGILGuard::new(ValkeyString::create(None, PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING));
-    static ref PROMQL_LOOKBACK_DELTA_MS: AtomicI64 = AtomicI64::new(5 * 60 * 1000);
-    static ref PROMQL_MAX_LOOKBACK_MS: AtomicI64 = AtomicI64::new(0);
-    static ref PROMQL_MAX_QUERY_DURATION_MS: AtomicI64 = AtomicI64::new(30 * 1000);
-}
+pub static ROUNDING_STRATEGY: Mutex<Option<RoundingStrategy>> = Mutex::new(None);
+pub static DECIMAL_DIGITS: AtomicI64 = AtomicI64::new(DECIMAL_DIGITS_MAX);
+pub static SIGNIFICANT_DIGITS: AtomicI64 = AtomicI64::new(SIGNIFICANT_DIGITS_MAX);
+pub static IGNORE_MAX_TIME_DIFF: AtomicI64 = AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT);
+pub static IGNORE_MAX_VALUE_DIFF: Mutex<f64> = Mutex::new(0.0);
+pub static RETENTION_PERIOD: Mutex<Duration> = Mutex::new(DEFAULT_RETENTION_PERIOD);
+pub static CHUNK_ENCODING: Mutex<ChunkEncoding> = Mutex::new(DEFAULT_CHUNK_ENCODING);
+pub static FANOUT_COMMAND_TIMEOUT: AtomicU64 = AtomicU64::new(DEFAULT_FANOUT_COMMAND_TIMEOUT_MS);
+pub static DUPLICATE_POLICY: Mutex<DuplicatePolicy> = Mutex::new(DEFAULT_DUPLICATE_POLICY);
+pub static CLUSTER_MAP_EXPIRATION_MS: AtomicU64 = AtomicU64::new(CLUSTER_MAP_EXPIRATION_MS_DEFAULT);
+static IS_DEBUG_MODE: AtomicBool = AtomicBool::new(false);
+
+static CHUNK_SIZE_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| ValkeyGILGuard::new(ValkeyString::create(None, CHUNK_SIZE_DEFAULT_STRING)));
+static CHUNK_ENCODING_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, DEFAULT_CHUNK_ENCODING.name()))
+});
+static DUPLICATE_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        DEFAULT_DUPLICATE_POLICY.as_str(),
+    ))
+});
+static RETENTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, RETENTION_POLICY_DEFAULT_STRING))
+});
+static COMPACTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, COMPACTION_POLICY_DEFAULT_STRING))
+});
+static IGNORE_MAX_TIME_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        IGNORE_MAX_TIME_DIFF_DEFAULT_STRING,
+    ))
+});
+static IGNORE_MAX_VALUE_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        IGNORE_MAX_VALUE_DIFF_DEFAULT_STRING,
+    ))
+});
+static DECIMAL_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(None, DECIMAL_DIGITS_DEFAULT_STRING))
+});
+static SIGNIFICANT_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> = LazyLock::new(|| {
+    ValkeyGILGuard::new(ValkeyString::create(
+        None,
+        SIGNIFICANT_DIGITS_DEFAULT_STRING,
+    ))
+});
+static FANOUT_COMMAND_TIMEOUT_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| {
+        ValkeyGILGuard::new(ValkeyString::create(None, FANOUT_COMMAND_TIMEOUT_DEFAULT))
+    });
+static CLUSTER_MAP_EXPIRATION_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| {
+        ValkeyGILGuard::new(ValkeyString::create(
+            None,
+            CLUSTER_MAP_EXPIRATION_DEFAULT_STRING,
+        ))
+    });
 
 /// Runtime toggle for shard-side aggregation push-down in MRANGE fanout
 /// (`ts-fanout-aggregation-pushdown`, default on). Consulted by the
@@ -268,6 +277,23 @@ pub static FANOUT_AGGREGATION_PUSHDOWN: AtomicBool = AtomicBool::new(true);
 
 pub fn is_fanout_aggregation_pushdown_enabled() -> bool {
     FANOUT_AGGREGATION_PUSHDOWN.load(Ordering::Relaxed)
+}
+
+pub static INDEX_PERSIST: AtomicBool = AtomicBool::new(true);
+
+pub fn is_index_persist_enabled() -> bool {
+    INDEX_PERSIST.load(Ordering::Relaxed)
+}
+
+/// Cap on the transient buffer used by the sorted bulk index build during RDB/replication
+/// loads (`ts-index-build-max-memory`, bytes, 0 = unlimited; default 256MiB). The buffer holds
+/// `(id, key, label-keys)` tuples at exactly the moment the loading dataset's own footprint peaks,
+/// so it must be bounded: crossing the cap drains the buffer with one sorted bulk build and
+/// degrades to per-key indexing for the remainder of the load window (`bulk_build.rs`).
+pub static INDEX_BUILD_MAX_MEMORY: AtomicI64 = AtomicI64::new(INDEX_BUILD_MAX_MEMORY_DEFAULT);
+
+pub fn index_build_max_memory() -> i64 {
+    INDEX_BUILD_MAX_MEMORY.load(Ordering::Relaxed)
 }
 
 static SETTINGS: LazyLock<RwLock<ConfigSettings>> =
@@ -942,7 +968,7 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
     register_bool_configuration(
         ctx,
         "debug-mode",
-        &*IS_DEBUG_MODE,
+        &IS_DEBUG_MODE,
         debug_mode_default,
         ConfigurationFlags::DEFAULT,
         None,
@@ -1073,6 +1099,35 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         &PROMQL_MAX_QUERY_DURATION_STRING,
         PROMQL_MAX_QUERY_DURATION_DEFAULT_STRING,
     )?;
+
+    let index_persist_default = get_bool_default_config_value(args, "ts-index-persist", true)?;
+
+    register_bool_configuration(
+        ctx,
+        "ts-index-persist",
+        &INDEX_PERSIST,
+        index_persist_default,
+        ConfigurationFlags::DEFAULT,
+        None,
+        Some(Box::new(on_bool_config_set)),
+    );
+
+    let index_build_max_memory_default = get_i64_default(
+        args,
+        "ts-index-build-max-memory",
+        INDEX_BUILD_MAX_MEMORY_DEFAULT,
+    )?;
+    register_i64_configuration(
+        ctx,
+        "ts-index-build-max-memory",
+        &INDEX_BUILD_MAX_MEMORY,
+        index_build_max_memory_default,
+        INDEX_BUILD_MAX_MEMORY_MIN,
+        INDEX_BUILD_MAX_MEMORY_MAX,
+        ConfigurationFlags::DEFAULT,
+        None,
+        None,
+    );
 
     // Initialize config settings
     unsafe { RedisModule_LoadConfigs.unwrap()(ctx.ctx) };
