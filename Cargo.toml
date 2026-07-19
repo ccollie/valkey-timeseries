@@ -180,6 +180,11 @@ name = "benchmark_dataset"
 path = "tools/benchmark_dataset.rs"
 required-features = ["test-utils", "enable-system-alloc"]
 
+[[bench]]
+name = "fast_path"
+harness = false
+required-features = ["bench"]
+
 [features]
 default = ["min-valkey-compatibility-version-8-0"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
