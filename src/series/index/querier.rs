@@ -188,6 +188,7 @@ fn count_series_from_postings(
     let mut guards: Vec<SeriesGuard> = Vec::with_capacity(capacity_estimate);
     for id in ids {
         let Some(key) = postings.get_key_by_id(id) else {
+            stale.push(id);
             continue;
         };
         let k = ctx.create_string(key.as_bytes());
@@ -286,8 +287,10 @@ fn get_multi_series_by_id<'a>(
     let mut result = Vec::with_capacity(capacity_estimate);
     for id in ids {
         let Some(key) = postings.get_key_by_id(id) else {
+            stale.push(id);
             continue;
         };
+
         let k = ctx.create_string(key.as_bytes());
         let perms = Some(AclPermissions::ACCESS);
         if let Some(guard) = get_timeseries(ctx, &k, perms, false)? {
