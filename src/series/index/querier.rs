@@ -125,6 +125,105 @@ pub fn series_keys_by_selectors(
     result
 }
 
+/// Cardinality-only counterpart of [`series_by_selectors`].
+///
+/// Applies the same posting lookup, ACL (`ACCESS`) filtering, and date-range predicate, but
+/// never materializes the `(guard, key)` pairs the caller would otherwise discard. Without a
+/// date range no series state is needed at all, so keys are only probed for existence.
+pub fn count_series_by_selectors(
+    ctx: &Context,
+    selectors: &[SeriesSelector],
+    range: Option<MetaDateRangeFilter>,
+) -> ValkeyResult<usize> {
+    if selectors.is_empty() {
+        return Ok(0);
+    }
+
+    let db = get_current_db(ctx);
+    let index = get_db_index(db);
+    let postings = index.get_postings();
+
+    let mut stale = StaleIds::new();
+    // Scoped so the read guard (and the bitmap borrowed from it) is released before we
+    // take the write lock to record stale IDs.
+    let result = {
+        let series_refs = postings.postings_for_selectors(selectors)?;
+        count_series_from_postings(ctx, &postings, series_refs.iter(), range, &mut stale)
+    };
+
+    drop(postings);
+    index.mark_ids_as_stale(&stale);
+    result
+}
+
+fn count_series_from_postings(
+    ctx: &Context,
+    postings: &Postings,
+    ids: impl Iterator<Item = SeriesRef>,
+    date_range: Option<MetaDateRangeFilter>,
+    stale: &mut StaleIds,
+) -> ValkeyResult<usize> {
+    // Without a date range, nothing about the series contents matters: resolve each posting
+    // to confirm the key still exists and the caller may read it, then drop the guard.
+    let Some(date_range) = date_range else {
+        let mut count = 0usize;
+        for id in ids {
+            let Some(key) = postings.get_key_by_id(id) else {
+                continue;
+            };
+            let k = ctx.create_string(key.as_bytes());
+            let perms = Some(AclPermissions::ACCESS);
+            if get_timeseries(ctx, &k, perms, false)?.is_some() {
+                count += 1;
+            } else {
+                stale.push(id);
+            }
+        }
+        return Ok(count);
+    };
+
+    // With a date range we need the series state, so hold the guards (bare pointers, no
+    // per-key `ValkeyString` retained) long enough to evaluate the predicate.
+    let capacity_estimate = ids.size_hint().1.unwrap_or(8);
+    let mut guards: Vec<SeriesGuard> = Vec::with_capacity(capacity_estimate);
+    for id in ids {
+        let Some(key) = postings.get_key_by_id(id) else {
+            continue;
+        };
+        let k = ctx.create_string(key.as_bytes());
+        let perms = Some(AclPermissions::ACCESS);
+        if let Some(guard) = get_timeseries(ctx, &k, perms, false)? {
+            guards.push(guard);
+        } else {
+            stale.push(id);
+        }
+    }
+
+    if guards.is_empty() {
+        return Ok(0);
+    }
+
+    let (start, end) = date_range.range();
+    let exclude = date_range.is_exclude();
+
+    if guards.len() == 1 {
+        // SAFETY: we have already checked above that we have at least one element.
+        let ts = unsafe { guards.get_unchecked(0).as_ref() };
+        return Ok(matches_date_range(ts, start, end, exclude) as usize);
+    }
+
+    // Mirrors `filter_series_by_date_range`: the guards borrow the non-`Send` `Context`, so we
+    // hand the parallel iterator plain `&TimeSeries` references instead.
+    let count = guards
+        .iter()
+        .map(|guard| guard.as_ref())
+        .iter_into_par()
+        .filter(|ts| matches_date_range(ts, start, end, exclude))
+        .count();
+
+    Ok(count)
+}
+
 fn collect_series_keys(
     ctx: &Context,
     postings: &Postings,
@@ -200,23 +299,23 @@ fn get_multi_series_by_id<'a>(
     Ok(result)
 }
 
+#[inline(always)]
+fn matches_date_range(
+    series: &TimeSeries,
+    start: Timestamp,
+    end: Timestamp,
+    exclude: bool,
+) -> bool {
+    let in_range = series.has_samples_in_range(start, end);
+    in_range != exclude
+}
+
 fn filter_series_by_date_range<'a>(
     mut series: Vec<(SeriesGuard<'a>, ValkeyString)>,
     date_range: &MetaDateRangeFilter,
 ) -> ValkeyResult<Vec<(SeriesGuard<'a>, ValkeyString)>> {
     let (start, end) = date_range.range();
     let exclude = date_range.is_exclude();
-
-    #[inline(always)]
-    fn matches_date_range(
-        series: &TimeSeries,
-        start: Timestamp,
-        end: Timestamp,
-        exclude: bool,
-    ) -> bool {
-        let in_range = series.has_samples_in_range(start, end);
-        in_range != exclude
-    }
 
     if series.len() == 1 {
         // SAFETY: we have already checked above that we have at least one element.
@@ -302,10 +401,7 @@ pub fn count_matched_series(
             let index = get_timeseries_index(ctx);
             index.get_cardinality_by_selectors(matchers)?
         }
-        (Some(range), false) => {
-            let matched_series = series_by_selectors(ctx, matchers, Some(range))?;
-            matched_series.len()
-        }
+        (Some(range), false) => count_series_by_selectors(ctx, matchers, Some(range))?,
         _ => {
             // if we don't have a date range, we need at least one matcher, otherwise we
             // end up scanning the entire index
