@@ -68,7 +68,6 @@ pub(crate) use ts_backtest::*;
 pub use ts_debug::*;
 pub use ts_decompose::*;
 pub use ts_features::*;
-pub use ts_fillgaps_cmd::*;
 pub use ts_fillgaps::*;
 pub(crate) use ts_forecast::*;
 pub use ts_mget::*;
