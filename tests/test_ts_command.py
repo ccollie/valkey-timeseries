@@ -1,3 +1,5 @@
+from multiprocessing.util import info
+
 import pytest
 
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
@@ -68,7 +70,7 @@ class TestTimeSeriesCommand(ValkeyTimeSeriesTestCaseBase):
     def test_command_flags(self):
         for command, expected in self.COMMAND_INFO.items():
             info = self.command_info(command)
-            assert info[2] == expected[4], (
+            assert sorted(info[2]) == sorted(expected[4]), (
                 f"Flags mismatch for '{command}': expected {expected[4]}, got {info[2]}"
             )
 
