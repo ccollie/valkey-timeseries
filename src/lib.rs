@@ -149,11 +149,11 @@ const COMMAND_ACL_CATEGORIES: &[(&str, &str)] = &[
 fn assign_command_acl_categories(ctx: &Context) {
     use std::ffi::CString;
     for (name, categories) in COMMAND_ACL_CATEGORIES {
-        if let (Ok(command), Ok(acl)) = (CString::new(*name), CString::new(*categories)) {
-            if Status::Err == ctx.set_acl_category(command.as_ptr(), acl.as_ptr()) {
-                // Handle the result if necessary, e.g., log errors or assert success
-                ctx.log_warning(&format!("Failed to set ACL category for command {name}"));
-            }
+        if let (Ok(command), Ok(acl)) = (CString::new(*name), CString::new(*categories))
+            && Status::Err == ctx.set_acl_category(command.as_ptr(), acl.as_ptr())
+        {
+            // Handle the result if necessary, e.g., log errors or assert success
+            ctx.log_warning(&format!("Failed to set ACL category for command {name}"));
         }
     }
 }
