@@ -146,6 +146,12 @@ Benchmarks
   records the run just made as the baseline, `--baseline <path>` overrides the default
   `benches/baselines/compression_baseline.csv`. That baseline is **not** checked in, so `--check` exits 2 until you
   generate one with `--save-baseline`.
+- `--by-workload [metric]` additionally writes a pivoted view —
+  `target/bench-reports/compression_by_workload_<metric>.{csv,md}` — with one table per chunk size, one row per
+  workload/timestamp model, and one column per encoding. `metric` is `ratio` (default), `bytes-per-sample`, or
+  `capacity`; in the Markdown the best encoding per row is bold, with `uncompressed` excluded as the baseline. This is
+  the layout to reach for when comparing encodings against each other; the flat `compression.csv` stays the source of
+  truth for `--check`.
 - `build.sh` does not run benches or the compression report; they are manual.
 
 Where to look first (key files & directories)

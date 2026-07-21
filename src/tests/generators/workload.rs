@@ -25,9 +25,9 @@ pub enum TimestampModel {
 impl TimestampModel {
     pub const fn id(self) -> &'static str {
         match self {
-            Self::Regular => "ts_regular",
-            Self::Jitter => "ts_jitter",
-            Self::Irregular => "ts_irregular",
+            Self::Regular => "regular",
+            Self::Jitter => "jitter",
+            Self::Irregular => "irregular",
         }
     }
 
