@@ -2,7 +2,8 @@ use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_median_sorted;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
+    AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, PointDetector,
+    detect_pointwise,
 };
 
 pub const MODIFIED_ZSCORE_DEFAULT_THRESHOLD: f64 = 3.5;
@@ -47,10 +48,15 @@ impl ModifiedZScoreOutlierDetector {
     }
 
     pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        let n = ts.len();
-        let mut scores = Vec::with_capacity(n);
-        let mut anomalies = Vec::with_capacity(4);
+        Ok(detect_pointwise(self, ts, self.threshold))
+    }
+}
+impl AnomalyDetector for ModifiedZScoreOutlierDetector {
+    fn method(&self) -> AnomalyMethod {
+        AnomalyMethod::ModifiedZScore
+    }
 
+    fn model_info(&self) -> Option<MethodInfo> {
         // Modified Z-score threshold |z| > T translates to:
         // x < median - T * (MAD / 0.6745)  OR  x > median + T * (MAD / 0.6745)
         let delta = if self.mad_scaled > 1e-10 {
@@ -59,41 +65,11 @@ impl ModifiedZScoreOutlierDetector {
             0.0
         };
 
-        let lower_fence = self.median - delta;
-        let upper_fence = self.median + delta;
-
-        for (index, &v) in ts.iter().enumerate() {
-            let value = normalize_value(v);
-            let score = self.get_anomaly_score(value);
-            let anomaly_direction = self.classify(value);
-            if anomaly_direction.is_anomaly() {
-                let anomaly = Anomaly {
-                    index,
-                    signal: anomaly_direction,
-                    value: v,
-                    score,
-                };
-                anomalies.push(anomaly);
-            }
-            scores.push(score);
-        }
-
-        Ok(AnomalyResult {
-            scores,
-            anomalies,
-            threshold: self.threshold,
-            method: AnomalyMethod::ModifiedZScore,
-            method_info: Some(MethodInfo::Fenced {
-                lower_fence,
-                upper_fence,
-                center_line: None,
-            }),
+        Some(MethodInfo::Fenced {
+            lower_fence: self.median - delta,
+            upper_fence: self.median + delta,
+            center_line: None,
         })
-    }
-}
-impl BatchOutlierDetector for ModifiedZScoreOutlierDetector {
-    fn method(&self) -> AnomalyMethod {
-        AnomalyMethod::ModifiedZScore
     }
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
@@ -123,14 +99,16 @@ impl BatchOutlierDetector for ModifiedZScoreOutlierDetector {
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         ModifiedZScoreOutlierDetector::detect(self, ts)
     }
+}
 
-    fn get_anomaly_score(&self, value: f64) -> f64 {
+impl PointDetector for ModifiedZScoreOutlierDetector {
+    fn score(&self, value: f64) -> f64 {
         let modified_zscore = self.get_modified_zscore(value).abs();
         normalize_unbounded_score(modified_zscore)
     }
 
-    fn classify(&self, x: f64) -> AnomalySignal {
-        let modified_zscore = self.get_modified_zscore(x);
+    fn classify(&self, value: f64) -> AnomalySignal {
+        let modified_zscore = self.get_modified_zscore(value);
         let z_abs = modified_zscore.abs();
         if z_abs > self.threshold {
             if modified_zscore > 0.0 {

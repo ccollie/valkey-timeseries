@@ -4,7 +4,7 @@
 /// Port of the golang implementation here:
 /// https://github.com/MicahParks/peakdetect
 /// Original License: Apache-2.0
-use super::{Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector};
+use super::{Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal};
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
 struct MovingMeanStdDev {
@@ -264,7 +264,11 @@ impl Default for SmoothedZScoreAnomalyDetector {
     }
 }
 
-impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
+/// The smoothed z-score algorithm implements only [`AnomalyDetector`], not
+/// [`PointDetector`]: each verdict is taken against a moving mean and standard
+/// deviation that the preceding points established, and that signals themselves
+/// feed back into via `influence`.
+impl AnomalyDetector for SmoothedZScoreAnomalyDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::SmoothedZScore
     }
@@ -300,23 +304,6 @@ impl BatchOutlierDetector for SmoothedZScoreAnomalyDetector {
 
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         SmoothedZScoreAnomalyDetector::detect(self, ts)
-    }
-
-    fn get_anomaly_score(&self, value: f64) -> f64 {
-        SmoothedZScoreAnomalyDetector::get_anomaly_score(self, value)
-    }
-
-    fn classify(&self, x: f64) -> AnomalySignal {
-        let deviation = (x - self.prev_mean).abs();
-        if deviation > self.threshold * self.prev_std_dev {
-            if x > self.prev_mean {
-                AnomalySignal::Positive
-            } else {
-                AnomalySignal::Negative
-            }
-        } else {
-            AnomalySignal::None
-        }
     }
 }
 

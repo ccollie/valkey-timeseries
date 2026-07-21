@@ -1,6 +1,6 @@
 use crate::analysis::math::calculate_median_sorted;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector,
+    Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal,
 };
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use statrs::distribution::{ContinuousCDF, StudentsT};
@@ -61,26 +61,17 @@ impl ESDOutlierDetector {
     }
 }
 
-impl BatchOutlierDetector for ESDOutlierDetector {
+/// ESD deliberately implements only [`AnomalyDetector`], not [`PointDetector`]:
+/// its verdict comes from iteratively removing the most extreme observation and
+/// re-testing, so "is this point an outlier?" has no answer independent of the
+/// rest of the sample.
+impl AnomalyDetector for ESDOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::Esd
     }
 
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         detect_anomalies_esd(ts, self.alpha, self.hybrid, self.max_outliers)
-    }
-
-    // ESD is a batch detector and does not currently expose per-point scores.
-    // Return a neutral score instead of panicking.
-    fn get_anomaly_score(&self, _value: f64) -> f64 {
-        0.0
-    }
-
-    // ESD does not classify individual points in isolation. Return a default
-    // signal instead of panicking, to avoid runtime crashes when this method
-    // is called via a trait object or generic bound.
-    fn classify(&self, _x: f64) -> AnomalySignal {
-        AnomalySignal::None
     }
 }
 

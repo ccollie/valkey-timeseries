@@ -2,7 +2,7 @@ use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_v
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::{calculate_mean, calculate_std_dev};
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
+    Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo,
 };
 
 /// Default alpha for Ewma SPC
@@ -119,27 +119,24 @@ pub(super) fn detect_anomalies_spc_ewma(
     detector.detect(ts)
 }
 
-impl BatchOutlierDetector for EwmaOutlierDetector {
+/// EWMA implements only [`AnomalyDetector`], not [`PointDetector`]. It tests the
+/// smoothed average against control limits that widen with the observation
+/// index, so both the statistic and the limits depend on position in the series.
+impl AnomalyDetector for EwmaOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::Ewma
     }
 
+    fn model_info(&self) -> Option<MethodInfo> {
+        let distance = self.multiplier * self.sigma;
+        Some(MethodInfo::Spc {
+            control_limits: (self.target - distance, self.target + distance),
+            center_line: self.target,
+        })
+    }
+
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         EwmaOutlierDetector::detect(self, ts)
-    }
-
-    fn get_anomaly_score(&self, value: f64) -> f64 {
-        if !self.sigma.is_finite() || self.sigma <= f64::EPSILON {
-            return 0.0;
-        }
-
-        let z_abs = (value - self.target).abs() / self.sigma;
-        normalize_unbounded_score(z_abs)
-    }
-
-    fn classify(&self, x: f64) -> AnomalySignal {
-        let distance = self.multiplier * self.sigma;
-        get_anomaly_direction(self.target - distance, self.target + distance, x)
     }
 }
 

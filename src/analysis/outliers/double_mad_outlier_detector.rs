@@ -5,8 +5,8 @@ use crate::analysis::outliers::mad_estimator::{
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal,
-    BatchOutlierDetector, MADAnomalyOptions, MethodInfo,
+    AnomalyDetector, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal,
+    MADAnomalyOptions, MethodInfo, PointDetector, detect_pointwise,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
@@ -165,42 +165,21 @@ impl DoubleMadOutlierDetector {
             self.train_from_samples(&samples, self.threshold, None::<SimpleNormalizedEstimator>);
         }
 
-        let n = ts.len();
-        let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(n);
-
-        for (index, &value) in ts.iter().enumerate() {
-            let score = self.get_anomaly_score(value);
-            let anomaly = self.classify(value);
-            if anomaly.is_anomaly() {
-                let outlier = Anomaly {
-                    index,
-                    value,
-                    signal: anomaly,
-                    score,
-                };
-                anomalies.push(outlier);
-            }
-            scores.push(score);
-        }
-
-        Ok(AnomalyResult {
-            scores,
-            anomalies,
-            threshold: self.threshold,
-            method: AnomalyMethod::DoubleMAD,
-            method_info: Some(MethodInfo::Fenced {
-                lower_fence: self.lower_fence.unwrap_or(f64::NAN),
-                upper_fence: self.upper_fence.unwrap_or(f64::NAN),
-                center_line: None,
-            }),
-        })
+        Ok(detect_pointwise(self, ts, self.threshold))
     }
 }
 
-impl BatchOutlierDetector for DoubleMadOutlierDetector {
+impl AnomalyDetector for DoubleMadOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::DoubleMAD
+    }
+
+    fn model_info(&self) -> Option<MethodInfo> {
+        Some(MethodInfo::Fenced {
+            lower_fence: self.lower_fence.unwrap_or(f64::NAN),
+            upper_fence: self.upper_fence.unwrap_or(f64::NAN),
+            center_line: None,
+        })
     }
 
     fn train(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<()> {
@@ -215,15 +194,17 @@ impl BatchOutlierDetector for DoubleMadOutlierDetector {
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         DoubleMadOutlierDetector::detect(self, ts)
     }
+}
 
-    fn get_anomaly_score(&self, value: f64) -> f64 {
+impl PointDetector for DoubleMadOutlierDetector {
+    fn score(&self, value: f64) -> f64 {
         DoubleMadOutlierDetector::get_anomaly_score(self, value)
     }
 
-    fn classify(&self, x: f64) -> AnomalySignal {
+    fn classify(&self, value: f64) -> AnomalySignal {
         // If fences are not computed yet, treat everything as non-anomalous
         match (self.lower_fence, self.upper_fence) {
-            (Some(l), Some(u)) => get_anomaly_direction(l, u, x),
+            (Some(l), Some(u)) => get_anomaly_direction(l, u, value),
             _ => AnomalySignal::None,
         }
     }

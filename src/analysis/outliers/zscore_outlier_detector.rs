@@ -2,7 +2,8 @@ use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_mean_std_dev;
 use crate::analysis::outliers::utils::normalize_unbounded_score;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
+    AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, PointDetector,
+    detect_pointwise,
 };
 
 /// Outlier detector based on the Z-Score method.
@@ -40,81 +41,36 @@ impl ZScoreOutlierDetector {
         }
     }
 
+    /// Guards on `EPSILON` rather than exact zero: a standard deviation that is
+    /// merely denormal still divides into an arbitrarily large z-score, which
+    /// would flag every point of a series that is constant to within rounding.
     #[inline]
     fn get_zscore(&self, value: f64) -> f64 {
-        if self.std_dev == 0.0 {
+        if self.std_dev < f64::EPSILON {
             return 0.0;
         }
         (value - self.mean) / self.std_dev
     }
 
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        let n = ts.len();
-        let threshold = self.threshold;
-
         if !self.is_trained {
             self.train(ts)?;
         }
-
-        if self.std_dev < f64::EPSILON {
-            // All values are identical; no anomalies can be detected
-            return Ok(AnomalyResult {
-                scores: vec![0.0; n],
-                anomalies: vec![],
-                threshold,
-                method: AnomalyMethod::ZScore,
-                method_info: None,
-            });
-        }
-
-        let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
-
-        for (index, &value) in ts.iter().enumerate() {
-            let zscore = self.get_zscore(value);
-            let z_abs = zscore.abs();
-            let score = normalize_unbounded_score(z_abs);
-
-            scores.push(score);
-
-            let signal = if z_abs > threshold {
-                if zscore > 0.0 {
-                    AnomalySignal::Positive
-                } else {
-                    AnomalySignal::Negative
-                }
-            } else {
-                AnomalySignal::None
-            };
-
-            if signal.is_anomaly() {
-                let outlier = Anomaly {
-                    index,
-                    signal,
-                    value,
-                    score,
-                };
-                anomalies.push(outlier);
-            }
-        }
-
-        Ok(AnomalyResult {
-            scores,
-            anomalies,
-            threshold,
-            method: AnomalyMethod::ZScore,
-            method_info: Some(MethodInfo::Fenced {
-                lower_fence: self.lower_fence,
-                upper_fence: self.upper_fence,
-                center_line: None,
-            }),
-        })
+        Ok(detect_pointwise(self, ts, self.threshold))
     }
 }
 
-impl BatchOutlierDetector for ZScoreOutlierDetector {
+impl AnomalyDetector for ZScoreOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::ZScore
+    }
+
+    fn model_info(&self) -> Option<MethodInfo> {
+        Some(MethodInfo::Fenced {
+            lower_fence: self.lower_fence,
+            upper_fence: self.upper_fence,
+            center_line: None,
+        })
     }
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
@@ -134,14 +90,16 @@ impl BatchOutlierDetector for ZScoreOutlierDetector {
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         ZScoreOutlierDetector::detect(self, ts)
     }
+}
 
-    fn get_anomaly_score(&self, value: f64) -> f64 {
+impl PointDetector for ZScoreOutlierDetector {
+    fn score(&self, value: f64) -> f64 {
         let z_abs = self.get_zscore(value).abs();
         normalize_unbounded_score(z_abs)
     }
 
-    fn classify(&self, x: f64) -> AnomalySignal {
-        let zscore = self.get_zscore(x);
+    fn classify(&self, value: f64) -> AnomalySignal {
+        let zscore = self.get_zscore(value);
         let z_abs = zscore.abs();
         if z_abs > self.threshold {
             match zscore.signum() {

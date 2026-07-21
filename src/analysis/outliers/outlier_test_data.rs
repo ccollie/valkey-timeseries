@@ -2,7 +2,7 @@
 // It assumes the existence of an OutlierDetector trait and some test output helper.
 // The actual detector implementations and test harness setup are not included.
 
-use crate::analysis::outliers::BatchOutlierDetector;
+use crate::analysis::outliers::AnomalyDetector;
 use std::fmt::Debug;
 
 /// Data set based on Table 1 "Outlier Score Cases" from the referenced paper
@@ -255,7 +255,7 @@ impl<'b> TestData<'b> {
 pub const EMPTY_DATASET: [f64; 1] = [0.0];
 pub const SAME_DATASET: [f64; 5] = [0.0, 0.0, 0.0, 0.0, 0.0];
 
-pub(super) fn check_outliers<D: BatchOutlierDetector + Debug, F: Fn(&[f64]) -> D>(
+pub(super) fn check_outliers<D: AnomalyDetector + Debug, F: Fn(&[f64]) -> D>(
     dataset_name: &str,
     test_data: &TestData,
     create_detector: F,

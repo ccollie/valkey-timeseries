@@ -4,8 +4,8 @@ use crate::analysis::outliers::mad_estimator::{
     SimpleNormalizedEstimator,
 };
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal,
-    BatchOutlierDetector, MethodInfo,
+    AnomalyDetector, AnomalyMADEstimator, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo,
+    PointDetector, detect_pointwise,
 };
 use crate::analysis::quantile_estimators::QuantileEstimator;
 use crate::analysis::quantile_estimators::Samples;
@@ -99,42 +99,21 @@ impl MadOutlierDetector {
     }
 
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        let n = ts.len();
-        let mut scores = Vec::with_capacity(n);
-        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
-
-        for (index, &value) in ts.iter().enumerate() {
-            let score = self.get_anomaly_score(value);
-            let signal = self.classify(value);
-            if signal.is_anomaly() {
-                let outlier = Anomaly {
-                    index,
-                    signal,
-                    value,
-                    score,
-                };
-                anomalies.push(outlier);
-            }
-            scores.push(score);
-        }
-
-        Ok(AnomalyResult {
-            scores,
-            anomalies,
-            threshold: self.k,
-            method: AnomalyMethod::Mad,
-            method_info: Some(MethodInfo::Fenced {
-                lower_fence: self.lower_fence,
-                upper_fence: self.upper_fence,
-                center_line: None,
-            }),
-        })
+        Ok(detect_pointwise(self, ts, self.k))
     }
 }
 
-impl BatchOutlierDetector for MadOutlierDetector {
+impl AnomalyDetector for MadOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::Mad
+    }
+
+    fn model_info(&self) -> Option<MethodInfo> {
+        Some(MethodInfo::Fenced {
+            lower_fence: self.lower_fence,
+            upper_fence: self.upper_fence,
+            center_line: None,
+        })
     }
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
@@ -176,15 +155,17 @@ impl BatchOutlierDetector for MadOutlierDetector {
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         MadOutlierDetector::detect(self, ts)
     }
+}
 
-    fn get_anomaly_score(&self, value: f64) -> f64 {
+impl PointDetector for MadOutlierDetector {
+    fn score(&self, value: f64) -> f64 {
         MadOutlierDetector::get_anomaly_score(self, value)
     }
 
-    fn classify(&self, x: f64) -> AnomalySignal {
-        if x < self.lower_fence {
+    fn classify(&self, value: f64) -> AnomalySignal {
+        if value < self.lower_fence {
             AnomalySignal::Negative
-        } else if x > self.upper_fence {
+        } else if value > self.upper_fence {
             AnomalySignal::Positive
         } else {
             AnomalySignal::None

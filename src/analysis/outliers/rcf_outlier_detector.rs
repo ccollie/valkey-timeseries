@@ -1,7 +1,7 @@
 use super::utils::normalize_unbounded_score;
 use crate::analysis::math::{calculate_mean, calculate_mean_std_dev, quantile};
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector,
+    Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal,
 };
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 use crate::config::num_threads;
@@ -478,43 +478,17 @@ impl RcfOutlierDetector {
     }
 }
 
-impl BatchOutlierDetector for RcfOutlierDetector {
+/// RCF implements only [`AnomalyDetector`], not [`PointDetector`]. Under a
+/// contamination threshold the cutoff is a quantile of the batch's own score
+/// distribution, so a point's verdict depends on the company it keeps; and the
+/// forest scores magnitude only, leaving no per-point basis for a direction.
+impl AnomalyDetector for RcfOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::RandomCutForest
     }
 
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         RcfOutlierDetector::detect(self, ts)
-    }
-
-    fn get_anomaly_score(&self, value: f64) -> f64 {
-        let raw_score = self.score(value);
-        normalize_rcf_score(raw_score)
-    }
-
-    fn classify(&self, x: f64) -> AnomalySignal {
-        let raw_score = self.score(x);
-        if !raw_score.is_finite() {
-            return AnomalySignal::None;
-        }
-
-        let is_anomaly = match self.threshold.unwrap_or_default() {
-            RCFThreshold::StdDev(threshold) => raw_score > threshold,
-            RCFThreshold::Contamination(contamination) => {
-                let cutoff = 1.0 - contamination.clamp(f64::EPSILON, 1.0 - f64::EPSILON);
-                normalize_rcf_score(raw_score) > cutoff
-            }
-        };
-
-        if !is_anomaly {
-            return AnomalySignal::None;
-        }
-
-        if x >= 0.0 {
-            AnomalySignal::Positive
-        } else {
-            AnomalySignal::Negative
-        }
     }
 }
 
