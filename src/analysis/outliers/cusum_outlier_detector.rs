@@ -1,26 +1,40 @@
 use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
-use crate::analysis::math::{calculate_mean, calculate_mean_std_dev, calculate_std_dev};
+use crate::analysis::math::calculate_mean_std_dev;
 use crate::analysis::outliers::{
     Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
 };
 
 /// Statistical Process Control (Spc) cusum anomaly detection
+///
+/// The cusum statistic is accumulated in standardized units, so `k` and `h` are
+/// dimensionless multiples of the standard deviation rather than raw data units.
+/// This keeps the detector scale-free: fitting it to a series with a standard
+/// deviation of 1 or of 1000 yields the same sensitivity to a shift of a given
+/// number of sigmas.
 pub struct CusumOutlierDetector {
     target: f64,
     std_dev: f64,
+    /// Reference value ("slack"), in multiples of `std_dev`. Conventionally half
+    /// the shift the chart is tuned to detect.
     k: f64,
+    /// Decision interval, in multiples of `std_dev`.
     h: f64,
     is_trained: bool,
 }
+
+/// Reference value, in sigmas. Tuned to detect a sustained shift of 1 sigma.
+const CUSUM_DEFAULT_K: f64 = 0.5;
+/// Decision interval, in sigmas. With k = 0.5 this gives an in-control ARL of ~465.
+const CUSUM_DEFAULT_H: f64 = 5.0;
 
 impl Default for CusumOutlierDetector {
     fn default() -> Self {
         CusumOutlierDetector {
             target: 0.0,
             std_dev: 1.0,
-            k: 0.5,
-            h: 5.0,
+            k: CUSUM_DEFAULT_K,
+            h: CUSUM_DEFAULT_H,
             is_trained: false,
         }
     }
@@ -28,52 +42,59 @@ impl Default for CusumOutlierDetector {
 
 impl CusumOutlierDetector {
     pub fn with_params(mean: f64, std_dev: f64) -> Self {
-        let k = 0.5 * std_dev; // Reference value
-        let h = 5.0 * std_dev; // Decision interval
-
         CusumOutlierDetector {
             target: mean,
-            k,
-            h,
             std_dev,
             is_trained: true,
+            ..Default::default()
         }
     }
 
     pub fn from_series(ts: &[f64]) -> Self {
-        let training_size = (ts.len() as f64 * 0.5).min(100.0) as usize;
-        let training_data = &ts[0..training_size];
-
-        let target = calculate_mean(training_data);
-        let std_dev = calculate_std_dev(training_data);
-
+        let (target, std_dev) = fit_baseline(ts);
         Self::with_params(target, std_dev)
+    }
+
+    /// True when the fitted baseline supports a meaningful standardized cusum.
+    /// A constant (or degenerate) baseline has no scale to measure shifts against.
+    #[inline]
+    fn has_valid_scale(&self) -> bool {
+        self.std_dev.is_finite() && self.std_dev > f64::EPSILON && self.target.is_finite()
     }
 
     pub fn detect(&self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         let n = ts.len();
+
+        // Both cusum arms and the decision interval are in sigmas, so the
+        // decision interval is used directly as the threshold.
+        let threshold = self.h;
+
+        // Without a usable scale every point standardizes to infinity or NaN;
+        // report a flat, anomaly-free result rather than propagating that.
+        if !self.has_valid_scale() {
+            return Ok(AnomalyResult {
+                scores: vec![0.0; n],
+                anomalies: Vec::new(),
+                threshold,
+                method: AnomalyMethod::Cusum,
+                method_info: Some(self.method_info()),
+            });
+        }
+
         let mut scores = Vec::with_capacity(n);
         let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
 
         let mut cusum_pos = 0.0;
         let mut cusum_neg = 0.0;
-        let threshold = self.h / self.std_dev;
-        let valid_std_dev = self.std_dev.is_finite() && self.std_dev > f64::EPSILON;
 
         for (index, &v) in ts.iter().enumerate() {
             let value = normalize_value(v);
-            cusum_pos = f64::max(0.0, cusum_pos + (value - self.target) - self.k);
-            cusum_neg = f64::max(0.0, cusum_neg - (value - self.target) - self.k);
+            let deviation = (value - self.target) / self.std_dev;
+            cusum_pos = f64::max(0.0, cusum_pos + deviation - self.k);
+            cusum_neg = f64::max(0.0, cusum_neg - deviation - self.k);
 
-            let cusum_max = f64::max(cusum_pos, cusum_neg);
-            let raw_score = if !valid_std_dev {
-                0.0
-            } else {
-                cusum_max / self.std_dev
-            };
-
-            // normalize score to [0, 1].
-            let score = normalize_unbounded_score(raw_score);
+            // Already in sigmas; normalize straight to [0, 1].
+            let score = normalize_unbounded_score(f64::max(cusum_pos, cusum_neg));
             scores.push(score);
 
             let signal = if cusum_pos > threshold {
@@ -100,12 +121,25 @@ impl CusumOutlierDetector {
             anomalies,
             threshold,
             method: AnomalyMethod::Cusum,
-            method_info: Some(MethodInfo::Spc {
-                control_limits: (-self.h, self.h),
-                center_line: self.target,
-            }),
+            method_info: Some(self.method_info()),
         })
     }
+
+    /// Control limits are reported as raw-unit offsets from the center line, so
+    /// they stay on the same scale as the `center_line` reported alongside them.
+    fn method_info(&self) -> MethodInfo {
+        let limit = self.h * self.std_dev;
+        MethodInfo::Spc {
+            control_limits: (-limit, limit),
+            center_line: self.target,
+        }
+    }
+}
+
+/// Fit the baseline mean and standard deviation from the head of the series.
+fn fit_baseline(ts: &[f64]) -> (f64, f64) {
+    let training_size = (ts.len() as f64 * 0.5).min(100.0) as usize;
+    calculate_mean_std_dev(&ts[0..training_size])
 }
 
 /// Statistical Process Control (Spc) cusum anomaly detection
@@ -121,11 +155,12 @@ impl BatchOutlierDetector for CusumOutlierDetector {
     }
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
-        let training_size = (data.len() as f64 * 0.5).min(100.0) as usize;
-        let training_data = &data[0..training_size];
-        let (mean, std_dev) = calculate_mean_std_dev(training_data);
-        self.target = mean;
+        // `k` and `h` are in sigmas and so remain valid across any rescaling of
+        // the baseline; only the baseline itself is refitted here.
+        let (target, std_dev) = fit_baseline(data);
+        self.target = target;
         self.std_dev = std_dev;
+        self.is_trained = true;
         Ok(())
     }
 
@@ -134,17 +169,25 @@ impl BatchOutlierDetector for CusumOutlierDetector {
     }
 
     fn get_anomaly_score(&self, value: f64) -> f64 {
-        if !self.std_dev.is_finite() || self.std_dev <= f64::EPSILON {
+        if !self.has_valid_scale() {
             return 0.0;
         }
         let z_abs = (value - self.target).abs() / self.std_dev;
         normalize_unbounded_score(z_abs)
     }
 
+    /// NOTE: this is a single-point level test against the decision interval and
+    /// does **not** reproduce the sequential verdict `detect` produces — cusum
+    /// flags a point based on accumulated drift, which no isolated point can
+    /// convey. It exists only to satisfy the trait; prefer `detect`.
     fn classify(&self, x: f64) -> AnomalySignal {
-        if x > self.target + self.h {
+        if !self.has_valid_scale() {
+            return AnomalySignal::None;
+        }
+        let deviation = (x - self.target) / self.std_dev;
+        if deviation > self.h {
             AnomalySignal::Positive
-        } else if x < self.target - self.h {
+        } else if deviation < -self.h {
             AnomalySignal::Negative
         } else {
             AnomalySignal::None
@@ -320,8 +363,9 @@ mod tests {
         }) = anomaly_result.method_info
         {
             assert_eq!(center_line, 10.0);
-            assert_eq!(control_limits.0, -detector.h);
-            assert_eq!(control_limits.1, detector.h);
+            // Control limits are raw-unit offsets: h sigmas scaled by std_dev.
+            assert_eq!(control_limits.0, -detector.h * detector.std_dev);
+            assert_eq!(control_limits.1, detector.h * detector.std_dev);
         } else {
             panic!("Expected Spc method info");
         }
@@ -337,8 +381,8 @@ mod tests {
         assert!(result.is_ok());
         let anomaly_result = result.unwrap();
 
-        let expected_threshold = (5.0 * std_dev) / std_dev;
-        assert_eq!(anomaly_result.threshold, expected_threshold);
+        // The threshold is the decision interval in sigmas, independent of scale.
+        assert_eq!(anomaly_result.threshold, CUSUM_DEFAULT_H);
     }
 
     #[test]
@@ -374,6 +418,71 @@ mod tests {
         let no_anomaly_count = ts.len() - anomaly_count;
 
         assert!(no_anomaly_count > ts.len() / 2);
+    }
+
+    /// Build a baseline with unit-ish variation followed by a sustained shift,
+    /// then scale the whole series by `scale`.
+    fn shifted_series(scale: f64) -> Vec<f64> {
+        let mut ts: Vec<f64> = (0..40)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        ts.extend((0..20).map(|i| if i % 2 == 0 { 5.0 } else { 3.0 }));
+        ts.iter().map(|v| v * scale).collect()
+    }
+
+    /// Regression: `train` used to refit the baseline while leaving `k`/`h` at
+    /// whatever the constructor set, so a detector built via `default()` kept
+    /// absolute limits and its sensitivity tracked the scale of the data.
+    #[test]
+    fn test_detect_is_scale_invariant_after_train() {
+        let counts: Vec<usize> = [1.0, 100.0, 10_000.0]
+            .iter()
+            .map(|&scale| {
+                let ts = shifted_series(scale);
+                let mut detector = CusumOutlierDetector::default();
+                detector.train(&ts).unwrap();
+                detector.detect(&ts).unwrap().anomalies.len()
+            })
+            .collect();
+
+        assert!(
+            counts[0] > 0,
+            "expected the sustained shift to be detected at unit scale"
+        );
+        assert!(
+            counts.iter().all(|&c| c == counts[0]),
+            "anomaly count must not depend on the scale of the data, got {counts:?}"
+        );
+    }
+
+    /// The same series fitted through `default() + train` and through
+    /// `from_series` must agree; previously the two paths disagreed because only
+    /// `from_series` scaled `k`/`h` by the standard deviation.
+    #[test]
+    fn test_train_and_from_series_agree() {
+        let ts = shifted_series(7.0);
+
+        let mut trained = CusumOutlierDetector::default();
+        trained.train(&ts).unwrap();
+
+        let fitted = CusumOutlierDetector::from_series(&ts);
+
+        assert_eq!(trained.target, fitted.target);
+        assert_eq!(trained.std_dev, fitted.std_dev);
+        assert_eq!(trained.k, fitted.k);
+        assert_eq!(trained.h, fitted.h);
+        assert_eq!(
+            trained.detect(&ts).unwrap().anomalies.len(),
+            fitted.detect(&ts).unwrap().anomalies.len()
+        );
+    }
+
+    #[test]
+    fn test_train_marks_detector_trained() {
+        let mut detector = CusumOutlierDetector::default();
+        assert!(!detector.is_trained);
+        detector.train(&shifted_series(1.0)).unwrap();
+        assert!(detector.is_trained);
     }
 
     #[test]
