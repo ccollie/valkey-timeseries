@@ -1,5 +1,6 @@
 mod anomalies;
 mod cusum_outlier_detector;
+mod detector;
 mod double_mad_outlier_detector;
 #[cfg(test)]
 mod double_mad_outlier_detector_tests;
@@ -19,6 +20,7 @@ mod utils;
 mod zscore_outlier_detector;
 
 pub use anomalies::*;
+pub use detector::Detector;
 pub use esd_outlier_detector::*;
 pub use ewma_outlier_detector::*;
 pub use rcf_outlier_detector::*;
