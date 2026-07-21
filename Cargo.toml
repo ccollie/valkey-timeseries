@@ -52,6 +52,9 @@ regex-syntax = "0.8.10"
 crc16 = "0.4.0"
 
 [dev-dependencies]
+# Self-dependency so benches, tests and the compression_report bin all see the
+# `test-utils` module (src/tests) without it leaking into the shipped module.
+valkey-timeseries = { path = ".", features = ["test-utils"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 rand = "0.10"
 rand_distr = "0.6"
@@ -88,9 +91,13 @@ harness = false
 [[bin]]
 name = "compression_report"
 path = "tools/compression_report.rs"
+required-features = ["test-utils"]
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = ["valkey-module/min-valkey-compatibility-version-8-0"]
 use-redismodule-api = [] # We don't support this feature flag which is why it is empty.
+# Exposes src/tests (data generators, chunk helpers) to benchmarks and tools.
+# Enabled automatically for dev targets via the self dev-dependency above.
+test-utils = []

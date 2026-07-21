@@ -1,11 +1,15 @@
+mod dataset;
 mod generator;
 mod mackey_glass;
 mod rand;
+mod workload;
 
 use ::rand::prelude::StdRng;
 use ::rand::{SeedableRng, rng};
-#[cfg(test)]
+
+pub use dataset::*;
 pub use rand::*;
+pub use workload::*;
 
 pub fn create_rng(seed: Option<u64>) -> StdRng {
     if let Some(seed) = seed {

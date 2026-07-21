@@ -9,7 +9,7 @@ mod tests {
         DuplicatePolicy, SampleAddResult,
         chunks::{Chunk, ChunkEncoding, ChunkOps, TimeSeriesChunk},
     };
-    use crate::tests::generators::{DataGenerator, RandAlgo};
+    use crate::tests::generators::{DataGenerator, ValueWorkload};
     use std::time::Duration;
 
     /// A test helper function for asserting floating point numbers are within the
@@ -31,7 +31,7 @@ mod tests {
         DataGenerator::builder()
             .samples(count)
             .start(1000)
-            .algorithm(RandAlgo::StdNorm)
+            .algorithm(ValueWorkload::StdNorm)
             .interval(Duration::from_millis(1000))
             .build()
             .generate()
@@ -2708,7 +2708,7 @@ mod tests {
             let samples = DataGenerator::builder()
                 .samples(2000)
                 .start(1000)
-                .algorithm(RandAlgo::MackeyGlass)
+                .algorithm(ValueWorkload::MackeyGlass)
                 .interval(Duration::from_millis(1000))
                 .decimal_digits(3)
                 .build()

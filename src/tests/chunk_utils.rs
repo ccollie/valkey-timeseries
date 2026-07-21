@@ -1,0 +1,114 @@
+//! Chunk construction helpers shared by benchmarks and the `compression_report`
+//! tool.
+
+use crate::common::Sample;
+use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
+use crate::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
+
+pub const CHUNK_SIZE_1K: usize = 1024;
+pub const CHUNK_SIZE_4K: usize = DEFAULT_CHUNK_SIZE_BYTES;
+pub const CHUNK_SIZE_64K: usize = 64 * 1024;
+
+pub fn chunk_size_id(chunk_size: usize) -> &'static str {
+    match chunk_size {
+        CHUNK_SIZE_1K => "1k",
+        CHUNK_SIZE_4K => "4k",
+        CHUNK_SIZE_64K => "64k",
+        _ => "custom",
+    }
+}
+
+/// Fill a chunk from `data`, stopping once it reports full.
+pub fn build_chunk(encoding: ChunkEncoding, chunk_size: usize, data: &[Sample]) -> TimeSeriesChunk {
+    let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
+    if matches!(encoding, ChunkEncoding::Pco) {
+        // PcoChunk::add_sample decompresses+recompresses on every call (O(n²)
+        // allocations).  For constant/repeating workloads PCO compresses so well
+        // that is_full() never triggers, causing OOM on large datasets.
+        // set_data is bulk O(n) and avoids this.
+        chunk.set_data(data).expect("set_data should succeed");
+    } else {
+        for sample in data {
+            if chunk.is_full() {
+                break;
+            }
+            chunk
+                .add_sample(sample)
+                .expect("sample should append to benchmark chunk");
+        }
+    }
+    chunk
+}
+
+/// As [`build_chunk`], but also reports how many samples were consumed, and
+/// never exceeds `chunk_size` for PCO.
+pub fn build_chunk_until_full(
+    encoding: ChunkEncoding,
+    chunk_size: usize,
+    data: &[Sample],
+) -> (TimeSeriesChunk, usize) {
+    let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
+    if matches!(encoding, ChunkEncoding::Pco) {
+        // See build_chunk: appending one sample at a time into a PCO chunk is
+        // O(n²); find the fitting prefix and bulk-load it instead.
+        let count = filled_prefix_len(data, encoding, chunk_size);
+        chunk
+            .set_data(&data[..count])
+            .expect("set_data should succeed");
+        return (chunk, count);
+    }
+
+    let mut count = 0;
+    for sample in data {
+        if chunk.is_full() {
+            break;
+        }
+        chunk
+            .add_sample(sample)
+            .expect("sample should append to benchmark chunk");
+        count += 1;
+    }
+    (chunk, count)
+}
+
+/// The longest prefix of `data` that fits in a chunk of `chunk_size` bytes.
+pub fn filled_prefix(data: &[Sample], encoding: ChunkEncoding, chunk_size: usize) -> &[Sample] {
+    &data[..filled_prefix_len(data, encoding, chunk_size)]
+}
+
+/// Length of the longest prefix of `data` that fits in a chunk of `chunk_size`
+/// bytes.
+pub fn filled_prefix_len(data: &[Sample], encoding: ChunkEncoding, chunk_size: usize) -> usize {
+    if matches!(encoding, ChunkEncoding::Pco) {
+        // PcoChunk::add_sample is O(n²); use binary search + set_data
+        // to find the largest prefix that fits within chunk_size.
+        let mut lo = 0;
+        let mut hi = data.len();
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
+            chunk
+                .set_data(&data[..mid])
+                .expect("set_data should succeed");
+            if chunk.is_full() {
+                hi = mid - 1;
+            } else {
+                lo = mid;
+            }
+        }
+        return lo;
+    }
+
+    let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
+    let mut count = 0;
+    for sample in data {
+        if chunk.is_full() {
+            break;
+        }
+        chunk
+            .add_sample(sample)
+            .expect("sample should append to benchmark chunk");
+        count += 1;
+    }
+    count
+}

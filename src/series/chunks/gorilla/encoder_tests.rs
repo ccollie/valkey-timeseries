@@ -3,7 +3,7 @@ mod tests {
     use crate::common::Sample;
     use crate::common::time::current_time_millis;
     use crate::series::chunks::gorilla::GorillaEncoder;
-    use crate::tests::generators::{DataGenerator, RandAlgo};
+    use crate::tests::generators::{DataGenerator, ValueWorkload};
     use std::time::Duration;
 
     #[test]
@@ -50,7 +50,7 @@ mod tests {
         let start = now.saturating_sub((4 * ONE_DAY).as_millis() as i64);
         let data = DataGenerator::builder()
             .start(start)
-            .algorithm(RandAlgo::MackeyGlass)
+            .algorithm(ValueWorkload::MackeyGlass)
             .samples(5000)
             .build()
             .generate();

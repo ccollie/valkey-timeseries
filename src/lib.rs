@@ -32,7 +32,11 @@ mod parser;
 pub mod series;
 
 pub use labels::Label;
-mod tests;
+
+/// Data generators and chunk helpers shared by unit tests, benchmarks and the
+/// `compression_report` tool. Not part of the module's runtime surface.
+#[cfg(any(test, feature = "test-utils"))]
+pub mod tests;
 
 use crate::series::background_tasks::init_background_tasks;
 use crate::series::index::init_croaring_allocator;
