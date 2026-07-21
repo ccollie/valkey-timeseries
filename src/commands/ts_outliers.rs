@@ -213,7 +213,7 @@ fn parse_method_options(
                 ..Default::default()
             })
         }
-        AnomalyMethod::ZScore => parse_zscore_options_ex(args),
+        AnomalyMethod::ZScore => parse_zscore_options(args),
         AnomalyMethod::ModifiedZScore => parse_modified_zscore_options(args),
         AnomalyMethod::SmoothedZScore => parse_smoothed_zscore_options(args),
         AnomalyMethod::Mad => parse_mad_options(args),
@@ -296,14 +296,6 @@ fn parse_ewma_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOpti
     Ok(options)
 }
 
-fn parse_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
-    let threshold = parse_optional_threshold_option(args)?;
-    Ok(AnomalyOptions {
-        options: AnomalyDetectionMethodOptions::ZScore(threshold),
-        ..Default::default()
-    })
-}
-
 fn parse_modified_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let threshold = parse_optional_threshold_option(args)?;
 
@@ -320,7 +312,7 @@ fn is_command_option(arg: &[u8]) -> bool {
     parse_command_arg_token(arg).is_some_and(|token| COMMAND_OPTIONS.contains(&token))
 }
 
-fn parse_zscore_options_ex(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
+fn parse_zscore_options(args: &mut CommandArgIterator) -> ValkeyResult<AnomalyOptions> {
     let mut threshold: Option<f64> = None;
     let mut influence: Option<f64> = None;
     let mut lag: Option<usize> = None;

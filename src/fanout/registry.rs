@@ -126,22 +126,6 @@ where
     FANOUT_REGISTRY.register::<OP>()
 }
 
-/// Execute a registered fanout operation by name.
-///
-/// # Arguments
-/// - `ctx`: The Valkey context
-/// - `name`: The name of the operation to execute
-/// - `payload`: Serialized request data
-/// - `dest`: destination buffer. This will be sent back to requester
-pub fn handle_fanout_request(
-    ctx: &Context,
-    name: &str,
-    payload: &[u8],
-    dest: &mut Vec<u8>,
-) -> FanoutResult {
-    FANOUT_REGISTRY.execute(ctx, name, payload, dest)
-}
-
 pub(super) fn get_fanout_request_handler(name: &str) -> Option<RequestHandlerCallback> {
     FANOUT_REGISTRY.get_operation_by_name(name)
 }
