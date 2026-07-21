@@ -250,21 +250,8 @@ valkey_module! {
         // `register_commands`. Only internal/admin commands remain in this positional table.
         // ACL categories for the annotated commands come from the `acl_categories!`
         // declaration beside each handler, applied by `assign_command_acl_categories`.
-        ["ts.autoforecast", commands::ts_autoforecast_cmd, "write deny-oom", 1, 1, 1, "read write timeseries"],
-        ["ts.decompose", commands::ts_decompose_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.periods", commands::ts_periods_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
         ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["ts._restore", commands::ts_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
-        ["ts.autocorrelation", commands::ts_autocorrelation_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.trend", commands::ts_trend_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.features", commands::ts_features_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.stationarity", commands::ts_stationarity_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
-        ["ts.fillgaps", commands::ts_fillgaps_cmd, "write deny-oom", 1, 1, 1, "fast write timeseries"],
-        ["ts.sanitize", commands::ts_sanitize_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["ts.stats", commands::ts_stats_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
-        ["ts.forecast", commands::ts_forecast_command, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["ts.backtest", commands::ts_backtest_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.xcorr", commands::ts_xcorr_cmd, "readonly deny-oom", 1, 2, 1, "read timeseries"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]

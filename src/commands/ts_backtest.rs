@@ -80,6 +80,7 @@ enum BacktestModelResult {
     },
 }
 
+acl_categories!(TS_BACKTEST, "ts.backtest", "read timeseries");
 /// ```text
 /// TS.BACKTEST key fromTimestamp toTimestamp
 ///   MODELS model_spec[,model_spec ...]
@@ -94,6 +95,19 @@ enum BacktestModelResult {
 ///   [SEASONAL_PERIOD period]
 ///   [WITH_PREDICTIONS]
 /// ```
+#[valkey_module_macros::command({
+    name: "TS.BACKTEST",
+    flags: [ReadOnly, DenyOOM],
+    summary: "Backtest forecasting models over historical windows of a time series.",
+    complexity: "O(N*M*F) where N is the number of samples in the range, M is the number of models and F is the number of folds.",
+    since: "1.0.0",
+    arity: -8,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 8 {
         return Err(ValkeyError::WrongArity);
