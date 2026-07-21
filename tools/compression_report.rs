@@ -4,242 +4,16 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use rand::SeedableRng;
-use rand::prelude::StdRng;
-use rand_distr::{Distribution, Exp, Normal, Poisson, Uniform};
-
 use get_size2::GetSize;
-use valkey_timeseries::common::{Sample, Timestamp};
-use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
-
-// -------- Workload & dataset generation (deterministic) --------
-
-const DATASET_SAMPLES: usize = 64 * 1024; // 64k
-const DEFAULT_START_TS: Timestamp = 1_700_000_000_000;
-const DEFAULT_INTERVAL_MS: i64 = 1_000; // 1s
-const DEFAULT_SEED: u64 = 0x7EA1_DA7A_5EED;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum ValueWorkload {
-    Constant,
-    ConstantInt,
-    Drift,
-    Periodic,
-    Noisy,
-    Bursty,
-    Counter,
-    Discrete,
-}
-
-impl ValueWorkload {
-    const fn id(self) -> &'static str {
-        match self {
-            Self::Constant => "constant",
-            Self::ConstantInt => "constant_int",
-            Self::Drift => "drift",
-            Self::Periodic => "periodic",
-            Self::Noisy => "noisy",
-            Self::Bursty => "bursty",
-            Self::Counter => "counter",
-            Self::Discrete => "discrete",
-        }
-    }
-
-    const fn all() -> &'static [ValueWorkload] {
-        &[
-            Self::Constant,
-            Self::ConstantInt,
-            Self::Drift,
-            Self::Periodic,
-            Self::Noisy,
-            Self::Bursty,
-            Self::Counter,
-            Self::Discrete,
-        ]
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum TimestampModel {
-    Regular,
-    Jitter,
-    Irregular,
-}
-
-impl TimestampModel {
-    const fn id(self) -> &'static str {
-        match self {
-            Self::Regular => "ts_regular",
-            Self::Jitter => "ts_jitter",
-            Self::Irregular => "ts_irregular",
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct DatasetKey {
-    workload: ValueWorkload,
-    ts_model: TimestampModel,
-}
-
-impl DatasetKey {
-    const fn new(workload: ValueWorkload, ts_model: TimestampModel) -> Self {
-        Self { workload, ts_model }
-    }
-}
-
-fn benchmark_dataset_keys() -> Vec<DatasetKey> {
-    let mut keys = Vec::with_capacity(ValueWorkload::all().len() + 4);
-    for wl in ValueWorkload::all() {
-        keys.push(DatasetKey::new(*wl, TimestampModel::Regular));
-    }
-    for wl in [ValueWorkload::Drift, ValueWorkload::Noisy] {
-        keys.push(DatasetKey::new(wl, TimestampModel::Jitter));
-        keys.push(DatasetKey::new(wl, TimestampModel::Irregular));
-    }
-    keys
-}
-
-fn generate_dataset(key: DatasetKey, sample_count: usize, seed: u64) -> Vec<Sample> {
-    let mut rng = StdRng::seed_from_u64(seed);
-    let timestamps = generate_timestamps(key.ts_model, sample_count, &mut rng);
-    let values = generate_values(key.workload, sample_count, &mut rng);
-    timestamps
-        .into_iter()
-        .zip(values)
-        .map(|(timestamp, value)| Sample { timestamp, value })
-        .collect()
-}
-
-fn generate_timestamps(
-    model: TimestampModel,
-    sample_count: usize,
-    rng: &mut StdRng,
-) -> Vec<Timestamp> {
-    let mut timestamps = Vec::with_capacity(sample_count);
-    let mut ts = DEFAULT_START_TS;
-    timestamps.push(ts);
-
-    let jitter = Uniform::new_inclusive(-50_i64, 50_i64).expect("valid uniform");
-    let irregular = Exp::new(1.0 / DEFAULT_INTERVAL_MS as f64).expect("valid exp lambda");
-
-    for _ in 1..sample_count {
-        let delta = match model {
-            TimestampModel::Regular => DEFAULT_INTERVAL_MS,
-            TimestampModel::Jitter => (DEFAULT_INTERVAL_MS + jitter.sample(rng)).max(1),
-            TimestampModel::Irregular => irregular.sample(rng).round().max(1.0) as i64,
-        };
-        ts += delta;
-        timestamps.push(ts);
-    }
-    timestamps
-}
-
-fn generate_values(workload: ValueWorkload, sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    match workload {
-        ValueWorkload::Constant => vec![42.0; sample_count],
-        ValueWorkload::ConstantInt => vec![1000.0; sample_count],
-        ValueWorkload::Drift => drift_values(sample_count, rng),
-        ValueWorkload::Periodic => periodic_values(sample_count, rng),
-        ValueWorkload::Noisy => noisy_values(sample_count, rng),
-        ValueWorkload::Bursty => bursty_values(sample_count, rng),
-        ValueWorkload::Counter => counter_values(sample_count, rng),
-        ValueWorkload::Discrete => discrete_values(sample_count, rng),
-    }
-}
-
-fn drift_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    let noise = Normal::new(0.0, 0.01).expect("valid normal");
-    let mut value = 100.0;
-    let min: f64 = 95.0;
-    let max: f64 = 105.0;
-    let mut out = Vec::with_capacity(sample_count);
-    for _ in 0..sample_count {
-        let next: f64 = value + noise.sample(rng);
-        value = next.max(min).min(max);
-        out.push(value);
-    }
-    out
-}
-
-fn periodic_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    let amplitude = 50.0;
-    let period = 3600.0; // one hour of 1s samples
-    let noise = Normal::new(0.0, amplitude / 100.0).expect("valid normal");
-    let sawtooth_every = 5_000;
-    let mut out = Vec::with_capacity(sample_count);
-    for idx in 0..sample_count {
-        let base = if (idx / sawtooth_every) % 2 == 0 {
-            (2.0 * std::f64::consts::PI * (idx as f64) / period).sin() * amplitude
-        } else {
-            let pos = (idx % 512) as f64 / 512.0;
-            (2.0 * pos - 1.0) * amplitude
-        };
-        out.push(base + noise.sample(rng));
-    }
-    out
-}
-
-fn noisy_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    let dist = Normal::new(100.0, 25.0).expect("valid normal");
-    (0..sample_count).map(|_| dist.sample(rng)).collect()
-}
-
-fn bursty_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    let quiet_noise = Normal::new(0.0, 0.01).expect("valid normal");
-    let burst_noise = Normal::new(0.0, 20.0).expect("valid normal");
-    let burst_len = Uniform::new_inclusive(200_usize, 500_usize).expect("valid uniform");
-    let mut out = Vec::with_capacity(sample_count);
-    let mut value: f64 = 100.0;
-    let mut idx = 0;
-
-    while idx < sample_count {
-        let quiet_segment = ((sample_count - idx) as f64 * 0.8).round() as usize;
-        let quiet_segment = quiet_segment.clamp(50, 4_000).min(sample_count - idx);
-        for _ in 0..quiet_segment {
-            value = (value + quiet_noise.sample(rng)).clamp(95.0, 105.0);
-            out.push(value);
-        }
-        idx += quiet_segment;
-        if idx >= sample_count {
-            break;
-        }
-
-        let len = burst_len.sample(rng).min(sample_count - idx);
-        for _ in 0..len {
-            out.push((value * 10.0) + burst_noise.sample(rng));
-        }
-        idx += len;
-    }
-
-    out
-}
-
-fn counter_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    let inc = Poisson::new(10.0).expect("valid poisson");
-    let reset_every = 50_000;
-    let mut value = 0.0;
-    let mut out = Vec::with_capacity(sample_count);
-    for i in 0..sample_count {
-        if i > 0 && i % reset_every == 0 {
-            value = 0.0;
-        }
-        value += inc.sample(rng);
-        out.push(value);
-    }
-    out
-}
-
-fn discrete_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
-    let choices = [0.0, 0.25, 0.5, 1.0];
-    let pick = Uniform::new(0usize, choices.len()).expect("valid uniform");
-    (0..sample_count)
-        .map(|_| {
-            let idx = pick.sample(rng);
-            choices[idx]
-        })
-        .collect()
-}
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps};
+use valkey_timeseries::tests::chunk_utils::{
+    CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K, build_chunk_until_full, chunk_size_id,
+    filled_prefix_len,
+};
+use valkey_timeseries::tests::generators::{
+    DATASET_SAMPLES, DatasetKey, DatasetRegistry, TimestampModel, ValueWorkload,
+    benchmark_dataset_keys,
+};
 
 // -------- Report structures --------
 
@@ -247,7 +21,7 @@ fn discrete_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
 struct RowKey {
     encoding: ChunkEncoding,
     workload: ValueWorkload,
-    ts_model: TimestampModel,
+    timestamp_model: TimestampModel,
     chunk_size: usize,
 }
 
@@ -257,7 +31,7 @@ impl RowKey {
             "{}/{}/{}/{}",
             self.encoding.name(),
             self.workload.id(),
-            self.ts_model.id(),
+            self.timestamp_model.id(),
             chunk_size_id(self.chunk_size)
         )
     }
@@ -278,51 +52,6 @@ impl RowVals {
         }
         (self.len as f64 * 16.0) / self.data_size as f64
     }
-}
-
-const CHUNK_SIZE_1K: usize = 1024;
-const CHUNK_SIZE_4K: usize = valkey_timeseries::config::DEFAULT_CHUNK_SIZE_BYTES;
-const CHUNK_SIZE_64K: usize = 64 * 1024;
-
-fn chunk_size_id(size: usize) -> &'static str {
-    match size {
-        CHUNK_SIZE_1K => "1k",
-        CHUNK_SIZE_4K => "4k",
-        CHUNK_SIZE_64K => "64k",
-        _ => "custom",
-    }
-}
-
-fn filled_prefix_len(data: &[Sample], encoding: ChunkEncoding, chunk_size: usize) -> usize {
-    let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
-    let mut count = 0;
-    for s in data {
-        if chunk.is_full() {
-            break;
-        }
-        chunk.add_sample(s).expect("append into benchmark chunk");
-        count += 1;
-    }
-    count
-}
-
-/// Build a chunk by appending from `data` until it becomes full (or data ends),
-/// returning the constructed chunk along with the number of samples consumed.
-fn build_chunk_until_full(
-    encoding: ChunkEncoding,
-    chunk_size: usize,
-    data: &[Sample],
-) -> (TimeSeriesChunk, usize) {
-    let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
-    let mut count = 0;
-    for s in data {
-        if chunk.is_full() {
-            break;
-        }
-        chunk.add_sample(s).expect("append into benchmark chunk");
-        count += 1;
-    }
-    (chunk, count)
 }
 
 fn encode_matrix_chunk_sizes(key: &DatasetKey) -> Vec<usize> {
@@ -398,7 +127,7 @@ fn write_csv(
             "{},{},{},{},{},{},{},{:.6},{:.6},{}",
             k.encoding.name(),
             k.workload.id(),
-            k.ts_model.id(),
+            k.timestamp_model.id(),
             chunk_size_id(k.chunk_size),
             v.len,
             v.data_size,
@@ -426,7 +155,7 @@ fn write_markdown(path: &Path, rows: &[(RowKey, RowVals)]) -> std::io::Result<()
             "| {} | {} | {} | {} | {} | {} | {} | {:.6} | {:.6} |",
             k.encoding.name(),
             k.workload.id(),
-            k.ts_model.id(),
+            k.timestamp_model.id(),
             chunk_size_id(k.chunk_size),
             v.len,
             v.data_size,
@@ -458,11 +187,7 @@ fn main() {
     let baseline = load_baseline(&baseline_path);
 
     // Build datasets once
-    let mut datasets: HashMap<DatasetKey, Vec<Sample>> = HashMap::new();
-    for (i, key) in benchmark_dataset_keys().into_iter().enumerate() {
-        let seed = DEFAULT_SEED.wrapping_add(i as u64 * 0x9E37_79B9);
-        datasets.insert(key, generate_dataset(key, DATASET_SAMPLES, seed));
-    }
+    let datasets = DatasetRegistry::with_samples(DATASET_SAMPLES);
 
     // Capacity@4k per (encoding, workload)
     let mut capacity4k: HashMap<(String, ValueWorkload), usize> = HashMap::new();
@@ -471,7 +196,7 @@ fn main() {
     let mut rows: Vec<(RowKey, RowVals)> = Vec::new();
 
     for key in benchmark_dataset_keys() {
-        let data = datasets.get(&key).expect("dataset present");
+        let data = datasets.dataset(key);
         for encoding in encodings() {
             // capacity at 4k (only compute once per (enc, workload) pair)
             let cap_key = (encoding.name().to_string(), key.workload);
@@ -501,7 +226,7 @@ fn main() {
                 let key_row = RowKey {
                     encoding,
                     workload: key.workload,
-                    ts_model: key.ts_model,
+                    timestamp_model: key.timestamp_model,
                     chunk_size,
                 };
                 rows.push((key_row, vals));
