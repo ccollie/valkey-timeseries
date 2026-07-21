@@ -12,6 +12,8 @@ Quick start (commands you can run)
     - `SERVER_VERSION=unstable ./build.sh`  # builds module, builds valkey-server, runs unit & integration tests
     - To run ASAN integration pass: `ASAN_BUILD=true SERVER_VERSION=unstable ./build.sh`
     - Run a subset of Python integration tests: `TEST_PATTERN="test_ts_add" SERVER_VERSION=unstable ./build.sh`
+- Benchmarks: `cargo bench --features enable-system-alloc` (see Benchmarks below — the feature is mandatory).
+- Compression report: `tools/compression_report.sh` (add `--check` to fail on regressions against a saved baseline).
 
 Key ENV and behavior (from `./build.sh`)
 
@@ -68,19 +70,83 @@ Project-specific conventions and patterns
 - Minimum supported Valkey server version: `[8, 0, 0]` (enforced in `preload()` via
   `config::TIMESERIES_MIN_SUPPORTED_VERSION`).
 
-- Allocator in tests: tests compile with `enable-system-alloc` feature in unit runs (see `build.sh`), and the crate
-  switches allocators under `#[cfg(test)]`.
+- Allocator in tests: always pass `--features enable-system-alloc` when running anything that links the crate outside a
+  live server (unit tests, doc tests, benches, `tools/` binaries). The `get_allocator!` macro in `src/lib.rs` is gated on
+  `#[cfg(not(all(test, doctest)))]`, which does **not** fire for an ordinary `cargo test`, so without the feature the
+  binary aborts at startup with `Critical error: the Valkey Allocator isn't available`. `build.sh` passes it for you.
+
+Cargo features
+
+- `default` = `min-valkey-compatibility-version-8-0` + `croaring/alloc`.
+- `enable-system-alloc` — see the allocator note above; required for tests, benches and `tools/` binaries.
+- `min-valkey-compatibility-version-8-0` — forwarded to `valkey-module`.
+- `use-redismodule-api` — empty on purpose; the Redis module API is not supported.
+- `test-utils` — compiles `src/tests/` (data generators, chunk helpers) into the library so benches and
+  `tools/` binaries can use the same fixtures as unit tests. It is enabled automatically for dev targets by a
+  **self dev-dependency** (`valkey-timeseries = { path = ".", features = ["test-utils"] }` in `[dev-dependencies]`),
+  so `cargo test`, `cargo bench` and any `--all-targets` build get it without extra flags. A `[[bin]]` does not pull in
+  dev-dependencies, so `cargo run --bin compression_report` must name the feature explicitly — cargo otherwise refuses
+  with `target requires the features: test-utils`. Note that in an `--all-targets` build the feature is unified into the
+  library build too, so the `.so`/`.dylib` produced by `build.sh` contains the (unreachable) fixture code; a plain
+  `cargo build --release` does not.
 
 Testing & debugging notes
 
 - Unit tests: `cargo test --features enable-system-alloc`.
 - Doc tests: `cargo test --doc --features enable-system-alloc`.
+- Test fixtures: build sample data with `DataGenerator` (`src/tests/generators/`, imported as
+  `crate::tests::generators::{DataGenerator, ValueWorkload, TimestampModel}`) rather than hand-rolling loops:
+  `DataGenerator::builder().start(ts).samples(n).seed(s).algorithm(ValueWorkload::Drift).build().generate()`.
+  `ValueWorkload` covers the four range-bounded random generators (`Uniform`, `StdNorm`, `MackeyGlass`, `Deriv`, which
+  honour `.values(range)`) plus eight absolute-valued shapes (`Constant`, `ConstantInt`, `Drift`, `Periodic`, `Noisy`,
+  `Bursty`, `Counter`, `Discrete`, which ignore the range — see `is_workload()`). `TimestampModel` controls spacing
+  (`Regular`, `Jitter`, `Irregular`). `DataGenerator::dataset(workload, model, samples, seed)` is the one-line form used
+  by the benchmark matrix.
 - Integration tests: Python pytest under `tests/` and rely on a built `valkey-server` and `tests/valkeytestframework`
   helper files (populated by `./build.sh`).
 - To reproduce integration runs locally: run `SERVER_VERSION=unstable ./build.sh` — this will clone/build Valkey and
   copy the server binary to `tests/build/binaries/`.
 - Leak detection: when `ASAN_BUILD` is set, the build script scans pytest output for LeakSanitizer output and fails if
   leaks are detected.
+
+Benchmarks
+
+- Criterion benches live in `benches/` and are registered in `Cargo.toml` with `harness = false`: `encode`, `decode`,
+  `query_scan`, `allocations`.
+- **`--features enable-system-alloc` is required.** Bench and tool binaries link the crate's global allocator
+  (`AlignedValkeyAlloc`), which needs a loaded Valkey runtime; without the feature every one of them aborts at startup
+  with `Critical error: the Valkey Allocator isn't available` (SIGABRT). Same constraint as `cargo test`.
+- Commands:
+    - All benches: `cargo bench --features enable-system-alloc`
+    - One target: `cargo bench --features enable-system-alloc --bench decode`
+    - Filter by name: `cargo bench --features enable-system-alloc --bench decode -- gorilla`
+    - Smoke run (executes each case once, no measurement — fast way to confirm benches still build and run):
+      `cargo bench --features enable-system-alloc --bench decode -- --test`
+- Groups: `encode_bulk` / `encode_append`, `decode_full` / `decode_materialize`, `scan` / `scan_filtered`. Bench ids are
+  `encoding/workload/timestamp_model/chunk_size`.
+- Shared fixtures live in the crate itself (`src/tests/`, exposed to dev targets by the `test-utils` feature) and are
+  re-exported through `benches/support/mod.rs`, so benches, unit tests and `compression_report` all generate data
+  through the same `DataGenerator`. `DatasetRegistry` builds 12 datasets of 64k samples from fixed seeds
+  (the 8 `ValueWorkload` shapes at regular timestamps, plus drift/noisy at jitter and irregular timestamps), so results
+  are comparable across runs, machines, and commits. The matrix is defined in `src/tests/generators/dataset.rs`
+  (`benchmark_dataset_keys`, `DatasetKey`, `DATASET_SAMPLES`, `dataset_seed`); chunk sizes are 1k / 4k
+  (`DEFAULT_CHUNK_SIZE_BYTES`) / 64k.
+- `benches/allocations.rs` is a placeholder — it benches `4usize + 4`, not allocations.
+- PCO gotcha: `PcoChunk::add_sample` decompresses and recompresses the whole chunk on every call (O(n²) allocations), and
+  well-compressing workloads never trip `is_full()`. Use `set_data` for bulk loads; `build_chunk`, `filled_prefix` and
+  `build_chunk_until_full` in `src/tests/chunk_utils.rs` already special-case this.
+- Known breakage: `--bench encode` is OOM-killed (SIGKILL) at `encode_append/pco/constant/...`, because
+  `bench_encode_append` calls `add_sample` per sample for every encoding including PCO — the hazard above. `decode`,
+  `query_scan`, and `allocations` all pass `-- --test`.
+- Compression report (not a criterion bench): run it with `tools/compression_report.sh`, which wraps
+  `cargo run --release --features "enable-system-alloc,test-utils" --bin compression_report` (both features must be
+  named explicitly for a `[[bin]]`; see Cargo features above). It writes
+  `target/bench-reports/compression.csv` and `.md` (96 rows: encoding × workload × timestamp model × chunk size).
+  Script flags: `--check` fails if any compression ratio drops more than 5% below the baseline, `--save-baseline`
+  records the run just made as the baseline, `--baseline <path>` overrides the default
+  `benches/baselines/compression_baseline.csv`. That baseline is **not** checked in, so `--check` exits 2 until you
+  generate one with `--save-baseline`.
+- `build.sh` does not run benches or the compression report; they are manual.
 
 Where to look first (key files & directories)
 
@@ -95,7 +161,16 @@ Where to look first (key files & directories)
 - `src/parser/` — filter syntax, metric name, timestamp, and duration parsers.
 - `src/iterators/` — sample and row iterators.
 - `src/join/` — ASOF join for TS.JOIN.
-- `src/tests/` — synthetic data generators (mackey_glass, rand) for unit tests.
+- `src/tests/` — shared test/bench support, compiled under `cfg(test)` or the `test-utils` feature:
+    - `generators/rand.rs` — `DataGenerator` (bon builder) and `ValueWorkload`.
+    - `generators/workload.rs` — the shape functions (drift/periodic/noisy/bursty/counter/discrete) and `TimestampModel`.
+    - `generators/generator.rs`, `generators/mackey_glass.rs` — the range-bounded iterator generators.
+    - `generators/dataset.rs` — `DatasetKey`, `DatasetRegistry`, and the benchmark dataset matrix.
+    - `chunk_utils.rs` — `build_chunk`, `build_chunk_until_full`, `filled_prefix(_len)`, `CHUNK_SIZE_*`.
+- `benches/` — criterion benchmarks; `benches/support/mod.rs` just re-exports `src/tests/` so benches, unit tests and
+  `compression_report` share one implementation.
+- `tools/compression_report.rs` — the `compression_report` binary; encoding size/ratio matrix with baseline checking.
+  `tools/compression_report.sh` is the wrapper that builds and runs it with the right features.
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
 - `README.md` and `docs/commands/` — human-facing command descriptions and examples.
 - `docs/topics/` — deep-dive topics: `filter-syntax.md`, `label-discovery.md`, `filter-dos-audit.md`.
