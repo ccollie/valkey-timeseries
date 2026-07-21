@@ -16,6 +16,15 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 ///    - Removes samples in [fromTimestamp, toTimestamp] for matching series
 /// 2. Series deletion: TS.MDEL FILTER label=value
 ///    - Removes entire time series matching the filter
+#[valkey_module_macros::command({
+    name: "TS.MDEL",
+    flags: [Write, DenyOOM],
+    summary: "Delete samples or entire time series matching a filter.",
+    complexity: "O(N*M) where N is the number of matching series and M the number of samples removed per series.",
+    since: "1.0.0",
+    arity: -2,
+    key_spec: []
+})]
 pub fn ts_mdel_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 

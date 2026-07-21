@@ -6,6 +6,15 @@ use crate::series::index::{PostingStat, PostingsStats, get_timeseries_index};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// https://prometheus.io/docs/prometheus/latest/querying/api/#tsdb-stats
+#[valkey_module_macros::command({
+    name: "TS.LABELSTATS",
+    flags: [ReadOnly],
+    summary: "Return cardinality statistics about labels and metric names.",
+    complexity: "O(N) where N is the number of indexed label-value pairs.",
+    since: "1.0.0",
+    arity: -1,
+    key_spec: []
+})]
 pub fn ts_labelstats_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() > 5 {
         return Err(ValkeyError::WrongArity);

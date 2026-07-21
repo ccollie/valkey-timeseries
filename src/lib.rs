@@ -106,6 +106,58 @@ fn preload(ctx: &Context, args: &[ValkeyString]) -> Status {
     Status::Ok
 }
 
+/// ACL categories for the commands registered through the `#[valkey_module_macros::command]`
+/// command-info path, keyed by command name. That path (via `register_commands`) does not
+/// assign ACL categories the way the positional command table does, so we (re-)apply them at
+/// load time in [`assign_command_acl_categories`]. Keep this in sync with the `#[command]`
+/// annotations in `src/commands/*`.
+#[cfg(feature = "min-valkey-compatibility-version-8-0")]
+const COMMAND_ACL_CATEGORIES: &[(&str, &str)] = &[
+    ("TS.CREATE", "write fast timeseries"),
+    ("TS.ALTER", "write timeseries"),
+    ("TS.ADD", "write timeseries"),
+    ("TS.ADDBULK", "write timeseries"),
+    ("TS.GET", "fast read timeseries"),
+    ("TS.MGET", "fast read timeseries"),
+    ("TS.MADD", "fast write timeseries"),
+    ("TS.DEL", "write timeseries"),
+    ("TS.DECRBY", "write timeseries"),
+    ("TS.INCRBY", "write timeseries"),
+    ("TS.JOIN", "read timeseries"),
+    ("TS.MDEL", "write timeseries"),
+    ("TS.MRANGE", "read timeseries"),
+    ("TS.MREVRANGE", "read timeseries"),
+    ("TS.RANGE", "read timeseries"),
+    ("TS.REVRANGE", "read timeseries"),
+    ("TS.INFO", "read fast timeseries"),
+    ("TS.QUERYINDEX", "read timeseries"),
+    ("TS.CARD", "read timeseries"),
+    ("TS.LABELNAMES", "read timeseries"),
+    ("TS.LABELVALUES", "read timeseries"),
+    ("TS.METRICNAMES", "read timeseries"),
+    ("TS.LABELSTATS", "read timeseries"),
+    ("TS.CREATERULE", "write timeseries"),
+    ("TS.DELETERULE", "write timeseries"),
+    ("TS.OUTLIERS", "fast read timeseries"),
+];
+
+/// Assign ACL categories to the commands registered via the command-info path. The
+/// `#[command]`-based registration performed by `register_commands` does not set ACL
+/// categories, so we apply them here to keep the custom `@timeseries` category (and the
+/// built-in read/write/fast categories) associated with each command.
+#[cfg(feature = "min-valkey-compatibility-version-8-0")]
+fn assign_command_acl_categories(ctx: &Context) {
+    use std::ffi::CString;
+    for (name, categories) in COMMAND_ACL_CATEGORIES {
+        if let (Ok(command), Ok(acl)) = (CString::new(*name), CString::new(*categories)) {
+            let _ = ctx.set_acl_category(command.as_ptr(), acl.as_ptr());
+        }
+    }
+}
+
+#[cfg(not(feature = "min-valkey-compatibility-version-8-0"))]
+fn assign_command_acl_categories(_ctx: &Context) {}
+
 fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     init_croaring_allocator();
 
@@ -114,6 +166,8 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
         ctx.log_warning(&msg);
         return Status::Err;
     }
+
+    assign_command_acl_categories(ctx);
 
     if let Err(e) = register_server_event_handlers(ctx) {
         let msg = format!("Failed to register server event handlers: {e}");
@@ -180,32 +234,12 @@ valkey_module! {
         "timeseries",
     ]
     commands: [
-        ["TS.CREATE", commands::ts_create_cmd, "write deny-oom", 1, 1, 1, "write fast timeseries"],
-        ["TS.ALTER", commands::ts_alter_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.ADD", commands::ts_add_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.ADDBULK", commands::ts_addbulk_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.GET", commands::ts_get_cmd, "readonly fast", 1, 1, 1, "fast read timeseries"],
-        ["TS.MGET", commands::ts_mget_cmd, "readonly fast", 0, 0, -1, "fast read timeseries"],
-        ["TS.MADD", commands::ts_madd_cmd, "write deny-oom", 1, -1, 3, "fast write timeseries"],
-        ["TS.DEL", commands::ts_del_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.DECRBY", commands::ts_decrby_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.INCRBY", commands::ts_incrby_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.JOIN", commands::ts_join_cmd, "readonly", 1, 2, 1, "read timeseries"],
-        ["TS.MDEL", commands::ts_mdel_cmd, "write deny-oom", 0, 0, -1, "write timeseries"],
-        ["TS.MRANGE", commands::ts_mrange_cmd, "readonly", 0, 0, -1, "read timeseries"],
-        ["TS.MREVRANGE", commands::ts_mrevrange_cmd, "readonly", 0, 0, -1, "read timeseries"],
-        ["TS.RANGE", commands::ts_range_cmd, "readonly", 1, 1, 1, "read timeseries"],
-        ["TS.REVRANGE", commands::ts_revrange_cmd, "readonly", 1, 1, 1, "read timeseries"],
-        ["TS.INFO", commands::ts_info_cmd, "readonly", 0, 0, 0, "read fast timeseries"],
-        ["TS.QUERYINDEX", commands::ts_queryindex_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.CARD", commands::ts_card_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELNAMES", commands::ts_labelnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELVALUES", commands::ts_labelvalues_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.METRICNAMES", commands::ts_metricnames_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.LABELSTATS", commands::ts_labelstats_cmd, "readonly", 0, 0, 0, "read timeseries"],
-        ["TS.CREATERULE", commands::ts_createrule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.DELETERULE", commands::ts_deleterule_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["TS.OUTLIERS", commands::ts_outliers_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
+        // User-facing commands are registered with full command info (summary, complexity,
+        // arity, and key specs) through the `#[valkey_module_macros::command]` attribute on
+        // each handler in `src/commands/*`; the `valkey_module!` macro registers them via
+        // `register_commands`. Only internal/admin commands remain in this positional table.
+        // ACL categories for the annotated commands are (re-)applied by
+        // `assign_command_acl_categories`, since the command-info path does not set them.
         ["TS._DEBUG", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["TS._RESTORE", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]

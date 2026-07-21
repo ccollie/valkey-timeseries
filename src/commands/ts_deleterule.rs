@@ -12,6 +12,19 @@ use valkey_module::{
 /// The rule is removed from the sourceKey, and the src_series field in destKey is cleared, but
 /// the destination series is not deleted.
 ///
+#[valkey_module_macros::command({
+    name: "TS.DELETERULE",
+    flags: [Write, DenyOOM],
+    summary: "Delete a compaction rule between a source and destination time series.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: 3,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 1, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_deleterule_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Check for minimum number of arguments: command, sourceKey, destKey
     if args.len() != 3 {

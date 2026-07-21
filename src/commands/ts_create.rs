@@ -19,6 +19,19 @@ use valkey_module::{Context, NextArg, VALKEY_OK, ValkeyError, ValkeyResult, Valk
 ///   [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///   [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///   [LABELS label1=value1 label2=value2 ...]
+#[valkey_module_macros::command({
+    name: "TS.CREATE",
+    flags: [Write, DenyOOM],
+    summary: "Create a new time series.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -2,
+    key_spec: [{
+        flags: [ReadWrite, Insert],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_create_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let (parsed_key, options) = parse_create_options(args)?;
 

@@ -283,9 +283,12 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         assert isinstance(result, list)
         assert len(result) > 0
 
-        # User without info permissions gets denied
+        # User without key access gets denied. TS.INFO declares a key spec (key at
+        # position 1), so the denial is enforced by the server's core ACL layer -- the same
+        # "No permissions to access a key" path as the other keyed read commands above --
+        # rather than by the module's own permission check.
         no_info_client = self.get_user_client('no_info', 'password123')
-        with pytest.raises(Exception, match="user doesn't have read permission"):
+        with pytest.raises(Exception, match="No permissions to access a key"):
             no_info_client.execute_command('TS.INFO', 'ts:acl:info_test')
 
     def test_acl_queryindex_permissions(self):

@@ -12,6 +12,19 @@ use valkey_module::{
 //   [FILTER_BY_VALUE min max]
 //   [COUNT count]
 //   [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+#[valkey_module_macros::command({
+    name: "TS.RANGE",
+    flags: [ReadOnly],
+    summary: "Query a range of samples from a time series in forward order.",
+    complexity: "O(N) where N is the number of samples in the requested range.",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_range_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     range_internal(ctx, args, false)
 }
@@ -22,6 +35,19 @@ pub fn ts_range_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 //   [FILTER_BY_VALUE min max]
 //   [COUNT count]
 //   [[ALIGN align] AGGREGATION aggregator bucket_duration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
+#[valkey_module_macros::command({
+    name: "TS.REVRANGE",
+    flags: [ReadOnly],
+    summary: "Query a range of samples from a time series in reverse order.",
+    complexity: "O(N) where N is the number of samples in the requested range.",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_revrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     range_internal(ctx, args, true)
 }

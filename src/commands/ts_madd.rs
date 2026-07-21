@@ -39,6 +39,19 @@ struct SeriesSamples<'a> {
 /// allows us to add multiple samples at once per series, while parallelizing across series blocks.
 /// Because of that there is extra bookkeeping to do, including mapping results back to the
 /// original input and returning results in input order.
+#[valkey_module_macros::command({
+    name: "TS.MADD",
+    flags: [Write, DenyOOM],
+    summary: "Append new samples to one or more time series.",
+    complexity: "O(N) where N is the number of samples added.",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: -1, steps: 3, limit: 0 })
+    }]
+})]
 pub fn ts_madd_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let arg_count = args.len() - 1;
 

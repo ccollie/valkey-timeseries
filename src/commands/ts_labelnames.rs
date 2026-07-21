@@ -14,6 +14,15 @@ use valkey_module::{Context, ValkeyResult, ValkeyString};
 /// [FILTER_BY_RANGE [NOT] fromTimestamp toTimestamp]
 /// [LIMIT limit]
 /// [FILTER seriesMatcher...]
+#[valkey_module_macros::command({
+    name: "TS.LABELNAMES",
+    flags: [ReadOnly],
+    summary: "Return label names across time series, optionally filtered.",
+    complexity: "O(N) where N is the number of label names in the index.",
+    since: "1.0.0",
+    arity: -1,
+    key_spec: []
+})]
 pub fn ts_labelnames_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     run_label_search(ctx, args, LabelSearchType::Name)
 }

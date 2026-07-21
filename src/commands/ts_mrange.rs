@@ -15,10 +15,28 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 //   [[ALIGN align] AGGREGATION aggregator bucketDuration [CONDITION op value] [BUCKETTIMESTAMP bt] [EMPTY]]
 //   FILTER filterExpr...
 //   [GROUPBY label REDUCE reducer]
+#[valkey_module_macros::command({
+    name: "TS.MRANGE",
+    flags: [ReadOnly],
+    summary: "Query a range across multiple time series selected by a filter, in forward order.",
+    complexity: "O(N*M) where N is the number of matching series and M the number of samples in the range.",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: []
+})]
 pub fn ts_mrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     mrange_internal(ctx, args, false)
 }
 
+#[valkey_module_macros::command({
+    name: "TS.MREVRANGE",
+    flags: [ReadOnly],
+    summary: "Query a range across multiple time series selected by a filter, in reverse order.",
+    complexity: "O(N*M) where N is the number of matching series and M the number of samples in the range.",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: []
+})]
 pub fn ts_mrevrange_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     mrange_internal(ctx, args, true)
 }

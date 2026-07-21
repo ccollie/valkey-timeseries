@@ -6,6 +6,15 @@ use crate::series::index::series_keys_by_selectors;
 use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyResult, ValkeyString, ValkeyValue};
 
+#[valkey_module_macros::command({
+    name: "TS.QUERYINDEX",
+    flags: [ReadOnly],
+    summary: "Return the keys of time series matching a filter.",
+    complexity: "O(N) where N is the number of time series that match the filters.",
+    since: "1.0.0",
+    arity: -2,
+    key_spec: []
+})]
 pub fn ts_queryindex_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(WrongArity);

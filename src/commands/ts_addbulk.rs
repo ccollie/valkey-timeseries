@@ -17,6 +17,19 @@ use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString, ValkeyV
 ///     [IGNORE ignoreMaxTimediff ignoreMaxValDiff]
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///
+#[valkey_module_macros::command({
+    name: "TS.ADDBULK",
+    flags: [Write, DenyOOM],
+    summary: "Append multiple samples supplied as a JSON payload to a time series.",
+    complexity: "O(N) where N is the number of samples in the payload.",
+    since: "1.0.0",
+    arity: -3,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_addbulk_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 3 {
         return Err(valkey_module::ValkeyError::WrongArity);

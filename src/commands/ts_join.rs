@@ -15,6 +15,19 @@ use valkey_module::{
 ///   [COUNT count]
 ///   [REDUCE op]
 ///   [AGGREGATION aggregator bucket_duration [ALIGN align] [BUCKETTIMESTAMP timestamp] [EMPTY]]
+#[valkey_module_macros::command({
+    name: "TS.JOIN",
+    flags: [ReadOnly],
+    summary: "Join the samples of two time series over a timestamp range.",
+    complexity: "O(N+M) where N and M are the number of samples in each series within the range.",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 1, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_join_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
 
