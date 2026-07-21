@@ -4,13 +4,13 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use rand::prelude::StdRng;
 use rand::SeedableRng;
+use rand::prelude::StdRng;
 use rand_distr::{Distribution, Exp, Normal, Poisson, Uniform};
 
-use valkey_timeseries::common::{Sample, Timestamp};
-use valkey_timeseries::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
 use get_size2::GetSize;
+use valkey_timeseries::common::{Sample, Timestamp};
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
 
 // -------- Workload & dataset generation (deterministic) --------
 
@@ -111,7 +111,11 @@ fn generate_dataset(key: DatasetKey, sample_count: usize, seed: u64) -> Vec<Samp
         .collect()
 }
 
-fn generate_timestamps(model: TimestampModel, sample_count: usize, rng: &mut StdRng) -> Vec<Timestamp> {
+fn generate_timestamps(
+    model: TimestampModel,
+    sample_count: usize,
+    rng: &mut StdRng,
+) -> Vec<Timestamp> {
     let mut timestamps = Vec::with_capacity(sample_count);
     let mut ts = DEFAULT_START_TS;
     timestamps.push(ts);
@@ -217,7 +221,9 @@ fn counter_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
     let mut value = 0.0;
     let mut out = Vec::with_capacity(sample_count);
     for i in 0..sample_count {
-        if i > 0 && i % reset_every == 0 { value = 0.0; }
+        if i > 0 && i % reset_every == 0 {
+            value = 0.0;
+        }
         value += inc.sample(rng);
         out.push(value);
     }
@@ -267,7 +273,9 @@ struct RowVals {
 
 impl RowVals {
     fn ratio(&self) -> f64 {
-        if self.data_size == 0 { return f64::INFINITY; }
+        if self.data_size == 0 {
+            return f64::INFINITY;
+        }
         (self.len as f64 * 16.0) / self.data_size as f64
     }
 }
@@ -289,7 +297,9 @@ fn filled_prefix_len(data: &[Sample], encoding: ChunkEncoding, chunk_size: usize
     let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
     let mut count = 0;
     for s in data {
-        if chunk.is_full() { break; }
+        if chunk.is_full() {
+            break;
+        }
         chunk.add_sample(s).expect("append into benchmark chunk");
         count += 1;
     }
@@ -306,7 +316,9 @@ fn build_chunk_until_full(
     let mut chunk = TimeSeriesChunk::new(encoding, chunk_size);
     let mut count = 0;
     for s in data {
-        if chunk.is_full() { break; }
+        if chunk.is_full() {
+            break;
+        }
         chunk.add_sample(s).expect("append into benchmark chunk");
         count += 1;
     }
@@ -315,7 +327,9 @@ fn build_chunk_until_full(
 
 fn encode_matrix_chunk_sizes(key: &DatasetKey) -> Vec<usize> {
     match key.workload {
-        ValueWorkload::Drift | ValueWorkload::Noisy => vec![CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K],
+        ValueWorkload::Drift | ValueWorkload::Noisy => {
+            vec![CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K]
+        }
         _ => vec![CHUNK_SIZE_4K],
     }
 }
@@ -333,14 +347,24 @@ fn encodings() -> [ChunkEncoding; 4] {
 
 fn load_baseline(path: &Path) -> HashMap<String, f64> {
     let mut map = HashMap::new();
-    if !path.exists() { return map; }
-    let Ok(text) = fs::read_to_string(path) else { return map; };
+    if !path.exists() {
+        return map;
+    }
+    let Ok(text) = fs::read_to_string(path) else {
+        return map;
+    };
     for (i, line) in text.lines().enumerate() {
-        if i == 0 { continue; } // header
+        if i == 0 {
+            continue;
+        } // header
         let cols: Vec<&str> = line.split(',').collect();
-        if cols.len() < 9 { continue; }
+        if cols.len() < 9 {
+            continue;
+        }
         let id = format!("{}/{}/{}/{}", cols[0], cols[1], cols[2], cols[3]);
-        if let Ok(r) = cols[8].parse::<f64>() { map.insert(id, r); }
+        if let Ok(r) = cols[8].parse::<f64>() {
+            map.insert(id, r);
+        }
     }
     map
 }
@@ -348,15 +372,24 @@ fn load_baseline(path: &Path) -> HashMap<String, f64> {
 // -------- Output writers --------
 
 fn ensure_dir(p: &Path) -> std::io::Result<()> {
-    if let Some(parent) = p.parent() { fs::create_dir_all(parent)?; }
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)?;
+    }
     Ok(())
 }
 
-fn write_csv(path: &Path, rows: &[(RowKey, RowVals)], capacity4k: &HashMap<(String, ValueWorkload), usize>) -> std::io::Result<()> {
+fn write_csv(
+    path: &Path,
+    rows: &[(RowKey, RowVals)],
+    capacity4k: &HashMap<(String, ValueWorkload), usize>,
+) -> std::io::Result<()> {
     ensure_dir(path)?;
     let file = File::create(path)?;
     let mut w = BufWriter::new(file);
-    writeln!(w, "encoding,workload,ts_model,chunk_size,len,data_size,size,bytes_per_sample,ratio,capacity_4k")?;
+    writeln!(
+        w,
+        "encoding,workload,ts_model,chunk_size,len,data_size,size,bytes_per_sample,ratio,capacity_4k"
+    )?;
     for (k, v) in rows {
         let cap_key = (k.encoding.name().to_string(), k.workload);
         let cap = capacity4k.get(&cap_key).cloned().unwrap_or_default();
@@ -382,7 +415,10 @@ fn write_markdown(path: &Path, rows: &[(RowKey, RowVals)]) -> std::io::Result<()
     ensure_dir(path)?;
     let file = File::create(path)?;
     let mut w = BufWriter::new(file);
-    writeln!(w, "| encoding | workload | ts_model | chunk | len | data_size | size | bytes/sample | ratio |")?;
+    writeln!(
+        w,
+        "| encoding | workload | ts_model | chunk | len | data_size | size | bytes/sample | ratio |"
+    )?;
     writeln!(w, "|---|---|---|---|---:|---:|---:|---:|---:|")?;
     for (k, v) in rows {
         writeln!(
@@ -413,11 +449,12 @@ fn main() {
         match arg.as_str() {
             "--check" => check = true,
             "--baseline" => baseline_path = args.next().map(PathBuf::from),
-            _ => {},
+            _ => {}
         }
     }
 
-    let baseline_path = baseline_path.unwrap_or_else(|| PathBuf::from("benches/baselines/compression_baseline.csv"));
+    let baseline_path = baseline_path
+        .unwrap_or_else(|| PathBuf::from("benches/baselines/compression_baseline.csv"));
     let baseline = load_baseline(&baseline_path);
 
     // Build datasets once
@@ -438,10 +475,9 @@ fn main() {
         for encoding in encodings() {
             // capacity at 4k (only compute once per (enc, workload) pair)
             let cap_key = (encoding.name().to_string(), key.workload);
-            capacity4k.entry(cap_key).or_insert_with(|| {
-                
-                filled_prefix_len(data, encoding, CHUNK_SIZE_4K)
-            });
+            capacity4k
+                .entry(cap_key)
+                .or_insert_with(|| filled_prefix_len(data, encoding, CHUNK_SIZE_4K));
 
             for chunk_size in encode_matrix_chunk_sizes(&key) {
                 // Reuse the chunk constructed during the prefix search instead of rebuilding it
@@ -451,9 +487,23 @@ fn main() {
                 let data_size = chunk.size();
                 // Prefer structural size via GetSize for footprint reporting
                 let footprint = chunk.get_size();
-                let bps = if len > 0 { data_size as f64 / len as f64 } else { 0.0 };
-                let vals = RowVals { len, data_size, size: footprint, bytes_per_sample: bps };
-                let key_row = RowKey { encoding, workload: key.workload, ts_model: key.ts_model, chunk_size };
+                let bps = if len > 0 {
+                    data_size as f64 / len as f64
+                } else {
+                    0.0
+                };
+                let vals = RowVals {
+                    len,
+                    data_size,
+                    size: footprint,
+                    bytes_per_sample: bps,
+                };
+                let key_row = RowKey {
+                    encoding,
+                    workload: key.workload,
+                    ts_model: key.ts_model,
+                    chunk_size,
+                };
                 rows.push((key_row, vals));
             }
         }
@@ -465,8 +515,12 @@ fn main() {
     // Write outputs
     let out_csv = PathBuf::from("target/bench-reports/compression.csv");
     let out_md = PathBuf::from("target/bench-reports/compression.md");
-    if let Err(e) = write_csv(&out_csv, &rows, &capacity4k) { eprintln!("Failed to write CSV: {e}"); }
-    if let Err(e) = write_markdown(&out_md, &rows) { eprintln!("Failed to write Markdown: {e}"); }
+    if let Err(e) = write_csv(&out_csv, &rows, &capacity4k) {
+        eprintln!("Failed to write CSV: {e}");
+    }
+    if let Err(e) = write_markdown(&out_md, &rows) {
+        eprintln!("Failed to write Markdown: {e}");
+    }
 
     // Check against baseline if requested
     if check && !baseline.is_empty() {
@@ -480,15 +534,23 @@ fn main() {
                 if ratio + f64::EPSILON < base_ratio * (1.0 - tol) {
                     eprintln!(
                         "Regression: {} ratio {:.6} < baseline {:.6} (>{:.0}% drop)",
-                        id, ratio, base_ratio, tol * 100.0
+                        id,
+                        ratio,
+                        base_ratio,
+                        tol * 100.0
                     );
                     failed = true;
                 }
             }
         }
-        if failed { std::process::exit(1); }
+        if failed {
+            std::process::exit(1);
+        }
     } else if check && baseline.is_empty() {
-        eprintln!("--check requested but baseline file not found: {}", baseline_path.display());
+        eprintln!(
+            "--check requested but baseline file not found: {}",
+            baseline_path.display()
+        );
         std::process::exit(2);
     }
 

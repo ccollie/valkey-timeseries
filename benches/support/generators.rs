@@ -1,5 +1,5 @@
-use rand::prelude::{IndexedRandom, StdRng};
 use rand::SeedableRng;
+use rand::prelude::{IndexedRandom, StdRng};
 use rand_distr::{Distribution, Exp, Normal, Poisson, Uniform};
 use valkey_timeseries::common::{Sample, Timestamp};
 
@@ -107,7 +107,11 @@ pub fn generate_dataset(key: DatasetKey, sample_count: usize, seed: u64) -> Vec<
         .collect()
 }
 
-fn generate_timestamps(model: TimestampModel, sample_count: usize, rng: &mut StdRng) -> Vec<Timestamp> {
+fn generate_timestamps(
+    model: TimestampModel,
+    sample_count: usize,
+    rng: &mut StdRng,
+) -> Vec<Timestamp> {
     let mut timestamps = Vec::with_capacity(sample_count);
     let mut ts = DEFAULT_START_TS;
     timestamps.push(ts);
@@ -180,7 +184,8 @@ fn noisy_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
 fn bursty_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
     let quiet_noise = Normal::new(0.0, 0.01).expect("valid normal");
     let burst_noise = Normal::new(0.0, 20.0).expect("valid normal");
-    let burst_length = Uniform::new_inclusive(200_usize, 500_usize).expect("valid uniform distribution");
+    let burst_length =
+        Uniform::new_inclusive(200_usize, 500_usize).expect("valid uniform distribution");
     let mut out = Vec::with_capacity(sample_count);
     let mut value: f64 = 100.0;
     let mut idx = 0;
@@ -228,4 +233,3 @@ fn discrete_values(sample_count: usize, rng: &mut StdRng) -> Vec<f64> {
         .map(|_| *choices.choose(rng).expect("choices non-empty"))
         .collect()
 }
-

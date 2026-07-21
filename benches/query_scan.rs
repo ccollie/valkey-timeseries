@@ -2,12 +2,14 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::time::Duration;
 use valkey_timeseries::common::Timestamp;
 use valkey_timeseries::series::ValueFilter;
-use valkey_timeseries::series::chunks::{Chunk, ChunkEncoding};
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps};
 
 mod support;
 
 use support::generators::{TimestampModel, ValueWorkload};
-use support::{DatasetKey, DatasetRegistry, CHUNK_SIZE_4K, CHUNK_SIZE_64K, build_chunk, chunk_size_id};
+use support::{
+    CHUNK_SIZE_4K, CHUNK_SIZE_64K, DatasetKey, DatasetRegistry, build_chunk, chunk_size_id,
+};
 
 /// Workloads trimmed to the scan-relevant set
 const SCAN_WORKLOADS: &[ValueWorkload] = &[
