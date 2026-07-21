@@ -36,32 +36,15 @@ mod ts_queryindex_fanout_command;
 mod ts_range;
 mod utils;
 
+// Command handlers are registered through the `#[valkey_module_macros::command]` attribute on
+// each `ts_*_cmd` function (see the individual `ts_*` modules), so they no longer need to be
+// re-exported here for the positional command table. Cross-module parser helpers are imported
+// via their defining module path (e.g. `crate::commands::ts_create::parse_series_options`).
+// Only modules whose items are consumed through `crate::commands::*` are re-exported below.
 pub use command_parser::*;
-pub use ts_add::*;
-pub use ts_addbulk::*;
-pub use ts_alter::*;
 pub use ts_asm_restore::*;
-pub use ts_card::*;
-pub use ts_create::*;
-pub use ts_createrule::*;
 pub use ts_debug::*;
-pub use ts_del::*;
-pub use ts_deleterule::*;
-pub use ts_get::*;
-pub use ts_incr_decr_by::*;
-pub use ts_info::*;
-pub use ts_join::*;
-pub use ts_labelnames::*;
-pub use ts_labelstats::*;
-pub use ts_labelvalues::*;
-pub use ts_madd::*;
-pub use ts_mdel::*;
-pub use ts_metricnames::*;
 pub use ts_mget::*;
-pub use ts_mrange::*;
-pub use ts_outliers::*;
-pub use ts_queryindex::*;
-pub use ts_range::*;
 use valkey_module::ValkeyResult;
 
 use crate::fanout::register_fanout_operation;

@@ -18,6 +18,19 @@ use valkey_module::{
 /// Creates a compaction rule from sourceKey to destKey with a specific aggregator and bucket duration.
 /// sourceKey must be different from destKey, and the user must be authorized to read from sourceKey and write to destKey.
 ///
+#[valkey_module_macros::command({
+    name: "TS.CREATERULE",
+    flags: [Write, DenyOOM],
+    summary: "Create a compaction rule from a source time series to a destination series.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -6,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 1, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_createrule_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Check for minimum number of arguments: command, sourceKey, destKey, AGGREGATION, aggregator, bucketDuration
     if args.len() < 6 {

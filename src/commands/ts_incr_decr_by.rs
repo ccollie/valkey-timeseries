@@ -8,10 +8,36 @@ use valkey_module::{
     AclPermissions, Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+#[valkey_module_macros::command({
+    name: "TS.INCRBY",
+    flags: [Write, DenyOOM],
+    summary: "Increase the value of the last sample, creating the series if needed.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -3,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_incrby_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     incr_decr(ctx, args, true)
 }
 
+#[valkey_module_macros::command({
+    name: "TS.DECRBY",
+    flags: [Write, DenyOOM],
+    summary: "Decrease the value of the last sample, creating the series if needed.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -3,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_decrby_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     incr_decr(ctx, args, false)
 }

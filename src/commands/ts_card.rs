@@ -8,6 +8,15 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 /// TS.CARD [FILTER_BY_RANGE fromTimestamp toTimestamp] [FILTER filter...]
 ///
 /// returns the number of unique time series that match a certain label set.
+#[valkey_module_macros::command({
+    name: "TS.CARD",
+    flags: [ReadOnly],
+    summary: "Count the time series matching a filter.",
+    complexity: "O(N) where N is the number of time series that match the filters.",
+    since: "1.0.0",
+    arity: -1,
+    key_spec: []
+})]
 pub fn ts_card_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1).peekable();
     let options = parse_metadata_command_args(&mut args, false)?;

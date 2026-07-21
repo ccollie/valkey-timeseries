@@ -12,6 +12,19 @@ use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{AclPermissions, Context, NextArg, ValkeyResult, ValkeyString, ValkeyValue};
 
+#[valkey_module_macros::command({
+    name: "TS.INFO",
+    flags: [ReadOnly],
+    summary: "Return information and statistics for a time series.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -2,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_info_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let mut args = args.into_iter().skip(1);
     let key = args.next_arg()?;

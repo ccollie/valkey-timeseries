@@ -3,6 +3,19 @@ use valkey_module::ValkeyError::WrongArity;
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// TS.GET key [LATEST]
+#[valkey_module_macros::command({
+    name: "TS.GET",
+    flags: [ReadOnly, Fast],
+    summary: "Get the last sample of a time series.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -2,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_get_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 || args.len() > 3 {
         return Err(WrongArity);

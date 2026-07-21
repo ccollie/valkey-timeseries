@@ -18,6 +18,19 @@ use valkey_module::{
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///     [LABELS label1=value1 label2=value2 ...]
 ///
+#[valkey_module_macros::command({
+    name: "TS.ADD",
+    flags: [Write, DenyOOM],
+    summary: "Append a sample to a time series, creating it if it does not exist.",
+    complexity: "O(1)",
+    since: "1.0.0",
+    arity: -4,
+    key_spec: [{
+        flags: [ReadWrite, Update],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_add_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 4 {
         return Err(ValkeyError::WrongArity);

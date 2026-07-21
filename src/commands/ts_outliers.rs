@@ -47,6 +47,19 @@ enum ZScoreType {
 ///     [OUTPUT <full|simple|cleaned>]
 ///     [DIRECTION <positive|negative|both>]
 ///     [SEASONALITY <period1> [period2] ...]
+#[valkey_module_macros::command({
+    name: "TS.OUTLIERS",
+    flags: [ReadOnly, DenyOOM],
+    summary: "Detect outlier samples in a time series over a timestamp range.",
+    complexity: "O(N) where N is the number of samples in the requested range.",
+    since: "1.0.0",
+    arity: -6,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_outliers_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 6 {
         return Err(ValkeyError::WrongArity);
