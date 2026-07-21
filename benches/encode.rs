@@ -1,6 +1,6 @@
 use crate::support::generators::ValueWorkload;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use valkey_timeseries::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
 
 mod support;
 

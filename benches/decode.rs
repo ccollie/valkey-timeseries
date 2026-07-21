@@ -1,11 +1,14 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::time::Duration;
-use valkey_timeseries::series::chunks::{Chunk, ChunkEncoding};
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps};
 
 mod support;
 
 use support::generators::ValueWorkload;
-use support::{DatasetKey, DatasetRegistry, CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K, build_chunk, chunk_size_id};
+use support::{
+    CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K, DatasetKey, DatasetRegistry, build_chunk,
+    chunk_size_id,
+};
 
 fn encodings() -> [ChunkEncoding; 5] {
     [

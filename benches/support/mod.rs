@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use valkey_timeseries::common::Sample;
 use valkey_timeseries::config::DEFAULT_CHUNK_SIZE_BYTES;
-use valkey_timeseries::series::chunks::{Chunk, ChunkEncoding, TimeSeriesChunk};
+use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
 
 pub mod generators;
 
-pub use generators::{
-    DATASET_SAMPLES, DatasetKey, benchmark_dataset_keys, generate_dataset,
-};
+pub use generators::{DATASET_SAMPLES, DatasetKey, benchmark_dataset_keys, generate_dataset};
 
 pub const CHUNK_SIZE_1K: usize = 1024;
 pub const CHUNK_SIZE_4K: usize = DEFAULT_CHUNK_SIZE_BYTES;
@@ -63,9 +61,7 @@ pub fn build_chunk(encoding: ChunkEncoding, chunk_size: usize, data: &[Sample]) 
         // allocations).  For constant/repeating workloads PCO compresses so well
         // that is_full() never triggers, causing OOM on large datasets.
         // set_data is bulk O(n) and avoids this.
-        chunk
-            .set_data(data)
-            .expect("set_data should succeed");
+        chunk.set_data(data).expect("set_data should succeed");
     } else {
         for sample in data {
             if chunk.is_full() {
