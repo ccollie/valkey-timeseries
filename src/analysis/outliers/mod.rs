@@ -27,7 +27,6 @@ pub use smoothed_zscores::*;
 use crate::analysis::TimeSeriesAnalysisResult;
 use std::fmt::Display;
 
-use std::ops::Deref;
 use std::str::FromStr;
 use valkey_module::{ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -275,16 +274,6 @@ pub struct AnomalyResult {
 }
 
 impl AnomalyResult {
-    pub fn with_capacity(n: usize) -> Self {
-        Self {
-            scores: Vec::with_capacity(n),
-            anomalies: Vec::with_capacity(4),
-            threshold: 0.0,
-            method: AnomalyMethod::ZScore,
-            method_info: None,
-        }
-    }
-
     /// Count the number of detected anomalies
     pub fn count_anomalies(&self) -> usize {
         self.anomalies.len()
@@ -366,60 +355,218 @@ impl Default for MADAnomalyOptions {
     }
 }
 
-/// Trait for outlier detection
-pub trait BatchOutlierDetector {
+/// The contract every detector satisfies: consume a batch of observations and
+/// produce a per-point score plus the subset judged anomalous.
+///
+/// Batch detection is deliberately the *only* universal operation. Whether a
+/// point is anomalous is not always a question that can be asked of that point
+/// alone — ESD's verdict is defined relative to the whole sample, and CUSUM's
+/// against accumulated drift. Detectors that *can* answer narrower questions
+/// opt in via [`PointDetector`], so no detector is ever forced to invent an
+/// answer its method cannot express.
+pub trait AnomalyDetector {
     /// The detector family/method.
     fn method(&self) -> AnomalyMethod;
 
+    /// Fit model parameters to `data`.
+    ///
+    /// Implementations must be idempotent — the dispatch path calls this before
+    /// every `detect`. Detectors that fit at construction, or that have nothing
+    /// to fit, keep the default no-op.
     fn train(&mut self, _data: &[f64]) -> TimeSeriesAnalysisResult<()> {
         Ok(())
     }
 
-    /// Batch detection entrypoint.
-    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        let mut result = AnomalyResult::with_capacity(ts.len());
-        result.method = self.method();
+    /// Fitted fences or control limits, when the method has them to report.
+    /// Reported to clients as `method_info`.
+    fn model_info(&self) -> Option<MethodInfo> {
+        None
+    }
 
-        for (index, &value) in ts.iter().enumerate() {
-            let signal = self.classify(value);
-            let score = self.get_anomaly_score(value);
-            result.scores.push(score);
+    /// Score and classify a batch.
+    ///
+    /// Implementations must return exactly one score per element of `ts`, each
+    /// in `[0, 1]`, and every `Anomaly::index` must index into `ts`.
+    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult>;
+}
 
-            if signal.is_anomaly() {
-                result.anomalies.push(Anomaly {
-                    signal,
-                    value,
-                    score,
-                    index,
-                });
+/// Detectors whose verdict for a point is a pure function of the fitted model —
+/// independent of where the point sits in the series, and of what else the
+/// series contains.
+///
+/// This covers the fence-based methods (z-score, modified z-score, MAD, double
+/// MAD, IQR). Sequential and whole-sample methods must not implement it: for
+/// them a per-point answer either doesn't exist or silently disagrees with
+/// [`AnomalyDetector::detect`].
+pub trait PointDetector: AnomalyDetector {
+    /// Normalized anomaly score in `[0, 1]`. Higher is more anomalous.
+    fn score(&self, value: f64) -> f64;
+
+    /// Which side of the fences `value` falls on, if any.
+    fn classify(&self, value: f64) -> AnomalySignal;
+}
+
+/// Assemble an [`AnomalyResult`] by scoring each observation independently.
+///
+/// This is the shared batch loop for every [`PointDetector`]; implementations
+/// delegate to it rather than repeating the accumulate-and-assemble dance.
+///
+/// NaN observations are scored `0.0` and never flagged — a missing reading is
+/// not evidence of an anomaly. (Substituting a placeholder, as some detectors
+/// used to, lets the placeholder itself trip the fences and reports the
+/// original NaN as the offending value.)
+pub fn detect_pointwise<D>(detector: &D, ts: &[f64], threshold: f64) -> AnomalyResult
+where
+    D: PointDetector + ?Sized,
+{
+    let mut scores = Vec::with_capacity(ts.len());
+    let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
+
+    for (index, &value) in ts.iter().enumerate() {
+        if value.is_nan() {
+            scores.push(0.0);
+            continue;
+        }
+
+        let score = detector.score(value);
+        scores.push(score);
+
+        let signal = detector.classify(value);
+        if signal.is_anomaly() {
+            anomalies.push(Anomaly {
+                index,
+                signal,
+                value,
+                score,
+            });
+        }
+    }
+
+    AnomalyResult {
+        scores,
+        anomalies,
+        threshold,
+        method: detector.method(),
+        method_info: detector.model_info(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Flags anything outside [-1, 1]; scores by distance past the fence.
+    struct FenceDetector;
+
+    impl AnomalyDetector for FenceDetector {
+        fn method(&self) -> AnomalyMethod {
+            AnomalyMethod::ZScore
+        }
+
+        fn model_info(&self) -> Option<MethodInfo> {
+            Some(MethodInfo::Fenced {
+                lower_fence: -1.0,
+                upper_fence: 1.0,
+                center_line: None,
+            })
+        }
+
+        fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+            Ok(detect_pointwise(self, ts, 1.0))
+        }
+    }
+
+    impl PointDetector for FenceDetector {
+        fn score(&self, value: f64) -> f64 {
+            utils::normalize_unbounded_score((value.abs() - 1.0).max(0.0))
+        }
+
+        fn classify(&self, value: f64) -> AnomalySignal {
+            utils::get_anomaly_direction(-1.0, 1.0, value)
+        }
+    }
+
+    #[test]
+    fn pointwise_emits_one_score_per_observation() {
+        let ts = [0.0, 5.0, -0.5, f64::NAN, -9.0];
+        let result = detect_pointwise(&FenceDetector, &ts, 1.0);
+
+        assert_eq!(result.scores.len(), ts.len());
+        assert!(result.scores.iter().all(|s| (0.0..=1.0).contains(s)));
+    }
+
+    #[test]
+    fn pointwise_reports_index_value_and_direction() {
+        let ts = [0.0, 5.0, -0.5, -9.0];
+        let result = detect_pointwise(&FenceDetector, &ts, 1.0);
+
+        let found: Vec<(usize, f64, AnomalySignal)> = result
+            .anomalies
+            .iter()
+            .map(|a| (a.index, a.value, a.signal))
+            .collect();
+
+        assert_eq!(
+            found,
+            vec![
+                (1, 5.0, AnomalySignal::Positive),
+                (3, -9.0, AnomalySignal::Negative),
+            ]
+        );
+        // Each anomaly's score must match the score recorded at its index.
+        for anomaly in &result.anomalies {
+            assert_eq!(anomaly.score, result.scores[anomaly.index]);
+        }
+    }
+
+    /// A missing reading is not evidence of an anomaly. Detectors used to
+    /// substitute 0.0 for NaN, which let the substitute trip the fences and
+    /// reported the original NaN back as the offending value.
+    #[test]
+    fn pointwise_never_flags_nan() {
+        // Fences that exclude the old 0.0 placeholder, so a substitution would show up.
+        struct OffsetFences;
+
+        impl AnomalyDetector for OffsetFences {
+            fn method(&self) -> AnomalyMethod {
+                AnomalyMethod::InterquartileRange
+            }
+            fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
+                Ok(detect_pointwise(self, ts, 1.0))
             }
         }
 
-        Ok(result)
+        impl PointDetector for OffsetFences {
+            fn score(&self, _value: f64) -> f64 {
+                1.0
+            }
+            fn classify(&self, value: f64) -> AnomalySignal {
+                utils::get_anomaly_direction(10.0, 20.0, value)
+            }
+        }
+
+        let result = detect_pointwise(&OffsetFences, &[15.0, f64::NAN, 15.0], 1.0);
+
+        assert!(
+            result.anomalies.is_empty(),
+            "NaN must not be flagged, got {:?}",
+            result.anomalies
+        );
+        assert_eq!(result.scores, vec![1.0, 0.0, 1.0]);
     }
 
-    fn get_anomaly_score(&self, value: f64) -> f64;
+    #[test]
+    fn pointwise_carries_method_and_model_info() {
+        let result = detect_pointwise(&FenceDetector, &[0.0], 1.0);
 
-    fn classify(&self, x: f64) -> AnomalySignal;
-}
-
-impl<T> BatchOutlierDetector for Box<T>
-where
-    T: BatchOutlierDetector,
-{
-    fn method(&self) -> AnomalyMethod {
-        self.deref().method()
-    }
-
-    fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        self.as_mut().detect(ts)
-    }
-
-    fn get_anomaly_score(&self, value: f64) -> f64 {
-        self.deref().get_anomaly_score(value)
-    }
-
-    fn classify(&self, x: f64) -> AnomalySignal {
-        self.deref().classify(x)
+        assert_eq!(result.method, AnomalyMethod::ZScore);
+        assert!(matches!(
+            result.method_info,
+            Some(MethodInfo::Fenced {
+                lower_fence: -1.0,
+                upper_fence: 1.0,
+                center_line: None,
+            })
+        ));
     }
 }

@@ -5,7 +5,7 @@
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
 use super::{
-    AnomalyMethod, AnomalyResult, BatchOutlierDetector, MADAnomalyOptions,
+    AnomalyDetector, AnomalyMethod, AnomalyResult, MADAnomalyOptions,
     SmoothedZScoreAnomalyDetector,
     cusum_outlier_detector::CusumOutlierDetector,
     double_mad_outlier_detector::DoubleMadOutlierDetector,
@@ -163,8 +163,8 @@ fn handle_dispatch(
 fn build_detector(
     values: &[f64],
     method_options: &AnomalyDetectionMethodOptions,
-) -> TimeSeriesAnalysisResult<Box<dyn BatchOutlierDetector>> {
-    let detector: Box<dyn BatchOutlierDetector> = match method_options {
+) -> TimeSeriesAnalysisResult<Box<dyn AnomalyDetector>> {
+    let detector: Box<dyn AnomalyDetector> = match method_options {
         AnomalyDetectionMethodOptions::Cusum => Box::new(CusumOutlierDetector::default()),
         AnomalyDetectionMethodOptions::Ewma(alpha) => Box::new(EwmaOutlierDetector::from_series(
             values,

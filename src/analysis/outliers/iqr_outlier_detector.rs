@@ -1,7 +1,8 @@
 use super::utils::{get_anomaly_direction, normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
+    AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo, PointDetector,
+    detect_pointwise,
 };
 
 pub const IQR_DEFAULT_THRESHOLD: f64 = 1.5;
@@ -41,50 +42,30 @@ impl IQROutlierDetector {
     }
 
     pub fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
-        let n = ts.len();
-        let mut scores: Vec<f64> = Vec::with_capacity(n);
-        let mut anomalies: Vec<Anomaly> = Vec::with_capacity(4);
-
-        for (index, &v) in ts.iter().enumerate() {
-            let value = if v.is_nan() { 0.0 } else { v };
-            let score = self.get_anomaly_score(value);
-
-            let signal = self.classify(value);
-            if signal.is_anomaly() {
-                anomalies.push(Anomaly {
-                    index,
-                    signal,
-                    value: v,
-                    score,
-                });
-            }
-            scores.push(score);
-        }
-
-        Ok(AnomalyResult {
-            scores,
-            anomalies,
-            threshold: self.threshold,
-            method: AnomalyMethod::InterquartileRange,
-            method_info: Some(MethodInfo::Fenced {
-                lower_fence: self.lower_fence,
-                upper_fence: self.upper_fence,
-                center_line: Some((self.lower_fence + self.upper_fence) / 2.0),
-            }),
-        })
+        Ok(detect_pointwise(self, ts, self.threshold))
     }
 }
 
-impl BatchOutlierDetector for IQROutlierDetector {
+impl AnomalyDetector for IQROutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::InterquartileRange
+    }
+
+    fn model_info(&self) -> Option<MethodInfo> {
+        Some(MethodInfo::Fenced {
+            lower_fence: self.lower_fence,
+            upper_fence: self.upper_fence,
+            center_line: Some((self.lower_fence + self.upper_fence) / 2.0),
+        })
     }
 
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         IQROutlierDetector::detect(self, ts)
     }
+}
 
-    fn get_anomaly_score(&self, value: f64) -> f64 {
+impl PointDetector for IQROutlierDetector {
+    fn score(&self, value: f64) -> f64 {
         // Guard against degenerate IQR to avoid division by zero / NaN.
         if !self.iqr.is_finite() || self.iqr <= f64::EPSILON {
             return 0.0;
@@ -101,8 +82,7 @@ impl BatchOutlierDetector for IQROutlierDetector {
         normalize_unbounded_score(raw)
     }
 
-    fn classify(&self, x: f64) -> AnomalySignal {
-        let value = if x.is_nan() { 0.0 } else { x };
+    fn classify(&self, value: f64) -> AnomalySignal {
         get_anomaly_direction(self.lower_fence, self.upper_fence, value)
     }
 }

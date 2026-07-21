@@ -2,7 +2,7 @@ use super::utils::{normalize_unbounded_score, normalize_value};
 use crate::analysis::TimeSeriesAnalysisResult;
 use crate::analysis::math::calculate_mean_std_dev;
 use crate::analysis::outliers::{
-    Anomaly, AnomalyMethod, AnomalyResult, AnomalySignal, BatchOutlierDetector, MethodInfo,
+    Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal, MethodInfo,
 };
 
 /// Statistical Process Control (Spc) cusum anomaly detection
@@ -149,9 +149,17 @@ pub(super) fn detect_anomalies_spc_cusum(ts: &[f64]) -> TimeSeriesAnalysisResult
     detector.detect(ts)
 }
 
-impl BatchOutlierDetector for CusumOutlierDetector {
+/// CUSUM implements only [`AnomalyDetector`], not [`PointDetector`]. Its whole
+/// purpose is to accumulate small deviations until they add up, so a point is
+/// flagged because of the drift preceding it — a per-point test would answer a
+/// different question and disagree with `detect`.
+impl AnomalyDetector for CusumOutlierDetector {
     fn method(&self) -> AnomalyMethod {
         AnomalyMethod::Cusum
+    }
+
+    fn model_info(&self) -> Option<MethodInfo> {
+        Some(CusumOutlierDetector::method_info(self))
     }
 
     fn train(&mut self, data: &[f64]) -> TimeSeriesAnalysisResult<()> {
@@ -166,32 +174,6 @@ impl BatchOutlierDetector for CusumOutlierDetector {
 
     fn detect(&mut self, ts: &[f64]) -> TimeSeriesAnalysisResult<AnomalyResult> {
         CusumOutlierDetector::detect(self, ts)
-    }
-
-    fn get_anomaly_score(&self, value: f64) -> f64 {
-        if !self.has_valid_scale() {
-            return 0.0;
-        }
-        let z_abs = (value - self.target).abs() / self.std_dev;
-        normalize_unbounded_score(z_abs)
-    }
-
-    /// NOTE: this is a single-point level test against the decision interval and
-    /// does **not** reproduce the sequential verdict `detect` produces — cusum
-    /// flags a point based on accumulated drift, which no isolated point can
-    /// convey. It exists only to satisfy the trait; prefer `detect`.
-    fn classify(&self, x: f64) -> AnomalySignal {
-        if !self.has_valid_scale() {
-            return AnomalySignal::None;
-        }
-        let deviation = (x - self.target) / self.std_dev;
-        if deviation > self.h {
-            AnomalySignal::Positive
-        } else if deviation < -self.h {
-            AnomalySignal::Negative
-        } else {
-            AnomalySignal::None
-        }
     }
 }
 
