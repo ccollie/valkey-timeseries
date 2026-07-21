@@ -167,17 +167,270 @@ fn write_markdown(path: &Path, rows: &[(RowKey, RowVals)]) -> std::io::Result<()
     Ok(())
 }
 
+// -------- Pivoted output (rows: workload/ts_model, columns: encoding) --------
+
+/// The metric a pivot cell holds.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum PivotMetric {
+    Ratio,
+    BytesPerSample,
+    Capacity,
+}
+
+impl PivotMetric {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ratio" => Some(Self::Ratio),
+            "bytes-per-sample" | "bps" => Some(Self::BytesPerSample),
+            "capacity" | "len" => Some(Self::Capacity),
+            _ => None,
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Ratio => "ratio",
+            Self::BytesPerSample => "bytes-per-sample",
+            Self::Capacity => "capacity",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Ratio => "Compression ratio (16 bytes/sample ÷ actual; higher is better)",
+            Self::BytesPerSample => "Bytes per sample (lower is better)",
+            Self::Capacity => "Samples held per chunk (higher is better)",
+        }
+    }
+
+    fn value(self, v: &RowVals) -> f64 {
+        match self {
+            Self::Ratio => v.ratio(),
+            Self::BytesPerSample => v.bytes_per_sample,
+            Self::Capacity => v.len as f64,
+        }
+    }
+
+    /// Whether a larger value is the better result — drives which cell is bolded.
+    fn higher_is_better(self) -> bool {
+        !matches!(self, Self::BytesPerSample)
+    }
+
+    fn format(self, value: f64) -> String {
+        match self {
+            Self::Capacity => format!("{}", value as usize),
+            _ => format!("{value:.2}"),
+        }
+    }
+}
+
+/// Ordering index of a workload / timestamp model, so pivot rows come out in
+/// declaration order rather than alphabetically.
+fn workload_index(workload: ValueWorkload) -> usize {
+    ValueWorkload::workloads()
+        .iter()
+        .position(|w| *w == workload)
+        .unwrap_or(usize::MAX)
+}
+
+fn timestamp_model_index(model: TimestampModel) -> usize {
+    TimestampModel::all()
+        .iter()
+        .position(|m| *m == model)
+        .unwrap_or(usize::MAX)
+}
+
+/// A pivot row: one dataset key plus one cell per encoding (in `encodings()`
+/// order), `None` where that combination was not measured.
+type PivotRow = (DatasetKey, Vec<Option<RowVals>>);
+
+/// One table per chunk size; within a table one row per workload/timestamp
+/// model and one column per encoding.
+fn pivot_tables(rows: &[(RowKey, RowVals)]) -> Vec<(usize, Vec<PivotRow>)> {
+    let mut chunk_sizes: Vec<usize> = rows.iter().map(|(k, _)| k.chunk_size).collect();
+    chunk_sizes.sort_unstable();
+    chunk_sizes.dedup();
+
+    chunk_sizes
+        .into_iter()
+        .map(|chunk_size| {
+            let mut keys: Vec<DatasetKey> = rows
+                .iter()
+                .filter(|(k, _)| k.chunk_size == chunk_size)
+                .map(|(k, _)| DatasetKey::new(k.workload, k.timestamp_model))
+                .collect();
+            keys.sort_by_key(|k| {
+                (
+                    workload_index(k.workload),
+                    timestamp_model_index(k.timestamp_model),
+                )
+            });
+            keys.dedup();
+
+            let table = keys
+                .into_iter()
+                .map(|key| {
+                    let cells = encodings()
+                        .iter()
+                        .map(|encoding| {
+                            rows.iter()
+                                .find(|(k, _)| {
+                                    k.chunk_size == chunk_size
+                                        && k.workload == key.workload
+                                        && k.timestamp_model == key.timestamp_model
+                                        && k.encoding == *encoding
+                                })
+                                .map(|(_, v)| v.clone())
+                        })
+                        .collect();
+                    (key, cells)
+                })
+                .collect();
+            (chunk_size, table)
+        })
+        .collect()
+}
+
+/// Index of the best cell in a row, ignoring the `uncompressed` baseline column.
+fn best_cell(metric: PivotMetric, cells: &[Option<RowVals>]) -> Option<usize> {
+    cells
+        .iter()
+        .enumerate()
+        .filter(|(idx, cell)| cell.is_some() && encodings()[*idx] != ChunkEncoding::Uncompressed)
+        .max_by(|(_, a), (_, b)| {
+            let a = metric.value(a.as_ref().unwrap());
+            let b = metric.value(b.as_ref().unwrap());
+            if metric.higher_is_better() {
+                a.total_cmp(&b)
+            } else {
+                b.total_cmp(&a)
+            }
+        })
+        .map(|(idx, _)| idx)
+}
+
+fn write_pivot_markdown(
+    path: &Path,
+    rows: &[(RowKey, RowVals)],
+    metric: PivotMetric,
+) -> std::io::Result<()> {
+    ensure_dir(path)?;
+    let file = File::create(path)?;
+    let mut w = BufWriter::new(file);
+
+    writeln!(w, "# {}", metric.title())?;
+    writeln!(w)?;
+    writeln!(
+        w,
+        "Best encoding per row is **bold**; `uncompressed` is the baseline and is excluded from that comparison."
+    )?;
+
+    for (chunk_size, table) in pivot_tables(rows) {
+        writeln!(w)?;
+        writeln!(w, "## chunk size {}", chunk_size_id(chunk_size))?;
+        writeln!(w)?;
+
+        let mut header = String::from("| workload | ts_model |");
+        let mut sep = String::from("|---|---|");
+        for encoding in encodings() {
+            header.push_str(&format!(" {} |", encoding.name()));
+            sep.push_str("---:|");
+        }
+        writeln!(w, "{header}")?;
+        writeln!(w, "{sep}")?;
+
+        for (key, cells) in table {
+            let best = best_cell(metric, &cells);
+            let mut line = format!("| {} | {} |", key.workload.id(), key.timestamp_model.id());
+            for (idx, cell) in cells.iter().enumerate() {
+                match cell {
+                    Some(v) => {
+                        let text = metric.format(metric.value(v));
+                        if Some(idx) == best {
+                            line.push_str(&format!(" **{text}** |"));
+                        } else {
+                            line.push_str(&format!(" {text} |"));
+                        }
+                    }
+                    None => line.push_str(" — |"),
+                }
+            }
+            writeln!(w, "{line}")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_pivot_csv(
+    path: &Path,
+    rows: &[(RowKey, RowVals)],
+    metric: PivotMetric,
+) -> std::io::Result<()> {
+    ensure_dir(path)?;
+    let file = File::create(path)?;
+    let mut w = BufWriter::new(file);
+
+    let mut header = String::from("metric,chunk_size,workload,ts_model");
+    for encoding in encodings() {
+        header.push(',');
+        header.push_str(encoding.name());
+    }
+    writeln!(w, "{header}")?;
+
+    for (chunk_size, table) in pivot_tables(rows) {
+        for (key, cells) in table {
+            let mut line = format!(
+                "{},{},{},{}",
+                metric.id(),
+                chunk_size_id(chunk_size),
+                key.workload.id(),
+                key.timestamp_model.id()
+            );
+            for cell in &cells {
+                line.push(',');
+                if let Some(v) = cell {
+                    line.push_str(&format!("{:.6}", metric.value(v)));
+                }
+            }
+            writeln!(w, "{line}")?;
+        }
+    }
+
+    Ok(())
+}
+
 // -------- Main --------
 
 fn main() {
-    // Flags: --check (exit non-zero on regression beyond tolerance), --baseline <path>
+    // Flags: --check (exit non-zero on regression beyond tolerance), --baseline <path>,
+    // --by-workload [metric] (extra pivot report: rows workload/ts_model, columns encoding)
     let mut check = false;
     let mut baseline_path: Option<PathBuf> = None;
-    let mut args = env::args().skip(1);
+    let mut pivot_metric: Option<PivotMetric> = None;
+    let mut args = env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--check" => check = true,
             "--baseline" => baseline_path = args.next().map(PathBuf::from),
+            "--by-workload" => {
+                // Optional metric argument; defaults to the compression ratio.
+                let metric = match args.peek().map(String::as_str) {
+                    Some(next) if !next.starts_with("--") => {
+                        let parsed = PivotMetric::parse(next);
+                        if parsed.is_none() {
+                            eprintln!(
+                                "Unknown --by-workload metric '{next}' (expected ratio, bytes-per-sample, or capacity)"
+                            );
+                            std::process::exit(1);
+                        }
+                        args.next();
+                        parsed
+                    }
+                    _ => Some(PivotMetric::Ratio),
+                };
+                pivot_metric = metric;
+            }
             _ => {}
         }
     }
@@ -247,6 +500,24 @@ fn main() {
         eprintln!("Failed to write Markdown: {e}");
     }
 
+    let pivot_paths = pivot_metric.map(|metric| {
+        let out_csv = PathBuf::from(format!(
+            "target/bench-reports/compression_by_workload_{}.csv",
+            metric.id()
+        ));
+        let out_md = PathBuf::from(format!(
+            "target/bench-reports/compression_by_workload_{}.md",
+            metric.id()
+        ));
+        if let Err(e) = write_pivot_csv(&out_csv, &rows, metric) {
+            eprintln!("Failed to write pivot CSV: {e}");
+        }
+        if let Err(e) = write_pivot_markdown(&out_md, &rows, metric) {
+            eprintln!("Failed to write pivot Markdown: {e}");
+        }
+        (out_csv, out_md)
+    });
+
     // Check against baseline if requested
     if check && !baseline.is_empty() {
         let mut failed = false;
@@ -285,4 +556,11 @@ fn main() {
         out_md.display(),
         rows.len()
     );
+    if let Some((pivot_csv, pivot_md)) = pivot_paths {
+        println!(
+            "By-workload report written to {} and {}",
+            pivot_csv.display(),
+            pivot_md.display()
+        );
+    }
 }
