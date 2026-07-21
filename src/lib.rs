@@ -158,6 +158,19 @@ const COMMAND_ACL_CATEGORIES: &[(&str, &str)] = &[
     ("ts.createrule", "write timeseries"),
     ("ts.deleterule", "write timeseries"),
     ("ts.outliers", "fast read timeseries"),
+    ("ts.xcorr", "read timeseries"),
+    ("ts.forecast", "write timeseries"),
+    ("ts.autoforecast", "read write timeseries"),
+    ("ts.backtest", "read timeseries"),
+    ("ts.decompose", "read timeseries"),
+    ("ts.periods", "read timeseries"),
+    ("ts.autocorrelation", "read timeseries"),
+    ("ts.trend", "read write timeseries"),
+    ("ts.fillgaps", "fast write timeseries"),
+    ("ts.sanitize", "write timeseries"),
+    ("ts.stats", "fast read timeseries"),
+    ("ts.features", "read timeseries"),
+    ("ts.stationarity", "fast read timeseries"),
 ];
 
 /// Assign ACL categories to the commands registered via the command-info path. The
@@ -269,21 +282,8 @@ valkey_module! {
         // `register_commands`. Only internal/admin commands remain in this positional table.
         // ACL categories for the annotated commands are (re-)applied by
         // `assign_command_acl_categories`, since the command-info path does not set them.
-        ["ts.autoforecast", commands::ts_autoforecast_cmd, "write deny-oom", 1, 1, 1, "read write timeseries"],
-        ["ts.decompose", commands::ts_decompose_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.periods", commands::ts_periods_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
         ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["ts._restore", commands::ts_asm_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
-        ["ts.autocorrelation", commands::ts_autocorrelation_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.trend", commands::ts_trend_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.features", commands::ts_features_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.stationarity", commands::ts_stationarity_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
-        ["ts.fillgaps", commands::ts_fillgaps_cmd, "write deny-oom", 1, 1, 1, "fast write timeseries"],
-        ["ts.sanitize", commands::ts_sanitize_cmd, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["ts.stats", commands::ts_stats_cmd, "readonly deny-oom", 1, 1, 1, "fast read timeseries"],
-        ["ts.forecast", commands::ts_forecast_command, "write deny-oom", 1, 1, 1, "write timeseries"],
-        ["ts.backtest", commands::ts_backtest_cmd, "readonly deny-oom", 1, 1, 1, "read timeseries"],
-        ["ts.xcorr", commands::ts_xcorr_cmd, "readonly deny-oom", 1, 2, 1, "read timeseries"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]
