@@ -91,7 +91,7 @@ valkey-server --loadmodule ./target/release/libvalkey_timeseries.so
 
 To run all unit tests, follow these steps:
 
-    $ cargo test
+    $ cargo test --features enable-system-alloc
 
 #### Local development script to build, run format checks, run unit / integration tests, and for cargo release:
 ```
