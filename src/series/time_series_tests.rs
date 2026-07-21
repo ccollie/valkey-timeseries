@@ -7,7 +7,7 @@ mod tests {
     use crate::series::{
         DuplicatePolicy, SampleAddResult, TimeSeries, TimeSeriesOptions, ValueFilter,
     };
-    use crate::tests::generators::{DataGenerator, RandAlgo};
+    use crate::tests::generators::{DataGenerator, ValueWorkload};
     use std::time::Duration;
 
     fn create_test_series() -> TimeSeries {
@@ -230,7 +230,7 @@ mod tests {
         let data = DataGenerator::builder()
             .start(1000)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::Deriv)
+            .algorithm(ValueWorkload::Deriv)
             .samples(60)
             .build()
             .generate();
@@ -731,7 +731,7 @@ mod tests {
         let data = DataGenerator::builder()
             .start(1000)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::Deriv)
+            .algorithm(ValueWorkload::Deriv)
             .samples(1000)
             .build()
             .generate();
@@ -753,7 +753,7 @@ mod tests {
         let samples_to_add = DataGenerator::builder()
             .start(1500)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::StdNorm)
+            .algorithm(ValueWorkload::StdNorm)
             .samples(5)
             .build()
             .generate();
@@ -1563,7 +1563,7 @@ mod tests {
         let data = DataGenerator::builder()
             .start(1000)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::Deriv)
+            .algorithm(ValueWorkload::Deriv)
             .samples(10)
             .build()
             .generate();
@@ -1624,7 +1624,7 @@ mod tests {
         let data = DataGenerator::builder()
             .start(1000)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::StdNorm)
+            .algorithm(ValueWorkload::StdNorm)
             .samples(5)
             .build()
             .generate();
@@ -1652,7 +1652,7 @@ mod tests {
         let data = DataGenerator::builder()
             .start(1000)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::StdNorm)
+            .algorithm(ValueWorkload::StdNorm)
             .samples(10)
             .build()
             .generate();
@@ -1743,7 +1743,7 @@ mod tests {
         let data = DataGenerator::builder()
             .start(1000)
             .interval(Duration::from_millis(1000))
-            .algorithm(RandAlgo::StdNorm)
+            .algorithm(ValueWorkload::StdNorm)
             .samples(10)
             .build()
             .generate();

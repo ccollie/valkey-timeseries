@@ -4,10 +4,9 @@ use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps};
 
 mod support;
 
-use support::generators::ValueWorkload;
 use support::{
-    CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K, DatasetKey, DatasetRegistry, build_chunk,
-    chunk_size_id,
+    CHUNK_SIZE_1K, CHUNK_SIZE_4K, CHUNK_SIZE_64K, DatasetKey, DatasetRegistry, ValueWorkload,
+    build_chunk, chunk_size_id,
 };
 
 fn encodings() -> [ChunkEncoding; 5] {

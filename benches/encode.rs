@@ -1,8 +1,9 @@
-use crate::support::generators::ValueWorkload;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use valkey_timeseries::series::chunks::{ChunkEncoding, ChunkOps, TimeSeriesChunk};
 
 mod support;
+
+use support::ValueWorkload;
 
 fn bench_chunk_sizes(key: support::DatasetKey) -> Vec<usize> {
     match key.workload {

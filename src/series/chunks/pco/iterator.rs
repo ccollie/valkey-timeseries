@@ -203,7 +203,7 @@ mod tests {
     use crate::series::chunks::pco::PcoSampleIterator;
     use crate::series::chunks::pco::pco_utils::{compress_timestamps, compress_values};
     use crate::tests::generators::DataGenerator;
-    use crate::tests::generators::RandAlgo::MackeyGlass;
+    use crate::tests::generators::ValueWorkload::MackeyGlass;
     use std::time::Duration;
 
     #[test]

@@ -1,20 +1,104 @@
 use crate::common::rounding::{round_to_decimal_digits, round_to_sig_figs};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
+use crate::tests::generators::create_rng;
 use crate::tests::generators::generator::{
     DerivativeGenerator, MackeyGlassGenerator, StdNormalGenerator, UniformGenerator,
 };
+use crate::tests::generators::workload::{
+    TimestampModel, bursty_values, constant_int_values, constant_values, counter_values,
+    discrete_values, drift_values, generate_timestamps_with_model, noisy_values, periodic_values,
+};
 use bon::bon;
+use rand::prelude::StdRng;
 use std::ops::Range;
 use std::time::Duration;
 
-#[derive(Debug, Copy, Clone, Default)]
-pub enum RandAlgo {
+/// Default start timestamp used when none is supplied (2023-11-14T22:13:20Z).
+pub const DEFAULT_START_TS: Timestamp = 1_700_000_000_000;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
+pub enum ValueWorkload {
     #[default]
     Uniform,
     StdNorm,
     MackeyGlass,
     Deriv,
+    /// Constant floating point value.
+    Constant,
+    /// Constant integral value.
+    ConstantInt,
+    /// Slow random walk within a narrow band.
+    Drift,
+    /// Alternating sine / sawtooth segments.
+    Periodic,
+    /// Wide-spread gaussian noise.
+    Noisy,
+    /// Quiet stretches punctuated by bursts.
+    Bursty,
+    /// Monotonically increasing counter with resets.
+    Counter,
+    /// Values drawn from a small fixed set.
+    Discrete,
+}
+
+impl ValueWorkload {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Uniform => "uniform",
+            Self::StdNorm => "std_norm",
+            Self::MackeyGlass => "mackey_glass",
+            Self::Deriv => "deriv",
+            Self::Constant => "constant",
+            Self::ConstantInt => "constant_int",
+            Self::Drift => "drift",
+            Self::Periodic => "periodic",
+            Self::Noisy => "noisy",
+            Self::Bursty => "bursty",
+            Self::Counter => "counter",
+            Self::Discrete => "discrete",
+        }
+    }
+
+    pub const fn all() -> &'static [ValueWorkload] {
+        &[
+            Self::Uniform,
+            Self::StdNorm,
+            Self::MackeyGlass,
+            Self::Deriv,
+            Self::Constant,
+            Self::ConstantInt,
+            Self::Drift,
+            Self::Periodic,
+            Self::Noisy,
+            Self::Bursty,
+            Self::Counter,
+            Self::Discrete,
+        ]
+    }
+
+    /// The shape-oriented workloads, in declaration order.
+    pub const fn workloads() -> &'static [ValueWorkload] {
+        &[
+            Self::Constant,
+            Self::ConstantInt,
+            Self::Drift,
+            Self::Periodic,
+            Self::Noisy,
+            Self::Bursty,
+            Self::Counter,
+            Self::Discrete,
+        ]
+    }
+
+    /// Shape-oriented workloads ignore the generator's value range and are
+    /// produced in bulk rather than as an unbounded iterator.
+    pub const fn is_workload(self) -> bool {
+        !matches!(
+            self,
+            Self::Uniform | Self::StdNorm | Self::MackeyGlass | Self::Deriv
+        )
+    }
 }
 
 /// GeneratorOptions contains the parameters for generating random time series data.
@@ -31,7 +115,9 @@ pub struct DataGenerator {
     /// Seed for random number generator.
     seed: Option<u64>,
     /// Type of random number generator.
-    pub typ: RandAlgo,
+    pub typ: ValueWorkload,
+    /// Spacing model applied to generated timestamps.
+    pub timestamp_model: TimestampModel,
     /// Number of significant digits.
     pub significant_digits: Option<usize>,
     /// Number of decimal digits.
@@ -48,7 +134,8 @@ impl DataGenerator {
         #[builder(default = 0.0..1.0)] values: Range<f64>,
         samples: usize,
         seed: Option<u64>,
-        #[builder(default = RandAlgo::StdNorm)] algorithm: RandAlgo,
+        #[builder(default = ValueWorkload::StdNorm)] algorithm: ValueWorkload,
+        #[builder(default)] timestamp_model: TimestampModel,
         significant_digits: Option<usize>,
         decimal_digits: Option<usize>,
     ) -> Self {
@@ -60,6 +147,7 @@ impl DataGenerator {
             interval,
             values,
             typ: algorithm,
+            timestamp_model,
             significant_digits,
             decimal_digits,
         };
@@ -88,6 +176,25 @@ impl DataGenerator {
     pub fn generate(&self) -> Vec<Sample> {
         generate_series_data(self)
     }
+
+    /// Generate a deterministic dataset of the given shape, starting at
+    /// [`DEFAULT_START_TS`] and sampled once per second.
+    pub fn dataset(
+        algorithm: ValueWorkload,
+        timestamp_model: TimestampModel,
+        samples: usize,
+        seed: u64,
+    ) -> Vec<Sample> {
+        DataGenerator::builder()
+            .start(DEFAULT_START_TS)
+            .interval(Duration::from_secs(1))
+            .samples(samples)
+            .seed(seed)
+            .algorithm(algorithm)
+            .timestamp_model(timestamp_model)
+            .build()
+            .generate()
+    }
 }
 
 const ONE_DAY_IN_SECS: u64 = 24 * 60 * 60;
@@ -103,7 +210,8 @@ impl Default for DataGenerator {
             values: 0.0..1.0,
             samples: 100,
             seed: None,
-            typ: RandAlgo::StdNorm,
+            typ: ValueWorkload::StdNorm,
+            timestamp_model: TimestampModel::Regular,
             significant_digits: None,
             decimal_digits: None,
         };
@@ -113,15 +221,32 @@ impl Default for DataGenerator {
 }
 
 fn get_generator_impl(
-    typ: RandAlgo,
+    typ: ValueWorkload,
     seed: Option<u64>,
     range: &Range<f64>,
 ) -> Box<dyn Iterator<Item = f64>> {
     match typ {
-        RandAlgo::Uniform => Box::new(UniformGenerator::new(seed, range)),
-        RandAlgo::StdNorm => Box::new(StdNormalGenerator::new(seed, range)),
-        RandAlgo::Deriv => Box::new(DerivativeGenerator::new(seed, range)),
-        RandAlgo::MackeyGlass => Box::new(MackeyGlassGenerator::new(17, seed, range)),
+        ValueWorkload::Uniform => Box::new(UniformGenerator::new(seed, range)),
+        ValueWorkload::StdNorm => Box::new(StdNormalGenerator::new(seed, range)),
+        ValueWorkload::Deriv => Box::new(DerivativeGenerator::new(seed, range)),
+        ValueWorkload::MackeyGlass => Box::new(MackeyGlassGenerator::new(17, seed, range)),
+        _ => unreachable!("{:?} is a workload, not an iterator generator", typ),
+    }
+}
+
+fn generate_values(options: &DataGenerator, rng: &mut StdRng) -> Vec<f64> {
+    match options.typ {
+        ValueWorkload::Constant => constant_values(options.samples),
+        ValueWorkload::ConstantInt => constant_int_values(options.samples),
+        ValueWorkload::Drift => drift_values(options.samples, rng),
+        ValueWorkload::Periodic => periodic_values(options.samples, rng),
+        ValueWorkload::Noisy => noisy_values(options.samples, rng),
+        ValueWorkload::Bursty => bursty_values(options.samples, rng),
+        ValueWorkload::Counter => counter_values(options.samples, rng),
+        ValueWorkload::Discrete => discrete_values(options.samples, rng),
+        _ => get_generator_impl(options.typ, options.seed, &options.values)
+            .take(options.samples)
+            .collect(),
     }
 }
 
@@ -138,14 +263,15 @@ pub fn generate_series_data(options: &DataGenerator) -> Vec<Sample> {
         (end - options.start) / options.samples as i64
     };
 
-    let generator = get_generator_impl(options.typ, options.seed, &options.values);
-
-    let mut values = generator.take(options.samples).collect::<Vec<f64>>();
-    let timestamps = generate_timestamps(
+    let mut rng = create_rng(options.seed);
+    let timestamps = generate_timestamps_with_model(
+        options.timestamp_model,
         options.samples,
         options.start,
-        Duration::from_millis(interval as u64),
+        interval,
+        &mut rng,
     );
+    let mut values = generate_values(options, &mut rng);
 
     if let Some(significant_digits) = options.significant_digits {
         for v in values.iter_mut() {
@@ -177,4 +303,70 @@ pub fn generate_timestamps(count: usize, start: Timestamp, interval: Duration) -
         t += interval_millis;
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_COUNT: usize = 2_048;
+
+    #[test]
+    fn test_workloads_and_timestamp_models() {
+        for algo in ValueWorkload::all() {
+            for model in TimestampModel::all() {
+                let samples = DataGenerator::dataset(*algo, *model, SAMPLE_COUNT, 42);
+                assert_eq!(
+                    samples.len(),
+                    SAMPLE_COUNT,
+                    "{}/{} sample count",
+                    algo.id(),
+                    model.id()
+                );
+                assert_eq!(samples[0].timestamp, DEFAULT_START_TS);
+                for pair in samples.windows(2) {
+                    assert!(
+                        pair[1].timestamp > pair[0].timestamp,
+                        "{}/{} timestamps must be strictly increasing",
+                        algo.id(),
+                        model.id()
+                    );
+                    assert!(
+                        pair[0].value.is_finite(),
+                        "{}/{} produced a non-finite value",
+                        algo.id(),
+                        model.id()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_regular_model_uses_fixed_interval() {
+        let samples = DataGenerator::dataset(ValueWorkload::Drift, TimestampModel::Regular, 100, 7);
+        for pair in samples.windows(2) {
+            assert_eq!(pair[1].timestamp - pair[0].timestamp, 1_000);
+        }
+    }
+
+    #[test]
+    fn test_seed_is_deterministic() {
+        let first =
+            DataGenerator::dataset(ValueWorkload::Bursty, TimestampModel::Jitter, 1_000, 99);
+        let second =
+            DataGenerator::dataset(ValueWorkload::Bursty, TimestampModel::Jitter, 1_000, 99);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_constant_workloads() {
+        let samples =
+            DataGenerator::dataset(ValueWorkload::Constant, TimestampModel::Regular, 64, 1);
+        assert!(samples.iter().all(|s| s.value == 42.0));
+
+        let samples =
+            DataGenerator::dataset(ValueWorkload::ConstantInt, TimestampModel::Regular, 64, 1);
+        assert!(samples.iter().all(|s| s.value == 1000.0));
+    }
 }
