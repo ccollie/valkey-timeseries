@@ -5,21 +5,11 @@
 //! Mad, Double Mad, and Random Cut Forest approaches.
 
 use super::{
-    AnomalyDetector, AnomalyMethod, AnomalyResult, MADAnomalyOptions,
-    SmoothedZScoreAnomalyDetector,
-    cusum_outlier_detector::CusumOutlierDetector,
-    double_mad_outlier_detector::DoubleMadOutlierDetector,
-    ewma_outlier_detector::{EWMA_DEFAULT_ALPHA, EwmaOutlierDetector},
-    iqr_outlier_detector::{IQR_DEFAULT_THRESHOLD, IQROutlierDetector},
-    mad_outlier_detector::MadOutlierDetector,
-    modified_zscore_outlier_detector::{
-        MODIFIED_ZSCORE_DEFAULT_THRESHOLD, ModifiedZScoreOutlierDetector,
-    },
-    rcf_outlier_detector::{RCFOptions, RcfOutlierDetector},
-    smoothed_zscores::SmoothedZScoreOptions,
+    AnomalyDetector, AnomalyMethod, AnomalyResult, Detector, MADAnomalyOptions,
+    rcf_outlier_detector::RCFOptions, smoothed_zscores::SmoothedZScoreOptions,
     zscore_outlier_detector::ZScoreOutlierDetector,
 };
-use crate::analysis::outliers::esd_outlier_detector::{ESDOutlierDetector, ESDOutlierOptions};
+use crate::analysis::outliers::esd_outlier_detector::ESDOutlierOptions;
 use crate::analysis::seasonality::{Seasonality, seasonally_adjust};
 use crate::analysis::{INSUFFICIENT_DATA_ERROR, TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
 
@@ -148,7 +138,7 @@ fn handle_dispatch(
     values: &[f64],
     options: &AnomalyOptions,
 ) -> TimeSeriesAnalysisResult<AnomalyResult> {
-    let mut detector = build_detector(values, &options.options)?;
+    let mut detector = Detector::build(values, &options.options)?;
     detector.train(values)?;
     let res = detector.detect(values)?;
     debug_assert_eq!(
@@ -158,57 +148,4 @@ fn handle_dispatch(
         options.method()
     );
     Ok(res)
-}
-
-fn build_detector(
-    values: &[f64],
-    method_options: &AnomalyDetectionMethodOptions,
-) -> TimeSeriesAnalysisResult<Box<dyn AnomalyDetector>> {
-    let detector: Box<dyn AnomalyDetector> = match method_options {
-        AnomalyDetectionMethodOptions::Cusum => Box::new(CusumOutlierDetector::default()),
-        AnomalyDetectionMethodOptions::Ewma(alpha) => Box::new(EwmaOutlierDetector::from_series(
-            values,
-            alpha.unwrap_or(EWMA_DEFAULT_ALPHA),
-        )),
-        AnomalyDetectionMethodOptions::InterQuartileRange(threshold) => Box::new(
-            IQROutlierDetector::new(values, threshold.unwrap_or(IQR_DEFAULT_THRESHOLD)),
-        ),
-        AnomalyDetectionMethodOptions::ZScore(threshold) => Box::new(ZScoreOutlierDetector::new(
-            threshold.unwrap_or(ZScoreOutlierDetector::DEFAULT_THRESHOLD),
-        )),
-        AnomalyDetectionMethodOptions::SmoothedZScore(options) => {
-            let detector = SmoothedZScoreAnomalyDetector::new(
-                options.influence,
-                options.threshold,
-                options.lag,
-            )?;
-            Box::new(detector)
-        }
-        AnomalyDetectionMethodOptions::ModifiedZScore(threshold) => {
-            Box::new(ModifiedZScoreOutlierDetector::new(
-                threshold.unwrap_or(MODIFIED_ZSCORE_DEFAULT_THRESHOLD),
-            ))
-        }
-        AnomalyDetectionMethodOptions::Mad(options) => {
-            Box::new(MadOutlierDetector::new(options.k, options.estimator))
-        }
-        AnomalyDetectionMethodOptions::DoubleMAD(options) => {
-            Box::new(DoubleMadOutlierDetector::with_options(options))
-        }
-        AnomalyDetectionMethodOptions::Rcf(opts) => {
-            let detector = RcfOutlierDetector::new(*opts)
-                .map_err(|e| TimeSeriesAnalysisError::InvalidModel(format!("{e:?}")))?;
-            Box::new(detector)
-        }
-        AnomalyDetectionMethodOptions::Esd(options) => {
-            let detector = if let Some(opts) = options {
-                ESDOutlierDetector::new(opts.alpha, opts.hybrid, opts.max_outliers)
-            } else {
-                ESDOutlierDetector::default()
-            };
-            Box::new(detector)
-        }
-    };
-
-    Ok(detector)
 }
