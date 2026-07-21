@@ -8,6 +8,7 @@ use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+acl_categories!(TS_STATS, "ts.stats", "fast read timeseries");
 /// ```text
 /// TS.STATS key [fromTimestamp toTimestamp]
 /// ```
@@ -41,6 +42,19 @@ use valkey_module::{
 /// | n_zeros_end            | Integer | Count of trailing zeros                       |
 /// | skewness               | Float   | Sample skewness                               |
 /// | kurtosis               | Float   | Sample excess kurtosis                        |
+#[valkey_module_macros::command({
+    name: "TS.STATS",
+    flags: [ReadOnly, DenyOOM],
+    summary: "Compute descriptive statistics for a time series.",
+    complexity: "O(N log N) where N is the number of samples in the range.",
+    since: "1.0.0",
+    arity: -2,
+    key_spec: [{
+        flags: [ReadOnly, Access],
+        begin_search: Index({ index: 1 }),
+        find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
+    }]
+})]
 pub fn ts_stats_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 2 {
         return Err(ValkeyError::WrongArity);
