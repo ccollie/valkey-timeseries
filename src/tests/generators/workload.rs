@@ -56,7 +56,7 @@ pub fn generate_timestamps_with_model(
 
     for _ in 1..count {
         let delta = match model {
-            TimestampModel::Regular => interval_millis,
+            TimestampModel::Regular => interval_millis.max(1),
             TimestampModel::Jitter => (interval_millis + jitter.sample(rng)).max(1),
             TimestampModel::Irregular => irregular.sample(rng).round().max(1.0) as i64,
         };
