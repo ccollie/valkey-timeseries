@@ -84,10 +84,6 @@ harness = false
 name = "query_scan"
 harness = false
 
-[[bench]]
-name = "allocations"
-harness = false
-
 [[bin]]
 name = "compression_report"
 path = "tools/compression_report.rs"
