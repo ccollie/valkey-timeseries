@@ -87,7 +87,7 @@ harness = false
 [[bin]]
 name = "compression_report"
 path = "tools/compression_report.rs"
-required-features = ["test-utils"]
+required-features = ["test-utils", "enable-system-alloc"]
 
 [features]
 default = ["min-valkey-compatibility-version-8-0", "croaring/alloc"]
