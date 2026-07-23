@@ -112,7 +112,7 @@ Testing & debugging notes
 Benchmarks
 
 - Criterion benches live in `benches/` and are registered in `Cargo.toml` with `harness = false`: `encode`, `decode`,
-  `query_scan`, `allocations`.
+  `query_scan`.
 - **`--features enable-system-alloc` is required.** Bench and tool binaries link the crate's global allocator
   (`AlignedValkeyAlloc`), which needs a loaded Valkey runtime; without the feature every one of them aborts at startup
   with `Critical error: the Valkey Allocator isn't available` (SIGABRT). Same constraint as `cargo test`.
@@ -131,13 +131,12 @@ Benchmarks
   are comparable across runs, machines, and commits. The matrix is defined in `src/tests/generators/dataset.rs`
   (`benchmark_dataset_keys`, `DatasetKey`, `DATASET_SAMPLES`, `dataset_seed`); chunk sizes are 1k / 4k
   (`DEFAULT_CHUNK_SIZE_BYTES`) / 64k.
-- `benches/allocations.rs` is a placeholder — it benches `4usize + 4`, not allocations.
 - PCO gotcha: `PcoChunk::add_sample` decompresses and recompresses the whole chunk on every call (O(n²) allocations), and
   well-compressing workloads never trip `is_full()`. Use `set_data` for bulk loads; `build_chunk`, `filled_prefix` and
   `build_chunk_until_full` in `src/tests/chunk_utils.rs` already special-case this.
 - Known breakage: `--bench encode` is OOM-killed (SIGKILL) at `encode_append/pco/constant/...`, because
-  `bench_encode_append` calls `add_sample` per sample for every encoding including PCO — the hazard above. `decode`,
-  `query_scan`, and `allocations` all pass `-- --test`.
+  `bench_encode_append` calls `add_sample` per sample for every encoding including PCO — the hazard above. `decode` and
+  `query_scan` all pass `-- --test`.
 - Compression report (not a criterion bench): run it with `tools/compression_report.sh`, which wraps
   `cargo run --release --features "enable-system-alloc,test-utils" --bin compression_report` (both features must be
   named explicitly for a `[[bin]]`; see Cargo features above). It writes
