@@ -71,6 +71,11 @@ fn bench_encode_append(c: &mut Criterion) {
     for key in support::benchmark_dataset_keys() {
         let dataset = registry.dataset(key);
         for encoding in encodings() {
+            // PCO recompresses the whole chunk on every add_sample call (O(n²) allocations).
+            // Skipping it here avoids OOM/timeout; use bench_encode_bulk for PCO throughput.
+            if encoding == ChunkEncoding::Pco {
+                continue;
+            }
             for chunk_size in bench_chunk_sizes(key) {
                 let samples = support::filled_prefix(dataset, encoding, chunk_size);
                 let bench_id = format!(
@@ -90,6 +95,9 @@ fn bench_encode_append(c: &mut Criterion) {
                             || TimeSeriesChunk::new(encoding, chunk_size),
                             |mut chunk| {
                                 for sample in samples {
+                                    if chunk.is_full() {
+                                        break;
+                                    }
                                     chunk.add_sample(sample).expect("add_sample should succeed");
                                 }
                             },
