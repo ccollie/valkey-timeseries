@@ -1,11 +1,11 @@
 //! RDB aux-field persistence for the postings index.
 //!
-//! Design: docs/postings-index-persistence.md (Option A). The whole index snapshot for all dbs is
-//! written as a single length-prefixed string via the module type's `aux_save2` callback with
-//! `AUX_BEFORE_RDB`, so `aux_load` runs before any key loads and consumes exactly one string from
-//! the RDB stream. Any parse failure after that read is soft: the payload is discarded and the
-//! index is rebuilt by the existing per-key `loaded` notification path (`index_series_by_key`).
-//!
+//! Design: The whole index snapshot for all dbs is written as a single length-prefixed string via 
+//! the module type's `aux_save2` callback with `AUX_BEFORE_RDB`, so `aux_load` runs before any key loads 
+//! and consumes exactly one string from the RDB stream. Any parse failure after that read is soft: 
+//! the payload is discarded and the index is rebuilt by the existing per-key `loaded` notification 
+//! path (`index_series_by_key`).
+//! 
 //! Fork safety: `aux_save` runs in the BGSAVE fork child, where a background task holding the
 //! postings write lock at fork time would deadlock the child. All db locks are acquired with
 //! `try_read`; if any is contended we write nothing at all (`aux_save2` omits the aux field
@@ -133,22 +133,34 @@ fn serialize_postings_section(buf: &mut Vec<u8>, db: i32, postings: &Postings) {
 
     // label_index in tree iteration order (sorted): cache-friendly ART rebuild on load.
     //
-    // Stale ids are subtracted here rather than persisted: `mark_ids_as_stale` already cleans
-    // `id_to_key` and `all_postings` at mark time, so the label bitmaps are the only structures
-    // still carrying stale ids — persisting them would persist a cleanup obligation. Subtracting
-    // yields exactly the state a completed GC drain would produce. A stale id whose key is still
-    // in the RDB (a fork can land mid-ASM-export, before the engine's lazy delete) is
-    // resurrected by the post-load count-verification scan, matching the keyspace either way.
-    // The subtraction only costs anything when `stale_ids` is non-empty (rare: the cron GC
-    // drains continuously); entries that become empty are dropped, so the entry count is
-    // written after the entries are serialized.
+    // Keys are written grouped by their shared `name=` prefix, which is emitted once per group
+    // rather than once per entry — the on-disk analogue of the prefix sharing the ART gives us
+    // in memory. Label *value* cardinality is what grows (hosts, instances); the set of label
+    // *names* is small and schema-bound, so a name with k values costs one copy of the name
+    // instead of k. Sorted iteration order is what makes this a single pass: a group's entries
+    // are necessarily contiguous, because every key in it shares the prefix up to and including
+    // the first `=`, and no other group's prefix can fall between them (a prefix never contains
+    // `=` except as its last byte, so no prefix is a prefix of another).
     let stale = &postings.stale_ids;
+    // Group directory: (prefix, entry count) pairs, one per distinct label name.
+    let mut groups: Vec<u8> = Vec::new();
+    let mut group_count: u64 = 0;
     let mut entries: Vec<u8> = Vec::new();
-    let mut entry_count: u64 = 0;
+    let mut open_group: Option<(&[u8], u64)> = None;
     for (key, bitmap) in postings.label_index.iter() {
         if bitmap.is_empty() {
             continue;
         }
+
+        // Stale ids are subtracted here rather than persisted: `mark_ids_as_stale` already cleans
+        // `id_to_key` and `all_postings` at mark time, so the label bitmaps are the only structures
+        // still carrying stale ids — persisting them would persist a cleanup obligation. Subtracting
+        // yields exactly the state a completed GC drain would produce. A stale id whose key is still
+        // in the RDB (a fork can land mid-ASM-export, before the engine's lazy delete) is
+        // resurrected by the post-load count-verification scan, matching the keyspace either way.
+        // The subtraction only costs anything when `stale_ids` is non-empty (rare: the cron GC
+        // drains continuously); entries that become empty are dropped, so each group's count is
+        // written only once its entries have been serialized.
         let cleaned: Cow<PostingsBitmap> = if stale.is_empty() {
             Cow::Borrowed(bitmap)
         } else {
@@ -157,12 +169,40 @@ fn serialize_postings_section(buf: &mut Vec<u8>, db: i32, postings: &Postings) {
         if cleaned.is_empty() {
             continue;
         }
+        
         // `as_str` strips the NUL sentinel; `IndexKey::from(&[u8])` re-appends it on load.
-        write_byte_slice(&mut entries, key.as_str().as_bytes());
+        let full = key.as_str().as_bytes();
+        // Split *after* the first `=` so that `prefix + suffix` reproduces the key byte for
+        // byte, whatever it contains — a value with an `=` in it, or a key with none at all.
+        // Nothing here has to agree with `IndexKey::for_label_value` about where the name ends.
+        let split_at = full
+            .iter()
+            .position(|b| *b == b'=')
+            .map_or(full.len(), |i| i + 1);
+        let (prefix, suffix) = full.split_at(split_at);
+
+        match open_group {
+            Some((open, ref mut count)) if open == prefix => *count += 1,
+            _ => {
+                if let Some((open, count)) = open_group {
+                    write_byte_slice(&mut groups, open);
+                    write_uvarint(&mut groups, count);
+                    group_count += 1;
+                }
+                open_group = Some((prefix, 1));
+            }
+        }
+        write_byte_slice(&mut entries, suffix);
         write_bitmap(&mut entries, &cleaned);
-        entry_count += 1;
     }
-    write_uvarint(buf, entry_count);
+    if let Some((open, count)) = open_group {
+        write_byte_slice(&mut groups, open);
+        write_uvarint(&mut groups, count);
+        group_count += 1;
+    }
+
+    write_uvarint(buf, group_count);
+    buf.extend_from_slice(&groups);
     buf.extend_from_slice(&entries);
 
     // id_to_key in ascending id order: ids share their high epoch bits and increment densely,
@@ -182,15 +222,32 @@ fn deserialize_postings_section(buf: &mut &[u8]) -> PayloadResult<(i32, Postings
     let db = try_read_uvarint(buf).map_err(|e| e.to_string())?;
     let db = i32::try_from(db).map_err(|_| format!("invalid db number {db}"))?;
 
-    let label_count = try_read_uvarint(buf).map_err(|e| e.to_string())? as usize;
+    // Group directory first (see `serialize_postings_section`), then the entries for each group
+    // in the same order. `with_capacity` is clamped: the count comes from the payload, and a
+    // corrupt one must not turn into an unbounded allocation before the read that rejects it.
+    let group_count = try_read_uvarint(buf).map_err(|e| e.to_string())? as usize;
+    let mut groups: Vec<(&[u8], usize)> = Vec::with_capacity(group_count.min(64));
+    for _ in 0..group_count {
+        let prefix = try_read_byte_slice(buf).map_err(|e| e.to_string())?;
+        let count = try_read_uvarint(buf).map_err(|e| e.to_string())? as usize;
+        groups.push((prefix, count));
+    }
+
     let mut label_index = PostingsIndex::new();
-    for _ in 0..label_count {
-        let key_bytes = try_read_byte_slice(buf).map_err(|e| e.to_string())?;
-        let key = IndexKey::from(key_bytes);
-        let bitmap = read_bitmap(buf)?;
-        label_index
-            .try_insert(key, bitmap)
-            .map_err(|e| format!("label index insert failed: {e}"))?;
+    let mut key_bytes: Vec<u8> = Vec::new();
+    for (prefix, count) in groups {
+        for _ in 0..count {
+            let suffix = try_read_byte_slice(buf).map_err(|e| e.to_string())?;
+            let bitmap = read_bitmap(buf)?;
+            key_bytes.clear();
+            key_bytes.reserve(prefix.len() + suffix.len());
+            key_bytes.extend_from_slice(prefix);
+            key_bytes.extend_from_slice(suffix);
+            let key = IndexKey::from(key_bytes.as_slice());
+            label_index
+                .try_insert(key, bitmap)
+                .map_err(|e| format!("label index insert failed: {e}"))?;
+        }
     }
 
     let id_count = try_read_uvarint(buf).map_err(|e| e.to_string())? as usize;
@@ -815,6 +872,76 @@ mod tests {
         // The live ids are untouched.
         assert_eq!(loaded.count(), 2);
         assert!(loaded.all_postings.contains(1) && loaded.all_postings.contains(3));
+    }
+
+    fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|w| *w == needle)
+            .count()
+    }
+
+    /// The point of the grouped encoding: a label name shared by many values is written once,
+    /// not once per value.
+    #[test]
+    fn label_name_is_written_once_per_group() {
+        let mut postings = Postings::default();
+        for i in 0..200u64 {
+            let mut bitmap = PostingsBitmap::new();
+            bitmap.add(i);
+            postings
+                .label_index
+                .try_insert(
+                    IndexKey::for_label_value("region", &format!("us-east-{i}")),
+                    bitmap,
+                )
+                .unwrap();
+        }
+
+        let payload = build_payload(&[(0, &postings)]);
+        assert_eq!(
+            count_occurrences(&payload, b"region="),
+            1,
+            "the shared label name must appear exactly once in the payload"
+        );
+        assert_postings_eq(&parse_aux_payload(&payload).unwrap()[0].1, &postings);
+    }
+
+    /// `prefix ++ suffix` must reproduce every key byte for byte, including shapes that
+    /// `IndexKey::for_label_value` never produces: a value containing `=`, and a key with no
+    /// `=` at all. Also covers the grouping edge cases — a name that extends another name, and
+    /// a group whose single entry has an empty suffix.
+    #[test]
+    fn roundtrip_preserves_unusual_key_shapes() {
+        let keys = ["bare", "a=1", "a=2", "ab=1", "eq=x=y", "eq=x=y=z"];
+        let mut postings = Postings::default();
+        for (i, key) in keys.iter().enumerate() {
+            let mut bitmap = PostingsBitmap::new();
+            bitmap.add(i as u64 + 1);
+            postings
+                .label_index
+                .try_insert(IndexKey::from(*key), bitmap)
+                .unwrap();
+        }
+
+        let payload = build_payload(&[(0, &postings)]);
+        let sections = parse_aux_payload(&payload).unwrap();
+        assert_postings_eq(&sections[0].1, &postings);
+
+        let loaded: Vec<String> = sections[0]
+            .1
+            .label_index
+            .iter()
+            .map(|(k, _)| k.to_string())
+            .collect();
+        let mut expected: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        expected.sort();
+        assert_eq!(loaded, expected);
+
+        // The two `eq=` keys were grouped despite the `=` inside their values, and the
+        // `=`-less key formed its own group rather than being merged into a neighbour.
+        assert_eq!(count_occurrences(&payload, b"eq="), 1);
+        assert_eq!(count_occurrences(&payload, b"bare"), 1);
     }
 
     #[test]
