@@ -1,11 +1,11 @@
 //! RDB aux-field persistence for the postings index.
 //!
-//! Design: The whole index snapshot for all dbs is written as a single length-prefixed string via 
-//! the module type's `aux_save2` callback with `AUX_BEFORE_RDB`, so `aux_load` runs before any key loads 
-//! and consumes exactly one string from the RDB stream. Any parse failure after that read is soft: 
-//! the payload is discarded and the index is rebuilt by the existing per-key `loaded` notification 
+//! Design: The whole index snapshot for all dbs is written as a single length-prefixed string via
+//! the module type's `aux_save2` callback with `AUX_BEFORE_RDB`, so `aux_load` runs before any key loads
+//! and consumes exactly one string from the RDB stream. Any parse failure after that read is soft:
+//! the payload is discarded and the index is rebuilt by the existing per-key `loaded` notification
 //! path (`index_series_by_key`).
-//! 
+//!
 //! Fork safety: `aux_save` runs in the BGSAVE fork child, where a background task holding the
 //! postings write lock at fork time would deadlock the child. All db locks are acquired with
 //! `try_read`; if any is contended we write nothing at all (`aux_save2` omits the aux field
@@ -169,7 +169,6 @@ fn serialize_postings_section(buf: &mut Vec<u8>, db: i32, postings: &Postings) {
         if cleaned.is_empty() {
             continue;
         }
-        
         // `as_str` strips the NUL sentinel; `IndexKey::from(&[u8])` re-appends it on load.
         let full = key.as_str().as_bytes();
         // Split *after* the first `=` so that `prefix + suffix` reproduces the key byte for
