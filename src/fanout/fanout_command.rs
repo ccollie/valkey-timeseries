@@ -27,6 +27,19 @@ pub(super) type FanoutResponseCallback =
 
 pub type FanoutCommandResult<T = ()> = Result<T, FanoutError>;
 
+/// Log a per-target fanout failure — the warning [`FanoutCommand::on_error`]
+/// emits by default.
+///
+/// Exposed because Rust has no way to call a trait method's default body from an
+/// override: an implementation that overrides `on_error` only to latch some
+/// state still has to report the failure, and should report it identically.
+pub fn log_fanout_failure(operation: &str, target: &NodeInfo, error: &FanoutError) {
+    crate::common::logging::log_warning(format!(
+        "Fanout operation {operation}, failed for target {}: {error}",
+        target.socket_address,
+    ))
+}
+
 /// A trait representing a fanout operation that can be performed across cluster nodes.
 /// It handles processing node-specific requests, managing responses, and generating the
 /// final reply to the client.
