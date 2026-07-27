@@ -89,6 +89,437 @@ pub enum FanoutTarget {
     HashTagsPrimary(Vec<String>),
 }
 
+/// Node role enumeration
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeRole {
+    Primary,
+    Replica,
+}
+
+impl Display for NodeRole {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeRole::Primary => write!(f, "Primary"),
+            NodeRole::Replica => write!(f, "Replica"),
+        }
+    }
+}
+
+/// Node location enumeration
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NodeLocation {
+    #[default]
+    Local,
+    Remote,
+}
+
+impl Display for NodeLocation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeLocation::Local => write!(f, "Local"),
+            NodeLocation::Remote => write!(f, "Remote"),
+        }
+    }
+}
+
+/// Socket address for a node. Derived Eq/Hash so it can be used as a map key.
+#[derive(Copy, Clone, Debug, Eq)]
+pub struct SocketAddress {
+    pub primary_endpoint: IpAddr,
+    pub port: u16,
+}
+
+impl PartialEq for SocketAddress {
+    fn eq(&self, other: &Self) -> bool {
+        self.primary_endpoint == other.primary_endpoint && self.port == other.port
+    }
+}
+
+impl Display for SocketAddress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.primary_endpoint, self.port)
+    }
+}
+
+impl Hash for SocketAddress {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.primary_endpoint.hash(state);
+        self.port.hash(state);
+    }
+}
+
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+pub struct SlotRangeSet {
+    ranges: RangeSetBlaze<u16>,
+}
+
+impl SlotRangeSet {
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.ranges.len() as usize
+    }
+
+    #[cfg(test)]
+    pub fn contains(&self, slot: u16) -> bool {
+        self.ranges.contains(slot)
+    }
+
+    pub fn insert_range(&mut self, start: u16, end: u16) {
+        debug_assert!(start <= end, "Invalid range: start ({start}) > end ({end})");
+        self.ranges.ranges_insert(start..=end);
+    }
+
+    pub fn range_iter(&self) -> RangesIter<'_, u16> {
+        self.ranges.ranges()
+    }
+
+    pub fn append(&mut self, other: &SlotRangeSet) {
+        for range in other.range_iter() {
+            self.ranges.ranges_insert(range.clone());
+        }
+    }
+
+    /// Helper method to calculate slot fingerprint
+    fn calculate_fingerprint(&self) -> u64 {
+        let mut hasher = DeterministicHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl Display for SlotRangeSet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.ranges.fmt(f)
+    }
+}
+
+impl Deref for SlotRangeSet {
+    type Target = RangeSetBlaze<u16>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ranges
+    }
+}
+
+pub type NodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for null terminator
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct NodeId(NodeIdBuf);
+
+impl NodeId {
+    /// Construct a [`NodeId`] from a raw `*const c_char` pointer returned by the
+    /// Valkey C API (e.g., [`ValkeyModule_GetMyClusterID`], cluster-message
+    /// sender IDs, or `CLUSTER SLOTS` reply fields).
+    ///
+    /// This is the **only** place in the codebase that converts a raw pointer
+    /// into a [`NodeId`].  All other code should obtain [`NodeId`] values
+    /// through this constructor or via [`NodeId::from_bytes`].
+    ///
+    /// # Null pointers
+    ///
+    /// If `node_id_ptr` is null, an empty (all-zero) [`NodeId`] is returned
+    /// silently.  This is intentional: several call-sites receive possibly-null
+    /// pointers from Valkey and rely on the resulting empty [`NodeId`] to
+    /// represent "no node" without an additional null-check at every call-site.
+    ///
+    /// # Safety
+    ///
+    /// When `node_id_ptr` is **non-null**, the caller must ensure it points to
+    /// a buffer of at least [`VALKEYMODULE_NODE_ID_LEN`] bytes (40) holding a
+    /// hex-encoded, null-terminated node ID string, e.g.
+    /// `"07c37dfeb235213a872192d90877d0cd55635b91"`.  The pointer is only read;
+    /// the bytes are copied into an owned buffer and the pointer is not retained.
+    ///
+    /// This function is safe to call from any thread — it performs no
+    /// synchronisation and only reads from the caller-provided pointer.
+    pub fn from_raw(node_id_ptr: *const std::os::raw::c_char) -> Self {
+        let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+
+        if node_id_ptr.is_null() {
+            return NodeId(buf);
+        }
+
+        // SAFETY: caller guarantees node_id_ptr is non-null and points to at
+        // least VALKEYMODULE_NODE_ID_LEN bytes of initialized memory.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(node_id_ptr as *const u8, VALKEYMODULE_NODE_ID_LEN as usize)
+        };
+
+        // In debug builds, verify the bytes look like a hex node ID.
+        debug_assert!(
+            bytes.iter().all(|b| b.is_ascii_hexdigit() || *b == 0),
+            "NodeId::from_raw: non-null pointer contains non-hex bytes"
+        );
+
+        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        NodeId(buf)
+    }
+
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        let mut buf: NodeIdBuf = [0; (VALKEYMODULE_NODE_ID_LEN as usize) + 1];
+        let len = bytes.len().min(VALKEYMODULE_NODE_ID_LEN as usize);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        NodeId(buf)
+    }
+
+    pub fn raw_ptr(&self) -> *const std::os::raw::c_char {
+        if self.is_empty() {
+            return std::ptr::null();
+        }
+        // SAFETY: self.0 is a null-terminated byte array
+        self.0.as_ptr() as *const std::os::raw::c_char
+    }
+
+    pub fn as_str(&self) -> &str {
+        if self.is_empty() {
+            return "";
+        }
+        // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
+        let buf = &self.0[..VALKEYMODULE_NODE_ID_LEN as usize];
+        debug_assert!(
+            std::str::from_utf8(buf).is_ok(),
+            "NodeId::as_str: node id bytes are not valid UTF-8"
+        );
+        unsafe { std::str::from_utf8_unchecked(buf) }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        if self.is_empty() {
+            return &[];
+        }
+        &self.0[..VALKEYMODULE_NODE_ID_LEN as usize]
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.0[0] == 0
+    }
+}
+
+impl AsRef<str> for NodeId {
+    fn as_ref(&self) -> &str {
+        // SAFETY: self.0 is always valid UTF-8 as it is copied from valid node ID strings
+        let buf = &self.0[..VALKEYMODULE_NODE_ID_LEN as usize];
+        debug_assert!(
+            std::str::from_utf8(buf).is_ok(),
+            "NodeId::as_ref: node id bytes are not valid UTF-8"
+        );
+        unsafe { std::str::from_utf8_unchecked(buf) }
+    }
+}
+
+impl AsRef<[u8]> for NodeId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0[..VALKEYMODULE_NODE_ID_LEN as usize]
+    }
+}
+
+impl PartialOrd for NodeId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NodeId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Display for NodeId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Borrow<str> for NodeId {
+    fn borrow(&self) -> &str {
+        self.as_ref()
+    }
+}
+
+impl Default for NodeId {
+    fn default() -> Self {
+        NodeId([0; VALKEYMODULE_NODE_ID_LEN as usize + 1])
+    }
+}
+
+/// Static buffer holding the current node's ID
+pub static CURRENT_NODE_ID: LazyLock<NodeId> = LazyLock::new(|| {
+    let node_id = unsafe {
+        ValkeyModule_GetMyClusterID.expect("ValkeyModule_GetMyClusterID function is unavailable")()
+    };
+    NodeId::from_raw(node_id)
+});
+
+/// Information about a cluster node
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct NodeInfo {
+    pub id: NodeId,
+    pub shard_id: NodeId,
+    pub socket_address: SocketAddress,
+    pub role: NodeRole,
+    pub location: NodeLocation,
+}
+
+impl NodeInfo {
+    pub fn address(&self) -> String {
+        if self.location == NodeLocation::Local {
+            String::new()
+        } else {
+            self.socket_address.to_string()
+        }
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.location == NodeLocation::Local
+    }
+
+    /// A distinct remote primary on `port`, for tests that need a response
+    /// target and nothing else about the node.
+    #[cfg(test)]
+    pub(crate) fn for_test(port: u16) -> NodeInfo {
+        use std::net::Ipv4Addr;
+        NodeInfo {
+            id: NodeId::default(),
+            shard_id: NodeId::default(),
+            socket_address: SocketAddress {
+                primary_endpoint: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                port,
+            },
+            role: NodeRole::Primary,
+            location: NodeLocation::Remote,
+        }
+    }
+}
+
+impl PartialOrd for NodeInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NodeInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl Hash for NodeInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl fmt::Debug for NodeInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NodeInfo")
+            .field("id", &format_args!("{}", self.id))
+            .field("shard_id", &format_args!("{}", self.shard_id))
+            .field("socket_address", &self.socket_address)
+            .field("role", &self.role)
+            .field("location", &self.location)
+            .finish()
+    }
+}
+
+impl Borrow<NodeId> for NodeInfo {
+    fn borrow(&self) -> &NodeId {
+        &self.id
+    }
+}
+
+/// Information about a shard in the cluster
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ShardInfo {
+    /// id is the primary node id
+    pub id: NodeId,
+    /// the primary node can be None
+    pub primary: Option<NodeInfo>,
+    pub replicas: Vec<NodeInfo>,
+    pub owned_slots: SlotRangeSet,
+    /// Whether this shard is local
+    pub is_local: bool,
+    /// Hash of an owned_slots set
+    pub slots_fingerprint: u64,
+    pub is_consistent: bool,
+}
+
+impl ShardInfo {
+    /// Pick a node from the shard.
+    /// - replica_only: pick only from replicas (must exist)
+    /// - prefer_replica: pick a replica if available, else primary
+    fn pick_target<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        replica_only: bool,
+        prefer_replica: bool,
+    ) -> NodeInfo {
+        if replica_only {
+            debug_assert!(
+                !self.replicas.is_empty(),
+                "Shard has no replicas to select from in replica-only mode"
+            );
+            let idx = rng.random_range(0..self.replicas.len());
+            return self.replicas[idx];
+        }
+
+        if prefer_replica && !self.replicas.is_empty() {
+            let idx = rng.random_range(0..self.replicas.len());
+            return self.replicas[idx];
+        }
+
+        if let Some(primary) = self.primary {
+            if self.replicas.is_empty() {
+                return primary;
+            }
+            // random between primary + replicas
+            let idx = rng.random_range(0..(self.replicas.len() + 1));
+            if idx == 0 {
+                primary
+            } else {
+                self.replicas[idx - 1]
+            }
+        } else {
+            assert!(
+                !self.replicas.is_empty(),
+                "Shard has no nodes to select from"
+            );
+            let idx = rng.random_range(0..self.replicas.len());
+            self.replicas[idx]
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.primary.is_none() && self.replicas.is_empty()
+    }
+}
+
+impl PartialOrd<ShardInfo> for ShardInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ShardInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl Borrow<NodeId> for ShardInfo {
+    fn borrow(&self) -> &NodeId {
+        &self.id
+    }
+}
+
+impl Borrow<str> for ShardInfo {
+    fn borrow(&self) -> &str {
+        self.id.as_ref()
+    }
+}
+
 /// Helper describing a parsed slot range before building the slot -> shard map.
 #[derive(Copy, Clone)]
 struct SlotRangeInfo {
