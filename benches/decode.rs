@@ -9,13 +9,11 @@ use support::{
     build_chunk, chunk_size_id,
 };
 
-fn encodings() -> [ChunkEncoding; 5] {
+fn encodings() -> [ChunkEncoding; 3] {
     [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
-        ChunkEncoding::TsXor,
-        ChunkEncoding::Xor2,
-        ChunkEncoding::Pco,
+        ChunkEncoding::Chimp,
     ]
 }
 

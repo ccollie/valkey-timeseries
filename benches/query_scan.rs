@@ -17,15 +17,15 @@ const SCAN_WORKLOADS: &[ValueWorkload] = &[
     ValueWorkload::Drift,
     ValueWorkload::Noisy,
     ValueWorkload::Bursty,
+    ValueWorkload::BurstyQuantized,
+    ValueWorkload::Discrete,
 ];
 
-fn encodings() -> [ChunkEncoding; 5] {
+fn encodings() -> [ChunkEncoding; 3] {
     [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
-        ChunkEncoding::TsXor,
-        ChunkEncoding::Xor2,
-        ChunkEncoding::Pco,
+        ChunkEncoding::Chimp,
     ]
 }
 

@@ -9,6 +9,7 @@ mod tests {
         DuplicatePolicy, SampleAddResult,
         chunks::{Chunk, ChunkEncoding, ChunkOps, TimeSeriesChunk},
     };
+    use crate::tests::chunk_utils::encoded_size;
     use crate::tests::generators::{DataGenerator, ValueWorkload};
     use std::time::Duration;
 
@@ -19,12 +20,10 @@ mod tests {
         (f1 - f2).abs() < f64::EPSILON
     }
 
-    const CHUNK_TYPES: [ChunkEncoding; 5] = [
+    const CHUNK_TYPES: [ChunkEncoding; 3] = [
         ChunkEncoding::Uncompressed,
         ChunkEncoding::Gorilla,
-        ChunkEncoding::Xor2,
-        ChunkEncoding::TsXor,
-        ChunkEncoding::Pco,
+        ChunkEncoding::Chimp,
     ];
 
     fn generate_random_samples(count: usize) -> Vec<Sample> {
@@ -1256,6 +1255,37 @@ mod tests {
         }
     }
 
+    /// `memory_usage` must account for the encoded payload on the heap.
+    ///
+    /// A manual `GetSize` impl that overrides only `get_size` is invisible to
+    /// the derived impl of any type containing it, which silently reported a
+    /// bare `size_of::<TimeSeriesChunk>()` for uncompressed and gorilla
+    /// series regardless of how many samples they held.
+    #[test]
+    fn test_memory_usage_counts_encoded_payload() {
+        const SAMPLE_COUNT: usize = 2000;
+
+        for chunk_type in CHUNK_TYPES {
+            let mut chunk = TimeSeriesChunk::new(chunk_type, 1024 * 1024);
+            for sample in generate_random_samples(SAMPLE_COUNT).iter() {
+                chunk.add_sample(sample).unwrap();
+            }
+            assert_eq!(chunk.len(), SAMPLE_COUNT, "{chunk_type:?} lost samples");
+
+            let empty = TimeSeriesChunk::new(chunk_type, 1024 * 1024).memory_usage();
+            let filled = chunk.memory_usage();
+            let payload = encoded_size(&chunk);
+
+            // The payload lives on the heap, so a filled chunk has to outweigh
+            // an empty one by at least the bytes the encoder wrote.
+            assert!(
+                filled >= empty + payload,
+                "{chunk_type:?}: memory_usage {filled} does not cover {payload} encoded \
+                 bytes over the empty baseline of {empty}",
+            );
+        }
+    }
+
     #[test]
     fn test_encode() {
         struct Test {
@@ -2444,7 +2474,7 @@ mod tests {
         for encoding in [
             ChunkEncoding::Uncompressed,
             ChunkEncoding::Gorilla,
-            ChunkEncoding::Pco,
+            ChunkEncoding::Chimp,
         ] {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![
@@ -2527,7 +2557,7 @@ mod tests {
         for encoding in [
             ChunkEncoding::Uncompressed,
             ChunkEncoding::Gorilla,
-            ChunkEncoding::Pco,
+            ChunkEncoding::Chimp,
         ] {
             let mut chunk = TimeSeriesChunk::new(encoding, 1024);
             let samples = vec![

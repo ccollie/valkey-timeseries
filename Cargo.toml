@@ -29,7 +29,6 @@ num-traits = "0.2"
 joinkit = "0.2.0"
 krcf = "0.4"
 papaya = "0.2"
-pco = "1.0"
 prost = "0.14"
 rand = { version = "0.10" }
 rand_distr = "0.6"
@@ -87,6 +86,16 @@ harness = false
 [[bin]]
 name = "compression_report"
 path = "tools/compression_report.rs"
+required-features = ["test-utils", "enable-system-alloc"]
+
+[[bin]]
+name = "latency_report"
+path = "tools/latency_report.rs"
+required-features = ["test-utils", "enable-system-alloc"]
+
+[[bin]]
+name = "wire_report"
+path = "tools/wire_report.rs"
 required-features = ["test-utils", "enable-system-alloc"]
 
 [features]

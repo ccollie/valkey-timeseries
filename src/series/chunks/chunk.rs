@@ -26,11 +26,9 @@ pub const MIN_SAMPLES_FOR_BPS_ESTIMATE: usize = 16;
 #[repr(u8)]
 pub enum ChunkEncoding {
     Uncompressed = 1,
-    #[default]
     Gorilla = 2,
-    TsXor = 3,
-    Pco = 4,
-    Xor2 = 5,
+    #[default]
+    Chimp = 3,
 }
 
 impl ChunkEncoding {
@@ -38,9 +36,7 @@ impl ChunkEncoding {
         match self {
             ChunkEncoding::Uncompressed => "uncompressed",
             ChunkEncoding::Gorilla => "gorilla",
-            ChunkEncoding::TsXor => "tsxor",
-            ChunkEncoding::Xor2 => "xor2",
-            ChunkEncoding::Pco => "pco",
+            ChunkEncoding::Chimp => "chimp",
         }
     }
 
@@ -61,9 +57,7 @@ impl TryFrom<u8> for ChunkEncoding {
         match value {
             1 => Ok(ChunkEncoding::Uncompressed),
             2 => Ok(ChunkEncoding::Gorilla),
-            3 => Ok(ChunkEncoding::TsXor),
-            4 => Ok(ChunkEncoding::Pco),
-            5 => Ok(ChunkEncoding::Xor2),
+            3 => Ok(ChunkEncoding::Chimp),
             _ => Err(ValkeyError::Str(error_consts::INVALID_CHUNK_ENCODING)),
         }
     }
@@ -92,9 +86,7 @@ fn parse_encoding(encoding: &str) -> Option<ChunkEncoding> {
         "compressed" => ChunkEncoding::default(),
         "uncompressed" => ChunkEncoding::Uncompressed,
         "gorilla" => ChunkEncoding::Gorilla,
-        "tsxor" => ChunkEncoding::TsXor,
-        "xor2" => ChunkEncoding::Xor2,
-        "pco" => ChunkEncoding::Pco,
+        "chimp" => ChunkEncoding::Chimp,
     }
 }
 
@@ -216,9 +208,7 @@ mod tests {
         let encodings = [
             ChunkEncoding::Uncompressed,
             ChunkEncoding::Gorilla,
-            ChunkEncoding::TsXor,
-            ChunkEncoding::Pco,
-            ChunkEncoding::Xor2,
+            ChunkEncoding::Chimp,
         ];
 
         for &enc in &encodings {
@@ -230,11 +220,12 @@ mod tests {
 
     #[test]
     fn chunk_encoding_invalid_u8_returns_err() {
-        // Pick a value outside the defined range (1..=5)
-        let invalid: u8 = 0u8;
-        assert!(ChunkEncoding::try_from(invalid).is_err());
-
-        let invalid2: u8 = 255u8;
-        assert!(ChunkEncoding::try_from(invalid2).is_err());
+        // The defined discriminants are contiguous over 1..=3; everything else is invalid.
+        for invalid in [0u8, 4u8, 5u8, 255u8] {
+            assert!(
+                ChunkEncoding::try_from(invalid).is_err(),
+                "byte {invalid} should not decode to an encoding"
+            );
+        }
     }
 }

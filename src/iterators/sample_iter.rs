@@ -1,19 +1,15 @@
 use crate::common::Sample;
 use crate::iterators::TimeSeriesRangeIterator;
 use crate::iterators::vec_sample_iterator::VecSampleIterator;
-use crate::series::chunks::{
-    GorillaChunkIterator, PcoSampleIterator, TsXorChunkIterator, Xor2RangeIterator,
-};
+use crate::series::chunks::{ChimpChunkIterator, GorillaChunkIterator};
 
 #[derive(Default)]
 pub enum SampleIter<'a> {
     Slice(std::slice::Iter<'a, Sample>),
     Vec(VecSampleIterator),
     Gorilla(GorillaChunkIterator<'a>),
-    Pco(Box<PcoSampleIterator<'a>>),
-    TSXor(TsXorChunkIterator<'a>),
+    Chimp(Box<ChimpChunkIterator<'a>>),
     Range(TimeSeriesRangeIterator<'a>),
-    XOR2(Box<Xor2RangeIterator<'a>>),
     #[default]
     Empty,
 }
@@ -30,14 +26,8 @@ impl<'a> SampleIter<'a> {
     pub fn gorilla(iter: GorillaChunkIterator<'a>) -> Self {
         SampleIter::Gorilla(iter)
     }
-    pub fn pco(iter: PcoSampleIterator<'a>) -> Self {
-        SampleIter::Pco(Box::new(iter))
-    }
-    pub fn tsxor(iter: TsXorChunkIterator<'a>) -> Self {
-        SampleIter::TSXor(iter)
-    }
-    pub fn xor2(iter: Xor2RangeIterator<'a>) -> Self {
-        SampleIter::XOR2(Box::new(iter))
+    pub fn chimp(iter: ChimpChunkIterator<'a>) -> Self {
+        SampleIter::Chimp(Box::new(iter))
     }
 }
 
@@ -49,11 +39,9 @@ impl Iterator for SampleIter<'_> {
             SampleIter::Slice(slice) => slice.next().copied(),
             SampleIter::Vec(iter) => iter.next(),
             SampleIter::Gorilla(iter) => iter.next(),
-            SampleIter::Pco(iter) => iter.next(),
-            SampleIter::TSXor(iter) => iter.next(),
+            SampleIter::Chimp(iter) => iter.next(),
             SampleIter::Range(range) => range.next(),
             SampleIter::Empty => None,
-            SampleIter::XOR2(iter) => iter.next(),
         }
     }
 }
@@ -76,14 +64,8 @@ impl<'a> From<GorillaChunkIterator<'a>> for SampleIter<'a> {
     }
 }
 
-impl<'a> From<TsXorChunkIterator<'a>> for SampleIter<'a> {
-    fn from(value: TsXorChunkIterator<'a>) -> Self {
-        Self::TSXor(value)
-    }
-}
-
-impl<'a> From<PcoSampleIterator<'a>> for SampleIter<'a> {
-    fn from(value: PcoSampleIterator<'a>) -> Self {
-        Self::Pco(Box::new(value))
+impl<'a> From<ChimpChunkIterator<'a>> for SampleIter<'a> {
+    fn from(value: ChimpChunkIterator<'a>) -> Self {
+        Self::Chimp(Box::new(value))
     }
 }

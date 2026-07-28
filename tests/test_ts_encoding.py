@@ -49,11 +49,9 @@ class TestTsEncodingIntegration(ValkeyTimeSeriesTestCaseBase):
 
         cases = [
             ("UNCOMPRESSED", "uncompressed", "uncompressed"),
-            ("COMPRESSED", "gorilla", "compressed"),
+            ("COMPRESSED", "chimp", "compressed"),
             ("GORILLA", "gorilla", "compressed"),
-            ("PCO", "pco", "compressed"),
-            ("XOR2", "xor2", "compressed"),
-            ("TSXOR", "tsxor", "compressed"),
+            ("CHIMP", "chimp", "compressed"),
         ]
 
         keys_by_encoding = {}

@@ -312,16 +312,21 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         self._roundtrip_encoding(client, 'UNCOMPRESSED', 'uncompressed', 'uncompressed')
 
     def test_save_restore_gorilla_encoding(self):
-        """RDB round-trip preserves data and encoding for GORILLA chunks.
-
-        Also verifies that the COMPRESSED alias resolves to the same
-        gorilla encoding after a save/restore cycle.
-        """
+        """RDB round-trip preserves data and encoding for GORILLA chunks."""
         client = self.server.get_new_client()
         self._roundtrip_encoding(client, 'GORILLA', 'gorilla', 'compressed')
 
-        # COMPRESSED is an alias for Gorilla – confirm the encoding name
-        # stored to RDB is still 'gorilla' after restore.
+    def test_save_restore_chimp_encoding(self):
+        """RDB round-trip preserves data and encoding for CHIMP chunks.
+
+        Also verifies that the COMPRESSED alias resolves to the same
+        chimp encoding after a save/restore cycle.
+        """
+        client = self.server.get_new_client()
+        self._roundtrip_encoding(client, 'CHIMP', 'chimp', 'compressed')
+
+        # COMPRESSED is an alias for the default encoding, Chimp – confirm the
+        # encoding name stored to RDB is still 'chimp' after restore.
         alias_key = 'enc_roundtrip:compressed_alias'
         client.execute_command(
             'TS.CREATE', alias_key,
@@ -332,8 +337,8 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
             client.execute_command('TS.ADD', alias_key, 2_000_000 + i * 1000, float(i))
 
         pre_info = get_info(client, alias_key)
-        assert pre_info['encoding'] == 'gorilla', (
-            "COMPRESSED alias should resolve to 'gorilla' encoding"
+        assert pre_info['encoding'] == 'chimp', (
+            "COMPRESSED alias should resolve to 'chimp' encoding"
         )
 
         client.bgsave()
@@ -343,28 +348,13 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
 
         post_info = get_info(client, alias_key)
-        assert post_info['encoding'] == 'gorilla', (
-            "COMPRESSED alias: encoding should still read 'gorilla' after restore"
+        assert post_info['encoding'] == 'chimp', (
+            "COMPRESSED alias: encoding should still read 'chimp' after restore"
         )
         assert post_info['chunkType'] == 'compressed'
 
-    def test_save_restore_pco_encoding(self):
-        """RDB round-trip preserves data and encoding for PCO chunks."""
-        client = self.server.get_new_client()
-        self._roundtrip_encoding(client, 'PCO', 'pco', 'compressed')
-
-    def test_save_restore_tsxor_encoding(self):
-        """RDB round-trip preserves data and encoding for TSXOR chunks."""
-        client = self.server.get_new_client()
-        self._roundtrip_encoding(client, 'TSXOR', 'tsxor', 'compressed')
-
-    def test_save_restore_xor2_encoding(self):
-        """RDB round-trip preserves data and encoding for XOR2 chunks."""
-        client = self.server.get_new_client()
-        self._roundtrip_encoding(client, 'XOR2', 'xor2', 'compressed')
-
     def test_save_restore_all_encodings_digest_match(self):
-        """All five chunk encodings produce identical per-key digests after a
+        """All three chunk encodings produce identical per-key digests after a
         single bgsave/restart cycle.  This catches any encoding-specific
         regression in a single test run.
         """
@@ -373,9 +363,7 @@ class TestTimeseriesSaveRestore(ValkeyTimeSeriesTestCaseBase):
         encoding_cases = [
             ('UNCOMPRESSED', 'uncompressed', 'uncompressed'),
             ('GORILLA',      'gorilla',      'compressed'),
-            ('PCO',          'pco',          'compressed'),
-            ('TSXOR',        'tsxor',        'compressed'),
-            ('XOR2',         'xor2',         'compressed'),
+            ('CHIMP',        'chimp',        'compressed'),
         ]
 
         keys = []

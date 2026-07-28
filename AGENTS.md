@@ -14,6 +14,7 @@ Quick start (commands you can run)
     - Run a subset of Python integration tests: `TEST_PATTERN="test_ts_add" SERVER_VERSION=unstable ./build.sh`
 - Benchmarks: `cargo bench --features enable-system-alloc` (see Benchmarks below — the feature is mandatory).
 - Compression report: `tools/compression_report.sh` (add `--check` to fail on regressions against a saved baseline).
+- Latency report: `tools/latency_report.sh`. Wire-payload report: `tools/wire_report.sh` (see Benchmarks below).
 
 Key ENV and behavior (from `./build.sh`)
 
@@ -40,8 +41,10 @@ High-level architecture (big picture)
     - `["TS.ADD", commands::ts_add_cmd, "write deny-oom", 1, 1, 1, "write timeseries"]`
 - Time-series core lives under `src/series` (storage, encoding, background tasks, indexes). Index/init helpers:
   `init_croaring_allocator()` and `init_background_tasks()` are invoked from `src/lib.rs`.
-  - `src/series/chunks/` implements five encoding formats: **Gorilla** (default), **PCO**, **TsXOR**, **Uncompressed**,
-    **XOR2**. The default is controlled by `DEFAULT_CHUNK_ENCODING` in `src/config.rs`.
+  - `src/series/chunks/` implements three encoding formats: **Chimp** (ELF-on-Chimp, default),
+    **Gorilla**, **Uncompressed**. The default is controlled by `DEFAULT_CHUNK_ENCODING` in `src/config.rs`.
+    Storage encoding is the user's choice; the encoding used for cluster *wire* payloads is a separate, internal policy —
+    see "Wire encoding policy" under conventions below.
   - ACL filtering per series: `src/series/acl.rs`.
 - Cross-node fanout / clustering patterns: `src/fanout` and `src/commands/*_fanout_command.rs` use protobuf (
   `src/commands/fanout.*.proto`) and explicit fanout registration (`register_fanout_operations`) to implement
@@ -64,6 +67,23 @@ Project-specific conventions and patterns
   messages for cluster aggregation. Seven operations are currently registered (see `register_fanout_operations` in
   `src/commands/mod.rs`): `LabelStatsFanoutCommand`, `CardFanoutCommand`, `LabelSearchFanoutCommand`,
   `MDelFanoutCommand`, `MGetFanoutCommand`, `MRangeFanoutCommand`, `QueryIndexFanoutCommand`.
+- Wire encoding policy: `samples_to_chunk` / `samples_to_chunk_lossless` in `src/series/chunks/serialization.rs` are the
+  **single** decision point for how samples are encoded onto the cluster wire. Two tiers, keyed on sample count:
+  below `WIRE_COMPRESSION_MIN_SAMPLES` (16) an `UncompressedChunk`, at or above it a `ChimpChunk`. Do not add a third
+  tier or hand-roll an encoding at a call site — both were true before and neither survived measurement (see the wire
+  report below): Chimp is smaller than Gorilla from ~12 samples up and cheaper to decode from ~16, so Gorilla has no
+  window where it wins, and below ~12 every compressed encoding can produce a payload *larger* than the raw samples.
+  Two things about this are easy to get wrong:
+    - **Only data that actually crosses the network is compressed.** `handle_grouping` in `src/series/mrange.rs` runs
+      solely on the node answering the client (`process_mrange` returns early when clustered), so it builds uncompressed
+      chunks; compressing there would only be undone by the reply serializer. The clustered branch of
+      `handle_non_grouped`, and `serialize_rows` in `src/commands/fanout/chunks.rs`, are the paths that do compress.
+    - **`max_size` is advisory on this path.** Neither `ChimpChunk` nor `GorillaChunk` enforces it in `add_sample` (the
+      check is commented out in `gorilla_chunk.rs`), and the fan-out path never calls `is_full()`, so passing a
+      `with_max_size(...)` budget there truncates nothing — it only widens the uvarint `max_size` occupies on the wire.
+      Use `default()`.
+  Chimp encoding is ~1.4x slower than Gorilla but decodes ~12% faster, which is the right way round for fan-out: shards
+  encode their own slice in parallel while the coordinator decodes every shard's response serially.
 - Initialization sequence (inside `initialize()` in `src/lib.rs`): `init_croaring_allocator` → `register_config` →
   `init_fanout` + `register_fanout_operations` (cluster only) → `register_server_events` → `init_thread_pool` →
   `init_background_tasks`.
@@ -98,8 +118,10 @@ Testing & debugging notes
   `crate::tests::generators::{DataGenerator, ValueWorkload, TimestampModel}`) rather than hand-rolling loops:
   `DataGenerator::builder().start(ts).samples(n).seed(s).algorithm(ValueWorkload::Drift).build().generate()`.
   `ValueWorkload` covers the four range-bounded random generators (`Uniform`, `StdNorm`, `MackeyGlass`, `Deriv`, which
-  honour `.values(range)`) plus eight absolute-valued shapes (`Constant`, `ConstantInt`, `Drift`, `Periodic`, `Noisy`,
-  `Bursty`, `Counter`, `Discrete`, which ignore the range — see `is_workload()`). `TimestampModel` controls spacing
+  honour `.values(range)`) plus twelve absolute-valued shapes (`Constant`, `ConstantInt`, `Drift`, `Periodic`, `Noisy`,
+  `Bursty`, `Counter`, `Discrete`, and the decimal-quantized variants `DriftQuantized`, `PeriodicQuantized`,
+  `NoisyQuantized`, `BurstyQuantized` — same seeded values rounded to two decimals, see `quantized()`/`is_quantized()`;
+  all of them ignore the range — see `is_workload()`). `TimestampModel` controls spacing
   (`Regular`, `Jitter`, `Irregular`). `DataGenerator::dataset(workload, model, samples, seed)` is the one-line form used
   by the benchmark matrix.
 - Integration tests: Python pytest under `tests/` and rely on a built `valkey-server` and `tests/valkeytestframework`
@@ -125,33 +147,71 @@ Benchmarks
 - Groups: `encode_bulk` / `encode_append`, `decode_full` / `decode_materialize`, `scan` / `scan_filtered`. Bench ids are
   `encoding/workload/timestamp_model/chunk_size`.
 - Shared fixtures live in the crate itself (`src/tests/`, exposed to dev targets by the `test-utils` feature) and are
-  re-exported through `benches/support/mod.rs`, so benches, unit tests and `compression_report` all generate data
-  through the same `DataGenerator`. `DatasetRegistry` builds 12 datasets of 64k samples from fixed seeds
-  (the 8 `ValueWorkload` shapes at regular timestamps, plus drift/noisy at jitter and irregular timestamps), so results
+  re-exported through `benches/support/mod.rs`, so benches, unit tests and the `tools/` report binaries all generate data
+  through the same `DataGenerator`. `DatasetRegistry` builds 16 datasets of 64k samples from fixed seeds
+  (the 12 `ValueWorkload` shapes at regular timestamps, plus drift/noisy at jitter and irregular timestamps), so results
   are comparable across runs, machines, and commits. The matrix is defined in `src/tests/generators/dataset.rs`
   (`benchmark_dataset_keys`, `DatasetKey`, `DATASET_SAMPLES`, `dataset_seed`); chunk sizes are 1k / 4k
   (`DEFAULT_CHUNK_SIZE_BYTES`) / 64k.
-- PCO gotcha: `PcoChunk::add_sample` decompresses and recompresses the whole chunk on every call (O(n²) allocations), and
-  well-compressing workloads never trip `is_full()`. Use `set_data` for bulk loads; `build_chunk`, `filled_prefix` and
-  `build_chunk_until_full` in `src/tests/chunk_utils.rs` already special-case this.
-- Known breakage: `--bench encode` is OOM-killed (SIGKILL) at `encode_append/pco/constant/...`, because
-  `bench_encode_append` calls `add_sample` per sample for every encoding including PCO — the hazard above. `decode` and
-  `query_scan` all pass `-- --test`.
+- `encode`, `decode` and `query_scan` all pass `-- --test`.
 - Compression report (not a criterion bench): run it with `tools/compression_report.sh`, which wraps
   `cargo run --release --features "enable-system-alloc,test-utils" --bin compression_report` (both features must be
   named explicitly for a `[[bin]]`; see Cargo features above). It writes
-  `target/bench-reports/compression.csv` and `.md` (96 rows: encoding × workload × timestamp model × chunk size).
+  `target/bench-reports/compression.csv` and `.md` (84 rows: encoding × workload × timestamp model × chunk size —
+  28 rows for each of the 3 encodings listed in `encodings()`).
+  The `data_size`, `bytes_per_sample` and `ratio` columns come from `chunk_utils::encoded_size`, the bytes the encoder
+  actually wrote. Do **not** switch them to `ChunkOps::size()`: gorilla and chimp report a `get_size()`
+  heap footprint there (buffer *capacity*, which doubles), while uncompressed reports bytes in use, so a ratio
+  built on it compares allocator slack instead of compression. The separate `size` column is the full heap footprint,
+  including unused capacity.
   Script flags: `--check` fails if any compression ratio drops more than 5% below the baseline, `--save-baseline`
   records the run just made as the baseline, `--baseline <path>` overrides the default
-  `benches/baselines/compression_baseline.csv`. That baseline is **not** checked in, so `--check` exits 2 until you
-  generate one with `--save-baseline`.
+  `benches/baselines/compression_baseline.csv`. `--check` exits 2 when that file is missing. Datasets are built from
+  fixed seeds, so a re-run reproduces the baseline exactly; regenerate it with `--save-baseline` after any intentional
+  encoder or dataset change, and review the diff rather than saving blind. `dataset_seed` hashes the dataset key
+  (`workload/ts_model`) rather than its position in the matrix, so adding or reordering workloads leaves every other
+  dataset — and its baseline row — byte-for-byte identical.
 - `--by-workload [metric]` additionally writes a pivoted view —
   `target/bench-reports/compression_by_workload_<metric>.{csv,md}` — with one table per chunk size, one row per
   workload/timestamp model, and one column per encoding. `metric` is `ratio` (default), `bytes-per-sample`, or
   `capacity`; in the Markdown the best encoding per row is bold, with `uncompressed` excluded as the baseline. This is
   the layout to reach for when comparing encodings against each other; the flat `compression.csv` stays the source of
   truth for `--check`.
-- `build.sh` does not run benches or the compression report; they are manual.
+- Latency report (also not a criterion bench): `tools/latency_report.sh` wraps the `latency_report` binary
+  (`tools/latency_report.rs`, same two required features). It answers "how fast" where the compression report answers
+  "how small": for each encoding it times `set_data`, per-sample `add_sample`, a full `iter()` scan, `get_range` over the
+  whole chunk, and a 10% mid-chunk `range_iter`, then writes `target/bench-reports/latency.{csv,md}` and prints the
+  table. Every cell is the median of `--iterations` runs (default 200, after `--warmup` 20) of the *whole* operation, in
+  µs. Parameterize with `--samples` (default 1000), `--encodings`/`--workloads`/`--ts-models` (comma lists or `all`),
+  `--chunk-size` (default 1 MiB so nothing fills up), `--seed`, `--out-csv`/`--out-md`, `--quiet`. There is no baseline
+  gate: these are wall-clock numbers, so compare rows within one run rather than across machines or commits. Note that
+  `set_data` bulk-loads past the chunk budget while `add_sample` stops at `is_full()`, so a small `--chunk-size` makes
+  the two encode columns cover different sample counts — the tool warns and records `append_len` in the CSV when that
+  happens.
+- Wire-payload report (also not a criterion bench): `tools/wire_report.sh` wraps the `wire_report` binary
+  (`tools/wire_report.rs`, same two required features). It exists because neither of the other two answers the question
+  the clustered fan-out path asks — `compression_report` fills chunks to capacity and `latency_report` uses a single
+  fixed sample count, while the encoding threshold lives at small `n`. Each row replays the real round trip from
+  `src/commands/fanout/chunks.rs` (shard: `set_data` + `Chunk::serialize`; coordinator: `deserialize` +
+  `iter().collect()`) and reports `wire_bytes` — the exact `SampleData::data` payload, not `encoded_size` — plus encode
+  and decode medians, swept across `--sample-counts`. This is the tool to re-run when changing
+  `WIRE_COMPRESSION_MIN_SAMPLES` or the wire encoding; it writes `target/bench-reports/wire.{csv,md}`.
+  Two features carry the analysis:
+    - **A correctness gate runs before any measurement.** Every encoding is put through adversarial payloads (NaN,
+      infinities, `-0.0`, subnormals, `f64::MIN/MAX`, timestamp extremes, duplicate timestamps) and must round-trip
+      bit-exactly. This is not academic: the grouped/aggregated path back-fills empty buckets with NaN, so an encoding
+      that cannot carry one is unusable on the wire whatever it scores on size.
+    - **`break_even` is a link speed in Gbit/s**, not a ratio: the bandwidth below which the bytes an encoding saves take
+      longer to transmit than the extra CPU takes to spend. Compare it against the interconnect — an encoding pays off on
+      any link *slower* than its figure, and `--link-gbps` (default 10) sets what the threshold summary is judged
+      against. Worth knowing before optimizing this path: Chimp's whole-round-trip break-even is ~1.2–1.7 Gbps
+      (~4–5 Gbps counting coordinator decode only), so on a 10–25 Gbps in-rack interconnect wire compression is a net
+      latency *loss* at every sample count. It is a bandwidth-and-egress-cost measure, not a latency optimization; treat
+      claims to the contrary as unmeasured.
+  Other flags mirror the latency report: `--encodings`/`--workloads`/`--ts-models` (comma lists or `all`; `uncompressed`
+  is always kept, since it is the baseline every delta is measured against), `--iterations`/`--warmup`, `--seed`,
+  `--out-csv`/`--out-md`, `--quiet`. Wall-clock again, so no baseline gate — compare rows within one run.
+- `build.sh` does not run benches or any of the three report tools; they are manual.
 
 Where to look first (key files & directories)
 
@@ -171,11 +231,14 @@ Where to look first (key files & directories)
     - `generators/workload.rs` — the shape functions (drift/periodic/noisy/bursty/counter/discrete) and `TimestampModel`.
     - `generators/generator.rs`, `generators/mackey_glass.rs` — the range-bounded iterator generators.
     - `generators/dataset.rs` — `DatasetKey`, `DatasetRegistry`, and the benchmark dataset matrix.
-    - `chunk_utils.rs` — `build_chunk`, `build_chunk_until_full`, `filled_prefix(_len)`, `CHUNK_SIZE_*`.
-- `benches/` — criterion benchmarks; `benches/support/mod.rs` just re-exports `src/tests/` so benches, unit tests and
-  `compression_report` share one implementation.
-- `tools/compression_report.rs` — the `compression_report` binary; encoding size/ratio matrix with baseline checking.
-  `tools/compression_report.sh` is the wrapper that builds and runs it with the right features.
+    - `chunk_utils.rs` — `build_chunk`, `build_chunk_until_full`, `filled_prefix(_len)`, `encoded_size`, `CHUNK_SIZE_*`.
+- `benches/` — criterion benchmarks; `benches/support/mod.rs` just re-exports `src/tests/` so benches, unit tests and the
+  `tools/` report binaries share one implementation.
+- `tools/` — the three report binaries, each with a `.sh` wrapper that builds and runs it with the right features:
+    - `compression_report.rs` — encoding size/ratio matrix at chunk capacity, with baseline checking ("how small").
+    - `latency_report.rs` — encode/decode/scan timings at a fixed sample count ("how fast").
+    - `wire_report.rs` — serialized payload bytes and round-trip cost swept across sample counts, plus the correctness
+      gate; the tool behind `WIRE_COMPRESSION_MIN_SAMPLES` ("is shipping this compressed worth it").
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
 - `README.md` and `docs/commands/` — human-facing command descriptions and examples.
 - `docs/topics/` — deep-dive topics: `filter-syntax.md`, `label-discovery.md`, `filter-dos-audit.md`.
