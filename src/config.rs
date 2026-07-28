@@ -27,7 +27,7 @@ use valkey_module::{
     ValkeyResult, ValkeyString, raw,
 };
 
-use crate::promql::engine::config::PROMQL_CONFIG;
+use crate::promql::engine::promql_config::update_prom_config;
 
 /// Minimal Valkey version that supports the TimeSeries Module
 pub const TIMESERIES_MIN_SUPPORTED_VERSION: &[i64; 3] = &[8, 0, 0];
@@ -137,6 +137,29 @@ impl TryFrom<&str> for CompatibilityMode {
         }
     }
 }
+
+// Bounds and defaults for the PromQL engine parameters (`ts-promql-*`). The engine's own
+// `PromqlConfig::default()` carries a parallel set of defaults for tests and direct
+// construction; these are the values the server registers and `register_config` pushes into
+// `PROMQL_CONFIG` once the startup configuration has been resolved.
+const PROMQL_MAX_QUERY_LEN_MIN: i64 = 1024; // 1 KiB
+const PROMQL_MAX_QUERY_LEN_MAX: i64 = 16 * 1024; // 16 KiB
+const PROMQL_MAX_QUERY_LEN_DEFAULT: i64 = 4 * 1024;
+const PROMQL_MAX_RESPONSE_SERIES_MIN: i64 = 0;
+const PROMQL_MAX_RESPONSE_SERIES_MAX: i64 = i64::MAX;
+const PROMQL_MAX_RESPONSE_SERIES_DEFAULT: i64 = 1000;
+const PROMQL_MAX_POINTS_PER_TIMESERIES_MIN: i64 = 0;
+const PROMQL_MAX_POINTS_PER_TIMESERIES_MAX: i64 = i64::MAX;
+const PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT: i64 = 0; // 0 = unlimited
+const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
+const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
+const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
+const PROMQL_MAX_LOOKBACK_MIN_MS: i64 = 0;
+const PROMQL_MAX_LOOKBACK_MAX_MS: i64 = ONE_YEAR_MS;
+const PROMQL_MAX_LOOKBACK_DEFAULT_MS: i64 = 0; // 0 = use lookback-delta
+const PROMQL_MAX_QUERY_DURATION_MIN_MS: i64 = 1;
+const PROMQL_MAX_QUERY_DURATION_MAX_MS: i64 = ONE_YEAR_MS;
+const PROMQL_MAX_QUERY_DURATION_DEFAULT_MS: i64 = 30 * 1000; // 30s
 
 /// The type of value a configuration parameter holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +635,39 @@ fn update_cluster_map_expiration(val: &str) -> ValkeyResult<()> {
         CLUSTER_MAP_EXPIRATION_MAX_MS,
     )?;
     CLUSTER_MAP_EXPIRATION_MS.store(duration as u64, Ordering::SeqCst);
+    Ok(())
+}
+
+fn update_promql_lookback_delta(val: &str) -> ValkeyResult<()> {
+    let duration = parse_duration_in_range(
+        "ts-promql-lookback-delta",
+        val,
+        PROMQL_LOOKBACK_DELTA_MIN_MS,
+        PROMQL_LOOKBACK_DELTA_MAX_MS,
+    )?;
+    PROMQL_LOOKBACK_DELTA_MS.store(duration, Ordering::SeqCst);
+    Ok(())
+}
+
+fn update_promql_max_lookback(val: &str) -> ValkeyResult<()> {
+    let duration = parse_duration_in_range(
+        "ts-promql-max-lookback",
+        val,
+        PROMQL_MAX_LOOKBACK_MIN_MS,
+        PROMQL_MAX_LOOKBACK_MAX_MS,
+    )?;
+    PROMQL_MAX_LOOKBACK_MS.store(duration, Ordering::SeqCst);
+    Ok(())
+}
+
+fn update_promql_max_query_duration(val: &str) -> ValkeyResult<()> {
+    let duration = parse_duration_in_range(
+        "ts-promql-max-query-duration",
+        val,
+        PROMQL_MAX_QUERY_DURATION_MIN_MS,
+        PROMQL_MAX_QUERY_DURATION_MAX_MS,
+    )?;
+    PROMQL_MAX_QUERY_DURATION_MS.store(duration, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1251,10 +1307,28 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         ));
     }
 
-    // Initialize PROMQL_CONFIG from the freshly loaded Valkey config
-    if let Ok(mut prom_guard) = PROMQL_CONFIG.write() {
-        prom_guard.apply_ts_config(is_debug_mode_enabled());
-    }
+    // Seed the PromQL engine from the freshly resolved startup configuration. `RedisModule_LoadConfigs`
+    // above has already run every parameter's set path, so the stores read here hold the values from
+    // `valkey.conf` / `MODULE LOAD` args, or the registered defaults.
+    update_prom_config(|cfg| {
+        // Query stats and tracing follow `debug-mode`.
+        cfg.stats_enabled = is_debug_mode_enabled();
+        cfg.trace_enabled = is_debug_mode_enabled();
+        cfg.max_query_len = PROMQL_MAX_QUERY_LEN.load(Ordering::Relaxed) as usize;
+        cfg.max_response_series = PROMQL_MAX_RESPONSE_SERIES.load(Ordering::Relaxed) as usize;
+        cfg.max_points_per_timeseries =
+            PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
+        cfg.set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
+        cfg.optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
+        cfg.enable_experimental_functions =
+            PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS.load(Ordering::Relaxed);
+        cfg.lookback_delta =
+            Duration::from_millis(PROMQL_LOOKBACK_DELTA_MS.load(Ordering::Relaxed) as u64);
+        cfg.max_lookback =
+            Duration::from_millis(PROMQL_MAX_LOOKBACK_MS.load(Ordering::Relaxed) as u64);
+        cfg.max_query_duration =
+            Duration::from_millis(PROMQL_MAX_QUERY_DURATION_MS.load(Ordering::Relaxed) as u64);
+    });
 
     Ok(())
 }
@@ -1288,6 +1362,18 @@ mod tests {
         ("ts-index-build-max-memory", "268435456"),
         ("ts-index-persist", "yes"),
         ("debug-mode", "no"),
+        // PromQL parameters. The duration-valued ones register the millisecond count rather
+        // than a human-readable literal, matching `ts-cluster-map-expiration-ms` above.
+        ("ts-fanout-rollup-pushdown", "no"),
+        ("ts-promql-set-lookback-to-step", "no"),
+        ("ts-promql-optimize-queries", "no"),
+        ("ts-promql-enable-experimental-functions", "yes"),
+        ("ts-promql-max-query-len", "4096"),
+        ("ts-promql-max-response-series", "1000"),
+        ("ts-promql-max-points-per-timeseries", "0"),
+        ("ts-promql-lookback-delta", "300000"),
+        ("ts-promql-max-lookback", "0"),
+        ("ts-promql-max-query-duration", "30000"),
     ];
 
     #[test]
