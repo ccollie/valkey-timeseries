@@ -18,7 +18,7 @@ use valkey_module::{AclPermissions, Context, ValkeyResult, ValkeyString, ValkeyV
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]
 ///
 #[valkey_module_macros::command({
-    name: "TS.ADDBULK",
+    name: "ts.addbulk",
     flags: [Write, DenyOOM],
     summary: "Append multiple samples supplied as a JSON payload to a time series.",
     complexity: "O(N) where N is the number of samples in the payload.",
@@ -50,7 +50,10 @@ pub fn ts_addbulk_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return process_series(ctx, &mut guard, samples);
     }
 
-    let mut series = create_and_store_series(ctx, &key, options, true, true)?;
+    // Auto-create: no ts.create event and no replication from the create
+    // helper — consistent with the TS.ADD family; this command replicates
+    // itself.
+    let mut series = create_and_store_series(ctx, &key, options, false, true)?;
     process_series(ctx, &mut series, samples)
 }
 

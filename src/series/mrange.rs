@@ -1,20 +1,22 @@
-use crate::aggregators::{PartialReducer, PartialRowReducer, PartialSampleReducer, PartialState};
+use crate::aggregators::{
+    EmptyFillBounds, PartialReducer, PartialRowReducer, PartialSampleReducer, PartialState,
+};
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::error_consts;
 use crate::iterators::create_sample_iterator_adapter;
 use crate::iterators::{
     MultiSeriesRowIter, MultiSeriesSampleIter, RowReducer, SampleReducer, TailIter,
-    create_range_iterator, create_row_iterator,
+    create_range_iterator, create_row_iterator, get_range_latest_sample,
 };
 use crate::labels::Label;
+use crate::series::TimeSeries;
 use crate::series::acl::check_metadata_permissions;
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk, samples_to_chunk_lossless};
 use crate::series::index::series_by_selectors;
 use crate::series::request_types::{
     MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions, SeriesResultData,
 };
-use crate::series::{TimeSeries, get_latest_compaction_sample};
 use ahash::AHashMap;
 use orx_parallel::{IntoParIter, IterIntoParIter, ParIter};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
@@ -236,9 +238,18 @@ fn process_mrange(
         }
     }
     let is_grouped = options.grouping.is_some();
+    let exclude_empty = options.exclude_empty;
 
     if is_clustered {
-        return Ok(handle_non_grouped(metas, options, true, limit));
+        // Shard side: a series lives entirely on one shard, so its emptiness is
+        // already decided here and dropping it now only saves transfer. The
+        // coordinator re-applies EXCLUDEEMPTY regardless, so a peer that ignores
+        // the request flag still yields the same reply.
+        let mut items = handle_non_grouped(metas, options, true, limit);
+        if exclude_empty {
+            items.retain(|item| !item.data.is_empty());
+        }
+        return Ok(items);
     }
 
     let mut items = if is_grouped {
@@ -247,37 +258,29 @@ fn process_mrange(
         handle_non_grouped(metas, options, false, None)
     };
 
+    // EXCLUDEEMPTY is rejected together with GROUPBY at parse time, so this only
+    // ever trims per-series results.
+    if exclude_empty {
+        items.retain(|item| !item.data.is_empty());
+    }
+
     sort_mrange_results(&mut items, is_grouped);
 
     Ok(items)
 }
 
+/// The destination's still-open bucket, when `LATEST` asks for it.
+///
+/// Delegates to the single-key helper rather than re-deriving the rule. A local copy here
+/// checked only that the bucket's timestamp fell inside the requested range, and so was
+/// missing two conditions the shared version carries: the retention clamp, and the
+/// `end_ts > last_timestamp()` guard that keeps an open bucket hidden unless the query
+/// reaches past the last *stored* sample. Without them TS.MRANGE reported an open bucket
+/// that TS.RANGE — and the reference — both omit, so the engine disagreed with itself
+/// (found by the Tier C fuzzer). Keeping one implementation is what stops that recurring.
 fn get_latest(options: &RangeOptions, ctx: &Context, series: &TimeSeries) -> Option<Sample> {
-    if !options.latest || !series.is_compaction() {
-        return None;
-    }
-    get_latest_compaction_sample(ctx, series).filter(|s| {
-        let (start_ts, end_ts) = options.get_timestamp_range();
-        let ts = s.timestamp;
-
-        if ts < start_ts || ts > end_ts {
-            return false;
-        }
-
-        if !options.value_filter.is_none_or(|vf| vf.is_match(s.value)) {
-            return false;
-        }
-
-        if !options
-            .timestamp_filter
-            .as_ref()
-            .is_none_or(|ts_vec| ts_vec.contains(&ts))
-        {
-            return false;
-        }
-
-        true
-    })
+    get_range_latest_sample(Some(ctx), series, options)
+        .filter(|s| options.value_filter.is_none_or(|vf| vf.is_match(s.value)))
 }
 
 fn create_iter<'a>(
@@ -357,6 +360,7 @@ fn handle_non_grouped(
                 group_label_value: meta.group_label_value,
                 key: meta.source_key,
                 labels,
+                sources: Vec::new(),
                 data,
             }
         })
@@ -416,6 +420,7 @@ fn handle_grouping(
                 key,
                 group_label_value: Some(label_value),
                 labels,
+                sources: group_data.source_keys,
                 data,
             }
         })
@@ -441,17 +446,14 @@ fn get_grouped_samples(
     //
     // Per-series iterators must not apply the group reducer: reduction happens once,
     // across series, in the SampleReducer below.
+    //
+    // They also run ascending (`false`), like `get_grouped_rows` and the shard-side path:
+    // the k-way merge below yields its sources' order, and `collect_samples` reverses the
+    // *reduced* stream. Feeding it descending sources made the merge's output order depend
+    // on it buffering every iterator, which stopped holding once the merge was corrected.
     let iterators = series_metas
         .iter()
-        .map(|meta| {
-            create_range_iterator(
-                meta.series,
-                &options.range,
-                &None,
-                meta.latest,
-                options.is_reverse,
-            )
-        })
+        .map(|meta| create_range_iterator(meta.series, &options.range, &None, meta.latest, false))
         .collect::<Vec<_>>();
 
     let multi_iter = MultiSeriesSampleIter::new(iterators);
@@ -509,19 +511,27 @@ pub(crate) fn collect_rows<I: Iterator<Item = MultiSample>>(
     rows
 }
 
+/// Apply reversal and COUNT to reduced samples. Like [`collect_rows`], COUNT limits samples in
+/// the *requested* order, so a reverse query must reverse before truncating: taking from the
+/// (ascending) iterator first would keep the oldest N and then merely reverse those, returning
+/// the wrong window entirely rather than just the wrong order.
 pub(crate) fn collect_samples<I: Iterator<Item = Sample>>(
     iter: I,
     is_reverse: bool,
     count: Option<usize>,
 ) -> Vec<Sample> {
-    let mut samples = if let Some(count) = count {
-        iter.take(count).collect::<Vec<_>>()
-    } else {
-        iter.collect::<Vec<_>>()
-    };
+    if !is_reverse {
+        // Ascending: the requested order matches the iterator, so COUNT can stop it early.
+        return match count {
+            Some(count) => iter.take(count).collect(),
+            None => iter.collect(),
+        };
+    }
 
-    if is_reverse {
-        samples.reverse();
+    let mut samples: Vec<Sample> = iter.collect();
+    samples.reverse();
+    if let Some(count) = count {
+        samples.truncate(count);
     }
     samples
 }
@@ -588,6 +598,7 @@ fn collect_group_label_values(metas: &mut Vec<MRangeSeriesMeta>, grouping: &Rang
 struct GroupedSeriesData<'a> {
     series: Vec<MRangeSeriesMeta<'a>>,
     labels: Vec<Label>,
+    source_keys: Vec<String>,
 }
 
 fn group_series_by_label<'a>(
@@ -606,26 +617,21 @@ fn group_series_by_label<'a>(
                 .or_insert_with(|| GroupedSeriesData {
                     series: Vec::new(),
                     labels: Vec::new(),
+                    source_keys: Vec::new(),
                 });
+            entry.source_keys.push(meta.source_key.clone());
             entry.series.push(meta);
         }
     }
 
-    if with_labels {
-        for (label_value_str, group_data) in grouped.iter_mut() {
-            let mut source_keys: Vec<String> = group_data
-                .series
-                .iter()
-                .map(|m| m.source_key.clone())
-                .collect();
-
-            source_keys.sort();
-
+    for (label_value_str, group_data) in grouped.iter_mut() {
+        group_data.source_keys.sort();
+        if with_labels {
             group_data.labels = build_mrange_grouped_labels(
                 group_by_label_name,
                 label_value_str,
                 reducer_name,
-                &source_keys,
+                &group_data.source_keys,
             );
         }
     }
@@ -633,6 +639,9 @@ fn group_series_by_label<'a>(
     grouped
 }
 
+/// Adapter over an already-materialized sample stream (no series in hand), so the `EMPTY`
+/// fill stays anchored to those samples — see [`EmptyFillBounds`]. `create_iter` above is the
+/// per-series path, and it derives the wider bounds from the series itself.
 pub fn create_mrange_iterator_adapter<'a>(
     base_iter: impl Iterator<Item = Sample> + 'a,
     options: &MRangeOptions,
@@ -642,6 +651,7 @@ pub fn create_mrange_iterator_adapter<'a>(
         &options.range,
         &options.grouping,
         options.is_reverse,
+        EmptyFillBounds::default(),
     )
 }
 
@@ -686,6 +696,82 @@ mod tests {
                 ..Default::default()
             },
             ..Default::default()
+        }
+    }
+
+    fn keys_of(results: &[MRangeSeriesResult]) -> Vec<&str> {
+        let mut keys: Vec<&str> = results.iter().map(|r| r.key.as_str()).collect();
+        keys.sort();
+        keys
+    }
+
+    /// EXCLUDEEMPTY drops exactly the series that report nothing, and it judges
+    /// the *reported* payload rather than the stored series: a series whose only
+    /// in-range sample is NaN still reports and is kept, while one emptied by
+    /// FILTER_BY_VALUE is dropped just like one with no samples in the range.
+    #[test]
+    fn test_exclude_empty_drops_series_with_no_reported_samples() {
+        let in_range = make_series(&[(100, 100.0), (400, 400.0)]);
+        let out_of_range = make_series(&[(2000, 2000.0)]);
+        let nan_only = make_series(&[(150, f64::NAN)]);
+
+        let metas = || {
+            vec![
+                meta(&in_range, "s", None),
+                meta(&out_of_range, "u", None),
+                meta(&nan_only, "n", None),
+            ]
+        };
+
+        let mut options = MRangeOptions {
+            range: RangeOptions::with_range(0, 500).unwrap(),
+            ..Default::default()
+        };
+
+        // Default: every matched series is reported, empty payload included.
+        let results = process_mrange(metas(), options.clone(), false, None).unwrap();
+        assert_eq!(keys_of(&results), vec!["n", "s", "u"]);
+
+        options.exclude_empty = true;
+        let results = process_mrange(metas(), options.clone(), false, None).unwrap();
+        assert_eq!(
+            keys_of(&results),
+            vec!["n", "s"],
+            "only `u` reports nothing"
+        );
+
+        // Shard side (clustered): same decision, made before the payload ships.
+        let results = process_mrange(metas(), options.clone(), true, None).unwrap();
+        assert_eq!(keys_of(&results), vec!["n", "s"]);
+
+        // A value filter that removes every sample makes a series empty too.
+        options.range.value_filter = Some(crate::series::ValueFilter::new(0.0, 200.0).unwrap());
+        let results = process_mrange(metas(), options, false, None).unwrap();
+        assert_eq!(
+            keys_of(&results),
+            vec!["s"],
+            "NaN fails the value filter, leaving `n` with nothing to report"
+        );
+    }
+
+    /// Under AGGREGATION, emptiness is decided on the buckets: a series with no
+    /// in-range samples produces none and is dropped, and MREVRANGE ordering
+    /// does not change which series survive.
+    #[test]
+    fn test_exclude_empty_with_aggregation_and_reverse() {
+        let in_range = make_series(&[(100, 100.0), (400, 400.0)]);
+        let out_of_range = make_series(&[(2000, 2000.0)]);
+
+        let mut options = multi_options(100);
+        options.range.date_range = crate::series::TimestampRange::from_timestamps(0, 500).unwrap();
+        options.exclude_empty = true;
+
+        for is_reverse in [false, true] {
+            options.is_reverse = is_reverse;
+            let metas = vec![meta(&in_range, "s", None), meta(&out_of_range, "u", None)];
+            let results = process_mrange(metas, options.clone(), false, None).unwrap();
+            assert_eq!(keys_of(&results), vec!["s"], "reverse={is_reverse}");
+            assert_eq!(rows_of(&results[0]).len(), 2);
         }
     }
 

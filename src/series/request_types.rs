@@ -7,7 +7,7 @@ use crate::common::hash::hash_f64;
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::labels::Label;
 use crate::labels::filters::SeriesSelector;
-use crate::series::chunks::TimeSeriesChunk;
+use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
 use crate::series::{DateRange, TimestampRange, ValueFilter};
 use get_size2::GetSize;
 use smallvec::{SmallVec, smallvec};
@@ -322,6 +322,44 @@ pub struct MRangeOptions {
     pub selected_labels: Vec<String>,
     pub grouping: Option<RangeGroupingOptions>,
     pub is_reverse: bool,
+    /// `EXCLUDEEMPTY`: drop matched series that report no samples/buckets for the
+    /// query. Mutually exclusive with `grouping` (rejected at parse time).
+    pub exclude_empty: bool,
+}
+
+/// TS.NRANGE / TS.NREVRANGE: a range over an explicit list of keys, pivoted so
+/// that each reply row is one timestamp followed by one value per requested
+/// column.
+///
+/// Key order is significant and duplicates are allowed — the reply has one
+/// column block per `keys` entry, in the order given — so this holds the keys
+/// verbatim rather than a set.
+#[derive(Debug, Default, Clone)]
+pub struct NRangeOptions {
+    /// Shared range parameters. `range.aggregation` is unused: TS.NRANGE takes
+    /// one aggregation clause per key, held in [`Self::aggregations`].
+    pub range: RangeOptions,
+    pub keys: Vec<ValkeyString>,
+    /// Empty in raw mode; otherwise exactly one entry per key, in key order.
+    /// The syntax has a single `bucketDuration`/`ALIGN`/`BUCKETTIMESTAMP`/`EMPTY`,
+    /// so every entry carries the same bucket parameters and they differ only in
+    /// their aggregator list.
+    pub aggregations: Vec<AggregationOptions>,
+    pub is_reverse: bool,
+}
+
+impl NRangeOptions {
+    /// The aggregation clause requested for key `index`, or `None` in raw mode.
+    pub fn aggregation_for(&self, index: usize) -> Option<&AggregationOptions> {
+        self.aggregations.get(index)
+    }
+
+    /// Number of reply columns contributed by key `index`: one per aggregator
+    /// under `AGGREGATION`, otherwise the single raw sample value.
+    pub fn column_count(&self, index: usize) -> usize {
+        self.aggregation_for(index)
+            .map_or(1, |agg| agg.aggregations.len())
+    }
 }
 
 /// Per-series MRANGE result data. `TimeSeriesChunk` can only store
@@ -347,6 +385,17 @@ impl From<TimeSeriesChunk> for SeriesResultData {
 }
 
 impl SeriesResultData {
+    /// Whether this series reports nothing at all — the emptiness `EXCLUDEEMPTY`
+    /// tests. It is the *reported* payload that counts, so a series whose samples
+    /// were all removed by FILTER_BY_TS/FILTER_BY_VALUE, or whose only in-range
+    /// samples produced no bucket, is empty; one reporting a NaN sample is not.
+    pub(crate) fn is_empty(&self) -> bool {
+        match self {
+            SeriesResultData::Chunk(chunk) => chunk.is_empty(),
+            SeriesResultData::Rows(rows) => rows.is_empty(),
+        }
+    }
+
     /// Iterate the raw samples of the `Chunk` variant. The coordinator ingest
     /// paths only ever hold chunks (rows never cross the wire); `Rows` yields
     /// nothing.
@@ -365,6 +414,10 @@ pub(crate) struct MRangeSeriesResult {
     pub key: String,
     pub group_label_value: Option<String>,
     pub labels: Vec<Label>,
+    /// Source series keys backing a GROUPBY group (sorted). Empty for
+    /// non-grouped results. RESP3 replies report these in the per-group
+    /// `sources` metadata map regardless of WITHLABELS.
+    pub sources: Vec<String>,
     pub data: SeriesResultData,
 }
 

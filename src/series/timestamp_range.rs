@@ -4,7 +4,7 @@ use crate::common::humanize::humanize_duration_ms;
 use crate::common::time::current_time_millis;
 use crate::error_consts;
 use crate::parser::duration::parse_duration_value;
-use crate::parser::timestamp::parse_timestamp;
+use crate::parser::timestamp::{parse_timestamp, timestamp_error};
 use crate::series::TimeSeries;
 use std::cmp::Ordering;
 use std::fmt::Display;
@@ -94,9 +94,16 @@ impl TryFrom<&str> for TimestampValue {
             }
         }
 
-        // Ergonomics. Support something like TS.RANGE key -6hrs -3hrs
+        // Ergonomics. Support something like TS.RANGE key -6hrs -3hrs.
+        //
+        // The offset must carry a unit ("-6hrs"): a bare signed integer is an
+        // absolute timestamp, not an offset. Reading "-1000" as "1000ms ago"
+        // would silently turn a negative timestamp — which RedisTimeSeries
+        // rejects outright — into a valid query over a completely different
+        // window, so the sign alone must not select the relative form.
         if let Some(ch) = value.chars().next()
             && (ch == '-' || ch == '+')
+            && !value[1..].bytes().all(|b| b.is_ascii_digit())
         {
             let value = &value[1..];
             let mut ms = parse_duration_ms(value)?;
@@ -107,12 +114,11 @@ impl TryFrom<&str> for TimestampValue {
             return Ok(Relative(ms));
         }
 
-        let ts = parse_timestamp(value, false)
-            .map_err(|_| ValkeyError::Str(error_consts::INVALID_TIMESTAMP))?;
-
-        if ts < 0 {
-            return Err(ValkeyError::Str(error_consts::NEGATIVE_TIMESTAMP));
-        }
+        // `parse_timestamp` already rejects negatives, reporting them distinctly from
+        // unparseable input. Callers in the range family discard this in favour of a
+        // positional `wrong fromTimestamp` / `wrong toTimestamp`.
+        let ts =
+            parse_timestamp(value, false).map_err(|e| ValkeyError::Str(timestamp_error(&e)))?;
 
         Ok(Specific(ts))
     }
@@ -134,27 +140,10 @@ impl TryFrom<&ValkeyString> for TimestampValue {
     type Error = ValkeyError;
 
     fn try_from(value: &ValkeyString) -> Result<Self, Self::Error> {
-        use TimestampValue::*;
-        if value.len() == 1 {
-            let bytes = value.as_slice();
-            match bytes[0] {
-                b'-' => return Ok(Earliest),
-                b'+' => return Ok(Latest),
-                b'*' => return Ok(Now),
-                _ => {}
-            }
-        }
-        if let Ok(int_val) = value.parse_integer() {
-            if int_val < 0 {
-                return Err(ValkeyError::Str(
-                    "TSDB: invalid timestamp, must be a non-negative integer",
-                ));
-            }
-            Ok(Specific(int_val))
-        } else {
-            let date_str = value.to_string_lossy();
-            date_str.as_str().try_into()
-        }
+        // Delegates rather than re-deriving the grammar: an independent copy here drifted
+        // from the `&str` form and rejected negatives with wording matching neither it nor
+        // RedisTimeSeries.
+        TimestampValue::try_from(value.to_string_lossy().as_str())
     }
 }
 
@@ -230,25 +219,25 @@ pub struct TimestampRange {
 }
 
 impl TimestampRange {
+    /// An inverted range (start > end) is *not* an error: it selects no samples.
+    /// Rejecting it would make us stricter than RedisTimeSeries, which answers
+    /// every inverted-window query with an empty result (and `TS.DEL` with 0).
+    /// [`Self::is_inverted`] is the single place readers short-circuit on.
     pub fn new(start: TimestampValue, end: TimestampValue) -> ValkeyResult<Self> {
-        if start > end {
-            return Err(ValkeyError::Str(
-                "TSDB: invalid timestamp range: start > end",
-            ));
-        }
         Ok(TimestampRange { start, end })
     }
 
     pub fn from_timestamps(start: Timestamp, end: Timestamp) -> ValkeyResult<Self> {
-        if start > end {
-            return Err(ValkeyError::Str(
-                "TSDB: invalid timestamp range: start > end",
-            ));
-        }
         Ok(TimestampRange {
             start: TimestampValue::Specific(start),
             end: TimestampValue::Specific(end),
         })
+    }
+
+    /// True when the window can not contain a sample, so callers can skip the
+    /// fetch entirely rather than rely on every iterator handling start > end.
+    pub fn is_inverted(&self) -> bool {
+        self.start > self.end
     }
 
     pub fn get_series_range(
@@ -328,7 +317,7 @@ mod tests {
     use crate::common::Sample;
     use crate::common::constants::MAX_TIMESTAMP;
     use crate::common::time::current_time_millis;
-    use crate::error_consts::INVALID_TIMESTAMP;
+    use crate::error_consts::{INVALID_TIMESTAMP, NEGATIVE_TIMESTAMP};
     use crate::series::timestamp_range::TimestampValue;
     use crate::series::{TimeSeries, TimestampRange};
     use std::cmp::Ordering;
@@ -375,11 +364,20 @@ mod tests {
 
     #[test]
     fn test_timestamp_range_value_try_from_negative_ms() {
+        // A bare signed integer is an absolute timestamp, not an offset; negative
+        // absolute timestamps are rejected. Offsets must carry a unit ("-5s").
         let input = "-12345678900";
         let result = TimestampValue::try_from(input);
-        assert!(result.is_ok());
-        let expected = TimestampValue::Relative(-12345678900);
-        assert_eq!(result.unwrap(), expected);
+        assert!(matches!(result, Err(ValkeyError::Str(msg)) if msg == NEGATIVE_TIMESTAMP));
+    }
+
+    #[test]
+    fn test_timestamp_range_value_negative_and_unparseable_differ() {
+        // The write path reports these separately, matching RedisTimeSeries.
+        let negative = TimestampValue::try_from("-1");
+        let garbage = TimestampValue::try_from("nope");
+        assert!(matches!(negative, Err(ValkeyError::Str(msg)) if msg == NEGATIVE_TIMESTAMP));
+        assert!(matches!(garbage, Err(ValkeyError::Str(msg)) if msg == INVALID_TIMESTAMP));
     }
 
     #[test]
@@ -791,25 +789,33 @@ mod tests {
 
     #[test]
     fn test_timestamp_range_new_start_greater_than_end() {
+        // An inverted range is accepted and reported as inverted; RTS answers
+        // such a window with an empty result rather than an error.
         let start = TimestampValue::Specific(2000);
         let end = TimestampValue::Specific(1000);
-        let result = TimestampRange::new(start, end);
+        let range = TimestampRange::new(start, end).expect("inverted range must be accepted");
 
-        assert!(
-            matches!(result, Err(ValkeyError::Str(err)) if err == "TSDB: invalid timestamp range: start > end"),
-            "Expected Err with message 'TSDB: invalid timestamp range: start > end', got {result:?}"
-        );
+        assert!(range.is_inverted());
     }
 
     #[test]
     fn test_timestamp_range_new_negative_start_greater_than_end() {
         let start = TimestampValue::Specific(-1000);
         let end = TimestampValue::Specific(-2000);
-        let result = TimestampRange::new(start, end);
+        let range = TimestampRange::new(start, end).expect("inverted range must be accepted");
 
+        assert!(range.is_inverted());
+    }
+
+    #[test]
+    fn test_timestamp_range_not_inverted() {
+        let range = TimestampRange::from_timestamps(1000, 2000).unwrap();
+        assert!(!range.is_inverted());
+
+        let equal = TimestampRange::from_timestamps(1000, 1000).unwrap();
         assert!(
-            matches!(result, Err(ValkeyError::Str(err)) if err == "TSDB: invalid timestamp range: start > end"),
-            "Expected Err with message 'TSDB: invalid timestamp range: start > end', got {result:?}"
+            !equal.is_inverted(),
+            "a single-point window is not inverted"
         );
     }
 

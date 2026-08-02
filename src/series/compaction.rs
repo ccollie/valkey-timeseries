@@ -1,4 +1,5 @@
 use crate::aggregators::{AggregationHandler, Aggregator, calc_bucket_start};
+use crate::common::block_on_keys::signal_timeseries_ready;
 use crate::common::logging::log_warning;
 use crate::common::rdb::{
     RdbSerializable, rdb_load_bool, rdb_load_timestamp, rdb_save_bool, rdb_save_timestamp,
@@ -130,6 +131,28 @@ impl<'a> CompactionContext<'a> {
     fn has_samples(&self) -> bool {
         self.rule.has_samples
     }
+
+    /// Remove a range from the destination, keeping the DIV-0023 marker live.
+    ///
+    /// Every destination removal goes through here, the counterpart to `add_dest_bucket`
+    /// for writes. If the removal took the bucket the marker names, the marker falls back
+    /// to whatever the destination still holds — its current last sample, or nothing when
+    /// the removal emptied it.
+    ///
+    /// Both halves matter, and the difference only shows when a *later* write re-creates
+    /// the removed timestamp. Leaving a dead marker set lets that write resurrect it and
+    /// drag the reported last-sample backwards. Clearing it unconditionally is equally
+    /// wrong: the next write would claim it, even though a surviving newer bucket is what
+    /// RedisTimeSeries goes on reporting.
+    fn remove_dest_range(&mut self, start: Timestamp, end: Timestamp) -> TsdbResult<usize> {
+        let removed = self.dest.remove_range(start, end)?;
+        if let Some(marker) = self.dest.last_forward_close
+            && matches!(self.dest.get_sample(marker.timestamp), Ok(None))
+        {
+            self.dest.last_forward_close = self.dest.last_sample;
+        }
+        Ok(removed)
+    }
 }
 
 /// Single entry point for all compaction-related mutations.
@@ -145,9 +168,14 @@ pub enum CompactionOp<'a> {
     /// stored (rounded) values. `prev_last` is the source series' last timestamp from before
     /// the batch was merged: samples above it are guaranteed fresh appends, samples at or
     /// below it may have replaced existing values and are treated as upserts.
+    ///
+    /// `input_order` holds the accepted timestamps in the order the caller supplied them
+    /// (MADD argument order), which sorting `samples` discards. Only the DIV-0023 forward-close
+    /// marker needs it — see [`last_forward_close_in_input_order`].
     AddBatch {
         samples: &'a [Sample],
         prev_last: Option<Timestamp>,
+        input_order: &'a [Timestamp],
     },
     /// Remove a range from source and reflect it into destinations (and ongoing aggregation state)
     RemoveRange { start: Timestamp, end: Timestamp },
@@ -164,17 +192,26 @@ pub fn apply_compaction(
     process_series_with_compaction(ctx, series, op)
 }
 
-fn null_ts_filter(ts: Timestamp) -> bool {
-    ts != 0
+/// The "no filtering" filter for bucket recalculation: every stored sample counts.
+///
+/// Timestamp 0 is a valid sample timestamp and must be included — a previous
+/// version excluded it (`ts != 0`), which made any recalculation of a bucket
+/// containing a ts=0 sample drop that sample: an out-of-order write into a
+/// finalized first bucket produced the wrong downstream value, and overwriting a
+/// lone ts=0 sample deleted the downstream bucket entirely.
+fn null_ts_filter(_ts: Timestamp) -> bool {
+    true
 }
 
 fn apply_op(ctx: &mut CompactionContext<'_>, op: CompactionOp) -> TsdbResult<()> {
     match op {
         CompactionOp::AddNew(sample) => handle_sample_compaction(ctx, sample),
         CompactionOp::Upsert(sample) => handle_compaction_upsert(ctx, sample),
-        CompactionOp::AddBatch { samples, prev_last } => {
-            handle_batch_compaction(ctx, samples, prev_last)
-        }
+        CompactionOp::AddBatch {
+            samples,
+            prev_last,
+            input_order,
+        } => handle_batch_compaction(ctx, samples, prev_last, input_order),
         CompactionOp::RemoveRange { start, end } => {
             handle_compaction_range_removal(ctx, start, end)
         }
@@ -183,10 +220,19 @@ fn apply_op(ctx: &mut CompactionContext<'_>, op: CompactionOp) -> TsdbResult<()>
 
 /// Propagate a batch of samples (already merged into the source) through one rule.
 ///
-/// Samples newer than `prev_last` are guaranteed fresh appends and stream through the
-/// open-bucket aggregator in O(1) each, exactly like sequential single-sample adds. Samples at
-/// or below `prev_last` may have replaced existing values, so their buckets are deduplicated
-/// and each affected bucket is recalculated from the source once.
+/// Appends stream through the open-bucket aggregator in O(1) each, exactly like sequential
+/// single-sample adds. Back-fills may have replaced existing values, so their buckets are
+/// deduplicated and each affected bucket is recalculated from the source once.
+///
+/// The two are told apart by replaying the batch in the caller's order against a running
+/// maximum seeded with `prev_last`, because that is how RedisTimeSeries applies MADD items:
+/// one at a time, each item above the running maximum appending and each item at or below it
+/// back-filling. Comparing against `prev_last` alone is not equivalent — on a series that the
+/// batch itself populates (`prev_last == None`) every item outranks it, so
+/// `TS.MADD k 0 v k 2000 v k 1000 v` would stream as three appends and never recalculate the
+/// bucket `1000` back-fills. That distinction is load-bearing under retention: only the
+/// recalculation reads the source back through the retention-clamped iterator, which is what
+/// drops a sample the pending trim is about to evict.
 ///
 /// Appends are processed first: a bucket recalculation reads the source, which already
 /// contains this batch's appends, so recalculating first and then streaming the appends would
@@ -197,38 +243,218 @@ fn handle_batch_compaction(
     ctx: &mut CompactionContext,
     samples: &[Sample],
     prev_last: Option<Timestamp>,
+    input_order: &[Timestamp],
 ) -> TsdbResult<()> {
     debug_assert!(
         samples.is_sorted_by_key(|s| s.timestamp),
         "batch compaction requires samples sorted by timestamp"
     );
 
-    let split = prev_last.map_or(0, |last| samples.partition_point(|s| s.timestamp <= last));
-    let (upserts, appends) = samples.split_at(split);
+    // Captured before the streaming below mutates them: the DIV-0023 marker has to be derived
+    // from the batch's *input* order, which the sorted `samples` no longer carries.
+    let marker_before = ctx.dest.last_forward_close;
+    let cache_trace =
+        trace_dest_cache_in_input_order(ctx.rule, ctx.rule.bucket_start, prev_last, input_order);
 
-    for sample in appends {
+    // Replay the caller's order to find the back-fills — items at or below the running maximum
+    // by the time they are applied — and, with each, the series' last timestamp at that moment.
+    // That timestamp fixes the retention floor the recalculation must read the source through:
+    // applied sequentially, the trim would have run with exactly that window in force.
+    let retention = ctx.parent.retention;
+    let mut advanced: SmallVec<[Timestamp; TEMP_VEC_LEN]> = SmallVec::new();
+    let mut backfilled: SmallVec<[(Timestamp, Timestamp); TEMP_VEC_LEN]> = SmallVec::new();
+    let mut high_water = prev_last;
+    // The bucket the rule is still accumulating into, tracked through the replay — not just
+    // `ctx.rule.bucket_start`, which is the *pre-batch* value and does not see this batch's own
+    // forward advances as they happen one by one.
+    let mut open_bucket = ctx.rule.bucket_start;
+    for &ts in input_order {
+        match high_water {
+            // A repeat of a timestamp this same batch already appended is a duplicate-policy
+            // fold, not a back-fill, but only while it still lands in the bucket the rule is
+            // currently accumulating into. The append is what advances the rule through its
+            // buckets, and `samples` carries one entry per timestamp holding the folded value,
+            // so classifying an open-bucket repeat as a back-fill would take that entry out of
+            // the append stream entirely: the bucket it should have closed stays open and
+            // unpublished, while the bucket it opened gets written to the destination as though
+            // it were historical. `TS.MADD k 0 0 k 500 0 k 500 0` published bucket 500 and lost
+            // bucket 0 that way.
+            //
+            // A repeat whose bucket a *later* forward advance in this same batch has since
+            // closed is a genuine back-fill into already-published history, exactly like a
+            // repeat of a distinct earlier timestamp: `TS.MADD k 0 0 k 2000 0 k 1000 0` closes
+            // bucket 0 on the middle item, and the trailing `1000` back-fills it.
+            //
+            // A timestamp this call has *not* itself advanced through — even one that lands in
+            // the currently open bucket — is a genuine out-of-order write, not a fold: it must
+            // go through recalculation, which replays the bucket's stored samples in timestamp
+            // order. Streaming it straight into the open aggregator via the append path assumes
+            // call order is timestamp order, which order-sensitive aggregators like `last`/
+            // `first` depend on — two separate `TS.MADD` calls, `1999` then `1500`, into the
+            // same still-open 500ms bucket must report `last`=1 (`1999`'s value); streaming
+            // `1500` straight in overwrites it with `1500`'s value instead.
+            Some(max) if ts <= max => {
+                if !advanced.contains(&ts) || Some(ctx.rule.calc_bucket_start(ts)) != open_bucket {
+                    backfilled.push((ts, max));
+                }
+            }
+            _ => {
+                high_water = Some(ts);
+                open_bucket = Some(ctx.rule.calc_bucket_start(ts));
+                advanced.push(ts);
+            }
+        }
+    }
+    // Later entries win: a bucket back-filled more than once settles at the floor of the last
+    // recalculation, and the replay above is already in input order.
+    backfilled.sort_by_key(|(ts, _)| *ts);
+    backfilled.dedup_by_key(|(ts, _)| *ts);
+
+    let floor_at = |last_ts: Timestamp| {
+        if retention.is_zero() {
+            0
+        } else {
+            last_ts.saturating_sub(retention.as_millis() as i64).max(0)
+        }
+    };
+    let backfill_floor = |ts: Timestamp| match backfilled.binary_search_by_key(&ts, |(bts, _)| *bts)
+    {
+        Ok(idx) => Some(floor_at(backfilled[idx].1)),
+        Err(_) => None,
+    };
+
+    // Both halves keep `samples`' ascending order: appends stream into the open bucket, and the
+    // recalculation loop below relies on same-bucket entries being adjacent. Each upsert carries
+    // the retention floor its recalculation must use.
+    let mut appends: SmallVec<[Sample; TEMP_VEC_LEN]> = SmallVec::new();
+    let mut upserts: SmallVec<[(Sample, Timestamp); TEMP_VEC_LEN]> = SmallVec::new();
+    for sample in samples {
+        match backfill_floor(sample.timestamp) {
+            Some(min_ts) => upserts.push((*sample, min_ts)),
+            None => appends.push(*sample),
+        }
+    }
+
+    for sample in &appends {
         handle_sample_compaction(ctx, *sample)?;
     }
 
-    // One recalculation per affected bucket (samples are sorted, so same-bucket entries are
-    // adjacent).
+    // One recalculation per affected bucket, using the *largest* retention floor across
+    // all back-fills to that bucket. When an append between two back-fills advances the
+    // retention window past earlier samples (e.g. MADD 0 v 1001 v 2 v with a retention that
+    // evicts timestamp 0 after 1001 arrives), the first back-fill's floor sees the earlier
+    // samples while the second back-fill's floor does not. Processing in reverse timestamp
+    // order keeps the later (higher) floor, which matches the source state that survives
+    // retention after the batch is complete.
+    //
+    // A bucket only reaches the destination when it closes, so `recalculate_bucket` (which
+    // writes) is for buckets the rule has already moved past. When the rule has no open bucket
+    // at all this upsert is opening it, exactly as the single-sample path does for its own
+    // "no current bucket" case — publishing here would expose a bucket still accepting samples.
+    // A batch reaches that state whenever a timestamp appears twice in the caller's order: the
+    // repeat reads as a back-fill, `samples` carries the timestamp once, so it is classified as
+    // an upsert and never streams through the append path that would have opened the bucket.
     let mut prev_bucket: Option<Timestamp> = None;
-    for sample in upserts {
+    for (sample, min_ts) in upserts.iter().rev() {
         let bucket_start = ctx.rule.calc_bucket_start(sample.timestamp);
         if prev_bucket == Some(bucket_start) {
             continue;
         }
         prev_bucket = Some(bucket_start);
 
+        if ctx.rule.bucket_start.is_none() {
+            let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+            recalculate_current_bucket(ctx, bucket_start, bucket_end, *min_ts)?;
+            continue;
+        }
+
         let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
         if ctx.rule.bucket_start == Some(bucket_start) {
-            recalculate_current_bucket(ctx, bucket_start, bucket_end)?;
+            recalculate_current_bucket(ctx, bucket_start, bucket_end, *min_ts)?;
         } else {
-            recalculate_bucket(ctx, bucket_start, bucket_end, null_ts_filter)?;
+            recalculate_bucket(ctx, bucket_start, bucket_end, *min_ts, null_ts_filter)?;
         }
     }
 
+    // Overwrite whatever the sorted append stream recorded: sorting turns an out-of-order
+    // MADD into a run of forward closes, which would advance the marker past a bucket that
+    // RedisTimeSeries only ever back-filled. A forward close always wins; failing that an
+    // already-set marker stands, and only a still-unset one takes the batch's first write.
+    let marker_bucket = match (cache_trace.last_forward_close, marker_before) {
+        (Some(ts), _) => Some(ts),
+        (None, Some(prev)) => Some(prev.timestamp),
+        (None, None) => cache_trace.first_write,
+    };
+    ctx.dest.last_forward_close =
+        marker_bucket.and_then(|ts| ctx.dest.get_sample(ts).ok().flatten());
+
     Ok(())
+}
+
+/// What replaying a batch in the caller's input order does to the destination's cached
+/// last-sample. Both fields are bucket starts.
+struct DestCacheTrace {
+    /// Bucket closed by the last forward advance, if the batch made one.
+    last_forward_close: Option<Timestamp>,
+    /// Bucket of the first downstream write in that order, forward or back-fill.
+    first_write: Option<Timestamp>,
+}
+
+/// Replay a batch in input order to work out the destination's cached last-sample (DIV-0023).
+///
+/// RedisTimeSeries applies MADD items one at a time in argument order. An item above the
+/// series' running maximum moves forward and closes the open bucket; an item at or below it
+/// back-fills, materializing a downstream bucket *without* refreshing the cache. We merge the
+/// batch as one sorted run, which is right for the stored data but erases that distinction:
+/// `TS.MADD k 0 v k 1000 v k 500 v` streams as 0,500,1000 and closes two buckets forward,
+/// where RTS closes only `[0,500)` and back-fills `[500,1000)`.
+///
+/// The cache also has to be *initialized*: with the max arriving first
+/// (`TS.MADD k 1000 v k 0 v k 500 v`) nothing closes forward at all, yet RTS still reports a
+/// value — the first bucket it materialized. So an empty cache takes the first write, and from
+/// then on only forward closes move it. Both halves were derived black-box and checked against
+/// the reference over every permutation of three and four timestamps.
+///
+/// Replaying against the rule's bucket boundaries recovers this without disturbing the
+/// aggregation path, which stays sorted and keeps producing identical stored data.
+fn trace_dest_cache_in_input_order(
+    rule: &CompactionRule,
+    pre_batch_bucket_start: Option<Timestamp>,
+    prev_last: Option<Timestamp>,
+    input_order: &[Timestamp],
+) -> DestCacheTrace {
+    let mut current = pre_batch_bucket_start;
+    let mut high_water = prev_last;
+    let mut trace = DestCacheTrace {
+        last_forward_close: None,
+        first_write: None,
+    };
+
+    for &ts in input_order {
+        let bucket = rule.calc_bucket_start(ts);
+
+        if high_water.is_some_and(|hw| ts <= hw) {
+            // Back-fill. It publishes unless it lands in the still-open bucket, which is
+            // never written downstream.
+            if current.is_some_and(|open| bucket < open) {
+                trace.first_write.get_or_insert(bucket);
+            }
+            continue;
+        }
+        high_water = Some(ts);
+
+        match current {
+            Some(open) if bucket > open => {
+                trace.first_write.get_or_insert(open);
+                trace.last_forward_close = Some(open);
+                current = Some(bucket);
+            }
+            Some(_) => {}
+            None => current = Some(bucket),
+        }
+    }
+
+    trace
 }
 
 /// Handle compaction for a genuinely new sample (timestamp > last sample timestamp)
@@ -254,7 +480,13 @@ fn handle_sample_compaction(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
         Ordering::Less => {
             let bucket_end = sample_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
             // Sample is in an older bucket (shouldn't happen for new samples, but handle gracefully)
-            recalculate_bucket(ctx, sample_bucket_start, bucket_end, null_ts_filter)?;
+            recalculate_bucket(
+                ctx,
+                sample_bucket_start,
+                bucket_end,
+                ctx.parent.get_min_timestamp(),
+                null_ts_filter,
+            )?;
         }
     }
 
@@ -274,7 +506,14 @@ fn finalize_current_bucket(
             "finalize_current_bucket should be called when current bucket start is already set",
         );
 
-        add_dest_bucket(ctx, current_bucket_start, aggregated_value)?;
+        if let Some(published) = add_dest_bucket(ctx, current_bucket_start, aggregated_value)? {
+            // DIV-0023: this is the only write that advances the destination
+            // last-sample `ts-compatibility-mode strict` reports from TS.GET/TS.MGET.
+            // Back-filling an older bucket (`recalculate_bucket`) materializes a
+            // downstream sample but deliberately leaves this untouched, mirroring
+            // RedisTimeSeries's cached last-sample.
+            ctx.dest.last_forward_close = Some(published);
+        }
     }
     ctx.rule.reset();
 
@@ -303,12 +542,28 @@ fn handle_compaction_upsert(ctx: &mut CompactionContext, sample: Sample) -> Tsdb
     if bucket_start == current_bucket_start {
         // This sample belongs to the current aggregation bucket
         // We need to recalculate the entire bucket since we don't know what changed
-        recalculate_current_bucket(ctx, current_bucket_start, bucket_end)?;
+        recalculate_current_bucket(
+            ctx,
+            current_bucket_start,
+            bucket_end,
+            ctx.parent.get_min_timestamp(),
+        )?;
         return Ok(());
     }
 
-    // This is a historical upsert - need to recalculate the affected bucket
-    recalculate_bucket(ctx, bucket_start, bucket_end, null_ts_filter)
+    // This is a historical upsert — recalculate the affected (closed) bucket.
+    // The recompute range must be that bucket's own span; `bucket_end` above
+    // belongs to the *current* open bucket, and using it here would fold every
+    // sample between the historical bucket and the open one into the recompute.
+    let historical_bucket_end = bucket_start.saturating_add_unsigned(duration);
+    let min_ts = ctx.parent.get_min_timestamp();
+    recalculate_bucket(
+        ctx,
+        bucket_start,
+        historical_bucket_end,
+        min_ts,
+        null_ts_filter,
+    )
 }
 
 /// Recalculate the current ongoing aggregation bucket
@@ -316,6 +571,7 @@ fn recalculate_current_bucket(
     ctx: &mut CompactionContext,
     bucket_start: Timestamp,
     bucket_end: Timestamp,
+    min_ts: Timestamp,
 ) -> TsdbResult<()> {
     // Reset the aggregator and recalculate from all samples in the bucket
     let has_samples = calculate_range(
@@ -323,6 +579,7 @@ fn recalculate_current_bucket(
         &mut ctx.rule.aggregator,
         bucket_start,
         bucket_end - 1,
+        min_ts,
         null_ts_filter,
     );
 
@@ -339,6 +596,7 @@ fn recalculate_bucket<F>(
     ctx: &mut CompactionContext,
     bucket_start: Timestamp,
     bucket_end: Timestamp,
+    min_ts: Timestamp,
     filter: F,
 ) -> TsdbResult<()>
 where
@@ -354,6 +612,7 @@ where
         &mut bucket_aggregator,
         bucket_start,
         bucket_end - 1,
+        min_ts,
         &filter,
     );
 
@@ -362,7 +621,7 @@ where
         add_dest_bucket(ctx, bucket_start, aggregated_value)?;
     } else {
         // No samples in this bucket anymore, remove it from destination
-        ctx.dest.remove_range(bucket_start, bucket_end - 1)?;
+        ctx.remove_dest_range(bucket_start, bucket_end - 1)?;
     }
 
     Ok(())
@@ -387,70 +646,123 @@ fn handle_compaction_range_removal(
     start: Timestamp,
     end: Timestamp,
 ) -> TsdbResult<()> {
-    // Update destination series buckets that overlap with [start, end]
+    // Update destination series buckets that overlap with [start, end].
+    //
+    // Only the first and last bucket can be partially covered; every bucket strictly between
+    // them is fully covered by definition (the removal spans them end to end), so they are
+    // dropped from the destination with a single range removal. Walking bucket by bucket
+    // instead made the cost scale with the *number of buckets in the range* rather than with
+    // the data actually stored: `TS.DEL key 0 <huge>` on a rule with a small bucketDuration
+    // spins for billions of iterations and blocks the server (a 1e10-bucket range took ~13s
+    // against RTS's 0.02s for the same two samples).
     let first_bucket_start = ctx.rule.calc_bucket_start(start);
     let last_bucket_start = ctx.rule.calc_bucket_start(end);
 
-    let mut current_bucket_start = first_bucket_start;
-    while current_bucket_start <= last_bucket_start {
-        let bucket_end = current_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+    remove_or_recalculate_bucket(ctx, first_bucket_start, start, end)?;
 
-        let fully_covered = start <= current_bucket_start && end >= bucket_end;
-        if fully_covered {
-            if !ctx.dest.is_empty() {
-                ctx.dest
-                    .remove_range(current_bucket_start, bucket_end - 1)?;
-            }
-        } else {
-            // Recalculate this bucket excluding removed timestamps.
-            // If destination has no flushed buckets yet, this still correctly maintains the aggregator state.
-            recalculate_bucket(ctx, current_bucket_start, bucket_end, |ts| {
-                ts < start || ts > end
-            })?;
+    if last_bucket_start != first_bucket_start {
+        let middle_start = first_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+        if middle_start < last_bucket_start && !ctx.dest.is_empty() {
+            // Buckets tile the range, so the fully covered middle is exactly
+            // [middle_start, last_bucket_start).
+            ctx.remove_dest_range(middle_start, last_bucket_start - 1)?;
         }
-
-        current_bucket_start = bucket_end;
+        remove_or_recalculate_bucket(ctx, last_bucket_start, start, end)?;
     }
 
-    // Adjust current in-memory aggregation (ongoing bucket), if affected
-    adjust_current_bucket_after_removal(ctx, start, end);
+    // Re-establish the open bucket from what the source still holds, retracting any
+    // destination bucket the removal re-opened.
+    resync_open_bucket_after_removal(ctx)?;
 
     Ok(())
 }
 
-fn adjust_current_bucket_after_removal(
-    ctx: &mut CompactionContext<'_>,
-    removal_start: Timestamp,
-    removal_end: Timestamp,
-) {
-    let Some(current_bucket_start) = ctx.rule.bucket_start else {
-        // No active aggregation, nothing to adjust
-        return;
+/// Apply a removal of `[start, end]` to the single destination bucket starting at `bucket_start`:
+/// drop it outright when the removal covers it entirely, otherwise recalculate it from the
+/// surviving source samples.
+fn remove_or_recalculate_bucket(
+    ctx: &mut CompactionContext,
+    bucket_start: Timestamp,
+    start: Timestamp,
+    end: Timestamp,
+) -> TsdbResult<()> {
+    // The rule's still-open bucket has no destination entry yet and must not gain one: a bucket
+    // only reaches the destination when it closes. Recalculating it here would publish a bucket
+    // that is still accepting samples (RTS reports nothing for it). Its aggregator is rebuilt by
+    // `resync_open_bucket_after_removal`, which runs after this, so leave it untouched.
+    if ctx.rule.bucket_start == Some(bucket_start) {
+        return Ok(());
+    }
+
+    let bucket_end = bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+
+    if start <= bucket_start && end >= bucket_end {
+        if !ctx.dest.is_empty() {
+            ctx.remove_dest_range(bucket_start, bucket_end - 1)?;
+        }
+    } else {
+        // Recalculate this bucket excluding removed timestamps.
+        // If destination has no flushed buckets yet, this still correctly maintains the aggregator state.
+        let min_ts = ctx.parent.get_min_timestamp();
+        recalculate_bucket(ctx, bucket_start, bucket_end, min_ts, |ts| {
+            ts < start || ts > end
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Re-establish the rule's open bucket from the source's surviving samples, retracting any
+/// destination bucket the removal re-opened.
+///
+/// The invariant this restores (confirmed by black-box probing of the reference): the
+/// destination holds exactly the buckets *strictly older* than the bucket containing the
+/// source's current last timestamp. That bucket is by definition still open, and an open
+/// bucket has no destination entry.
+///
+/// A removal that deletes the source's trailing samples therefore moves the open bucket
+/// *backwards*, and every destination sample at or after the new open bucket belongs to a
+/// bucket that is open again — it must be retracted, not left stranded. The differential
+/// fuzzer found this via `TS.DEL` deleting the very sample whose arrival had closed the
+/// preceding bucket: we kept publishing the closed value where the reference reports nothing.
+///
+/// Recomputing the aggregation state from the source (rather than patching it against the
+/// removed range) is also what makes the re-opened bucket publish the right value when a later
+/// write closes it again: its surviving samples are simply re-aggregated.
+fn resync_open_bucket_after_removal(ctx: &mut CompactionContext<'_>) -> TsdbResult<()> {
+    let Some(last_sample) = ctx.parent.last_sample else {
+        // Source is empty, so no bucket can ever have closed: the destination holds nothing
+        // valid and there is no aggregation in progress.
+        ctx.rule.reset();
+        if !ctx.dest.is_empty() {
+            ctx.remove_dest_range(Timestamp::MIN, Timestamp::MAX)?;
+        }
+        return Ok(());
     };
 
-    let current_bucket_end = current_bucket_start.saturating_add_unsigned(ctx.rule.bucket_duration);
+    let (open_start, open_end) = ctx.rule.get_bucket_range(last_sample.timestamp);
 
-    // Check if the removal affects the current aggregation bucket
-    if removal_start < current_bucket_end && removal_end > current_bucket_start {
-        let mut new_aggregator = ctx.rule.aggregator.clone();
-        AggregationHandler::reset(&mut new_aggregator);
-
-        // Re-aggregate samples that are not in the removal range
-        let bucket_samples = ctx
-            .parent
-            .range_iter(current_bucket_start, current_bucket_end)
-            .filter(|sample| sample.timestamp < removal_start || sample.timestamp > removal_end);
-
-        let mut has_samples = false;
-        for sample in bucket_samples {
-            if AggregationHandler::update(&mut new_aggregator, sample.timestamp, sample.value) {
-                has_samples = true;
-            }
-        }
-
-        ctx.rule.aggregator = new_aggregator;
-        ctx.rule.has_samples = has_samples;
+    // The re-opened bucket and anything after it are no longer closed.
+    if !ctx.dest.is_empty() {
+        ctx.remove_dest_range(open_start, Timestamp::MAX)?;
     }
+
+    let mut aggregator = ctx.rule.aggregator.clone();
+    AggregationHandler::reset(&mut aggregator);
+
+    // `open_end - 1`: buckets are [start, end) but `range_iter` is inclusive on both bounds.
+    let mut has_samples = false;
+    for sample in ctx.parent.range_iter(open_start, open_end - 1) {
+        if AggregationHandler::update(&mut aggregator, sample.timestamp, sample.value) {
+            has_samples = true;
+        }
+    }
+
+    ctx.rule.aggregator = aggregator;
+    ctx.rule.has_samples = has_samples;
+    ctx.rule.bucket_start = Some(open_start);
+
+    Ok(())
 }
 
 /// Outcome of applying one compaction rule to its destination series.
@@ -515,6 +827,12 @@ fn process_series_with_compaction(
     series: &mut TimeSeries,
     op: CompactionOp,
 ) -> TsdbResult<()> {
+    // `ts.add:dest` fires only when compaction appends new bucket data to a
+    // downstream series (a bucket close). Reference-observed (§7.3): an
+    // upsert into an already-closed bucket recomputes the destination
+    // silently, and a TS.DEL propagated into destinations emits only the
+    // source's `ts.del`.
+    let notify_destinations = matches!(op, CompactionOp::AddNew(_) | CompactionOp::AddBatch { .. });
     let mut notified: SmallVec<[SeriesRef; TEMP_VEC_LEN]> = SmallVec::new();
     let mut visited: SmallVec<[SeriesRef; TEMP_VEC_LEN]> = SmallVec::new();
     visited.push(series.id);
@@ -588,9 +906,14 @@ fn process_series_with_compaction(
                     continue;
                 }
 
+                // A cascaded batch is this level's own committed buckets, which are published
+                // in bucket order — so input order and sorted order coincide.
+                let cascade_order: SmallVec<[Timestamp; TEMP_VEC_LEN]> =
+                    samples.iter().map(|s| s.timestamp).collect();
                 let batch_op = CompactionOp::AddBatch {
                     samples: &samples,
                     prev_last,
+                    input_order: &cascade_order,
                 };
                 let child_outcomes =
                     apply_rules_on_destinations(&mut child, child_destinations, batch_op)?;
@@ -610,7 +933,7 @@ fn process_series_with_compaction(
         }
     }
 
-    if !notified.is_empty() {
+    if notify_destinations && !notified.is_empty() {
         notify_compaction(ctx, &notified);
     }
 
@@ -728,11 +1051,24 @@ fn notify_compaction(ctx: &Context, ids: &[SeriesRef]) {
             };
             let key = ctx.create_string(key.as_ref());
             ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add:dest", &key);
+            // Callers only reach here for destinations that materialized a sample, so this is
+            // the one place both direct and cascaded compaction output can wake a `TS.READ`
+            // reader blocked on a rollup key.
+            signal_timeseries_ready(ctx, &key);
         }
     });
 }
 
-fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> TsdbResult<()> {
+/// Write one aggregated bucket to the destination.
+///
+/// Returns the stored sample when the write actually landed, so a caller can tell a
+/// real publish from one the destination ignored (see DIV-0023 in
+/// `finalize_current_bucket`).
+fn add_dest_bucket(
+    ctx: &mut CompactionContext,
+    ts: Timestamp,
+    value: f64,
+) -> TsdbResult<Option<Sample>> {
     let bucket_start = ctx.rule.calc_bucket_start(ts);
     // Add the sample to the destination series
     // todo: specify to ignore whatever adjustments
@@ -742,12 +1078,26 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
     {
         SampleAddResult::Ok(sample) => {
             ctx.written.push(sample);
-            Ok(())
+            // DIV-0023: an unset destination cache takes the *first* downstream write,
+            // whether it came from a forward close or a back-fill — RedisTimeSeries reports
+            // a value even for a destination only ever populated out of order. Later
+            // back-fills leave it alone; only a forward close moves it (see
+            // `finalize_current_bucket`). This is the single point every write passes
+            // through, so it covers the sequential and batch paths alike; the batch path
+            // then recomputes the final marker from input order.
+            //
+            // Removals keep the marker live themselves (`remove_dest_range`), so an unset
+            // marker here really means "nothing published yet", not "the marker's bucket
+            // went away".
+            if ctx.dest.last_forward_close.is_none() {
+                ctx.dest.last_forward_close = Some(sample);
+            }
+            Ok(Some(sample))
         }
-        SampleAddResult::Ignored(_) => Ok(()), // duplicate sample, (ignored)
+        SampleAddResult::Ignored(_) => Ok(None), // duplicate sample, (ignored)
         SampleAddResult::TooOld => {
             // bucket start is too old, we cannot add it
-            Ok(())
+            Ok(None)
         }
         x => {
             let base_msg = format!("TSDB: failed to add sample @{ts} to destination bucket: {x}",);
@@ -757,11 +1107,19 @@ fn add_dest_bucket(ctx: &mut CompactionContext, ts: Timestamp, value: f64) -> Ts
     }
 }
 
+/// Aggregate the source samples in `[start, end]` that pass `filter`, ignoring anything below
+/// `min_ts`.
+///
+/// The floor is a parameter rather than `series.get_min_timestamp()` because a batch is applied
+/// as one sorted run while the retention trim runs after it: the window in force when a given
+/// item would have been applied sequentially is not the series' current one. Callers outside the
+/// batch path pass the current window, which is the same thing for them.
 fn calculate_range<F>(
     series: &TimeSeries,
     aggregator: &mut Aggregator,
     start: Timestamp,
     end: Timestamp,
+    min_ts: Timestamp,
     filter: F,
 ) -> bool
 where
@@ -770,7 +1128,7 @@ where
     let mut has_samples = false;
     aggregator.reset();
     for sample in series
-        .range_iter(start, end)
+        .stored_range_iter(start.max(min_ts), end)
         .filter(|sample| filter(sample.timestamp))
     {
         if aggregator.update(sample.timestamp, sample.value) {
@@ -848,11 +1206,20 @@ impl TimeSeries {
         ctx: &Context,
         samples: &[Sample],
         prev_last: Option<Timestamp>,
+        input_order: &[Timestamp],
     ) -> TsdbResult<()> {
         if self.rules.is_empty() || samples.is_empty() {
             return Ok(());
         }
-        apply_compaction(ctx, self, CompactionOp::AddBatch { samples, prev_last })
+        apply_compaction(
+            ctx,
+            self,
+            CompactionOp::AddBatch {
+                samples,
+                prev_last,
+                input_order,
+            },
+        )
     }
 }
 

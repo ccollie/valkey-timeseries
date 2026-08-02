@@ -2,9 +2,10 @@ use super::fanout_codec;
 use super::fanout_codec::generated::{
     GroupPartialSeries, MultiRangeRequest, MultiRangeResponse, SeriesRangeResponse,
 };
+use crate::aggregators::EmptyFillBounds;
 use crate::aggregators::MultiAggregateIterator;
 use crate::aggregators::{PartialReducer, PartialState};
-use crate::commands::utils::reply_with_mrange_series_results;
+use crate::commands::utils::{MRangeReplyShape, reply_with_mrange_series_results};
 use crate::common::{MultiSample, Sample};
 use crate::fanout::{FanoutClientCommand, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
@@ -188,10 +189,14 @@ impl FanoutClientCommand for MRangeFanoutCommand {
         let series = std::mem::take(&mut self.series);
         let group_partials = std::mem::take(&mut self.group_partials);
 
+        // Captured before process_responses, which clears aggregation options
+        // under push-down (the RESP3 reply still reports the aggregator names).
+        let shape = MRangeReplyShape::from_options(&self.options);
+
         match self.process_responses(series, group_partials) {
             Ok(mut series) => {
                 sort_mrange_results(&mut series, is_grouped);
-                let _ = reply_with_mrange_series_results(ctx, &series);
+                let _ = reply_with_mrange_series_results(ctx, &series, &shape);
                 Status::Ok
             }
             Err(e) => {
@@ -258,7 +263,16 @@ impl MRangeFanoutCommand {
         } else if self.options.grouping.is_some() {
             handle_grouping(series, &self.options)
         } else {
-            handle_basic(series, &self.options)
+            let mut results = handle_basic(series, &self.options)?;
+            // Authoritative EXCLUDEEMPTY pass. Shards already drop empty series
+            // when they honor `exclude_empty`, but a peer that ignores the field
+            // (or coordinator-side aggregation that empties a series) must not
+            // change the reply. GROUPBY is rejected with EXCLUDEEMPTY at parse
+            // time, so only this branch can see the flag.
+            if self.options.exclude_empty {
+                results.retain(|result| !result.data.is_empty());
+            }
+            Ok(results)
         }
     }
 }
@@ -290,11 +304,16 @@ fn normalize_response_series(
                 return Ok(response);
             }
             let mut result = MRangeSeriesResult::try_from(response)?;
+            // Default `EMPTY` bounds: the coordinator holds the shard's samples, already
+            // clipped to the query window, and no series to look outside it with — so the
+            // fill stays anchored to those samples (interior gaps only). A shard that
+            // bucketed for itself returns above with the wider fill applied.
             let samples: Vec<Sample> = create_sample_iterator_adapter(
                 result.data.sample_iter(),
                 &shard_range,
                 &None,
                 false,
+                EmptyFillBounds::default(),
             )
             .collect();
             result.data = SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
@@ -567,6 +586,7 @@ fn handle_group_partials(
                 key: format!("{}={}", group_options.group_label, label),
                 group_label_value: Some(label),
                 labels,
+                sources,
                 data,
             }
         })
@@ -692,6 +712,7 @@ fn process_group(
         key: format!("{}={}", group_options.group_label, label),
         group_label_value: Some(label),
         labels,
+        sources: data.keys.to_vec(),
         data: result_data,
     }
 }
@@ -727,6 +748,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.range,
             &options.grouping,
             reverse_aggr,
+            EmptyFillBounds::default(),
         )
         .collect()
     } else if series.len() == 1 {
@@ -735,6 +757,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.range,
             &options.grouping,
             reverse_aggr,
+            EmptyFillBounds::default(),
         )
         .collect()
     } else {
@@ -747,6 +770,7 @@ fn process_series_list(series: &[MRangeSeriesResult], options: &MRangeOptions) -
             &options.range,
             &options.grouping,
             reverse_aggr,
+            EmptyFillBounds::default(),
         )
         .collect()
     }
@@ -787,6 +811,7 @@ mod tests {
             key: key.into(),
             group_label_value: group.map(String::from),
             labels: Vec::new(),
+            sources: Vec::new(),
             data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
                 UncompressedChunk::from_vec(data),
             )),
@@ -812,6 +837,7 @@ mod tests {
                     value: value.into(),
                 })
                 .collect(),
+            sources: Vec::new(),
             data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
                 UncompressedChunk::from_vec(data),
             )),
@@ -852,7 +878,14 @@ mod tests {
     /// Simulate what a push-down shard returns: the per-series aggregation
     /// pipeline applied to the raw samples.
     fn shard_aggregate(raw: Vec<Sample>, options: &MRangeOptions) -> Vec<Sample> {
-        create_sample_iterator_adapter(raw.into_iter(), &options.range, &None, false).collect()
+        create_sample_iterator_adapter(
+            raw.into_iter(),
+            &options.range,
+            &None,
+            false,
+            EmptyFillBounds::default(),
+        )
+        .collect()
     }
 
     /// Push-down equivalence: shard-side bucketing + coordinator post-processing
@@ -1237,6 +1270,54 @@ mod tests {
         }
     }
 
+    /// EXCLUDEEMPTY rides on the request so shards can drop empty series before
+    /// shipping, but the coordinator is the authority: a peer that ignores the
+    /// field (here, both shards) must not be able to put an empty series back
+    /// into the reply.
+    #[test]
+    fn test_exclude_empty_reapplied_at_coordinator() {
+        let mut options = mrange_options(0, 500);
+        options.exclude_empty = true;
+
+        let mut command = MRangeFanoutCommand::new(options);
+        let request = command.generate_request();
+        assert!(request.exclude_empty, "shards are told to pre-filter");
+        // The shard rebuilds its options from the request, so the flag has to
+        // survive both directions of the codec for the pre-filter to happen.
+        assert!(
+            MRangeOptions::try_from(&request).unwrap().exclude_empty
+                && MRangeOptions::try_from(request).unwrap().exclude_empty
+        );
+
+        let responses = vec![
+            (
+                to_response(series_result("s", None, samples(&[(100, 1.0), (400, 4.0)]))),
+                false,
+            ),
+            (to_response(series_result("u", None, Vec::new())), false),
+        ];
+        let results = command.process_responses(responses, Vec::new()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "s");
+
+        // Without the flag the empty series is reported, as before.
+        let mut options = mrange_options(0, 500);
+        options.exclude_empty = false;
+        let mut command = MRangeFanoutCommand::new(options);
+        assert!(!command.generate_request().exclude_empty);
+        let responses = vec![
+            (
+                to_response(series_result("s", None, samples(&[(100, 1.0), (400, 4.0)]))),
+                false,
+            ),
+            (to_response(series_result("u", None, Vec::new())), false),
+        ];
+        let mut results = command.process_responses(responses, Vec::new()).unwrap();
+        sort_mrange_results(&mut results, false);
+        assert_eq!(results.len(), 2);
+        assert!(results[1].data.is_empty());
+    }
+
     /// COUNT push-down latch: flag mirrors config && COUNT presence.
     #[test]
     fn test_count_pushdown_latch() {
@@ -1482,6 +1563,7 @@ mod tests {
             key: key.into(),
             group_label_value: group.map(String::from),
             labels: Vec::new(),
+            sources: Vec::new(),
             data: SeriesResultData::Rows(rows),
         })
     }

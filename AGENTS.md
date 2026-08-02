@@ -4,17 +4,46 @@ Purpose
 
 - Short, focused instructions to help an AI model become productive in this codebase quickly.
 
+## ⚠️ Clean-room rule (read before touching compatibility work)
+
+This repo is Apache-2.0. RedisTimeSeries — **including its test suite** — is RSALv2/SSPLv1/AGPLv3,
+which is incompatible with that license.
+
+**Do not consult, fetch, vendor, copy, or port RedisTimeSeries source or test code**, and do not
+reproduce it from memory. Compatibility behavior must be derived only from public command
+documentation and black-box observation of a running reference server. Running the pinned
+`redis:8.10` image as a test target is fine; its source is off-limits. See
+[tests/compat/README.md](tests/compat/README.md).
+
 Quick start (commands you can run)
 
-- Build + checks:
+- Prerequisites: a Rust toolchain, and nothing else. In particular **`protoc` is not required**:
+  `build.rs` parses `proto/v1/*.proto` with [`protox`](https://docs.rs/protox), a pure-Rust
+  protobuf compiler, precisely so the build needs no external toolchain. This holds for
+  regeneration too (`VALKEY_TS_PROTO_REGEN=1`), which goes through the same path. No CI job
+  installs a protobuf compiler — if you find yourself adding one to fix a build, the problem is
+  something else.
+- If `build.rs` fails saying the generated file `is missing` or `is out of date`, that is a
+  *schema drift* error, not a missing-toolchain error: the fix is
+  `VALKEY_TS_PROTO_REGEN=1 cargo build` plus committing the result. Installing `protoc` will not
+  help. See the protobuf-codegen note under "Quick tips for code changes".
+- Editing a `.proto` does mean one external tool, but only in CI: `buf lint` runs against the
+  `proto/` module (`buf.yaml`, `STANDARD` minus `PACKAGE_DIRECTORY_MATCH`). Install
+  [`buf`](https://buf.build) to check it locally; a lint failure there is separate from the
+  codegen-drift failure above.
+- Build + checks (mirrors CI):
   `cargo fmt --check && cargo clippy --profile release --all-targets -- -D clippy::all && RUSTFLAGS="-D warnings" cargo build --all --all-targets --release`
 - Local dev script (recommended):
     - `SERVER_VERSION=unstable ./build.sh`  # builds module, builds valkey-server, runs unit & integration tests
+      (`tests/compat` is excluded — see below)
     - To run ASAN integration pass: `ASAN_BUILD=true SERVER_VERSION=unstable ./build.sh`
     - Run a subset of Python integration tests: `TEST_PATTERN="test_ts_add" SERVER_VERSION=unstable ./build.sh`
+    - Include the compatibility suite: `RTS_COMPAT=1 SERVER_VERSION=unstable ./build.sh`
 - Benchmarks: `cargo bench --features enable-system-alloc` (see Benchmarks below — the feature is mandatory).
 - Compression report: `tools/compression_report.sh` (add `--check` to fail on regressions against a saved baseline).
 - Latency report: `tools/latency_report.sh`. Wire-payload report: `tools/wire_report.sh` (see Benchmarks below).
+- Compatibility fuzzer: `./fuzz.sh` (installs deps, builds, starts both servers, runs the fuzzer;
+  `--help` for options — see Fuzzing below).
 
 Key ENV and behavior (from `./build.sh`)
 
@@ -22,11 +51,24 @@ Key ENV and behavior (from `./build.sh`)
   `tests/build/binaries/$SERVER_VERSION/valkey-server`. Defaults to `unstable` if not set, which tracks the latest main or branch.
 - `ASAN_BUILD`: when set runs tests with LeakSanitizer checks and fails on leaks.
 - `TEST_PATTERN`: passed to pytest `-k` to select tests.
+- `RTS_COMPAT=1` / `COMPAT_REFERENCE_URL` (or the `./build.sh compat` argument): any of them adds a second
+  pytest phase that runs the differential compatibility suite. Unset (the default), `build.sh` never collects
+  `tests/compat`, because those tests need a live RedisTimeSeries reference server. In compat mode `build.sh`
+  provisions, starts and *validates* the reference itself before pytest (`tests/reference_server.sh`), so a
+  missing tool or a pin mismatch fails the build instead of reaching conftest's skip path.
+  `ASAN_BUILD` and compat mode are rejected in combination. See
+  `docs/rts-compat-build-integration-plan.md`.
 - `MODULE_PATH` exported after build: `target/release/libvalkey_timeseries{.so,.dylib}` depending on OS.
 
 Setup & Environment Notes
 
-- Rust version: The project requires a minimum Rust version of `1.92`.
+- Rust: edition 2024, minimum supported version `1.92`.
+- **After pulling or switching branches, always rebuild the module.** The module binary
+  (`target/release/libvalkey_timeseries.{so,dylib}`) is not tracked in git and can be stale
+  after source changes — e.g. new config parameters or commands won't be registered, causing
+  opaque failures like `CONFIG GET` returning empty or `fuzz.sh` reporting
+  "could not set ts-compatibility-mode=strict (is the module loaded?)". Run
+  `cargo build --release` or `./build.sh` after any checkout that pulls new commits.
 - Python tests: Integration tests use Python. Dependencies are in `requirements.txt` (or via `uv sync`). The `build.sh`
   script handles this, but if running `pytest` manually, ensure packages are installed.
 - Running manually: To manually start a server with the module loaded, run
@@ -39,8 +81,9 @@ High-level architecture (big picture)
 - Command implementations live in `src/commands/*` and are registered in `src/lib.rs` with a one-to-one mapping to
   Valkey commands. Example:
     - `["TS.ADD", commands::ts_add_cmd, "write deny-oom", 1, 1, 1, "write timeseries"]`
-- Time-series core lives under `src/series` (storage, encoding, background tasks, indexes). Index/init helpers:
-  `init_croaring_allocator()` and `init_background_tasks()` are invoked from `src/lib.rs`.
+- Time-series core lives under `src/series` (storage, chunk encodings, compaction, background tasks, indexes,
+  serialization). Init helpers invoked from `src/lib.rs`: `init_croaring_allocator()`, `init_thread_pool()`,
+  `init_background_tasks()`, and `init_fanout()` when clustered.
   - `src/series/chunks/` implements three encoding formats: **Chimp** (ELF-on-Chimp, default),
     **Gorilla**, **Uncompressed**. The default is controlled by `DEFAULT_CHUNK_ENCODING` in `src/config.rs`.
     Storage encoding is the user's choice; the encoding used for cluster *wire* payloads is a separate, internal policy —
@@ -49,6 +92,10 @@ High-level architecture (big picture)
 - Cross-node fanout / clustering patterns: `src/fanout` and `src/commands/*_fanout_command.rs` use the protobuf wire
   contract in `proto/v1/` and explicit fanout registration (`register_fanout_operations`) to implement
   cluster-wide queries.
+- Beyond the RedisTimeSeries surface, the module ships extensions: `TS.JOIN` (`src/join/`), `TS.OUTLIERS` and the
+  statistical machinery behind it (`src/analysis/` — outliers, seasonality, quantile estimators; see
+  `src/analysis/README.md`), `TS.ADDBULK`, `TS.LABELSTATS`, `TS.METRICNAMES`, `TS.MDEL`, and Prometheus-style
+  selector syntax (`src/parser/`, `docs/topics/filter-syntax.md`).
 - Outlier detection: `src/analysis/outliers/` — multiple algorithms (ESD, CUSUM, EWMA, IQR, MAD, modified z-score, RCF
   variants) exposed via the `TS.OUTLIERS` command.
 - Aggregation: `src/aggregators/` — aggregation handlers and iterators used by range queries.
@@ -110,6 +157,38 @@ Cargo features
   library build too, so the `.so`/`.dylib` produced by `build.sh` contains the (unreachable) fixture code; a plain
   `cargo build --release` does not.
 
+Compatibility with RedisTimeSeries
+
+- [COMPATIBILITY.md](COMPATIBILITY.md) is the contract: what is expected to match RTS 8.10, what is an intentional
+  divergence, and what is explicitly a non-goal (RDB/AOF/replication byte formats, error message text, performance,
+  internals). Read it before "fixing" a behavior difference — some are deliberate.
+  [docs/topics/redistimeseries-migration.md](docs/topics/redistimeseries-migration.md) is the end-user-facing
+  digest of the same material (what carries over, what to change, the migration checklist); keep the two in sync
+  when the contract moves — the contract is the source of truth, the topic doc is derived.
+- [docs/plans/rts-compatibility-test-plan.md](docs/plans/rts-compatibility-test-plan.md) is the plan the harness implements;
+  its section numbers (§5.1 normalization, §5.2 error policy, §5.3 registry, §6 matrix, §7 operational parity)
+  are referenced throughout the test code.
+- `tests/compat/` is the differential harness. Each test uses a `diff` fixture that sends every command to both the
+  subject (valkey-server + this module) and the reference (pinned `redis:8.10`), normalizes both replies, and asserts
+  equality — automatically parametrized over RESP2 and RESP3.
+- Intentional mismatches go in `tests/compat/divergences.yml` and report as XFAIL-DIVERGENT rather than failing.
+  "Reference errors, subject succeeds" always hard-fails and cannot be registered away. Stale entries hide
+  regressions — remove entries that stop firing.
+- The reference server lifecycle lives in one place: [tests/reference_server.sh](tests/reference_server.sh),
+  sourced by both `build.sh` and `fuzz.sh`. It exposes `compat_reference_provision` / `_start` / `_stop`,
+  installs **no traps** (the caller owns teardown and reads `COMPAT_REFERENCE_OWNED` to know what it started),
+  and validates on every start that the reference reports the pinned `redis_version` and `timeseries` module
+  version — a mismatch aborts rather than silently reinterpreting the registry.
+- The digest-pinned `redis:8.10` image is the canonical reference artifact. A secondary native-binary mode
+  (`COMPAT_REFERENCE_MODE=binary`, Linux-only, pinned deb + SHA256 table in the helper) exists but is **not**
+  selected by `auto` until an equivalence run against the image is recorded in
+  [docs/plans/rts-reference-bumps.md](docs/plans/rts-reference-bumps.md). Bump the image digest and the binary pin in the
+  same reviewed change. Design and rationale: `docs/rts-compat-build-integration-plan.md`.
+- Docker is still required for the whole suite even in binary mode: `test_compat_replication.py` starts its
+  reference replica with `docker run` regardless of how the primary was obtained, and skips when it cannot.
+  `COMPAT_STRICT_SKIPS=1` (set by `./build.sh compat`) turns that skip into a failure so replication coverage
+  cannot vanish silently.
+
 Testing & debugging notes
 
 - Unit tests: `cargo test --features enable-system-alloc`.
@@ -124,12 +203,34 @@ Testing & debugging notes
   all of them ignore the range — see `is_workload()`). `TimestampModel` controls spacing
   (`Regular`, `Jitter`, `Irregular`). `DataGenerator::dataset(workload, model, samples, seed)` is the one-line form used
   by the benchmark matrix.
-- Integration tests: Python pytest under `tests/` and rely on a built `valkey-server` and `tests/valkeytestframework`
-  helper files (populated by `./build.sh`).
+- Integration tests: Python pytest under `tests/` (`test_ts_*.py` per command; `*_cme.py` are cluster-mode-enabled
+  variants) relying on a built `valkey-server` and the `tests/valkeytestframework` helpers (populated by `./build.sh`).
 - To reproduce integration runs locally: run `SERVER_VERSION=unstable ./build.sh` — this will clone/build Valkey and
   copy the server binary to `tests/build/binaries/`.
+- `build.sh` is Bash (`set -euo pipefail`), derives its root from the script path rather than `pwd`, and rejects
+  unknown positional arguments — it takes `clean`, `compat`, or nothing. In compat mode it runs pytest in **two
+  phases**: `tests/` with `--ignore=tests/compat` first, then `tests/compat` alone with the reference up. With
+  `TEST_PATTERN` set, a phase that collects nothing (pytest exit 5) is tolerated, but a pattern that matches
+  nothing in *either* phase fails the build rather than passing green having run zero tests.
+- Compat tests need a reference server, so a plain `./build.sh` excludes `tests/compat` (`--ignore`, which also
+  avoids importing that directory's `conftest.py` and its PyYAML/`compat_diff` imports). `./build.sh compat`
+  runs them as a separate second phase with a reference it starts, validates and stops itself — provisioning
+  failures, port conflicts and pin mismatches fail the build instead of reaching conftest's skip path.
+  `ASAN_BUILD` plus compat is rejected outright. Or run them explicitly:
+  `RTS_COMPAT=1 python3 -m pytest tests/compat -v` (harness manages the container), or
+  `docker compose -f docker-compose.compat.yml up -d reference` plus
+  `COMPAT_REFERENCE_URL=redis://127.0.0.1:16379 python3 -m pytest tests/compat -v`.
+  Without either var a direct `pytest tests/compat` run still collects but skips every test.
+  The opt-in Hypothesis fuzzer needs `COMPAT_FUZZ=1` and is easiest to run via `./fuzz.sh`
+  (see "Fuzzing" below). Full env var table in `tests/compat/README.md`.
+- pytest markers: `rts_compat` (needs a live reference server), `skip_for_asan`.
 - Leak detection: when `ASAN_BUILD` is set, the build script scans pytest output for LeakSanitizer output and fails if
   leaks are detected.
+- CI (`.github/workflows/ci.yml`): ubuntu + macos build/lint/unit, ubuntu integration tests across
+  `unstable`/`8.1`, an ASAN leak job, and a `compat-smoke` job that diffs the smoke subset against the pinned
+  reference (RESP3 only). The integration and ASAN jobs pass `--ignore=tests/compat` (same as `build.sh`);
+  `compat-smoke` is the only job that runs the compat suite, and it starts the reference container first.
+  `compat-smoke` is currently `continue-on-error: true` — non-blocking until the first-run divergences are triaged.
 
 Benchmarks
 
@@ -213,17 +314,86 @@ Benchmarks
   `--out-csv`/`--out-md`, `--quiet`. Wall-clock again, so no baseline gate — compare rows within one run.
 - `build.sh` does not run benches or any of the three report tools; they are manual.
 
+Fuzzing (Tier C differential fuzzer, plan §4.3)
+
+- There is no `cargo-fuzz`/libFuzzer target. The only fuzzer is `tests/compat/test_compat_fuzz.py`: Hypothesis
+  generates valid-by-construction command sequences (`tests/compat/fuzz_strategies.py`) over a small key/label
+  universe and replays each through the same `diff` client the rest of `tests/compat` uses, so every reply is
+  checked against the pinned `redis:8.10` reference. It therefore needs a reference server just like the other
+  compat tests, plus `hypothesis` installed (`requirements.txt` / `uv sync`).
+- It is opt-in and not part of the PR gate — a time-budgeted nightly-style job. It is currently not wired into
+  `.github/workflows/ci.yml`; run it by hand.
+- **Preferred entry point: `./fuzz.sh`.** It installs the Python deps if missing, builds the module
+  and `valkey-server` if missing, starts the reference (via the shared `tests/reference_server.sh`) and a subject
+  server, puts the subject in `ts-compatibility-mode strict`, runs the fuzzer in rounds, and tears down whatever
+  it started — a reference someone else left running is used and left up:
+
+  ```sh
+  ./fuzz.sh                                  # 150 examples/protocol
+  ./fuzz.sh --examples 20000 --duration 20m --stats   # soak
+  ./fuzz.sh --protocol resp3 --derandomize --seed 4 -v  # reproduce
+  ./fuzz.sh --suite corpus                   # replay the corpus only
+  ./fuzz.sh --reference-url redis://127.0.0.1:16379 \
+                --subject-url   redis://127.0.0.1:16390   # reuse servers
+  ./fuzz.sh --dry-run                        # print the plan, run nothing
+  ```
+
+  Other options: `--rounds`, `--filter` (extra pytest `-k`), `--compat-mode strict|extended|keep`,
+  `--reference-port`, `--keep-reference`, `--server-version`, `--skip-build`, `--rebuild`, `--skip-install`,
+  `--python`, `--report`; everything after `--` goes to pytest. Exit status is pytest's (0 clean, 1 divergence,
+  5 nothing collected). Full list: `--help`.
+- **Strict mode is not optional for a soak.** The subject defaults to `extended`, where we knowingly diverge, so
+  gated divergences (e.g. DIV-0023) fail the fuzzer as if they were new bugs and Hypothesis stops at the first
+  failure — a "soak" then dies in ~30s. `fuzz.sh` sets `CONFIG SET ts.ts-compatibility-mode strict` for you
+  (module configs carry the `ts.` prefix, DIV-0008); driving pytest directly means doing it yourself, as the
+  `strict_subject` fixture in `test_compat_compaction.py` does.
+- Running pytest directly (what the script wraps), when you need full control:
+
+  ```sh
+  # harness manages the reference container (needs Docker)
+  RTS_COMPAT=1 COMPAT_FUZZ=1 python3 -m pytest tests/compat/test_compat_fuzz.py -q
+
+  # or against an already-running reference
+  docker compose -f docker-compose.compat.yml up -d reference
+  COMPAT_FUZZ=1 COMPAT_REFERENCE_URL=redis://127.0.0.1:16379 \
+    python3 -m pytest tests/compat/test_compat_fuzz.py -q
+  ```
+
+  This path builds nothing: build the module and `valkey-server` first
+  (`SERVER_VERSION=unstable ./build.sh`) or point `COMPAT_SUBJECT_URL` at a running instance.
+- Fuzzer knobs (on top of the usual `COMPAT_*` vars): `COMPAT_FUZZ=1` enables it at all (without it the module
+  skips), `COMPAT_FUZZ_MAX_EXAMPLES=N` sets examples per protocol (default 150 — raise it for a longer soak),
+  `COMPAT_FUZZ_DERANDOMIZE=1` pins a fixed seed for reproducible debugging. `fuzz.sh` exposes these as
+  `--examples` / `--derandomize`, and adds `--seed N` (Hypothesis's own `--hypothesis-seed`).
+- Throughput is roughly 55-60 examples/sec/protocol, so a 20-minute budget is ~70k examples — but a run ends at
+  the first unregistered divergence regardless of the cap, which is why `--duration` restarts rounds rather than
+  handing Hypothesis one enormous `max_examples`.
+- Triage a finding before treating it as a bug: grep the command in `tests/compat/divergences.yml` (it may
+  already be registered) and re-run the shrunk sequence under `--compat-mode strict` vs `extended` to see whether
+  it is gated, known behavior.
+- When it finds a divergence, Hypothesis shrinks it to a minimal reproducer. Promote that command list into
+  `tests/compat/corpus/<slug>.json` (schema in `tests/compat/corpus/README.md`) so it becomes a deterministic
+  golden test; `test_compat_corpus.py` replays the whole corpus under RESP2 and RESP3 and runs as part of the
+  normal (non-opt-in) compat suite. Fixing the bug and adding the corpus case go in the same change.
+- Verify a promoted case with
+  `COMPAT_REFERENCE_URL=... python3 -m pytest tests/compat/test_compat_corpus.py -k <slug>`.
+- The generators deliberately stay inside the input space both engines accept, so a failure means a *reply*
+  divergence, not an input-rejection-boundary difference (that boundary is the §6 matrix's job). If a fuzzer
+  finding is an intentional divergence, register it in `divergences.yml` rather than weakening the generator.
+- Writing new strategies is clean-room work: derive them from public RTS documentation and black-box observation
+  only — never from RedisTimeSeries source or test code.
+
 Where to look first (key files & directories)
 
-- `src/lib.rs` — module entrypoint, command registration, lifecycle (preload/init/deinit).
+- `src/lib.rs` — module entrypoint, command registration, lifecycle (preload/init/deinit), config.
 - `src/commands/` — implementations and command parsing utilities (`command_parser.rs`).
-- `src/series/` — core storage, encodings, indexes, background tasks.
-- `src/fanout/` — cluster communication primitives.
+- `src/series/` — core storage, chunk encodings, compaction, indexes, background tasks, serialization.
+- `src/fanout/` — cluster communication primitives (cluster map, RPC, blocked clients, migrations).
 - `src/analysis/` — outlier detection algorithms (`src/analysis/outliers/`).
 - `src/aggregators/` — aggregation handlers for range queries.
 - `src/common/` — shared utilities (encoding, logging, thread pool, RDB, string interning).
 - `src/labels/` — label types and filter evaluation.
-- `src/parser/` — filter syntax, metric name, timestamp, and duration parsers.
+- `src/parser/` — selector/duration/timestamp parsing for the filter syntax.
 - `src/iterators/` — sample and row iterators.
 - `src/join/` — ASOF join for TS.JOIN.
 - `src/tests/` — shared test/bench support, compiled under `cfg(test)` or the `test-utils` feature:
@@ -241,14 +411,16 @@ Where to look first (key files & directories)
       gate; the tool behind `WIRE_COMPRESSION_MIN_SAMPLES` ("is shipping this compressed worth it").
 - `build.sh` — canonical developer flow for formatting, linting, building, and running tests.
 - `README.md` and `docs/commands/` — human-facing command descriptions and examples.
-- `docs/topics/` — deep-dive topics: `filter-syntax.md`, `label-discovery.md`, `filter-dos-audit.md`.
+- `docs/topics/` — deep-dive topics: `filter-syntax.md`, `label-discovery.md`, `filter-dos-audit.md`,
+  `encodings.md`, `redistimeseries-migration.md` (user-facing digest of `COMPATIBILITY.md`).
+- `COMPATIBILITY.md`, `tests/compat/` — the RTS compatibility contract and its harness.
 
 Quick tips for code changes
 
 - Add new commands: create `src/commands/ts_<name>.rs`, add function `ts_<name>_cmd`, then register in `valkey_module!`
   in `src/lib.rs`. Currently registered commands: TS.CREATE, TS.ALTER, TS.ADD, TS.ADDBULK, TS.GET, TS.MGET, TS.MADD,
-  TS.DEL, TS.DECRBY, TS.INCRBY, TS.JOIN, TS.MDEL, TS.MRANGE, TS.MREVRANGE, TS.RANGE, TS.REVRANGE, TS.INFO,
-  TS.QUERYINDEX, TS.CARD, TS.LABELNAMES, TS.LABELVALUES, TS.METRICNAMES, TS.LABELSTATS, TS.CREATERULE,
+  TS.DEL, TS.DECRBY, TS.INCRBY, TS.JOIN, TS.MDEL, TS.MRANGE, TS.MREVRANGE, TS.NRANGE, TS.NREVRANGE, TS.RANGE, TS.READ, TS.REVRANGE, TS.INFO,
+  TS.QUERYINDEX, TS.QUERYLABELS, TS.CARD, TS.LABELNAMES, TS.LABELVALUES, TS.METRICNAMES, TS.LABELSTATS, TS.CREATERULE,
   TS.DELETERULE, TS.OUTLIERS, TS._DEBUG (hidden admin command, no user-facing docs needed).
 - Documentation: When adding or modifying commands, remember to update the human-facing docs in `docs/commands/` and the
   supported list in `README.md`. TS._DEBUG is intentionally undocumented.
@@ -258,11 +430,17 @@ Quick tips for code changes
   `VALKEY_TS_PROTO_REGEN=1 cargo build` and commit the regenerated file; a normal build fails with instructions if the
   two disagree, so drift cannot land silently. Local↔wire conversions live beside it in `src/commands/fanout_codec/`
   (named `fanout_codec` rather than `fanout` so it does not collide with the `src/fanout/` transport layer).
+  Every build still parses the schema — `build.rs` compiles all four of `proto/v1/{common,filters,request,response}.proto`
+  with `protox` and diffs the result against the checked-in file — so the generated code is verified, not merely trusted.
+  No `protoc` is involved on either path; see Prerequisites above.
+- Behavior changes on the shared RTS surface should be checked against `tests/compat` and, if the difference is
+  deliberate, recorded in `COMPATIBILITY.md` and/or `divergences.yml` (`behavior`-kind entries need explicit
+  sign-off in the PR that introduces them).
 
 Limitations of this document
 
 - Focused on discoverable, executable patterns. It does not cover domain rationale beyond what is visible in
-  source/docs.
+  source/docs. `docs/` also carries in-flight design and investigation notes that may run ahead of the code.
 
 If you need more context, inspect:
 

@@ -5,8 +5,9 @@ use crate::series::{TimeSeries, get_latest_compaction_sample};
 use valkey_module::Context;
 
 /// Determines and retrieves the latest compaction sample if needed
-/// (aggregation-agnostic; shared by the sample and row range iterators).
-fn get_range_latest_sample(
+/// (aggregation-agnostic; shared by the sample and row range iterators, and by the
+/// multi-key path in `series::mrange` — see the note there).
+pub(crate) fn get_range_latest_sample(
     ctx: Option<&Context>,
     series: &TimeSeries,
     options: &RangeOptions,
@@ -481,7 +482,10 @@ mod tests {
         let samples: Vec<Sample> =
             TimeSeriesRangeIterator::new(None, &series, &options, true).collect();
 
-        // Reverse order: bucket [2000, 4000) first, then [0, 2000)
+        // RedisTimeSeries defines first/last chronologically — the bucket's latest non-NaN
+        // sample by timestamp — independent of query direction. Buckets come back newest
+        // first under TS.REVRANGE, so [2000, 4000) yields 7.0 (at t=3000, the bucket's latest)
+        // and [0, 2000) yields 3.0 (at t=1000). Reference-checked against RedisTimeSeries 8.10.
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].timestamp, 2000);
         assert_eq!(samples[0].value, 7.0);
@@ -519,13 +523,12 @@ mod tests {
         let samples: Vec<Sample> =
             TimeSeriesRangeIterator::new(None, &series, &options, false).collect();
 
-        // Bucket [0, 2000) has only NaNs — result should be NaN
-        // Bucket [2000, 4000) last non-NaN is 7.0
-        assert_eq!(samples.len(), 2);
-        assert_eq!(samples[0].timestamp, 0);
-        assert!(samples[0].value.is_nan());
-        assert_eq!(samples[1].timestamp, 2000);
-        assert_eq!(samples[1].value, 7.0);
+        // Bucket [0, 2000) holds only NaNs, so it is empty and — without EMPTY — omitted
+        // entirely rather than reported as NaN (reference-checked).
+        // Bucket [2000, 4000) last non-NaN is 7.0.
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].timestamp, 2000);
+        assert_eq!(samples[0].value, 7.0);
     }
 
     #[test]

@@ -1,0 +1,1219 @@
+# Known-divergence registry (docs/plans/rts-compatibility-test-plan.md §5.3).
+#
+# The single source of truth consulted by the differential harness. A mismatch
+# fully covered by an entry here is recorded as XFAIL-DIVERGENT in the conformance
+# report; an uncovered mismatch fails the test.
+#
+# Rules:
+#   - every entry has an owner-reviewed rationale;
+#   - `behavior`-kind entries additionally require sign-off in the PR that adds them;
+#   - remove entries that stop firing (stale entries mean we probably fixed the
+#     divergence — delete the entry so a regression is caught).
+#
+# Fields: id, command, kind, description, rationale, since, details_regex (optional —
+# scopes the entry to deltas whose detail string matches; without it the entry covers
+# every delta of the given kind on the given command), documentation_only (optional —
+# the harness never matches the entry; it documents a divergence that a test pins with
+# explicit per-engine assertions).
+#
+# ⚠️ An unscoped `behavior` entry covers every value/shape/error-condition delta on its
+# command — i.e. nearly every real bug on that command. Always add a details_regex, or
+# documentation_only, so an entry can not silently absorb an unrelated mismatch.
+#
+# Kinds: reply-superset | error-text | float-format | behavior | config-name | unsupported
+#
+# Phase-1 triage suspects: all resolved.
+#   - config naming (ts-chunk-size, ts-ignore-max-value-diff): fixed 2026-07-16 —
+#     renamed to the RTS names (ts-chunk-size-bytes, ts-ignore-max-val-diff);
+#     the module-name prefix that valkey 8.0 forces on every module config is
+#     DIV-0008 below. Full parity coverage in tests/compat/test_compat_config.py.
+#   - TS.INFO labels nil vs empty-array: fixed (findings doc #5).
+
+- id: DIV-0001
+  command: TS.INFO
+  kind: reply-superset
+  description: >
+    TS.INFO returns additional fields (metric, encoding, rounding) beyond the
+    RedisTimeSeries 8.10 field set.
+  rationale: extension metadata; extra fields are additive and invisible to
+    map-parsing clients
+  since: 0.1.0
+  details_regex: '^\$\.(metric|encoding|rounding)\b'
+
+# DIV-0002..DIV-0007 and DIV-0052..DIV-0053 share one root cause (findings doc #13): sample values are
+# replied via RedisModule_ReplyWithDouble, so the RESP2 bulk-string text comes
+# from valkey-core's fpconv/d2string formatter ("0.5", "1e+100"), while RTS
+# formats with its own internal method ("5E-1", "1E100"). The parsed values are
+# bit-identical; RESP3 is unaffected (clients compare parsed doubles). Reviewed
+# decision: keep the valkey-native ValkeyValue::Float path. One entry per
+# one entry per sample-returning command because registry matching is per-command; delete the 
+# batch together if the decision is ever reversed.
+- id: DIV-0002
+  command: TS.RANGE
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation (e.g. 0.5 vs 5E-1); values parse identically.
+  rationale: sample values are replied with ValkeyValue::Float
+    (RedisModule_ReplyWithDouble); RESP2 text is owned by valkey-core, and
+    matching RTS byte-for-byte would be impractical
+  since: 0.1.0
+
+- id: DIV-0003
+  command: TS.REVRANGE
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation; values parse identically (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0004
+  command: TS.GET
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation; values parse identically (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0005
+  command: TS.MGET
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation; values parse identically (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0006
+  command: TS.MRANGE
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation; values parse identically (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0007
+  command: TS.MREVRANGE
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation; values parse identically (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0052
+  command: TS.NRANGE
+  kind: float-format
+  description: >
+    RESP2 pivoted-row value text uses valkey-core's double formatting instead of
+    RTS's notation (e.g. 0.1 vs 1E-1, nan vs NaN); values parse identically
+    (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0053
+  command: TS.NREVRANGE
+  kind: float-format
+  description: >
+    RESP2 pivoted-row value text uses valkey-core's double formatting instead of
+    RTS's notation; values parse identically (same cause as DIV-0002).
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0055
+  command: TS.READ
+  kind: float-format
+  description: >
+    RESP2 sample-value text uses valkey-core's double formatting instead of
+    RTS's notation (e.g. 0.1 vs 1E-1); values parse identically
+    (same cause as DIV-0002). Applies to both the immediate and the blocking
+    form — the reply is built by the same sample writer either way.
+  rationale: same root cause as DIV-0002
+  since: 0.1.0
+
+- id: DIV-0008
+  command: CONFIG
+  kind: config-name
+  description: >
+    Every module config is reachable only under the module-name namespace:
+    RTS `ts-chunk-size-bytes` is our `ts.ts-chunk-size-bytes`, and likewise
+    for the whole ts-* surface. The unprefixed suffix matches RTS exactly.
+  rationale: valkey 8.0's module-config API always registers configs as
+    "<module>.<name>" and offers no unprefixed registration (the RTS names are
+    possible on Redis 8 only via its CONFIG_UNPREFIXED module flag); revisit
+    when the minimum supported valkey version gains unprefixed module configs
+  since: 0.1.0
+
+- id: DIV-0009
+  command: CONFIG
+  kind: behavior
+  description: >
+    `ts-num-threads` defaults to 4; RTS 8.10 defaults to 3. Name, range,
+    immutability, and semantics (query worker pool size) are unchanged —
+    only the out-of-the-box value differs.
+  rationale: sizes our rayon pool for parallel query processing; 4 is the
+    deliberate default for this engine and the config remains settable at
+    startup for anyone wanting RTS's value
+  since: 0.1.0
+
+- id: DIV-0010
+  command: RESTORE
+  kind: unsupported
+  description: >
+    RTS-produced RDB files and DUMP payloads cannot be loaded (and ours
+    cannot be loaded by RTS). Both modules register the module type name
+    TSDB-TYPE with incompatible payload formats (ours encver 1, RTS 8.10
+    encver 9); every load path fails cleanly by design — RESTORE errors
+    without creating a key, an RTS RDB file is refused at startup with a
+    clear log message, and the module's encoding-version guard rejects any
+    foreign TSDB-TYPE payload that passes the server's RDB-version check.
+  rationale: owner decision 2026-07-16 — RTS->valkey RDB migration is
+    explicitly not a roadmap item; the formats are incompatible and no
+    conversion tooling is planned. Migration is by re-ingest (TS.RANGE
+    export -> TS.MADD, or live dual-write); see COMPATIBILITY.md
+    "Persistence and on-disk format". Defined-failure behavior pinned by
+    tests/compat/test_compat_persistence.py
+  since: 0.1.0
+
+- id: DIV-0012
+  command: TS.RANGE
+  kind: unsupported
+  description: >
+    The `twa` (time-weighted average) aggregator is not implemented. RTS 8.10
+    computes a time-weighted average over the bucket; we reject the aggregator
+    name with "TSDB: unknown aggregation type" on every command that takes an
+    AGGREGATION token (TS.RANGE/TS.REVRANGE/TS.MRANGE/TS.MREVRANGE and
+    TS.CREATERULE), and `twa` compaction policies are likewise unavailable.
+  rationale: >
+    owner decision 2026-07-16 (Phase 2 triage) — a feature gap rather than a
+    deliberate divergence, deferred to its own task because matching RTS's
+    bucket-edge interpolation semantics needs a design pass and its own
+    black-box probing. Rejecting cleanly is the safe interim behavior — a
+    client gets a detectable error instead of a differently-computed number.
+    Pinned by TestAggregation::test_unsupported_aggregator_is_rejected_not_wrong;
+    delete this entry and tests/compat/compat_helpers.py's
+    UNSUPPORTED_AGGREGATORS when twa lands.
+  since: 0.1.0
+
+# DIV-0013..DIV-0016 are Phase 2 read-path findings. All four are pinned by
+# per-engine assertions in tests/compat/test_compat_range.py rather than by
+# registry matching: an accepted-input superset is non-registrable by design
+# (§5.2), and the over-strict/behavior cases can only be matched by a regex
+# broad enough to mask real regressions in the same delta class. They are
+# recorded here because this file is what the public compatibility page renders.
+#
+# ⚠️ All four are `behavior`-kind and therefore need owner sign-off in the PR
+# that introduces them (§5.3).
+
+- id: DIV-0013
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    The range-bound grammar accepts two forms RTS 8.10 rejects with
+    "wrong fromTimestamp": `*` (the current time) and unit-suffixed relative
+    offsets (`-1h`, `-30m`, `-2d`). This is an accepted-input superset — a
+    query valid here errors on RedisTimeSeries. A *bare* negative integer is
+    NOT part of the extension: it is an absolute timestamp and is rejected the
+    same way RTS rejects it (previously it was silently read as an offset).
+  rationale: >
+    Accepted (owner sign-off 2026-07-17, §5.3): a deliberate extension for
+    developer ergonomics — `*` and unit-suffixed relative offsets make ad-hoc
+    queries far easier to write by hand. Kept because it is purely additive and
+    unambiguous once bare negatives are excluded: every query RTS accepts still
+    means the same thing here, so the extension only widens the accepted input.
+    Being a superset, it can not be matched by the registry (§5.2 hard-fails
+    "reference errors, subject succeeds") and is pinned per-engine by
+    TestOptionParsing::test_relative_and_now_bounds_are_an_accepted_input_superset.
+    Note the direction of risk: code written against this extension will not run
+    on RedisTimeSeries, so it is a portability caveat for users, not a
+    compatibility break for clients arriving from RTS.
+  since: 0.1.0
+
+- id: DIV-0014
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    A repeated option (e.g. `COUNT 5 COUNT 2`) is accepted by both engines but
+    resolved differently: RTS 8.10 keeps the first occurrence, we keep the last.
+    Neither errors.
+  rationale: >
+    Accepted (owner sign-off 2026-07-17, §5.3): keep our last-occurrence-wins
+    resolution as the default. Pinned by TestOptionParsing::test_duplicated_option.
+    Gated (2026-07-18): this is the archetype of the class `ts-compatibility-mode`
+    exists for — both engines accept the input, neither errors, and the answers
+    differ silently — so `strict` now resolves first-occurrence-wins the way RTS
+    does, on TS.RANGE/REVRANGE/MRANGE/MREVRANGE. The earlier "for no observable
+    benefit" reading undervalued that: a client migrating from RTS with a
+    duplicated option (a query builder appending twice) gets different data with
+    no error to alert it. The cost estimate was accurate — the implementation is
+    the seen-token tracking described here (RepeatedOptions in command_parser.rs),
+    which still parses the duplicate's operands so a malformed operand errors in
+    both modes. The default is unchanged; only the opt-in is new.
+  since: 0.1.0
+
+- id: DIV-0015
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    We reject unknown or inapplicable trailing tokens; RTS 8.10 silently ignores
+    them. `TS.RANGE k - + GARBAGE` returns samples on RTS and errors here, as do
+    `WITHLABELS` (not a TS.RANGE option) and `EMPTY`/`BUCKETTIMESTAMP` without
+    an accompanying AGGREGATION. ALIGN without AGGREGATION is the exception RTS
+    does validate, and both engines reject it.
+  rationale: >
+    Accepted (owner sign-off 2026-07-17, §5.3): deliberately stricter than the
+    reference. Matching would mean accepting arbitrary garbage in the option list
+    and silently ignoring a mistyped option, turning a user's typo into a wrong
+    answer instead of an error. Strictness is the safer divergence, and it is the
+    one direction that cannot corrupt a result: the cost is that a client relying
+    on RTS ignoring a stray token sees an error here, which is a visible, fixable
+    failure rather than silently wrong data. Pinned by
+    TestOptionParsing::test_unknown_or_inapplicable_option_rejected.
+  since: 0.1.0
+
+# DIV-0016 covered the EMPTY carry-forward direction on TS.REVRANGE: a gap
+# bucket's fill was chronological here and scan-ordered on RTS, so reverse
+# `first`/`last` came out swapped. It was removed 2026-07-29 during the sign-off
+# review, when the carry was found to already follow scan order on both engines:
+# `CarryLastEmpty` (src/iterators/utils.rs) runs the fill pass *after* ReverseIter,
+# landed by 0b74495e on 2026-07-22 — after this entry was written, which is why it
+# went stale. Re-probed across seven gap shapes x eight
+# aggregators x both directions x three bucket sizes x ALIGN/BUCKETTIMESTAMP
+# variants: 1008 comparisons, zero mismatches.
+#
+# The entry had gone stale unnoticed because its pinning test asserted only that
+# the bucket *counts* matched, which stayed true after the fix. Per the "remove
+# entries that stop firing" rule (§5.3) the entry is gone, the reverse first/last
+# skip in test_empty_gap_bucket_value_per_aggregator is lifted, and the direction
+# is now pinned positively by TestEmpty::test_empty_carry_forward_follows_scan_order
+# and test_empty_carry_forward_across_bucket_sizes.
+
+- id: DIV-0017
+  command: TS.CREATERULE
+  kind: behavior
+  documentation_only: true
+  description: >
+    A compaction destination may itself be the source of another rule. RTS 8.10
+    refuses ("TSDB: the source key already has a source rule"), making a
+    destination a leaf; we accept the chain, so a downstream series can compact
+    into a third. Accepted-input superset — a TS.CREATERULE valid here errors on
+    RedisTimeSeries.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): chaining is a deliberate extension —
+    cascading rollups (raw -> 1m -> 1h) without a second write path — and the
+    circular-dependency guard (check_new_rule_circular_dependency) is what keeps it
+    safe. Accepted-input superset, so no rule valid on RTS behaves differently here.
+    Pinned by TestRuleLifecycle::test_rule_on_rule_is_an_accepted_input_superset.
+  since: 0.1.0
+
+- id: DIV-0018
+  command: CONFIG
+  kind: behavior
+  documentation_only: true
+  description: >
+    `ts-encoding` is a one-way latch on RTS 8.10: CONFIG SET can move it away
+    from the default `compressed` (e.g. to `uncompressed`) but never back —
+    the set returns OK yet the value stays put. Ours is fully reversible. The
+    default (compressed) matches; only runtime mutability diverges. Because the
+    latch is irreversible and the reference container is shared, no fixture can
+    restore it, so the value-validation test exercises the encoding grammar on
+    the subject and leaves the reference pristine, and the defaults test
+    tolerates a latched reference value.
+  rationale: >
+    owner decision pending — observed RTS behavior, not something we chose;
+    matching it would mean making ts-encoding immutable-after-change, which is
+    strictly less useful. Pinned by
+    TestValueValidation::test_encoding_is_a_one_way_latch_on_reference.
+  since: 0.1.0
+
+# DIV-0020 is the surviving Prometheus-style FILTER extension: our label-filter grammar
+# is a superset of RTS's, so a bare metric-name token valid here is rejected by RTS. It is
+# an accepted-input superset (§5.2, non-registrable) pinned by per-engine assertions in
+# test_compat_mrange.py, and applies equally to TS.MGET and TS.QUERYINDEX.
+# behavior-kind → owner sign-off required.
+#
+# DIV-0019 covered the other half — a FILTER with no positive matcher (`metric!=cpu`,
+# `region=`) selecting the complement — and was removed 2026-07-22 when the boundedness
+# check made both engines reject it with the same text (owner decision: parity). Per the
+# "remove entries that stop firing" rule, the divergence is gone rather than registered.
+# Parity is now pinned by TestFilterLanguage::test_negative_only_matcher_rejected, with
+# the list-level rule that one bounded selector anywhere suffices covered alongside it.
+
+- id: DIV-0020
+  command: TS.MRANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    A bare token with no operator (`not-a-matcher`) is accepted as a Prometheus
+    metric-name selector (matching nothing when no such metric exists); RTS
+    rejects it with "failed parsing labels". Applies to TS.MRANGE/MGET/QUERYINDEX.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): bare metric-name selectors are valid
+    PromQL and a deliberate part of the filter-grammar extension. Pinned by
+    TestFilterLanguage::test_bare_metric_name_matcher_is_a_superset.
+  since: 0.1.0
+
+# DIV-0021 is a Tier C (differential fuzzer) finding. Like DIV-0013..DIV-0020 it is
+# `documentation_only` and pinned by explicit per-engine assertions
+# (tests/compat/test_compat_del.py): the only registry regex that could match it
+# ("reference=<n> subject=0" on TS.DEL) would also absorb a genuine "TS.DEL deletes
+# nothing" regression — the exact hazard §5.3 warns about.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0021
+  command: TS.DEL
+  kind: behavior
+  documentation_only: true
+  description: >
+    TS.DEL over a range covering only already-expired samples reports 0 where RTS
+    reports the number of expired-but-still-stored samples it removed. Root cause is
+    a retention-model difference, not a TS.DEL bug: RTS trims lazily (an out-of-window
+    sample stays physically stored until its chunk expires) and filters it out of every
+    read path, so TS.DEL can still find and count it; we trim eagerly on write, so the
+    sample is already gone. Every read path agrees on both engines — TS.RANGE hides the
+    sample and TS.INFO reports totalSamples/firstTimestamp over the retained window —
+    so the divergence is confined to the TS.DEL return value for samples a client can
+    not observe anyway.
+  rationale: >
+    owner decision pending — matching RTS exactly means adopting its lazy-trim model
+    (physical retention deferred, every read path filtering logically), which is the
+    architecture the eager trim deliberately replaced to make TS.INFO's totalSamples /
+    firstTimestamp agree with TS.RANGE (see the plan's "retention accounting" fix).
+    Reverting that is a much larger change than the observable delta justifies, so the
+    divergence is documented rather than chased. Pinned by
+    TestDelRetention::test_del_of_expired_range_counts_differently.
+  since: 0.1.0
+
+# DIV-0022 is a Tier C (differential fuzzer) finding, pinned per-engine in
+# tests/compat/test_compat_range.py rather than matched by regex: the only regex that
+# could match it ("reference='NaN' subject=<n>") would absorb any real aggregation bug
+# that returns a number where RTS returns NaN.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0022
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    The variance/stddev aggregators (std.p, std.s, var.p, var.s) return NaN on RTS when
+    any sample magnitude exceeds sqrt(DBL_MAX) (~1.34e154); we return the mathematically
+    correct value. RTS accumulates the naive sum of squares, so x^2 overflows to +Inf and
+    the Inf - Inf term yields NaN — e.g. std.p over the single sample 1.7976931348623157e308
+    is NaN on RTS and 0 for us (a single sample has zero variance). The overflow boundary
+    itself is exact: 1e150 (square 1e300, finite) agrees on both engines; 1e200 (square
+    overflows) diverges. Only this aggregator family overflows — avg/sum/min/max do not
+    accumulate squares, so a single sample at DBL_MAX agrees on both.
+
+    CORRECTION (2026-07-25, Tier C): read that last sentence as scoped to overflow, which
+    is all it was measured against (a single DBL_MAX sample). It does not mean sum/avg
+    agree with RTS generally at those magnitudes — they diverge on any bucket that mixes
+    magnitudes, for an unrelated reason (naive vs compensated accumulation), which is
+    registered separately as DIV-0039. {DBL_MAX, 1, -DBL_MAX} sums to 1 here and 0 on RTS.
+
+    CORRECTION (2026-07-22, Tier C): overflow is not the only failure mode of that naive
+    identity, and staying under the boundary is *not* sufficient for agreement. The same
+    E[x^2]-E[x]^2 form also cancels catastrophically whenever a bucket's samples are close
+    relative to their magnitude, losing about (mean/sd)^2 * DBL_EPSILON of relative
+    accuracy at any magnitude. Measured against the reference: {100, 100.1} disagrees at
+    ~1e-10 relative (past the §5.1 1e-12 tolerance), {100, 100.0001} at 2.2e-4, and
+    {12345.6789, 12345.679} returns NaN — nine orders of magnitude below the overflow
+    boundary. Where the cancellation is total, RTS returns exactly 0 for a non-zero
+    deviation; that end of the range is registered separately as DIV-0024..0029.
+  rationale: >
+    Accepted (owner sign-off 2026-07-17, §5.3): our implementation is correct and stands.
+    Matching RTS would mean adopting a numerically unstable accumulation purely to
+    reproduce a floating-point overflow artifact, degrading a correct result (a single
+    sample has zero variance) into NaN. This divergence can only ever turn an RTS NaN into
+    a usable number, never the reverse, so no client is broken by it.
+    Pinned by TestAggregationOverflow::test_variance_family_overflows_on_rts, whose
+    companion test_below_the_overflow_boundary_agrees keeps the sub-boundary values (where
+    both engines must agree exactly) from being masked by this entry.
+    Consequence for Tier C, CORRECTED (2026-07-22): the magnitude cap
+    (fuzz_strategies.VALUES) keeps the *overflow* mode out of the fuzzer, but — per the
+    correction above — it is not enough to keep the variance family fuzzable, because
+    cancellation strikes well inside the capped range. A program may now either use a
+    variance aggregator, in which case its writes are drawn from
+    fuzz_strategies.WELL_CONDITIONED_VALUES/DELTAS (small magnitudes, spreads >= 1, which
+    hold the naive form's error under the §5.1 tolerance), or use the full adversarial
+    value set with the variance family excluded — never both. Deltas are constrained too,
+    not just values: the case that exposed this built {100, 100.1} via TS.INCRBY. DBL_MAX
+    itself stays covered by the pinning test and
+    corpus/float_formatting_high_precision.json.
+    WIDENED (2026-07-25): that same either/or now covers sum and avg, which fail on the
+    opposite input shape (a bucket mixing magnitudes) for an unrelated reason — DIV-0039.
+    The gate is keyed on fuzz_strategies.ILL_CONDITIONED_AGGREGATORS, the union of the two
+    families, so the adversarial value set is now paired only with the aggregators that do
+    not accumulate at all (min/max/range/count/first/last).
+  since: 0.1.0
+
+# DIV-0023 is a Tier C (differential fuzzer) finding, pinned per-engine in
+# tests/compat/test_compat_compaction.py. Not registry-matchable: the regex would have to
+# cover "reference=<ts> subject=<ts>" on TS.GET/TS.MGET, absorbing any real last-sample bug.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0023
+  command: TS.GET
+  kind: behavior
+  documentation_only: true
+  description: >
+    After an out-of-order write back-fills a compaction bucket *older* than the currently
+    open one, TS.GET / TS.MGET without LATEST report the newly materialized downstream
+    bucket for us, but the previous (stale) bucket on RTS. Both engines store identical
+    downstream data — TS.RANGE returns the same samples on each, and TS.GET ... LATEST
+    agrees too — so RTS's reply contradicts its own TS.RANGE: it does not advance the
+    destination's cached last-sample when an older bucket is filled in. Reproducer: rule
+    `AGGREGATION avg 500` on src; `TS.ADD src 0 0`, `TS.ADD src 1000 0` (closes bucket 0),
+    then `TS.ADD src 500 0` — RANGE is `[[0,0],[500,0]]` on both, but TS.GET is `[500,0]`
+    for us and `[0,0]` on RTS.
+  rationale: >
+    Default unchanged: `extended` reports the last sample the series actually holds,
+    rather than reproducing an inconsistency between RTS's own TS.GET and TS.RANGE.
+    Gated (2026-07-18): both engines accept the input and neither errors, so this is
+    the class `ts-compatibility-mode` exists for — `strict` now reports RTS's cached
+    destination last-sample from TS.GET/TS.MGET. The state is a runtime-only marker
+    (TimeSeries::last_forward_close) recorded when forward progress closes a bucket;
+    back-filling an older bucket deliberately leaves it alone. LATEST and the stored
+    downstream data are untouched in either mode.
+    Known limitation of the gate: the marker is not persisted, so after a reload or
+    restart a destination with a pending back-fill reports its true last sample again
+    until the next forward close. Matching RTS there would mean persisting a value
+    that contradicts the series' own chunk data, which needs an RDB encoding-version
+    bump (loader refuses any encver but 1); deliberately out of scope for the gate.
+    Pinned by TestOutOfOrderBackfill::test_get_after_backfilling_an_older_bucket
+    (extended) and ::test_strict_mode_reports_the_stale_bucket_like_rts plus
+    ::test_strict_mode_advances_on_the_next_forward_close (strict).
+  since: 0.1.0
+
+# DIV-0024..DIV-0029 share one root cause (Tier C fuzzer, 2026-07-22): the variance
+# family. RedisTimeSeries evaluates variance with the textbook sum-of-squares identity
+# (E[x^2] - E[x]^2). When |x| is large and the spread is small, the two terms agree to
+# within f64 precision and the subtraction cancels catastrophically, so RTS returns
+# exactly 0 for a sample set whose true deviation is not 0. We accumulate in a
+# numerically stable form and return the correct value.
+#
+#   TS.ADD s 0 123456789.123456789 ; TS.ADD s 1 123456789.123456789+1
+#   TS.RANGE s - + AGGREGATION std.p 500  ->  ours 0.5, RTS 0
+#
+# Observed on std.p / std.s / var.p / var.s, at magnitudes from ~1.2e8 upward (also
+# reproduced at 1e15). avg and sum agree at the same magnitudes *for these inputs*, and all
+# four agree on small-magnitude inputs, which is what identifies this as cancellation rather
+# than a formatting or accumulation-order difference.
+#
+# ⚠️ CORRECTION (2026-07-25): do not read that as "sum/avg agree with RTS at these
+# magnitudes" in general — it holds for the input shape measured here (large magnitude,
+# *small spread*), not across the board. sum/avg diverge on the opposite shape, a bucket
+# that mixes magnitudes, from an unrelated root cause (naive vs compensated accumulation):
+# at this very magnitude, {1e15, 0.01, -1e15} sums to 0.01 here and 0 on RTS. (The mix has
+# to exceed the running sum's precision to bite: {1e15, 1, -1e15} agrees, because 1e15 + 1
+# is exactly representable and nothing is absorbed.) That is DIV-0039, and the mitigation
+# this note was used to scope (pairing the adversarial value set with non-variance
+# aggregators) had to be widened to cover sum/avg as a result.
+#
+# It reaches every sample-returning command
+# two ways: AGGREGATION std|var on the read path, and reading a series fed by a
+# std|var compaction rule.
+#
+# Reviewed decision: do NOT match. Reproducing it means deliberately implementing an
+# unstable variance so that a mathematically wrong answer can be returned — the same
+# reasoning as DIV-0023, where we declined to reproduce RTS contradicting its own
+# TS.RANGE. Registered per command because registry matching is per-command; delete the
+# batch together if the decision is ever reversed.
+#
+# ⚠️ Scoping: each entry requires the *reference* side to be exactly 0 (`reference='0'`
+# in RESP2, `reference=0.0` in RESP3) at a sample-value position. That is much tighter
+# than a bare path regex — it can not absorb a general value delta — but it does still
+# cover any bug in which RTS legitimately returns 0 for a sample value and we return
+# non-zero. The registry sees only (command, delta kind, "path: reference=X subject=Y");
+# it can not see the aggregator, so std/var can not be named directly. A per-engine
+# pinning test would close that gap.
+#
+# ⚠️ That absorption is no longer hypothetical (2026-07-25): a sum|avg bucket whose
+# magnitudes cancel *totally* produces exactly this delta shape on exactly these commands,
+# so DIV-0024/DIV-0026 match it and file it under the variance family. Different root
+# cause — see DIV-0039, which is pinned by its own test for that reason.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0024
+  command: TS.RANGE
+  kind: behavior
+  description: >
+    AGGREGATION std.p/std.s/var.p/var.s over large-magnitude, small-spread samples:
+    RTS cancels to 0, we return the mathematically correct deviation.
+  rationale: RTS uses the unstable E[x^2]-E[x]^2 identity; matching it would mean
+    returning a knowingly wrong value
+  since: 0.1.0
+  details_regex: '^\$\[\d+\]\[1\]: reference=(?:''0''|0\.0) subject='
+
+- id: DIV-0025
+  command: TS.REVRANGE
+  kind: behavior
+  description: >
+    AGGREGATION std.p/std.s/var.p/var.s over large-magnitude, small-spread samples:
+    RTS cancels to 0, we return the mathematically correct deviation.
+  rationale: see DIV-0024
+  since: 0.1.0
+  details_regex: '^\$\[\d+\]\[1\]: reference=(?:''0''|0\.0) subject='
+
+- id: DIV-0026
+  command: TS.MRANGE
+  kind: behavior
+  description: >
+    AGGREGATION std.p/std.s/var.p/var.s over large-magnitude, small-spread samples:
+    RTS cancels to 0, we return the mathematically correct deviation.
+  rationale: see DIV-0024
+  since: 0.1.0
+  details_regex: '^\$(?:\[\d+\]|\.[^\[]+)\[2\]\[\d+\]\[1\]: reference=(?:''0''|0\.0) subject='
+
+- id: DIV-0027
+  command: TS.MREVRANGE
+  kind: behavior
+  description: >
+    AGGREGATION std.p/std.s/var.p/var.s over large-magnitude, small-spread samples:
+    RTS cancels to 0, we return the mathematically correct deviation.
+  rationale: see DIV-0024
+  since: 0.1.0
+  details_regex: '^\$(?:\[\d+\]|\.[^\[]+)\[2\]\[\d+\]\[1\]: reference=(?:''0''|0\.0) subject='
+
+- id: DIV-0028
+  command: TS.GET
+  kind: behavior
+  description: >
+    Reading a destination fed by a std|var compaction rule: the bucket value RTS
+    cancelled to 0 where the true deviation is non-zero.
+  rationale: see DIV-0024
+  since: 0.1.0
+  details_regex: '^\$\[1\]: reference=(?:''0''|0\.0) subject='
+
+- id: DIV-0029
+  command: TS.MGET
+  kind: behavior
+  description: >
+    Reading a destination fed by a std|var compaction rule: the bucket value RTS
+    cancelled to 0 where the true deviation is non-zero.
+  rationale: see DIV-0024
+  since: 0.1.0
+  details_regex: '^\$(?:\[\d+\]\[2\]|\.[^\[]+\[1\])\[1\]: reference=(?:''0''|0\.0) subject='
+
+# DIV-0030..DIV-0031 (Tier C fuzzer, 2026-07-22): reverse + LATEST + AGGREGATION reading a
+# compaction destination, where the range end falls before the destination's open bucket.
+#
+# `LATEST` appends the rule's still-open bucket to the destination's data. Reading backwards
+# with a re-aggregation, RTS appears to start from that appended bucket, find it past the
+# range end, and stop — returning nothing and dropping the closed bucket that *is* in range.
+#
+#   TS.CREATERULE k0 rollup AGGREGATION avg 500 ; TS.ADD k0 0 0 ; TS.MADD k0 500 0
+#   TS.REVRANGE rollup - 1 LATEST AGGREGATION avg 500   ->  ours [[0,0]], RTS []
+#
+# All five conditions are required, and dropping any one makes the engines agree: the series
+# must be a compaction destination (a plain series holding the same two samples agrees), the
+# direction reverse (forward TS.MRANGE agrees), plus LATEST, plus AGGREGATION, plus an end
+# bound below the open bucket's start (`- 500` and `- +` agree).
+#
+# Reviewed decision: do NOT match. Our reply is the same set the forward query returns and
+# the same the non-LATEST reverse returns; RTS's contradicts both of its own — the DIV-0023
+# pattern, where we decline to reproduce an engine disagreeing with itself. Registered per
+# command because registry matching is per-command.
+#
+# ⚠️ Scoping: each entry requires the *reference* side to be an empty row set
+# (`reference=[] subject=...`, a `shape` delta). The dangerous direction — subject returns
+# nothing where the reference returned data — is NOT matched, and neither is any value
+# delta. It does still cover other "we return rows where RTS returns none" cases on these
+# two commands, which is an accepted-input-superset class §5.2 would normally hard-fail;
+# the pinning test below is what keeps that from going unnoticed.
+#
+# ⚠️ Second symptom, same path (Tier C fuzzer, 2026-08-01): add `EMPTY` and "returns
+# nothing" becomes "returns everything twice" — RTS replies with the window's buckets as an
+# all-NaN run followed by the same buckets carrying their values, ten rows for a five-bucket
+# window, even where the range reaches past the open bucket and the plain reverse+LATEST read
+# agrees. Our reply is the forward one reversed. Not matched either: the delta is a row-count
+# difference, which no regex could scope without absorbing real length bugs. Pinned by
+# TestReverseLatestAggregationOnDestination::test_with_empty_the_reference_repeats_the_whole_bucket_run,
+# and fuzz_strategies.py keeps the generator off `EMPTY` for reverse LATEST reads that can
+# reach a destination (the plain shape is still generated, so these entries keep firing).
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0030
+  command: TS.REVRANGE
+  kind: behavior
+  description: >
+    Reverse + LATEST + AGGREGATION on a compaction destination, with the range ending
+    before the open bucket: RTS returns an empty reply, dropping the closed bucket inside
+    the range; we return it, matching our own forward reply.
+  rationale: RTS contradicts its own forward and non-LATEST replies; matching it would mean
+    dropping in-range data (see DIV-0023 for the same reasoning)
+  since: 0.1.0
+  details_regex: '^\$: reference=\[\] subject=\[\[.*\(length 0 vs \d+\)$'
+
+- id: DIV-0031
+  command: TS.MREVRANGE
+  kind: behavior
+  description: >
+    Reverse + LATEST + AGGREGATION on a compaction destination, with the range ending
+    before the open bucket: RTS returns an empty sample list for that series, dropping the
+    closed bucket inside the range; we return it, matching our own forward reply.
+  rationale: see DIV-0030
+  since: 0.1.0
+  details_regex: '^\$(?:\[\d+\]\[2\]|\.[^\[]+\[2\]): reference=\[\] subject=\[\[.*\(length 0 vs \d+\)$'
+
+# DIV-0032..DIV-0033 (2026-07-22): the counter commands are the one place RTS forgets to
+# validate the timestamp. Unlike the DIV-0013 read-path extension, this is the *stricter*
+# direction — we reject input RTS accepts — so it is registrable (§5.2 only hard-fails the
+# accepted-input-superset direction, "reference errors, subject succeeds").
+#
+# Both entries are scoped by details_regex to the nonnegative-timestamp message, so they
+# cover only this rejection and can not absorb another error-condition bug on these
+# commands. One entry per command because registry matching is per-command.
+#
+# ⚠️ `behavior`-kind: owner sign-off 2026-07-22 — stricter validation is preferred here.
+
+- id: DIV-0032
+  command: TS.INCRBY
+  kind: behavior
+  description: >
+    TS.INCRBY with a negative TIMESTAMP is rejected ("must be a nonnegative integer");
+    RTS 8.10 accepts it and stores a sample at that negative timestamp. TS.ADD and
+    TS.MADD reject it on both engines — the gap is specific to the counter commands.
+  rationale: >
+    Accepted (owner sign-off 2026-07-22, §5.3): an RTS validation gap, not intended
+    semantics. The sample RTS stores is unreachable — TS.RANGE key 0 + skips it and
+    TS.RANGE key -1000 + is itself rejected with "wrong fromTimestamp" — so it is
+    write-only, is reported by TS.INFO as firstTimestamp, and drags the series' reported
+    start before an unqueryable boundary. It also bypasses the out-of-order rejection the
+    same command applies to nonnegative timestamps. Matching RTS would mean reproducing a
+    bug that corrupts the retrievable range of a series, so we validate instead. Direction
+    of risk is the safe one: input we reject, RTS accepts, so nothing written against RTS
+    silently changes meaning here — it errors loudly.
+  since: 0.1.0
+  details_regex: 'must be a nonnegative integer'
+
+- id: DIV-0033
+  command: TS.DECRBY
+  kind: behavior
+  description: >
+    TS.DECRBY with a negative TIMESTAMP is rejected; RTS 8.10 accepts it. Same gap as
+    DIV-0032.
+  rationale: see DIV-0032
+  since: 0.1.0
+  details_regex: 'must be a nonnegative integer'
+
+- id: DIV-0034
+  command: CONFIG
+  kind: unsupported
+  description: >
+    `ts-libmr-protocol` (default `INTERNAL`) is present on RTS 8.10 and has no
+    subject equivalent. It selects the wire protocol spoken between nodes by
+    libmr, the MapReduce layer RTS uses to fan TS.MRANGE/TS.MGET/TS.QUERYINDEX
+    out across cluster shards. New in the 8.8 reference bump (absent from the
+    previous 8.6 pin); still present, unchanged, on the 8.10 pin.
+  rationale: >
+    Accepted (reference bump 2026-07-23): configures an RTS-internal transport
+    this engine does not have. Cross-shard fan-out here is not libmr-based, so
+    there is no protocol to select and no user-visible behavior the knob could
+    map onto. Registering it as reference-only keeps the config-parity test's
+    "every RTS name must exist on the subject" rule intact for the rest of the
+    surface; revisit only if this engine adopts a comparable pluggable
+    inter-node transport.
+  since: 0.1.0
+
+- id: DIV-0035
+  command: CONFIG
+  kind: behavior
+  description: >
+    `ts-num-threads` is immutable here — `CONFIG SET` is rejected by the server
+    with "can't set immutable config" and the value can only be chosen at
+    startup (valkey.conf or MODULE LOAD args). RTS 8.10 accepts it at runtime
+    (validated to 1..16) and resizes its pool. This is a change in the
+    reference, not in this engine: RTS 8.6, the previous-previous pin, rejected
+    the same CONFIG SET as immutable exactly as we do; the mutability change
+    landed at the 8.6 -> 8.8 bump and is unchanged on 8.10.
+  rationale: >
+    Accepted (reference bump 2026-07-23, §5.3 sign-off): the config sizes the
+    module's global rayon thread pool, which is built once at load and shared by
+    every in-flight query; resizing it under live readers is a real concurrency
+    change, not a config-flag flip, and nothing about it is forced by the
+    reference bump. Direction of risk is the safe one — we reject input RTS
+    accepts, so a CONFIG SET written against RTS errors loudly here instead of
+    silently doing nothing. Revisit if runtime pool resizing is implemented, at
+    which point this entry and SUBJECT_IMMUTABLE_CONFIGS both go away.
+  since: 0.1.0
+  details_regex: "can't set immutable config"
+
+# DIV-0036..DIV-0038 are the AGGREGATION aggregator-list surface that RTS 8.8
+# introduced (`AGGREGATION min,avg,max 1000`). All three are `documentation_only`
+# and pinned by explicit per-engine assertions in
+# tests/compat/test_compat_multi_aggregation.py: two are accepted-input supersets
+# (§5.2 hard-fails those through DiffClient by design) and one is an over-strict
+# rejection whose only matching regex would mask real regressions in the same
+# delta class.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0036
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    A repeated aggregator inside an AGGREGATION list is rejected here and
+    accepted by RTS 8.10. RTS treats the list positionally, so
+    `AGGREGATION avg,avg 1000` returns two identical columns; we reject the
+    whole clause with "duplicate aggregation 'avg'". The check is
+    case-insensitive on the aggregator name (`avg,AVG` is a duplicate) and
+    applies to TS.RANGE/REVRANGE/MRANGE/MREVRANGE, and to the per-key lists of
+    TS.NRANGE/TS.NREVRANGE (confirmed against the reference 2026-08-01). A side effect is that the
+    16-element list cap is unreachable here through a repeat: only 15 distinct
+    aggregator names exist, so any 17-element list hits the duplicate check
+    first, where RTS reports "Too many aggregation types".
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): a repeated column carries no
+    information the caller does not already have (it is a byte-for-byte copy of
+    another column), so rejecting it turns a probable query-builder bug into a
+    visible error rather than silently widening the row. Direction of risk is the
+    safe one: we reject input RTS accepts, so a client migrating from RTS sees an
+    error instead of wrong data. The cost is that a generated query that happens to
+    repeat an aggregator stops working and must be de-duplicated caller-side.
+    Pinned by TestDivergences::test_duplicate_aggregator_in_a_list_is_rejected.
+  since: 0.1.0
+
+- id: DIV-0037
+  command: TS.MRANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    GROUPBY/REDUCE combined with a multi-aggregator AGGREGATION list is rejected
+    by RTS 8.10 ("GROUPBY is not allowed when multiple aggregators are
+    specified") and supported here: we apply the reducer to each column
+    independently and return a grouped row of the same width. RTS enforces the
+    restriction on list *length*, so even a list of one repeated aggregator is
+    refused there. With a single aggregator, GROUPBY behaves identically on both
+    engines. Applies to TS.MRANGE and TS.MREVRANGE.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): column-wise reduction is the natural
+    reading of the two features composed (each column is an independent series of
+    bucket values, and the reducer is defined on exactly that), and it is already
+    implemented and covered by tests/test_ts_multi_aggregation.py. Being a superset
+    it can not be matched by the registry (§5.2 hard-fails "reference errors,
+    subject succeeds"), and the direction of risk is the portability one: a query
+    written against this combination will not run on RedisTimeSeries, so it is a
+    caveat for users moving the other way rather than a compatibility break for
+    clients arriving from RTS. Pinned by
+    TestDivergences::test_groupby_with_a_multi_aggregator_list_is_a_superset, with
+    test_groupby_with_a_single_aggregator_still_agrees holding the boundary.
+  since: 0.1.0
+
+- id: DIV-0038
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    The list-element grammar accepts two forms RTS 8.10 has no vocabulary for,
+    both answered there with "Unknown aggregation type": aggregator names this
+    engine adds (`rate`, `countif`, `sumif`, …), and the inline per-element
+    condition `name(condition)` — e.g. `AGGREGATION countif(>15),avg 1000`,
+    which counts only the samples matching the condition in the first column
+    while the second aggregates normally. Each element carries its own
+    condition; an aggregator that requires one and is given none, or is given
+    one it does not accept, is rejected here. The same grammar backs the per-key
+    lists of TS.NRANGE/TS.NREVRANGE, so the superset extends there too
+    (confirmed against the reference 2026-08-01).
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): the inline-condition syntax exists
+    because the list grammar gives each element its own slot, and it is the only way
+    to express a filtered aggregation without a second round trip. Purely additive:
+    every list RTS accepts still parses and means the same thing here.
+    Non-registrable for the usual §5.2 reason, and the risk direction is portability
+    — code written against these elements will not run on RedisTimeSeries. Pinned by
+    TestDivergences::test_extension_list_elements_are_a_superset.
+  since: 0.1.0
+
+# DIV-0039 (Tier C fuzzer, 2026-07-25): sum/avg accumulation. We accumulate with
+# compensated (Neumaier) summation; RedisTimeSeries adds naively, left to right. The two
+# agree until a bucket mixes magnitudes: a naive running sum absorbs the small terms into
+# the rounding of the large ones, and once the large terms cancel, what is left is the
+# absorption error rather than the small terms. Shrunk reproducer — three series holding
+# -9.999999999999999e149, 1 and 1e150, grouped into one bucket:
+#
+#   TS.MRANGE - + FILTER metric=m GROUPBY metric REDUCE sum  ->  ours 1, RTS 0
+#
+# Neither engine is close to the exact sum for that input; it is catastrophically
+# ill-conditioned either way. But the effect does not need extreme magnitudes, and that is
+# the part that matters for migration:
+#
+#   {1e16, 1, 1, -1e16} -> ours 2,     RTS 0
+#   {1e6, 0.001, -1e6}  -> ours 0.001, RTS 1.0000000474974513e-3
+#
+# Compensation, not ordering, is what identifies it: Neumaier predicts our answer for every
+# permutation of the samples, while the naive sum's answer depends on the order (4 of the 6
+# permutations of the shrunk case give 0, two give 1). Protocol-independent — RESP2 and
+# RESP3 diverge identically. It reaches a reply by the same two routes as DIV-0024..0029:
+# AGGREGATION sum|avg (and GROUPBY ... REDUCE sum|avg) on the read path, and reading a
+# destination fed by a sum|avg compaction rule.
+#
+# Reviewed decision: do NOT match, for the DIV-0022/DIV-0024 reason — reproducing it means
+# adopting a knowingly lossy accumulation, and here it would not even be deterministic,
+# since the naive result depends on an accumulation order neither engine specifies.
+#
+# ⚠️ documentation_only, unlike DIV-0024..0029, which are matched by a `reference='0'`
+# regex. That regex shape cannot be reused here: total cancellation (RTS exactly 0) is only
+# one of the two shapes — partial cancellation leaves a non-zero wrong value, and a regex
+# loose enough to cover it would absorb any value delta on the command. Generation is
+# prevented instead (fuzz_strategies.ILL_CONDITIONED_AGGREGATORS) and the divergence is
+# pinned per-engine by TestSumAvgAccumulation.
+#
+# ⚠️ Correction to DIV-0024..0029's scoping note, which called it hypothetical that those
+# regexes could absorb a delta from an unrelated root cause: they do. A sum/avg bucket that
+# cancels *totally* produces exactly `reference='0' subject=<n>` on the same commands, so
+# DIV-0024 and DIV-0026 match it and report it as a variance-family divergence. That is now
+# harmless — the generator no longer produces it and the pinning test covers it directly —
+# but the entries are broader than their descriptions claim.
+#
+# ⚠️ `behavior`-kind: owner sign-off 2026-07-25 — compensated summation stands, and the
+# divergence is deliberately not gated under `strict`.
+
+- id: DIV-0039
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    AGGREGATION sum|avg (and GROUPBY ... REDUCE sum|avg, and reading a destination fed by
+    a sum|avg compaction rule) over a bucket that mixes magnitudes: we accumulate with
+    compensated summation and return the small terms that survive the cancellation, RTS
+    accumulates naively and returns the absorption error instead. `{1e150, 1, -1e150}`
+    sums to 1 here and 0 on RTS; `{1e6, 0.001, -1e6}` to 0.001 here and
+    1.0000000474974513e-3 on RTS. Both engines are far from the exact sum on inputs this
+    ill-conditioned; the divergence is that ours is reproducible and theirs depends on
+    accumulation order.
+  rationale: >
+    Accepted (owner sign-off 2026-07-25, §5.3): compensated summation stands. Matching RTS
+    would mean adopting an accumulation that is both lossier and order-dependent, so the
+    "matched" result would not be stable across a change in bucket iteration or GROUPBY
+    series order in either engine. Deliberately not gated by `ts-compatibility-mode strict`
+    either (same sign-off), on the same ground as DIV-0022/DIV-0024..0029: `strict`
+    reproduces RTS's resolution of genuinely ambiguous cases, not its arithmetic error
+    terms. This is a settled decision, not a deferral for want of a mechanism.
+    Consequence for Tier C: the DIV-0022 mitigation was scoped by the claim that "avg and
+    sum agree at the same magnitudes" as the variance family. That is true only in the
+    regime it was measured in (large magnitude, small spread, where sum/avg do agree) and
+    does not generalize — sum/avg fail on the opposite input shape, a bucket mixing
+    magnitudes. fuzz_strategies.WELL_CONDITIONED_VALUES/DELTAS therefore now gate sum/avg
+    as well as the variance family (ILL_CONDITIONED_AGGREGATORS); that value set was
+    verified to hold sum/avg to exact agreement over every 3-sample combination.
+    Pinned by TestSumAvgAccumulation in test_compat_range.py, whose companion
+    test_well_conditioned_buckets_agree keeps the agreeing case from being masked.
+  since: 0.1.0
+
+# ---------------------------------------------------------------------------
+# DIV-0040..DIV-0046 are Phase 1 findings: the write-path matrix modules
+# (test_compat_create/alter/add/madd/incrby/rules/info.py, plan §6).
+#
+# All seven are `documentation_only` and pinned by explicit per-engine assertions
+# rather than routed through `diff`, because each is either an accepted-input
+# superset — which §5.2 hard-fails and forbids registering — or an over-strict
+# rejection whose only matching regex would mask real regressions in the same
+# delta class (tests/compat/README.md, "Divergences the registry can not express").
+#
+# ⚠️ All are `behavior`-kind and carry owner sign-off dated 2026-07-29 (§5.3).
+# ---------------------------------------------------------------------------
+
+- id: DIV-0040
+  command: TS.CREATE
+  kind: behavior
+  documentation_only: true
+  description: >
+    ENCODING accepts `gorilla` and `chimp` in addition to `compressed` and
+    `uncompressed`; RTS rejects both with "unknown ENCODING parameter". `chimp` is
+    what `compressed` selects here, so the extra names expose the underlying
+    compressor rather than adding a new storage mode. Applies to every command
+    that takes creation options (TS.CREATE, TS.ADD, TS.INCRBY/TS.DECRBY).
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): additional chunk encodings are a
+    deliberate extension and, per the `CompatibilityMode` criterion in
+    src/config.rs, an input RTS rejects is not gated — no RTS-compatible
+    application can depend on it. Pinned by
+    TestParserDivergences::test_extra_encodings_are_a_superset.
+  since: 0.1.0
+
+- id: DIV-0041
+  command: TS.CREATE
+  kind: behavior
+  documentation_only: true
+  description: >
+    RETENTION and the TS.ADD timestamp accept duration strings (`1h`, `30m`) and
+    fractional milliseconds (`1.5` -> 1500 ms); RTS accepts a plain integer only
+    ("Couldn't parse RETENTION" / "invalid timestamp"). Both engines reject
+    genuinely unparseable input (`abc`, `100abc`, a leading space).
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): duration-string parsing is a
+    deliberate extension shared by the whole command surface, and the fractional
+    form falls out of the same parser. Pinned by
+    TestParserDivergences::test_duration_string_retention_is_a_superset and
+    TestAddDivergences::test_duration_string_timestamp_is_a_superset.
+  since: 0.1.0
+
+- id: DIV-0042
+  command: TS.CREATE
+  kind: behavior
+  documentation_only: true
+  description: >
+    An argument that is not a recognized option is rejected here ("invalid
+    argument"); RTS resolves the options it recognizes by scanning the argument
+    list and silently drops everything else, so `TS.CREATE key BOGUS 1`,
+    `TS.ALTER key BOGUS 1` and an odd trailing LABELS argument all succeed there.
+    On TS.ADD the difference is confined to the auto-create path: against an
+    existing series neither engine interprets the inert creation options at all.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): deliberately stricter, on the
+    ground stated in src/config.rs — a visible error beats silently ignoring a
+    mistyped option, and strictness is not relaxed to match RTS. Already covered
+    in user-facing terms by COMPATIBILITY.md "A note on stricter input
+    validation". Pinned by
+    TestParserDivergences::test_unrecognized_arguments_are_rejected_not_ignored
+    (and the TS.ALTER / TS.ADD equivalents).
+  since: 0.1.0
+
+- id: DIV-0043
+  command: TS.CREATE
+  kind: behavior
+  documentation_only: true
+  description: >
+    RTS looks for option keywords across the *whole* argument list, including
+    inside the LABELS section: `TS.CREATE key LABELS a 1 RETENTION 100` sets the
+    retention to 100 **and** stores a label named RETENTION, and
+    `TS.CREATE key LABELS CHUNK_SIZE x` fails trying to parse the label's value as
+    a chunk size. Here LABELS ends the option list — everything after it is label
+    pairs and nothing else.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): matching would mean reproducing a
+    parser quirk in which a label name silently changes an unrelated series
+    property. The label set itself is identical on both engines. Pinned by
+    TestParserDivergences::test_option_keywords_are_not_scanned_inside_labels and
+    test_label_named_like_an_option_is_only_a_label_here.
+  since: 0.1.0
+
+- id: DIV-0044
+  command: TS.ADD
+  kind: behavior
+  documentation_only: true
+  description: >
+    A sample value of `inf` / `-inf` is stored here; RTS rejects it with "invalid
+    value" (TS.ADD) or the per-item equivalent (TS.MADD). NaN is accepted by both.
+    The counter commands are not affected — RTS takes an infinite increment.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): ±inf is a representable IEEE-754
+    value the read and aggregation paths already handle, and RTS itself accepts it
+    through TS.INCRBY, so the rejection is not a consistent RTS rule to match.
+    Pinned by TestAddDivergences::test_infinite_values_are_a_superset and the
+    TS.MADD equivalent.
+  since: 0.1.0
+
+# DIV-0045 covered TS.MADD auto-creating a missing series where RTS returns a
+# per-item "the key is not a TSDB key" error and creates nothing. It was removed
+# 2026-07-29 when the owner decided in favour of RTS semantics: TS.MADD no longer
+# creates the series, so there is nothing left to diverge. Per the "remove entries
+# that stop firing" rule (§5.3) the entry is gone rather than registered. Parity is
+# pinned by TestPartialFailure::test_missing_key_is_a_per_item_error and
+# test_every_item_failing in test_compat_madd.py, which assert both the per-item
+# error and that the keyspace is untouched.
+
+- id: DIV-0046
+  command: TS.INCRBY
+  kind: behavior
+  documentation_only: true
+  description: >
+    `TS.INCRBY key <n> TIMESTAMP` with no operand makes RedisTimeSeries read
+    past the end of its argument vector. It usually replies "TSDB: invalid
+    timestamp", but sometimes dereferences garbage and takes the server down —
+    reproduced 2026-07-29 against the pinned redis:8.8 image with
+    `TS.INCRBY <new-key> 1 TIMESTAMP` (SIGSEGV in RM_StringPtrLen, container exit
+    139). We reply "TSDB: missing timestamp value" and stay up.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): a reference defect, not a behavior
+    we chose, and one we will not match. The error text is kept as ours rather than
+    aligned to RTS's usual "invalid timestamp": that reply comes from an
+    out-of-bounds read, so there is no defined behavior to align to. Deliberately
+    NOT exercised against the reference by the suite — the input would
+    intermittently kill the shared reference container, so
+    TestTimestampOption::test_timestamp_missing_value asserts only that the subject
+    reports a clean error and survives. Re-check on the next reference bump; if it
+    is fixed upstream, this entry becomes an ordinary error-text delta.
+    Re-checked at the 8.10 bump (2026-08-01): not reproduced in 15 attempts on a
+    disposable redis:8.10 container (all clean "TSDB: invalid timestamp" replies,
+    server stayed up). Left registered rather than removed — an unreproduced
+    memory-layout-dependent out-of-bounds read is not the same as a fixed one, and
+    the entry still describes correct, tested subject behavior either way.
+  since: 0.1.0
+
+# DIV-0047 was uncovered when TS.MADD stopped auto-creating (see the DIV-0045 note
+# above): the missing-key case used to produce a real `ts.add` here, which masked
+# the fact that the two engines notify on different conditions. `documentation_only`
+# and pinned by per-engine assertions in test_compat_notifications.py, because the
+# only registry entry that could match would absorb a genuine "TS.MADD stopped
+# notifying" regression.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0047
+  command: TS.MADD
+  kind: behavior
+  documentation_only: true
+  description: >
+    RTS emits a `ts.add` keyspace event for every TS.MADD *item attempted*,
+    whatever its outcome. We emit one for every item that got as far as a usable
+    series — so the two agree on stored samples and on items a write-time rule
+    rejected (duplicate blocked, older than retention), and differ on items that
+    never reached a series: a missing key, a key holding another type, and an
+    unparseable timestamp or value produce `ts.add` on RTS and nothing here.
+  rationale: >
+    Accepted (owner sign-off 2026-07-29, §5.3): announcing a write to a key that
+    does not exist (and that the same command declined to create) would fire
+    watchers, keyspace-event consumers, and any downstream tooling for something
+    that never happened. Note the divergence is only about *which* failures notify,
+    not about notifying on failure at all: both engines already announce a
+    duplicate blocked by policy. Pinned by TestMaddFailureEvents in
+    test_compat_notifications.py, with
+    TestNotificationParity::test_madd_events_agree_when_every_item_succeeds keeping
+    the success path from being masked.
+  since: 0.1.0
+
+# DIV-0048 (reference bump 2026-08-01): a second RTS-internal config surfaced
+# alongside ts-libmr-protocol (DIV-0034), same shape — no subject equivalent,
+# registered reference-only rather than gated.
+
+- id: DIV-0048
+  command: CONFIG
+  kind: unsupported
+  description: >
+    `ts-topology-events` (default `yes`, immutable — `CONFIG SET` rejected with
+    "can't set immutable config") is present on RTS 8.10 and has no subject
+    equivalent. New in the 8.10 reference bump (absent from the previous 8.8
+    pin). Black-box probing only shows a boolean immutable flag; its effect was
+    not further probed (no observable command-level behavior found under
+    default `yes`).
+  rationale: >
+    Accepted (reference bump 2026-08-01): same treatment as DIV-0034
+    (`ts-libmr-protocol`) — an RTS-internal knob this engine has no
+    corresponding subsystem for. Registering it as reference-only keeps the
+    config-parity test's "every RTS name must exist on the subject" rule
+    intact for the rest of the surface; revisit if this engine grows a
+    comparable topology-change-notification concept.
+  since: 0.1.0
+
+# DIV-0049 (reference bump 2026-08-01): RTS 8.10 grew a dedicated error message
+# for the empty-string aggregator case, previously (8.8 and earlier) folded into
+# the generic "unknown aggregation type" text. Only the empty-string case is
+# affected — every other bogus aggregator name still errors identically on both
+# engines (TestAggregators::test_unknown_aggregator_rejected's `median`,
+# `average`, `p99` cases are unaffected).
+
+- id: DIV-0049
+  command: TS.CREATERULE
+  kind: error-text
+  description: >
+    `AGGREGATION ""` (empty string): RTS 8.10 replies "TSDB: Empty aggregation
+    type in list"; this module replies "TSDB: Unknown aggregation type", the
+    same generic text it uses for every other unrecognized aggregator name.
+  rationale: >
+    Accepted (reference bump 2026-08-01): both sides reject the input (no
+    accepted-input-superset risk), and diverge only in wording, which plan
+    §5.2 treats as reportable rather than gating. Pending a reviewed decision
+    on whether to special-case the empty string; left as a generic-message
+    divergence for now.
+  since: 0.1.0
+  details_regex: "reference='TSDB: Empty aggregation type in list'"
+
+# DIV-0050 (feature parity 2026-08-01): EXCLUDEEMPTY, added for TS.MRANGE /
+# TS.MREVRANGE. The flag's semantics match the reference exactly (probed against
+# the redis:8.10 pin); only the accepted argument positions differ, as below.
+
+- id: DIV-0050
+  command: TS.MRANGE
+  kind: behavior
+  description: >
+    `FILTER <expr...> EXCLUDEEMPTY` (the trailing position the documented syntax
+    uses, `... FILTER filterExpr... [GROUPBY ...] [EXCLUDEEMPTY]`) is accepted
+    here and honored as the flag; RTS 8.10 replies "TSDB: failed parsing labels"
+    because its FILTER expression list does not stop at the token. Both engines
+    agree on every other position (before FILTER, and after a complete
+    GROUPBY ... REDUCE block) and on the flag's effect.
+  rationale: >
+    Accepted (feature addition 2026-08-01) — an accepted-input superset, scoped
+    to one token in one position. This dialect additionally treats a bare word
+    as a metric-name selector (docs/topics/filter-syntax.md), so *not* stopping
+    the filter list at EXCLUDEEMPTY would parse the documented form as
+    `__name__="EXCLUDEEMPTY"` and reply with an empty array — a silent wrong
+    answer where RTS at least errors. Every other option token (COUNT, LATEST,
+    WITHLABELS, GROUPBY, ...) already terminates the FILTER list, so making this
+    one the exception would be inconsistent as well as unsafe.
+  since: 0.1.0
+  documentation_only: true
+
+- id: DIV-0051
+  command: TS.MREVRANGE
+  kind: behavior
+  description: >
+    TS.MREVRANGE twin of DIV-0050: `FILTER <expr...> EXCLUDEEMPTY` is accepted
+    here and rejected by RTS 8.10. Same parser, same rationale.
+  rationale: see DIV-0050 (registry matching is per-command, so the entry is
+    duplicated rather than shared; delete both together if the decision is
+    ever reversed)
+  since: 0.1.0
+  documentation_only: true
+
+# DIV-0054 (2026-08-01, found while fixing the EMPTY fill span): the reference suppresses
+# the leading/trailing EMPTY fill when the aligned bucket grid puts a bucket boundary below
+# timestamp 0 — i.e. when `ALIGN` is not a multiple of the bucket duration and the data sits
+# near 0. It is reachable only in that state:
+#
+#   TS.ADD k 0 0 ; TS.ADD k 501 0
+#   TS.RANGE    k 0 500 ALIGN 250 AGGREGATION min 500 EMPTY  -> RTS [[0,0]]
+#   TS.REVRANGE k 0 500 ALIGN 250 AGGREGATION min 500 EMPTY  -> RTS [[250,nan],[0,0]]
+#
+# The two RTS replies are not the same row set, and the bucket it drops from the forward
+# reply is one it *does* report when the bucket holds a sample ([[0,0],[250,5]]), and one its
+# own reverse reply reports as NaN. Interior fill agrees with us in the same state (pinned by
+# aggregate_iterator::tests::test_align_offset_empty_buckets_match_reference), so this is the
+# leading/trailing fill only.
+#
+# Reviewed decision: do NOT match — the DIV-0023/DIV-0030 pattern, where the reference
+# contradicts itself and reproducing it would mean dropping in-range buckets that our own
+# reverse reply returns. Every non-negative grid agrees exactly, boundary cases included
+# (`bucket_start == query_end` is reported, `> query_end` is not); see
+# tests/compat/corpus/empty_fill_reaches_the_query_window_edges.json for the agreeing side.
+#
+# documentation_only: the delta is a plain length difference on a command whose every real
+# bug is also a length or value difference, so no regex could scope it safely. Pinned instead
+# by TestEmptyFillDivergence in tests/compat/test_compat_range.py, which asserts both engines
+# explicitly. fuzz_strategies.py keeps the generator off the negative-grid combination
+# (`_align_choices`) rather than registering it away.
+#
+# ⚠️ `behavior`-kind: needs owner sign-off in the PR that introduces it (§5.3).
+
+- id: DIV-0054
+  command: TS.RANGE
+  kind: behavior
+  documentation_only: true
+  description: >
+    With `EMPTY` and an `ALIGN` offset that is not a multiple of the bucket duration,
+    a bucket grid extending below timestamp 0 makes RTS 8.10 suppress the leading and
+    trailing empty-bucket fill entirely; we report those buckets, as RTS's own
+    TS.REVRANGE reply does. Non-negative grids agree exactly. Applies to
+    TS.RANGE/REVRANGE and the TS.MRANGE and TS.NRANGE families, which share the
+    aggregation core.
+  rationale: >
+    Reproducing it would mean dropping in-range buckets that the reference itself
+    returns for the same query in the other direction, and that it returns in the
+    forward direction as soon as the bucket holds a sample — the DIV-0023/DIV-0030
+    pattern of declining to copy the reference contradicting itself. The affected
+    state is narrow (ALIGN offset off-grid, data within one bucket of timestamp 0)
+    and the correction is additive: we return buckets RTS omits, never fewer.
+  since: 0.1.0

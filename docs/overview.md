@@ -42,6 +42,8 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.MGET`: Retrieve the last sample from multiple series matching a filter.
 * `TS.RANGE`: Query a range of samples from a single series.
 * `TS.MRANGE`: Query ranges across multiple series based on filters.
+* `TS.READ`: Read samples at or after a timestamp, optionally blocking until enough new samples
+  arrive. The streaming counterpart to `TS.RANGE`, for tailing a series.
 
 ### Compaction & Rules
 
@@ -53,6 +55,7 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 
 * `TS.INFO`: Retrieve detailed information and statistics about a specific time series.
 * `TS.QUERYINDEX`: Retrieve all series keys matching a label filter.
+* `TS.QUERYLABELS`: Retrieve all label names, or all values of a given label, for series matching a filter.
 * `TS.CARD`: Get the cardinality of the index for a specific label filter.
 * `TS.LABELNAMES`: Get all label names used in the index.
 * `TS.METRICNAMES`: Search metric names with substring and optional fuzzy matching.

@@ -103,11 +103,13 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
 
         assert len(result) == 4
 
+        # A selected label missing from the series keeps its requested name
+        # with a nil value ([name, nil]), matching RedisTimeSeries.
         expected_labels = [
             [[b'name', b'cpu'], [b'type', b'usage']],
             [[b'name', b'cpu'], [b'type', b'usage']],
             [[b'name', b'cpu'], [b'type', b'temperature']],
-            [[b'name', b'cpu'], None]
+            [[b'name', b'cpu'], [b'type', None]]
         ]
 
         # Check that only selected labels are included
@@ -160,7 +162,7 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         self.setup_test_data(self.client)
 
         # Missing FILTER
-        with pytest.raises(ResponseError, match="wrong number of arguments for 'TS.MGET' command"):
+        with pytest.raises(ResponseError, match="wrong number of arguments for 'ts.mget' command"):
             self.client.execute_command('TS.MGET')
 
         # Unknown option

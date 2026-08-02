@@ -30,10 +30,15 @@ class TestTimeSeriesCommandKeys(ValkeyTimeSeriesTestCaseBase):
         (["TS.INCRBY", "k", "1"], [b"k"]),
         (["TS.DECRBY", "k", "1"], [b"k"]),
         (["TS.RANGE", "k", "-", "+"], [b"k"]),
+        (["TS.READ", "k", "0"], [b"k"]),
         (["TS.REVRANGE", "k", "-", "+"], [b"k"]),
         (["TS.OUTLIERS", "k", "-", "+", "MAD", "3"], [b"k"]),
         (["TS.MADD", "k1", "1", "1.0", "k2", "2", "2.0"], [b"k1", b"k2"]),
         (["TS.JOIN", "k1", "k2", "-", "+"], [b"k1", b"k2"]),
+        # numkeys-style key spec: the count at index 1 says how many keys follow.
+        (["TS.NRANGE", "2", "k1", "k2", "-", "+"], [b"k1", b"k2"]),
+        (["TS.NRANGE", "1", "k1", "-", "+"], [b"k1"]),
+        (["TS.NREVRANGE", "2", "k1", "k2", "-", "+"], [b"k1", b"k2"]),
         (["TS.CREATERULE", "src", "dst", "AGGREGATION", "avg", "60000"], [b"src", b"dst"]),
         (["TS.DELETERULE", "src", "dst"], [b"src", b"dst"]),
     ]
@@ -45,6 +50,7 @@ class TestTimeSeriesCommandKeys(ValkeyTimeSeriesTestCaseBase):
         ["TS.MREVRANGE", "-", "+", "FILTER", "a=b"],
         ["TS.MDEL", "FILTER", "a=b"],
         ["TS.QUERYINDEX", "FILTER", "a=b"],
+        ["TS.QUERYLABELS", "LABELS", "FILTER", "a=b"],
         ["TS.CARD", "FILTER", "a=b"],
         ["TS.LABELNAMES", "FILTER", "a=b"],
         ["TS.LABELVALUES", "label", "FILTER", "a=b"],
@@ -76,7 +82,7 @@ class TestTimeSeriesCommandKeys(ValkeyTimeSeriesTestCaseBase):
         # Every user-facing command is registered with a summary, complexity and since via the
         # command-info annotations. Spot-check a representative set across the read/write and
         # keyed/keyless categories.
-        for command in ["TS.CREATE", "TS.ADD", "TS.RANGE", "TS.MGET", "TS.CREATERULE"]:
+        for command in ["TS.CREATE", "TS.ADD", "TS.RANGE", "TS.READ", "TS.MGET", "TS.CREATERULE"]:
             docs = self.client.execute_command(f"COMMAND DOCS {command}")
             assert docs and docs[0].decode().upper() == command, (
                 f"COMMAND DOCS did not return an entry for {command}"

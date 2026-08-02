@@ -23,13 +23,19 @@ pub fn with_timeseries<R>(
     f: impl FnOnce(&TimeSeries) -> ValkeyResult<R>,
 ) -> ValkeyResult<R> {
     let redis_key = ctx.open_key(key);
-    if let Some(series) = redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE)? {
-        if check_acl {
-            check_key_permissions(ctx, key, &AclPermissions::ACCESS)?;
+    // A key holding a non-TSDB value must surface the standard WRONGTYPE error,
+    // not valkey-module-rs's raw "Existing key has wrong Valkey type" — the `?`
+    // shortcut leaked the latter, diverging from RTS (and from TS.RANGE/TS.INFO,
+    // which report WRONGTYPE). A missing key is KEY_NOT_FOUND.
+    match redis_key.get_value::<TimeSeries>(&VK_TIME_SERIES_TYPE) {
+        Ok(Some(series)) => {
+            if check_acl {
+                check_key_permissions(ctx, key, &AclPermissions::ACCESS)?;
+            }
+            f(series)
         }
-        f(series)
-    } else {
-        Err(invalid_series_key_error())
+        Ok(None) => Err(invalid_series_key_error()),
+        Err(_) => Err(ValkeyError::WrongType),
     }
 }
 
@@ -133,6 +139,7 @@ pub fn create_and_store_internal(
     ctx: &Context,
     key: &ValkeyString,
     options: TimeSeriesOptions,
+    replicate: bool,
     notify: bool,
 ) -> ValkeyResult<()> {
     let _key = ValkeyKeyWritable::open(ctx.ctx, key);
@@ -144,8 +151,13 @@ pub fn create_and_store_internal(
     let ts = create_series(key, options, ctx)?;
     _key.set_value(&VK_TIME_SERIES_TYPE, ts)?;
 
-    if notify {
+    if replicate {
         ctx.replicate_verbatim();
+    }
+    // Only an explicit TS.CREATE emits `ts.create`; auto-creating write
+    // commands (TS.ADD/TS.MADD/TS.INCRBY/...) emit just their own write
+    // event, matching RedisTimeSeries (compat plan §7.3).
+    if notify {
         ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.create", key);
         ctx.log_verbose("series created");
     }
@@ -153,14 +165,25 @@ pub fn create_and_store_internal(
     Ok(())
 }
 
+/// `explicit_create` distinguishes a client-issued `TS.CREATE` from the
+/// auto-create performed by write commands (TS.ADD/TS.MADD/TS.INCRBY/...):
+///
+/// - explicit: this call replicates verbatim and emits `ts.create`.
+/// - auto-create: neither — the calling command replicates *itself*, and the
+///   replica re-creates the series by re-running that command. Replicating
+///   here as well would propagate the write twice (`alsoPropagate` queues
+///   every call), which doubles non-idempotent effects like TS.INCRBY on
+///   replicas. (Corner case accepted: if the command errors *after* the
+///   auto-create, nothing propagates and the primary keeps an empty series
+///   the replica never sees.)
 pub fn create_and_store_series<'a>(
     ctx: &'a Context,
     key: &ValkeyString,
     options: TimeSeriesOptions,
-    notify: bool,
+    explicit_create: bool,
     add_compactions: bool,
 ) -> ValkeyResult<SeriesGuardMut<'a>> {
-    create_and_store_internal(ctx, key, options, notify)?;
+    create_and_store_internal(ctx, key, options, explicit_create, explicit_create)?;
 
     let Some(mut series) = get_timeseries_mut(ctx, key, true, Some(AclPermissions::INSERT))? else {
         return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND));

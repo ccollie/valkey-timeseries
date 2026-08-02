@@ -37,7 +37,10 @@ const ONE_YEAR_MS: i64 = 365 * ONE_DAY_MS;
 pub(crate) const FANOUT_COMMAND_TIMEOUT_MIN: i64 = 500;
 pub(crate) const FANOUT_COMMAND_TIMEOUT_MAX: i64 = 10000;
 
-pub const CHUNK_SIZE_MIN: i64 = 64;
+// Matches both RTS's config range [48, 1MiB] and our own TS.CREATE
+// validation (chunk.rs MIN_CHUNK_SIZE); the multiple-of-8 rule is enforced
+// by the set-callback.
+pub const CHUNK_SIZE_MIN: i64 = 48;
 pub const CHUNK_SIZE_MAX: i64 = 1024 * 1024;
 pub const CHUNK_SIZE_DEFAULT: i64 = 4 * 1024;
 // Rounding bounds come from the rounding module, which is what actually applies them: the
@@ -59,6 +62,8 @@ pub const IGNORE_MAX_VALUE_DIFF_MAX: f64 = f64::MAX;
 
 pub const MIN_THREADS: i64 = 1;
 pub const MAX_THREADS: i64 = 16;
+// Deliberately above RTS's default of 3 (registered divergence DIV-0009):
+// sizes the rayon pool used for parallel query processing.
 pub const DEFAULT_THREADS: i64 = 4;
 
 pub const RETENTION_POLICY_MIN: i64 = 0;
@@ -74,6 +79,62 @@ pub const INDEX_BUILD_MAX_MEMORY_DEFAULT: i64 = 256 * 1024 * 1024; // 256 MiB
 pub const CLUSTER_MAP_EXPIRATION_MS_DEFAULT: u64 = 750; // default: 0.75 seconds
 pub(crate) const CLUSTER_MAP_EXPIRATION_MIN_MS: i64 = 0; // min: 0 (no cache)
 pub(crate) const CLUSTER_MAP_EXPIRATION_MAX_MS: i64 = 3_600_000; // max: 1 hour
+
+pub(crate) const COMPATIBILITY_MODE_DEFAULT_STRING: &str = "extended";
+
+/// Which side of a *value* divergence from RedisTimeSeries the module takes
+/// (`ts-compatibility-mode`).
+///
+/// Scope is deliberately narrow: this governs only the cases where **both
+/// engines accept the command and both return a result, but the results
+/// differ**. That is the one class a migrating application cannot detect for
+/// itself — there is no error to catch, just different data.
+///
+/// It explicitly does *not* restrict the additive surface. Where RTS rejects an
+/// input we accept (relative range bounds, cascading compaction rules,
+/// complement filters, bare metric-name selectors, and the
+/// Valkey-TimeSeries-only commands), no RTS-compatible application can be
+/// depending on it, so there is nothing to protect and gating it would only
+/// remove function. Nor does it relax the places we are *stricter* than RTS: a
+/// visible error already beats silently wrong data.
+///
+/// See COMPATIBILITY.md for the gated set and for the divergences that qualify
+/// but are not yet switchable. Orthogonal to `ts-emulate-release`, which selects
+/// behavior by *release* to keep SemVer promises across a compatibility-bug fix;
+/// this selects between two behaviors that are both intended.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum CompatibilityMode {
+    /// Valkey TimeSeries semantics. The default.
+    #[default]
+    Extended,
+    /// On a gated value divergence, resolve the command the way RedisTimeSeries
+    /// 8.6 resolves it, so a client written against RTS is not handed a
+    /// silently different answer.
+    Strict,
+}
+
+impl CompatibilityMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CompatibilityMode::Extended => "extended",
+            CompatibilityMode::Strict => "strict",
+        }
+    }
+}
+
+impl TryFrom<&str> for CompatibilityMode {
+    type Error = ValkeyError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value.eq_ignore_ascii_case("extended") {
+            Ok(CompatibilityMode::Extended)
+        } else if value.eq_ignore_ascii_case("strict") {
+            Ok(CompatibilityMode::Strict)
+        } else {
+            Err(ValkeyError::Str(error_consts::INVALID_COMPATIBILITY_MODE))
+        }
+    }
+}
 
 /// The type of value a configuration parameter holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,7 +335,7 @@ fn store_rounding_strategy(strategy: Option<RoundingStrategy>) {
 /// `ts-ignore-max-time-diff`, in milliseconds.
 static IGNORE_MAX_TIME_DIFF: AtomicI64 = AtomicI64::new(IGNORE_MAX_TIME_DIFF_DEFAULT);
 
-/// `ts-ignore-max-value-diff`, held as the `f64` bit pattern.
+/// `ts-ignore-max-val-diff`, held as the `f64` bit pattern.
 static IGNORE_MAX_VALUE_DIFF: AtomicU64 = AtomicU64::new(0);
 
 pub fn ignore_max_value_diff() -> f64 {
@@ -304,7 +365,7 @@ pub fn duplicate_policy() -> DuplicatePolicy {
         .unwrap_or(DEFAULT_DUPLICATE_POLICY)
 }
 
-/// `ts-chunk-size`, in bytes.
+/// `ts-chunk-size-bytes`, in bytes.
 pub fn chunk_size_bytes() -> usize {
     CHUNK_SIZE.load(Ordering::Relaxed) as usize
 }
@@ -345,10 +406,37 @@ static RETENTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
     LazyLock::new(|| default_string_cell("ts-retention-policy"));
 static COMPACTION_POLICY_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
     LazyLock::new(|| default_string_cell("ts-compaction-policy"));
+static COMPATIBILITY_MODE_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| default_string_cell("ts-compatibility-mode"));
+
+/// Mirrors `ts-compatibility-mode` as a plain flag because it is read on the
+/// parse path of every range and filter command; the enum itself only ever has
+/// two states, so a lock here would buy nothing.
+static STRICT_RTS_COMPAT: AtomicBool = AtomicBool::new(false);
+
+/// True when `ts-compatibility-mode` is `strict`, i.e. a gated *value*
+/// divergence should resolve the way RedisTimeSeries 8.6 resolves it.
+///
+/// Before adding a call site, check it against the criterion in
+/// [`CompatibilityMode`]: both engines must accept the command and return
+/// differing results. If RTS errors on the input, it is an additive extension
+/// and must stay available in both modes.
+#[inline]
+pub fn is_strict_rts_compat() -> bool {
+    STRICT_RTS_COMPAT.load(Ordering::Relaxed)
+}
+
+pub fn compatibility_mode() -> CompatibilityMode {
+    if is_strict_rts_compat() {
+        CompatibilityMode::Strict
+    } else {
+        CompatibilityMode::Extended
+    }
+}
 static IGNORE_MAX_TIME_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
     LazyLock::new(|| default_string_cell("ts-ignore-max-time-diff"));
 static IGNORE_MAX_VALUE_DIFF_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
-    LazyLock::new(|| default_string_cell("ts-ignore-max-value-diff"));
+    LazyLock::new(|| default_string_cell("ts-ignore-max-val-diff"));
 static DECIMAL_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
     LazyLock::new(|| default_string_cell("ts-decimal-digits"));
 static SIGNIFICANT_DIGITS_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
@@ -466,6 +554,12 @@ fn update_chunk_encoding(val: &str) -> ValkeyResult<()> {
     Ok(())
 }
 
+fn update_compatibility_mode(val: &str) -> ValkeyResult<()> {
+    let mode = CompatibilityMode::try_from(val)?;
+    STRICT_RTS_COMPAT.store(mode == CompatibilityMode::Strict, Ordering::SeqCst);
+    Ok(())
+}
+
 fn update_compaction_policy(v: &str) -> ValkeyResult<()> {
     if v.is_empty() || v.eq_ignore_ascii_case(CONFIG_VALUE_NONE) {
         clear_compaction_policy_config();
@@ -504,7 +598,7 @@ fn update_ignore_max_time_diff(val: &str) -> ValkeyResult<()> {
 
 fn update_ignore_max_value_diff(val: &str) -> ValkeyResult<()> {
     let value = parse_number_in_range(
-        "ts-ignore-max-value-diff",
+        "ts-ignore-max-val-diff",
         val,
         IGNORE_MAX_VALUE_DIFF_MIN,
         IGNORE_MAX_VALUE_DIFF_MAX,
@@ -668,6 +762,10 @@ fn read_compaction_policy() -> ConfigValue {
     ConfigValue::String(Cow::Owned(lock(&COMPACTION_POLICY).clone()))
 }
 
+fn read_compatibility_mode() -> ConfigValue {
+    ConfigValue::str(compatibility_mode().as_str())
+}
+
 fn read_decimal_digits() -> ConfigValue {
     match rounding_strategy() {
         Some(RoundingStrategy::DecimalDigits(digits)) => ConfigValue::Integer(digits as i64),
@@ -718,7 +816,7 @@ fn read_debug_mode() -> ConfigValue {
     ConfigValue::Boolean(is_debug_mode_enabled())
 }
 
-/// Constraint on `ts-chunk-size` that the server's own numeric range check cannot express:
+/// Constraint on `ts-chunk-size-bytes` that the server's own numeric range check cannot express:
 /// the size must additionally be a multiple of 8.
 fn validate_chunk_size_config(chunk_size: i64) -> ValkeyResult<()> {
     validate_chunk_size(chunk_size as usize)?;
@@ -759,7 +857,7 @@ fn get_i64_default(args: &[ValkeyString], name: &str, default: i64) -> ValkeyRes
 /// and `TS._DEBUG LIST_CONFIGS` reports name/type/default/bounds/description from here.
 pub static CONFIGS: &[ConfigDesc] = &[
     ConfigDesc {
-        name: "ts-chunk-size",
+        name: "ts-chunk-size-bytes",
         read: read_chunk_size,
         kind: ConfigType::Integer,
         default: ConfigValue::Integer(CHUNK_SIZE_DEFAULT),
@@ -776,7 +874,11 @@ pub static CONFIGS: &[ConfigDesc] = &[
         name: "ts-encoding",
         read: read_chunk_encoding,
         kind: ConfigType::Enum,
-        default: ConfigValue::str(DEFAULT_CHUNK_ENCODING.name()),
+        // "compressed" is an accepted alias for the default compressed encoding
+        // (parse_encoding maps it to ChunkEncoding::default()); using it as the
+        // registered default makes `CONFIG GET ts-encoding` report the same string
+        // as RTS while the effective encoding is unchanged.
+        default: ConfigValue::str("compressed"),
         min: None,
         max: None,
         flags: ConfigurationFlags::DEFAULT,
@@ -829,6 +931,20 @@ pub static CONFIGS: &[ConfigDesc] = &[
         },
     },
     ConfigDesc {
+        name: "ts-compatibility-mode",
+        read: read_compatibility_mode,
+        kind: ConfigType::Enum,
+        default: ConfigValue::str(COMPATIBILITY_MODE_DEFAULT_STRING),
+        min: None,
+        max: None,
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Which side of a value divergence from RedisTimeSeries to take: EXTENDED or STRICT",
+        storage: ConfigStorage::Str {
+            cell: || &COMPATIBILITY_MODE_STRING,
+            apply: update_compatibility_mode,
+        },
+    },
+    ConfigDesc {
         name: "ts-decimal-digits",
         read: read_decimal_digits,
         kind: ConfigType::Integer,
@@ -877,7 +993,7 @@ pub static CONFIGS: &[ConfigDesc] = &[
         },
     },
     ConfigDesc {
-        name: "ts-ignore-max-value-diff",
+        name: "ts-ignore-max-val-diff",
         read: read_ignore_max_value_diff,
         kind: ConfigType::Float,
         default: ConfigValue::Float(IGNORE_MAX_VALUE_DIFF_MIN),
@@ -1169,17 +1285,21 @@ mod tests {
     /// user-visible (`CONFIG GET` reports them on a fresh server), so the registry must
     /// reproduce them byte for byte and a change here is a change to documented behaviour.
     const EXPECTED_REGISTRATION_DEFAULTS: &[(&str, &str)] = &[
-        ("ts-chunk-size", "4096"),
-        ("ts-encoding", "chimp"),
+        ("ts-chunk-size-bytes", "4096"),
+        // "compressed" rather than the concrete encoding name: an intentional RTS-parity
+        // change to the reported default. The effective encoding is unchanged, since
+        // `parse_encoding` maps "compressed" to `ChunkEncoding::default()`.
+        ("ts-encoding", "compressed"),
         // Lowercase: this is what the server registers and what `CONFIG GET` returns.
         // `TS._DEBUG LIST_CONFIGS` reports the same value, having previously hardcoded "BLOCK".
         ("ts-duplicate-policy", "block"),
         ("ts-retention-policy", "0"),
         ("ts-compaction-policy", ""),
+        ("ts-compatibility-mode", "extended"),
         ("ts-decimal-digits", "none"),
         ("ts-significant-digits", "none"),
         ("ts-ignore-max-time-diff", "0"),
-        ("ts-ignore-max-value-diff", "0"),
+        ("ts-ignore-max-val-diff", "0"),
         ("ts-num-threads", "4"),
         ("ts-fanout-command-timeout", "5000"),
         ("ts-cluster-map-expiration-ms", "750"),
@@ -1431,11 +1551,16 @@ mod tests {
                 )
             });
 
-            // The parameter must now report the value it was just set to. Retention is the one
-            // exception: zero means "no expiry", which reports as the "none" sentinel.
+            // The parameter must now report the value it was just set to, with two exceptions:
+            // retention, where zero means "no expiry" and reports as the "none" sentinel; and
+            // `ts-encoding`, whose default is the RTS-facing alias "compressed" while `read`
+            // reports the canonical name of the encoding it selects ("gorilla").
             let value = (desc.read)();
+            let alias_default = desc.name == "ts-encoding"
+                && desc.default.as_registration_str() == "compressed"
+                && value == ConfigValue::str(DEFAULT_CHUNK_ENCODING.name());
             assert!(
-                value == desc.default || value == ConfigValue::none(),
+                value == desc.default || value == ConfigValue::none() || alias_default,
                 "{}: default {:?} applied but reads back as {value:?}",
                 desc.name,
                 desc.default
@@ -1567,5 +1692,35 @@ mod tests {
                 desc.name
             );
         }
+    }
+
+    #[test]
+    fn test_compatibility_mode_parsing() {
+        assert_eq!(
+            CompatibilityMode::try_from("extended").unwrap(),
+            CompatibilityMode::Extended
+        );
+        assert_eq!(
+            CompatibilityMode::try_from("strict").unwrap(),
+            CompatibilityMode::Strict
+        );
+        // CONFIG SET values arrive as-typed, so accept any casing.
+        assert_eq!(
+            CompatibilityMode::try_from("STRICT").unwrap(),
+            CompatibilityMode::Strict
+        );
+        assert!(CompatibilityMode::try_from("").is_err());
+        assert!(CompatibilityMode::try_from("rts").is_err());
+
+        // The registered default must round-trip, or CONFIG GET would report a
+        // value the set-callback rejects.
+        assert_eq!(
+            CompatibilityMode::try_from(COMPATIBILITY_MODE_DEFAULT_STRING).unwrap(),
+            CompatibilityMode::default()
+        );
+        assert_eq!(
+            CompatibilityMode::default().as_str(),
+            COMPATIBILITY_MODE_DEFAULT_STRING
+        );
     }
 }

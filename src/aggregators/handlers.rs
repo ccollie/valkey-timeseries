@@ -86,41 +86,57 @@ impl Hash for FirstAggregator {
 // -- Last ----------------------------------------------------------------
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, GetSize)]
-pub struct LastAggregator(Option<f64>);
+pub struct LastAggregator {
+    current: Option<f64>,
+}
 
 impl AggregationHandler for LastAggregator {
     fn update(&mut self, _timestamp: i64, value: f64) -> bool {
         if value.is_nan() {
             return false;
         }
-        self.0 = Some(value);
+        self.current = Some(value);
         true
     }
 
     fn reset(&mut self) {
-        self.0 = None;
+        self.current = None;
     }
 
     fn current(&self) -> Option<Value> {
-        self.0
+        self.current
+    }
+
+    /// NaN, like every other non-counting aggregator.
+    ///
+    /// `last` is the one aggregator whose EMPTY fill is not a constant — RTS reports the
+    /// chronologically previous non-empty bucket's value for a gap, a gap meaning "no new
+    /// reading, so the last reading still stands" (RedisTimeSeries 8.10; carry is timeline-
+    /// based, independent of query direction). That carry cannot be done here: this
+    /// aggregator is reset per bucket and has no visibility across buckets. `CarryLastEmpty`
+    /// (src/iterators/utils.rs) applies it across the chronological stream instead — before
+    /// `ReverseIter`, so a reverse query still carries forward in time rather than from
+    /// whichever bucket happens to be emitted first.
+    fn empty_value(&self) -> Value {
+        f64::NAN
     }
 }
 
 impl RdbSerializable for LastAggregator {
     fn rdb_save(&self, rdb: *mut RedisModuleIO) {
-        rdb_save_optional_f64(rdb, self.0);
+        rdb_save_optional_f64(rdb, self.current);
     }
     fn rdb_load(rdb: *mut RedisModuleIO) -> ValkeyResult<Self>
     where
         Self: Sized,
     {
-        rdb_load_optional_f64(rdb).map(Self)
+        rdb_load_optional_f64(rdb).map(|current| Self { current })
     }
 }
 
 impl Hash for LastAggregator {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        hash_f64(self.0.unwrap_or(f64::NAN), state);
+        hash_f64(self.current.unwrap_or(f64::NAN), state);
     }
 }
 
@@ -1218,6 +1234,21 @@ impl Aggregator {
             Aggregator::VarS(_) => AggregationType::VarS,
             Aggregator::Sum(_) => AggregationType::Sum,
             Aggregator::SumIf(_) => AggregationType::SumIf,
+        }
+    }
+
+    /// Value for a group this aggregator accepted no member of — every value was NaN, or
+    /// every value failed the aggregator's condition.
+    ///
+    /// This is deliberately *not* `empty_value()`, which answers the different question of
+    /// what an empty *bucket* holds. The two disagree on `sum`: an empty bucket sums to 0,
+    /// but a group of nothing-but-NaN sums to NaN. See
+    /// [`AggregationType::reduces_empty_to_zero`].
+    pub fn empty_group_value(&self) -> Value {
+        if self.aggregation_type().reduces_empty_to_zero() {
+            0.0
+        } else {
+            f64::NAN
         }
     }
 }

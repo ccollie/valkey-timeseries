@@ -16,7 +16,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
 ///   [WITHLABELS | SELECTED_LABELS label...]
 ///   [FILTER filterExpr...]
 #[valkey_module_macros::command({
-    name: "TS.MGET",
+    name: "ts.mget",
     flags: [ReadOnly, Fast],
     summary: "Get the last sample of each time series matching a filter.",
     complexity: "O(N) where N is the number of time series that match the filters.",
@@ -142,12 +142,29 @@ pub fn process_mget_request(
         let sample = if options.latest {
             get_latest_compaction_sample(ctx, series).or(series.last_sample)
         } else {
-            series.last_sample
+            series.reported_last_sample()
         };
-        let labels = get_series_labels(series, with_labels, selected_labels)
-            .into_iter()
-            .map(|label| label.map(|x| Label::new(x.name, x.value)))
-            .collect();
+        // SELECTED_LABELS entries are positionally aligned with the request:
+        // a label missing from the series keeps its requested name with an
+        // empty value, so the reply can render [name, nil] like the reference.
+        let series_labels = get_series_labels(series, with_labels, selected_labels);
+        let labels = if selected_labels.is_empty() {
+            series_labels
+                .into_iter()
+                .map(|label| label.map(|x| Label::new(x.name, x.value)))
+                .collect()
+        } else {
+            series_labels
+                .into_iter()
+                .zip(selected_labels.iter())
+                .map(|(label, requested)| {
+                    Some(label.map_or_else(
+                        || Label::new(requested.as_str(), ""),
+                        |x| Label::new(x.name, x.value),
+                    ))
+                })
+                .collect()
+        };
 
         acc.push(MGetSeriesData {
             sample,

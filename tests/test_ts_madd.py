@@ -85,9 +85,10 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
                                              'ts_dup', 1000, 20.0,  # Duplicate
                                              'ts_dup', 2000, 30.0)  # New
 
-        print(result)
-        # Verify timestamps (should fail for duplicate)
-        assert result[0] == b'TSDB: duplicate sample'  # Error code for duplicate timestamp
+        # The duplicate item must be a real RESP error reply inside the array
+        # (not a plain string), with RTS's exact upsert error text.
+        assert isinstance(result[0], ResponseError)
+        assert str(result[0]).startswith('TSDB: Error at upsert')
         assert result[1] == 2000
 
         # Verify data - the original sample should remain unchanged
@@ -192,7 +193,7 @@ class TestTsMadd(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError) as execInfo:
             self.client.execute_command("TS.MADD", "ts1", "1000")
 
-        assert "wrong number of arguments for 'TS.MADD' command" in str(execInfo.value)
+        assert "wrong number of arguments for 'ts.madd' command" in str(execInfo.value)
 
     def test_madd_with_millisecond_values(self):
         """Test TS.MADD with millisecond timestamp values"""

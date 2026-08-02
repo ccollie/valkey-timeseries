@@ -217,10 +217,10 @@ class TestTimeSeriesRevRange(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command('TS.REVRANGE', 'ts1', '-')
 
         # Invalid start/end timestamp
-        with pytest.raises(ResponseError, match="invalid start timestamp"):
+        with pytest.raises(ResponseError, match="wrong fromTimestamp"):
             self.client.execute_command('TS.REVRANGE', 'ts1', 'invalid', '+')
 
-        with pytest.raises(ResponseError, match="invalid end timestamp"):
+        with pytest.raises(ResponseError, match="wrong toTimestamp"):
             self.client.execute_command('TS.REVRANGE', 'ts1', '-', 'invalid')
 
         # Invalid filter values
@@ -236,6 +236,8 @@ class TestTimeSeriesRevRange(ValkeyTimeSeriesTestCaseBase):
         ('MIN', 1.0),
         ('MAX', 6.0),
         ('COUNT', 6.0),
+        # first/last are chronological (earliest/latest sample), the same as
+        # TS.RANGE, regardless of query direction (RedisTimeSeries 8.10).
         ('FIRST', 1.0),
         ('LAST', 6.0),
         ('RANGE', 5.0),

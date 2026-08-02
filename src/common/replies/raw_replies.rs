@@ -3,9 +3,18 @@ use crate::labels::Label;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_long};
 use valkey_module::{
-    Context, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN, ValkeyModule_ReplySetArrayLength,
-    ValkeyModuleCtx, ValkeyResult, ValkeyString, raw,
+    Context, ContextFlags, Status, VALKEYMODULE_POSTPONED_ARRAY_LEN,
+    ValkeyModule_ReplySetArrayLength, ValkeyModuleCtx, ValkeyResult, ValkeyString, raw,
 };
+
+/// True when the client this reply targets negotiated RESP3 (HELLO 3).
+/// Commands whose RESP3 reply is structurally different from the RESP2 one
+/// (e.g. TS.MRANGE's map-of-series form) branch on this.
+pub fn is_resp3_client<C: IntoRawCtx>(ctx: C) -> bool {
+    Context::new(ctx.into_raw())
+        .get_flags()
+        .contains(ContextFlags::FLAGS_RESP3)
+}
 
 /// A small trait that allows reply helpers to accept either a raw
 /// `*mut raw::RedisModuleCtx` or a `&Context` and get the underlying raw
@@ -91,6 +100,24 @@ pub fn reply_with_labels<C: IntoRawCtx>(ctx: C, labels: &[Label]) {
     }
 }
 
+/// RESP3 form of a label set: a map of name -> value, with a null value for a
+/// label that exists in the request but not on the series (SELECTED_LABELS).
+pub fn reply_with_labels_map<'a, C: IntoRawCtx>(
+    ctx: C,
+    labels: impl ExactSizeIterator<Item = &'a Label>,
+) {
+    let raw_ctx = ctx.into_raw();
+    reply_with_map(raw_ctx, labels.len());
+    for label in labels {
+        reply_with_bulk_string(raw_ctx, &label.name);
+        if label.value.is_empty() {
+            raw::reply_with_null(raw_ctx);
+        } else {
+            reply_with_bulk_string(raw_ctx, &label.value);
+        }
+    }
+}
+
 pub fn reply_with_sample_ex<C: IntoRawCtx>(ctx: C, timestamp: Timestamp, value: f64) {
     let raw_ctx = ctx.into_raw();
     reply_with_array(raw_ctx, 2);
@@ -137,6 +164,37 @@ pub fn reply_with_multi_samples<C: IntoRawCtx, T: std::borrow::Borrow<MultiSampl
     let mut len = 0;
     for row in rows {
         reply_with_multi_sample(raw_ctx, row.borrow());
+        len += 1;
+    }
+
+    reply_with_array_len(raw_ctx, len);
+}
+
+/// One pivoted row: `[timestamp, [value, ...]]`.
+///
+/// The values are nested in their own array rather than flattened into the row as
+/// [`reply_with_multi_sample`] does — TS.NRANGE's row spans several series, so the value list
+/// is a unit of its own.
+pub fn reply_with_pivot_row<C: IntoRawCtx>(ctx: C, row: &MultiSample) {
+    let raw_ctx = ctx.into_raw();
+    reply_with_array(raw_ctx, 2);
+    reply_with_integer(raw_ctx, row.timestamp);
+    reply_with_array(raw_ctx, row.values.len());
+    for value in &row.values {
+        raw::reply_with_double(raw_ctx, *value);
+    }
+}
+
+pub fn reply_with_pivot_rows<C: IntoRawCtx, T: std::borrow::Borrow<MultiSample>>(
+    ctx: C,
+    rows: impl Iterator<Item = T>,
+) {
+    let raw_ctx = ctx.into_raw();
+    reply_with_postponed_array(raw_ctx);
+
+    let mut len = 0;
+    for row in rows {
+        reply_with_pivot_row(raw_ctx, row.borrow());
         len += 1;
     }
 
@@ -198,6 +256,24 @@ pub fn reply_with_map<C: IntoRawCtx>(ctx: C, len: usize) -> Status {
 pub fn reply_with_array<C: IntoRawCtx>(ctx: C, len: usize) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_array(raw_ctx, len as c_long)
+}
+
+/// Reply with a set of bulk strings.
+///
+/// RESP2 clients receive a regular array (the wire form of a set there); RESP3
+/// clients receive a native set reply via `ValkeyModule_ReplyWithSet`. Used by
+/// `TS.QUERYLABELS`, whose reply is a set of distinct label names or values.
+pub fn reply_with_string_set<C: IntoRawCtx>(ctx: C, values: &[String]) -> Status {
+    let raw_ctx = ctx.into_raw();
+    if is_resp3_client(raw_ctx) {
+        raw::reply_with_set(raw_ctx, values.len() as c_long);
+    } else {
+        reply_with_array(raw_ctx, values.len());
+    }
+    for value in values {
+        reply_with_bulk_string(raw_ctx, value);
+    }
+    Status::Ok
 }
 
 pub fn reply_with_array_len<C: IntoRawCtx>(ctx: C, len: usize) -> Status {

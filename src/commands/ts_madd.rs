@@ -1,10 +1,11 @@
 use crate::commands::command_parser::{parse_timestamp, parse_value_arg};
+use crate::common::block_on_keys::signal_timeseries_ready;
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
 use crate::series::{
-    PerSeriesSamples, SampleAddResult, SeriesGuardMut, TimeSeriesOptions, create_and_store_series,
-    get_timeseries_mut, multi_series_merge_samples,
+    PerSeriesSamples, SampleAddResult, SeriesGuardMut, get_timeseries_mut,
+    multi_series_merge_samples,
 };
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -40,7 +41,7 @@ struct SeriesSamples<'a> {
 /// Because of that there is extra bookkeeping to do, including mapping results back to the
 /// original input and returning results in input order.
 #[valkey_module_macros::command({
-    name: "TS.MADD",
+    name: "ts.madd",
     flags: [Write, DenyOOM],
     summary: "Append new samples to one or more time series.",
     complexity: "O(N) where N is the number of samples added.",
@@ -91,8 +92,12 @@ fn handle_update(
     );
 
     let mut per_series_samples: Vec<PerSeriesSamples> = Vec::with_capacity(4);
+    // Sample counts before the merge, so blocked `TS.READ` readers are woken only for series
+    // that actually gained a sample. Collected here because the mutable borrows taken by
+    // `PerSeriesSamples` below run until the merge returns.
+    let mut counts_before: SmallVec<[(&ValkeyString, usize); 8]> = SmallVec::new();
 
-    for (_key, samples) in input_map.iter_mut() {
+    for (key, samples) in input_map.iter_mut() {
         let res = samples.err;
         if !res.is_ok() {
             // Series-level error applies to every sample in that series
@@ -105,6 +110,8 @@ fn handle_update(
         let Some(series) = &mut samples.series else {
             continue;
         };
+
+        counts_before.push((*key, series.total_samples));
 
         let mut s = PerSeriesSamples::new(series.deref_mut());
         for input in samples.samples.iter() {
@@ -128,6 +135,15 @@ fn handle_update(
         }
     }
 
+    for (key, count_before) in counts_before {
+        if let Some(samples) = input_map.get(key)
+            && let Some(series) = &samples.series
+            && series.total_samples > count_before
+        {
+            signal_timeseries_ready(ctx, key);
+        }
+    }
+
     Ok(results)
 }
 
@@ -144,8 +160,6 @@ fn parse_args<'a>(
     let mut input_map: AHashMap<&ValkeyString, SeriesSamples> =
         AHashMap::with_capacity(sample_count);
     let mut all_inputs: Vec<ParsedInput<'a>> = Vec::with_capacity(sample_count);
-
-    let options = TimeSeriesOptions::from_config();
 
     for (sample_index, chunk) in args.chunks_exact(3).enumerate() {
         let key = &chunk[0];
@@ -173,11 +187,11 @@ fn parse_args<'a>(
                         series_samples.series = Some(guard);
                         SampleAddResult::Ok(Sample::default())
                     }
-                    Ok(None) => {
-                        let guard = create_and_store_series(ctx, key, options.clone(), true, true)?;
-                        series_samples.series = Some(guard);
-                        SampleAddResult::Ok(Sample::default())
-                    }
+                    // Unlike TS.ADD, TS.MADD does not create the series: a missing
+                    // key is a per-item error and the keyspace is left alone
+                    // (RedisTimeSeries parity — a mistyped key in a batch must not
+                    // silently materialize a series).
+                    Ok(None) => SampleAddResult::Error(error_consts::INVALID_TIMESERIES_KEY),
                     Err(ValkeyError::WrongType) => {
                         SampleAddResult::Error(error_consts::INVALID_TIMESERIES_KEY)
                     }
@@ -193,6 +207,10 @@ fn parse_args<'a>(
         } else {
             let ts = match parse_timestamp(timestamp_str) {
                 Ok(ts) => ts,
+                Err(ValkeyError::Str(msg)) => {
+                    res = SampleAddResult::Error(msg);
+                    0
+                }
                 Err(_) => {
                     res = SampleAddResult::Error(error_consts::INVALID_TIMESTAMP);
                     0

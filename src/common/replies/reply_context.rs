@@ -1,6 +1,6 @@
 use super::raw_replies::{
-    IntoRawCtx, reply, reply_error_string, reply_with_array_len, reply_with_bulk_string,
-    reply_with_simple_string,
+    IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_array_len,
+    reply_with_bulk_string, reply_with_simple_string,
 };
 use crate::series::index::{TimeSeriesIndexGuard, get_db_index};
 use std::ops::Deref;
@@ -23,6 +23,22 @@ impl ReplyContext {
             ctx: Context { ctx },
             raw_ctx: ctx,
         }
+    }
+
+    /// The underlying raw context, for the free reply helpers in
+    /// [`super::raw_replies`] that take an [`IntoRawCtx`] rather than a `ReplyContext`.
+    #[inline]
+    pub(crate) fn raw(&self) -> *mut raw::RedisModuleCtx {
+        self.raw_ctx
+    }
+
+    /// The wrapped [`Context`], for helpers that need the crate type — key access, context flags,
+    /// and ACL identity. Inside a blocked-client reply or timeout callback this carries the real
+    /// blocked client, so both protocol detection and ACL lookups behave as they do on the
+    /// original command call.
+    #[inline]
+    pub(crate) fn context(&self) -> &Context {
+        &self.ctx
     }
 
     /// Log a message at the specified `level` using the underlying context.
@@ -92,6 +108,18 @@ impl ReplyContext {
     /// Start a map reply with the given length.
     pub fn reply_with_map(&self, len: usize) -> Status {
         raw::reply_with_map(self.raw_ctx, len as c_long)
+    }
+
+    /// Start a set reply (RESP3) or array reply (RESP2) with the given length.
+    ///
+    /// `TS.QUERYLABELS` replies with a set of distinct label names/values; RESP2
+    /// clients receive the equivalent array form.
+    pub fn reply_with_set(&self, len: usize) -> Status {
+        if is_resp3_client(self.raw_ctx) {
+            raw::reply_with_set(self.raw_ctx, len as c_long)
+        } else {
+            self.reply_with_array(len)
+        }
     }
 
     /// Start a postponed-length array reply.
