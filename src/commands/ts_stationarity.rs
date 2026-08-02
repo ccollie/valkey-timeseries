@@ -29,7 +29,7 @@ acl_categories!(TS_STATIONARITY, "ts.stationarity", "fast read timeseries");
 ///
 /// Returns a map with test statistics, p-values, critical values, and a conclusion.
 #[valkey_module_macros::command({
-    name: "TS.STATIONARITY",
+    name: "ts.stationarity",
     flags: [ReadOnly, DenyOOM],
     summary: "Test whether a time series is stationary.",
     complexity: "O(N*L) where N is the number of samples in the range and L is the number of lags used by the test.",
