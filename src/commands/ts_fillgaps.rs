@@ -45,7 +45,7 @@ acl_categories!(TS_FILLGAPS, "ts.fillgaps", "fast write timeseries");
 /// persisted anywhere. With STORE, the filled gap samples are written to the
 /// destination key and the number of samples written is returned.
 #[valkey_module_macros::command({
-    name: "TS.FILLGAPS",
+    name: "ts.fillgaps",
     flags: [Write, DenyOOM],
     summary: "Fill missing timestamps in a time series over a range.",
     complexity: "O(N) where N is the number of timestamps in the range.",

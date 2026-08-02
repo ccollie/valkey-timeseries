@@ -49,7 +49,7 @@ acl_categories!(TS_SANITIZE, "ts.sanitize", "write timeseries");
 ///
 /// Without STORE, returns the number of samples that were sanitized (imputed or dropped).
 #[valkey_module_macros::command({
-    name: "TS.SANITIZE",
+    name: "ts.sanitize",
     flags: [Write, DenyOOM],
     summary: "Replace or drop missing values in a time series.",
     complexity: "O(N) where N is the number of samples in the range.",
