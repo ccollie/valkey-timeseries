@@ -591,7 +591,7 @@ class TestTimeSeriesFillgaps(ValkeyTimeSeriesTestCaseBase):
         self.verify_error_response(
             self.client,
             'TS.FILLGAPS',
-            "wrong number of arguments for 'TS.FILLGAPS' command"
+            "wrong number of arguments for 'ts.fillgaps' command"
         )
 
     def test_fillgaps_wrong_arity_missing_end(self):
@@ -600,7 +600,7 @@ class TestTimeSeriesFillgaps(ValkeyTimeSeriesTestCaseBase):
         self.verify_error_response(
             self.client,
             'TS.FILLGAPS ts_arity 1000',
-            "wrong number of arguments for 'TS.FILLGAPS' command"
+            "wrong number of arguments for 'ts.fillgaps' command"
         )
 
     def test_fillgaps_zero_frequency(self):

@@ -43,7 +43,7 @@ acl_categories!(TS_STATS, "ts.stats", "fast read timeseries");
 /// | skewness               | Float   | Sample skewness                               |
 /// | kurtosis               | Float   | Sample excess kurtosis                        |
 #[valkey_module_macros::command({
-    name: "TS.STATS",
+    name: "ts.stats",
     flags: [ReadOnly, DenyOOM],
     summary: "Compute descriptive statistics for a time series.",
     complexity: "O(N log N) where N is the number of samples in the range.",
