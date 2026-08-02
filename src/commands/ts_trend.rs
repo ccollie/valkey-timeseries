@@ -77,7 +77,7 @@ impl Default for TrendModel {
 /// - `features`: map of named features from the fitted component (when FEATURES is specified)
 /// - `metrics`: accuracy metrics between observed and fitted values (when METRICS is specified)
 #[valkey_module_macros::command({
-    name: "TS.TREND",
+    name: "ts.trend",
     // Declared `Write` rather than `ReadOnly`: the STORE clause creates/updates the
     // destination series and replicates, so the command must not be routed to replicas
     // or treated as read-only, even though it is a pure read when STORE is omitted.

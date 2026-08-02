@@ -95,7 +95,7 @@ enum BacktestModelResult {
 ///   [WITH_PREDICTIONS]
 /// ```
 #[valkey_module_macros::command({
-    name: "TS.BACKTEST",
+    name: "ts.backtest",
     flags: [ReadOnly, DenyOOM],
     summary: "Backtest forecasting models over historical windows of a time series.",
     complexity: "O(N*M*F) where N is the number of samples in the range, M is the number of models and F is the number of folds.",

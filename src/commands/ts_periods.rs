@@ -18,7 +18,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 /// `MIN_STRENGTH` sets the minimum seasonal differencing strength (0–1) for a
 /// period to be accepted. The default is 0.05. Set to 0 to disable strength filtering.
 #[valkey_module_macros::command({
-    name: "TS.PERIODS",
+    name: "ts.periods",
     flags: [ReadOnly, DenyOOM],
     summary: "Detect seasonal periods in a time series.",
     complexity: "O(N log N) where N is the number of samples in the range.",

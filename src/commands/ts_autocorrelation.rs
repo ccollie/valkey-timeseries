@@ -17,7 +17,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 /// - `AGGREGATED <mean|var|std|median>`: Returns aggregated autocorrelation across lags
 ///   1..=lag, using the specified aggregation function.
 #[valkey_module_macros::command({
-    name: "TS.AUTOCORRELATION",
+    name: "ts.autocorrelation",
     flags: [ReadOnly, DenyOOM],
     summary: "Compute autocorrelation statistics for a time series at a given lag.",
     complexity: "O(N*L) where N is the number of samples in the range and L is the lag.",

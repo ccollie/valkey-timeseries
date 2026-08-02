@@ -56,7 +56,7 @@ struct ForecastOptions {
 /// ```
 ///
 #[valkey_module_macros::command({
-    name: "TS.FORECAST",
+    name: "ts.forecast",
     flags: [Write, DenyOOM],
     summary: "Forecast future values of a time series using one or more explicit models.",
     complexity: "O(N*M) where N is the number of samples in the range and M is the number of models.",

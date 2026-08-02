@@ -68,7 +68,7 @@ impl Default for AutoForecastOptions {
 /// `TS.AUTOFORECAST` fits all enabled auto models (AutoARIMA, AutoETS, AutoTheta)
 /// and selects the best one based on cross-validation error.
 #[valkey_module_macros::command({
-    name: "TS.AUTOFORECAST",
+    name: "ts.autoforecast",
     flags: [Write, DenyOOM],
     summary: "Forecast a time series, automatically selecting the best-fitting model.",
     complexity: "O(N*M) where N is the number of samples in the range and M is the number of candidate models.",
