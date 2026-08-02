@@ -38,7 +38,7 @@ use valkey_module::{
 ///
 /// Returns a map of `{feature_name: value}`.
 #[valkey_module_macros::command({
-    name: "TS.FEATURES",
+    name: "ts.features",
     flags: [ReadOnly, DenyOOM],
     summary: "Compute statistical features for a time series.",
     complexity: "O(N*F) where N is the number of samples in the range and F is the number of requested features.",

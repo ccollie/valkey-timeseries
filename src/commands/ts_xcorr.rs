@@ -37,7 +37,7 @@ use valkey_module::{
 /// - `peak_correlation` — the (signed) correlation value at `peak_lag`
 /// - `n` — the number of timestamp-aligned sample pairs used
 #[valkey_module_macros::command({
-    name: "TS.XCORR",
+    name: "ts.xcorr",
     flags: [ReadOnly, DenyOOM],
     summary: "Compute the cross-correlation function between two time series.",
     complexity: "O(N*L) where N is the number of timestamp-aligned sample pairs and L is the number of lags (2*maxLag+1).",
