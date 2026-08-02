@@ -1868,9 +1868,7 @@ pub(super) fn parse_store_clause(args: &mut CommandArgIterator) -> ValkeyResult<
                     return Err(ValkeyError::Str(error_consts::MISSING_DUPLICATE_POLICY));
                 };
                 let policy: DuplicatePolicy = DuplicatePolicy::try_from(arg.as_slice())?;
-                let mut ignore_options = options.sample_duplicate_policy.unwrap_or_default();
-                ignore_options.policy = Some(policy);
-                options.sample_duplicate_policy = Some(ignore_options);
+                options.duplicate_policy = Some(policy);
             }
             CommandArgToken::OnDuplicate => {
                 options.on_duplicate = Some(parse_duplicate_policy(args)?);
@@ -1881,10 +1879,7 @@ pub(super) fn parse_store_clause(args: &mut CommandArgIterator) -> ValkeyResult<
             }
             CommandArgToken::Ignore => {
                 let (ignore_max_timediff, ignore_max_val_diff) = parse_ignore_options(args)?;
-                let mut ignore_options = options.sample_duplicate_policy.unwrap_or_default();
-                ignore_options.max_time_delta = ignore_max_timediff as u64;
-                ignore_options.max_value_delta = ignore_max_val_diff;
-                options.sample_duplicate_policy = Some(ignore_options);
+                options.ignore = Some((ignore_max_timediff as u64, ignore_max_val_diff));
             }
             CommandArgToken::Retention => options.retention(parse_retention(args)?),
             CommandArgToken::SignificantDigits => {
