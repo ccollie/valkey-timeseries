@@ -796,16 +796,24 @@ class TestTimeSeriesFillgaps(ValkeyTimeSeriesTestCaseBase):
         assert timestamps == [1500, 3500]
 
     def test_fillgaps_end_before_start(self):
-        """Error when endTimestamp is before startTimestamp."""
+        """An inverted range (end < start) is not an error and fills nothing."""
         self.client.execute_command('TS.CREATE', 'ts_reverse')
         self.client.execute_command('TS.ADD', 'ts_reverse', 1000, 10)
 
-        # end < start: should return an error since TimestampRange::new rejects start > end
-        with pytest.raises(ResponseError) as excinfo:
-            self.client.execute_command(
-                'TS.FILLGAPS', 'ts_reverse', 5000, 1000, 'FREQUENCY', 1000
-            )
-        assert "invalid timestamp range" in str(excinfo.value).lower()
+        # end < start: since the RTS 8.10 compat change, inverted ranges are
+        # valid and select no samples (TimestampRange::new no longer rejects
+        # them), so FILLGAPS returns an empty result instead of an error.
+        result = self.client.execute_command(
+            'TS.FILLGAPS', 'ts_reverse', 5000, 1000, 'FREQUENCY', 1000
+        )
+        assert result == []
+
+        # With STORE, the same inverted window writes nothing.
+        stored = self.client.execute_command(
+            'TS.FILLGAPS', 'ts_reverse', 5000, 1000, 'FREQUENCY', 1000,
+            'STORE', 'ts_reverse_dest',
+        )
+        assert stored == 0
 
     # ------------------------------------------------------------------
     # Chunk boundary tests
