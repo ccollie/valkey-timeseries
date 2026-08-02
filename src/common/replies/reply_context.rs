@@ -2,7 +2,6 @@ use super::raw_replies::{
     IntoRawCtx, is_resp3_client, reply, reply_error_string, reply_with_array_len,
     reply_with_bulk_string, reply_with_simple_string,
 };
-use crate::common::context::replies::reply_with_key;
 use crate::series::index::{TimeSeriesIndexGuard, get_db_index};
 use std::ops::Deref;
 use std::os::raw::c_long;
