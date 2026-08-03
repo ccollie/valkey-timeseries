@@ -103,6 +103,33 @@ Take a page at a time:
    2) "23"
 ```
 
+Alert when more than 5% of requests in a one-minute window take longer than 500 ms. A
+[`TS.CREATERULE`](./ts.createrule.md) with `share(>500)` down-samples the raw latency values to
+one fraction per minute; a worker then tails that compacted series:
+
+```
+> TS.CREATE api:latency:raw
+OK
+> TS.CREATE api:latency:over_500ms:1m
+OK
+> TS.CREATERULE api:latency:raw api:latency:over_500ms:1m AGGREGATION share(>500) 1m 0
+OK
+```
+
+```
+cursor = "$"
+loop:
+    samples = TS.READ api:latency:over_500ms:1m cursor BLOCK 0 1
+    for (timestamp, fraction) in samples:
+        if fraction > 0.05:
+            notify("more than 5% of requests exceeded 500 ms")
+        cursor = timestamp + 1
+```
+
+`share(>500)` returns a fraction from `0.0` to `1.0`, so `0.05` represents 5%. The compaction
+rule emits a value after the corresponding one-minute bucket is complete, letting the worker read
+one downsampled sample per minute rather than scan every request observation.
+
 ## Paging and tailing
 
 To advance, resume from **one millisecond past the last timestamp you received**. The cursor is
