@@ -116,12 +116,19 @@ OK
 OK
 ```
 
-```
+```python
+# python
+import valkey
+
+client = valkey.Valkey(decode_responses=True)
 cursor = "$"
-loop:
-    samples = TS.READ api:latency:over_500ms:1m cursor BLOCK 0 1
-    for (timestamp, fraction) in samples:
-        if fraction > 0.05:
+
+while True:
+    samples = client.execute_command(
+        "TS.READ", "api:latency:over_500ms:1m", cursor, "BLOCK", 0, 1
+    )
+    for timestamp, fraction in samples:
+        if float(fraction) > 0.05:
             notify("more than 5% of requests exceeded 500 ms")
         cursor = timestamp + 1
 ```
@@ -135,13 +142,22 @@ one downsampled sample per minute rather than scan every request observation.
 To advance, resume from **one millisecond past the last timestamp you received**. The cursor is
 inclusive, so re-using the last timestamp unchanged would return that sample a second time.
 
-```
-last = 0
-loop:
-    reply = TS.READ key <last == 0 ? "-" : last + 1> BLOCK 5000 1 MAX_COUNT 100
-    if reply is empty: continue          # timed out; just ask again
+```python
+# python
+import valkey
+
+client = valkey.Valkey(decode_responses=True)
+last = None
+
+while True:
+    cursor = "-" if last is None else last + 1
+    reply = client.execute_command(
+        "TS.READ", "key", cursor, "BLOCK", 5000, 1, "MAX_COUNT", 100
+    )
+    if not reply:
+        continue  # Timed out; just ask again.
     process(reply)
-    last = reply[-1].timestamp
+    last = reply[-1][0]
 ```
 
 Two properties make this loop safe:
