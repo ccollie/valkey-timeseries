@@ -435,7 +435,22 @@ fn process_request_message(
     }
 
     let mut dest = get_pooled_buffer(FANOUT_RPC_RESPONSE_BUFFER_SIZE);
-    let _ = set_current_db(ctx, db);
+
+    // don't proceed if we can't set the current db
+    if set_current_db(ctx, db) == Status::Err {
+        let msg = format!(
+            "cluster rpc: rejecting request {request_id} from node {sender_id}: failed to set current db to {db}"
+        );
+        ctx.log_warning(&msg);
+        send_error_response(
+            ctx,
+            request_id,
+            db,
+            sender_id.raw_ptr(),
+            FanoutError::invalid_db(),
+        );
+        return;
+    }
 
     let user = header.user.as_deref();
     let res = with_fanout_user(ctx, user, |ctx| {
