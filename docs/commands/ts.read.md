@@ -188,7 +188,7 @@ Alert when more than 5% of requests in a one-minute window take longer than 500 
 one fraction per minute; a worker then tails that compacted series, and `CONDITION` does the
 threshold test on the server so the worker is woken only by a breach:
 
-``` 
+```
 > TS.CREATE api:latency:raw
 OK
 > TS.CREATE api:latency:over_500ms:1m
@@ -217,7 +217,6 @@ OK
 ```
 
 The worker is woken by the condition check on the server.
-
 
 ## Paging and tailing
 
