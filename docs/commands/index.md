@@ -1,23 +1,35 @@
+# Commands
+
 The following commands are supported
 
-```aiignore
-[TS.CREATE-SERIES](./create.md)
-TS.ALTER
-TS.ADD
-TS.CARD
-TS.MADD
-TS.DEL
-TS.GET
-TS.INFO
-TS.JOIN
-TS.LABELNAMES
-TS.LABELVALUES
-TS.MDEL
-TS.MGET
-TS.METRICNAMES
-TS.MRANGE
-TS.NRANGE
-TS.NREVRANGE
-TS.RANGE
-TS.STATS
-```
+- [`TS.ADD`](ts.add.md)
+- [`TS.ADDBULK`](ts.addbulk.md)
+- [`TS.ALTER`](ts.alter.md)
+- [`TS.CARD`](ts.card.md)
+- [`TS.CREATE`](ts.create.md)
+- [`TS.CREATERULE`](ts.createrule.md)
+- [`TS.DECRBY`](ts.decrby.md)
+- [`TS.DEL`](ts.del.md)
+- [`TS.DELETERULE`](ts.deleterule.md)
+- [`TS.GET`](ts.get.md)
+- [`TS.INCRBY`](ts.incrby.md)
+- [`TS.INFO`](ts.info.md)
+- [`TS.JOIN`](ts.join.md)
+- [`TS.LABELNAMES`](ts.labelnames.md)
+- [`TS.LABELSTATS`](ts.labelstats.md)
+- [`TS.LABELVALUES`](ts.labelvalues.md)
+- [`TS.MADD`](ts.madd.md)
+- [`TS.MDEL`](ts.mdel.md)
+- [`TS.MGET`](ts.mget.md)
+- [`TS.METRICNAMES`](ts.metricnames.md)
+- [`TS.MRANGE`](ts.mrange.md)
+- [`TS.MREVRANGE`](ts.mrevrange.md)
+- [`TS.NRANGE`](ts.nrange.md)
+- [`TS.NREVRANGE`](ts.nrevrange.md)
+- [`TS.OUTLIERS`](ts.outliers.md)
+- [`TS.QUERYINDEX`](ts.queryindex.md)
+- [`TS.QUERYLABELS`](ts.querylabels.md)
+- [`TS.RANGE`](ts.range.md)
+- [`TS.READ`](ts.read.md)
+- [`TS.REVRANGE`](ts.revrange.md)
+- [`TS._DEBUG`](ts._debug.md)
