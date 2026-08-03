@@ -47,37 +47,37 @@ https://tech.loveholidays.com/redis-cluster-multi-key-command-optimisation-with-
 
 The following commands are supported
 
-```aiignore
-TS.ADD
-TS.ADDBULK
-TS.ALTER
-TS.CARD
-TS.CREATE
-TS.CREATERULE
-TS.DELETERULE
-TS.DECRBY
-TS.DEL
-TS.GET
-TS.INCRBY
-TS.JOIN
-TS.LABELNAMES
-TS.LABELSTATS
-TS.LABELVALUES
-TS.MADD
-TS.MDEL
-TS.MGET
-TS.MRANGE
-TS.MREVRANGE
-TS.NRANGE
-TS.NREVRANGE
-TS.OUTLIERS
-TS.QUERYINDEX
-TS.QUERYLABELS
-TS.RANGE
-TS.READ
-TS.REVRANGE
-TS._DEBUG
-```
+- [`TS.ADD`](docs/commands/ts.add.md)
+- [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
+- [`TS.ALTER`](docs/commands/ts.alter.md)
+- [`TS.CARD`](docs/commands/ts.card.md)
+- [`TS.CREATE`](docs/commands/ts.create.md)
+- [`TS.CREATERULE`](docs/commands/ts.createrule.md)
+- [`TS.DELETERULE`](docs/commands/ts.deleterule.md)
+- [`TS.DECRBY`](docs/commands/ts.decrby.md)
+- [`TS.DEL`](docs/commands/ts.del.md)
+- [`TS.GET`](docs/commands/ts.get.md)
+- [`TS.INCRBY`](docs/commands/ts.incrby.md)
+- [`TS.INFO`](docs/commands/ts.info.md)
+- [`TS.JOIN`](docs/commands/ts.join.md)
+- [`TS.LABELNAMES`](docs/commands/ts.labelnames.md)
+- [`TS.LABELSTATS`](docs/commands/ts.labelstats.md)
+- [`TS.LABELVALUES`](docs/commands/ts.labelvalues.md)
+- [`TS.MADD`](docs/commands/ts.madd.md)
+- [`TS.MDEL`](docs/commands/ts.mdel.md)
+- [`TS.MGET`](docs/commands/ts.mget.md)
+- [`TS.METRICNAMES`](docs/commands/ts.metricnames.md)
+- [`TS.MRANGE`](docs/commands/ts.mrange.md)
+- [`TS.MREVRANGE`](docs/commands/ts.mrevrange.md)
+- [`TS.NRANGE`](docs/commands/ts.nrange.md)
+- [`TS.NREVRANGE`](docs/commands/ts.nrevrange.md)
+- [`TS.OUTLIERS`](docs/commands/ts.outliers.md)
+- [`TS.QUERYINDEX`](docs/commands/ts.queryindex.md)
+- [`TS.QUERYLABELS`](docs/commands/ts.querylabels.md)
+- [`TS.RANGE`](docs/commands/ts.range.md)
+- [`TS.READ`](docs/commands/ts.read.md)
+- [`TS.REVRANGE`](docs/commands/ts.revrange.md)
+- [`TS._DEBUG`](docs/commands/ts._debug.md)
 
 
 ## Build instructions
