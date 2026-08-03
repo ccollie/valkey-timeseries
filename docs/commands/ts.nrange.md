@@ -2,11 +2,10 @@
 
 Query a range across an explicit list of time series, returning the results grouped by timestamp.
 
-Where [TS.RANGE](./ts.range.md) answers "what did this series do?" and [TS.MRANGE](./ts.mrange.md)
-answers "what did every series matching this filter do, series by series?", `TS.NRANGE` answers
-"what did all of these series do *at the same moment*?" — it runs a compatible `TS.RANGE` over each
-key and outer-joins the results on timestamp, so each reply row lines up every key's value for one
-timestamp.
+[TS.RANGE](./ts.range.md) reports one series at a time, and [TS.MRANGE](./ts.mrange.md) reports each
+series matching a filter separately. `TS.NRANGE` instead compares series at the same moment: it runs
+an equivalent `TS.RANGE` over every key, then outer-joins those results on timestamp. Each row of the
+reply is therefore a single timestamp paired with each key's value at that timestamp.
 
 ### Syntax
 
