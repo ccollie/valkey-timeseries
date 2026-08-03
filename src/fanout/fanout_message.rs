@@ -100,9 +100,14 @@ impl FanoutMessageHeader {
         // Decode request_id as uvarint
         let request_id = read_uvarint(&mut buf)?;
 
-        let db = try_read_signed_varint(&mut buf)
-            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?
-            as i32;
+        // `db` is written from an `i32`, so anything outside that range is a
+        // malformed or hostile encoding. Reject it rather than truncating: an
+        // `as i32` cast would silently fold e.g. 2^32 down to a *valid-looking*
+        // db 0 and run the request against the wrong keyspace.
+        let db_raw = try_read_signed_varint(&mut buf)
+            .map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
+        let db =
+            i32::try_from(db_raw).map_err(|_| FanoutError::serialization(INVALID_MESSAGE_ERROR))?;
 
         // Read the handler name, capping the raw length before allocating.
         let handler = read_bounded_str(&mut buf, MAX_HANDLER_LEN)?.to_owned();
@@ -309,6 +314,7 @@ pub(super) fn serialize_request_message(
 mod tests {
     use super::*;
     use crate::fanout::ErrorKind;
+    use proptest::prelude::*;
 
     /// The envelope feature gate: with no bits defined, any demanded bit is
     /// unsupported; 0 (all current senders and pre-repurposing peers, which
@@ -742,6 +748,384 @@ mod tests {
                 original_header.cluster_fingerprint
             );
             assert_eq!(remaining_buf.len(), 0);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Adversarial input
+    //
+    // Everything below feeds the parser bytes a correct sender cannot produce.
+    // The header is decoded straight off the cluster bus inside
+    // `on_request_received`, an `extern "C"` entry point, so a panic here does
+    // not fail a request — it unwinds into C and aborts the node. The bar for
+    // every case is therefore: return `Err`, never panic, and never allocate
+    // proportionally to an attacker-chosen number.
+    // -----------------------------------------------------------------------
+
+    /// A header builder that takes every field as a raw wire value, so tests can
+    /// express bytes no well-behaved sender would emit: over-long strings,
+    /// non-UTF-8, a `db` outside `i32`, a version we do not speak.
+    struct RawHeader<'a> {
+        version: u16,
+        request_id: u64,
+        db: i64,
+        handler: &'a [u8],
+        user: &'a [u8],
+        cluster_fingerprint: u64,
+        required_features: u16,
+    }
+
+    impl Default for RawHeader<'_> {
+        fn default() -> Self {
+            Self {
+                version: FANOUT_MESSAGE_VERSION,
+                request_id: 1,
+                db: 0,
+                handler: b"handler",
+                user: b"",
+                cluster_fingerprint: 0,
+                required_features: 0,
+            }
+        }
+    }
+
+    impl RawHeader<'_> {
+        /// Mirrors `write_message_header` field for field.
+        fn encode(&self) -> Vec<u8> {
+            let mut buf = Vec::new();
+            write_marker(&mut buf);
+            write_u16_le(&mut buf, self.version);
+            write_uvarint(&mut buf, self.request_id);
+            write_signed_varint(&mut buf, self.db);
+            write_byte_slice(&mut buf, self.handler);
+            write_byte_slice(&mut buf, self.user);
+            write_u64_le(&mut buf, self.cluster_fingerprint);
+            write_u16_le(&mut buf, self.required_features);
+            buf
+        }
+    }
+
+    /// Non-UTF-8 handler bytes must be rejected, not lossily converted. The
+    /// handler is looked up in the registry and logged on miss.
+    #[test]
+    fn test_deserialize_rejects_non_utf8_handler() {
+        // Lone continuation byte, a truncated 2-byte sequence, and a surrogate
+        // half — the three shapes `from_utf8` must catch.
+        for bad in [&[0x80u8][..], &[0xC3][..], &[0xED, 0xA0, 0x80][..]] {
+            let buf = RawHeader {
+                handler: bad,
+                ..Default::default()
+            }
+            .encode();
+            assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+        }
+    }
+
+    /// Non-UTF-8 user bytes must be rejected before the name reaches
+    /// `authenticate_user`.
+    #[test]
+    fn test_deserialize_rejects_non_utf8_user() {
+        for bad in [&[0xFFu8][..], &[0xF0, 0x9F][..]] {
+            let buf = RawHeader {
+                user: bad,
+                ..Default::default()
+            }
+            .encode();
+            assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+        }
+    }
+
+    /// The length caps are `>`, not `>=`: a name of exactly the maximum length
+    /// is legitimate and must still decode. Guards the oversized-* tests against
+    /// passing for an off-by-one reason.
+    #[test]
+    fn test_deserialize_accepts_fields_exactly_at_length_cap() {
+        let handler = vec![b'h'; MAX_HANDLER_LEN];
+        let user = vec![b'u'; MAX_USERNAME_LEN];
+        let buf = RawHeader {
+            handler: &handler,
+            user: &user,
+            ..Default::default()
+        }
+        .encode();
+
+        let (header, remaining) = FanoutMessageHeader::deserialize(&buf).unwrap();
+        assert_eq!(header.handler.len(), MAX_HANDLER_LEN);
+        assert_eq!(header.user.as_deref().map(str::len), Some(MAX_USERNAME_LEN));
+        assert!(remaining.is_empty());
+    }
+
+    /// A length prefix that overstates the bytes actually present must fail on
+    /// the remaining-data check. This is the shape that would otherwise read
+    /// past the end of the received payload.
+    #[test]
+    fn test_deserialize_rejects_length_prefix_exceeding_buffer() {
+        let mut buf = Vec::new();
+        write_marker(&mut buf);
+        write_u16_le(&mut buf, FANOUT_MESSAGE_VERSION);
+        write_uvarint(&mut buf, 1);
+        write_signed_varint(&mut buf, 0);
+        write_uvarint(&mut buf, 64); // handler claims 64 bytes...
+        buf.extend_from_slice(b"short"); // ...only 5 follow
+
+        assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+    }
+
+    /// An absurd length prefix must be rejected by the remaining-data check
+    /// before anything is sized from it. If the parser ever pre-allocated on the
+    /// claimed length, these values would OOM or panic on capacity overflow
+    /// rather than return an error.
+    #[test]
+    fn test_deserialize_rejects_absurd_length_prefix() {
+        for claimed in [u64::MAX, u64::MAX / 2, 1 << 40, usize::MAX as u64] {
+            let mut buf = Vec::new();
+            write_marker(&mut buf);
+            write_u16_le(&mut buf, FANOUT_MESSAGE_VERSION);
+            write_uvarint(&mut buf, 1);
+            write_signed_varint(&mut buf, 0);
+            write_uvarint(&mut buf, claimed);
+
+            assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+        }
+    }
+
+    /// Every strict prefix of a valid message must be rejected. This covers the
+    /// truncation points the hand-written `incomplete_*` tests miss — mid-string
+    /// bodies, a partial 8-byte fingerprint, and a 1-byte `required_features`.
+    #[test]
+    fn test_deserialize_rejects_every_truncated_prefix() {
+        let full = RawHeader {
+            request_id: u64::MAX, // 10-byte varint, so truncation lands inside it too
+            db: -7,
+            handler: b"mrange",
+            user: b"alice",
+            cluster_fingerprint: u64::MAX,
+            ..Default::default()
+        }
+        .encode();
+
+        for len in 0..full.len() {
+            assert!(
+                FanoutMessageHeader::deserialize(&full[..len]).is_err(),
+                "a {len}-byte prefix of a {}-byte header parsed as valid",
+                full.len()
+            );
+        }
+        assert!(FanoutMessageHeader::deserialize(&full).is_ok());
+    }
+
+    /// An unterminated varint must stop on the decoder's shift guard instead of
+    /// consuming the rest of the buffer or looping.
+    #[test]
+    fn test_deserialize_rejects_unterminated_varint() {
+        for run in [10usize, 64, 4096] {
+            let mut buf = Vec::new();
+            write_marker(&mut buf);
+            write_u16_le(&mut buf, FANOUT_MESSAGE_VERSION);
+            // request_id: continuation bit set on every byte.
+            buf.extend_from_slice(&vec![0x80u8; run]);
+            buf.push(0x01);
+
+            assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+        }
+    }
+
+    /// `db` is written from an `i32`; a value outside that range is malformed and
+    /// must be rejected rather than truncated into a different, valid-looking
+    /// database. `on_request_received` hands this value straight to `SelectDb`.
+    #[test]
+    fn test_deserialize_rejects_db_outside_i32_range() {
+        for db in [
+            i32::MAX as i64 + 1,
+            i32::MIN as i64 - 1,
+            1 << 32, // truncates to 0 under an `as i32` cast
+            i64::MAX,
+            i64::MIN,
+        ] {
+            let buf = RawHeader {
+                db,
+                ..Default::default()
+            }
+            .encode();
+            assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+        }
+
+        // The extremes of the representable range still decode.
+        for db in [i32::MIN, i32::MAX] {
+            let buf = RawHeader {
+                db: db as i64,
+                ..Default::default()
+            }
+            .encode();
+            let (header, _) = FanoutMessageHeader::deserialize(&buf).unwrap();
+            assert_eq!(header.db, db);
+        }
+    }
+
+    /// Only the exact current version is accepted — older and newer alike.
+    #[test]
+    fn test_deserialize_rejects_all_other_versions() {
+        for version in [0, FANOUT_MESSAGE_VERSION + 1, 0x00FF, u16::MAX] {
+            let buf = RawHeader {
+                version,
+                ..Default::default()
+            }
+            .encode();
+            assert_serialization_error(FanoutMessageHeader::deserialize(&buf));
+        }
+    }
+
+    /// An empty user field decodes to `None`, which `with_fanout_user` treats as
+    /// "run without ACL enforcement". Pinning this makes the collapse explicit:
+    /// a peer cannot smuggle a distinct zero-length ACL identity through, and
+    /// conversely an empty name is never passed to `authenticate_user`.
+    #[test]
+    fn test_deserialize_empty_user_collapses_to_none() {
+        let from_wire = RawHeader {
+            user: b"",
+            ..Default::default()
+        }
+        .encode();
+        let (header, _) = FanoutMessageHeader::deserialize(&from_wire).unwrap();
+        assert_eq!(header.user, None);
+
+        // Serializing `Some("")` produces the identical bytes.
+        let mut round_trip = Vec::new();
+        FanoutMessageHeader {
+            version: FANOUT_MESSAGE_VERSION,
+            request_id: 1,
+            db: 0,
+            handler: "handler".to_string(),
+            user: Some(String::new()),
+            cluster_fingerprint: 0,
+            required_features: 0,
+        }
+        .serialize(&mut round_trip);
+        assert_eq!(round_trip, from_wire);
+    }
+
+    /// Framing is length-prefixed, so interior NUL bytes must survive intact
+    /// rather than truncating the name the way a C string would. A silently
+    /// truncated "alice\0evil" must not become "alice".
+    #[test]
+    fn test_deserialize_preserves_interior_nul_in_user() {
+        let buf = RawHeader {
+            user: b"alice\0evil",
+            ..Default::default()
+        }
+        .encode();
+
+        let (header, _) = FanoutMessageHeader::deserialize(&buf).unwrap();
+        assert_eq!(header.user.as_deref(), Some("alice\0evil"));
+    }
+
+    /// An unsupported `required_features` bit must survive parsing so intake can
+    /// see it and reject the message. Dropping or masking it here would let the
+    /// request through as if it demanded nothing.
+    #[test]
+    fn test_unsupported_features_survive_parsing_for_intake() {
+        for required_features in [1u16, 0x8000, u16::MAX] {
+            let buf = RawHeader {
+                required_features,
+                ..Default::default()
+            }
+            .encode();
+
+            let msg = FanoutMessage::new(&buf).unwrap();
+            assert_eq!(msg.required_features, required_features);
+            assert!(has_unsupported_features(msg.required_features));
+        }
+    }
+
+    proptest! {
+        /// Totality: arbitrary bytes off the cluster bus must decode to `Ok` or
+        /// `Err`, never panic. `deserialize` runs under an `extern "C"` callback,
+        /// where an unwind aborts the process.
+        #[test]
+        fn arbitrary_bytes_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..1024)) {
+            let _ = FanoutMessageHeader::deserialize(&bytes);
+            let _ = FanoutMessage::new(&bytes);
+        }
+
+        /// The same, but starting from a valid marker so the generator gets past
+        /// the cheap `skip_marker` rejection and actually exercises field decoding.
+        #[test]
+        fn arbitrary_bytes_after_valid_marker_never_panic(
+            tail in prop::collection::vec(any::<u8>(), 0..1024),
+        ) {
+            let mut buf = FANOUT_MESSAGE_MARKER.to_le_bytes().to_vec();
+            buf.extend_from_slice(&tail);
+            let _ = FanoutMessageHeader::deserialize(&buf);
+        }
+
+        /// Single-byte corruption of a well-formed message: whatever survives
+        /// parsing must still satisfy the parser's own invariants. Catches a cap
+        /// or version check that a flipped length/discriminant can slip past.
+        #[test]
+        fn corrupted_message_never_violates_invariants(
+            index in any::<prop::sample::Index>(),
+            replacement in any::<u8>(),
+        ) {
+            let mut buf = RawHeader {
+                request_id: 4242,
+                db: 3,
+                handler: b"mrange",
+                user: b"alice",
+                cluster_fingerprint: 0xFEED_FACE,
+                ..Default::default()
+            }
+            .encode();
+
+            let i = index.index(buf.len());
+            buf[i] = replacement;
+
+            match FanoutMessageHeader::deserialize(&buf) {
+                Ok((header, _)) => {
+                    prop_assert_eq!(header.version, FANOUT_MESSAGE_VERSION);
+                    prop_assert!(header.handler.len() <= MAX_HANDLER_LEN);
+                    prop_assert!(header.user.as_deref().map_or(0, str::len) <= MAX_USERNAME_LEN);
+                    prop_assert!(header.user.as_deref() != Some(""));
+                }
+                Err(e) => prop_assert_eq!(e.kind, ErrorKind::Serialization),
+            }
+        }
+
+        /// Round-trip fidelity across the full range of each field, so the
+        /// rejection tests above cannot be passing by rejecting too much.
+        /// `user` is generated non-empty because empty and `None` are the same
+        /// on the wire (see `test_deserialize_empty_user_collapses_to_none`).
+        #[test]
+        fn valid_headers_round_trip(
+            request_id in any::<u64>(),
+            db in any::<i32>(),
+            // Char counts, not byte counts: capped so that even all-4-byte
+            // characters stay inside MAX_HANDLER_LEN / MAX_USERNAME_LEN.
+            handler in "\\PC{0,32}",
+            user in prop::option::of("\\PC{1,64}"),
+            cluster_fingerprint in any::<u64>(),
+            required_features in any::<u16>(),
+        ) {
+            let original = FanoutMessageHeader {
+                version: FANOUT_MESSAGE_VERSION,
+                request_id,
+                db,
+                handler,
+                user,
+                cluster_fingerprint,
+                required_features,
+            };
+
+            let mut buf = Vec::new();
+            original.serialize(&mut buf);
+            let (decoded, remaining) = FanoutMessageHeader::deserialize(&buf).unwrap();
+
+            prop_assert_eq!(decoded.request_id, original.request_id);
+            prop_assert_eq!(decoded.db, original.db);
+            prop_assert_eq!(decoded.handler, original.handler);
+            prop_assert_eq!(decoded.user, original.user);
+            prop_assert_eq!(decoded.cluster_fingerprint, original.cluster_fingerprint);
+            prop_assert_eq!(decoded.required_features, original.required_features);
+            prop_assert!(remaining.is_empty());
         }
     }
 }
