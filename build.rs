@@ -9,6 +9,7 @@ const PROTOS: [&str; 5] = [
     "proto/v1/common.proto",
     "proto/v1/envelope.proto",
     "proto/v1/filters.proto",
+    "proto/v1/promql.proto",
     "proto/v1/request.proto",
     "proto/v1/response.proto",
 ];
@@ -85,14 +86,6 @@ fn main() -> io::Result<()> {
             )));
         }
     }
-
-    // The promql surface has its own, unrelated proto contract; it is compiled
-    // dynamically into OUT_DIR rather than checked in like the fanout wire types.
-    println!("cargo:rerun-if-changed=src/promql/types.proto");
-    prost_build::Config::new()
-        .out_dir(&out_dir)
-        .compile_protos(&["src/promql/types.proto"], &["src/"])
-        .map_err(io::Error::other)?;
 
     // Generate one #[test] per `.test` file under the promqltest testdata
     // directory, included via
