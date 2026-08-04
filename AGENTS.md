@@ -81,9 +81,8 @@ Setup & Environment Notes
 - Python tests: Integration tests use Python. Dependencies are managed in `pyproject.toml`, locked in `uv.lock`, and
   mirrored in `requirements.txt` (or installed via `uv sync`). The `build.sh` script handles this, but if running
   `pytest` manually, ensure packages are installed.
-- Protobuf generation: `build.rs` compiles `src/commands/fanout.request.proto`, `src/commands/fanout.response.proto`,
-  and `src/promql/types.proto`. If you change those files, rerun a build so the generated code under `OUT_DIR` is
-  refreshed.
+- Protobuf generation: `build.rs` compiles every `.proto` under `proto/v1/`. If you change one, rerun a build so the
+  checked-in generated code is refreshed — see the codegen note under "Quick tips for code changes".
 - Running manually: To manually start a server with the module loaded, run
   `valkey-server --loadmodule ./target/release/libvalkey_timeseries.so` (requires building the module first).
 
@@ -485,11 +484,17 @@ Quick tips for code changes
   `VALKEY_TS_PROTO_REGEN=1 cargo build` and commit the regenerated file; a normal build fails with instructions if the
   two disagree, so drift cannot land silently. Local↔wire conversions live beside it in `src/commands/fanout_codec/`
   (named `fanout_codec` rather than `fanout` so it does not collide with the `src/fanout/` transport layer).
-  Every build still parses the schema — `build.rs` compiles all four of `proto/v1/{common,filters,request,response}.proto`
-  with `protox` and diffs the result against the checked-in file — so the generated code is verified, not merely trusted.
-  No `protoc` is involved on either path; see Prerequisites above.
-- When changing `src/promql/types.proto` or `src/promql/promqltest/testdata/*.test`, rerun `cargo test` or `./build.sh`
-  so `build.rs` regenerates the derived Rust files.
+  Every build still parses the schema — `build.rs` compiles all five of
+  `proto/v1/{common,filters,promql,request,response}.proto` with `protox` and diffs the result against the checked-in
+  file — so the generated code is verified, not merely trusted. No `protoc` is involved on either path; see
+  Prerequisites above.
+- The PromQL push-down messages are in that same contract and that same package (`proto/v1/promql.proto`), so they
+  share `Label`, `Sample` and `SeriesSelector` with the TS.* fanout types rather than redeclaring them. They used to
+  live at `src/promql/types.proto` under a package of their own, where the copies drifted; `crate::promql::generated`
+  is now a re-export of `crate::commands::fanout_codec::generated`. A PromQL selector reaches the wire through the
+  local `SeriesSelector` and the `filters.proto` encoding, the same route a TS.* one takes.
+- When changing `src/promql/promqltest/testdata/*.test`, rerun `cargo test` or `./build.sh` so `build.rs` regenerates
+  the derived test files.
 - Behavior changes on the shared RTS surface should be checked against `tests/compat` and, if the difference is
   deliberate, recorded in `COMPATIBILITY.md` and/or `divergences.yml` (`behavior`-kind entries need explicit
   sign-off in the PR that introduces them).
