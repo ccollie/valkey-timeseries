@@ -94,7 +94,7 @@ The following commands are supported
 - [`TS.SANITIZE`](docs/commands/ts.sanitize.md)
 - [`TS.STATIONARITY`](docs/commands/ts.stationarity.md)
 - [`TS.TREND`](docs/commands/ts.trend.md)
-- TS.XCORR
+- [`TS.XCORR`](docs/commands/ts.xcorr.md)
 - [`TS._DEBUG`](docs/commands/ts._debug.md)
 
 
