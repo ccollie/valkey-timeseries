@@ -5,7 +5,7 @@ Returns label cardinality statistics about the timeseries data.
 ## Syntax
 
 ```
-TS.LABELSTATS [LABEL <label-name>] [LIMIT <n>]
+TS.LABELSTATS [LABEL <label-name>] [LIMIT <n>] [FILTER selector [selector ...]]
 ```
 
 ## Description
@@ -22,15 +22,31 @@ It returns the following statistics:
   - labels by usage
   - label=value pairs by usage
 
+With `FILTER`, every one of those statistics is computed over the matching series alone
+instead of over the whole index.
+
 ## Optional Arguments
 
 - `LABEL <label-name>`  
   When provided, `TS.LABELSTATS` also returns the top-`LIMIT` values for this label, sorted by series count (
-  cardinality).  
+  cardinality), in a `seriesCountByFocusLabelValue` section. Without `LABEL` that section is
+  absent from the reply.  
   Example: `LABEL region` returns the most common `region` values.
 
 - `LIMIT <n>`  
   Limits the number of items returned in each top-N section. Higher values may increase runtime.
+
+- `FILTER <selector> [selector ...]`  
+  Restricts the report to the series matching every listed selector. See
+  [filter syntax](../topics/filter-syntax.md). Because the list is variadic it consumes the rest
+  of the argument list, so `FILTER` must be the last option given; `LABEL` and `LIMIT` have to
+  precede it. At least one selector must follow `FILTER`, and the list must contain at least one
+  positive matcher — a list of only negative matchers such as `region!=us` is rejected with
+  `TSDB: please provide at least one matcher`.
+
+  Labels carried only by non-matching series are excluded entirely: they contribute to neither
+  `totalLabels`, `totalLabelValuePairs`, nor any of the top-K sections. When nothing matches,
+  every count is zero and every section is empty.
 
 ## Return
 
@@ -66,6 +82,16 @@ Top-K label names by total usage, each item containing:
 
 This answers "which labels appear most across series?"
 
+### `seriesCountByFocusLabelValue`
+
+Present only when `LABEL` is given. Top-K values of that label, each item containing:
+
+- `name`: the label value
+- `count`: number of series carrying that value
+
+Empty when no series carries the label. `LABEL ""` is still a request for this section, and
+focuses on the metric name (`__name__`).
+
 ### `seriesCountByLabelValuePair`
 
 Top-N label=value pairs by series count, each item containing:
@@ -85,13 +111,13 @@ TS.LABELSTATS
 ```
 
 ```aiignore
-valkey> TS.LABELSTATS http_requests 10
+valkey> TS.LABELSTATS LABEL http_requests LIMIT 10
  1) totalSeries
  2) (integer) 1247
- 3) totalLabelValuePairs
- 4) (integer) 156
- 5) totalLabels
- 6) (integer) 8
+ 3) totalLabels
+ 4) (integer) 8
+ 5) totalLabelValuePairs
+ 6) (integer) 156
  7) seriesCountByMetricName
  8)  1) 1) "api_latency"
         2) (integer) 523
@@ -102,28 +128,56 @@ valkey> TS.LABELSTATS http_requests 10
      4) 1) "memory_usage"
         2) (integer) 123
  9) labelValueCountByLabelName
-    1) 1) "status"
+10)  1) 1) "__name__"
         2) (integer) 1247
-     2) 1) "method"
+     2) 1) "instance"
         2) (integer) 1247
-     3) 1) "endpoint"
+     3) 1) "status"
+        2) (integer) 1247
+     4) 1) "method"
+        2) (integer) 1247
+     5) 1) "endpoint"
         2) (integer) 1089
-     4) 1) "region"
+     6) 1) "region"
         2) (integer) 892
-     5) 1) "service"
+     7) 1) "service"
         2) (integer) 456
-10) seriesCountByLabelValuePair
-     1) 1) "status=200"
+     8) 1) "env"
+        2) (integer) 312
+11) seriesCountByFocusLabelValue
+12) (empty array)
+13) seriesCountByLabelValuePair
+14)  1) 1) "status=200"
         2) (integer) 856
-     2) 1) "status=404"
-        2) (integer) 234
-     3) 1) "method=GET"
+     2) 1) "method=GET"
         2) (integer) 789
+     3) 1) "__name__=api_latency"
+        2) (integer) 523
      4) 1) "method=POST"
         2) (integer) 458
+     5) 1) "service=api"
+        2) (integer) 456
+     6) 1) "region=us-east-1"
+        2) (integer) 431
+     7) 1) "__name__=api_errors"
+        2) (integer) 312
+     8) 1) "env=prod"
+        2) (integer) 312
+     9) 1) "__name__=cpu_usage"
+        2) (integer) 289
+    10) 1) "region=eu-west-1"
+        2) (integer) 289
 ```
 
 Use this to inspect overall index health and growth trends (series count, label counts).
+
+Note the shape of the reply here. `seriesCountByFocusLabelValue` is empty because no series in
+this database carries a label *named* `http_requests` — it is a metric name, and metric names are
+reported under `seriesCountByMetricName` (or by focusing on the `__name__` label). See
+[Top values for a specific label](#top-values-for-a-specific-label) for a focus label that
+resolves. The other sections stop short of `LIMIT 10` only where fewer items exist: there are 4
+metric names and 8 label names in total, but 156 label=value pairs, so only that last section is
+actually truncated.
 
 ### Top values for a specific label
 
@@ -140,6 +194,22 @@ TS.LABELSTATS LIMIT 5
 ```
 
 Useful in production when you want a quick snapshot with minimal overhead.
+
+### Restricting the report to a subset of series
+
+```text
+TS.LABELSTATS LABEL status LIMIT 5 FILTER region=us-east-1
+```
+
+Reports the same sections, but counting only the series labelled `region=us-east-1`. Selectors
+are AND-ed, so several can be combined:
+
+```text
+TS.LABELSTATS FILTER region=us-east-1 env=prod
+```
+
+This answers "which labels drive cardinality inside this slice of the index?" — for example,
+narrowing to a single tenant or metric family before hunting for a high-cardinality label.
 
 ### Complexity
 
