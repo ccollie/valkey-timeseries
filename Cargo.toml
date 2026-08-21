@@ -18,7 +18,7 @@ cfg-if = "1.0.4"
 croaring = "2.6"
 enquote = "1.1.0"
 enum_dispatch = "0.3.13"
-get-size2 = { version = "0.10.2", features = ["derive"] }
+get-size2 = { version = "0.11.0", features = ["derive"] }
 hashify = { version = "0.2" }
 itertools = "0.14"
 linkme = "0.3"
@@ -36,16 +36,16 @@ smallvec = "1.15.2"
 speedate = "0.17"
 thiserror = "2.0"
 topo_sort = "0.4.0"
-valkey-module = "0.1.11"
-valkey-module-macros = "0.1.11"
+valkey-module = "0.1.14"
+valkey-module-macros = "0.1.14"
 range-set-blaze = "0.6.1"
 rayon-core = "1.13"
 regex = "1"
 strum = { version = "0.28", features = ["derive"] }
 strum_macros = "0.28"
-simd-json = "0.17.3"
+simd-json = "0.18.0"
 log = "0.4"
-statrs = "0.19.0"
+statrs = "0.19.1"
 welch-sde = "0.1.0"
 regex-syntax = "0.8.11"
 crc16 = "0.4.0"
@@ -58,7 +58,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 rand = "0.10"
 rand_distr = "0.6"
 test-case = "3.3"
-serial_test = { version = "3.5", default-features = false }
+serial_test = { version = "3.5.0", default-features = false }
 proptest = "1"
 
 [build-dependencies]
