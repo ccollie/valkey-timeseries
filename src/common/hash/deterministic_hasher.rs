@@ -21,4 +21,8 @@ impl DeterministicHasher {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn new_hasher() -> AHasher {
+        Self::new().build_hasher()
+    }
 }
