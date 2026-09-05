@@ -739,6 +739,36 @@ impl TimeSeries {
         SeriesSampleIterator::new(self, start, end, false)
     }
 
+    /// Return the latest visible sample in the inclusive range `[start, end]`.
+    ///
+    /// Instant PromQL selectors need one sample, not a materialized lookback
+    /// range. Walk chunks from newest to oldest so the common case returns the
+    /// cached last sample from the newest matching chunk without decoding older
+    /// chunks or allocating a range result.
+    pub fn last_sample_in_range(&self, start: Timestamp, end: Timestamp) -> Option<Sample> {
+        let start = start.max(self.get_min_timestamp());
+        if start > end {
+            return None;
+        }
+
+        for chunk in self.chunks.iter().rev() {
+            if chunk.first_timestamp() > end {
+                continue;
+            }
+            if chunk.last_timestamp() < start {
+                break;
+            }
+            if chunk.last_timestamp() <= end {
+                return chunk.last_sample();
+            }
+            if let Some(sample) = chunk.range_iter(start, end).last() {
+                return Some(sample);
+            }
+        }
+
+        None
+    }
+
     /// Iterate the samples physically stored in `[start, end]`, **without** clamping `start`
     /// to the current retention window the way [`Self::range_iter`] does.
     ///
@@ -1329,5 +1359,30 @@ mod tests {
 
         assert!(ts.get_chunk_index_bounds(40, 20).is_none());
         assert!(!ts.has_samples_in_range(40, 20));
+    }
+
+    #[test]
+    fn last_sample_in_range_reads_only_the_latest_matching_chunk() {
+        use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk};
+
+        fn sample(timestamp: Timestamp) -> Sample {
+            Sample::new(timestamp, timestamp as f64)
+        }
+
+        let ts = TimeSeries::from_chunks(vec![
+            TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
+                sample(10),
+                sample(20),
+            ])),
+            TimeSeriesChunk::Uncompressed(UncompressedChunk::from_vec(vec![
+                sample(30),
+                sample(40),
+            ])),
+        ])
+        .unwrap();
+
+        assert_eq!(ts.last_sample_in_range(0, 35), Some(sample(30)));
+        assert_eq!(ts.last_sample_in_range(21, 29), None);
+        assert_eq!(ts.last_sample_in_range(0, 5), None);
     }
 }
