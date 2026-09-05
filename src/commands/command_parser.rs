@@ -1879,6 +1879,24 @@ fn parse_duration_internal(arg: Option<ValkeyString>, token_name: &str) -> Valke
         .map_err(|_| ValkeyError::String(format!("TSDB: couldn't parse {token_name} duration")))
 }
 
+/// Apply a request timeout to both timeout representations. Selector fanout
+/// consumes the relative duration, while evaluation and preloading consume the
+/// absolute deadline; they must describe the same budget.
+fn set_query_timeout(
+    config: &PromqlConfig,
+    options: &mut crate::promql::QueryOptions,
+    requested_timeout: Duration,
+) {
+    let timeout = if config.max_query_duration.is_zero() {
+        requested_timeout
+    } else {
+        requested_timeout.min(config.max_query_duration)
+    };
+    let deadline = current_time_millis().saturating_add(timeout.as_millis() as i64);
+    options.timeout = Some(timeout);
+    options.deadline = Some(deadline);
+}
+
 pub(super) fn parse_query_range_command_args(
     config: &PromqlConfig,
     args: &mut CommandArgIterator,
@@ -1911,13 +1929,8 @@ pub(super) fn parse_query_range_command_args(
                 lookback_delta = Some(delta);
             }
             CommandArgToken::Timeout => {
-                let mut timeout = parse_duration_internal(args.next(), token.as_str())?;
-                if !config.max_query_duration.is_zero() {
-                    timeout = timeout.min(config.max_query_duration);
-                }
-                let deadline = current_time_millis().saturating_add(timeout.as_millis() as i64);
-                options.timeout = Some(timeout);
-                options.deadline = Some(deadline);
+                let timeout = parse_duration_internal(args.next(), token.as_str())?;
+                set_query_timeout(config, &mut options, timeout);
             }
             _ => {
                 let msg = format!("ERR invalid argument '{}'", arg);
@@ -2016,7 +2029,8 @@ pub(super) fn parse_query_command_args(
                 lookback_delta = parse_duration_internal(args.next(), token.as_str())?;
             }
             CommandArgToken::Timeout => {
-                options.timeout = Some(parse_duration_internal(args.next(), token.as_str())?);
+                let timeout = parse_duration_internal(args.next(), token.as_str())?;
+                set_query_timeout(config, &mut options, timeout);
             }
             _ => {
                 let msg = format!("TSDB: invalid query argument '{}'", arg);
@@ -2042,6 +2056,38 @@ pub(super) fn parse_query_command_args(
 mod tests {
     use super::*;
     use strum::IntoEnumIterator;
+
+    #[test]
+    fn explicit_timeout_replaces_the_default_deadline() {
+        let mut config = PromqlConfig::default();
+        config.max_query_duration = Duration::from_secs(1);
+        let mut options = crate::promql::QueryOptions {
+            timeout: Some(Duration::from_secs(30)),
+            deadline: Some(i64::MAX),
+            ..Default::default()
+        };
+        let requested = Duration::from_millis(5);
+        let before = current_time_millis();
+
+        set_query_timeout(&config, &mut options, requested);
+
+        let after = current_time_millis();
+        assert_eq!(options.timeout, Some(requested));
+        let deadline = options.deadline.expect("TIMEOUT must set a deadline");
+        assert!(deadline >= before.saturating_add(requested.as_millis() as i64));
+        assert!(deadline <= after.saturating_add(requested.as_millis() as i64));
+    }
+
+    #[test]
+    fn explicit_timeout_is_capped_by_the_configured_maximum() {
+        let mut config = PromqlConfig::default();
+        config.max_query_duration = Duration::from_millis(5);
+        let mut options = crate::promql::QueryOptions::default();
+
+        set_query_timeout(&config, &mut options, Duration::from_secs(1));
+
+        assert_eq!(options.timeout, Some(Duration::from_millis(5)));
+    }
 
     /// DIV-0014. Built directly rather than through `RepeatedOptions::new()` so
     /// the two modes are exercised without touching the process-wide config,
