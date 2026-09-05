@@ -11,7 +11,7 @@ use valkey_module::{
     ValkeyModuleServerInfoData, ValkeyResult, ValkeyString, raw,
 };
 
-use crate::fanout::{FANOUT_ACL_USER, fanout_acl_scope_active, is_clustered};
+use crate::fanout::{FANOUT_ACL_USER, fanout_acl_scope_active};
 pub use blocked::*;
 pub(crate) use client_reply_context::*;
 pub use thread_safe::*;
@@ -107,7 +107,12 @@ pub fn is_acl_enforced(ctx: &Context) -> bool {
 }
 
 pub fn get_acl_user(ctx: &Context) -> valkey_module::ValkeyString {
-    if is_clustered(ctx) {
+    // A detached/thread-safe context has no client, so `get_current_user` reads
+    // `ctx->client->user->name` and returns empty. Background selector work
+    // (PromQL) carries the caller's identity in the thread-local fanout scope
+    // instead, so prefer it whenever that scope is active — including on a
+    // single node, not just in cluster fanout.
+    if fanout_acl_scope_active() {
         let fanout_user = FANOUT_ACL_USER.with(|u| u.borrow().clone());
         if let Some(user) = fanout_user {
             return ctx.create_string(user.as_str());
