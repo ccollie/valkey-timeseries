@@ -6,6 +6,7 @@ use crate::common::replies::{
     reply_with_labels, reply_with_labels_map, reply_with_map, reply_with_multi_samples,
     reply_with_sample_ex, reply_with_samples, reply_with_slice,
 };
+use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fanout_mode};
 use crate::labels::Label;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, SeriesResultData};
 use valkey_module::{Context, Status, ValkeyResult, ValkeyValue, raw};
@@ -200,4 +201,15 @@ fn reply_with_mget_value<C: IntoRawCtx>(ctx: C, value: &MGetValue) -> Status {
     reply_with_fanout_labels(raw_ctx, &value.labels);
     reply_with_fanout_sample(raw_ctx, &value.sample);
     Status::Ok
+}
+
+pub(super) fn get_multi_command_targets(context: &Context, tags: &[String]) -> FanoutTarget {
+    if tags.is_empty() {
+        return compute_query_fanout_mode(context);
+    }
+    if client_allows_replica_fanout(context) {
+        FanoutTarget::HashTags(tags.to_vec())
+    } else {
+        FanoutTarget::HashTagsPrimary(tags.to_vec())
+    }
 }

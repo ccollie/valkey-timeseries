@@ -246,3 +246,35 @@ class TestTimeSeriesMget(ValkeyTimeSeriesTestCaseBase):
         assert result[1][0] == b'ts4'
         assert result[1][2][0] == 2000  # latest timestamp for ts4
         assert math.isnan(float(result[1][2][1]))  # latest value for ts4
+
+    def test_mget_hashtag_is_accepted_and_ignored_outside_a_cluster(self):
+        """HASHTAG only scopes the cluster fanout, so a standalone server still answers in full."""
+        self.setup_test_data(self.client)
+
+        expected = sorted(item[0] for item in self.client.execute_command('TS.MGET', 'FILTER', 'name=cpu'))
+
+        for args in (
+            ('HASHTAG', 'anything'),
+            ('HASHTAG', 'a,b,c'),
+            ('HASHTAG', '{braced}'),
+            ('hashtag', 'lowercase'),
+            ('LATEST', 'HASHTAG', 'after-another-option'),
+        ):
+            result = self.client.execute_command('TS.MGET', *args, 'FILTER', 'name=cpu')
+            assert sorted(item[0] for item in result) == expected, args
+
+    def test_mget_hashtag_error_cases(self):
+        """HASHTAG needs a non-empty value, and FILTER is still required after it."""
+        self.setup_test_data(self.client)
+
+        # No value at all: FILTER is split off before the options are read, so
+        # HASHTAG is left with nothing to consume.
+        with pytest.raises(ResponseError, match="missing HASHTAG argument"):
+            self.client.execute_command('TS.MGET', 'HASHTAG', 'FILTER', 'name=cpu')
+
+        # An empty value is rejected rather than treated as "no tags".
+        with pytest.raises(ResponseError, match="missing HASHTAG argument"):
+            self.client.execute_command('TS.MGET', 'HASHTAG', '', 'FILTER', 'name=cpu')
+
+        with pytest.raises(ResponseError, match="wrong number of arguments for 'ts.mget' command"):
+            self.client.execute_command('TS.MGET', 'HASHTAG', 'no-filter')

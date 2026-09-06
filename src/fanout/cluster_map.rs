@@ -1,3 +1,4 @@
+use crate::common::hash::DeterministicHasher;
 use crate::common::time::current_time_millis;
 use crate::config::CLUSTER_MAP_EXPIRATION_MS;
 use crate::fanout::calculate_hash_slot;
@@ -10,7 +11,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
@@ -25,19 +26,44 @@ use valkey_module::{
 pub const NUM_SLOTS: u16 = 16384;
 
 /// Enumeration for fanout target modes
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum FanoutTargetMode {
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum FanoutTarget {
+    /// Select only the local node
+    Local,
     /// Default: randomly select one node per shard
     #[default]
     Random,
     /// Select only replicas, one per shard
     ReplicasOnly,
     /// Select one replica per shard (if available), otherwise primary
-    OneReplicaPerShard,
+    ReplicaPerShard,
     /// Select all primary (master) nodes
     Primary,
     /// Select all nodes (both primary and replica)
     All,
+    /// Randomly select one node per slot
+    Slots(SmallVec<[u16; 4]>),
+    /// Select a random node from each of the slots corresponding to the hash tags provided
+    HashTags(Vec<String>),
+    /// Select the primary node for each slot corresponding to the hash tags provided
+    HashTagsPrimary(Vec<String>),
+}
+
+impl FanoutTarget {
+    pub fn for_slots(slots: &[u16]) -> Self {
+        FanoutTarget::Slots(slots.iter().copied().collect())
+    }
+
+    pub fn for_hash_tags(hash_tags: &[&str]) -> Self {
+        let mut slots = SmallVec::<[u16; 4]>::new();
+        for tag in hash_tags {
+            let slot = calculate_hash_slot(tag.as_ref());
+            if !slots.contains(&slot) {
+                slots.push(slot);
+            }
+        }
+        FanoutTarget::Slots(slots)
+    }
 }
 
 /// Node role enumeration
@@ -156,7 +182,7 @@ impl SlotRangeSet {
 
     /// Helper method to calculate slot fingerprint
     fn calculate_fingerprint(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = DeterministicHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
     }
@@ -581,14 +607,53 @@ impl ClusterMap {
     }
 
     /// Helper function to refresh targets in CreateNewClusterMap
-    pub fn get_targets(&self, target_mode: FanoutTargetMode) -> Arc<HashSet<NodeInfo>> {
+    pub fn get_targets(&self, target_mode: FanoutTarget) -> Arc<HashSet<NodeInfo>> {
         match target_mode {
-            FanoutTargetMode::Primary => self.primary_targets(),
-            FanoutTargetMode::ReplicasOnly => self.replica_targets(),
-            FanoutTargetMode::All => self.all_targets(),
-            FanoutTargetMode::OneReplicaPerShard => self.random_one_replica_per_shard(),
-            FanoutTargetMode::Random => self.random_one_per_shard(),
+            FanoutTarget::Local => self.random_one_from_local(),
+            FanoutTarget::Primary => self.primary_targets(),
+            FanoutTarget::ReplicasOnly => self.replica_targets(),
+            FanoutTarget::All => self.all_targets(),
+            FanoutTarget::ReplicaPerShard => self.random_one_replica_per_shard(),
+            FanoutTarget::Random => self.random_one_per_shard(),
+            FanoutTarget::Slots(slots) => self.random_for_slots(&slots),
+            FanoutTarget::HashTags(hash_tags) => {
+                let mut slots = SmallVec::<[u16; 4]>::new();
+                for tag in hash_tags {
+                    let slot = calculate_hash_slot(tag.as_ref());
+                    if !slots.contains(&slot) {
+                        slots.push(slot);
+                    }
+                }
+                self.random_for_slots(&slots)
+            }
+            FanoutTarget::HashTagsPrimary(hash_tags) => {
+                let mut targets = HashSet::new();
+                for tag in hash_tags {
+                    let slot = calculate_hash_slot(tag.as_ref());
+                    if let Some(shard) = self.get_shard_by_slot(slot)
+                        && let Some(primary) = shard.primary
+                    {
+                        targets.insert(primary);
+                    }
+                }
+                Arc::new(targets)
+            }
         }
+    }
+
+    fn random_one_from_local(&self) -> Arc<HashSet<NodeInfo>> {
+        let mut targets = HashSet::new();
+        match self.get_local_shard() {
+            Some(local_shard) => {
+                let mut rng_ = rng();
+                let node = local_shard.pick_target(&mut rng_, false, false);
+                targets.insert(node);
+            }
+            None => {
+                log_warning("No local shard found in cluster map");
+            }
+        }
+        Arc::new(targets)
     }
 
     fn random_one_per_shard(&self) -> Arc<HashSet<NodeInfo>> {
@@ -608,6 +673,22 @@ impl ClusterMap {
             targets.insert(shard.pick_target(&mut rng_, false, true));
         }
         Arc::new(targets)
+    }
+
+    fn random_for_slots(&self, slots: &[u16]) -> Arc<HashSet<NodeInfo>> {
+        let mut targets = HashSet::new();
+        for &slot in slots {
+            self.random_one_from_slot(slot, &mut targets);
+        }
+        Arc::new(targets)
+    }
+
+    fn random_one_from_slot(&self, slot: u16, targets: &mut HashSet<NodeInfo>) {
+        if let Some(shard) = self.get_shard_by_slot(slot) {
+            let mut rng_ = rng();
+            let node = shard.pick_target(&mut rng_, false, false);
+            targets.insert(node);
+        }
     }
 
     #[inline]
@@ -919,7 +1000,7 @@ impl ClusterMap {
     }
 
     fn compute_cluster_fingerprint(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = DeterministicHasher::default();
         for shard in self.shards.iter() {
             hasher.write(shard.id.as_bytes());
             shard.slots_fingerprint.hash(&mut hasher);
