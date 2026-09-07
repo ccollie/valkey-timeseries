@@ -3,13 +3,14 @@ use crate::commands::command_parser::{
 };
 use crate::commands::fanout_codec::LabelSearchType;
 use crate::commands::ts_label_search_fanout_command::LabelSearchFanoutCommand;
-use crate::commands::utils::get_multi_command_targets;
 use crate::common::SortDir;
 use crate::common::replies::{
     reply_with_array, reply_with_bool, reply_with_bulk_string, reply_with_integer, reply_with_map,
 };
 use crate::error_consts;
-use crate::fanout::{FanoutClientCommand, FanoutTarget, is_clustered};
+use crate::fanout::{
+    FanoutClientCommand, FanoutTarget, compute_hash_tag_fanout_target, is_clustered,
+};
 use crate::parser::series_selector::parse_series_selector;
 use crate::series::index::{
     DefaultLabelQuerier, FuzzyAlgorithm, FuzzyFilter, LabelNameSearchFilter, LabelQuerier,
@@ -309,7 +310,7 @@ pub(super) fn parse_label_name_search_args(
 }
 
 pub(crate) fn label_search_targets(context: &Context, tags: &[String]) -> FanoutTarget {
-    get_multi_command_targets(context, tags)
+    compute_hash_tag_fanout_target(context, tags)
 }
 
 pub(crate) fn process_label_search_request(
