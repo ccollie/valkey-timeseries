@@ -6,6 +6,7 @@ use crate::commands::ts_labelstats::reply_with_postings_stats;
 use crate::commands::utils::get_multi_command_targets;
 use crate::common::replies::ReplyContext;
 use crate::common::threads::join;
+use crate::fanout::compute_hash_tag_fanout_target;
 use crate::fanout::{
     FanoutClientCommand, FanoutCommandResult, FanoutContext, FanoutTarget, NodeInfo,
 };
@@ -107,7 +108,7 @@ impl FanoutClientCommand for LabelStatsFanoutCommand {
     }
 
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        get_multi_command_targets(ctx, &self.options.tags)
+        compute_hash_tag_fanout_target(ctx, &self.options.tags)
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
