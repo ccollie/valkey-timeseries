@@ -1,7 +1,6 @@
 use super::fanout_codec::{MetaQueryRequest, StringListResponse};
 use super::fanout_codec::{deserialize_match_filter_options, serialize_match_filter_options};
-use super::utils::get_multi_command_targets;
-use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo};
+use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo, compute_hash_tag_fanout_target};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::series_keys_by_selectors;
 use crate::series::request_types::MatchFilterOptions;
@@ -50,7 +49,7 @@ impl FanoutClientCommand for QueryIndexFanoutCommand {
     }
 
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        get_multi_command_targets(ctx, &self.tags)
+        compute_hash_tag_fanout_target(ctx, &self.tags)
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {

@@ -19,7 +19,7 @@ pub trait FanoutClientCommand: Default + Send + 'static {
     /// Get the target nodes for the fanout operation, bound to the cluster-map
     /// fingerprint of the snapshot they were selected from.
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        super::compute_query_fanout_mode(ctx)
+        super::compute_query_fanout_target(ctx)
     }
 
     fn get_local_response(ctx: &Context, req: Self::Request) -> ValkeyResult<Self::Response>;

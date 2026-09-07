@@ -1956,6 +1956,19 @@ fn parse_duration_internal(arg: Option<ValkeyString>, token_name: &str) -> Valke
 /// Apply a request timeout to both timeout representations. Selector fanout
 /// consumes the relative duration, while evaluation and preloading consume the
 /// absolute deadline; they must describe the same budget.
+/// The three distinct concerns a parsed `TS.QUERY` / `TS.QUERYRANGE` invocation
+/// carries: the statement to evaluate, the evaluation options, and the cluster
+/// routing scope requested with `HASHTAG`.
+///
+/// The routing scope is deliberately kept out of [`crate::promql::QueryOptions`]:
+/// it selects which peers the coordinator contacts and is never part of
+/// evaluation.
+pub(super) struct ParsedPromqlQuery {
+    pub eval_stmt: EvalStmt,
+    pub options: crate::promql::QueryOptions,
+    pub hash_tags: Vec<String>,
+}
+
 fn set_query_timeout(
     config: &PromqlConfig,
     options: &mut crate::promql::QueryOptions,
@@ -1974,12 +1987,13 @@ fn set_query_timeout(
 pub(super) fn parse_query_range_command_args(
     config: &PromqlConfig,
     args: &mut CommandArgIterator,
-) -> ValkeyResult<(EvalStmt, crate::promql::QueryOptions)> {
+) -> ValkeyResult<ParsedPromqlQuery> {
     let query = args.next_string()?;
     let mut start_value: Option<TimestampValue> = None;
     let mut end_value: Option<TimestampValue> = None;
     let mut lookback_delta: Option<Duration> = None;
     let mut step: Option<Duration> = None;
+    let mut hash_tags: Vec<String> = Vec::new();
     let mut options = crate::promql::QueryOptions::default();
 
     let expr = parse_promql_query(&query, config)?;
@@ -2005,6 +2019,12 @@ pub(super) fn parse_query_range_command_args(
             CommandArgToken::Timeout => {
                 let timeout = parse_duration_internal(args.next(), token.as_str())?;
                 set_query_timeout(config, &mut options, timeout);
+            }
+            CommandArgToken::HashTag => {
+                // Last occurrence wins, matching the extended-mode option
+                // convention: repeating the clause replaces the routing scope
+                // rather than widening it.
+                hash_tags = parse_hash_tags(args)?;
             }
             _ => {
                 let msg = format!("ERR invalid argument '{}'", arg);
@@ -2054,7 +2074,11 @@ pub(super) fn parse_query_range_command_args(
         lookback_delta,
     };
 
-    Ok((eval_stmt, options))
+    Ok(ParsedPromqlQuery {
+        eval_stmt,
+        options,
+        hash_tags,
+    })
 }
 
 fn normalize_lookback(
@@ -2080,11 +2104,12 @@ fn normalize_lookback(
 pub(super) fn parse_query_command_args(
     config: &PromqlConfig,
     args: &mut CommandArgIterator,
-) -> ValkeyResult<(EvalStmt, crate::promql::QueryOptions)> {
+) -> ValkeyResult<ParsedPromqlQuery> {
     let query = args.next_string()?;
 
     let mut evaluation_ts: TimestampValue = TimestampValue::Now;
     let mut lookback_delta: Duration = config.lookback_delta;
+    let mut hash_tags: Vec<String> = Vec::new();
     let mut options = crate::promql::QueryOptions::default();
 
     let expr = parse_promql_query(&query, config)?;
@@ -2106,6 +2131,10 @@ pub(super) fn parse_query_command_args(
                 let timeout = parse_duration_internal(args.next(), token.as_str())?;
                 set_query_timeout(config, &mut options, timeout);
             }
+            CommandArgToken::HashTag => {
+                // Last occurrence wins; see `parse_query_range_command_args`.
+                hash_tags = parse_hash_tags(args)?;
+            }
             _ => {
                 let msg = format!("TSDB: invalid query argument '{}'", arg);
                 return Err(ValkeyError::String(msg));
@@ -2123,7 +2152,11 @@ pub(super) fn parse_query_command_args(
         lookback_delta,
     };
 
-    Ok((eval_stmt, options))
+    Ok(ParsedPromqlQuery {
+        eval_stmt,
+        options,
+        hash_tags,
+    })
 }
 
 #[cfg(test)]
@@ -2133,8 +2166,10 @@ mod tests {
 
     #[test]
     fn explicit_timeout_replaces_the_default_deadline() {
-        let mut config = PromqlConfig::default();
-        config.max_query_duration = Duration::from_secs(1);
+        let config = PromqlConfig {
+            max_query_duration: Duration::from_secs(1),
+            ..Default::default()
+        };
         let mut options = crate::promql::QueryOptions {
             timeout: Some(Duration::from_secs(30)),
             deadline: Some(i64::MAX),
@@ -2154,8 +2189,10 @@ mod tests {
 
     #[test]
     fn explicit_timeout_is_capped_by_the_configured_maximum() {
-        let mut config = PromqlConfig::default();
-        config.max_query_duration = Duration::from_millis(5);
+        let config = PromqlConfig {
+            max_query_duration: Duration::from_millis(5),
+            ..Default::default()
+        };
         let mut options = crate::promql::QueryOptions::default();
 
         set_query_timeout(&config, &mut options, Duration::from_secs(1));
