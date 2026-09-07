@@ -57,6 +57,14 @@ where
 }
 
 pub(super) fn get_fanout_user(ctx: &Context) -> Option<String> {
+    // Background commands do not have a client attached to their context. In
+    // that case `with_fanout_user` carries the caller identity in the
+    // thread-local scope, and fanout request construction must preserve it in
+    // the wire header just like a normal client-backed command does.
+    if let Some(user) = FANOUT_ACL_USER.with(|u| u.borrow().clone()) {
+        return Some(user);
+    }
+
     let user = ctx.get_current_user().to_string();
     if user.is_empty() {
         return None;
