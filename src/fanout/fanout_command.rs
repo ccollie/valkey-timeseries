@@ -10,7 +10,7 @@ use crate::fanout::fanout_context::FanoutContext;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::workers::PEER_REQUEST_EXECUTOR;
 use crate::fanout::{
-    FanoutResult, FanoutTarget, NodeInfo, compute_query_fanout_mode, get_fanout_targets,
+    FanoutResult, FanoutTarget, NodeInfo, compute_query_fanout_target, get_fanout_targets,
 };
 use metered::Counter;
 use std::panic::{self, AssertUnwindSafe};
@@ -76,7 +76,7 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// fingerprint of the snapshot they were selected from.
     /// By default, it retrieves a random replica per shard.
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        compute_query_fanout_mode(ctx)
+        compute_query_fanout_target(ctx)
     }
 
     /// Execute the fanout operation across cluster nodes. `started` is when the
