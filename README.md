@@ -12,7 +12,8 @@ well as provide a superset of the _RedisTimeSeries_ API.
 - Supports [Metadata](https://prometheus.io/docs/prometheus/latest/querying/api/#querying-metadata) like queries
 - PromQL querying with the `TS.QUERY` and `TS.QUERYRANGE` commands, which
   support [instant and range queries](https://victoriametrics.com/blog/prometheus-monitoring-instant-range-query/)
-  respectively.
+  respectively. See the [PromQL overview](docs/topics/promql.md) for language coverage,
+  execution behavior, and configuration.
 - Basic compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
 ## Scaling
