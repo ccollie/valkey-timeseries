@@ -1,7 +1,7 @@
 use super::fanout_codec::filters::{deserialize_matchers_list, serialize_matchers_list};
 use super::fanout_codec::{QueryLabelsRequest, QueryLabelsSubtype, StringListResponse};
-use super::utils::get_multi_command_targets;
 use crate::commands::command_parser::QueryLabelsOptions;
+use crate::fanout::compute_hash_tag_fanout_target;
 use crate::fanout::{
     FanoutClientCommand, FanoutCommandResult, FanoutContext, FanoutTarget, NodeInfo,
 };
@@ -66,7 +66,7 @@ impl FanoutClientCommand for QueryLabelsFanoutCommand {
     }
 
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        get_multi_command_targets(ctx, &self.options.tags)
+        compute_hash_tag_fanout_target(ctx, &self.options.tags)
     }
 
     fn generate_request(&self) -> QueryLabelsRequest {

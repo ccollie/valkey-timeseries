@@ -2,7 +2,7 @@ use super::fanout_codec::generated::{CountResponse, MetaQueryRequest};
 use crate::commands::fanout_codec::{
     deserialize_match_filter_options, serialize_match_filter_options,
 };
-use crate::commands::utils::get_multi_command_targets;
+use crate::fanout::compute_hash_tag_fanout_target;
 use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::index::count_matched_series;
@@ -47,7 +47,7 @@ impl FanoutClientCommand for CardFanoutCommand {
     }
 
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        get_multi_command_targets(ctx, &self.tags)
+        compute_hash_tag_fanout_target(ctx, &self.tags)
     }
 
     fn on_response(&mut self, resp: Self::Response, _target: &NodeInfo) -> FanoutCommandResult {
