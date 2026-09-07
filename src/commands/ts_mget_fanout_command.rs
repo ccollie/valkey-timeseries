@@ -5,6 +5,7 @@ use crate::commands::utils::{get_multi_command_targets, reply_with_mget_values};
 use crate::common::logging::log_error;
 use crate::common::replies::ReplyContext;
 use crate::error_consts;
+use crate::fanout::compute_hash_tag_fanout_target;
 use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
 use crate::series::request_types::MGetRequest;
@@ -34,7 +35,7 @@ impl FanoutClientCommand for MGetFanoutCommand {
     }
 
     fn get_targets(&self, ctx: &Context) -> FanoutTarget {
-        get_multi_command_targets(ctx, &self.options.tags)
+        compute_hash_tag_fanout_target(ctx, &self.options.tags)
     }
 
     fn get_local_response(
