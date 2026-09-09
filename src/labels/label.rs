@@ -226,12 +226,17 @@ mod tests {
 /// That equivalence is what lets a caller key by a projection (an aggregation's
 /// `by`/`without` grouping, say) without allocating the projected set, and it
 /// only holds while both go through here.
-pub(crate) fn fingerprint_labels<'a>(
-    labels: impl IntoIterator<Item = &'a Label>,
+/// Fingerprint an ordered sequence of labels by their `(name, value)` bytes.
+///
+/// Generic over [`SeriesLabel`] so owned `Label`s and borrowed views such as
+/// `InternedLabel` hash identically — `EvalLabels` relies on that to keep its
+/// variants interchangeable as map keys.
+pub(crate) fn fingerprint_labels<L: SeriesLabel>(
+    labels: impl IntoIterator<Item = L>,
 ) -> SeriesFingerprint {
     let mut hasher = super::hash::create_hasher();
     for label in labels {
-        super::hash::hash_key_value(&mut hasher, &label.name, &label.value);
+        super::hash::hash_key_value(&mut hasher, label.name(), label.value());
     }
     hasher.finish_128()
 }
