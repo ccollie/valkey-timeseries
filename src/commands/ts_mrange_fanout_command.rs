@@ -25,7 +25,6 @@ use crate::series::request_types::{
 };
 use orx_parallel::Par;
 use orx_parallel::ParResult;
-use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
@@ -312,7 +311,7 @@ fn normalize_response_series(
     let mut shard_range = options.range.clone();
     shard_range.count = None;
     series
-        .into_par()
+        .into_par_rayon()
         .map(|(response, bucketed)| {
             if bucketed {
                 return Ok(response);
@@ -366,7 +365,7 @@ fn compensate_group_partials(
     };
 
     let results = series
-        .into_par()
+        .into_par_rayon()
         .map(MRangeSeriesResult::try_from)
         .into_fallible()
         .collect()?;
@@ -420,7 +419,7 @@ fn handle_basic(
     options: &MRangeOptions,
 ) -> ValkeyResult<Vec<MRangeSeriesResult>> {
     series
-        .into_par()
+        .into_par_rayon()
         .map(MRangeSeriesResult::try_from) // Explicit conversion
         .into_fallible()
         .map(|series| process_series_samples(series, options))
@@ -449,7 +448,7 @@ fn handle_grouping(
         .as_ref()
         .expect("Grouping options should be present");
     let results = series
-        .into_par()
+        .into_par_rayon()
         .map(MRangeSeriesResult::try_from)
         .into_fallible()
         .collect()?;
@@ -457,7 +456,7 @@ fn handle_grouping(
 
     Ok(grouped_by_key
         .into_iter()
-        .iter_into_par()
+        .iter_into_par_rayon()
         .map(|(label, data)| process_group(label, data, options, group_options))
         .collect())
 }

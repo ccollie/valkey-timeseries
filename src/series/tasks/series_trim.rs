@@ -122,7 +122,7 @@ fn trim_series(ctx: &Context, db: i32, cursor: u64) -> (usize, i32) {
     let processed = batch.len();
 
     let total_deletes = batch
-        .par_mut()
+        .par_mut_rayon()
         .map(|series| match series.trim() {
             Ok(deletes) => deletes,
             Err(_) => {

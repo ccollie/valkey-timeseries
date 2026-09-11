@@ -1,10 +1,11 @@
+use crate::common::threads::ParMutRayon;
 use crate::common::{Sample, Timestamp};
 use crate::error::TsdbResult;
 use crate::series::bulk_add::merge_samples_into_series;
 use crate::series::index::get_series_key_by_id;
 use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
+use orx_parallel::Par;
 use orx_parallel::ParResult;
-use orx_parallel::{Par, ParCollectionMut};
 use smallvec::{SmallVec, smallvec};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
@@ -131,7 +132,7 @@ pub fn multi_series_merge_samples(
         add_samples_internal(&mut groups[0])?
     } else {
         groups
-            .par_mut()
+            .par_mut_rayon()
             .map(add_samples_internal)
             .into_fallible()
             .reduce(|mut acc, item| {
