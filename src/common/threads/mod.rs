@@ -1,4 +1,5 @@
 mod batch_worker;
+mod orx_pool;
 
 use crate::common::context::{get_current_db, set_current_db};
 use crate::is_main_thread;
@@ -6,6 +7,9 @@ use crate::is_main_thread;
 pub(crate) use batch_worker::{
     BatchRequest, BatchWorker, exec_with_payload, global_valkey_task_worker, send_with_payload,
     submit_valkey_task, submit_valkey_task_and_forget,
+};
+pub use orx_pool::{
+    GlobalRayonPool, IntoParRayon, IterIntoParRayon, ParCollectionRayon, ParMutRayon, ParRayon,
 };
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
