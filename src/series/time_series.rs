@@ -1625,6 +1625,30 @@ pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (
 /// halves are re-encoded, so it is roughly one chunk's worth of samples.
 const SPLIT_WORK: usize = 2048;
 
+/// Below this many chunks, `get_range` decodes on the calling thread even
+/// when it is free to fan out.
+const PARALLEL_RANGE_MIN_CHUNKS: usize = 4;
+
+/// How many of `chunk`'s samples `[start, end]` is likely to cover, from the
+/// fraction of the chunk's time span it overlaps. Sizes the buffer a range read
+/// decodes into: exact for a fully covered chunk, and a proportional guess for
+/// a boundary chunk, where `chunk.len()` would over-reserve for every series a
+/// narrow window touches.
+fn estimate_range_len(chunk: &TimeSeriesChunk, start: Timestamp, end: Timestamp) -> usize {
+    let len = chunk.len();
+    let (first, last) = (chunk.first_timestamp(), chunk.last_timestamp());
+    if start <= first && end >= last {
+        return len;
+    }
+    let span = (last - first).max(1) as f64;
+    let overlap = (end.min(last) - start.max(first)).max(0) as f64;
+    // Round up, and keep a floor: an exact or tiny estimate that lands one
+    // short forces a doubling of the whole buffer.
+    ((len as f64 * overlap / span).ceil() as usize)
+        .saturating_add(8)
+        .min(len)
+}
+
 fn get_range_parallel(
     chunks: &[TimeSeriesChunk],
     start: Timestamp,
