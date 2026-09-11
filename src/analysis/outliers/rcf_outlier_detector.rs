@@ -4,9 +4,10 @@ use crate::analysis::outliers::{
     Anomaly, AnomalyDetector, AnomalyMethod, AnomalyResult, AnomalySignal,
 };
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
+use crate::common::threads::ParRayon;
 use crate::config::num_threads;
 use krcf::{RandomCutForest, RandomCutForestOptions};
-use orx_parallel::{ParIter, ParIterResult, Parallelizable};
+use orx_parallel::{ParIter, ParIterResult};
 use valkey_module::logging::log_warning;
 use valkey_module::{ValkeyError, ValkeyResult};
 
@@ -246,7 +247,7 @@ impl RcfOutlierDetector {
 
         if should_parallelize {
             values
-                .par()
+                .par_rayon()
                 .map(|&v| self.try_score(v))
                 .into_fallible_result()
                 .collect()

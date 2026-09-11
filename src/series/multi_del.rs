@@ -1,5 +1,6 @@
 use crate::common::Timestamp;
 use crate::common::context::{create_key_string, get_acl_user, is_acl_enforced};
+use crate::common::threads::ParMutRayon;
 use crate::config::num_threads;
 use crate::labels::filters::SeriesSelector;
 use crate::series::index::{PostingsBitmap, get_timeseries_index, with_timeseries_postings};
@@ -10,7 +11,6 @@ use crate::series::{
 use blart::AsBytes;
 use croaring::bitmap64::Bitmap64Iterator;
 use orx_parallel::ParIter;
-use orx_parallel::ParallelizableCollectionMut;
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
 use valkey_module::{
@@ -125,7 +125,7 @@ fn delete_range_batch(
     let end_arg = ctx.create_string(end_ts.to_string());
     let mut series = series;
     let res = series
-        .par_mut()
+        .par_mut_rayon()
         .map(|guard| guard.remove_range(start_ts, end_ts))
         .collect::<Vec<_>>();
 

@@ -1,11 +1,11 @@
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::logging::{log_debug, log_warning};
 use crate::common::sync::lock;
+use crate::common::threads::ParMutRayon;
 use crate::common::threads::spawn;
 use crate::is_shutting_down;
 use crate::series::tasks::utils::{fetch_series_batch, find_next_db};
 use orx_parallel::ParIter;
-use orx_parallel::ParallelizableCollectionMut;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{Context, MODULE_CONTEXT, Status};
 
@@ -91,7 +91,7 @@ fn trim_series(ctx: &Context, db: i32, cursor: u64) -> (usize, i32) {
     let processed = batch.len();
 
     let total_deletes = batch
-        .par_mut()
+        .par_mut_rayon()
         .map(|series| match series.trim() {
             Ok(deletes) => deletes,
             Err(_) => {
