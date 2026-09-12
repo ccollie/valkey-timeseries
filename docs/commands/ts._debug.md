@@ -226,6 +226,7 @@ TS._DEBUG LIST_CONFIGS [VERBOSE]
 | `ts-fanout-command-timeout`    | duration | —               | Timeout (ms) for fanout (cluster scatter/gather) commands                               |
 | `ts-cluster-map-expiration-ms` | duration | —               | How long (ms) cluster slot-map entries are cached; `0` disables caching                 |
 | `ts-forecast-max-horizon`      | integer  | 10000           | Largest `HORIZON` accepted by `TS.FORECAST`, `TS.AUTOFORECAST` and `TS.BACKTEST` (1–1000000) |
+| `ts-forecast-timeout`          | duration | 60000           | Default deadline (ms) for `TS.FORECAST`, `TS.AUTOFORECAST` and `TS.BACKTEST`; `0` = none; a command's `TIMEOUT` overrides it |
 | `ts-fanout-aggregation-pushdown` | boolean | `yes`          | Shard-side aggregation/reduce push-down for clustered MRANGE. Not needed for rolling upgrades (version skew is handled automatically); disable only as an emergency/diagnostic revert to the coordinator-side path |
 
 ### Examples

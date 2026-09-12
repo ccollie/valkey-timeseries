@@ -16,6 +16,7 @@ Covers:
 """
 
 import math
+import time
 from typing import Any, Dict, List
 
 import pytest
@@ -851,4 +852,121 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         with pytest.raises(ResponseError, match="horizon must not exceed 10000"):
             self.client.execute_command(
                 "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "1000000000"
+            )
+
+    # ── TIMEOUT and the analysis pool ────────────────────────────────────
+
+    def _slow_series(self, key: str, count: int = 4000) -> None:
+        """A series on which `SEASONALITY AUTO` takes a couple of seconds
+        (release build), so a short TIMEOUT is guaranteed to fire."""
+        pipe = self.client.pipeline(transaction=False)
+        for i in range(count):
+            value = 10 + math.sin(i / 7.0) * 3 + math.cos(i / 101.0) * 2 + i * 0.001
+            pipe.execute_command("TS.ADD", key, 1000 + i * 1000, value)
+        pipe.execute()
+
+    SLOW_JOB_DRAIN_SECONDS = 6
+
+    def test_timeout_argument_fires(self):
+        """A per-command TIMEOUT shorter than the work returns the timeout
+        error at the deadline, not after the job finishes."""
+        key = "test:autoforecast:timeout:fires"
+        self._slow_series(key)
+
+        started = time.monotonic()
+        with pytest.raises(ResponseError, match="forecast timed out"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
+                "SEASONALITY", "AUTO", "TIMEOUT", "200"
+            )
+        assert time.monotonic() - started < 1.5
+
+        # The server stays responsive while the abandoned job finishes.
+        assert self.client.ping()
+        time.sleep(self.SLOW_JOB_DRAIN_SECONDS)
+
+    def test_timeout_does_not_store_behind_the_client(self):
+        """Once the client has been told the command timed out, a STORE that
+        finishes later must not write the destination."""
+        key = "test:autoforecast:timeout:store"
+        store_key = "test:autoforecast:timeout:store:out"
+        self._slow_series(key)
+
+        with pytest.raises(ResponseError, match="forecast timed out"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
+                "SEASONALITY", "AUTO", "TIMEOUT", "200", "STORE", store_key
+            )
+        time.sleep(self.SLOW_JOB_DRAIN_SECONDS)
+        assert self.client.execute_command("EXISTS", store_key) == 0
+
+    def test_timeout_zero_disables_the_deadline(self):
+        """TIMEOUT 0 overrides a short configured default with no deadline."""
+        key = "test:autoforecast:timeout:zero"
+        self._slow_series(key, count=2000)
+        name = "ts.ts-forecast-timeout"
+        default = self.client.execute_command("CONFIG", "GET", name)[1]
+        assert default == b"60000"
+
+        try:
+            self.client.execute_command("CONFIG", "SET", name, "100")
+            with pytest.raises(ResponseError, match="forecast timed out"):
+                self.client.execute_command(
+                    "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
+                    "SEASONALITY", "AUTO"
+                )
+            time.sleep(self.SLOW_JOB_DRAIN_SECONDS)
+
+            result = self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
+                "SEASONALITY", "AUTO", "TIMEOUT", "0"
+            )
+            assert len(get_forecast_values(parse_forecast_response(result))) == 3
+        finally:
+            self.client.execute_command("CONFIG", "SET", name, default)
+
+    def test_concurrent_requests_all_complete(self):
+        """More simultaneous jobs than pool workers queue rather than fail,
+        and every one of them still finishes."""
+        import threading
+
+        keys = [f"test:autoforecast:pool:{i}" for i in range(8)]
+        for key in keys:
+            create_linear_series(self.client, key, count=300)
+
+        results: List[Any] = [None] * len(keys)
+
+        def run(i: int) -> None:
+            try:
+                results[i] = self.client.execute_command(
+                    "TS.AUTOFORECAST", keys[i], "-", "+", "HORIZON", "4"
+                )
+            except Exception as exc:  # noqa: BLE001 - recorded and asserted below
+                results[i] = exc
+
+        threads = [threading.Thread(target=run, args=(i,)) for i in range(len(keys))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        for i, result in enumerate(results):
+            assert not isinstance(result, Exception), f"job {i} failed: {result}"
+            assert result is not None, f"job {i} did not finish"
+            assert len(get_forecast_values(parse_forecast_response(result))) == 4
+
+    def test_error_timeout_negative(self):
+        key = "test:autoforecast:err:timeout_negative"
+        create_linear_series(self.client, key, count=100)
+        with pytest.raises(ResponseError, match="TIMEOUT must be zero or positive"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3", "TIMEOUT", "-1"
+            )
+
+    def test_error_timeout_missing_value(self):
+        key = "test:autoforecast:err:timeout_missing"
+        create_linear_series(self.client, key, count=100)
+        with pytest.raises(ResponseError, match="TIMEOUT"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3", "TIMEOUT"
             )
