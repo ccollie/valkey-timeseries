@@ -16,6 +16,7 @@ TS.AUTOFORECAST key fromTimestamp toTimestamp
   [MODELS family1[,family2 ...]]
   [LEVEL confidence_level]
   [METRICS]
+  [TIMEOUT milliseconds]
   [STORE destination]
 ```
 
@@ -115,6 +116,21 @@ Returned fields:
 - `mase` (may be `null` when insufficient scaling history)
 - `r_squared`
 
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds, counted from when the request is accepted (so time
+spent queued behind other forecasting work counts). When it elapses the client receives
+`TSDB: forecast timed out before the result was ready` and the request is abandoned: its result
+is discarded and a `STORE` that has not yet happened is skipped. `0` disables the deadline for this call.
+
+When omitted, the `ts-forecast-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
+
+Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
+they never block the server's main thread; requests beyond the worker count wait in a queue.
 </details>
 
 <details open>
@@ -279,6 +295,9 @@ TS.AUTOFORECAST temperature:sensor1 30d + HORIZON 7
   holds too few samples to infer where the stored forecast samples should be placed.
 - `TSDB: failed to store forecast in key` — the forecast samples could not be written to the destination.
 - `TSDB: Unknown argument` — An unrecognized optional argument was provided.
+- `TSDB: forecast timed out before the result was ready` — the `TIMEOUT` (or `ts-forecast-timeout`)
+  deadline elapsed before the result was available.
+- `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
 - `TSDB: Failed to prepare time series for forecasting` — Internal error converting series data.
 - `TSDB: forecast error` — The forecasting model failed to fit or predict.
 
