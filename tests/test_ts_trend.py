@@ -20,6 +20,7 @@ Covers:
 """
 
 import math
+import time
 from typing import Any, Dict, List
 
 import pytest
@@ -29,6 +30,7 @@ from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 from data_helpers import (
     _add,
     create_exponential_series,
+    create_large_seasonal_series,
     create_linear_series,
     create_negative_linear_series,
     create_quadratic_series,
@@ -1189,3 +1191,83 @@ class TestTrend(ValkeyTimeSeriesTestCaseBase):
                 "TS.TREND", key, "-", "+",
                 "MODEL"
             )
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Analysis pool and TIMEOUT
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_large_range_runs_in_background_with_same_reply(self):
+        """Above the inline threshold the fit runs on the analysis pool; the
+        reply keeps the AUTO shape and a full-length fitted trend."""
+        key = "test:trend:large"
+        create_large_seasonal_series(self.client, key, count=20000)
+
+        parsed = parse_trend_response(
+            self.client.execute_command("TS.TREND", key, "-", "+", "FEATURES", "METRICS")
+        )
+        assert "model" in parsed and "criterion" in parsed and "scores" in parsed
+        assert len(parsed["fitted_trend"]) == 20000
+        assert "features" in parsed and "accuracy_metrics" in parsed
+
+    def test_large_range_specific_model_in_background(self):
+        key = "test:trend:large_specific"
+        create_large_seasonal_series(self.client, key, count=20000)
+
+        parsed = parse_trend_response(self.client.execute_command(
+            "TS.TREND", key, "-", "+", "MODEL", "Polynomial", "PREDICT", "5"
+        ))
+        assert parsed["model"] == "Polynomial"
+        assert "criterion" not in parsed and "scores" not in parsed
+        assert len(parsed["fitted_trend"]) == 20000
+        assert len(parsed["predicted_trend"]) == 5
+
+    def test_large_range_store_in_background(self):
+        """STORE from the analysis pool takes the lock and writes like inline."""
+        key = "test:trend:large_store"
+        store_key = "test:trend:large_store:dst"
+        create_large_seasonal_series(self.client, key, count=20000)
+
+        count = self.client.execute_command(
+            "TS.TREND", key, "-", "+", "MODEL", "Polynomial", "STORE", store_key
+        )
+        assert count == 20000
+        assert self.client.execute_command("TS.INFO", store_key) is not None
+        stored = self.client.execute_command("TS.RANGE", store_key, "-", "+")
+        assert len(stored) == 20000
+
+    def test_timeout_fires_on_slow_input(self):
+        key = "test:trend:timeout"
+        create_large_seasonal_series(self.client, key, count=20000)
+
+        started = time.monotonic()
+        with pytest.raises(ResponseError, match="timed out before the result was ready"):
+            self.client.execute_command("TS.TREND", key, "-", "+", "TIMEOUT", "20")
+        assert time.monotonic() - started < 1.0
+        assert self.client.ping()
+
+    def test_timeout_does_not_store_behind_the_client(self):
+        key = "test:trend:timeout_store"
+        store_key = "test:trend:timeout_store:dst"
+        create_large_seasonal_series(self.client, key, count=20000)
+
+        with pytest.raises(ResponseError, match="timed out before the result was ready"):
+            self.client.execute_command(
+                "TS.TREND", key, "-", "+", "TIMEOUT", "20", "STORE", store_key
+            )
+        time.sleep(2)  # let the abandoned fit finish
+        assert self.client.execute_command("EXISTS", store_key) == 0
+
+    def test_timeout_accepted_inline(self):
+        key = "test:trend:timeout_ok"
+        create_linear_series(self.client, key, count=100)
+        parsed = parse_trend_response(
+            self.client.execute_command("TS.TREND", key, "-", "+", "TIMEOUT", "30000")
+        )
+        assert len(parsed["fitted_trend"]) == 100
+
+    def test_timeout_negative(self):
+        key = "test:trend:timeout_neg"
+        create_linear_series(self.client, key, count=100)
+        with pytest.raises(ResponseError, match="TIMEOUT must be zero or positive"):
+            self.client.execute_command("TS.TREND", key, "-", "+", "TIMEOUT", "-1")

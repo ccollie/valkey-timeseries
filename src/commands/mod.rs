@@ -33,6 +33,7 @@ macro_rules! acl_categories {
     };
 }
 
+mod analysis_runner;
 pub mod command_parser;
 mod fanout_codec;
 mod forecast_utils;
