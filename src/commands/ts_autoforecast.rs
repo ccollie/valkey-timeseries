@@ -6,21 +6,17 @@ use crate::commands::command_parser::{
 };
 use crate::commands::forecast_utils::{
     StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast, store_anchor,
+    reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
 };
 use crate::commands::utils::reply_with_double_array;
-use crate::common::Sample;
 use crate::common::replies::{ThreadSafeReplyContext, reply_with_str};
-use crate::series::{
-    DestinationWriteMode, TimeSeriesOptions, TimestampRange, create_or_update_series_with_samples,
-};
+use crate::series::{DestinationWriteMode, TimeSeriesOptions};
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::detection::detect_dominant_period;
 use anofox_forecast::models::auto_forecast::{AutoForecast, AutoForecastConfig};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 struct AutoForecastOptions {
-    date_range: TimestampRange,
     horizon: usize,
     level: Option<f64>,
     metrics: bool,
@@ -35,7 +31,6 @@ struct AutoForecastOptions {
 impl Default for AutoForecastOptions {
     fn default() -> Self {
         Self {
-            date_range: TimestampRange::default(),
             horizon: 5,
             level: None,
             metrics: false,
@@ -171,8 +166,6 @@ fn parse_autoforecast_args(args: &mut CommandArgIterator) -> ValkeyResult<AutoFo
         return Err(ValkeyError::Str("TSDB: HORIZON is required"));
     }
 
-    // Theta models don
-
     Ok(options)
 }
 
@@ -243,29 +236,15 @@ fn store_forecast(
     forecast: &[f64],
     anchor: StoreAnchor,
 ) -> ValkeyResult<()> {
-    let samples: Vec<Sample> = forecast
-        .iter()
-        .enumerate()
-        .map(|(i, &value)| Sample::new(anchor.timestamp_at(i), value))
-        .collect();
-
-    let lock = ctx.lock();
-    let key = lock.create_string(dest_key);
-    let mode = options.write_mode.unwrap_or_default();
-    create_or_update_series_with_samples(
-        &lock,
-        &key,
+    write_forecast_samples(
+        ctx,
+        dest_key,
         options.create_options.clone(),
-        mode,
-        &samples,
-        None,
+        options.write_mode.unwrap_or_default(),
+        forecast,
+        anchor,
     )
     .map(|_| ())
-    .map_err(|e| {
-        let msg = format!("TSDB: failed to store forecast in key '{}': {}", key, e);
-        ctx.log_warning(&msg);
-        ValkeyError::String(msg)
-    })
 }
 
 pub(super) fn reply_with_interval_array(
