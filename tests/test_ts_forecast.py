@@ -1274,3 +1274,62 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command("EXISTS", store_key) == 1
         lossy = store_key.decode("utf-8", errors="replace").encode("utf-8")
         assert self.client.execute_command("EXISTS", lossy) == 0
+
+    # ══════════════════════════════════════════════════════════════════════
+    # HORIZON is capped by ts-forecast-max-horizon
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_error_horizon_above_default_cap(self):
+        """A HORIZON past the default cap is rejected before any model runs,
+        so an absurd value cannot allocate gigabytes off the main thread."""
+        key = "test:forecast:err:horizon_cap"
+        create_linear_series(self.client, key, count=50)
+
+        for horizon in ("10001", "1000000000", "9223372036854775807"):
+            with pytest.raises(ResponseError,
+                               match="horizon must not exceed 10000"):
+                self.client.execute_command(
+                    "TS.FORECAST", key, "-", "+",
+                    "MODELS", "Naive", "HORIZON", horizon
+                )
+
+    def test_horizon_at_default_cap_is_accepted(self):
+        key = "test:forecast:horizon_at_cap"
+        create_linear_series(self.client, key, count=50)
+
+        result = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "Naive", "HORIZON", "10000"
+        )
+        forecasts = get_forecast_values(parse_forecast_array_response(result)[0])
+        assert len(forecasts) == 10000
+
+    def test_horizon_cap_follows_config_set(self):
+        """The cap is live: lowering it rejects what was accepted a moment ago."""
+        key = "test:forecast:horizon_cap_config"
+        create_linear_series(self.client, key, count=50)
+        name = "ts.ts-forecast-max-horizon"
+        default = self.client.execute_command("CONFIG", "GET", name)[1]
+        assert default == b"10000"
+
+        try:
+            self.client.execute_command("CONFIG", "SET", name, "5")
+            with pytest.raises(ResponseError, match="horizon must not exceed 5"):
+                self.client.execute_command(
+                    "TS.FORECAST", key, "-", "+",
+                    "MODELS", "Naive", "HORIZON", "6"
+                )
+            result = self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "5"
+            )
+            assert len(get_forecast_values(
+                parse_forecast_array_response(result)[0])) == 5
+
+            # The operator-facing ceiling and floor are enforced by the server.
+            with pytest.raises(ResponseError):
+                self.client.execute_command("CONFIG", "SET", name, "0")
+            with pytest.raises(ResponseError):
+                self.client.execute_command("CONFIG", "SET", name, "1000001")
+        finally:
+            self.client.execute_command("CONFIG", "SET", name, default)

@@ -48,7 +48,8 @@ Use `+` to denote the latest timestamp in the series.
 <details open>
 <summary><code>HORIZON horizon</code></summary>
 
-Number of future data points to predict. Must be a positive integer.
+Number of future data points to predict. Must be a positive integer no larger than the `ts-forecast-max-horizon` configuration
+parameter (default 10000).
 
 </details>
 
@@ -266,6 +267,8 @@ TS.AUTOFORECAST temperature:sensor1 30d + HORIZON 7
 - `ERR wrong number of arguments` — Missing required arguments (minimum 5 arguments required).
 - `TSDB: HORIZON is required` — The `HORIZON` argument was not provided.
 - `TSDB: HORIZON must be greater than 0` — `HORIZON` value is zero or negative.
+- `TSDB: forecast horizon must not exceed N (ts-forecast-max-horizon)` — `HORIZON` is above the
+  configured cap.
 - `TSDB: the key does not exist` — The specified time series key was not found.
 - `TSDB: LEVEL must be between 0 and 100` — The confidence level is out of range.
 - `TSDB: unknown auto-forecast model` — An unrecognized model family was specified in `MODELS`.
