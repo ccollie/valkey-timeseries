@@ -2,6 +2,7 @@ use super::ForecastTransformKind;
 use super::SpecValue;
 use super::transform_spec_parser::{TransformSpec, TransformSpecError, parse_transform_specs};
 use crate::analysis::forecasting::DynTransform;
+use anofox_forecast::models::BoxedForecaster;
 use anofox_forecast::transform::transforms::{
     BoxCoxTransform, DifferenceTransform, LogTransform, ScaleMethod, ScaleTransform,
     SeasonalDifferenceTransform, YeoJohnsonTransform,
@@ -17,18 +18,25 @@ pub fn build_transforms_from_specs(
         .collect()
 }
 
-pub fn build_transform_pipeline(input: &str) -> Result<Pipeline, TransformSpecError> {
-    let specs = parse_transform_specs(input)?;
-    if specs.is_empty() {
-        return Err(TransformSpecError::new("No transforms specified"));
+/// Wrap `model` in a [`Pipeline`] that applies `transforms` before fitting and
+/// inverts them on the way out, so fitted values, predictions and intervals
+/// all come back in the original units.
+///
+/// Transforms are stateful (`fit_transform` learns parameters), so each model
+/// gets its own clone of the chain. With no transforms the model is returned
+/// untouched rather than wrapped in a no-op pipeline.
+pub fn wrap_model_with_transforms(
+    model: BoxedForecaster,
+    transforms: &[Box<dyn Transform>],
+) -> BoxedForecaster {
+    if transforms.is_empty() {
+        return model;
     }
-    let mut builder = Pipeline::builder();
-    for spec in specs {
-        let transform = build_single_transform(spec)?;
-        builder = builder.transform(DynTransform::new(transform));
+    let mut builder = Pipeline::builder().model(model);
+    for transform in transforms {
+        builder = builder.transform(DynTransform::new(transform.clone()));
     }
-    let pipeline = builder.build();
-    Ok(pipeline)
+    Box::new(builder.build())
 }
 
 pub fn build_single_transform(
@@ -153,6 +161,10 @@ fn parse_scale_method(
 #[cfg(test)]
 mod tests {
     use super::build_transforms_from_specs;
+    use super::wrap_model_with_transforms;
+    use anofox_forecast::core::TimeSeries;
+    use anofox_forecast::models::{BoxedForecaster, baseline::Naive};
+    use chrono::{TimeZone, Utc};
 
     #[test]
     fn builds_supported_transforms_from_specs() {
@@ -168,6 +180,67 @@ mod tests {
     fn supports_boxcox_lambda_positional_and_keyword() {
         let transforms = build_transforms_from_specs("BoxCox(0.25), BoxCox(lambda=0.5)").unwrap();
         assert_eq!(transforms.len(), 2);
+    }
+
+    #[test]
+    fn wrap_model_with_transforms_inverts_predictions() {
+        // A linear trend: after Difference(1) it is constant, so a Naive model
+        // on the differenced data forecasts the slope, and the inverse yields
+        // a continued line in the original units.
+        let ts: Vec<_> = (0..20)
+            .map(|i| Utc.timestamp_opt(i * 60, 0).unwrap())
+            .collect();
+        let values: Vec<f64> = (0..20).map(|i| 10.0 + 2.0 * i as f64).collect();
+        let series = TimeSeries::univariate(ts, values).unwrap();
+
+        let transforms = build_transforms_from_specs("Difference(1)").unwrap();
+        let mut model = wrap_model_with_transforms(Box::new(Naive::new()), &transforms);
+        let forecast = model.fit_predict(&series, 3).unwrap();
+        let predicted = forecast.primary();
+        assert_eq!(predicted.len(), 3);
+        for (i, v) in predicted.iter().enumerate() {
+            let expected = 10.0 + 2.0 * (20 + i) as f64;
+            assert!((v - expected).abs() < 1e-9, "point {i}: {v} != {expected}");
+        }
+    }
+
+    #[test]
+    fn fitted_values_survive_model_warmup_nans_through_differencing() {
+
+        // Naive's first fitted value on the differenced series is undefined.
+        // Without the DynTransform fix-up the cumulative inverse turns that
+        // one NaN into an all-NaN fitted series and metrics cannot be scored.
+        let n = 30;
+        let ts: Vec<_> = (0..n)
+            .map(|i| Utc.timestamp_opt(i * 60, 0).unwrap())
+            .collect();
+        let values: Vec<f64> = (0..n).map(|i| 1.0 + 2.0 * i as f64).collect();
+        let series = TimeSeries::univariate(ts, values.clone()).unwrap();
+
+        let transforms = build_transforms_from_specs("Difference(1)").unwrap();
+        let mut model = wrap_model_with_transforms(Box::new(Naive::new()), &transforms);
+        model.fit_predict(&series, 1).unwrap();
+        let fitted = model
+            .fitted_values()
+            .expect("pipeline exposes fitted values");
+        assert_eq!(fitted.len(), values.len());
+
+        let warmup = fitted.iter().take_while(|v| !v.is_finite()).count();
+        assert!(warmup >= 1 && warmup < fitted.len(), "warmup = {warmup}");
+        // Only the warm-up prefix may be NaN, and every value after it must
+        // sit on the original line (differenced Naive fits a line exactly).
+        for (i, (f, a)) in fitted.iter().zip(&values).enumerate().skip(warmup) {
+            assert!(f.is_finite(), "fitted[{i}] is not finite");
+            assert!((f - a).abs() < 1e-9, "fitted[{i}] = {f}, actual = {a}");
+        }
+    }
+
+    #[test]
+    fn wrap_model_without_transforms_is_identity() {
+        let inner: BoxedForecaster = Box::new(Naive::new());
+        let expected = inner.name().to_string();
+        let model = wrap_model_with_transforms(inner, &[]);
+        assert_eq!(model.name(), expected);
     }
 
     #[test]

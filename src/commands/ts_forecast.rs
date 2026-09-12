@@ -1,5 +1,7 @@
 use crate::analysis::forecasting::DynForecaster;
-use crate::analysis::forecasting::build_models_from_specs;
+use crate::analysis::forecasting::{
+    build_models_from_specs, build_transforms_from_specs, wrap_model_with_transforms,
+};
 use crate::commands::CommandArgIterator;
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
@@ -18,13 +20,17 @@ use crate::series::TimestampRange;
 use crate::series::create_or_update_series_with_samples;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::models::BoxedForecaster;
+use anofox_forecast::transform::Transform;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 #[derive(Default)]
 struct ForecastOptions {
     series_key: String,
     models_spec: String,
-    transforms_spec: Option<String>,
+    /// Reversible pre-processing chain applied, in order, ahead of every model
+    /// (see `TRANSFORMS`). Built on the main thread so a bad spec is rejected
+    /// before the client is blocked; each model gets its own clone.
+    transforms: Vec<Box<dyn Transform>>,
     timestamp_range: TimestampRange,
     horizon: usize,
     include_metrics: bool,
@@ -207,6 +213,7 @@ fn process_models(
 ) -> ValkeyResult<Vec<ForecastOutput>> {
     let mut results = Vec::new();
     for (model, spec_name) in models {
+        let model = wrap_model_with_transforms(model, &options.transforms);
         let mut model: DynForecaster = DynForecaster::from(model);
         let mut output = run_forecast(
             series,
@@ -242,8 +249,12 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
                     options.level = Some(value);
                 },
                 "TRANSFORMS" => {
-                    let transforms = args.next_string().map_err(|_| ValkeyError::Str("TSDB: missing value for TRANSFORMS"))?;
-                    options.transforms_spec = Some(transforms);
+                    let spec = args.next_string().map_err(|_| ValkeyError::Str("TSDB: missing value for TRANSFORMS"))?;
+                    options.transforms = build_transforms_from_specs(&spec)
+                        .map_err(|e| ValkeyError::String(format!("TSDB: error parsing TRANSFORMS: {e}")))?;
+                    if options.transforms.is_empty() {
+                        return Err(ValkeyError::Str("TSDB: TRANSFORMS must contain at least one transform specification"));
+                    }
                 },
                 "WITH_METRICS" => {
                     options.include_metrics = true;

@@ -15,6 +15,7 @@ TS.FORECAST key fromTimestamp toTimestamp
   MODELS model_spec[,model_spec ...]
   HORIZON horizon
   [LEVEL confidence_level]
+  [TRANSFORMS transform_spec[,transform_spec ...]]
   [WITH_METRICS]
   [STORE destinationKey
     [MERGE]
@@ -138,6 +139,33 @@ For each point `i`, `lower_interval[i] <= forecast[i] <= upper_interval[i]`.
 
 Not all models support prediction intervals. Models that do not support intervals will omit
 the `lower_interval` and `upper_interval` fields, but `level` will still be included.
+</details>
+
+<details open>
+<summary><code>TRANSFORMS transform_spec[,transform_spec ...]</code></summary>
+
+A comma-separated chain of reversible pre-processing transforms applied to the series, in
+order, before every model in `MODELS` is fit. Each model gets its own independently fitted
+copy of the chain. Forecasts, prediction intervals and in-sample fitted values (and therefore
+`WITH_METRICS`) are all inverse-transformed back into the original units, so the response
+shape is identical with or without `TRANSFORMS`.
+
+Use this to hand a stationary or variance-stabilised series to models that assume one
+(for example `Difference(1)` ahead of `SES`, or `Log` ahead of `ARIMA` on multiplicative data).
+
+Specs use the same `Name(arg, ..., key=value)` syntax as `MODELS`; names are case-insensitive.
+
+| Transform | Arguments | Description |
+|-----------|-----------|-------------|
+| `Difference(d)` | `d` — order (non-negative integer) | Ordinary differencing; consumes the first `d` observations. |
+| `SeasonalDifference(period)` | `period` — season length | Seasonal differencing; consumes the first `period` observations. |
+| `Log` | — | Natural log. The series must be strictly positive. |
+| `BoxCox` / `BoxCox(lambda)` / `BoxCox(lambda=λ)` | optional `lambda` | Box-Cox power transform. With no lambda it is estimated from the data. |
+| `YeoJohnson` | — | Yeo-Johnson power transform (handles zero and negative values). |
+| `Scale(method)` | `Standardize`, `Normalize` or `RobustScale` | Rescale to zero-mean/unit-variance, `[0, 1]`, or median/IQR. |
+
+Differencing shortens the series handed to the model by the transform's offset, so the range
+must contain enough samples for the model *after* the chain is applied.
 </details>
 
 <details open>
@@ -323,6 +351,9 @@ Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust`, `multiplic
 - `TSDB: forecast horizon must be greater than 0` — `HORIZON` is zero or negative.
 - `TSDB: MODELS must contain at least one model specification` — no models were provided.
 - `TSDB: error parsing MODELS` — the model specification string could not be parsed.
+- `TSDB: error parsing TRANSFORMS` — a transform name is unknown or its arguments are invalid.
+- `TSDB: TRANSFORMS must contain at least one transform specification` — `TRANSFORMS` was given
+  an empty string.
 - `TSDB: STORE is only supported with a single model` — `STORE` was specified with multiple models.
 - `TSDB: LEVEL must be between 0 and 100` — `LEVEL` is out of the valid range.
 - `TSDB: Unknown argument` — an unrecognized argument was provided.
@@ -436,6 +467,23 @@ OK
        12) "1.05"
        13) "r_squared"
        14) "0.99"
+```
+
+### Difference a trending series before a level-only model
+
+`Naive` repeats the last observation, so on a trend it flat-lines. Differencing first makes the
+trend the thing being forecast, and the result is re-integrated back into the original units.
+
+```
+127.0.0.1:6379> TS.FORECAST temperature - + MODELS Naive HORIZON 3 TRANSFORMS Difference(1)
+1) 1) "model"
+   2) "Naive"
+   3) "horizon"
+   4) (integer) 3
+   5) "forecast"
+   6) 1) "203"
+      2) "205"
+      3) "207"
 ```
 
 ### Store forecast into a destination key
