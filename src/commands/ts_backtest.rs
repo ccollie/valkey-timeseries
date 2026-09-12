@@ -1,4 +1,4 @@
-use crate::analysis::forecasting::{BacktestModelSpec, DynForecaster, parse_backtest_model_specs};
+use crate::analysis::forecasting::{DynForecaster, PreparedModelSpec, prepare_model_specs};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
 use crate::commands::command_parser::parse_forecast_horizon_value;
@@ -244,7 +244,7 @@ fn process_backtest(
     series: ForecastTimeSeries,
     options: BacktestOptions,
 ) {
-    let specs = match parse_backtest_model_specs(&options.models_spec) {
+    let specs = match prepare_model_specs(&options.models_spec) {
         Ok(s) => s,
         Err(e) => {
             let err = ValkeyError::String(format!("TSDB: error parsing MODELS: {e}"));
@@ -290,7 +290,7 @@ fn process_backtest(
 }
 
 fn evaluate_model(
-    spec: &BacktestModelSpec,
+    spec: &PreparedModelSpec,
     series: &ForecastTimeSeries,
     folds: &[Fold],
     options: &BacktestOptions,
@@ -326,7 +326,7 @@ fn evaluate_model(
 /// `Box<dyn Forecaster>` can't be proven `Send`; this design sidesteps the need for that bound
 /// rather than requiring one.
 fn evaluate_fold(
-    spec: &BacktestModelSpec,
+    spec: &PreparedModelSpec,
     series: &ForecastTimeSeries,
     fold: &Fold,
     seasonal_period: Option<usize>,

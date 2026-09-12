@@ -1,6 +1,6 @@
 use crate::analysis::forecasting::DynForecaster;
 use crate::analysis::forecasting::{
-    build_models_from_specs, build_transforms_from_specs, wrap_model_with_transforms,
+    PreparedModelSpec, build_transforms_from_specs, prepare_model_specs, wrap_model_with_transforms,
 };
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
@@ -9,29 +9,24 @@ use crate::commands::command_parser::{
 };
 use crate::commands::forecast_utils::{
     ForecastOutput, StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast, store_anchor,
+    reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
 };
 use crate::commands::parse_store_clause;
-use crate::common::Sample;
 use crate::common::replies::{ThreadSafeReplyContext, reply_with_array};
 use crate::series::DestinationWriteMode;
 use crate::series::TimeSeriesOptions;
-use crate::series::TimestampRange;
-use crate::series::create_or_update_series_with_samples;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
-use anofox_forecast::models::BoxedForecaster;
 use anofox_forecast::transform::Transform;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 #[derive(Default)]
 struct ForecastOptions {
-    series_key: String,
-    models_spec: String,
+    /// Parsed and validated `MODELS`; each entry builds a fresh model on the pool.
+    models: Vec<PreparedModelSpec>,
     /// Reversible pre-processing chain applied, in order, ahead of every model
     /// (see `TRANSFORMS`). Built on the main thread so a bad spec is rejected
     /// before the client is blocked; each model gets its own clone.
     transforms: Vec<Box<dyn Transform>>,
-    timestamp_range: TimestampRange,
     horizon: usize,
     include_metrics: bool,
     level: Option<f64>,
@@ -84,7 +79,7 @@ struct ForecastOptions {
         }
     ]
 })]
-pub(crate) fn ts_forecast_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 8 {
         return Err(ValkeyError::WrongArity);
     }
@@ -118,16 +113,7 @@ fn process_forecast(
     options: ForecastOptions,
     anchor: Option<StoreAnchor>,
 ) {
-    let models = match build_models_from_specs(&options.models_spec) {
-        Ok(models) => models,
-        Err(e) => {
-            let err = ValkeyError::String(format!("TSDB: error parsing MODELS: {:?}", e));
-            ctx.reply(Err(err));
-            return;
-        }
-    };
-
-    let results = match process_models(&series, models, &options) {
+    let results = match process_models(&series, &options) {
         Ok(results) => results,
         Err(e) => {
             ctx.reply(Err(e));
@@ -162,41 +148,32 @@ fn store_forecast(
 ) {
     // STORE is limited to a single model, so the outputs concatenate into one
     // run of consecutive steps after the last observed sample.
-    let samples: Vec<Sample> = results
+    let values: Vec<f64> = results
         .iter()
         .flat_map(|output| output.forecast.primary().iter().copied())
-        .enumerate()
-        .map(|(i, value)| Sample::new(anchor.timestamp_at(i), value))
         .collect();
-
-    let lock = ctx.lock();
-    let key = lock.create_string(dest_key);
-    match create_or_update_series_with_samples(
-        &lock,
-        &key,
+    let reply = write_forecast_samples(
+        ctx,
+        dest_key,
         options.series_options.clone(),
         options.write_mode,
-        &samples,
-        None,
-    ) {
-        Ok(written) => {
-            let _ = ctx.reply(Ok(ValkeyValue::Integer(written as i64)));
-        }
-        Err(e) => {
-            let msg = format!("TSDB: failed to store forecast in key '{}': {}", key, e);
-            ctx.log_warning(&msg);
-            let _ = ctx.reply(Err(ValkeyError::String(msg)));
-        }
-    }
+        &values,
+        anchor,
+    )
+    .map(|written| ValkeyValue::Integer(written as i64));
+    ctx.reply(reply);
 }
 
 fn process_models(
     series: &ForecastTimeSeries,
-    models: Vec<(BoxedForecaster, String)>,
     options: &ForecastOptions,
 ) -> ValkeyResult<Vec<ForecastOutput>> {
-    let mut results = Vec::new();
-    for (model, spec_name) in models {
+    let mut results = Vec::with_capacity(options.models.len());
+    for spec in &options.models {
+        // Validated at parse time, so this only fails on a bug in the builder.
+        let model = spec
+            .build()
+            .map_err(|e| ValkeyError::String(format!("TSDB: error building model: {e}")))?;
         let model = wrap_model_with_transforms(model, &options.transforms);
         let mut model: DynForecaster = DynForecaster::from(model);
         let mut output = run_forecast(
@@ -207,7 +184,7 @@ fn process_models(
             options.include_metrics,
             None, // seasonal_period can be added as an option if needed
         )?;
-        output.model_name = spec_name;
+        output.model_name = spec.display_name().to_string();
         results.push(output);
     }
     Ok(results)
@@ -225,8 +202,9 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
                     horizon_set = true;
                 },
                 "MODELS" => {
-                    let models = args.next_string().map_err(|_| ValkeyError::Str("TSDB: missing value for MODELS"))?;
-                    options.models_spec = models;
+                    let spec = args.next_string().map_err(|_| ValkeyError::Str("TSDB: missing value for MODELS"))?;
+                    options.models = prepare_model_specs(&spec)
+                        .map_err(|e| ValkeyError::String(format!("TSDB: error parsing MODELS: {e}")))?;
                 },
                 "LEVEL" => {
                     let value = parse_forecast_confidence_level(args)?;
@@ -262,21 +240,16 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
         return Err(ValkeyError::Str("TSDB: HORIZON is required"));
     }
 
-    if options.models_spec.is_empty() {
+    if options.models.is_empty() {
         return Err(ValkeyError::Str(
             "TSDB: MODELS must contain at least one model specification",
         ));
     }
 
-    if options.destination_key.is_some() {
-        let model_count = build_models_from_specs(&options.models_spec)
-            .map_err(|e| ValkeyError::String(format!("TSDB: error parsing MODELS: {:?}", e)))?
-            .len();
-        if model_count > 1 {
-            return Err(ValkeyError::Str(
-                "TSDB: STORE is only supported with a single model",
-            ));
-        }
+    if options.destination_key.is_some() && options.models.len() > 1 {
+        return Err(ValkeyError::Str(
+            "TSDB: STORE is only supported with a single model",
+        ));
     }
 
     Ok(options)
