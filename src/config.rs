@@ -72,6 +72,13 @@ pub const RETENTION_POLICY_MAX: i64 = 10 * ONE_YEAR_MS; // 10 years
 /// The default compaction policy: no automatic downsampling rules.
 pub(crate) const DEFAULT_COMPACTION_POLICY: &str = "";
 
+/// Bounds for `ts-forecast-max-horizon`. The ceiling is a hard cap on what an operator can
+/// raise the limit to: every forecast allocates point, lower and upper vectors of `horizon`
+/// doubles per model, off the main thread and after the `deny-oom` check has already passed.
+pub const FORECAST_MAX_HORIZON_MIN: i64 = 1;
+pub const FORECAST_MAX_HORIZON_MAX: i64 = 1_000_000;
+pub const FORECAST_MAX_HORIZON_DEFAULT: i64 = 10_000;
+
 pub const INDEX_BUILD_MAX_MEMORY_MIN: i64 = 0; // 0 = unlimited
 pub const INDEX_BUILD_MAX_MEMORY_MAX: i64 = i64::MAX;
 pub const INDEX_BUILD_MAX_MEMORY_DEFAULT: i64 = 256 * 1024 * 1024; // 256 MiB
@@ -500,6 +507,14 @@ pub fn index_build_max_memory() -> i64 {
     INDEX_BUILD_MAX_MEMORY.load(Ordering::Relaxed)
 }
 
+/// Largest `HORIZON` accepted by `TS.FORECAST`, `TS.AUTOFORECAST` and `TS.BACKTEST`
+/// (`ts-forecast-max-horizon`). Enforced at argument parsing, before any model runs.
+pub static FORECAST_MAX_HORIZON: AtomicI64 = AtomicI64::new(FORECAST_MAX_HORIZON_DEFAULT);
+
+pub fn forecast_max_horizon() -> usize {
+    FORECAST_MAX_HORIZON.load(Ordering::Relaxed).max(1) as usize
+}
+
 fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> ValkeyResult<i64> {
     let duration = parse_duration_value(value).map_err(|_e| {
         ValkeyError::String(format!(
@@ -804,6 +819,10 @@ fn read_index_build_max_memory() -> ConfigValue {
     ConfigValue::Integer(index_build_max_memory())
 }
 
+fn read_forecast_max_horizon() -> ConfigValue {
+    ConfigValue::Integer(FORECAST_MAX_HORIZON.load(Ordering::Relaxed))
+}
+
 fn read_fanout_aggregation_pushdown() -> ConfigValue {
     ConfigValue::Boolean(is_fanout_aggregation_pushdown_enabled())
 }
@@ -1066,6 +1085,20 @@ pub static CONFIGS: &[ConfigDesc] = &[
         },
     },
     ConfigDesc {
+        name: "ts-forecast-max-horizon",
+        read: read_forecast_max_horizon,
+        kind: ConfigType::Integer,
+        default: ConfigValue::Integer(FORECAST_MAX_HORIZON_DEFAULT),
+        min: Some(ConfigValue::Integer(FORECAST_MAX_HORIZON_MIN)),
+        max: Some(ConfigValue::Integer(FORECAST_MAX_HORIZON_MAX)),
+        flags: ConfigurationFlags::DEFAULT,
+        description: "Largest HORIZON accepted by TS.FORECAST, TS.AUTOFORECAST and TS.BACKTEST",
+        storage: ConfigStorage::I64 {
+            cell: || &FORECAST_MAX_HORIZON,
+            validate: None,
+        },
+    },
+    ConfigDesc {
         name: "ts-fanout-aggregation-pushdown",
         read: read_fanout_aggregation_pushdown,
         kind: ConfigType::Boolean,
@@ -1304,6 +1337,7 @@ mod tests {
         ("ts-fanout-command-timeout", "5000"),
         ("ts-cluster-map-expiration-ms", "750"),
         ("ts-index-build-max-memory", "268435456"),
+        ("ts-forecast-max-horizon", "10000"),
         ("ts-fanout-aggregation-pushdown", "yes"),
         ("ts-index-persist", "yes"),
         ("debug-mode", "no"),

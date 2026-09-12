@@ -828,6 +828,16 @@ class TestBacktest(ValkeyTimeSeriesTestCaseBase):
                 "MODELS", "Naive()", "HORIZON", "0"
             )
 
+    def test_error_horizon_above_cap(self):
+        """HORIZON is bounded by ts-forecast-max-horizon before fold sizing."""
+        key = "test:backtest:err:horizon_cap"
+        create_linear_series(self.client, key, count=150)
+        with pytest.raises(ResponseError, match="horizon must not exceed 10000"):
+            self.client.execute_command(
+                "TS.BACKTEST", key, "-", "+",
+                "MODELS", "Naive()", "HORIZON", "1000000000"
+            )
+
     def test_error_insufficient_data(self):
         """A horizon larger than the whole series can't form a single fold."""
         key = "test:backtest:err:insufficient"
