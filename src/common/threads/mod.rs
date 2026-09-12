@@ -33,8 +33,31 @@ pub fn init_thread_pool() {
 
 /// Spawn a job which runs asynchronously.
 /// The job must be `'static` and thus cannot borrow local variables.
+///
+/// The job runs on a pool worker, so it must not take the module lock: see
+/// [`spawn_background`].
 pub fn spawn<F: FnOnce() + Send + 'static>(job: F) {
     rayon_core::spawn(job)
+}
+
+/// Spawn a job on its own thread, off the rayon pool.
+///
+/// For jobs that take `MODULE_CONTEXT` (the module GIL). A pool worker that
+/// holds the GIL and then waits on the pool — a `scope`, a `join`, a
+/// `par_*_rayon` fan-out — waits by stealing whatever job is pending, and
+/// under query load the pending jobs are evaluator closures that ask the
+/// PromQL selector executor for data and block until it answers. The executor
+/// needs the GIL to answer; the worker holds the GIL and is blocked on the
+/// answer: the server freezes. Observed with the series trim cron firing
+/// during a burst of subquery steps. A detached thread waits on the pool
+/// without stealing, so a GIL holder here can never pick up such a closure.
+pub fn spawn_background<F: FnOnce() + Send + 'static>(name: &str, job: F) {
+    if let Err(err) = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(job)
+    {
+        log_notice(format!("failed to spawn background thread {name}: {err}"));
+    }
 }
 
 /// Spawn a job in the context of a valkey GIL (Global Interpreter Lock).

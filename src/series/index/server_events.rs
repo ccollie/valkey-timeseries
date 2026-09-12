@@ -182,11 +182,11 @@ pub(super) fn process_delayed_indexing() {
         total_keys
     ));
 
-    // Runs on the module's rayon pool (not a detached `std::thread`) so it participates in the
-    // same thread lifecycle as every other background job, and checks `is_shutting_down()`
-    // between dbs — an aborted drain leaves the remaining dbs' keys un-indexed, which is fine on
-    // shutdown (see `process_delayed_keys_for_db`) but must not happen otherwise.
-    crate::common::threads::spawn(move || {
+    // On its own thread rather than the pool because it takes the module lock (see
+    // `spawn_background`), and checks `is_shutting_down()` between dbs — an aborted drain
+    // leaves the remaining dbs' keys un-indexed, which is fine on shutdown (see
+    // `process_delayed_keys_for_db`) but must not happen otherwise.
+    crate::common::threads::spawn_background("ts-delayed-indexing", move || {
         for db in dbs {
             if crate::is_shutting_down() {
                 log_debug("ASM delayed indexing drain aborted by shutdown");
@@ -318,8 +318,8 @@ fn handle_post_migration_cleanup(source_slots: RangeSetBlaze<u16>) {
     ));
 
     // Spawn a background task so we don't block the main thread; this can take a while if there are
-    // a lot of keys to clean up.
-    crate::common::threads::spawn(move || {
+    // a lot of keys to clean up. Off the pool: it takes the module lock (see `spawn_background`).
+    crate::common::threads::spawn_background("ts-asm-cleanup", move || {
         let index = TIMESERIES_INDEX.pin();
         let mut dbs: Vec<i32> = index.keys().copied().collect();
         dbs.sort_unstable();
