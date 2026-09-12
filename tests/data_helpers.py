@@ -293,6 +293,26 @@ def _add(client, key: str, start_ms: int, values: List[float],
         client.execute_command("TS.ADD", key, start_ms + i * step_ms, v)
 
 
+def create_large_seasonal_series(client, key: str, count: int,
+                                  start_ms: int = 1000,
+                                  step_ms: int = 1000) -> None:
+    """Pipelined writer for the tens-of-thousands-of-samples series the analysis
+    commands need to cross their background-execution thresholds.
+
+    Values carry a short (~44-sample) and a long (~635-sample) cycle plus a slight
+    drift, so period detection, decomposition and trend fitting all have
+    something to find.
+    """
+    pipe = client.pipeline(transaction=False)
+    for i in range(count):
+        value = 10 + math.sin(i / 7.0) * 3 + math.cos(i / 101.0) * 2 + i * 0.001
+        pipe.execute_command("TS.ADD", key, start_ms + i * step_ms, value)
+        if i % 5000 == 4999:
+            pipe.execute()
+            pipe = client.pipeline(transaction=False)
+    pipe.execute()
+
+
 def create_linear_series(client, key: str, start_ms: int = 1000,
                           count: int = 100, slope: float = 2.0,
                           intercept: float = 1.0,

@@ -21,6 +21,7 @@ TS.TREND key fromTimestamp toTimestamp
   [PREDICT <horizon>]
   [FEATURES]
   [METRICS]
+  [TIMEOUT milliseconds]
   [STORE <destination>]
 ```
 
@@ -143,6 +144,20 @@ values with timestamps continuing from the last observed timestamp using the ser
 sampling interval. If the series has fewer than two timestamps or no positive time intervals,
 predicted values are skipped with a warning (fitted values are still stored).
 
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds. Ranges of up to 2,000 samples are computed
+inline; larger ranges run on a dedicated pool of analysis worker threads (sized by
+`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
+counted from when the request is accepted, so time spent queued behind other analysis work
+counts. When it elapses the client receives `TSDB: command timed out before the result was
+ready` and the request is abandoned; a `STORE` that has not yet happened is skipped. `0` disables the deadline for this call.
+
+When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
 </details>
 
 ## Return

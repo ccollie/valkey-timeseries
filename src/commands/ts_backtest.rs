@@ -1,9 +1,9 @@
 use crate::analysis::forecasting::{BacktestModelSpec, DynForecaster, parse_backtest_model_specs};
 use crate::commands::CommandArgIterator;
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
 use crate::commands::command_parser::parse_forecast_horizon_value;
 use crate::commands::forecast_utils::{
-    ForecastTimeout, handle_forecast_key_pos_request, parse_forecast_timeout,
-    parse_timeseries_for_forecast, reply_with_accuracy_metrics, run_forecast_job,
+    handle_forecast_key_pos_request, parse_timeseries_for_forecast, reply_with_accuracy_metrics,
 };
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{
@@ -31,7 +31,7 @@ struct BacktestOptions {
     embargo: usize,
     seasonal_period: Option<usize>,
     with_predictions: bool,
-    timeout: ForecastTimeout,
+    timeout: AnalysisTimeout,
 }
 
 impl Default for BacktestOptions {
@@ -48,7 +48,7 @@ impl Default for BacktestOptions {
             embargo: 0,
             seasonal_period: None,
             with_predictions: false,
-            timeout: ForecastTimeout::default(),
+            timeout: AnalysisTimeout::default(),
         }
     }
 }
@@ -124,7 +124,7 @@ pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_backtest_args(&mut args)?;
 
-    run_forecast_job(ctx, options.timeout, move |thread_ctx| {
+    run_analysis_job(ctx, options.timeout, move |thread_ctx| {
         process_backtest(thread_ctx, series, options);
     });
 
@@ -140,7 +140,7 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
         hashify::fnc_map_ignore_case!(
             arg.as_slice(),
             "TIMEOUT" => {
-                options.timeout.set(parse_forecast_timeout(args)?);
+                options.timeout.set(parse_timeout(args)?);
             },
             "HORIZON" => {
                 options.horizon = parse_forecast_horizon_value(args)?;

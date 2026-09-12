@@ -79,10 +79,10 @@ pub const FORECAST_MAX_HORIZON_MIN: i64 = 1;
 pub const FORECAST_MAX_HORIZON_MAX: i64 = 1_000_000;
 pub const FORECAST_MAX_HORIZON_DEFAULT: i64 = 10_000;
 
-/// Bounds for `ts-forecast-timeout` (milliseconds; 0 = no deadline).
-pub const FORECAST_TIMEOUT_MIN_MS: i64 = 0;
-pub const FORECAST_TIMEOUT_MAX_MS: i64 = 3_600_000; // 1 hour
-pub const FORECAST_TIMEOUT_DEFAULT_MS: u64 = 60_000;
+/// Bounds for `ts-analysis-timeout` (milliseconds; 0 = no deadline).
+pub const ANALYSIS_TIMEOUT_MIN_MS: i64 = 0;
+pub const ANALYSIS_TIMEOUT_MAX_MS: i64 = 3_600_000; // 1 hour
+pub const ANALYSIS_TIMEOUT_DEFAULT_MS: u64 = 60_000;
 
 pub const INDEX_BUILD_MAX_MEMORY_MIN: i64 = 0; // 0 = unlimited
 pub const INDEX_BUILD_MAX_MEMORY_MAX: i64 = i64::MAX;
@@ -457,8 +457,8 @@ static FANOUT_COMMAND_TIMEOUT_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
     LazyLock::new(|| default_string_cell("ts-fanout-command-timeout"));
 static CLUSTER_MAP_EXPIRATION_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
     LazyLock::new(|| default_string_cell("ts-cluster-map-expiration-ms"));
-static FORECAST_TIMEOUT_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
-    LazyLock::new(|| default_string_cell("ts-forecast-timeout"));
+static ANALYSIS_TIMEOUT_STRING: LazyLock<ValkeyGILGuard<ValkeyString>> =
+    LazyLock::new(|| default_string_cell("ts-analysis-timeout"));
 
 /// Gate for the `TS._DEBUG` command surface (`debug-mode`, default off).
 ///
@@ -522,12 +522,13 @@ pub fn forecast_max_horizon() -> usize {
     FORECAST_MAX_HORIZON.load(Ordering::Relaxed).max(1) as usize
 }
 
-/// Default deadline for `TS.FORECAST`, `TS.AUTOFORECAST` and `TS.BACKTEST`
-/// (`ts-forecast-timeout`, milliseconds, 0 = none). Each command's `TIMEOUT` overrides it.
-pub static FORECAST_TIMEOUT_MS: AtomicU64 = AtomicU64::new(FORECAST_TIMEOUT_DEFAULT_MS);
+/// Default deadline for the analysis commands (forecasting, trend, decomposition, period
+/// detection, stationarity, autocorrelation): `ts-analysis-timeout`, milliseconds, 0 = none.
+/// Each command's `TIMEOUT` overrides it.
+pub static ANALYSIS_TIMEOUT_MS: AtomicU64 = AtomicU64::new(ANALYSIS_TIMEOUT_DEFAULT_MS);
 
-pub fn forecast_timeout_ms() -> u64 {
-    FORECAST_TIMEOUT_MS.load(Ordering::Relaxed)
+pub fn analysis_timeout_ms() -> u64 {
+    ANALYSIS_TIMEOUT_MS.load(Ordering::Relaxed)
 }
 
 fn parse_duration_in_range(name: &str, value: &str, min: i64, max: i64) -> ValkeyResult<i64> {
@@ -659,14 +660,14 @@ fn update_cluster_map_expiration(val: &str) -> ValkeyResult<()> {
     Ok(())
 }
 
-fn update_forecast_timeout(val: &str) -> ValkeyResult<()> {
+fn update_analysis_timeout(val: &str) -> ValkeyResult<()> {
     let duration = parse_duration_in_range(
-        "ts-forecast-timeout",
+        "ts-analysis-timeout",
         val,
-        FORECAST_TIMEOUT_MIN_MS,
-        FORECAST_TIMEOUT_MAX_MS,
+        ANALYSIS_TIMEOUT_MIN_MS,
+        ANALYSIS_TIMEOUT_MAX_MS,
     )?;
-    FORECAST_TIMEOUT_MS.store(duration as u64, Ordering::SeqCst);
+    ANALYSIS_TIMEOUT_MS.store(duration as u64, Ordering::SeqCst);
     Ok(())
 }
 
@@ -849,8 +850,8 @@ fn read_forecast_max_horizon() -> ConfigValue {
     ConfigValue::Integer(FORECAST_MAX_HORIZON.load(Ordering::Relaxed))
 }
 
-fn read_forecast_timeout() -> ConfigValue {
-    ConfigValue::DurationMs(forecast_timeout_ms() as i64)
+fn read_analysis_timeout() -> ConfigValue {
+    ConfigValue::DurationMs(analysis_timeout_ms() as i64)
 }
 
 fn read_fanout_aggregation_pushdown() -> ConfigValue {
@@ -1129,17 +1130,17 @@ pub static CONFIGS: &[ConfigDesc] = &[
         },
     },
     ConfigDesc {
-        name: "ts-forecast-timeout",
-        read: read_forecast_timeout,
+        name: "ts-analysis-timeout",
+        read: read_analysis_timeout,
         kind: ConfigType::Duration,
-        default: ConfigValue::DurationMs(FORECAST_TIMEOUT_DEFAULT_MS as i64),
-        min: Some(ConfigValue::DurationMs(FORECAST_TIMEOUT_MIN_MS)),
-        max: Some(ConfigValue::DurationMs(FORECAST_TIMEOUT_MAX_MS)),
+        default: ConfigValue::DurationMs(ANALYSIS_TIMEOUT_DEFAULT_MS as i64),
+        min: Some(ConfigValue::DurationMs(ANALYSIS_TIMEOUT_MIN_MS)),
+        max: Some(ConfigValue::DurationMs(ANALYSIS_TIMEOUT_MAX_MS)),
         flags: ConfigurationFlags::DEFAULT,
         description: "Default deadline in milliseconds for TS.FORECAST, TS.AUTOFORECAST and                       TS.BACKTEST (0 = none); a command's TIMEOUT argument overrides it",
         storage: ConfigStorage::Str {
-            cell: || &FORECAST_TIMEOUT_STRING,
-            apply: update_forecast_timeout,
+            cell: || &ANALYSIS_TIMEOUT_STRING,
+            apply: update_analysis_timeout,
         },
     },
     ConfigDesc {
@@ -1382,7 +1383,7 @@ mod tests {
         ("ts-cluster-map-expiration-ms", "750"),
         ("ts-index-build-max-memory", "268435456"),
         ("ts-forecast-max-horizon", "10000"),
-        ("ts-forecast-timeout", "60000"),
+        ("ts-analysis-timeout", "60000"),
         ("ts-fanout-aggregation-pushdown", "yes"),
         ("ts-index-persist", "yes"),
         ("debug-mode", "no"),

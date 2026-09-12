@@ -7,6 +7,7 @@ Compute autocorrelation-based statistics on a time series.
 ```
 TS.AUTOCORRELATION key startTime endTime lag 
     [PARTIAL | TRA | AGGREGATED mean|var|std|median]
+    [TIMEOUT milliseconds]
 ```
 
 [Examples](#examples)
@@ -71,6 +72,20 @@ Requires an aggregation function:
 * `var` - Variance of the autocorrelation values across lags 1..=lag
 * `std` - Standard deviation of the autocorrelation values across lags 1..=lag
 * `median` - Median of the autocorrelation values across lags 1..=lag
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds. Ranges of up to 50,000 samples are computed
+inline; larger ranges run on a dedicated pool of analysis worker threads (sized by
+`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
+counted from when the request is accepted, so time spent queued behind other analysis work
+counts. When it elapses the client receives `TSDB: command timed out before the result was
+ready` and the request is abandoned. `0` disables the deadline for this call.
+
+When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
 </details>
 
 ## Return

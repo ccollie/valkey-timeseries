@@ -1,6 +1,7 @@
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::common::replies::{
-    reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
+    IntoRawCtx, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
 };
 use anofox_forecast::validation::stationarity::{self, StationarityResult};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -11,6 +12,7 @@ const MIN_SAMPLES: usize = 10;
 /// TS.STATIONARITY key startTime endTime
 ///     [TEST adf|kpss|combined]
 ///     [LAGS n]
+///     [TIMEOUT ms]
 /// ```
 ///
 /// `TS.STATIONARITY` tests whether a time series is stationary.
@@ -59,9 +61,10 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         )));
     }
 
-    // Parse optional TEST and LAGS
+    // Parse optional TEST, LAGS and TIMEOUT
     let mut test_type = TestType::Combined;
     let mut lags: Option<usize> = None;
+    let mut timeout = AnalysisTimeout::default();
 
     while let Some(arg) = args.peek() {
         let arg_str = arg
@@ -87,6 +90,10 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
                 }
                 lags = Some(lag as usize);
             }
+            "TIMEOUT" => {
+                args.next();
+                timeout.set(parse_timeout(&mut args)?);
+            }
             _ => break,
         }
     }
@@ -100,6 +107,46 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         ));
     }
 
+    let sample_count = values.len();
+    run_analysis(
+        ctx,
+        sample_count,
+        INLINE_MAX_SAMPLES,
+        timeout,
+        move || Ok(run_tests(&values, test_type, lags)),
+        move |actx, outcome| {
+            let ctx = actx.reply_ctx();
+            match outcome {
+                Outcome::Combined {
+                    adf,
+                    kpss,
+                    conclusion,
+                } => reply_combined(&ctx, &adf, &kpss, conclusion),
+                Outcome::Single { result, test_name } => {
+                    reply_single_test(&ctx, &result, test_name)
+                }
+            }
+        },
+    )
+}
+
+/// Largest range that runs on the main thread. ADF/KPSS are linear in the range
+/// (~60 ms at 200k samples, release build), so the bar is high.
+const INLINE_MAX_SAMPLES: usize = 50_000;
+
+enum Outcome {
+    Combined {
+        adf: StationarityResult,
+        kpss: StationarityResult,
+        conclusion: &'static str,
+    },
+    Single {
+        result: StationarityResult,
+        test_name: &'static str,
+    },
+}
+
+fn run_tests(values: &[f64], test_type: TestType, lags: Option<usize>) -> Outcome {
     // Constant series (all values identical) is trivially stationary.
     // The ADF/KPSS regression would fail with zero variance, so handle
     // this edge case by returning a stationary result directly.
@@ -117,36 +164,39 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
             critical_values: stationarity::CriticalValues::default(),
         };
         return match test_type {
-            TestType::Combined => {
-                reply_with_map(ctx, 4);
-                reply_with_str(ctx, "test");
-                reply_with_str(ctx, "combined");
-                reply_with_str(ctx, "conclusion");
-                reply_with_str(ctx, "stationary");
-                reply_with_str(ctx, "adf");
-                reply_with_map(ctx, 7);
-                reply_result_fields(ctx, &const_result);
-                reply_with_str(ctx, "kpss");
-                reply_with_map(ctx, 7);
-                reply_result_fields(ctx, &const_result);
-                Ok(ValkeyValue::NoReply)
-            }
-            TestType::Adf => reply_single_test(ctx, &const_result, "adf"),
-            TestType::Kpss => reply_single_test(ctx, &const_result, "kpss"),
+            TestType::Combined => Outcome::Combined {
+                adf: const_result.clone(),
+                kpss: const_result,
+                conclusion: "stationary",
+            },
+            TestType::Adf => Outcome::Single {
+                result: const_result,
+                test_name: "adf",
+            },
+            TestType::Kpss => Outcome::Single {
+                result: const_result,
+                test_name: "kpss",
+            },
         };
     }
 
-    // Run test(s) and build response
     match test_type {
-        TestType::Combined => reply_combined_test(ctx, &values),
-        TestType::Adf => {
-            let result = stationarity::adf_test(&values, lags);
-            reply_single_test(ctx, &result, "adf")
+        TestType::Combined => {
+            let (adf, kpss, conclusion) = stationarity::test_stationarity(values);
+            Outcome::Combined {
+                adf,
+                kpss,
+                conclusion,
+            }
         }
-        TestType::Kpss => {
-            let result = stationarity::kpss_test(&values, lags);
-            reply_single_test(ctx, &result, "kpss")
-        }
+        TestType::Adf => Outcome::Single {
+            result: stationarity::adf_test(values, lags),
+            test_name: "adf",
+        },
+        TestType::Kpss => Outcome::Single {
+            result: stationarity::kpss_test(values, lags),
+            test_name: "kpss",
+        },
     }
 }
 
@@ -165,7 +215,7 @@ enum TestType {
 /// `statistic`, `pValue`, `lags`, `isStationary`, and the three
 /// critical-value keys.  The caller is responsible for opening the map
 /// and writing the `test` / `conclusion` fields before calling this.
-fn reply_result_fields(ctx: &Context, result: &StationarityResult) {
+fn reply_result_fields<C: IntoRawCtx + Copy>(ctx: C, result: &StationarityResult) {
     reply_with_str(ctx, "statistic");
     reply_with_double(ctx, result.statistic);
 
@@ -188,7 +238,11 @@ fn reply_result_fields(ctx: &Context, result: &StationarityResult) {
     reply_with_double(ctx, result.critical_values.cv_10pct);
 }
 
-fn reply_single_test(ctx: &Context, result: &StationarityResult, test_name: &str) -> ValkeyResult {
+fn reply_single_test<C: IntoRawCtx + Copy>(
+    ctx: C,
+    result: &StationarityResult,
+    test_name: &str,
+) -> ValkeyResult {
     reply_with_map(ctx, 9);
 
     reply_with_str(ctx, "test");
@@ -207,9 +261,12 @@ fn reply_single_test(ctx: &Context, result: &StationarityResult, test_name: &str
     Ok(ValkeyValue::NoReply)
 }
 
-fn reply_combined_test(ctx: &Context, values: &[f64]) -> ValkeyResult {
-    let (adf_result, kpss_result, conclusion) = stationarity::test_stationarity(values);
-
+fn reply_combined<C: IntoRawCtx + Copy>(
+    ctx: C,
+    adf_result: &StationarityResult,
+    kpss_result: &StationarityResult,
+    conclusion: &str,
+) -> ValkeyResult {
     // Top-level map: 4 keys — test, conclusion, adf (nested), kpss (nested)
     reply_with_map(ctx, 4);
 
@@ -222,12 +279,12 @@ fn reply_combined_test(ctx: &Context, values: &[f64]) -> ValkeyResult {
     // ADF nested map — 7 keys: statistic, pValue, lags, isStationary, cv1pct, cv5pct, cv10pct
     reply_with_str(ctx, "adf");
     reply_with_map(ctx, 7);
-    reply_result_fields(ctx, &adf_result);
+    reply_result_fields(ctx, adf_result);
 
     // KPSS nested map — 7 keys
     reply_with_str(ctx, "kpss");
     reply_with_map(ctx, 7);
-    reply_result_fields(ctx, &kpss_result);
+    reply_result_fields(ctx, kpss_result);
 
     Ok(ValkeyValue::NoReply)
 }

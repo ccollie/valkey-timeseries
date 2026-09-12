@@ -1,8 +1,9 @@
 use crate::analysis::seasonality::Seasonality;
 use crate::commands::CommandArgIterator;
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::common::replies::{
-    reply_with_array, reply_with_double, reply_with_integer, reply_with_str,
+    IntoRawCtx, reply_with_array, reply_with_double, reply_with_integer, reply_with_str,
 };
 use anofox_forecast::detection::{PeriodDetectionConfig, detect_periods};
 use anofox_forecast::seasonality::{MSTL, MSTLResult, STL, STLResult};
@@ -13,6 +14,7 @@ const MAX_SEASONALITY_PERIODS: usize = 4;
 /// ```text
 /// TS.DECOMPOSE key startTimestamp endTimestamp
 ///     [SEASONALITY "auto"|period [period...]]
+///     [TIMEOUT ms]
 /// ```
 ///
 /// `TS.DECOMPOSE` decomposes a time series into its constituent components:
@@ -49,14 +51,58 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
 
     let seasonality = parse_seasonality(&mut args)?;
 
+    let mut timeout = AnalysisTimeout::default();
+    while let Some(arg) = args.peek() {
+        if arg.as_slice().eq_ignore_ascii_case(b"TIMEOUT") {
+            args.next();
+            timeout.set(parse_timeout(&mut args)?);
+        } else {
+            break;
+        }
+    }
+
     args.done()?;
 
-    // Determine periods
-    let periods = match &seasonality {
-        Seasonality::Periods(periods) => periods.clone(),
+    let timestamps: Vec<i64> = samples.iter().map(|s| s.timestamp).collect();
+    let sample_count = values.len();
+
+    run_analysis(
+        ctx,
+        sample_count,
+        INLINE_MAX_SAMPLES,
+        timeout,
+        move || {
+            let result = decompose(&values, seasonality)?;
+            Ok((values, result))
+        },
+        move |actx, (values, result)| {
+            let ctx = actx.reply_ctx();
+            match result {
+                Decomposition::Stl(result) => reply_stl_result(&ctx, &timestamps, &values, &result),
+                Decomposition::Mstl(result) => {
+                    reply_mstl_result(&ctx, &timestamps, &values, &result)
+                }
+            }
+        },
+    )
+}
+
+/// Largest range that runs on the main thread. STL is ~25 ms here and 1.7–8 s at
+/// 200k samples (release build), so anything bigger goes to the pool.
+const INLINE_MAX_SAMPLES: usize = 2_000;
+
+enum Decomposition {
+    Stl(STLResult),
+    Mstl(MSTLResult),
+}
+
+/// Resolve the seasonal period(s) and run STL (one period) or MSTL (several).
+fn decompose(values: &[f64], seasonality: Seasonality) -> ValkeyResult<Decomposition> {
+    let periods = match seasonality {
+        Seasonality::Periods(periods) => periods,
         Seasonality::Auto => {
             let config = PeriodDetectionConfig::default();
-            let periods = detect_periods(&values, &config);
+            let periods = detect_periods(values, &config);
             periods.iter().map(|p| p.period).collect()
         }
     };
@@ -68,10 +114,8 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
     }
 
     let n = values.len();
-    let timestamps: Vec<i64> = samples.iter().map(|s| s.timestamp).collect();
 
     if periods.len() == 1 {
-        // Single period: use STL
         let period = periods[0];
         if n < 2 * period {
             return Err(ValkeyError::String(format!(
@@ -81,14 +125,12 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
             )));
         }
 
-        let result = STL::new(period)
+        STL::new(period)
             .robust()
-            .decompose(&values)
-            .ok_or(ValkeyError::Str("TSDB: STL decomposition failed"))?;
-
-        reply_stl_result(ctx, &timestamps, &values, &result)
+            .decompose(values)
+            .map(Decomposition::Stl)
+            .ok_or(ValkeyError::Str("TSDB: STL decomposition failed"))
     } else {
-        // Multiple periods: use MSTL
         let max_period = *periods.iter().max().unwrap_or(&0);
         if n < 2 * max_period {
             return Err(ValkeyError::String(format!(
@@ -98,12 +140,11 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
             )));
         }
 
-        let result = MSTL::new(periods)
+        MSTL::new(periods)
             .robust()
-            .decompose(&values)
-            .ok_or(ValkeyError::Str("TSDB: MSTL decomposition failed"))?;
-
-        reply_mstl_result(ctx, &timestamps, &values, &result)
+            .decompose(values)
+            .map(Decomposition::Mstl)
+            .ok_or(ValkeyError::Str("TSDB: MSTL decomposition failed"))
     }
 }
 
@@ -163,8 +204,8 @@ fn parse_seasonality(args: &mut CommandArgIterator) -> ValkeyResult<Seasonality>
 ///   "trend" -> [[ts, val], ...]
 ///   "seasonal" -> [[ts, val], ...]
 ///   "residual" -> [[ts, val], ...]
-fn reply_stl_result(
-    ctx: &Context,
+fn reply_stl_result<C: IntoRawCtx + Copy>(
+    ctx: C,
     timestamps: &[i64],
     original: &[f64],
     result: &STLResult,
@@ -197,8 +238,8 @@ fn reply_stl_result(
 ///   "trend"                 -> [[ts, val], ...]
 ///   "seasonal_components"   -> [ [period, [[ts, val], ...]], ... ]
 ///   "residual"              -> [[ts, val], ...]
-fn reply_mstl_result(
-    ctx: &Context,
+fn reply_mstl_result<C: IntoRawCtx + Copy>(
+    ctx: C,
     timestamps: &[i64],
     original: &[f64],
     result: &MSTLResult,
@@ -230,7 +271,7 @@ fn reply_mstl_result(
 }
 
 /// Reply with an array of [timestamp, value] pairs.
-fn reply_sample_array(ctx: &Context, timestamps: &[i64], values: &[f64]) {
+fn reply_sample_array<C: IntoRawCtx + Copy>(ctx: C, timestamps: &[i64], values: &[f64]) {
     reply_with_array(ctx, timestamps.len());
     for (ts, val) in timestamps.iter().zip(values.iter()) {
         reply_with_array(ctx, 2);

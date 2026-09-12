@@ -3,13 +3,13 @@ use crate::analysis::forecasting::{
     build_models_from_specs, build_transforms_from_specs, wrap_model_with_transforms,
 };
 use crate::commands::CommandArgIterator;
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
 };
 use crate::commands::forecast_utils::{
-    ForecastOutput, ForecastTimeout, StoreAnchor, handle_forecast_key_pos_request,
-    parse_forecast_timeout, parse_timeseries_for_forecast, reply_with_forecast_output,
-    run_forecast, run_forecast_job, store_anchor,
+    ForecastOutput, StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
+    reply_with_forecast_output, run_forecast, store_anchor,
 };
 use crate::commands::parse_store_clause;
 use crate::common::Sample;
@@ -38,7 +38,7 @@ struct ForecastOptions {
     destination_key: Option<Vec<u8>>,
     series_options: Option<TimeSeriesOptions>,
     write_mode: DestinationWriteMode,
-    timeout: ForecastTimeout,
+    timeout: AnalysisTimeout,
 }
 
 /// Forecasts future values of a time series using a specified model.
@@ -104,7 +104,7 @@ pub(crate) fn ts_forecast_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
         .map(|_| store_anchor(&series))
         .transpose()?;
 
-    run_forecast_job(ctx, options.timeout, move |thread_ctx| {
+    run_analysis_job(ctx, options.timeout, move |thread_ctx| {
         process_forecast(thread_ctx, series, options, anchor);
     });
 
@@ -244,7 +244,7 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
                     options.include_metrics = true;
                 },
                 "TIMEOUT" => {
-                    options.timeout.set(parse_forecast_timeout(args)?);
+                    options.timeout.set(parse_timeout(args)?);
                 },
                 "STORE" => {
                     let store_options = parse_store_clause(args)?;

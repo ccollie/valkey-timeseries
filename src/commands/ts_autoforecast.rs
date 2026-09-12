@@ -1,12 +1,12 @@
 use crate::analysis::forecasting::normalize_model_name;
 use crate::commands::CommandArgIterator;
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value, parse_store_clause,
 };
 use crate::commands::forecast_utils::{
-    ForecastTimeout, StoreAnchor, handle_forecast_key_pos_request, parse_forecast_timeout,
-    parse_timeseries_for_forecast, reply_with_forecast_output, run_forecast, run_forecast_job,
-    store_anchor,
+    StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
+    reply_with_forecast_output, run_forecast, store_anchor,
 };
 use crate::commands::utils::reply_with_double_array;
 use crate::common::Sample;
@@ -29,7 +29,7 @@ struct AutoForecastOptions {
     write_mode: Option<DestinationWriteMode>,
     config: AutoForecastConfig,
     auto_seasonality: bool,
-    timeout: ForecastTimeout,
+    timeout: AnalysisTimeout,
 }
 
 impl Default for AutoForecastOptions {
@@ -44,7 +44,7 @@ impl Default for AutoForecastOptions {
             write_mode: None,
             config: AutoForecastConfig::default(),
             auto_seasonality: false,
-            timeout: ForecastTimeout::default(),
+            timeout: AnalysisTimeout::default(),
         }
     }
 }
@@ -111,7 +111,7 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
         .map(|_| store_anchor(&series))
         .transpose()?;
 
-    run_forecast_job(ctx, options.timeout, move |thread_ctx| {
+    run_analysis_job(ctx, options.timeout, move |thread_ctx| {
         process_forecast(thread_ctx, series, options, anchor);
     });
 
@@ -153,7 +153,7 @@ fn parse_autoforecast_args(args: &mut CommandArgIterator) -> ValkeyResult<AutoFo
                     options.metrics = true;
                 },
                 "TIMEOUT" => {
-                    options.timeout.set(parse_forecast_timeout(args)?);
+                    options.timeout.set(parse_timeout(args)?);
                 },
                 "STORE" => {
                     let store_options = parse_store_clause(args)?;

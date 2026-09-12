@@ -4,7 +4,7 @@ import pytest
 from valkey import ResponseError
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
-from data_helpers import create_constant_series, create_linear_series, create_sine_series, create_white_noise_series, create_random_walk_series
+from data_helpers import create_constant_series, create_linear_series, create_sine_series, create_white_noise_series, create_random_walk_series, create_large_seasonal_series
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +309,43 @@ class TestStationarity(ValkeyTimeSeriesTestCaseBase):
             self.client.execute_command(
                 "TS.STATIONARITY", key, 1000, 5000, "TEST", "adf"
             )
+
+
+    # ── analysis pool and TIMEOUT ────────────────────────────────────────
+
+    def test_large_range_runs_in_background_with_same_reply(self):
+        """Above the inline threshold the tests run on the analysis pool; the
+        combined reply keeps its four top-level keys and nested maps."""
+        key = "test:stationarity:large"
+        create_large_seasonal_series(self.client, key, count=60000)
+
+        result = self.client.execute_command("TS.STATIONARITY", key, "-", "+")
+        d = dict(zip(result[::2], result[1::2]))
+        assert d[b"test"] == b"combined"
+        assert d[b"conclusion"]  # one of the combined-test verdicts, e.g. non_stationary
+        adf = dict(zip(d[b"adf"][::2], d[b"adf"][1::2]))
+        assert b"statistic" in adf and b"pValue" in adf
+        assert len(d) == 4
+
+    def test_large_range_single_test_in_background(self):
+        key = "test:stationarity:large_adf"
+        create_large_seasonal_series(self.client, key, count=60000)
+
+        result = self.client.execute_command("TS.STATIONARITY", key, "-", "+", "TEST", "adf")
+        d = dict(zip(result[::2], result[1::2]))
+        assert d[b"test"] == b"adf"
+
+    def test_timeout_accepted(self):
+        key = "test:stationarity:timeout_ok"
+        create_sine_series(self.client, key, count=100)
+        result = self.client.execute_command(
+            "TS.STATIONARITY", key, "-", "+", "TEST", "kpss", "TIMEOUT", "30000"
+        )
+        d = dict(zip(result[::2], result[1::2]))
+        assert d[b"test"] == b"kpss"
+
+    def test_timeout_negative(self):
+        key = "test:stationarity:timeout_neg"
+        create_sine_series(self.client, key, count=100)
+        with pytest.raises(ResponseError, match="TIMEOUT must be zero or positive"):
+            self.client.execute_command("TS.STATIONARITY", key, "-", "+", "TIMEOUT", "-1")

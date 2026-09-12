@@ -1,10 +1,13 @@
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
-use crate::common::replies::{reply_with_array, reply_with_double, reply_with_integer};
+use crate::common::replies::{
+    reply_with_array, reply_with_double, reply_with_integer, reply_with_null,
+};
 use anofox_forecast::detection::period::{PeriodDetectionConfig, detect_periods};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 /// ```text
-/// TS.PERIODS key startTimestamp endTimestamp [MIN_STRENGTH minStrength] [DOMINANT]
+/// TS.PERIODS key startTimestamp endTimestamp [MIN_STRENGTH minStrength] [DOMINANT] [TIMEOUT ms]
 /// ```
 ///
 /// `TS.PERIODS` detects seasonal periods in a time series using the SAZED algorithm.
@@ -47,9 +50,10 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ));
     }
 
-    // Parse optional arguments: MIN_STRENGTH and DOMINANT
+    // Parse optional arguments: MIN_STRENGTH, DOMINANT and TIMEOUT
     let mut min_strength: Option<f64> = None;
     let mut dominant = false;
+    let mut timeout = AnalysisTimeout::default();
 
     while let Some(arg) = args.peek() {
         if arg.as_slice().eq_ignore_ascii_case(b"MIN_STRENGTH") {
@@ -68,6 +72,9 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         } else if arg.as_slice().eq_ignore_ascii_case(b"DOMINANT") {
             args.next(); // consume DOMINANT
             dominant = true;
+        } else if arg.as_slice().eq_ignore_ascii_case(b"TIMEOUT") {
+            args.next(); // consume TIMEOUT
+            timeout.set(parse_timeout(&mut args)?);
         } else {
             return Err(ValkeyError::String(format!(
                 "TSDB: Unknown argument: {}",
@@ -84,29 +91,41 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ..Default::default()
     };
 
-    let periods = detect_periods(&values, &config);
-
-    if dominant {
-        match periods.first() {
-            Some(p) => {
-                reply_with_integer(ctx, p.period as i64);
+    let sample_count = values.len();
+    run_analysis(
+        ctx,
+        sample_count,
+        INLINE_MAX_SAMPLES,
+        timeout,
+        move || Ok(detect_periods(&values, &config)),
+        move |actx, periods| {
+            let ctx = actx.reply_ctx();
+            if dominant {
+                match periods.first() {
+                    Some(p) => {
+                        reply_with_integer(&ctx, p.period as i64);
+                    }
+                    None => {
+                        reply_with_null(&ctx);
+                    }
+                }
+            } else {
+                reply_with_array(&ctx, periods.len());
+                for p in &periods {
+                    // Each period returned as an array: [period, power, strength, acf, n_cycles]
+                    reply_with_array(&ctx, 5);
+                    reply_with_integer(&ctx, p.period as i64);
+                    reply_with_double(&ctx, p.power);
+                    reply_with_double(&ctx, p.strength);
+                    reply_with_double(&ctx, p.acf);
+                    reply_with_integer(&ctx, p.n_cycles as i64);
+                }
             }
-            None => {
-                valkey_module::raw::reply_with_null(ctx.ctx);
-            }
-        }
-    } else {
-        reply_with_array(ctx, periods.len());
-        for p in &periods {
-            // Each period returned as an array: [period, power, strength, acf, n_cycles]
-            reply_with_array(ctx, 5);
-            reply_with_integer(ctx, p.period as i64);
-            reply_with_double(ctx, p.power);
-            reply_with_double(ctx, p.strength);
-            reply_with_double(ctx, p.acf);
-            reply_with_integer(ctx, p.n_cycles as i64);
-        }
-    }
-
-    Ok(ValkeyValue::NoReply)
+            Ok(ValkeyValue::NoReply)
+        },
+    )
 }
+
+/// Largest range that runs on the main thread. Period detection is ~7 ms at this
+/// size and ~200 ms at 20k (release build), so anything bigger goes to the pool.
+const INLINE_MAX_SAMPLES: usize = 5_000;

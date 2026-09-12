@@ -201,10 +201,10 @@ large backtests.
 
 Deadline for the command, in milliseconds, counted from when the request is accepted (so time
 spent queued behind other forecasting work counts). When it elapses the client receives
-`TSDB: forecast timed out before the result was ready` and the request is abandoned: its result
+`TSDB: command timed out before the result was ready` and the request is abandoned: its result
 is discarded. `0` disables the deadline for this call.
 
-When omitted, the `ts-forecast-timeout` configuration parameter applies (default 60000 ms;
+When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
 `0` there means no default deadline).
 
 Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
@@ -392,7 +392,7 @@ The response is an **array of flat key-value maps**, one entry per model specifi
   range is too short to produce even one fold. The minimum length for a single fold is
   `INITIAL_WINDOW + PURGE + GAP + HORIZON` observations.
 - `TSDB: Unknown argument` — an unrecognized argument was provided.
-- `TSDB: forecast timed out before the result was ready` — the `TIMEOUT` (or `ts-forecast-timeout`)
+- `TSDB: command timed out before the result was ready` — the `TIMEOUT` (or `ts-analysis-timeout`)
   deadline elapsed before the result was available.
 - `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
 - `TSDB: Failed to prepare time series for forecasting` — the series data could not be converted
