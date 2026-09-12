@@ -3,11 +3,14 @@ use crate::commands::CommandArgIterator;
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
 use crate::commands::utils::{get_store_key_pos, reply_with_double_array};
-use crate::common::Timestamp;
 use crate::common::replies::{
     ThreadSafeReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
 };
 use crate::common::time::compute_median_step_ms;
+use crate::common::{Sample, Timestamp};
+use crate::series::{
+    DestinationWriteMode, TimeSeriesOptions, create_or_update_series_with_samples,
+};
 use anofox_forecast::core::{Forecast, TimeSeries as ForecastTimeSeries};
 use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
@@ -74,6 +77,34 @@ pub(super) fn store_anchor(series: &ForecastTimeSeries) -> ValkeyResult<StoreAnc
         })
         .ok_or(ValkeyError::Str(STORE_STEP_ERROR))?;
     Ok(StoreAnchor { last_ts, step_ms })
+}
+
+/// Write forecast `values` as consecutive samples after `anchor` into `dest_key`,
+/// creating or updating the series per `options` / `write_mode`. Takes the
+/// thread-safe lock for the write. Returns the number of samples written.
+pub(super) fn write_forecast_samples(
+    ctx: &ThreadSafeReplyContext,
+    dest_key: &[u8],
+    options: Option<TimeSeriesOptions>,
+    write_mode: DestinationWriteMode,
+    values: &[f64],
+    anchor: StoreAnchor,
+) -> ValkeyResult<usize> {
+    let samples: Vec<Sample> = values
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| Sample::new(anchor.timestamp_at(i), value))
+        .collect();
+
+    let lock = ctx.lock();
+    let key = lock.create_string(dest_key);
+    create_or_update_series_with_samples(&lock, &key, options, write_mode, &samples, None).map_err(
+        |e| {
+            let msg = format!("TSDB: failed to store forecast in key '{}': {}", key, e);
+            ctx.log_warning(&msg);
+            ValkeyError::String(msg)
+        },
+    )
 }
 
 const STORE_STEP_ERROR: &str =
