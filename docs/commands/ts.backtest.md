@@ -29,6 +29,7 @@ TS.BACKTEST key fromTimestamp toTimestamp
   [EMBARGO embargo]
   [SEASONAL_PERIOD period]
   [WITH_PREDICTIONS]
+  [TIMEOUT milliseconds]
 ```
 
 [Examples](#examples)
@@ -193,6 +194,21 @@ When specified, each fold's entry in the response includes `predictions` and `ac
 the raw forecasted and observed values for that fold's test window. Useful for plotting forecast
 accuracy over time. Omitted by default, since `N_FOLDS × HORIZON` values per model can add up for
 large backtests.
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds, counted from when the request is accepted (so time
+spent queued behind other forecasting work counts). When it elapses the client receives
+`TSDB: forecast timed out before the result was ready` and the request is abandoned: its result
+is discarded. `0` disables the deadline for this call.
+
+When omitted, the `ts-forecast-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
+
+Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
+they never block the server's main thread; requests beyond the worker count wait in a queue.
 </details>
 
 ## How Backtesting Works
@@ -376,6 +392,9 @@ The response is an **array of flat key-value maps**, one entry per model specifi
   range is too short to produce even one fold. The minimum length for a single fold is
   `INITIAL_WINDOW + PURGE + GAP + HORIZON` observations.
 - `TSDB: Unknown argument` — an unrecognized argument was provided.
+- `TSDB: forecast timed out before the result was ready` — the `TIMEOUT` (or `ts-forecast-timeout`)
+  deadline elapsed before the result was available.
+- `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
 - `TSDB: Failed to prepare time series for forecasting` — the series data could not be converted
   to the format required by the forecasting library.
 - Per-model, per-fold failures do **not** abort the whole command — see

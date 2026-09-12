@@ -7,12 +7,13 @@ use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
 };
 use crate::commands::forecast_utils::{
-    ForecastOutput, StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast, store_anchor,
+    ForecastOutput, ForecastTimeout, StoreAnchor, handle_forecast_key_pos_request,
+    parse_forecast_timeout, parse_timeseries_for_forecast, reply_with_forecast_output,
+    run_forecast, run_forecast_job, store_anchor,
 };
 use crate::commands::parse_store_clause;
 use crate::common::Sample;
-use crate::common::replies::{ThreadSafeReplyContext, block_client, reply_with_array};
+use crate::common::replies::{ThreadSafeReplyContext, reply_with_array};
 use crate::series::DestinationWriteMode;
 use crate::series::TimeSeriesOptions;
 use crate::series::TimestampRange;
@@ -37,6 +38,7 @@ struct ForecastOptions {
     destination_key: Option<Vec<u8>>,
     series_options: Option<TimeSeriesOptions>,
     write_mode: DestinationWriteMode,
+    timeout: ForecastTimeout,
 }
 
 /// Forecasts future values of a time series using a specified model.
@@ -48,6 +50,7 @@ struct ForecastOptions {
 ///   [LEVEL confidenceLevel]
 ///   [TRANSFORMS transform spec, ..]
 ///   [WITH_METRICS]
+///   [TIMEOUT milliseconds]
 ///   [STORE destinationKey
 ///     [MERGE]
 ///     [RETENTION retentionPeriod]
@@ -101,13 +104,11 @@ pub(crate) fn ts_forecast_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
         .map(|_| store_anchor(&series))
         .transpose()?;
 
-    let blocked_client = block_client(ctx);
-    std::thread::spawn(move || {
-        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
+    run_forecast_job(ctx, options.timeout, move |thread_ctx| {
         process_forecast(thread_ctx, series, options, anchor);
     });
 
-    // Reply will be sent from the background thread
+    // Reply will be sent from the analysis pool
     Ok(ValkeyValue::NoReply)
 }
 
@@ -136,6 +137,10 @@ fn process_forecast(
 
     // With STORE the reply is the number of samples written, not the forecast.
     if let (Some(dest_key), Some(anchor)) = (options.destination_key.as_ref(), anchor) {
+        // The client has already been told the command failed; do not write behind it.
+        if ctx.is_timed_out() {
+            return;
+        }
         store_forecast(&ctx, dest_key, &options, &results, anchor);
         return;
     }
@@ -237,6 +242,9 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
                 },
                 "WITH_METRICS" => {
                     options.include_metrics = true;
+                },
+                "TIMEOUT" => {
+                    options.timeout.set(parse_forecast_timeout(args)?);
                 },
                 "STORE" => {
                     let store_options = parse_store_clause(args)?;

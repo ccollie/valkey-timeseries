@@ -4,12 +4,13 @@ use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value, parse_store_clause,
 };
 use crate::commands::forecast_utils::{
-    StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast, store_anchor,
+    ForecastTimeout, StoreAnchor, handle_forecast_key_pos_request, parse_forecast_timeout,
+    parse_timeseries_for_forecast, reply_with_forecast_output, run_forecast, run_forecast_job,
+    store_anchor,
 };
 use crate::commands::utils::reply_with_double_array;
 use crate::common::Sample;
-use crate::common::replies::{ThreadSafeReplyContext, block_client, reply_with_str};
+use crate::common::replies::{ThreadSafeReplyContext, reply_with_str};
 use crate::series::{
     DestinationWriteMode, TimeSeriesOptions, TimestampRange, create_or_update_series_with_samples,
 };
@@ -28,6 +29,7 @@ struct AutoForecastOptions {
     write_mode: Option<DestinationWriteMode>,
     config: AutoForecastConfig,
     auto_seasonality: bool,
+    timeout: ForecastTimeout,
 }
 
 impl Default for AutoForecastOptions {
@@ -42,6 +44,7 @@ impl Default for AutoForecastOptions {
             write_mode: None,
             config: AutoForecastConfig::default(),
             auto_seasonality: false,
+            timeout: ForecastTimeout::default(),
         }
     }
 }
@@ -108,13 +111,11 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
         .map(|_| store_anchor(&series))
         .transpose()?;
 
-    let blocked_client = block_client(ctx);
-    std::thread::spawn(move || {
-        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
+    run_forecast_job(ctx, options.timeout, move |thread_ctx| {
         process_forecast(thread_ctx, series, options, anchor);
     });
 
-    // Reply will be sent from the background thread
+    // Reply will be sent from the analysis pool
     Ok(ValkeyValue::NoReply)
 }
 
@@ -150,6 +151,9 @@ fn parse_autoforecast_args(args: &mut CommandArgIterator) -> ValkeyResult<AutoFo
                 },
                 "METRICS" => {
                     options.metrics = true;
+                },
+                "TIMEOUT" => {
+                    options.timeout.set(parse_forecast_timeout(args)?);
                 },
                 "STORE" => {
                     let store_options = parse_store_clause(args)?;
@@ -216,12 +220,17 @@ fn process_forecast(
 
     // With STORE the forecast is persisted first; a failed write is the
     // command's failure, since the caller asked for the samples, not the reply.
-    if let (Some(dest_key), Some(anchor)) = (options.destination_key.as_ref(), anchor)
-        && let Err(err) =
+    if let (Some(dest_key), Some(anchor)) = (options.destination_key.as_ref(), anchor) {
+        // The client has already been told the command failed; do not write behind it.
+        if ctx.is_timed_out() {
+            return;
+        }
+        if let Err(err) =
             store_forecast(&ctx, dest_key, &options, output.forecast.primary(), anchor)
-    {
-        ctx.reply(Err(err));
-        return;
+        {
+            ctx.reply(Err(err));
+            return;
+        }
     }
 
     reply_with_forecast_output(&ctx, &output);

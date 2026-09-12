@@ -7,8 +7,9 @@ pub(crate) use batch_worker::{
     BatchRequest, BatchWorker, global_valkey_task_worker, submit_task_no_wait,
     submit_task_with_payload,
 };
-use rayon_core::{Scope, ThreadPoolBuilder};
+use rayon_core::{Scope, ThreadPool, ThreadPoolBuilder};
 use std::os::raw::c_void;
+use std::sync::LazyLock;
 use valkey_module::logging::log_notice;
 use valkey_module::{Context, MODULE_CONTEXT, raw};
 
@@ -31,6 +32,31 @@ pub fn init_thread_pool() {
 /// The job must be `'static` and thus cannot borrow local variables.
 pub fn spawn<F: FnOnce() + Send + 'static>(job: F) {
     rayon_core::spawn(job)
+}
+
+/// Pool for long-running, CPU-bound analysis commands (forecasting, backtesting).
+///
+/// Kept separate from the global pool so that a burst of model fits cannot starve the
+/// short jobs that pool serves (fan-out, index maintenance, trimming). It has the same
+/// worker count as the global pool; jobs beyond that queue, and a queued job's wait counts
+/// toward its command's `TIMEOUT` because the client is blocked before it is enqueued.
+///
+/// Rayon runs nested parallel iterators on the pool of the *current* worker, so a model's
+/// own `par_iter` fan-out (anofox is built with `parallel`) stays inside this pool too.
+/// That nesting is fork-join only — the calling worker participates until it completes —
+/// so it cannot park a worker the way waiting on pool-dependent work would.
+static ANALYSIS_POOL: LazyLock<ThreadPool> = LazyLock::new(|| {
+    let threads = crate::config::num_threads().max(1);
+    ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|index| format!("valkey-timeseries-analysis-{index}"))
+        .build()
+        .expect("failed to build the analysis thread pool")
+});
+
+/// Spawn a CPU-bound analysis job on [`ANALYSIS_POOL`].
+pub fn spawn_analysis<F: FnOnce() + Send + 'static>(job: F) {
+    ANALYSIS_POOL.spawn(job)
 }
 
 /// Spawn a job in the context of a valkey GIL (Global Interpreter Lock).

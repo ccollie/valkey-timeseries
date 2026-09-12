@@ -851,3 +851,21 @@ class TestBacktest(ValkeyTimeSeriesTestCaseBase):
     def test_error_wrong_arity(self):
         with pytest.raises(ResponseError):
             self.client.execute_command("TS.BACKTEST", "key", "-", "+")
+
+    def test_timeout_is_accepted(self):
+        key = "test:backtest:timeout:ok"
+        create_linear_series(self.client, key, count=150)
+        result = self.client.execute_command(
+            "TS.BACKTEST", key, "-", "+",
+            "MODELS", "Naive()", "HORIZON", "5", "TIMEOUT", "30000"
+        )
+        assert result is not None
+
+    def test_error_timeout_negative(self):
+        key = "test:backtest:err:timeout_negative"
+        create_linear_series(self.client, key, count=150)
+        with pytest.raises(ResponseError, match="TIMEOUT must be zero or positive"):
+            self.client.execute_command(
+                "TS.BACKTEST", key, "-", "+",
+                "MODELS", "Naive()", "HORIZON", "5", "TIMEOUT", "-1"
+            )

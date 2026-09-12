@@ -1333,3 +1333,26 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
                 self.client.execute_command("CONFIG", "SET", name, "1000001")
         finally:
             self.client.execute_command("CONFIG", "SET", name, default)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TIMEOUT
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_timeout_is_accepted_and_generous_value_completes(self):
+        key = "test:forecast:timeout:ok"
+        create_linear_series(self.client, key, count=100)
+
+        result = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "Naive", "HORIZON", "3", "TIMEOUT", "30000"
+        )
+        assert len(get_forecast_values(parse_forecast_array_response(result)[0])) == 3
+
+    def test_error_timeout_negative(self):
+        key = "test:forecast:err:timeout_negative"
+        create_linear_series(self.client, key, count=100)
+        with pytest.raises(ResponseError, match="TIMEOUT must be zero or positive"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "3", "TIMEOUT", "-5"
+            )

@@ -2,12 +2,13 @@ use crate::analysis::forecasting::{BacktestModelSpec, DynForecaster, parse_backt
 use crate::commands::CommandArgIterator;
 use crate::commands::command_parser::parse_forecast_horizon_value;
 use crate::commands::forecast_utils::{
-    handle_forecast_key_pos_request, parse_timeseries_for_forecast, reply_with_accuracy_metrics,
+    ForecastTimeout, handle_forecast_key_pos_request, parse_forecast_timeout,
+    parse_timeseries_for_forecast, reply_with_accuracy_metrics, run_forecast_job,
 };
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{
-    ThreadSafeReplyContext, block_client, reply_with_array, reply_with_integer, reply_with_map,
-    reply_with_null, reply_with_str, reply_with_usize,
+    ThreadSafeReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_null,
+    reply_with_str, reply_with_usize,
 };
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::models::Forecaster;
@@ -30,6 +31,7 @@ struct BacktestOptions {
     embargo: usize,
     seasonal_period: Option<usize>,
     with_predictions: bool,
+    timeout: ForecastTimeout,
 }
 
 impl Default for BacktestOptions {
@@ -46,6 +48,7 @@ impl Default for BacktestOptions {
             embargo: 0,
             seasonal_period: None,
             with_predictions: false,
+            timeout: ForecastTimeout::default(),
         }
     }
 }
@@ -93,6 +96,7 @@ enum BacktestModelResult {
 ///   [EMBARGO embargo]
 ///   [SEASONAL_PERIOD period]
 ///   [WITH_PREDICTIONS]
+///   [TIMEOUT milliseconds]
 /// ```
 #[valkey_module_macros::command({
     name: "ts.backtest",
@@ -120,13 +124,11 @@ pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_backtest_args(&mut args)?;
 
-    let blocked_client = block_client(ctx);
-    std::thread::spawn(move || {
-        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
+    run_forecast_job(ctx, options.timeout, move |thread_ctx| {
         process_backtest(thread_ctx, series, options);
     });
 
-    // Reply will be sent from the background thread
+    // Reply will be sent from the analysis pool
     Ok(ValkeyValue::NoReply)
 }
 
@@ -137,6 +139,9 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
     while let Some(arg) = args.next() {
         hashify::fnc_map_ignore_case!(
             arg.as_slice(),
+            "TIMEOUT" => {
+                options.timeout.set(parse_forecast_timeout(args)?);
+            },
             "HORIZON" => {
                 options.horizon = parse_forecast_horizon_value(args)?;
                 horizon_set = true;
