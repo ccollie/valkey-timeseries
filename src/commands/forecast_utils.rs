@@ -169,8 +169,17 @@ pub(super) fn reply_with_forecast_output(
     let lower_interval = get_lower_interval(forecast);
     let upper_interval = get_upper_interval(forecast);
 
-    if lower_interval.is_some() || upper_interval.is_some() {
-        map_len += 1; // "level" is only emitted when intervals exist
+    // "level" is only emitted when intervals exist. The same `level` binding gates
+    // both the count and the emit below so the map header can never disagree
+    // with the number of entries actually written.
+    let level = if lower_interval.is_some() || upper_interval.is_some() {
+        forecast_output.level
+    } else {
+        None
+    };
+
+    if level.is_some() {
+        map_len += 1;
     }
     if lower_interval.is_some() {
         map_len += 1;
@@ -190,12 +199,9 @@ pub(super) fn reply_with_forecast_output(
     reply_with_str(ctx, "forecast");
     reply_with_double_array(ctx, predicted_values);
 
-    if forecast.has_lower() || forecast.has_upper() {
+    if let Some(level) = level {
         reply_with_str(ctx, "level");
-        reply_with_double(
-            ctx,
-            forecast_output.level.expect("confidence level must be set"),
-        );
+        reply_with_double(ctx, level);
     }
 
     if let Some(lower_values) = lower_interval {
