@@ -24,6 +24,7 @@ use valkey_module::{Context, MODULE_CONTEXT, raw};
 /// cannot be resized once built — there is no later point at which this needs to re-run.
 pub fn init_thread_pool() {
     let threads = crate::config::num_threads();
+    // `num_threads()` has already resolved `ts-num-threads 0` to the CPU count.
     log_notice(format!("Setting number of threads to {threads}"));
     ThreadPoolBuilder::new()
         .num_threads(threads)
