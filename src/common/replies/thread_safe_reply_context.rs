@@ -19,6 +19,43 @@ pub struct BlockedClient {
     answered: bool,
 }
 
+/// Blocked clients that were given a timeout, keyed by their handle, so the timeout
+/// callback — a plain `extern "C"` fn with no captured state — can find the flag to raise
+/// and the error text to answer with. Entries live from `block_client_with_timeout` until
+/// the [`BlockedClient`] is dropped.
+static TIMEOUT_WATCHERS: LazyLock<Mutex<HashMap<usize, TimeoutWatcher>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct TimeoutWatcher {
+    timed_out: Arc<AtomicBool>,
+    error: &'static str,
+}
+
+/// Runs on the main thread when a blocked client's timeout elapses. The server has already
+/// detached the real client from the handle by the time the worker finishes, so whatever the
+/// worker replies later is discarded; this reply is the one the client sees.
+extern "C" fn blocked_client_timeout(
+    ctx: *mut raw::RedisModuleCtx,
+    _argv: *mut *mut raw::RedisModuleString,
+    _argc: c_int,
+) -> c_int {
+    let handle = unsafe { raw::RedisModule_GetBlockedClientHandle.unwrap()(ctx) };
+    let error = TIMEOUT_WATCHERS
+        .lock()
+        .ok()
+        .and_then(|watchers| {
+            watchers.get(&(handle as usize)).map(|w| {
+                w.timed_out.store(true, Ordering::SeqCst);
+                w.error
+            })
+        })
+        .unwrap_or(BLOCKED_CLIENT_TIMEOUT_ERROR);
+    Context::new(ctx).reply_error_string(error);
+    raw::REDISMODULE_OK as c_int
+}
+
+const BLOCKED_CLIENT_TIMEOUT_ERROR: &str = "TSDB: command timed out before the result was ready";
+
 // We need to be able to send the inner pointer to another thread
 unsafe impl Send for BlockedClient {}
 
@@ -63,6 +100,49 @@ pub(crate) fn block_client(ctx: &Context) -> BlockedClient {
     };
 
     BlockedClient::new(blocked_client)
+}
+
+/// Block the calling client with a server-enforced deadline.
+///
+/// `timeout_ms == 0` means no deadline, exactly like [`block_client`]. Otherwise, once
+/// `timeout_ms` elapses the server replies to the client with `error` and marks the
+/// returned handle as timed out ([`BlockedClient::is_timed_out`]). The worker still owns
+/// the handle and must let it drop as usual; its own reply is then discarded by the server.
+///
+/// The deadline starts now, so time spent queued behind other jobs counts against it.
+pub(crate) fn block_client_with_timeout(
+    ctx: &Context,
+    timeout_ms: u64,
+    error: &'static str,
+) -> BlockedClient {
+    if timeout_ms == 0 {
+        return block_client(ctx);
+    }
+    let blocked_client = unsafe {
+        raw::RedisModule_BlockClient.unwrap()(
+            ctx.ctx,
+            None,
+            Some(blocked_client_timeout),
+            None,
+            timeout_ms as c_longlong,
+        )
+    };
+    let timed_out = Arc::new(AtomicBool::new(false));
+    // Timeouts are delivered on the main thread after this command handler returns, so
+    // the watcher is always registered before the callback can look for it.
+    if let Ok(mut watchers) = TIMEOUT_WATCHERS.lock() {
+        watchers.insert(
+            blocked_client as usize,
+            TimeoutWatcher {
+                timed_out: Arc::clone(&timed_out),
+                error,
+            },
+        );
+    }
+    BlockedClient {
+        inner: blocked_client,
+        timed_out: Some(timed_out),
+    }
 }
 
 pub struct ThreadSafeReplyContext {

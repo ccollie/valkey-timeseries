@@ -17,6 +17,7 @@ TS.FORECAST key fromTimestamp toTimestamp
   [LEVEL confidence_level]
   [TRANSFORMS transform_spec[,transform_spec ...]]
   [WITH_METRICS]
+  [TIMEOUT milliseconds]
   [STORE destinationKey
     [MERGE]
     [RETENTION retentionPeriod]
@@ -184,6 +185,21 @@ Returned fields per model:
 - `mase` — Mean Absolute Scaled Error (may be `null` when insufficient scaling history)
 - `r_squared` — Coefficient of determination
 
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds, counted from when the request is accepted (so time
+spent queued behind other forecasting work counts). When it elapses the client receives
+`TSDB: forecast timed out before the result was ready` and the request is abandoned: its result
+is discarded and a `STORE` that has not yet happened is skipped. `0` disables the deadline for this call.
+
+When omitted, the `ts-forecast-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
+
+Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
+they never block the server's main thread; requests beyond the worker count wait in a queue.
 </details>
 
 <details open>
@@ -363,6 +379,9 @@ Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust`, `multiplic
   range holds too few samples to infer where the stored forecast samples should be placed.
 - `TSDB: LEVEL must be between 0 and 100` — `LEVEL` is out of the valid range.
 - `TSDB: Unknown argument` — an unrecognized argument was provided.
+- `TSDB: forecast timed out before the result was ready` — the `TIMEOUT` (or `ts-forecast-timeout`)
+  deadline elapsed before the result was available.
+- `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
 - `TSDB: failed to store forecast in key` — an error occurred while writing STORE samples.
 - `TSDB: Failed to prepare time series for forecasting` — the series data could not be
   converted to the format required by the forecasting library.
