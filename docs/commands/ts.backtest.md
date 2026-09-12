@@ -74,7 +74,8 @@ for slower models (`ARIMA`, `TBATS`, `AutoARIMA`, `AutoTBATS`) still scales with
 <summary><code>HORIZON horizon</code></summary>
 
 Number of points to forecast forward at each fold, and the number of points each fold's
-predictions are compared against. Must be a positive integer.
+predictions are compared against. Must be a positive integer no larger than the `ts-forecast-max-horizon` configuration
+parameter (default 10000).
 </details>
 
 ## Optional Arguments
@@ -363,6 +364,8 @@ The response is an **array of flat key-value maps**, one entry per model specifi
 - `TSDB: the key does not exist` — the specified key does not hold a time series.
 - `TSDB: HORIZON is required` — the `HORIZON` argument is missing.
 - `TSDB: forecast horizon must be greater than 0` — `HORIZON` is zero or negative.
+- `TSDB: forecast horizon must not exceed N (ts-forecast-max-horizon)` — `HORIZON` is above the
+  configured cap.
 - `TSDB: MODELS must contain at least one model specification` — no models were provided.
 - `TSDB: error parsing MODELS` — the model specification string could not be parsed.
 - `TSDB: STRATEGY must be EXPANDING or ROLLING` — an invalid `STRATEGY` value was given.

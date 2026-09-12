@@ -118,7 +118,8 @@ At least one model must be specified. All models are case-insensitive.
 <details open>
 <summary><code>HORIZON horizon</code></summary>
 
-Number of future data points to predict. Must be a positive integer.
+Number of future data points to predict. Must be a positive integer no larger than the `ts-forecast-max-horizon` configuration
+parameter (default 10000).
 </details>
 
 ## Optional Arguments
@@ -350,6 +351,8 @@ Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust`, `multiplic
 - `TSDB: the key does not exist` — the specified key does not hold a time series.
 - `TSDB: HORIZON is required` — the `HORIZON` argument is missing.
 - `TSDB: forecast horizon must be greater than 0` — `HORIZON` is zero or negative.
+- `TSDB: forecast horizon must not exceed N (ts-forecast-max-horizon)` — `HORIZON` is above the
+  configured cap.
 - `TSDB: MODELS must contain at least one model specification` — no models were provided.
 - `TSDB: error parsing MODELS` — the model specification string could not be parsed.
 - `TSDB: error parsing TRANSFORMS` — a transform name is unknown or its arguments are invalid.

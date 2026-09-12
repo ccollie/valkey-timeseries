@@ -842,3 +842,13 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         lossy = store_key.decode("utf-8", errors="replace").encode("utf-8")
         assert self.client.execute_command("EXISTS", lossy) == 0
         assert len(self.client.execute_command("TS.RANGE", store_key, "-", "+")) == 3
+
+    def test_error_horizon_above_cap(self):
+        """HORIZON is bounded by ts-forecast-max-horizon here too."""
+        key = "test:autoforecast:err:horizon_cap"
+        create_linear_series(self.client, key, count=100)
+
+        with pytest.raises(ResponseError, match="horizon must not exceed 10000"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "1000000000"
+            )
