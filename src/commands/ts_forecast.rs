@@ -7,13 +7,12 @@ use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
 };
 use crate::commands::forecast_utils::{
-    ForecastOutput, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast,
+    ForecastOutput, StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
+    reply_with_forecast_output, run_forecast, store_anchor,
 };
 use crate::commands::parse_store_clause;
 use crate::common::Sample;
 use crate::common::replies::{ThreadSafeReplyContext, block_client, reply_with_array};
-use crate::common::time::compute_median_step_ms;
 use crate::series::DestinationWriteMode;
 use crate::series::TimeSeriesOptions;
 use crate::series::TimestampRange;
@@ -94,11 +93,18 @@ pub(crate) fn ts_forecast_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
     let mut args = args.into_iter().skip(1).peekable();
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_forecast_args(&mut args)?;
+    // STORE needs a step to place the forecast samples; reject a range that
+    // cannot provide one now rather than after the models have run.
+    let anchor = options
+        .destination_key
+        .as_ref()
+        .map(|_| store_anchor(&series))
+        .transpose()?;
 
     let blocked_client = block_client(ctx);
     std::thread::spawn(move || {
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
-        process_forecast(thread_ctx, series, options);
+        process_forecast(thread_ctx, series, options, anchor);
     });
 
     // Reply will be sent from the background thread
@@ -109,23 +115,8 @@ fn process_forecast(
     ctx: ThreadSafeReplyContext,
     series: ForecastTimeSeries,
     options: ForecastOptions,
+    anchor: Option<StoreAnchor>,
 ) {
-    // Capture timestamp metadata before models consume the series reference.
-    let last_timestamp_ms = series.timestamps().last().map(|dt| dt.timestamp_millis());
-    let step_ms = options.destination_key.as_ref().and_then(|_| {
-        series
-            .frequency()
-            .map(|d| d.num_milliseconds())
-            .or_else(|| {
-                let timestamps: Vec<i64> = series
-                    .timestamps()
-                    .iter()
-                    .map(|dt| dt.timestamp_millis())
-                    .collect();
-                compute_median_step_ms(&timestamps)
-            })
-    });
-
     let models = match build_models_from_specs(&options.models_spec) {
         Ok(models) => models,
         Err(e) => {
@@ -143,8 +134,9 @@ fn process_forecast(
         }
     };
 
-    // If STORE was specified, persist the predicted values into the destination key.
-    if store_forecast_if_necessary(&ctx, &options, &results, last_timestamp_ms, step_ms) {
+    // With STORE the reply is the number of samples written, not the forecast.
+    if let (Some(dest_key), Some(anchor)) = (options.destination_key.as_ref(), anchor) {
+        store_forecast(&ctx, dest_key, &options, &results, anchor);
         return;
     }
 
@@ -154,38 +146,26 @@ fn process_forecast(
     }
 }
 
-/// Attempts to store forecasted values into the destination key specified in `options`.
-/// Returns `true` if the STORE was handled (reply already sent), `false` if the caller
-/// should proceed with the standard forecast reply.
-fn store_forecast_if_necessary(
+/// Persist the predicted values into the STORE destination key and reply
+/// with the number of samples written, or with an error if the write fails.
+fn store_forecast(
     ctx: &ThreadSafeReplyContext,
+    dest_key: &[u8],
     options: &ForecastOptions,
     results: &[ForecastOutput],
-    last_timestamp_ms: Option<i64>,
-    step_ms: Option<i64>,
-) -> bool {
-    let (Some(dest_key), Some(step), Some(last_ts)) =
-        (options.destination_key.as_ref(), step_ms, last_timestamp_ms)
-    else {
-        if options.destination_key.is_some() && step_ms.is_none() {
-            ctx.log_warning(
-                "TSDB: STORE skipped — could not determine forecast step from input series",
-            );
-        }
-        return false;
-    };
-
-    let mut samples: Vec<Sample> = Vec::new();
-    for output in results {
-        let predicted = output.forecast.primary();
-        let offset = samples.len() as i64;
-        for (i, &value) in predicted.iter().enumerate() {
-            samples.push(Sample::new(last_ts + step * (offset + i as i64 + 1), value));
-        }
-    }
+    anchor: StoreAnchor,
+) {
+    // STORE is limited to a single model, so the outputs concatenate into one
+    // run of consecutive steps after the last observed sample.
+    let samples: Vec<Sample> = results
+        .iter()
+        .flat_map(|output| output.forecast.primary().iter().copied())
+        .enumerate()
+        .map(|(i, value)| Sample::new(anchor.timestamp_at(i), value))
+        .collect();
 
     let lock = ctx.lock();
-    let key = lock.create_string(dest_key.as_slice());
+    let key = lock.create_string(dest_key);
     match create_or_update_series_with_samples(
         &lock,
         &key,
@@ -203,7 +183,6 @@ fn store_forecast_if_necessary(
             let _ = ctx.reply(Err(ValkeyError::String(msg)));
         }
     }
-    true
 }
 
 fn process_models(

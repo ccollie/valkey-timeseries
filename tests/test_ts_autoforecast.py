@@ -781,3 +781,48 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         for i, (lo, f, hi) in enumerate(zip(lower, forecasts, upper)):
             assert lo <= f <= hi, \
                 f"Level 20: lower={lo} forecast={f} upper={hi}"
+
+    # ── STORE failure modes are errors, never a silently unstored reply ──
+
+    def test_store_rejects_range_too_short_for_a_step(self):
+        """With a single sample no step can be inferred; STORE must fail
+        rather than return the forecast with nothing stored."""
+        key = "test:autoforecast:store:one_sample"
+        store_key = "test:autoforecast:store:one_sample:out"
+        _add(self.client, key, 1000, [42.0])
+
+        with pytest.raises(ResponseError, match="STORE requires at least two samples"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3", "STORE", store_key
+            )
+        assert self.client.execute_command("EXISTS", store_key) == 0
+
+    def test_store_write_failure_is_an_error(self):
+        """A destination holding another type cannot be written; the command
+        reports that instead of returning the forecast as if it had stored."""
+        key = "test:autoforecast:store:wrong_type"
+        store_key = "test:autoforecast:store:wrong_type:out"
+        create_linear_series(self.client, key, count=100)
+        self.client.execute_command("SET", store_key, "not a series")
+
+        with pytest.raises(ResponseError, match="failed to store forecast|WRONGTYPE"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3", "STORE", store_key
+            )
+        assert self.client.execute_command("GET", store_key) == b"not a series"
+
+    def test_store_applies_series_options(self):
+        """Options after STORE are applied when the destination is created."""
+        key = "test:autoforecast:store:options"
+        store_key = "test:autoforecast:store:options:out"
+        create_linear_series(self.client, key, count=100)
+
+        self.client.execute_command(
+            "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "4",
+            "STORE", store_key, "RETENTION", "86400000", "CHUNK_SIZE", "8192"
+        )
+
+        info = self.client.execute_command("TS.INFO", store_key)
+        info = dict(zip(info[::2], info[1::2]))
+        assert info[b"retentionTime"] == 86400000
+        assert info[b"chunkSize"] == 8192

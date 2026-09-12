@@ -124,7 +124,11 @@ from the last observed timestamp using the series' median sampling interval.
 
 - If the destination key does not exist, a new time series is created.
 - If the destination key already exists, the forecast samples are merged into it.
-- When the source series has fewer than 2 timestamps or no positive time intervals, `STORE` is skipped with a warning.
+- The forecast step is the series' detected sampling frequency, falling back to the median positive gap
+  between samples. That needs at least two samples in the range; with fewer the command fails with an
+  error rather than returning the forecast without storing it.
+- If the samples cannot be written (for example the destination holds a value of another type), the
+  command fails with an error rather than returning the forecast without storing it.
 </details>
 
 ## Return Value
@@ -268,6 +272,9 @@ TS.AUTOFORECAST temperature:sensor1 30d + HORIZON 7
 - `TSDB: at least one valid model must be specified in MODELS` — The `MODELS` argument was empty.
 - `TSDB: Missing value for MODELS` — The `MODELS` argument was given without a value.
 - `TSDB: Missing value for STORE` — The `STORE` argument was given without a key name.
+- `TSDB: STORE requires at least two samples in the range to determine the forecast step` — the range
+  holds too few samples to infer where the stored forecast samples should be placed.
+- `TSDB: failed to store forecast in key` — the forecast samples could not be written to the destination.
 - `TSDB: Unknown argument` — An unrecognized optional argument was provided.
 - `TSDB: Failed to prepare time series for forecasting` — Internal error converting series data.
 - `TSDB: forecast error` — The forecasting model failed to fit or predict.

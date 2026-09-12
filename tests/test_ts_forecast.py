@@ -1211,3 +1211,49 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
                 "MODELS", "Naive", "HORIZON", "3",
                 "TRANSFORMS"
             )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STORE failure modes are errors, never a silently different reply
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_store_rejects_range_too_short_for_a_step(self):
+        """With a single sample no step can be inferred; STORE must fail
+        rather than fall back to returning the forecast array."""
+        key = "test:forecast:store:one_sample"
+        store_key = "test:forecast:store:one_sample:out"
+        _add(self.client, key, 1000, [42.0])
+
+        with pytest.raises(ResponseError, match="STORE requires at least two samples"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "3", "STORE", store_key
+            )
+        assert self.client.execute_command("EXISTS", store_key) == 0
+
+    def test_store_rejects_range_filtered_to_one_sample(self):
+        """The check applies to the selected range, not the whole series."""
+        key = "test:forecast:store:narrow_range"
+        store_key = "test:forecast:store:narrow_range:out"
+        create_linear_series(self.client, key, count=50)
+
+        with pytest.raises(ResponseError, match="STORE requires at least two samples"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "1000", "1000",
+                "MODELS", "Naive", "HORIZON", "3", "STORE", store_key
+            )
+        assert self.client.execute_command("EXISTS", store_key) == 0
+
+    def test_store_write_failure_is_an_error(self):
+        """A destination holding another type cannot be written; the command
+        reports that instead of replying as if nothing was requested."""
+        key = "test:forecast:store:wrong_type"
+        store_key = "test:forecast:store:wrong_type:out"
+        create_linear_series(self.client, key, count=50)
+        self.client.execute_command("SET", store_key, "not a series")
+
+        with pytest.raises(ResponseError, match="failed to store forecast|WRONGTYPE"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "3", "STORE", store_key
+            )
+        assert self.client.execute_command("GET", store_key) == b"not a series"
