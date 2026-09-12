@@ -826,3 +826,19 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         info = dict(zip(info[::2], info[1::2]))
         assert info[b"retentionTime"] == 86400000
         assert info[b"chunkSize"] == 8192
+
+    def test_store_destination_key_is_binary_safe(self):
+        """Keys are arbitrary bytes. A destination that is not valid UTF-8
+        must be written exactly, not to a lossily re-encoded name."""
+        key = "test:autoforecast:store:binary"
+        store_key = b"test:autoforecast:store:binary:\xff\xfe:out"
+        create_linear_series(self.client, key, count=100)
+
+        self.client.execute_command(
+            "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3", "STORE", store_key
+        )
+
+        assert self.client.execute_command("EXISTS", store_key) == 1
+        lossy = store_key.decode("utf-8", errors="replace").encode("utf-8")
+        assert self.client.execute_command("EXISTS", lossy) == 0
+        assert len(self.client.execute_command("TS.RANGE", store_key, "-", "+")) == 3

@@ -1257,3 +1257,20 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
                 "MODELS", "Naive", "HORIZON", "3", "STORE", store_key
             )
         assert self.client.execute_command("GET", store_key) == b"not a series"
+
+    def test_store_destination_key_is_binary_safe(self):
+        """Keys are arbitrary bytes. A destination that is not valid UTF-8
+        must be written exactly, not to a lossily re-encoded name."""
+        key = "test:forecast:store:binary"
+        store_key = b"test:forecast:store:binary:\xff\xfe:out"
+        create_linear_series(self.client, key, count=50)
+
+        count = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "Naive", "HORIZON", "3", "STORE", store_key
+        )
+
+        assert count == 3
+        assert self.client.execute_command("EXISTS", store_key) == 1
+        lossy = store_key.decode("utf-8", errors="replace").encode("utf-8")
+        assert self.client.execute_command("EXISTS", lossy) == 0
