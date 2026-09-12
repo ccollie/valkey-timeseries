@@ -429,12 +429,11 @@ fn reconcile_preloaded_indexes() {
     }
     let stats = take_loaded_stats();
 
-    // Off the main thread: the sweep opens every indexed key once. Runs on the module's
-    // thread pool (not a detached `std::thread`) so it participates in the same thread
-    // lifecycle as every other background job, and checks `is_shutting_down()` between
-    // batches — an aborted sweep is safe, since ids it never reached are either valid or
-    // will be stale-marked by the query path's self-heal.
-    crate::common::threads::spawn(move || {
+    // Off the main thread: the sweep opens every indexed key once. On its own thread
+    // rather than the pool because it takes the module lock (see `spawn_background`), and
+    // checks `is_shutting_down()` between batches — an aborted sweep is safe, since ids it
+    // never reached are either valid or will be stale-marked by the query path's self-heal.
+    crate::common::threads::spawn_background("ts-index-sweep", move || {
         for db in dbs {
             if crate::is_shutting_down() {
                 return;

@@ -2,7 +2,7 @@ use super::acl::{get_fanout_user, with_fanout_user};
 use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::sync::lock;
-use crate::common::threads::spawn;
+use crate::common::threads::spawn_background;
 use crate::fanout::serialization::{Deserialized, Serializable};
 use crate::fanout::{
     FanoutResult, FanoutTarget, NodeInfo, compute_query_fanout_target, get_fanout_targets,
@@ -392,7 +392,9 @@ fn spawn_local_request<OP, F>(
     OP::Response: Send + 'static,
     F: FnOnce(OP, FanoutCommandResult) + Send + 'static,
 {
-    spawn(move || {
+    // Off the pool: this takes the module lock and the local response may fan out
+    // on the pool under it (see `spawn_background`).
+    spawn_background("ts-fanout-local", move || {
         // Minimize the scope of GIL locking, avoiding re-entering the GIL which is non-reentrant.
         let result = {
             let ctx = MODULE_CONTEXT.lock();
