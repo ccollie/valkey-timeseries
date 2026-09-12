@@ -33,16 +33,19 @@ pub fn build_models_from_specs(
         .collect()
 }
 
-/// A model specification for repeated (re-)construction, for use cases such as walk-forward
-/// backtesting where every fold must train its own untrained model instance from scratch.
-/// `ModelSpec` itself stays private to this module; callers only get an opaque handle whose
-/// `build` method produces a fresh [`BoxedForecaster`] on every call.
-pub struct BacktestModelSpec {
+/// A parsed model specification that can build fresh, untrained forecasters on demand.
+///
+/// Two callers need this: walk-forward backtesting, where every fold trains its own
+/// instance from scratch, and the forecasting commands, which parse and validate the
+/// `MODELS` argument on the main thread but must construct the models on the analysis
+/// pool — `BoxedForecaster` is not `Send`, while this handle is plain data.
+/// `ModelSpec` itself stays private to this module; callers only get this opaque handle.
+pub struct PreparedModelSpec {
     display_name: String,
     spec: ModelSpec,
 }
 
-impl BacktestModelSpec {
+impl PreparedModelSpec {
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
@@ -53,14 +56,20 @@ impl BacktestModelSpec {
     }
 }
 
-pub fn parse_backtest_model_specs(input: &str) -> Result<Vec<BacktestModelSpec>, ModelSpecError> {
-    Ok(parse_model_specs(input)?
+/// Parse a comma-separated `MODELS` string and check that every entry builds, so a bad
+/// spec is reported to the caller synchronously. Model construction is struct
+/// initialisation only, so the throwaway build costs nothing measurable.
+pub fn prepare_model_specs(input: &str) -> Result<Vec<PreparedModelSpec>, ModelSpecError> {
+    parse_model_specs(input)?
         .into_iter()
-        .map(|spec| BacktestModelSpec {
-            display_name: spec.to_string(),
-            spec,
+        .map(|spec| {
+            build_single_model(spec.clone())?;
+            Ok(PreparedModelSpec {
+                display_name: spec.to_string(),
+                spec,
+            })
         })
-        .collect())
+        .collect()
 }
 
 pub fn build_single_model(mut spec: ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
@@ -818,11 +827,11 @@ fn get_seasonal_forecast_method(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_models_from_specs, parse_backtest_model_specs};
+    use super::{build_models_from_specs, prepare_model_specs};
 
     #[test]
     fn backtest_specs_rebuild_a_fresh_model_on_each_call() {
-        let specs = parse_backtest_model_specs("ARIMA(1,1,1), Naive()").unwrap();
+        let specs = prepare_model_specs("ARIMA(1,1,1), Naive()").unwrap();
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].display_name(), "ARIMA(1,1,1)");
         assert_eq!(specs[1].display_name(), "Naive()");
@@ -836,7 +845,7 @@ mod tests {
 
     #[test]
     fn backtest_specs_reject_invalid_model_names() {
-        assert!(parse_backtest_model_specs("NotAModel()").is_err());
+        assert!(prepare_model_specs("NotAModel()").is_err());
     }
 
     #[test]
