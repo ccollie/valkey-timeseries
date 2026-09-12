@@ -726,10 +726,25 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         key = "test:forecast:err:bad_model"
         create_linear_series(self.client, key, count=100)
 
-        with pytest.raises(ResponseError, match="MODELS"):
+        with pytest.raises(ResponseError, match="error parsing MODELS") as exc:
             self.client.execute_command(
                 "TS.FORECAST", key, "-", "+",
                 "MODELS", "INVALID_MODEL_NAME", "HORIZON", "5"
+            )
+        # The message is the parser's own text, not a Debug dump of the error value.
+        assert "SpecError" not in str(exc.value)
+        assert "{" not in str(exc.value)
+
+    def test_error_invalid_model_args_reported_synchronously(self):
+        """A spec that parses but cannot build (wrong arity) is rejected at
+        argument time on every call, not only when STORE forces validation."""
+        key = "test:forecast:err:bad_model_args"
+        create_linear_series(self.client, key, count=100)
+
+        with pytest.raises(ResponseError, match="error parsing MODELS"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "ARIMA(1)", "HORIZON", "5"
             )
 
     def test_error_insufficient_data(self):
