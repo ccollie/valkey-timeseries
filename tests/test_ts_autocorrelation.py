@@ -3,7 +3,7 @@ import pytest
 from valkey import ResponseError
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
-from data_helpers import create_linear_series, create_alternating_series, create_constant_series, create_sine_series
+from data_helpers import create_linear_series, create_alternating_series, create_constant_series, create_sine_series, create_large_seasonal_series
 
 class TestAutocorrelation(ValkeyTimeSeriesTestCaseBase):
     """Test suite for TS.AUTOCORRELATION command."""
@@ -218,3 +218,52 @@ class TestAutocorrelation(ValkeyTimeSeriesTestCaseBase):
 
         with pytest.raises(ResponseError, match="unrecognized option"):
             self.client.execute_command('TS.AUTOCORRELATION', key, '-', '+', 1, 'INVALID')
+
+
+    # ── analysis pool and TIMEOUT ────────────────────────────────────────
+
+    def test_large_range_runs_in_background(self):
+        """Above the inline threshold the statistic is computed on the analysis
+        pool and still comes back as a plain float."""
+        key = 'test:acf:large'
+        create_large_seasonal_series(self.client, key, count=60000)
+
+        acf = float(self.client.execute_command('TS.AUTOCORRELATION', key, '-', '+', 1))
+        assert -1.0 <= acf <= 1.0
+        # A smooth signal is strongly autocorrelated at lag 1.
+        assert acf > 0.9, f"expected high ACF(1), got {acf}"
+
+        pacf = float(self.client.execute_command(
+            'TS.AUTOCORRELATION', key, '-', '+', 5, 'PARTIAL'
+        ))
+        assert -1.0 <= pacf <= 1.0
+
+        agg = float(self.client.execute_command(
+            'TS.AUTOCORRELATION', key, '-', '+', 10, 'AGGREGATED', 'mean'
+        ))
+        assert -1.0 <= agg <= 1.0
+
+    def test_large_range_nan_is_an_error_in_background(self):
+        """Errors raised by the compute step reach the client from the pool
+        (AGGREGATED over zero lags has no value, as in the inline test above)."""
+        key = 'test:acf:large_nan'
+        create_large_seasonal_series(self.client, key, count=60000)
+
+        with pytest.raises(ResponseError, match="returned NaN"):
+            self.client.execute_command(
+                'TS.AUTOCORRELATION', key, '-', '+', 0, 'AGGREGATED', 'mean'
+            )
+
+    def test_timeout_accepted(self):
+        key = 'test:acf:timeout_ok'
+        create_linear_series(self.client, key, count=20)
+        result = float(self.client.execute_command(
+            'TS.AUTOCORRELATION', key, '-', '+', 1, 'TIMEOUT', '30000'
+        ))
+        assert result > 0.8
+
+    def test_timeout_negative(self):
+        key = 'test:acf:timeout_neg'
+        create_linear_series(self.client, key, count=20)
+        with pytest.raises(ResponseError, match="TIMEOUT must be zero or positive"):
+            self.client.execute_command('TS.AUTOCORRELATION', key, '-', '+', 1, 'TIMEOUT', '-1')

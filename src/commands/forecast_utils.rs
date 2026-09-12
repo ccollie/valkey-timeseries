@@ -5,60 +5,13 @@ use crate::commands::ts_autoforecast::reply_with_interval_array;
 use crate::commands::utils::{get_store_key_pos, reply_with_double_array};
 use crate::common::Timestamp;
 use crate::common::replies::{
-    ThreadSafeReplyContext, block_client_with_timeout, reply_with_double, reply_with_map,
-    reply_with_str, reply_with_usize,
+    ThreadSafeReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
 };
-use crate::common::threads::spawn_analysis;
 use crate::common::time::compute_median_step_ms;
 use anofox_forecast::core::{Forecast, TimeSeries as ForecastTimeSeries};
 use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
-
-/// Deadline for a forecasting command: the `TIMEOUT` argument if given, else
-/// `ts-forecast-timeout`. Zero means no deadline.
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct ForecastTimeout(Option<u64>);
-
-impl ForecastTimeout {
-    pub fn set(&mut self, ms: u64) {
-        self.0 = Some(ms);
-    }
-
-    pub fn resolve(self) -> u64 {
-        self.0.unwrap_or_else(crate::config::forecast_timeout_ms)
-    }
-}
-
-/// Parse the value after a `TIMEOUT` keyword: a non-negative millisecond count.
-pub(super) fn parse_forecast_timeout(args: &mut CommandArgIterator) -> ValkeyResult<u64> {
-    let value = args
-        .next_i64()
-        .map_err(|_| ValkeyError::Str("TSDB: missing value for TIMEOUT"))?;
-    if value < 0 {
-        return Err(ValkeyError::Str("TSDB: TIMEOUT must be zero or positive"));
-    }
-    Ok(value as u64)
-}
-
-pub(super) const FORECAST_TIMEOUT_ERROR: &str =
-    "TSDB: forecast timed out before the result was ready (see TIMEOUT / ts-forecast-timeout)";
-
-/// Block the client for a forecasting command and run `job` on the analysis pool.
-///
-/// The deadline is server-enforced: on expiry the client gets
-/// [`FORECAST_TIMEOUT_ERROR`] and the job's own reply is discarded. Jobs check
-/// [`ThreadSafeReplyContext::is_timed_out`] before side effects such as `STORE`.
-pub(super) fn run_forecast_job<F>(ctx: &Context, timeout: ForecastTimeout, job: F)
-where
-    F: FnOnce(ThreadSafeReplyContext) + Send + 'static,
-{
-    let blocked_client = block_client_with_timeout(ctx, timeout.resolve(), FORECAST_TIMEOUT_ERROR);
-    spawn_analysis(move || {
-        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
-        job(thread_ctx);
-    });
-}
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
 pub(super) fn handle_forecast_key_pos_request(
     ctx: &Context,
