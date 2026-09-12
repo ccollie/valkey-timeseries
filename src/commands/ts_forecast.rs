@@ -50,7 +50,7 @@ acl_categories!(TS_FORECAST, "ts.forecast", "write timeseries");
 ///   HORIZON horizon
 ///   [LEVEL confidenceLevel]
 ///   [TRANSFORMS transform spec, ..]
-///   [WITH_METRICS]
+///   [METRICS]
 ///   [TIMEOUT milliseconds]
 ///   [STORE destinationKey
 ///     [MERGE]
@@ -241,7 +241,7 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
                         return Err(ValkeyError::Str("TSDB: TRANSFORMS must contain at least one transform specification"));
                     }
                 },
-                "WITH_METRICS" => {
+                "METRICS" => {
                     options.include_metrics = true;
                 },
                 "TIMEOUT" => {
