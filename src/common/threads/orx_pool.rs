@@ -48,6 +48,42 @@ impl ParThreadPool for GlobalRayonPool {
 /// default chunk-sizing executor.
 pub type RayonRunner = RunnerWithPool<GlobalRayonPool, DefaultExecutor>;
 
+/// orx-parallel adapter over one specific `rayon_core::ThreadPool`, for a
+/// computation that must not depend on the global pool — the PromQL selector
+/// executor's materialization, which runs while global workers may be parked
+/// waiting for it. Attach with `.with_pool(RayonPool(&pool))`.
+#[derive(Clone, Copy)]
+pub struct RayonPool(pub &'static rayon_core::ThreadPool);
+
+impl ParThreadPool for RayonPool {
+    type ScopeRef<'s, 'env, 'scope>
+        = &'s rayon_core::Scope<'scope>
+    where
+        'scope: 's,
+        'env: 'scope + 's;
+
+    fn run_in_scope<'s, 'env, 'scope, W>(s: &Self::ScopeRef<'s, 'env, 'scope>, work: W)
+    where
+        'scope: 's,
+        'env: 'scope + 's,
+        W: Fn() + Send + 'scope + 'env,
+    {
+        s.spawn(move |_| work());
+    }
+
+    fn scoped_computation<'env, 'scope, F>(&'env mut self, f: F)
+    where
+        'env: 'scope,
+        for<'s> F: FnOnce(&'s rayon_core::Scope<'scope>) + Send,
+    {
+        self.0.scope(f)
+    }
+
+    fn max_num_threads(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.0.current_num_threads().max(1)).expect(">0")
+    }
+}
+
 /// `.par()` on the global rayon pool, for borrowed sources such as `&[T]` and ranges.
 ///
 /// orx splits `.par()` across two disjoint blanket traits ([`Parallelizable`] for types that

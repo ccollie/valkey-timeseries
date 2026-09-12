@@ -10,6 +10,7 @@ pub(crate) use batch_worker::{
 };
 pub use orx_pool::{
     GlobalRayonPool, IntoParRayon, IterIntoParRayon, ParCollectionRayon, ParMutRayon, ParRayon,
+    RayonPool,
 };
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
