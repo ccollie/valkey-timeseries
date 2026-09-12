@@ -7,6 +7,7 @@ Covers:
 - HORIZON option
 - WITH_METRICS option
 - LEVEL option for prediction intervals
+- TRANSFORMS option (reversible pre-processing chain applied per model)
 - STORE option (persisting forecast to a destination key)
   - Creates new key, returns count not array
   - Overwrites existing key
@@ -16,7 +17,7 @@ Covers:
   - Timestamps are sequential
 - Time-range filtering
 - Error handling: nonexistent key, missing HORIZON, missing MODELS,
-  invalid model spec, wrong arity, unknown argument, LEVEL out of range,
+  invalid model spec, invalid transform spec, wrong arity, unknown argument, LEVEL out of range,
   insufficient data
 - Response format validation (array of flat key-value maps, one per model)
 - Edge cases: different series types, all options combined
@@ -1062,3 +1063,151 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         assert self.client.execute_command("EXISTS", store_key) == 1
         stored = self.client.execute_command("TS.RANGE", store_key, "-", "+")
         assert len(stored) == 4
+
+    # ══════════════════════════════════════════════════════════════════════
+    # TRANSFORMS
+    # ══════════════════════════════════════════════════════════════════════
+
+    def test_transforms_difference_returns_original_units(self):
+        """Difference(1) + Naive on a linear series must continue the line.
+
+        Differencing turns a perfect line into a constant, Naive forecasts
+        that constant, and the inverse transform must re-integrate back
+        into the original units — so the forecast is the next points on
+        the line, not the slope.
+        """
+        key = "test:forecast:transforms:difference"
+        count, slope, intercept = 100, 2.0, 1.0
+        create_linear_series(self.client, key, count=count, slope=slope,
+                             intercept=intercept)
+
+        result = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "Naive", "HORIZON", "5",
+            "TRANSFORMS", "Difference(1)"
+        )
+
+        parsed_list = parse_forecast_array_response(result)
+        assert len(parsed_list) == 1
+        assert "Naive" in parsed_list[0]["model"]
+        forecasts = get_forecast_values(parsed_list[0])
+        assert len(forecasts) == 5
+        for i, value in enumerate(forecasts):
+            expected = intercept + slope * (count + i)
+            assert math.isclose(value, expected, rel_tol=1e-9), \
+                f"point {i}: expected {expected}, got {value}"
+
+    def test_transforms_change_the_forecast(self):
+        """The same model with and without TRANSFORMS must differ on a
+        trending series, proving the chain is applied and not dropped."""
+        key = "test:forecast:transforms:applied"
+        create_linear_series(self.client, key, count=100)
+
+        plain = parse_forecast_array_response(self.client.execute_command(
+            "TS.FORECAST", key, "-", "+", "MODELS", "Naive", "HORIZON", "3"
+        ))[0]
+        transformed = parse_forecast_array_response(self.client.execute_command(
+            "TS.FORECAST", key, "-", "+", "MODELS", "Naive", "HORIZON", "3",
+            "TRANSFORMS", "Difference(1)"
+        ))[0]
+
+        # Naive alone repeats the last value; differenced Naive extrapolates.
+        assert get_forecast_values(plain) != get_forecast_values(transformed)
+
+    def test_transforms_chain_applies_to_every_model(self):
+        """A transform chain is applied independently to each listed model."""
+        key = "test:forecast:transforms:multi"
+        create_linear_series(self.client, key, count=120)
+
+        result = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "Naive,SES", "HORIZON", "4",
+            "TRANSFORMS", "Difference(1),Scale(Standardize)"
+        )
+
+        parsed_list = parse_forecast_array_response(result)
+        assert len(parsed_list) == 2
+        assert "Naive" in parsed_list[0]["model"]
+        assert "SES" in parsed_list[1]["model"]
+        for parsed in parsed_list:
+            forecasts = get_forecast_values(parsed)
+            assert len(forecasts) == 4
+            assert all(math.isfinite(v) for v in forecasts)
+
+    def test_transforms_with_metrics_and_level(self):
+        """Metrics and intervals are reported in original units when a
+        transform is active (fitted values are inverse-transformed too)."""
+        key = "test:forecast:transforms:metrics"
+        create_linear_series(self.client, key, count=150)
+
+        result = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "ARIMA(1,0,0)", "HORIZON", "5",
+            "TRANSFORMS", "Difference(1)",
+            "LEVEL", "95", "WITH_METRICS"
+        )
+
+        parsed = parse_forecast_array_response(result)[0]
+        assert "metrics" in parsed
+        # A differenced AR(1) fits a straight line almost perfectly, so the
+        # error in original units must be small relative to the values.
+        assert parsed["metrics"]["rmse"] < 1.0
+        assert parsed["level"] == 95.0
+        lower = parsed["lower_interval"]
+        upper = parsed["upper_interval"]
+        forecasts = get_forecast_values(parsed)
+        assert len(lower) == len(upper) == len(forecasts) == 5
+        for lo, mid, hi in zip(lower, forecasts, upper):
+            assert lo <= mid <= hi
+
+    def test_transforms_log_on_positive_series(self):
+        """Log transform on a strictly positive series round-trips to
+        positive, finite forecasts."""
+        key = "test:forecast:transforms:log"
+        create_linear_series(self.client, key, count=100, intercept=10.0)
+
+        result = self.client.execute_command(
+            "TS.FORECAST", key, "-", "+",
+            "MODELS", "Naive", "HORIZON", "3",
+            "TRANSFORMS", "Log"
+        )
+
+        forecasts = get_forecast_values(parse_forecast_array_response(result)[0])
+        assert len(forecasts) == 3
+        assert all(math.isfinite(v) and v > 0 for v in forecasts)
+
+    def test_error_invalid_transform_spec(self):
+        """An unknown transform name is rejected synchronously."""
+        key = "test:forecast:transforms:invalid"
+        create_linear_series(self.client, key, count=50)
+
+        with pytest.raises(ResponseError, match="TRANSFORMS"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "3",
+                "TRANSFORMS", "NotATransform(1)"
+            )
+
+    def test_error_transform_bad_arity(self):
+        """A transform with the wrong number of arguments is rejected."""
+        key = "test:forecast:transforms:arity"
+        create_linear_series(self.client, key, count=50)
+
+        with pytest.raises(ResponseError, match="TRANSFORMS"):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "3",
+                "TRANSFORMS", "Difference"
+            )
+
+    def test_error_missing_transforms_value(self):
+        """TRANSFORMS with no following value is rejected."""
+        key = "test:forecast:transforms:missing"
+        create_linear_series(self.client, key, count=50)
+
+        with pytest.raises(ResponseError):
+            self.client.execute_command(
+                "TS.FORECAST", key, "-", "+",
+                "MODELS", "Naive", "HORIZON", "3",
+                "TRANSFORMS"
+            )
