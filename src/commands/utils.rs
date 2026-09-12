@@ -3,10 +3,9 @@ use crate::commands::fanout_codec::MGetValue;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::replies::{
     IntoRawCtx, ThreadSafeReplyContext, is_resp3_client, reply_label_ex, reply_with_array,
-    reply_with_bulk_string,
-    reply_with_double, reply_with_labels, reply_with_labels_map, reply_with_map,
-    reply_with_multi_samples, reply_with_sample_ex, reply_with_samples, reply_with_slice,
-    reply_with_str,
+    reply_with_bulk_string, reply_with_double, reply_with_labels, reply_with_labels_map,
+    reply_with_map, reply_with_multi_samples, reply_with_sample_ex, reply_with_samples,
+    reply_with_slice, reply_with_str,
 };
 use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fanout_mode};
 use crate::labels::Label;
