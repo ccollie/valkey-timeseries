@@ -5,7 +5,7 @@ Covers:
 - Basic forecasting with a single model
 - Forecasting with multiple models
 - HORIZON option
-- WITH_METRICS option
+- METRICS option
 - LEVEL option for prediction intervals
 - TRANSFORMS option (reversible pre-processing chain applied per model)
 - STORE option (persisting forecast to a destination key)
@@ -290,17 +290,17 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         assert "upper_interval" in parsed
 
     # ══════════════════════════════════════════════════════════════════════
-    # WITH_METRICS option
+    # METRICS option
     # ══════════════════════════════════════════════════════════════════════
 
     def test_forecast_with_metrics(self):
-        """Test forecast with WITH_METRICS for in-sample accuracy metrics."""
+        """Test forecast with METRICS for in-sample accuracy metrics."""
         key = "test:forecast:metrics"
         create_linear_series(self.client, key, count=150)
 
         result = self.client.execute_command(
             "TS.FORECAST", key, "-", "+",
-            "MODELS", "ARIMA(2,1,0)", "HORIZON", "5", "WITH_METRICS"
+            "MODELS", "ARIMA(2,1,0)", "HORIZON", "5", "METRICS"
         )
 
         parsed_list = parse_forecast_array_response(result)
@@ -322,7 +322,7 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         assert metrics["smape"] >= 0.0
 
     def test_without_metrics_omits_field(self):
-        """Test that metrics field is omitted when WITH_METRICS is not specified."""
+        """Test that metrics field is omitted when METRICS is not specified."""
         key = "test:forecast:no_metrics"
         create_linear_series(self.client, key, count=120)
 
@@ -891,7 +891,7 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
     # ══════════════════════════════════════════════════════════════════════
 
     def test_all_options_combined(self):
-        """Test with MODELS, HORIZON, LEVEL, WITH_METRICS, and STORE together."""
+        """Test with MODELS, HORIZON, LEVEL, METRICS, and STORE together."""
         key = "test:forecast:combined:src"
         store_key = "test:forecast:combined:dst"
         create_linear_series(self.client, key, count=150)
@@ -901,7 +901,7 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
             "MODELS", "ARIMA(2,1,0)",
             "HORIZON", "5",
             "LEVEL", "90",
-            "WITH_METRICS",
+            "METRICS",
             "STORE", store_key,
             "RETENTION", "10000",
             "CHUNK_SIZE", "128",
@@ -916,7 +916,7 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         assert len(stored) == 5
 
     def test_all_options_without_store(self):
-        """Test with MODELS, HORIZON, LEVEL, and WITH_METRICS (no STORE)."""
+        """Test with MODELS, HORIZON, LEVEL, and METRICS (no STORE)."""
         key = "test:forecast:combined:no_store"
         create_linear_series(self.client, key, count=150)
 
@@ -925,7 +925,7 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
             "MODELS", "ARIMA(2,1,0), SES(alpha=0.3)",
             "HORIZON", "5",
             "LEVEL", "90",
-            "WITH_METRICS",
+            "METRICS",
         )
 
         parsed_list = parse_forecast_array_response(result)
@@ -1144,7 +1144,7 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
             "TS.FORECAST", key, "-", "+",
             "MODELS", "ARIMA(1,0,0)", "HORIZON", "5",
             "TRANSFORMS", "Difference(1)",
-            "LEVEL", "95", "WITH_METRICS"
+            "LEVEL", "95", "METRICS"
         )
 
         parsed = parse_forecast_array_response(result)[0]

@@ -16,7 +16,7 @@ TS.FORECAST key fromTimestamp toTimestamp
   HORIZON horizon
   [LEVEL confidence_level]
   [TRANSFORMS transform_spec[,transform_spec ...]]
-  [WITH_METRICS]
+  [METRICS]
   [TIMEOUT milliseconds]
   [STORE destinationKey
     [MERGE]
@@ -149,7 +149,7 @@ the `lower_interval` and `upper_interval` fields, but `level` will still be incl
 A comma-separated chain of reversible pre-processing transforms applied to the series, in
 order, before every model in `MODELS` is fit. Each model gets its own independently fitted
 copy of the chain. Forecasts, prediction intervals and in-sample fitted values (and therefore
-`WITH_METRICS`) are all inverse-transformed back into the original units, so the response
+`METRICS`) are all inverse-transformed back into the original units, so the response
 shape is identical with or without `TRANSFORMS`.
 
 Use this to hand a stationary or variance-stabilised series to models that assume one
@@ -171,7 +171,7 @@ must contain enough samples for the model *after* the chain is applied.
 </details>
 
 <details open>
-<summary><code>WITH_METRICS</code></summary>
+<summary><code>METRICS</code></summary>
 
 When specified, each model's response includes a `metrics` map with accuracy metrics using in-sample observed values and fitted values from the model.
 
@@ -247,7 +247,7 @@ Each map contains alternating keys and values with the following fields:
 | `level`          | double          | No             | Confidence level (only when `LEVEL` is specified)                                                        |
 | `lower_interval` | array of double | No             | Lower prediction interval bounds (only when supported by the model and `LEVEL` is specified)             |
 | `upper_interval` | array of double | No             | Upper prediction interval bounds (only when supported by the model and `LEVEL` is specified)             |
-| `metrics`        | map             | No             | Accuracy metrics map (only when `WITH_METRICS` is specified and the model supports fitted values)        |
+| `metrics`        | map             | No             | Accuracy metrics map (only when `METRICS` is specified and the model supports fitted values)        |
 
 **With `STORE`:** The response is a single integer representing the number of samples written
 to the destination key.
@@ -452,7 +452,7 @@ OK
 ### Forecast with prediction intervals and metrics
 
 ```
-127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "ARIMA(2,1,0)" HORIZON 5 LEVEL 95 WITH_METRICS
+127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "ARIMA(2,1,0)" HORIZON 5 LEVEL 95 METRICS
 1) 1) "model"
    2) "ARIMA(2,1,0)"
    3) "horizon"

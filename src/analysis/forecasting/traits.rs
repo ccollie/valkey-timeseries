@@ -163,7 +163,7 @@ impl Forecaster for DynForecaster {
 /// [`InverseMode::Fitted`]. For length-changing transforms (differencing)
 /// that inverse is a cumulative sum from the initial anchor, so a single
 /// non-finite warm-up value from the model (ARIMA, Naive, ...) poisons every
-/// later position and `WITH_METRICS` fails with "missing values detected".
+/// later position and `METRICS` fails with "missing values detected".
 ///
 /// This wrapper remembers the transformed *actual* series from
 /// `fit_transform`. On the fitted path it substitutes the actual value at
