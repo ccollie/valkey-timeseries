@@ -7,7 +7,7 @@ returning out-of-sample accuracy metrics for each model.
 forecast this series over time?" It repeatedly trains a model on a window of historical data,
 forecasts forward `HORIZON` points, compares the forecast against the actual observed values,
 and records the error. This is repeated across multiple folds that slide across the requested
-range. Unlike `TS.FORECAST WITH_METRICS`, which scores a model against its own in-sample fitted
+range. Unlike `TS.FORECAST METRICS`, which scores a model against its own in-sample fitted
 values, `TS.BACKTEST` scores models against **held-out data the model never saw during
 training** — a realistic estimate of production forecast accuracy.
 
@@ -184,7 +184,7 @@ each test window), the seasonal scaling factor cannot be computed and `mase` is 
 for that fold. When `SEASONAL_PERIOD` is omitted, MASE falls back to non-seasonal (lag-1) scaling,
 which is defined whenever `HORIZON >= 2`. In short: to get a non-null seasonal `mase`, use a
 `HORIZON` larger than `SEASONAL_PERIOD`; otherwise omit `SEASONAL_PERIOD` and rely on the lag-1
-scaling. This mirrors how `TS.FORECAST WITH_METRICS` computes MASE.
+scaling. This mirrors how `TS.FORECAST METRICS` computes MASE.
 </details>
 
 <details open>
@@ -278,7 +278,7 @@ The response is an **array of flat key-value maps**, one entry per model specifi
 | `train_end`   | integer         | Yes             | Timestamp of the last training sample in this fold         |
 | `test_start`  | integer         | Yes             | Timestamp of the first sample in this fold's test window   |
 | `test_end`    | integer         | Yes             | Timestamp of the last sample in this fold's test window    |
-| `metrics`     | map             | Yes             | `mae`, `mse`, `rmse`, `mape`, `smape`, `mase`, `r_squared` for this fold (same shape as `TS.FORECAST WITH_METRICS`) |
+| `metrics`     | map             | Yes             | `mae`, `mse`, `rmse`, `mape`, `smape`, `mase`, `r_squared` for this fold (same shape as `TS.FORECAST METRICS`) |
 | `predictions` | array of double | No              | Forecasted values (only with `WITH_PREDICTIONS`)           |
 | `actuals`     | array of double | No              | Observed values (only with `WITH_PREDICTIONS`)              |
 
