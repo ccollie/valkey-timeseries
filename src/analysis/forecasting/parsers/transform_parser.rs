@@ -206,7 +206,6 @@ mod tests {
 
     #[test]
     fn fitted_values_survive_model_warmup_nans_through_differencing() {
-
         // Naive's first fitted value on the differenced series is undefined.
         // Without the DynTransform fix-up the cumulative inverse turns that
         // one NaN into an all-NaN fitted series and metrics cannot be scored.

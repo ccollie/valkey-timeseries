@@ -3,9 +3,11 @@ use crate::commands::CommandArgIterator;
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
 use crate::commands::utils::{get_store_key_pos, reply_with_double_array};
+use crate::common::Timestamp;
 use crate::common::replies::{
     ThreadSafeReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
 };
+use crate::common::time::compute_median_step_ms;
 use anofox_forecast::core::{Forecast, TimeSeries as ForecastTimeSeries};
 use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
@@ -33,6 +35,49 @@ pub(super) fn parse_timeseries_for_forecast(
     make_forecast_time_series(samples.into_iter())
         .map_err(|_e| ValkeyError::Str("TSDB: Failed to prepare time series for forecasting"))
 }
+
+/// Where `STORE` anchors the forecast samples: the last observed timestamp and
+/// the step between consecutive forecast points.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct StoreAnchor {
+    pub last_ts: Timestamp,
+    pub step_ms: i64,
+}
+
+impl StoreAnchor {
+    /// Timestamp of the `i`-th (zero-based) forecast point.
+    pub fn timestamp_at(&self, i: usize) -> Timestamp {
+        self.last_ts + self.step_ms * (i as i64 + 1)
+    }
+}
+
+/// Derive the [`StoreAnchor`] for a series about to be forecast.
+///
+/// The step is the series' detected frequency, falling back to the median
+/// positive gap between samples. Both need at least two distinct timestamps,
+/// so a range that cannot yield a step is rejected here — on the main thread,
+/// before the client is blocked — rather than silently downgrading `STORE`
+/// to a plain reply after the models have run.
+pub(super) fn store_anchor(series: &ForecastTimeSeries) -> ValkeyResult<StoreAnchor> {
+    let timestamps = series.timestamps();
+    let last_ts = timestamps
+        .last()
+        .map(|dt| dt.timestamp_millis())
+        .ok_or(ValkeyError::Str(STORE_STEP_ERROR))?;
+    let step_ms = series
+        .frequency()
+        .map(|d| d.num_milliseconds())
+        .filter(|&step| step > 0)
+        .or_else(|| {
+            let millis: Vec<i64> = timestamps.iter().map(|dt| dt.timestamp_millis()).collect();
+            compute_median_step_ms(&millis)
+        })
+        .ok_or(ValkeyError::Str(STORE_STEP_ERROR))?;
+    Ok(StoreAnchor { last_ts, step_ms })
+}
+
+const STORE_STEP_ERROR: &str =
+    "TSDB: STORE requires at least two samples in the range to determine the forecast step";
 
 pub struct ForecastOutput {
     pub(crate) model_name: String,
