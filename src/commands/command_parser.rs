@@ -2006,6 +2006,14 @@ pub(super) fn parse_forecast_horizon_value(args: &mut CommandArgIterator) -> Val
             "TSDB: forecast horizon must be greater than 0",
         ));
     }
+    // Every model allocates O(horizon) per forecast off the main thread, past the
+    // deny-oom check, so the cap is enforced here before anything is scheduled.
+    let max = crate::config::forecast_max_horizon();
+    if next as u64 > max as u64 {
+        return Err(ValkeyError::String(format!(
+            "TSDB: forecast horizon must not exceed {max} (ts-forecast-max-horizon)"
+        )));
+    }
     Ok(next as usize)
 }
 
