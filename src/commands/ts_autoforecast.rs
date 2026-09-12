@@ -23,7 +23,7 @@ struct AutoForecastOptions {
     horizon: usize,
     level: Option<f64>,
     metrics: bool,
-    destination_key: Option<String>,
+    destination_key: Option<Vec<u8>>,
     create_options: Option<TimeSeriesOptions>,
     write_mode: Option<DestinationWriteMode>,
     config: AutoForecastConfig,
@@ -154,8 +154,7 @@ fn parse_autoforecast_args(args: &mut CommandArgIterator) -> ValkeyResult<AutoFo
                 },
                 "STORE" => {
                     let store_options = parse_store_clause(args)?;
-                    // todo: this is fishy. Keys are binary safe
-                    options.destination_key = Some(store_options.key.to_string_lossy());
+                    options.destination_key = Some(store_options.key.into());
                     options.create_options = Some(store_options.options);
                     options.write_mode = Some(store_options.write_mode);
                 },
@@ -231,7 +230,7 @@ fn process_forecast(
 
 fn store_forecast(
     ctx: &ThreadSafeReplyContext,
-    dest_key: &str,
+    dest_key: &[u8],
     options: &AutoForecastOptions,
     forecast: &[f64],
     anchor: StoreAnchor,
@@ -243,7 +242,7 @@ fn store_forecast(
         .collect();
 
     let lock = ctx.lock();
-    let key = lock.create_string(dest_key.as_bytes());
+    let key = lock.create_string(dest_key);
     let mode = options.write_mode.unwrap_or_default();
     create_or_update_series_with_samples(
         &lock,
