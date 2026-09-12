@@ -212,8 +212,9 @@ interval.
 Without `MERGE` (overwrite mode), the destination is cleared before writing.
 With `MERGE`, forecast samples use `KeepLast` semantics for duplicate timestamps.
 
-When the source series has fewer than 2 timestamps or no positive time intervals,
-`STORE` is skipped with a warning logged to the server.
+The forecast step is the series' detected sampling frequency, falling back to the median
+positive gap between samples. That needs at least two samples in the range; with fewer the
+command fails with an error rather than returning the forecast without storing it.
 </details>
 
 ## Return Value
@@ -355,6 +356,8 @@ Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust`, `multiplic
 - `TSDB: TRANSFORMS must contain at least one transform specification` — `TRANSFORMS` was given
   an empty string.
 - `TSDB: STORE is only supported with a single model` — `STORE` was specified with multiple models.
+- `TSDB: STORE requires at least two samples in the range to determine the forecast step` — the
+  range holds too few samples to infer where the stored forecast samples should be placed.
 - `TSDB: LEVEL must be between 0 and 100` — `LEVEL` is out of the valid range.
 - `TSDB: Unknown argument` — an unrecognized argument was provided.
 - `TSDB: failed to store forecast in key` — an error occurred while writing STORE samples.
