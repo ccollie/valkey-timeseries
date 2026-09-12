@@ -1,3 +1,4 @@
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use anofox_forecast::features::autocorrelation;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -5,7 +6,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 acl_categories!(TS_AUTOCORRELATION, "ts.autocorrelation", "read timeseries");
 /// ```text
 /// TS.AUTOCORRELATION key startTime endTime lag
-/// [PARTIAL | TRA | AGGREGATED <mean|var|std|median>]
+/// [PARTIAL | TRA | AGGREGATED <mean|var|std|median>] [TIMEOUT ms]
 /// ```
 ///
 /// `TS.AUTOCORRELATION` computes autocorrelation-based statistics on a time series.
@@ -61,14 +62,15 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         )));
     }
 
-    let mut result = f64::NAN;
-    if let Some(arg) = args.peek() {
+    let mut kind = Kind::Plain;
+    let mut timeout = AnalysisTimeout::default();
+    while let Some(arg) = args.peek() {
         let arg = arg.as_slice();
         hashify::fnc_map_ignore_case!(
             arg,
             "PARTIAL" => {
                 args.next();
-                result = autocorrelation::partial_autocorrelation(&values, lag);
+                kind = Kind::Partial;
             },
             "TRA" => {
                 args.next();
@@ -79,7 +81,7 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
                         values.len()
                     )));
                 }
-                result = autocorrelation::time_reversal_asymmetry_statistic(&values, lag);
+                kind = Kind::Tra;
             },
             "AGGREGATED" => {
                 args.next();
@@ -96,22 +98,50 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
                         "TSDB: invalid AGGREGATED function. Expected mean, var, std, or median"
                     ));
                 }
-                let agg = agg_str.to_ascii_lowercase();
-                result = autocorrelation::agg_autocorrelation(&values, lag, &agg);
+                kind = Kind::Aggregated(agg_str.to_ascii_lowercase());
+            },
+            "TIMEOUT" => {
+                args.next();
+                timeout.set(parse_timeout(&mut args)?);
             },
             _ => return Err(ValkeyError::String("TSDB: unrecognized option".to_string()))
         )
-    } else {
-        result = autocorrelation::autocorrelation(&values, lag)
-    };
+    }
 
     args.done()?;
 
-    if result.is_nan() {
-        return Err(ValkeyError::Str(
-            "TSDB: autocorrelation computation returned NaN",
-        ));
-    }
-
-    Ok(ValkeyValue::Float(result))
+    let sample_count = values.len();
+    run_analysis(
+        ctx,
+        sample_count,
+        INLINE_MAX_SAMPLES,
+        timeout,
+        move || {
+            let result = match &kind {
+                Kind::Plain => autocorrelation::autocorrelation(&values, lag),
+                Kind::Partial => autocorrelation::partial_autocorrelation(&values, lag),
+                Kind::Tra => autocorrelation::time_reversal_asymmetry_statistic(&values, lag),
+                Kind::Aggregated(agg) => autocorrelation::agg_autocorrelation(&values, lag, agg),
+            };
+            if result.is_nan() {
+                return Err(ValkeyError::Str(
+                    "TSDB: autocorrelation computation returned NaN",
+                ));
+            }
+            Ok(result)
+        },
+        |_actx, result| Ok(ValkeyValue::Float(result)),
+    )
 }
+
+/// Which statistic to compute.
+enum Kind {
+    Plain,
+    Partial,
+    Tra,
+    Aggregated(String),
+}
+
+/// Largest range that runs on the main thread. Every variant is linear in the
+/// range (~100 ms at 200k samples, release build), so the bar is high.
+const INLINE_MAX_SAMPLES: usize = 50_000;

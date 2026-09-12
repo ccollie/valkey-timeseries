@@ -174,7 +174,7 @@ class TestTimeSeriesDebug(ValkeyTimeSeriesTestCaseDebugMode):
             'ts-cluster-map-expiration-ms',
             'ts-index-build-max-memory',
             'ts-forecast-max-horizon',
-            'ts-forecast-timeout',
+            'ts-analysis-timeout',
             'ts-fanout-aggregation-pushdown',
             'ts-index-persist',
             'debug-mode',

@@ -874,7 +874,7 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         self._slow_series(key)
 
         started = time.monotonic()
-        with pytest.raises(ResponseError, match="forecast timed out"):
+        with pytest.raises(ResponseError, match="timed out before the result was ready"):
             self.client.execute_command(
                 "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
                 "SEASONALITY", "AUTO", "TIMEOUT", "200"
@@ -892,7 +892,7 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         store_key = "test:autoforecast:timeout:store:out"
         self._slow_series(key)
 
-        with pytest.raises(ResponseError, match="forecast timed out"):
+        with pytest.raises(ResponseError, match="timed out before the result was ready"):
             self.client.execute_command(
                 "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
                 "SEASONALITY", "AUTO", "TIMEOUT", "200", "STORE", store_key
@@ -904,13 +904,13 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         """TIMEOUT 0 overrides a short configured default with no deadline."""
         key = "test:autoforecast:timeout:zero"
         self._slow_series(key, count=2000)
-        name = "ts.ts-forecast-timeout"
+        name = "ts.ts-analysis-timeout"
         default = self.client.execute_command("CONFIG", "GET", name)[1]
         assert default == b"60000"
 
         try:
             self.client.execute_command("CONFIG", "SET", name, "100")
-            with pytest.raises(ResponseError, match="forecast timed out"):
+            with pytest.raises(ResponseError, match="timed out before the result was ready"):
                 self.client.execute_command(
                     "TS.AUTOFORECAST", key, "-", "+", "HORIZON", "3",
                     "SEASONALITY", "AUTO"

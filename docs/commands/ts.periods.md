@@ -11,7 +11,7 @@ is returned as an integer, or `nil` if no significant period is found.
 ## Syntax
 
 ```
-TS.PERIODS key fromTimestamp toTimestamp [MIN_STRENGTH minStrength] [DOMINANT]
+TS.PERIODS key fromTimestamp toTimestamp [MIN_STRENGTH minStrength] [DOMINANT] [TIMEOUT milliseconds]
 ```
 
 [Examples](#examples)
@@ -68,6 +68,20 @@ each containing: `[period, power, strength, acf, n_cycles]`.
 * `acf` — Autocorrelation at the detected lag. Positive values confirm a repeating pattern.
 * `n_cycles` — Number of complete cycles of this period in the signal.
 
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds. Ranges of up to 5,000 samples are computed
+inline; larger ranges run on a dedicated pool of analysis worker threads (sized by
+`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
+counted from when the request is accepted, so time spent queued behind other analysis work
+counts. When it elapses the client receives `TSDB: command timed out before the result was
+ready` and the request is abandoned. `0` disables the deadline for this call.
+
+When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
 </details>
 
 ## Return

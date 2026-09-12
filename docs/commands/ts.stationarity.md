@@ -25,6 +25,7 @@ conclusion than either test alone.
 TS.STATIONARITY key fromTimestamp toTimestamp
     [TEST adf|kpss|combined]
     [LAGS n]
+    [TIMEOUT milliseconds]
 ```
 
 [Examples](#examples)
@@ -93,6 +94,20 @@ Number of lags to use in the test (non-negative integer). Only valid when `TEST`
 
 Returns an error if `LAGS` is specified with `TEST combined`, since the combined test
 function uses its own internal defaults.
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds. Ranges of up to 50,000 samples are computed
+inline; larger ranges run on a dedicated pool of analysis worker threads (sized by
+`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
+counted from when the request is accepted, so time spent queued behind other analysis work
+counts. When it elapses the client receives `TSDB: command timed out before the result was
+ready` and the request is abandoned. `0` disables the deadline for this call.
+
+When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
+`0` there means no default deadline).
 </details>
 
 ## Return
