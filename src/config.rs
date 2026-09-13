@@ -161,6 +161,10 @@ const PROMQL_MAX_RESPONSE_SERIES_DEFAULT: i64 = 1000;
 const PROMQL_MAX_POINTS_PER_TIMESERIES_MIN: i64 = 0;
 const PROMQL_MAX_POINTS_PER_TIMESERIES_MAX: i64 = i64::MAX;
 const PROMQL_MAX_POINTS_PER_TIMESERIES_DEFAULT: i64 = 0; // 0 = unlimited
+const PROMQL_MAX_SAMPLES_PER_QUERY_MIN: i64 = 0;
+const PROMQL_MAX_SAMPLES_PER_QUERY_MAX: i64 = i64::MAX;
+/// Prometheus' `--query.max-samples` default. 0 = unlimited.
+pub const PROMQL_MAX_SAMPLES_PER_QUERY_DEFAULT: i64 = 50_000_000;
 const PROMQL_LOOKBACK_DELTA_MIN_MS: i64 = 0;
 const PROMQL_LOOKBACK_DELTA_MAX_MS: i64 = ONE_YEAR_MS;
 const PROMQL_LOOKBACK_DELTA_DEFAULT_MS: i64 = 5 * 60 * 1000; // 5m
@@ -1364,6 +1368,7 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         cfg.max_response_series = PROMQL_MAX_RESPONSE_SERIES.load(Ordering::Relaxed) as usize;
         cfg.max_points_per_timeseries =
             PROMQL_MAX_POINTS_PER_TIMESERIES.load(Ordering::Relaxed) as usize;
+        cfg.max_samples_per_query = PROMQL_MAX_SAMPLES_PER_QUERY.load(Ordering::Relaxed) as usize;
         cfg.set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
         cfg.optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
         cfg.enable_experimental_functions =
@@ -1418,6 +1423,7 @@ mod tests {
         ("ts-promql-max-query-len", "4096"),
         ("ts-promql-max-response-series", "1000"),
         ("ts-promql-max-points-per-timeseries", "0"),
+        ("ts-promql-max-samples-per-query", "500000"),
         ("ts-promql-lookback-delta", "300000"),
         ("ts-promql-max-lookback", "0"),
         ("ts-promql-max-query-duration", "30000"),
