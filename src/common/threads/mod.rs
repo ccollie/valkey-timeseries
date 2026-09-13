@@ -62,9 +62,12 @@ pub fn spawn_background<F: FnOnce() + Send + 'static>(name: &str, job: F) {
     }
 }
 
-/// Spawn a job in the context of a valkey GIL (Global Interpreter Lock).
+/// Spawn a job that runs holding the valkey GIL (module lock).
+///
+/// On its own thread, not the pool: a pool worker that holds the lock and
+/// waits on the pool is the freeze described on [`spawn_background`].
 pub fn spawn_with_context<F: FnOnce(&Context) + Send + 'static>(job: F) {
-    spawn(move || {
+    spawn_background("ts-with-context", move || {
         let ctx = MODULE_CONTEXT.lock();
         job(&ctx);
     });
