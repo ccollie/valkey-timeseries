@@ -58,6 +58,14 @@ impl InFlightRequest {
             })
     }
 
+    /// Stop the pending timeout timer. Only for a timer that has *not* fired:
+    /// the firing timer is consumed by `on_request_timeout` itself, and stopping
+    /// it from inside its own callback double-frees its data (see there).
+    ///
+    /// `stop_timer::<u64>` reclaims the callback data with `u64`'s layout. That
+    /// is exact here because the timer was created with a fn item (a ZST) as
+    /// the callback, so the wrapper's `CallbackData` is one `u64`; a closure
+    /// with captures would make this free with the wrong layout.
     fn cancel_timer(&self, ctx: &Context) {
         let _ = ctx.stop_timer::<u64>(self.timer_id);
     }
@@ -149,6 +157,17 @@ fn generate_id() -> u64 {
     }
 }
 
+/// The timeout timer's callback. Runs on the main thread inside
+/// `moduleTimerHandler`, for a timer that is in the middle of firing.
+///
+/// It must not stop that timer. The module-API wrapper has already reclaimed
+/// and freed the timer's callback data before calling in here, and on the
+/// server side the timer is still registered while its callback runs — so
+/// `stop_timer` would succeed, hand back the same freed pointer, and free it
+/// again (`free_tiny_botch` → abort, taking the coordinator and its quorum
+/// with it; observed on the first fanout timeout of a large cluster range
+/// read). The server removes and frees the firing timer itself once this
+/// returns.
 fn on_request_timeout(ctx: &Context, id: u64) {
     let map = INFLIGHT_REQUESTS.pin();
     if let Some(request) = map.get(&id) {
@@ -156,8 +175,6 @@ fn on_request_timeout(ctx: &Context, id: u64) {
         if request.timed_out.swap(true, Ordering::AcqRel) {
             return;
         }
-
-        request.cancel_timer(ctx);
 
         let local_node_id = CURRENT_NODE_ID.raw_ptr();
         request.handle_response(ctx, Err(FanoutError::timeout()), local_node_id);
@@ -177,6 +194,8 @@ fn finish_inflight_request(ctx: &Context, request: &InFlightRequest) {
     if let Ok(v) = request.rpc_done()
         && v == 1
     {
+        // Every shard answered before the deadline: the timer is still pending
+        // and this is the one place it is stopped.
         request.cancel_timer(ctx);
         let map = INFLIGHT_REQUESTS.pin();
         map.remove(&request.id);
