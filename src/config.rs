@@ -1416,14 +1416,14 @@ mod tests {
         ("debug-mode", "no"),
         // PromQL parameters. The duration-valued ones register the millisecond count rather
         // than a human-readable literal, matching `ts-cluster-map-expiration-ms` above.
-        ("ts-fanout-rollup-pushdown", "no"),
+        ("ts-fanout-rollup-pushdown", "yes"),
         ("ts-promql-set-lookback-to-step", "no"),
         ("ts-promql-optimize-queries", "no"),
         ("ts-promql-enable-experimental-functions", "yes"),
         ("ts-promql-max-query-len", "4096"),
         ("ts-promql-max-response-series", "1000"),
         ("ts-promql-max-points-per-timeseries", "0"),
-        ("ts-promql-max-samples-per-query", "500000"),
+        ("ts-promql-max-samples-per-query", "50000000"),
         ("ts-promql-lookback-delta", "300000"),
         ("ts-promql-max-lookback", "0"),
         ("ts-promql-max-query-duration", "30000"),
