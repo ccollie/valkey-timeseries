@@ -6,7 +6,7 @@ use super::utils::{is_clustered, is_multi_or_lua};
 use crate::common::context::{get_current_db, set_current_db};
 use crate::common::hash::BuildNoHashHasher;
 use crate::common::pool::get_pooled_buffer;
-use crate::common::threads::spawn_with_context;
+use crate::common::threads::spawn_background;
 use crate::config::FANOUT_COMMAND_TIMEOUT;
 use crate::fanout::acl::get_fanout_user;
 use crate::fanout::cluster_map::{CURRENT_NODE_ID, NodeId, NodeRole, SocketAddress};
@@ -26,7 +26,7 @@ use std::os::raw::{c_char, c_int, c_uchar};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use valkey_module::{
-    Context, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
+    Context, MODULE_CONTEXT, RedisModuleCtx, Status, VALKEYMODULE_OK, ValkeyError,
     ValkeyModule_RegisterClusterMessageReceiver, ValkeyModule_SendClusterMessage,
     ValkeyModuleClusterMessageReceiver, ValkeyModuleCtx, ValkeyResult,
 };
@@ -588,8 +588,11 @@ extern "C" fn on_request_received(
 
     alloc_db_if_needed(&ctx, message.db);
 
-    spawn_with_context(move |ctx| {
-        process_request_message(ctx, header, handler, &buf, sender);
+    // Off the rayon pool: the handler takes the module lock and the local
+    // response fans out on the pool under it (see `spawn_background`).
+    spawn_background("ts-fanout-request", move || {
+        let ctx = MODULE_CONTEXT.lock();
+        process_request_message(&ctx, header, handler, &buf, sender);
     });
 }
 
