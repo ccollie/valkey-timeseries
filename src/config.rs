@@ -1371,6 +1371,7 @@ pub(super) fn register_config(ctx: &Context, args: &[ValkeyString]) -> ValkeyRes
         cfg.max_samples_per_query = PROMQL_MAX_SAMPLES_PER_QUERY.load(Ordering::Relaxed) as usize;
         cfg.set_lookback_to_step = PROMQL_SET_LOOKBACK_TO_STEP.load(Ordering::Relaxed);
         cfg.optimize_queries = PROMQL_OPTIMIZE_QUERIES.load(Ordering::Relaxed);
+        cfg.derived_filter_pushdown = PROMQL_DERIVED_FILTER_PUSHDOWN.load(Ordering::Relaxed);
         cfg.enable_experimental_functions =
             PROMQL_ENABLE_EXPERIMENTAL_FUNCTIONS.load(Ordering::Relaxed);
         cfg.lookback_delta =
@@ -1419,6 +1420,7 @@ mod tests {
         ("ts-fanout-rollup-pushdown", "yes"),
         ("ts-promql-set-lookback-to-step", "no"),
         ("ts-promql-optimize-queries", "no"),
+        ("ts-promql-derived-filter-pushdown", "yes"),
         ("ts-promql-enable-experimental-functions", "yes"),
         ("ts-promql-max-query-len", "4096"),
         ("ts-promql-max-response-series", "1000"),
