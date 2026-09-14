@@ -2087,10 +2087,9 @@ mod tests {
         ];
         let expected: Vec<Vec<(String, String)>> = wire.iter().map(label_pairs).collect();
 
-        let (symbol_table_names, symbol_table_values) =
-            fanout_codec::symbol_table::intern_labels(&mut wire);
-        assert_eq!(symbol_table_names.len(), 2, "region, env");
-        assert_eq!(symbol_table_values.len(), 3, "us-east-1, prod, staging");
+        let symbol_table = fanout_codec::symbol_table::intern_labels(&mut wire);
+        assert_eq!(symbol_table.names.len(), 2, "region, env");
+        assert_eq!(symbol_table.values.len(), 3, "us-east-1, prod, staging");
         assert!(wire.iter().all(|s| s.labels.is_empty()), "interned away");
 
         let resp = MultiRangeResponse {
@@ -2124,8 +2123,10 @@ mod tests {
                 group_label_value: String::new(),
                 labels: Vec::new(),
                 columns: Vec::new(),
-                label_name_refs: vec![7],
-                label_value_refs: vec![0],
+                label_refs: vec![super::fanout_codec::generated::SymbolTableRef {
+                    name: 7,
+                    value: 0,
+                }],
             }],
             group_partials: Vec::new(),
             symbol_table_names: Vec::new(),
@@ -2160,8 +2161,7 @@ mod tests {
             series: vec![wire],
             group_partials: Vec::new(),
             // No symbol table and no refs: labels carried directly.
-            symbol_table_names: Vec::new(),
-            symbol_table_values: Vec::new(),
+            symbol_table: Some(SymbolTable::default()),
         };
 
         let mut cmd = MRangeFanoutCommand::default();
@@ -2177,10 +2177,9 @@ mod tests {
     #[test]
     fn ingest_response_handles_label_less_series() {
         let mut wire = vec![to_response(series_result("a", None, samples(&[(0, 1.0)])))];
-        let (symbol_table_names, symbol_table_values) =
-            fanout_codec::symbol_table::intern_labels(&mut wire);
-        assert!(symbol_table_names.is_empty());
-        assert!(symbol_table_values.is_empty());
+        let symbol_table = fanout_codec::symbol_table::intern_labels(&mut wire);
+        assert!(symbol_table.names.is_empty());
+        assert!(symbol_table.values.is_empty());
 
         let resp = MultiRangeResponse {
             series: wire,
