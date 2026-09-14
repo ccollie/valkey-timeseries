@@ -24,11 +24,10 @@ message SeriesRangeResponse {
   // `symbol_table_values`. Interning is unconditional, so there is no
   // flag; non-empty ref arrays are themselves the signal.
   //
-  // Both arrays empty means there is nothing to resolve — either the series has
+  // An empty ref list means there is nothing to resolve — either the series has
   // no labels, or it carries them in `labels` directly. A decoder must leave
   // `labels` alone in that case rather than overwriting it.
-  repeated uint32 label_name_refs = 5;
-  repeated uint32 label_value_refs = 6;
+  repeated SymbolTableRef label_refs = 5;
 }
 
 message MultiGetResponse {
