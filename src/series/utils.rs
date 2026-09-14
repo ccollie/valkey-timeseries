@@ -236,7 +236,7 @@ pub fn get_or_create_series<'a>(
     key: &ValkeyString,
     options: Option<TimeSeriesOptions>,
 ) -> ValkeyResult<SeriesGuardMut<'a>> {
-    match get_timeseries_mut(ctx, key, false, Some(AclPermissions::UPDATE))? {
+    match try_get_timeseries_mut(ctx, key, Some(AclPermissions::UPDATE))? {
         Some(series) => Ok(series),
         None => create_and_store_series(ctx, key, options.unwrap_or_default(), true, true),
     }

@@ -358,14 +358,9 @@ pub(super) fn parse_series_range_samples(
 ) -> ValkeyResult<Vec<Sample>> {
     let key = args.next_arg()?;
     let date_range = parse_timestamp_range(args)?;
-    match get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), false) {
-        Ok(Some(series)) => {
-            let (start, end) = date_range.get_series_range(&series, None, false);
-            Ok(series.get_range(start, end))
-        }
-        Ok(None) => Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
-        Err(e) => Err(e),
-    }
+    let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS))?;
+    let (start, end) = date_range.get_series_range(&series, None, false);
+    Ok(series.get_range(start, end))
 }
 
 pub fn parse_retention(args: &mut CommandArgIterator) -> ValkeyResult<Duration> {
