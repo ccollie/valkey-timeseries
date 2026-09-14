@@ -79,9 +79,9 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     args.done()?;
 
-    // Both series must exist; propagate an error otherwise (must_exist = true).
-    let left_series = get_timeseries(ctx, &key1, Some(AclPermissions::ACCESS), true)?.unwrap();
-    let right_series = get_timeseries(ctx, &key2, Some(AclPermissions::ACCESS), true)?.unwrap();
+    // Both series must exist; `get_timeseries` reports a missing key as an error.
+    let left_series = get_timeseries(ctx, &key1, Some(AclPermissions::ACCESS))?;
+    let right_series = get_timeseries(ctx, &key2, Some(AclPermissions::ACCESS))?;
 
     let options = JoinOptions {
         date_range,

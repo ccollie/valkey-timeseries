@@ -82,7 +82,7 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let date_range = parse_timestamp_range(&mut args)?;
 
     // Get a mutable reference to the series (must exist, need UPDATE permission)
-    let mut series = get_timeseries_mut(ctx, &key, true, Some(AclPermissions::UPDATE))?.unwrap();
+    let mut series = get_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE))?;
     let (start_ts, end_ts) = date_range.get_series_range(&series, None, false);
 
     // Get existing samples in the range
