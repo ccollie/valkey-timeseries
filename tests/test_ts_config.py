@@ -508,3 +508,41 @@ class TestTimeseriesRoundingConfig(ValkeyTimeSeriesTestCaseBase):
                 self.set_config("ts-decimal-digits", "0")
         finally:
             self.set_config("ts-significant-digits", "none")
+
+
+class TestPromqlQueryQueueConfig(ValkeyTimeSeriesTestCaseBase):
+    """`ts-promql-max-queued-queries` bounds the PromQL worker backlog and `INFO ts_promql`
+    reports the pool. Filling the backlog needs a query slower than the test can make one,
+    so the refusal itself is covered by the Rust unit tests on the pool."""
+
+    NAME = "ts.ts-promql-max-queued-queries"
+
+    def _promql_info(self) -> dict:
+        parsed = self.client.execute_command("INFO", "ts_promql")
+        return {k: int(v) for k, v in parsed.items() if k.startswith("ts_")}
+
+    def test_queue_limit_round_trips_and_is_range_checked(self):
+        assert self.client.execute_command("CONFIG", "GET", self.NAME)[1] == b"128"
+        try:
+            self.client.execute_command("CONFIG", "SET", self.NAME, 5)
+            assert self.client.execute_command("CONFIG", "GET", self.NAME)[1] == b"5"
+            self.client.execute_command("CONFIG", "SET", self.NAME, 0)
+            assert self.client.execute_command("CONFIG", "GET", self.NAME)[1] == b"0"
+            for bad in (-1, 65537):
+                with pytest.raises(ResponseError):
+                    self.client.execute_command("CONFIG", "SET", self.NAME, bad)
+        finally:
+            self.client.execute_command("CONFIG", "SET", self.NAME, 128)
+
+    def test_info_reports_an_idle_pool_after_queries(self):
+        self.client.execute_command("TS.ADD", "q:cpu", 1000, 1.0, "LABELS", "__name__", "cpu")
+        for _ in range(5):
+            self.client.execute_command("TS.QUERY", "cpu", "TIME", 1000)
+            self.client.execute_command("TS.QUERYRANGE", "cpu", "START", 0, "END", 2000, "STEP", "1s")
+        info = self._promql_info()
+        assert set(info) >= {"ts_queries_running", "ts_queries_queued", "ts_queries_rejected"}
+        # Every query above was answered before its client got the reply, so nothing is
+        # running or waiting, and none was refused.
+        assert info["ts_queries_running"] == 0
+        assert info["ts_queries_queued"] == 0
+        assert info["ts_queries_rejected"] == 0
