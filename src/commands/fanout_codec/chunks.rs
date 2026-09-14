@@ -169,7 +169,8 @@ impl TryFrom<MRangeSeriesResult> for SeriesRangeResponse {
             // Symbol-table interning, if any, is applied as a post-processing
             // pass over the whole response batch (see `symbol_table.rs`), not
             // per-series here.
-            label_refs: Vec::new(),
+            label_name_refs: Vec::new(),
+            label_value_refs: Vec::new(),
         })
     }
 }
@@ -425,7 +426,8 @@ mod tests {
             group_label_value: "g".into(),
             labels: Vec::new(),
             columns: vec![short.clone(), long.clone()],
-            label_refs: Vec::new(),
+            label_name_refs: Vec::new(),
+            label_value_refs: Vec::new(),
         };
         let result: Result<MRangeSeriesResult, _> = wire.try_into();
         // The rejection names the offending column, both lengths, and the
@@ -449,7 +451,8 @@ mod tests {
             group_label_value: "g".into(),
             labels: Vec::new(),
             columns: vec![short, shifted],
-            label_refs: Vec::new(),
+            label_name_refs: Vec::new(),
+            label_value_refs: Vec::new(),
         };
         let result: Result<MRangeSeriesResult, _> = wire.try_into();
         let msg = result.unwrap_err().to_string();
@@ -476,7 +479,8 @@ mod tests {
             group_label_value: "g".into(),
             labels: Vec::new(),
             columns,
-            label_refs: Vec::new(),
+            label_name_refs: Vec::new(),
+            label_value_refs: Vec::new(),
         }
     }
 
