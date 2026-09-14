@@ -5,6 +5,7 @@
 //! memory section to walk the term dictionary.
 
 use crate::common::string_interner::InternedString;
+use crate::promql::engine::query_workers;
 use crate::series::index::index_memory_usage;
 use valkey_module::{InfoContext, ValkeyResult};
 use valkey_module_macros::info_command_handler;
@@ -47,6 +48,28 @@ fn memory_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
             "interned_strings_bytes",
             InternedString::memory_used() as u64,
         )?
+        .build_section()?
+        .build_info()?;
+
+    Ok(())
+}
+
+/// `INFO ts_promql`: the `TS.QUERY` / `TS.QUERYRANGE` worker pool.
+///
+/// `queries_running` is at most `ts-promql-max-concurrent-queries`; `queries_queued` is
+/// at most `ts-promql-max-queued-queries`. `queries_rejected` counts, since startup, the
+/// queries refused on arrival because the backlog was full. A non-zero, growing
+/// `queries_queued` with `queries_rejected` climbing is the pool being overrun: either the
+/// queries are too slow or there are too few workers for the load.
+#[info_command_handler]
+fn promql_info(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
+    let pool = query_workers::stats();
+
+    ctx.builder()
+        .add_section("promql")
+        .field("queries_running", pool.running as u64)?
+        .field("queries_queued", pool.queued as u64)?
+        .field("queries_rejected", pool.rejected)?
         .build_section()?
         .build_info()?;
 
