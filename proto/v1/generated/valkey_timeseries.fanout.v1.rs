@@ -72,6 +72,20 @@ pub struct Label {
     #[prost(string, tag = "2")]
     pub value: ::prost::alloc::string::String,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SymbolTableRef {
+    #[prost(uint32, tag = "1")]
+    pub name: u32,
+    #[prost(uint32, tag = "2")]
+    pub value: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SymbolTable {
+    #[prost(string, repeated, tag = "1")]
+    pub names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "2")]
+    pub values: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Sample {
     #[prost(int64, tag = "1")]
@@ -1323,13 +1337,11 @@ pub struct SeriesRangeResponse {
     /// `symbol_table_values`. Interning is unconditional, so there is no
     /// flag; non-empty ref arrays are themselves the signal.
     ///
-    /// Both arrays empty means there is nothing to resolve — either the series has
+    /// An empty ref list means there is nothing to resolve — either the series has
     /// no labels, or it carries them in `labels` directly. A decoder must leave
     /// `labels` alone in that case rather than overwriting it.
-    #[prost(uint32, repeated, tag = "5")]
-    pub label_name_refs: ::prost::alloc::vec::Vec<u32>,
-    #[prost(uint32, repeated, tag = "6")]
-    pub label_value_refs: ::prost::alloc::vec::Vec<u32>,
+    #[prost(message, repeated, tag = "5")]
+    pub label_refs: ::prost::alloc::vec::Vec<SymbolTableRef>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MultiGetResponse {
