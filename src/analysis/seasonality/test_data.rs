@@ -1,24 +1,8 @@
 #[cfg(test)]
-pub use tests::{CASES, SEASON_SEVEN, TestCase};
+pub use tests::SEASON_SEVEN;
 
 #[cfg(test)]
 mod tests {
-    pub struct TestCase {
-        pub(crate) season_lengths: &'static [u32],
-        pub(crate) data: &'static [f64],
-    }
-
-    pub static CASES: &[TestCase] = &[
-        TestCase {
-            season_lengths: &[8],
-            data: SEASON_EIGHT,
-        },
-        TestCase {
-            season_lengths: &[7],
-            data: SEASON_SEVEN,
-        },
-    ];
-
     /// https://github.com/grafana/augurs/blob/main/crates/augurs-testing/src/data.rs
     /// A trendless, seasonal time series with season length 7.
     pub static SEASON_SEVEN: &[f64] = &[

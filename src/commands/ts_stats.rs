@@ -1,6 +1,5 @@
 use crate::analysis::forecasting::stats::{SeriesStats, calculate_stats};
 use crate::commands::parse_timestamp_range;
-use crate::error_consts;
 use crate::series::get_timeseries;
 use std::collections::HashMap;
 use valkey_module::redisvalue::ValkeyValueKey;
@@ -73,8 +72,7 @@ pub fn ts_stats_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     args.done()?;
 
-    let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), false)?;
-    let series = series.ok_or(ValkeyError::Str(error_consts::KEY_NOT_FOUND))?;
+    let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS))?;
 
     let (start_ts, end_ts) = if let Some(ref dr) = date_range {
         dr.get_series_range(&series, None, false)

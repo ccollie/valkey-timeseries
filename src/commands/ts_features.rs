@@ -6,7 +6,6 @@ use crate::common::replies::{
     ThreadSafeReplyContext, block_client, reply_with_double, reply_with_map, reply_with_str,
 };
 use crate::common::threads::spawn;
-use crate::error_consts;
 use crate::series::get_timeseries;
 use anofox_forecast::features::Feature;
 use valkey_module::{
@@ -115,11 +114,7 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
 
     // Get the time series and extract sample values
-    let series = match get_timeseries(ctx, &key, Some(AclPermissions::ACCESS), false) {
-        Ok(Some(series)) => series,
-        Ok(None) => return Err(ValkeyError::Str(error_consts::KEY_NOT_FOUND)),
-        Err(e) => return Err(e),
-    };
+    let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS))?;
 
     let (start, end) = date_range.get_series_range(&series, None, false);
     let samples = series.get_range(start, end);

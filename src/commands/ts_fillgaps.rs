@@ -75,7 +75,7 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let key = args.next_arg()?;
     let date_range = parse_timestamp_range(&mut args)?;
     // Get the series (must exist)
-    let series = get_timeseries_mut(ctx, &key, true, Some(AclPermissions::UPDATE))?.unwrap();
+    let series = get_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE))?;
 
     let (start_ts, end_ts) = date_range.get_series_range(&series, None, false);
 
