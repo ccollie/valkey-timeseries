@@ -8,14 +8,14 @@ use crate::common::threads::{IntoParRayon, IterIntoParRayon, request_par_threads
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::error_consts;
 use crate::iterators::{
-    create_range_iterator_from_base, create_sample_iterator_adapter, empty_fill_bounds,
-};
-use crate::series::RangeSnapshot;
-use crate::iterators::{
     MultiSeriesRowIter, MultiSeriesSampleIter, RowReducer, SampleReducer, TailIter,
     create_range_iterator, create_row_iterator, get_range_latest_sample,
 };
+use crate::iterators::{
+    create_range_iterator_from_base, create_sample_iterator_adapter, empty_fill_bounds,
+};
 use crate::labels::Label;
+use crate::series::RangeSnapshot;
 use crate::series::TimeSeries;
 use crate::series::chunks::{TimeSeriesChunk, UncompressedChunk, samples_to_chunk_lossless};
 use crate::series::index::series_by_selectors;
