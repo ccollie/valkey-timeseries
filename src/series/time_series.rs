@@ -2,6 +2,7 @@ use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
 use crate::common::rounding::RoundingStrategy;
+use crate::common::threads::{request_par_threads, request_pool};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -487,12 +488,23 @@ impl TimeSeries {
     }
 
     pub(crate) fn split_chunks_if_needed(&mut self) -> TsdbResult<()> {
+        // Every append ends here, and almost never with anything to split: decide
+        // that with a scan, not with a parallel section (which used to spawn
+        // threads on every MADD just to test `is_full`).
+        let full = self.chunks.iter().filter(|c| c.is_full()).count();
+        if full == 0 {
+            return Ok(());
+        }
         let errored: AtomicBool = AtomicBool::new(false);
 
         // todo: track error, but allow partials
+        // A split re-encodes two half chunks (~thousands of samples), so a
+        // handful of them is worth the pool; one is not.
         let mut new_chunks = if self.is_compressed() {
             self.chunks
                 .par_mut()
+                .with_pool(request_pool())
+                .num_threads(request_par_threads(full, full * SPLIT_WORK))
                 .filter(|c| c.is_full())
                 .flat_map(|chunks| {
                     if let Ok(mut split_chunk) = chunks.split() {
@@ -706,6 +718,11 @@ impl TimeSeries {
                 [meta] => meta_fetch(meta),
                 _ => slice
                     .par()
+                    .with_pool(request_pool())
+                    .num_threads(request_par_threads(
+                        slice.len(),
+                        slice.iter().map(|m| m.chunk.len()).sum(),
+                    ))
                     .map(|meta| meta_fetch(meta))
                     .into_fallible_result()
                     .flat_map(|r| r)
@@ -874,11 +891,15 @@ impl TimeSeries {
                 deleted_samples
             }
             (true, [one]) => remove_internal(one, start_ts, end_ts)?,
-            (true, many) => many
-                .into_par()
-                .map(|chunk| remove_internal(chunk, start_ts, end_ts))
-                .into_fallible_result()
-                .sum()?,
+            (true, many) => {
+                let threads = request_par_threads(many.len(), many.iter().map(|c| c.len()).sum());
+                many.into_par()
+                    .with_pool(request_pool())
+                    .num_threads(threads)
+                    .map(|chunk| remove_internal(chunk, start_ts, end_ts))
+                    .into_fallible_result()
+                    .sum()?
+            }
         };
 
         // Remove empty chunks
@@ -1102,9 +1123,15 @@ impl TimeSeries {
 
     pub fn optimize(&mut self) {
         // todo: merge chunks if possible
-        self.chunks.par_mut().for_each(|chunk| {
-            let _ = chunk.optimize();
-        });
+        let threads =
+            request_par_threads(self.chunks.len(), self.chunks.iter().map(|c| c.len()).sum());
+        self.chunks
+            .par_mut()
+            .with_pool(request_pool())
+            .num_threads(threads)
+            .for_each(|chunk| {
+                let _ = chunk.optimize();
+            });
     }
 
     #[cfg(test)]
@@ -1284,6 +1311,10 @@ pub(super) fn find_last_ge_index(chunks: &[TimeSeriesChunk], ts: Timestamp) -> (
     }
 }
 
+/// Sample-equivalents a chunk split is worth in the dispatch decision: both
+/// halves are re-encoded, so it is roughly one chunk's worth of samples.
+const SPLIT_WORK: usize = 2048;
+
 fn get_range_parallel(
     chunks: &[TimeSeriesChunk],
     start: Timestamp,
@@ -1294,6 +1325,11 @@ fn get_range_parallel(
         [chunk] => chunk.get_range(start, end),
         _ => chunks
             .into_par()
+            .with_pool(request_pool())
+            .num_threads(request_par_threads(
+                chunks.len(),
+                chunks.iter().map(|c| c.len()).sum(),
+            ))
             .map(|chunk| chunk.get_range(start, end))
             .into_fallible_result()
             .flat_map(|x| x)

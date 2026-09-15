@@ -116,6 +116,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   Never the global rayon pool — its jobs take the module GIL and a handler waiting in a `scope`
   can deadlock — and never orx-parallel's default runner, which spawns OS threads per call
   (~75–200 µs even for one item). When the threshold says sequential, use a plain loop.
+- Commands that touch many keys resolve the caller once with `series::acl::KeyAccess` and check each key
+  through it (`TS.MADD`, `TS.MDEL`, the querier); never cache one across commands. `TS.MADD` replicates
+  verbatim when every item was accepted and no `*` timestamp was rewritten.
 
 ## Testing
 

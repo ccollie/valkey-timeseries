@@ -1,5 +1,6 @@
 use crate::common::Timestamp;
 use crate::common::context::create_key_string;
+use crate::common::threads::{request_par_threads, request_pool};
 use crate::config::num_threads;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::KeyAccess;
@@ -125,8 +126,11 @@ fn delete_range_batch(
     let start_arg = ctx.create_string(start_ts.to_string());
     let end_arg = ctx.create_string(end_ts.to_string());
     let mut series = series;
+    let threads = request_par_threads(series.len(), series.iter().map(|g| g.total_samples).sum());
     let res = series
         .par_mut()
+        .with_pool(request_pool())
+        .num_threads(threads)
         .map(|guard| guard.remove_range(start_ts, end_ts))
         .collect::<Vec<_>>();
 
