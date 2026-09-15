@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "name": "core",
-  "description": "First-comparison profile (plan step 2 families): 1,000 series x 1,000 samples; ordered and pipelined ADD, MADD 16/128, GET uniform/hot, raw RANGE windows, memory. Plan defaults: 5 paired trials, 5 s warm-up, 30 s read trials.",
+  "name": "range",
+  "description": "Range-read profile (docs/plans/range-performance-plan.md, phase 0): the core fixture and series settings; the four raw RANGE windows with RESP3 twins (both engines emit identical bytes under RESP3, so the RESP2 \u2212 RESP3 spread is the wire-format share of a gap), `head100` as the dual of `recent100` (same reply, no discarded decoding), and GET / ADD as controls. Plan defaults: 5 paired trials, 5 s warm-up, 30 s read trials.",
   "fixture": {
     "series": 1000,
     "samples_per_series": 1000,
@@ -33,62 +33,10 @@
   "settle_seconds": 3,
   "cases": [
     {
-      "id": "add_c1_p1",
-      "kind": "add",
-      "connections": 1,
-      "pipeline": 1
-    },
-    {
-      "id": "add_c8_p16",
-      "kind": "add",
-      "connections": 8,
-      "pipeline": 16
-    },
-    {
-      "id": "madd16_c8_p1",
-      "kind": "madd",
-      "batch": 16,
-      "connections": 8,
-      "pipeline": 1
-    },
-    {
-      "id": "madd16_4ps_c8_p1",
-      "kind": "madd",
-      "batch": 16,
-      "samples_per_series": 4,
-      "connections": 8,
-      "pipeline": 1
-    },
-    {
-      "id": "madd128_c8_p1",
-      "kind": "madd",
-      "batch": 128,
-      "connections": 8,
-      "pipeline": 1
-    },
-    {
-      "id": "madd128_16ps_c8_p1",
-      "kind": "madd",
-      "batch": 128,
-      "samples_per_series": 16,
-      "connections": 8,
-      "pipeline": 1
-    },
-    {
       "id": "get_uniform_c8",
       "kind": "get",
       "distribution": {
         "type": "uniform"
-      },
-      "connections": 8
-    },
-    {
-      "id": "get_hot_c8",
-      "kind": "get",
-      "distribution": {
-        "type": "hot",
-        "keys": 10,
-        "share_percent": 90
       },
       "connections": 8
     },
@@ -138,8 +86,54 @@
       "connections": 8
     },
     {
-      "id": "memory",
-      "kind": "memory"
+      "id": "range_recent100_c8_resp3",
+      "kind": "range",
+      "window": {
+        "type": "recent",
+        "points": 100
+      },
+      "connections": 8,
+      "protocol": "resp3"
+    },
+    {
+      "id": "range_head100_c8_resp3",
+      "kind": "range",
+      "window": {
+        "type": "head",
+        "points": 100
+      },
+      "connections": 8,
+      "protocol": "resp3"
+    },
+    {
+      "id": "range_middle10_c8_resp3",
+      "kind": "range",
+      "window": {
+        "type": "middle",
+        "percent": 10
+      },
+      "connections": 8,
+      "protocol": "resp3"
+    },
+    {
+      "id": "range_full_c8_resp3",
+      "kind": "range",
+      "window": {
+        "type": "full"
+      },
+      "connections": 8,
+      "protocol": "resp3"
+    },
+    {
+      "id": "revrange_recent100_c8_resp3",
+      "kind": "range",
+      "window": {
+        "type": "recent",
+        "points": 100
+      },
+      "reverse": true,
+      "connections": 8,
+      "protocol": "resp3"
     }
   ]
 }

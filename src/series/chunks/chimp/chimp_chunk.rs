@@ -5,8 +5,7 @@
 //! The codec is sequential, so every mutation (`remove_range`, `upsert`,
 //! `merge`, `split`) re-encodes from an iterator rather than patching in place.
 
-use super::chimp_iterator::ChimpIterator;
-use super::compressor::ChimpCompressor;
+use super::compressor::{ChimpCompressor, ChimpDecompressor};
 use crate::common::encoding::{try_read_uvarint, write_uvarint};
 use crate::common::logging::log_warning;
 use crate::common::rdb::{rdb_load_usize, rdb_save_usize};
@@ -335,8 +334,12 @@ fn push_sample(encoder: &mut ChimpCompressor, sample: &Sample) -> TsdbResult {
     })
 }
 
+/// Samples of one chunk within `[start, end]`, straight off the decompressor
+/// (no intermediate `Result`-per-sample iterator: a decoding error ends the
+/// iteration, as it would have anyway). Samples before `start` are decoded and
+/// dropped — the stream has no seek.
 pub struct ChimpChunkIterator<'a> {
-    inner: ChimpIterator<'a>,
+    inner: ChimpDecompressor<'a>,
     start: Timestamp,
     end: Timestamp,
     init: bool,
@@ -344,30 +347,31 @@ pub struct ChimpChunkIterator<'a> {
 
 impl<'a> ChimpChunkIterator<'a> {
     pub fn new(chunk: &'a ChimpChunk, start: Timestamp, end: Timestamp) -> Self {
+        let encoder = &chunk.encoder;
         Self {
-            inner: ChimpIterator::new(&chunk.encoder),
+            inner: ChimpDecompressor::new(encoder.bytes(), encoder.count()),
             start,
             end,
             init: false,
         }
     }
 
+    #[inline]
     fn next_internal(&mut self) -> Option<Sample> {
-        match self.inner.next() {
-            Some(Ok(sample)) => {
+        match self.inner.next_sample() {
+            Ok(Some(sample)) => {
                 if sample.timestamp > self.end {
                     return None;
                 }
                 Some(sample)
             }
-            #[cfg(debug_assertions)]
-            Some(Err(err)) => {
-                log_warning(format!("chimp: error decoding sample: {err:?}"));
+            Ok(None) => None,
+            Err(err) => {
+                if cfg!(debug_assertions) {
+                    log_warning(format!("chimp: error decoding sample: {err:?}"));
+                }
                 None
             }
-            #[cfg(not(debug_assertions))]
-            Some(Err(_)) => None,
-            None => None,
         }
     }
 }
