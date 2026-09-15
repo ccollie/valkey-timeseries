@@ -23,7 +23,9 @@ hashify = { version = "0.2" }
 itertools = "0.15.0"
 linkme = "0.3"
 logos = "0.16"
-orx-parallel = "3.4"
+# `rayon-core` lets per-request parallel sites run on the module's own pool
+# (`common::threads::request_pool`) instead of spawning OS threads per call.
+orx-parallel = { version = "3.4", features = ["rayon-core"] }
 min-max-heap = "1.3"
 num-traits = "0.2"
 joinkit = "0.2.0"

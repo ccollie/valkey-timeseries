@@ -7,8 +7,9 @@ pub(crate) use batch_worker::{
     BatchRequest, BatchWorker, global_valkey_task_worker, submit_task_no_wait,
     submit_task_with_payload,
 };
-use rayon_core::{Scope, ThreadPoolBuilder};
+use rayon_core::{Scope, ThreadPool, ThreadPoolBuilder};
 use std::os::raw::c_void;
+use std::sync::LazyLock;
 use valkey_module::logging::log_notice;
 use valkey_module::{Context, MODULE_CONTEXT, raw};
 
@@ -25,6 +26,62 @@ pub fn init_thread_pool() {
         .thread_name(|index| format!("valkey-timeseries-{index}"))
         .build_global()
         .unwrap();
+    // Build the request pool now rather than on the first command, so its threads
+    // exist before the server starts serving.
+    LazyLock::force(&REQUEST_POOL);
+}
+
+/// Pool for the parallel sections of command handlers (`into_par` over matched
+/// series, shard responses, MADD groups).
+///
+/// It is deliberately *not* the global rayon pool. Jobs on the global pool take the
+/// module GIL (`MODULE_CONTEXT.lock()` in cluster RPC, index persistence and server
+/// events), and a command handler already holds the GIL while it waits in a `scope`;
+/// if every global worker were parked on that lock the wait could never end. Nothing
+/// here may touch a `Context`: the sites hand their closures plain `&TimeSeries`
+/// references or decoded shard data, and anything that needs the context (`LATEST`
+/// lookups, compaction propagation) is done before or after the parallel section on
+/// the calling thread.
+///
+/// Before this pool existed these sites used orx-parallel's default runner, which
+/// spawns fresh OS threads on every call (`std::thread::scope`): about 75 µs on macOS
+/// and 200 µs inside a Linux VM even for a one-element input, which was most of
+/// TS.MRANGE's overhead over TS.RANGE for a single matched series.
+static REQUEST_POOL: LazyLock<ThreadPool> = LazyLock::new(|| {
+    ThreadPoolBuilder::new()
+        .num_threads(crate::config::num_threads())
+        .thread_name(|index| format!("valkey-timeseries-req-{index}"))
+        .build()
+        .expect("request thread pool")
+});
+
+/// The pool per-request parallel sections run on. See [`REQUEST_POOL`].
+pub fn request_pool() -> &'static ThreadPool {
+    &REQUEST_POOL
+}
+
+/// Fewer items than this, or less work than [`PARALLEL_MIN_WORK`], and a request
+/// runs its parallel section sequentially on the calling thread.
+pub const PARALLEL_MIN_ITEMS: usize = 2;
+
+/// Minimum amount of work — in samples, or sample-sized units of shard payload —
+/// before dispatching to the pool pays for itself. Dispatch plus join costs on the
+/// order of 10–20 µs; decoding a sample costs well under 0.1 µs, so below a few
+/// thousand samples the sequential path wins. Measured, not derived: a one-series
+/// TS.MRANGE over 100 samples went from 342 µs to 269 µs when it stopped
+/// dispatching at all (paired A/B, three trials).
+pub const PARALLEL_MIN_WORK: usize = 4096;
+
+/// The `num_threads` argument for a per-request `into_par()`: `1` (orx-parallel's
+/// sequential fast path, no dispatch) unless there are at least
+/// [`PARALLEL_MIN_ITEMS`] items and [`PARALLEL_MIN_WORK`] units of work, else `0`
+/// (auto, bounded by the pool size).
+pub fn request_par_threads(items: usize, work: usize) -> usize {
+    if items < PARALLEL_MIN_ITEMS || work < PARALLEL_MIN_WORK {
+        1
+    } else {
+        0
+    }
 }
 
 /// Spawn a job which runs asynchronously.
@@ -175,5 +232,21 @@ where
 
     unsafe {
         raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_requests_stay_sequential() {
+        assert_eq!(request_par_threads(1, usize::MAX), 1);
+        assert_eq!(request_par_threads(1000, PARALLEL_MIN_WORK - 1), 1);
+        assert_eq!(
+            request_par_threads(PARALLEL_MIN_ITEMS, PARALLEL_MIN_WORK),
+            0
+        );
+        assert_eq!(request_par_threads(1000, 1_000_000), 0);
     }
 }

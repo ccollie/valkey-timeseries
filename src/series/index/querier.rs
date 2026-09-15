@@ -27,6 +27,7 @@ use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
 use crate::common::context::{create_key_string, get_current_db};
 use crate::common::hash::IntMap;
+use crate::common::threads::{request_par_threads, request_pool};
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::KeyAccess;
@@ -305,10 +306,14 @@ fn count_series_from_postings(
 
     // Mirrors `filter_series_by_date_range`: the guards borrow the non-`Send` `Context`, so we
     // hand the parallel iterator plain `&TimeSeries` references instead.
+    // The per-item work is two timestamp comparisons, so only a very large match
+    // set is worth dispatching.
     let count = guards
         .iter()
         .map(|guard| guard.as_ref())
         .iter_into_par()
+        .with_pool(request_pool())
+        .num_threads(request_par_threads(guards.len(), guards.len()))
         .filter(|ts| matches_date_range(ts, start, end, exclude))
         .count();
 
@@ -410,6 +415,8 @@ fn filter_series_by_date_range<'a>(
         .iter()
         .map(|guard| guard.0.as_ref())
         .iter_into_par()
+        .with_pool(request_pool())
+        .num_threads(request_par_threads(series.len(), series.len()))
         .filter_map(|ts| {
             if matches_date_range(ts, start, end, exclude) {
                 Some(ts.id)
