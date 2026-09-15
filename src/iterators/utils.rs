@@ -238,6 +238,52 @@ pub fn create_range_iterator<'a>(
     }
 }
 
+/// The pipeline `create_range_iterator` builds after its base reader, for a base
+/// that is not a live series: `base` must already be in the direction the
+/// query iterates (descending for a non-aggregated reverse query), `latest` and
+/// `empty_fill` must have been derived from the series beforehand. Used by the
+/// deferred TS.MRANGE path, whose base is a [`crate::series::RangeSnapshot`]
+/// decoded off the main thread. `FILTER_BY_TS` is not supported here (its base
+/// reader needs the series).
+pub fn create_range_iterator_from_base<'a, I>(
+    base: I,
+    options: &RangeOptions,
+    grouping: &Option<RangeGroupingOptions>,
+    latest_sample: Option<Sample>,
+    is_reverse: bool,
+    empty_fill: EmptyFillBounds,
+) -> Box<dyn Iterator<Item = Sample> + 'a>
+where
+    I: Iterator<Item = Sample> + 'a,
+{
+    debug_assert!(options.timestamp_filter.is_none());
+    let has_aggregation = options.aggregation.is_some();
+    let should_reverse_iter = !has_aggregation && is_reverse;
+    let should_reverse_aggr = has_aggregation && is_reverse;
+    if let Some(sample) = latest_sample {
+        let latest_iter = std::iter::once(sample);
+        if should_reverse_iter {
+            create_sample_iterator_adapter(
+                latest_iter.chain(base),
+                options,
+                grouping,
+                should_reverse_aggr,
+                empty_fill,
+            )
+        } else {
+            create_sample_iterator_adapter(
+                base.chain(latest_iter),
+                options,
+                grouping,
+                should_reverse_aggr,
+                empty_fill,
+            )
+        }
+    } else {
+        create_sample_iterator_adapter(base, options, grouping, should_reverse_aggr, empty_fill)
+    }
+}
+
 /// Pre-aggregation composition for one series: base reader (ts-filter variant
 /// when FILTER_BY_TS is present) + LATEST chaining + value filter. The output
 /// is always ascending — multi-aggregation consumes ascending input and

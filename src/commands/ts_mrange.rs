@@ -1,10 +1,24 @@
 use crate::commands::parse_mrange_options;
 use crate::commands::ts_mrange_fanout_command::MRangeFanoutCommand;
 use crate::commands::utils::{MRangeReplyShape, reply_with_mrange_series_results};
+use crate::common::context::is_blocking_denied;
+use crate::common::replies::{ThreadSafeReplyContext, block_client};
+use crate::common::threads::request_pool;
 use crate::error_consts;
 use crate::fanout::{FanoutClientCommand, is_clustered};
-use crate::series::mrange::process_mrange_query;
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString};
+use crate::series::mrange::{
+    decode_snapshot_series, is_snapshot_answerable, process_mrange_query, snapshot_mrange_query,
+};
+use std::sync::LazyLock;
+use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+
+/// EXPERIMENT (not for merge as-is): `TS_MRANGE_DEFER=1` answers non-clustered,
+/// non-grouped TS.MRANGE off the main thread — chunks are copied under the
+/// command, the client is blocked, and decode + reply happen on the request
+/// pool through a thread-safe reply context, the way TS.OUTLIERS already
+/// works. Read once so the two modes can be A/B'd from one binary.
+static DEFER_MRANGE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("TS_MRANGE_DEFER").is_ok_and(|v| v == "1"));
 
 acl_categories!(TS_MRANGE, "ts.mrange", "read timeseries");
 /// TS.MRANGE fromTimestamp toTimestamp
@@ -62,7 +76,28 @@ fn mrange_internal(ctx: &Context, args: Vec<ValkeyString>, reverse: bool) -> Val
         return operation.exec(ctx);
     }
 
+    if *DEFER_MRANGE && !is_blocking_denied(ctx) && is_snapshot_answerable(&options) {
+        return mrange_deferred(ctx, options);
+    }
+
     let shape = MRangeReplyShape::from_options(&options);
     let result_rows = process_mrange_query(ctx, options, false, None)?;
     reply_with_mrange_series_results(ctx, &result_rows, &shape)
+}
+
+/// Snapshot on the main thread, decode and reply on the request pool.
+fn mrange_deferred(
+    ctx: &Context,
+    options: crate::series::request_types::MRangeOptions,
+) -> ValkeyResult {
+    let (series, _copied) = snapshot_mrange_query(ctx, &options)?;
+    let shape = MRangeReplyShape::from_options(&options);
+    let blocked_client = block_client(ctx);
+    request_pool().spawn(move || {
+        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
+        let rows = decode_snapshot_series(series, &options);
+        let reply_ctx = Context::new(thread_ctx.ctx);
+        let _ = reply_with_mrange_series_results(&reply_ctx, &rows, &shape);
+    });
+    Ok(ValkeyValue::NoReply)
 }

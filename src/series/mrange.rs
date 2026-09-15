@@ -3,9 +3,14 @@ use crate::aggregators::{
 };
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::context::key_for_display;
+use crate::common::threads::{request_par_threads, request_pool};
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::error_consts;
-use crate::iterators::create_sample_iterator_adapter;
+use crate::iterators::{
+    create_range_iterator_from_base, create_sample_iterator_adapter, empty_fill_bounds,
+};
+use crate::series::RangeSnapshot;
+
 use crate::iterators::{
     MultiSeriesRowIter, MultiSeriesSampleIter, RowReducer, SampleReducer, TailIter,
     create_range_iterator, create_row_iterator, get_range_latest_sample,
@@ -119,9 +124,18 @@ pub(crate) fn process_mrange_group_partials(
         .filter(|a| a.is_multi())
         .map(|a| a.aggregations.len());
 
+    let threads = request_par_threads(
+        grouped.len(),
+        grouped
+            .values()
+            .map(|g| estimated_work(&g.series, &options.range))
+            .sum(),
+    );
     Ok(grouped
         .into_iter()
         .iter_into_par()
+        .with_pool(request_pool())
+        .num_threads(threads)
         .map(|(label_value, group_data)| {
             let mut source_keys: Vec<Vec<u8>> = group_data
                 .series
@@ -299,6 +313,41 @@ fn create_iter<'a>(
     )
 }
 
+/// Rough number of samples `series` holds inside `[start, end]`, from its sample
+/// count and timestamp span alone — no chunk is touched. Only used to decide
+/// whether a request is worth dispatching to the pool, so being off by a factor
+/// of a few does not matter.
+fn estimated_samples_in_range(series: &TimeSeries, start: Timestamp, end: Timestamp) -> usize {
+    let Some(last) = series.last_sample.map(|s| s.timestamp) else {
+        return 0;
+    };
+    let first = series.first_timestamp;
+    if end < first || start > last {
+        return 0;
+    }
+    let span = (last - first).max(1) as f64;
+    let overlap = (end.min(last) - start.max(first)).max(0) as f64;
+    // A one-sample span still counts its sample.
+    ((series.total_samples as f64 * (overlap / span)).ceil() as usize)
+        .clamp(1, series.total_samples.max(1))
+}
+
+/// Sample-equivalents charged per series on top of its samples: iterator setup,
+/// chunk lookup, result and label construction cost about as much as decoding
+/// this many samples (a ten-series MRANGE over 100 samples each measured ~80 µs
+/// per series), so a handful of series with short windows is still worth
+/// spreading across the pool.
+const PER_SERIES_WORK: usize = 1024;
+
+/// Work estimate for a set of series over the request's range.
+fn estimated_work(metas: &[MRangeSeriesMeta], options: &RangeOptions) -> usize {
+    let (start, end) = options.get_timestamp_range();
+    metas
+        .iter()
+        .map(|m| PER_SERIES_WORK + estimated_samples_in_range(m.series, start, end))
+        .sum()
+}
+
 pub(crate) fn sort_mrange_results(results: &mut [MRangeSeriesResult], is_grouped: bool) {
     if is_grouped {
         results.sort_by(|a, b| a.group_label_value.cmp(&b.group_label_value));
@@ -319,8 +368,11 @@ fn handle_non_grouped(
         .as_ref()
         .is_some_and(|a| a.is_multi());
 
+    let threads = request_par_threads(metas.len(), estimated_work(&metas, &options.range));
     metas
         .into_par()
+        .with_pool(request_pool())
+        .num_threads(threads)
         .map(|meta| {
             // Multi-aggregation yields rows, which chunks cannot store. Under
             // aggregation push-down a shard produces these rows too; they ship
@@ -390,9 +442,18 @@ fn handle_grouping(
     let count = options.range.count;
     options.range.count = None;
 
+    let threads = request_par_threads(
+        grouped_series_map.len(),
+        grouped_series_map
+            .values()
+            .map(|g| estimated_work(&g.series, &options.range))
+            .sum(),
+    );
     let items = grouped_series_map
         .into_iter()
         .iter_into_par()
+        .with_pool(request_pool())
+        .num_threads(threads)
         .map(|(label_value, group_data)| {
             let grouping = options
                 .grouping
@@ -856,4 +917,106 @@ mod tests {
         assert_eq!(rows[0].timestamp, 200);
         assert_eq!(rows[1].timestamp, 100);
     }
+}
+
+// -------- deferred (off-main-thread) MRANGE --------
+
+/// One matched series with everything the deferred decode needs, gathered on
+/// the main thread while the series guard is held: the copied chunks, the
+/// `LATEST` sample, the EMPTY fill bounds (both need the live series), the
+/// reply key and labels.
+pub struct SnapshotSeries {
+    pub key: Vec<u8>,
+    pub labels: Vec<Label>,
+    pub snapshot: RangeSnapshot,
+    pub latest: Option<Sample>,
+    pub empty_fill: EmptyFillBounds,
+}
+
+/// Whether the non-clustered path can answer `options` from snapshots:
+/// grouping needs the reducer pass, multi-aggregation yields rows, and
+/// `FILTER_BY_TS` needs the series-backed base reader.
+pub fn is_snapshot_answerable(options: &MRangeOptions) -> bool {
+    options.grouping.is_none()
+        && options.range.timestamp_filter.is_none()
+        && !options
+            .range
+            .aggregation
+            .as_ref()
+            .is_some_and(|a| a.is_multi())
+}
+
+/// The main-thread half of a deferred TS.MRANGE: resolve and ACL-check the
+/// series, then copy out what the decode needs. Returns the snapshots and the
+/// total compressed bytes copied.
+pub fn snapshot_mrange_query(
+    ctx: &Context,
+    options: &MRangeOptions,
+) -> ValkeyResult<(Vec<SnapshotSeries>, usize)> {
+    if options.filters.is_empty() {
+        return Err(ValkeyError::Str(error_consts::MISSING_FILTER));
+    }
+    let series_guards = series_by_selectors(ctx, &options.filters, None)?;
+    let (start, end) = options.range.get_timestamp_range();
+    let mut copied = 0usize;
+    let series = series_guards
+        .iter()
+        .map(|(guard, key)| {
+            let snapshot = guard.snapshot_range(start, end);
+            copied += snapshot.compressed_bytes();
+            SnapshotSeries {
+                key: key.as_slice().to_vec(),
+                labels: convert_labels(guard, options.with_labels, &options.selected_labels),
+                snapshot,
+                latest: get_latest(&options.range, ctx, guard),
+                empty_fill: empty_fill_bounds(guard, &options.range),
+            }
+        })
+        .collect();
+    Ok((series, copied))
+}
+
+/// The off-thread half: decode every snapshot through the same pipeline
+/// `handle_non_grouped` uses, apply EXCLUDEEMPTY, sort by key.
+pub(crate) fn decode_snapshot_series(
+    series: Vec<SnapshotSeries>,
+    options: &MRangeOptions,
+) -> Vec<MRangeSeriesResult> {
+    let has_aggregation = options.range.aggregation.is_some();
+    let should_reverse_iter = !has_aggregation && options.is_reverse;
+    let mut items: Vec<MRangeSeriesResult> = series
+        .into_iter()
+        .map(|s| {
+            // The snapshot decodes ascending; a non-aggregated reverse query
+            // wants the base descending, as `SeriesSampleIterator` would give it.
+            let mut base: Vec<Sample> = Vec::with_capacity(s.snapshot.capacity_hint());
+            base.extend(s.snapshot.range_iter());
+            if should_reverse_iter {
+                base.reverse();
+            }
+            let samples: Vec<Sample> = create_range_iterator_from_base(
+                base.into_iter(),
+                &options.range,
+                &None,
+                s.latest,
+                options.is_reverse,
+                s.empty_fill,
+            )
+            .collect();
+            MRangeSeriesResult {
+                group_label_value: None,
+                key: s.key,
+                labels: s.labels,
+                sources: Vec::new(),
+                data: SeriesResultData::Chunk(TimeSeriesChunk::Uncompressed(
+                    UncompressedChunk::from_vec(samples),
+                )),
+            }
+        })
+        .collect();
+    if options.exclude_empty {
+        items.retain(|item| !item.data.is_empty());
+    }
+    sort_mrange_results(&mut items, false);
+    items
 }
