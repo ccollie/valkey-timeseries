@@ -27,7 +27,7 @@ use super::{PostingsBitmap, get_db_index, get_timeseries_index};
 use crate::common::Timestamp;
 use crate::common::context::{create_key_string, get_current_db};
 use crate::common::hash::IntMap;
-use crate::common::threads::{request_par_threads, request_pool};
+use crate::common::threads::{RequestPoolPar, request_par_threads};
 use crate::error_consts;
 use crate::labels::filters::SeriesSelector;
 use crate::series::acl::KeyAccess;
@@ -36,7 +36,7 @@ use crate::series::{
     SeriesGuard, SeriesRef, TimeSeries, try_get_timeseries, try_get_timeseries_as,
 };
 use blart::AsBytes;
-use orx_parallel::{IterIntoParIter, Par, Runner};
+use orx_parallel::{IterIntoParIter, Par};
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -312,7 +312,7 @@ fn count_series_from_postings(
         .iter()
         .map(|guard| guard.as_ref())
         .iter_into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(request_par_threads(guards.len(), guards.len()))
         .filter(|ts| matches_date_range(ts, start, end, exclude))
         .count();
@@ -415,7 +415,7 @@ fn filter_series_by_date_range<'a>(
         .iter()
         .map(|guard| guard.0.as_ref())
         .iter_into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(request_par_threads(series.len(), series.len()))
         .filter_map(|ts| {
             if matches_date_range(ts, start, end, exclude) {

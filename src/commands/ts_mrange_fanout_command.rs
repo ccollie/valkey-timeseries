@@ -10,7 +10,7 @@ use crate::commands::utils::{
 };
 use crate::common::context::key_for_display;
 use crate::common::replies::ReplyContext;
-use crate::common::threads::{request_par_threads, request_pool};
+use crate::common::threads::{RequestPoolPar, request_par_threads};
 use crate::common::{MultiSample, Sample};
 use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
@@ -27,7 +27,7 @@ use crate::series::request_types::{
 };
 use orx_parallel::Par;
 use orx_parallel::ParResult;
-use orx_parallel::{IntoParIter, IterIntoParIter, Runner};
+use orx_parallel::{IntoParIter, IterIntoParIter};
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 use valkey_module::{Context, Status, ValkeyError, ValkeyResult};
@@ -316,7 +316,7 @@ fn normalize_response_series(
     let threads = request_par_threads(series.len(), shard_payload_work(&series));
     series
         .into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(|(response, bucketed)| {
             if bucketed {
@@ -373,7 +373,7 @@ fn compensate_group_partials(
     let threads = request_par_threads(series.len(), shard_payload_work_plain(&series));
     let results = series
         .into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(MRangeSeriesResult::try_from)
         .into_fallible()
@@ -430,7 +430,7 @@ fn handle_basic(
     let threads = request_par_threads(series.len(), shard_payload_work_plain(&series));
     series
         .into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(MRangeSeriesResult::try_from) // Explicit conversion
         .into_fallible()
@@ -480,7 +480,7 @@ fn handle_grouping(
     let threads = request_par_threads(series.len(), work);
     let results = series
         .into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(MRangeSeriesResult::try_from)
         .into_fallible()
@@ -491,7 +491,7 @@ fn handle_grouping(
     Ok(grouped_by_key
         .into_iter()
         .iter_into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(|(label, data)| process_group(label, data, options, group_options))
         .collect())

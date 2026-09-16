@@ -7,6 +7,7 @@ pub(crate) use batch_worker::{
     BatchRequest, BatchWorker, global_valkey_task_worker, submit_task_no_wait,
     submit_task_with_payload,
 };
+use orx_parallel::{Par, Runner};
 use rayon_core::{Scope, ThreadPool, ThreadPoolBuilder};
 use std::os::raw::c_void;
 use std::sync::LazyLock;
@@ -38,7 +39,7 @@ pub fn init_thread_pool() {
 /// module GIL (`MODULE_CONTEXT.lock()` in cluster RPC, index persistence and server
 /// events), and a command handler already holds the GIL while it waits in a `scope`;
 /// if every global worker were parked on that lock the wait could never end. Nothing
-/// here may touch a `Context`: the sites hand their closures plain `&TimeSeries`
+/// here may touch a `Context`: the sites (`.on_request_pool()`) hand their closures plain `&TimeSeries`
 /// references or decoded shard data, and anything that needs the context (`LATEST`
 /// lookups, compaction propagation) is done before or after the parallel section on
 /// the calling thread.
@@ -59,6 +60,25 @@ static REQUEST_POOL: LazyLock<ThreadPool> = LazyLock::new(|| {
 pub fn request_pool() -> &'static ThreadPool {
     &REQUEST_POOL
 }
+
+/// `.on_request_pool()`: run a parallel pipeline on [`REQUEST_POOL`].
+///
+/// This is the one place that names the runner. It is the fixed-chunk runner —
+/// what orx-parallel 3.4's `with_pool` used — because the adaptive one measured
+/// no different on the request-pool shapes (interleaved A/B, MRANGE/GROUPBY over
+/// a uniform 1000×1000 fixture, 2026-09-16). Sites pair it with
+/// `.num_threads(request_par_threads(items, work))`.
+///
+/// An extension trait rather than a `request_runner()` function because
+/// orx-parallel does not export `ParRunner`, so the runner's type cannot be
+/// written down outside the crate; the return type of [`Par::runner`] can.
+pub trait RequestPoolPar: Par {
+    fn on_request_pool(self) -> impl Par<Item = Self::Item, Xap = Self::Xap, Input = Self::Input> {
+        self.runner(Runner::fixed_with_pool(request_pool()))
+    }
+}
+
+impl<P: Par> RequestPoolPar for P {}
 
 /// Fewer items than this, or less work than [`PARALLEL_MIN_WORK`], and a request
 /// runs its parallel section sequentially on the calling thread.
@@ -238,6 +258,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_request_pool_dispatches() {
+        use orx_parallel::IntoParIter;
+        let sum: usize = (0..1000usize)
+            .into_par()
+            .on_request_pool()
+            .num_threads(0)
+            .sum();
+        assert_eq!(sum, 499_500);
+    }
 
     #[test]
     fn small_requests_stay_sequential() {

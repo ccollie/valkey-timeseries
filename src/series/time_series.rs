@@ -2,7 +2,7 @@ use super::chunks::utils::{filter_samples_by_value, filter_timestamp_slice};
 use super::{SampleAddResult, SampleDuplicatePolicy, TimeSeriesOptions, ValueFilter};
 use crate::common::hash::IntMap;
 use crate::common::rounding::RoundingStrategy;
-use crate::common::threads::{request_par_threads, request_pool};
+use crate::common::threads::{RequestPoolPar, request_par_threads};
 use crate::common::time::current_time_millis;
 use crate::common::{Sample, Timestamp};
 use crate::config::DEFAULT_CHUNK_SIZE_BYTES;
@@ -21,7 +21,7 @@ use crate::series::series_sample_iterator::SeriesSampleIterator;
 use crate::{config, error_consts};
 use get_size2::GetSize;
 use orx_parallel::ParResult;
-use orx_parallel::{IntoParIter, Par, ParCollectionMut, Parallelizable, Runner};
+use orx_parallel::{IntoParIter, Par, ParCollectionMut, Parallelizable};
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -515,7 +515,7 @@ impl TimeSeries {
         let mut new_chunks = if self.is_compressed() {
             self.chunks
                 .par_mut()
-                .runner(Runner::fixed_with_pool(request_pool()))
+                .on_request_pool()
                 .num_threads(request_par_threads(full, full * SPLIT_WORK))
                 .filter(|c| Self::needs_split(c))
                 .flat_map(|chunks| {
@@ -730,7 +730,7 @@ impl TimeSeries {
                 [meta] => meta_fetch(meta),
                 _ => slice
                     .par()
-                    .runner(Runner::fixed_with_pool(request_pool()))
+                    .on_request_pool()
                     .num_threads(request_par_threads(
                         slice.len(),
                         slice.iter().map(|m| m.chunk.len()).sum(),
@@ -906,7 +906,7 @@ impl TimeSeries {
             (true, many) => {
                 let threads = request_par_threads(many.len(), many.iter().map(|c| c.len()).sum());
                 many.into_par()
-                    .runner(Runner::fixed_with_pool(request_pool()))
+                    .on_request_pool()
                     .num_threads(threads)
                     .map(|chunk| remove_internal(chunk, start_ts, end_ts))
                     .into_fallible()
@@ -1139,7 +1139,7 @@ impl TimeSeries {
             request_par_threads(self.chunks.len(), self.chunks.iter().map(|c| c.len()).sum());
         self.chunks
             .par_mut()
-            .runner(Runner::fixed_with_pool(request_pool()))
+            .on_request_pool()
             .num_threads(threads)
             .for_each(|chunk| {
                 let _ = chunk.optimize();
@@ -1337,7 +1337,7 @@ fn get_range_parallel(
         [chunk] => chunk.get_range(start, end),
         _ => chunks
             .into_par()
-            .runner(Runner::fixed_with_pool(request_pool()))
+            .on_request_pool()
             .num_threads(request_par_threads(
                 chunks.len(),
                 chunks.iter().map(|c| c.len()).sum(),

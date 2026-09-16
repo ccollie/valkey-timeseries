@@ -4,7 +4,7 @@ use crate::aggregators::{
 };
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::context::key_for_display;
-use crate::common::threads::{request_par_threads, request_pool};
+use crate::common::threads::{RequestPoolPar, request_par_threads};
 use crate::common::{MultiSample, Sample, Timestamp};
 use crate::error_consts;
 use crate::iterators::{
@@ -25,7 +25,7 @@ use crate::series::request_types::{
     MRangeOptions, MRangeSeriesResult, RangeGroupingOptions, RangeOptions, SeriesResultData,
 };
 use ahash::AHashMap;
-use orx_parallel::{IntoParIter, IterIntoParIter, Par, ParCollection, Runner};
+use orx_parallel::{IntoParIter, IterIntoParIter, Par, ParCollection};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 struct MRangeSeriesMeta<'a> {
@@ -135,7 +135,7 @@ pub(crate) fn process_mrange_group_partials(
     Ok(grouped
         .into_iter()
         .iter_into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(|(label_value, group_data)| {
             let mut source_keys: Vec<Vec<u8>> = group_data
@@ -372,7 +372,7 @@ fn handle_non_grouped(
     let threads = request_par_threads(metas.len(), estimated_work(&metas, &options.range));
     metas
         .into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(|meta| {
             // Multi-aggregation yields rows, which chunks cannot store. Under
@@ -484,7 +484,7 @@ fn handle_grouping(
         let series_threads = request_par_threads(series_refs.len(), total_work);
         let mut rows: Vec<Vec<Sample>> = series_refs
             .par()
-            .runner(Runner::fixed_with_pool(request_pool()))
+            .on_request_pool()
             .num_threads(series_threads)
             .map(|meta| series_bucket_rows(meta, &options.range))
             .collect();
@@ -505,7 +505,7 @@ fn handle_grouping(
     let merged_items = merged
         .into_iter()
         .iter_into_par()
-        .runner(Runner::fixed_with_pool(request_pool()))
+        .on_request_pool()
         .num_threads(threads)
         .map(|(label_value, group_data)| {
             let grouping = options

@@ -111,8 +111,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   (behavior-kind entries need explicit PR sign-off).
 - When adding/changing a command, update `docs/COMMANDS.md`, `docs/commands/`, `docs/overview.md`,
   and `README.md` (skip this for `TS._DEBUG`/`TS._RESTORE` — intentionally undocumented internals).
-- Parallel sections inside command handlers run on `common::threads::request_pool()` with
-  `.num_threads(request_par_threads(items, work))` (see `series/mrange.rs`, `sample_merge.rs`).
+- Parallel sections inside command handlers run on `common::threads::request_pool()` via
+  `.on_request_pool().num_threads(request_par_threads(items, work))` (`RequestPoolPar`; see
+  `series/mrange.rs`, `sample_merge.rs`). `on_request_pool()` is the only place that names the runner.
   Never the global rayon pool — its jobs take the module GIL and a handler waiting in a `scope`
   can deadlock — and never orx-parallel's default runner, which spawns OS threads per call
   (~75–200 µs even for one item). When the threshold says sequential, use a plain loop.
