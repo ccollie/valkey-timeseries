@@ -487,11 +487,23 @@ impl TimeSeries {
         }
     }
 
+    /// Whether a merge left `chunk` big enough that a split should halve it. "Full" is not
+    /// the test: a chunk completed by appends sits at its size limit (the append that
+    /// crosses it is the last one accepted), and the next append seals it and starts a new
+    /// chunk — halving it later would re-encode every sample it holds only to leave two
+    /// half-empty chunks, once per chunk-full of appends (it was 11 % of a 128-key TS.MADD
+    /// and made every series carry twice the chunks). Only a chunk that a merge has grown
+    /// well past the limit is split.
+    fn needs_split(chunk: &TimeSeriesChunk) -> bool {
+        let max = chunk.max_size();
+        chunk.is_full() && chunk.size() > max + max / 4
+    }
+
     pub(crate) fn split_chunks_if_needed(&mut self) -> TsdbResult<()> {
         // Every append ends here, and almost never with anything to split: decide
         // that with a scan, not with a parallel section (which used to spawn
         // threads on every MADD just to test `is_full`).
-        let full = self.chunks.iter().filter(|c| c.is_full()).count();
+        let full = self.chunks.iter().filter(|c| Self::needs_split(c)).count();
         if full == 0 {
             return Ok(());
         }
@@ -505,7 +517,7 @@ impl TimeSeries {
                 .par_mut()
                 .with_pool(request_pool())
                 .num_threads(request_par_threads(full, full * SPLIT_WORK))
-                .filter(|c| c.is_full())
+                .filter(|c| Self::needs_split(c))
                 .flat_map(|chunks| {
                     if let Ok(mut split_chunk) = chunks.split() {
                         // `split` re-encodes both halves from scratch, so both arrive with a
@@ -521,7 +533,7 @@ impl TimeSeries {
                 .collect::<Vec<_>>()
         } else {
             let mut new_chunks = Vec::with_capacity(std::cmp::max(2, self.chunks.len() / 6));
-            for c in self.chunks.iter_mut().filter(|c| c.is_full()) {
+            for c in self.chunks.iter_mut().filter(|c| Self::needs_split(c)) {
                 if let Ok(mut split_chunk) = c.split() {
                     seal_chunk(c);
                     seal_chunk(&mut split_chunk);
