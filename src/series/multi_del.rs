@@ -11,8 +11,7 @@ use crate::series::{
 };
 use blart::AsBytes;
 use croaring::bitmap64::Bitmap64Iterator;
-use orx_parallel::ParIter;
-use orx_parallel::ParallelizableCollectionMut;
+use orx_parallel::{Par, ParCollectionMut, Runner};
 use smallvec::SmallVec;
 use std::ops::{Deref, DerefMut};
 use valkey_module::{
@@ -129,7 +128,7 @@ fn delete_range_batch(
     let threads = request_par_threads(series.len(), series.iter().map(|g| g.total_samples).sum());
     let res = series
         .par_mut()
-        .with_pool(request_pool())
+        .runner(Runner::fixed_with_pool(request_pool()))
         .num_threads(threads)
         .map(|guard| guard.remove_range(start_ts, end_ts))
         .collect::<Vec<_>>();

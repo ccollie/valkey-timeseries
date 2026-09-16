@@ -14,7 +14,7 @@ use crate::series::{
     DuplicatePolicy, SampleAddResult, SeriesGuardMut, SeriesRef, TimeSeries, try_get_timeseries,
 };
 use get_size2::GetSize;
-use orx_parallel::{ParIter, ParallelizableCollectionMut};
+use orx_parallel::{Par, ParCollectionMut, Runner};
 use smallvec::SmallVec;
 use std::cmp::Ordering;
 use topo_sort::TopoSort;
@@ -998,7 +998,7 @@ fn apply_rules_internal(
     let mut destinations = rules.iter_mut().zip(child_series).collect::<Vec<_>>();
     let results: Vec<Result<RuleOutcome, TsdbError>> = destinations
         .par_mut()
-        .with_pool(request_pool())
+        .runner(Runner::fixed_with_pool(request_pool()))
         .num_threads(if len < PARALLEL_THRESHOLD { 1 } else { 0 }) // 0 is shorthand for Auto
         .map(|(rule, dest_guard)| {
             let dest_id = dest_guard.id;

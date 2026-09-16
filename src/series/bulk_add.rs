@@ -12,7 +12,7 @@ use crate::series::chunks::{ChunkOps, TimeSeriesChunk};
 use crate::series::index::with_timeseries_postings;
 use crate::series::ingest_normalize::{NormalizedBatch, normalize_batch};
 use crate::series::{DuplicatePolicy, SampleAddResult, SeriesRef, TimeSeries, seal_chunk};
-use orx_parallel::{IterIntoParIter, ParIter, ParallelizableCollection};
+use orx_parallel::{IterIntoParIter, Par, ParCollection, Runner};
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::borrowed::Value;
 use simd_json::prelude::ValueObjectAccess;
@@ -353,7 +353,7 @@ pub(super) fn merge_samples_into_series(
                 .into_iter()
                 .zip(existing_groups.iter())
                 .iter_into_par()
-                .with_pool(request_pool())
+                .runner(Runner::fixed_with_pool(request_pool()))
                 .num_threads(threads)
                 .map(|(chunk, &(group_pos, _, samples))| {
                     let res = exec_merge(chunk, samples, resolved_policy);
@@ -387,7 +387,7 @@ pub(super) fn merge_samples_into_series(
         } else {
             new_groups
                 .par()
-                .with_pool(request_pool())
+                .runner(Runner::fixed_with_pool(request_pool()))
                 .num_threads(threads)
                 .map(build)
                 .collect::<Vec<_>>()

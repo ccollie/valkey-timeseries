@@ -20,8 +20,8 @@ use crate::series::sample_merge::merge_samples;
 use crate::series::series_sample_iterator::SeriesSampleIterator;
 use crate::{config, error_consts};
 use get_size2::GetSize;
-use orx_parallel::ParIterResult;
-use orx_parallel::{IntoParIter, ParIter, Parallelizable, ParallelizableCollectionMut};
+use orx_parallel::ParResult;
+use orx_parallel::{IntoParIter, Par, ParCollectionMut, Parallelizable, Runner};
 use smallvec::SmallVec;
 use std::hash::Hash;
 use std::mem::size_of;
@@ -515,7 +515,7 @@ impl TimeSeries {
         let mut new_chunks = if self.is_compressed() {
             self.chunks
                 .par_mut()
-                .with_pool(request_pool())
+                .runner(Runner::fixed_with_pool(request_pool()))
                 .num_threads(request_par_threads(full, full * SPLIT_WORK))
                 .filter(|c| Self::needs_split(c))
                 .flat_map(|chunks| {
@@ -730,13 +730,13 @@ impl TimeSeries {
                 [meta] => meta_fetch(meta),
                 _ => slice
                     .par()
-                    .with_pool(request_pool())
+                    .runner(Runner::fixed_with_pool(request_pool()))
                     .num_threads(request_par_threads(
                         slice.len(),
                         slice.iter().map(|m| m.chunk.len()).sum(),
                     ))
                     .map(|meta| meta_fetch(meta))
-                    .into_fallible_result()
+                    .into_fallible()
                     .flat_map(|r| r)
                     .collect(),
             }
@@ -906,10 +906,10 @@ impl TimeSeries {
             (true, many) => {
                 let threads = request_par_threads(many.len(), many.iter().map(|c| c.len()).sum());
                 many.into_par()
-                    .with_pool(request_pool())
+                    .runner(Runner::fixed_with_pool(request_pool()))
                     .num_threads(threads)
                     .map(|chunk| remove_internal(chunk, start_ts, end_ts))
-                    .into_fallible_result()
+                    .into_fallible()
                     .sum()?
             }
         };
@@ -1139,7 +1139,7 @@ impl TimeSeries {
             request_par_threads(self.chunks.len(), self.chunks.iter().map(|c| c.len()).sum());
         self.chunks
             .par_mut()
-            .with_pool(request_pool())
+            .runner(Runner::fixed_with_pool(request_pool()))
             .num_threads(threads)
             .for_each(|chunk| {
                 let _ = chunk.optimize();
@@ -1337,13 +1337,13 @@ fn get_range_parallel(
         [chunk] => chunk.get_range(start, end),
         _ => chunks
             .into_par()
-            .with_pool(request_pool())
+            .runner(Runner::fixed_with_pool(request_pool()))
             .num_threads(request_par_threads(
                 chunks.len(),
                 chunks.iter().map(|c| c.len()).sum(),
             ))
             .map(|chunk| chunk.get_range(start, end))
-            .into_fallible_result()
+            .into_fallible()
             .flat_map(|x| x)
             .collect(),
     }

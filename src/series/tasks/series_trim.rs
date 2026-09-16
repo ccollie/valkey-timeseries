@@ -5,8 +5,7 @@ use crate::common::threads::spawn;
 use crate::common::threads::{request_par_threads, request_pool};
 use crate::is_shutting_down;
 use crate::series::tasks::utils::{fetch_series_batch, find_next_db};
-use orx_parallel::ParIter;
-use orx_parallel::ParallelizableCollectionMut;
+use orx_parallel::{Par, ParCollectionMut, Runner};
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{Context, MODULE_CONTEXT, Status};
 
@@ -94,7 +93,7 @@ fn trim_series(ctx: &Context, db: i32, cursor: u64) -> (usize, i32) {
     let threads = request_par_threads(batch.len(), batch.iter().map(|s| s.total_samples).sum());
     let total_deletes = batch
         .par_mut()
-        .with_pool(request_pool())
+        .runner(Runner::fixed_with_pool(request_pool()))
         .num_threads(threads)
         .map(|series| match series.trim() {
             Ok(deletes) => deletes,
