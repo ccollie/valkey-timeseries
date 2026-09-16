@@ -86,7 +86,24 @@ pub fn is_blocking_denied(ctx: &Context) -> bool {
     ctx.get_flags().contains(ContextFlags::DENY_BLOCKING)
 }
 
+/// `ValkeyModule_NotifyKeyspaceEvent` for a `MODULE`-class event whose name is a
+/// compile-time C string. The crate's `Context::notify_keyspace_event` takes a `&str` and
+/// allocates a `CString` per call, which on a 128-key TS.MADD was half the notification
+/// cost; the event names are all literals, so `c"ts.add"` needs no allocation.
 #[inline]
+pub fn notify_module_event(ctx: &Context, event: &std::ffi::CStr, key: &ValkeyString) {
+    // SAFETY: `ctx` is a live command context, `event` is NUL-terminated by construction and
+    // `key` is a live module string; the API copies what it keeps.
+    unsafe {
+        raw::RedisModule_NotifyKeyspaceEvent.unwrap()(
+            ctx.ctx,
+            raw::NotifyEvent::MODULE.bits(),
+            event.as_ptr(),
+            key.inner,
+        );
+    }
+}
+
 pub fn is_acl_enforced(ctx: &Context) -> bool {
     // Replicated (master-link) and AOF-applied commands must not trigger ACL checks:
     // the originating primary already enforced ACLs on the real client, and the
