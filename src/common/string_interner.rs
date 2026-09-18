@@ -1,9 +1,8 @@
 //! A string interner that deallocates unused values.
 //!
-//! Original code https://github.com/ryzhyk/arc-interner
+//! Derived from https://github.com/ryzhyk/arc-interner
 //! Copyright (c) 2021-2024 Leonid Ryzhyk
 //! License: MIT
-//!
 //!
 //! Interning reduces the memory footprint of an application by storing
 //! a unique copy of each distinct value.  It speeds up equality
@@ -11,7 +10,7 @@
 //! values need to be compared.  On the flip side, object creation is
 //! slower, as it involves lookup in the interned string pool.
 //!
-//! This library makes the following design choices:
+//! Design choices:
 //!
 //! - Interned strings are reference counted.  When the last reference to
 //!   an interned object is dropped, the string is deallocated.  This
@@ -20,52 +19,330 @@
 //!   some CPU and memory overhead (due to storing and maintaining an
 //!   atomic counter).
 //! - Multithreading.  A single pool of interned strings is shared by all
-//!   threads in the program.  The pool is protected by a RwLock, allowing
-//!   concurrent reads but exclusive writes.
-//! - Safe: this library is built on the `Arc` type from the Rust
-//!   standard library and does not contain any unsafe code.
+//!   threads in the program.  The pool is a lock-free [`papaya::HashMap`];
+//!   interning, cloning and dropping never take a lock. The pool's own
+//!   reference to a string is released through papaya's deferred
+//!   reclamation, so a thread that found an entry can always finish
+//!   reading it (see [`retire_if_dead`]).
+//! - Thin. An [`InternedString`] is one pointer (8 bytes) to a header that
+//!   holds the reference count, the byte length and the position of the
+//!   `=` in a `name=value` label. The original held an `Arc<[u8]>`, a fat
+//!   pointer whose 16-byte slot per label dominated the memory of a
+//!   `MetricName` once the pool had deduplicated the strings themselves
+//!   (see `tools/interning_report.sh`). Keeping the separator in the
+//!   header makes [`InternedString::name`] and [`InternedString::value`]
+//!   O(1) slices, so a label needs no side structure to be split.
 //!
 //! # Example
-//! ```rust
+//! ```ignore
 //! use valkey_timeseries::common::string_interner::InternedString;
 //! let x = InternedString::new("hello");
 //! let y: InternedString = "world".into();
 //! assert_ne!(x, y);
 //! assert_eq!(x, InternedString::new("hello"));
 //! assert_eq!(&*x, "hello"); // dereference an InternedString like a pointer
+//! let l = InternedString::new_pair("env", "prod");
+//! assert_eq!((l.name(), l.value()), ("env", "prod"));
 //! ```
 
-use crate::common::sync::{read_lock, write_lock};
 use ahash::RandomState;
 use get_size2::GetSize;
 use min_max_heap::MinMaxHeap;
+use papaya::{Guard, HashMap};
+use smallvec::SmallVec;
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use std::ptr::NonNull;
 use std::str::FromStr;
-use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
-type StringContainer = RwLock<HashSet<Arc<[u8]>, RandomState>>;
+/// The pool: every live interned string, keyed by content. Used as a set;
+/// `papaya::HashSet` lacks the conditional insert/remove this needs.
+type StringPool = HashMap<PoolEntry, (), RandomState>;
 
-static STRING_POOL: LazyLock<StringContainer> =
-    LazyLock::new(|| RwLock::new(HashSet::with_hasher(RandomState::new())));
+static STRING_POOL: LazyLock<StringPool> =
+    LazyLock::new(|| HashMap::builder().hasher(RandomState::new()).build());
 
 /// Total memory used by all interned strings.
 static STRING_MEMORY_USED: AtomicUsize = AtomicUsize::new(0);
 
-/// Bytes the pool allocated for `arc`: the `Arc` control block (the strong and weak counts)
-/// followed by the payload.
+/// Marker in [`Header::name_len`] for a string with no `=`.
+const NO_SEPARATOR: u32 = u32::MAX;
+
+/// Largest supported strong-reference count. Keeping the count below the
+/// signed pointer range matches the limit used by shared-pointer types such
+/// as `Arc` and leaves no path for a count increment to wrap.
+const MAX_REFCOUNT: usize = isize::MAX as usize;
+
+/// Bytes between the start of an allocation and its payload.
+const HEADER_SIZE: usize = size_of::<Header>();
+
+/// What precedes the bytes of every interned string.
 ///
-/// `GetSize` on `Arc<[u8]>` counts the payload only, which understates every interned string by
-/// a fixed 16 bytes on a 64-bit target -- material for label values, which are short. Every site
-/// that accounts for pool memory goes through here so the counters agree.
-fn arc_allocated_size(arc: &Arc<[u8]>) -> usize {
-    2 * size_of::<usize>() + arc.len()
+/// Sixteen bytes, like the `Arc<[u8]>` control block it replaces: the never-used
+/// weak count became `len` (which the fat pointer used to carry in every holder)
+/// and `name_len`. `repr(C)` fixes the payload offset at [`HEADER_SIZE`].
+///
+/// # Reference protocol
+///
+/// `strong` counts the pool's reference (while the entry is in the map) plus
+/// one per holder. Without a lock, the count and the map membership have to
+/// be reconciled by convention:
+///
+/// - **A pool entry whose count is 1 is dead.** Only the pool refers to it, and
+///   nothing may bring it back: [`Node::try_acquire`] refuses to increment from
+///   1, so a count of 1 is stable, which is what makes "remove it if its count
+///   is 1" a sound test inside `remove_if`.
+/// - **Whoever removes an entry releases the pool's reference** — the last
+///   holder in [`InternedString::drop`], or an interner that stumbled on a dead
+///   entry — and does so through [`Guard::defer_retire`], so the release runs
+///   only once every thread that could have found the entry has unpinned. A
+///   thread that reached a node through the map can therefore keep reading it
+///   for as long as it stays pinned.
+/// - A holder pins the map **before** giving up its own reference in the slow
+///   path, so the node it is about to remove cannot be reclaimed under it.
+#[repr(C)]
+struct Header {
+    /// References: one for the pool while the string is interned, one per holder.
+    strong: AtomicUsize,
+    /// Payload length in bytes.
+    len: u32,
+    /// Byte offset of the first `=`, or [`NO_SEPARATOR`]. Determined by the
+    /// content alone, so every constructor agrees on it and deduplication
+    /// cannot change what `name()` returns.
+    name_len: u32,
+}
+
+impl Header {
+    fn layout(len: usize) -> Layout {
+        Layout::from_size_align(HEADER_SIZE + len, align_of::<Header>())
+            .expect("interned string layout")
+    }
+}
+
+/// Bytes the pool allocated for a string of `len` bytes: the header followed by the payload.
+///
+/// Every site that accounts for pool memory goes through here so the counters agree.
+fn allocated_size(len: usize) -> usize {
+    HEADER_SIZE + len
+}
+
+#[inline]
+fn increment_refcount(current: usize) -> Option<usize> {
+    current.checked_add(1).filter(|&next| next <= MAX_REFCOUNT)
+}
+
+/// One allocation: header immediately followed by `len` payload bytes.
+///
+/// The raw pointer shared by [`InternedString`] (a holder) and [`PoolEntry`]
+/// (the pool's own reference). Each of those owns one count; this type owns
+/// nothing and does no counting.
+#[derive(Clone, Copy)]
+struct Node(NonNull<Header>);
+
+impl Node {
+    /// Allocate a node holding `strong` references, all owned by the caller.
+    fn allocate(bytes: &[u8], strong: usize) -> Node {
+        let len = bytes.len();
+        assert!(
+            len < NO_SEPARATOR as usize,
+            "interned string of {len} bytes exceeds u32::MAX"
+        );
+        let name_len = bytes
+            .iter()
+            .position(|&b| b == b'=')
+            .map_or(NO_SEPARATOR, |i| i as u32);
+        let layout = Header::layout(len);
+        // SAFETY: the layout is non-zero-sized (it holds at least the header).
+        let ptr = unsafe { alloc(layout) } as *mut Header;
+        let Some(ptr) = NonNull::new(ptr) else {
+            handle_alloc_error(layout)
+        };
+        // SAFETY: `ptr` is a fresh, properly aligned allocation of `layout`
+        // bytes; the header is written in full before anything reads it and
+        // the payload region starts `HEADER_SIZE` bytes in and holds `len` bytes.
+        unsafe {
+            ptr.write(Header {
+                strong: AtomicUsize::new(strong),
+                len: len as u32,
+                name_len,
+            });
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                ptr.as_ptr().cast::<u8>().add(HEADER_SIZE),
+                len,
+            );
+        }
+        Node(ptr)
+    }
+
+    #[inline]
+    fn header(&self) -> &Header {
+        // SAFETY: the node is alive for as long as any reference it counts
+        // exists, and every `Node` handed out is held by such a reference.
+        unsafe { self.0.as_ref() }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.header().len as usize
+    }
+
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: the payload starts `HEADER_SIZE` bytes after the header and
+        // is `len` bytes long, written in full by `allocate`.
+        unsafe {
+            std::slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(HEADER_SIZE), self.len())
+        }
+    }
+
+    #[inline]
+    fn strong(&self) -> &AtomicUsize {
+        &self.header().strong
+    }
+
+    /// Take one reference.
+    #[inline]
+    fn retain(&self) {
+        // Relaxed is enough for an increment: the holder cloning from already
+        // owns a reference, so the count cannot reach zero underneath us
+        // (same reasoning as `Arc::clone`).
+        let strong = self.strong();
+        let mut current = strong.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = increment_refcount(current) else {
+                // Continuing would make a safe `clone` wrap the count and
+                // eventually allow a live allocation to be freed.
+                std::process::abort();
+            };
+            match strong.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return,
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Take one reference to a node found through the pool, unless the entry
+    /// is dead (count 1: only the pool's reference is left and a remover is on
+    /// its way). See the protocol on [`Header`].
+    #[inline]
+    fn try_acquire(&self) -> bool {
+        let strong = self.strong();
+        let mut current = strong.load(Ordering::Acquire);
+        loop {
+            if current < 2 {
+                return false;
+            }
+            let Some(next) = increment_refcount(current) else {
+                // See `retain`: refcount overflow would invalidate the
+                // ownership protocol, so it cannot be allowed to continue.
+                std::process::abort();
+            };
+            match strong.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Give back one reference, freeing the allocation with the last one.
+    #[inline]
+    fn release(self) {
+        if self.strong().fetch_sub(1, Ordering::Release) == 1 {
+            // Every other release happened-before this fence; no reader remains.
+            fence(Ordering::Acquire);
+            self.dealloc();
+        }
+    }
+
+    /// Free the allocation. The caller guarantees no reference to it remains.
+    #[inline]
+    fn dealloc(self) {
+        let layout = Header::layout(self.len());
+        // SAFETY: by contract no reference to this node exists any more;
+        // `layout` is the one it was allocated with.
+        unsafe { dealloc(self.0.as_ptr().cast::<u8>(), layout) }
+    }
+}
+
+/// Retire `node`'s pool entry if it is dead — still in the map, and with the
+/// pool's reference as its only one. Returns whether this call did the removal.
+///
+/// The entry owns that reference, so Papaya releases it by dropping the key
+/// only after the entry is unreachable from every table involved in an
+/// incremental resize.
+///
+/// Both the last holder and an interner that finds a dead entry call this;
+/// `remove_if` makes exactly one of them succeed, and the pointer check keeps
+/// a lookalike entry (same bytes, different allocation) untouched.
+fn retire_if_dead(node: Node, guard: &impl Guard) -> bool {
+    let removed = STRING_POOL.remove_if(
+        node.bytes(),
+        |entry, _| entry.0.0 == node.0 && node.strong().load(Ordering::Acquire) == 1,
+        guard,
+    );
+    if !matches!(removed, Ok(Some(_))) {
+        return false;
+    }
+    STRING_MEMORY_USED.fetch_sub(allocated_size(node.len()), Ordering::SeqCst);
+    true
+}
+
+// SAFETY: a node is immutable after construction except for its atomic count,
+// so sharing pointers to it across threads is sound, exactly as for `Arc`.
+unsafe impl Send for Node {}
+unsafe impl Sync for Node {}
+
+/// A pool key. Hashes and compares by content, and borrows as `[u8]`, so the
+/// map can be probed with the bytes of a candidate string before anything is
+/// allocated for it.
+///
+/// It owns the pool's reference to the node. Papaya may keep this key reachable
+/// from an older table while incrementally resizing, so releasing the reference
+/// in [`Drop`] ensures the node outlives every such lookup.
+struct PoolEntry(Node);
+
+impl PoolEntry {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self.0.bytes()
+    }
+}
+
+impl Hash for PoolEntry {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Must match `<[u8] as Hash>::hash` for `Borrow<[u8]>` lookups to land.
+        self.as_bytes().hash(state);
+    }
+}
+
+impl PartialEq for PoolEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for PoolEntry {}
+
+impl Borrow<[u8]> for PoolEntry {
+    fn borrow(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl Drop for PoolEntry {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 #[derive(Default)]
@@ -137,7 +414,7 @@ pub struct TopKEntry {
     pub ref_count: usize,
     /// Length of the string in bytes.
     pub bytes: usize,
-    /// Total allocated memory for this string (Arc overhead + data).
+    /// Total allocated memory for this string (header + data).
     pub allocated: usize,
 }
 
@@ -184,15 +461,48 @@ pub struct Stats {
     pub top_k_by_ref: Vec<TopKEntry>,
     /// Bytes saved by interning: sum of `allocated * (ref_count - 1)` over all pool entries.
     pub memory_saved_bytes: usize,
-    /// Percentage of memory saved relative to the hypothetical uninterned cost.
-    /// `memory_saved_bytes / (memory_saved_bytes + total_stats.allocated) * 100`
+    /// Share of the *pool's* hypothetical uninterned cost that interning avoids:
+    /// `memory_saved_bytes / (memory_saved_bytes + total_stats.allocated) * 100`.
+    ///
+    /// This is a pool-efficiency figure, not a label-memory one, and it runs high (99 %+ on a
+    /// fleet-shaped label set) because both sides of the ratio count only heap allocations. A
+    /// holder pays for a [`InternedString`] slot as well, and pays for it either way, so the
+    /// slot cancels out of the numerator but belongs in the denominator of any claim about
+    /// what interning saves overall. [`Self::storage_saved_pct`] is that claim; prefer it when
+    /// the question is "how much memory do labels cost", and use this one when the question is
+    /// "how well is the pool deduplicating".
     pub memory_saved_pct: f64,
+    /// Live holders across the whole pool: `Σ ref_count`, so one per outstanding
+    /// [`InternedString`] value. Equivalently, the number of label occurrences when every
+    /// holder is a label in a series.
+    pub holder_count: usize,
+    /// What those holders spend on slots: `holder_count * size_of::<InternedString>()`.
+    /// Unaffected by interning — an uninterned layout with one allocation per holder pays the
+    /// same slot, only pointing somewhere else.
+    pub holder_slot_bytes: usize,
+    /// What interned strings actually cost right now: `total_stats.allocated +
+    /// holder_slot_bytes`. On a fleet-shaped label set the slots dominate, which is the point
+    /// of reporting them.
+    pub total_storage_bytes: usize,
+    /// Share of total string storage that interning avoids, counting holder slots on both
+    /// sides: `memory_saved_bytes / (total_storage_bytes + memory_saved_bytes) * 100`.
+    ///
+    /// The honest whole-storage figure, and always at or below [`Self::memory_saved_pct`].
+    /// Still a slight over-statement of what a *series* saves: the pool cannot see the
+    /// per-series container that holds the slots (`MetricName`'s `Arc<[InternedString]>`
+    /// header), and it counts transient holders — a clone on the stack — alongside stored
+    /// ones.
+    pub storage_saved_pct: f64,
 }
 
 /// A pointer to an interned, reference-counted, and immutable string object.
 ///
-/// The interned string will be held in memory only until its
-/// reference count reaches zero.
+/// One machine word. The interned string will be held in memory only until
+/// its reference count reaches zero.
+///
+/// Labels are interned as `name=value`; [`Self::name`] and [`Self::value`]
+/// return the two halves without scanning, from the separator position the
+/// header records at intern time.
 ///
 /// # Example
 /// ```rust
@@ -204,12 +514,11 @@ pub struct Stats {
 /// assert_eq!(x, InternedString::new("hello"));
 /// assert_eq!(&*x, "hello"); // dereference an InternedString like a pointer
 /// ```
-#[derive(Debug, GetSize)]
-pub struct InternedString {
-    /// The actual string data. We use `Arc<[u8]>` instead of `Arc<String>` to save
-    /// some memory (no need to store the capacity of the string since we're immutable).
-    arc: Arc<[u8]>,
-}
+pub struct InternedString(Node);
+
+/// Buffer for assembling a `name=value` candidate before the pool is probed;
+/// sized so ordinary labels never touch the heap for it.
+type PairBuf = SmallVec<[u8; 128]>;
 
 impl InternedString {
     /// Intern a string value.  If this value has not previously been
@@ -221,56 +530,116 @@ impl InternedString {
     /// a lock. However, the performance should be acceptable for our use cases,
     /// especially under low contention.
     pub fn new(val: &str) -> Self {
-        let v = Arc::from(val.as_bytes());
-        Self::from_arc(v)
+        Self::intern(val.as_bytes())
     }
 
-    fn from_arc(val: Arc<[u8]>) -> InternedString {
-        // First, try to get an existing entry with a read lock
-        {
-            let pool = read_lock(&STRING_POOL);
-            if let Some(existing) = pool.get(&val) {
-                return InternedString {
-                    arc: existing.clone(),
-                };
+    /// Intern the label `name=value` without building the string first: the
+    /// pool is probed with the bytes on the stack, and only a miss allocates.
+    pub fn new_pair(name: &str, value: &str) -> Self {
+        let mut buf = PairBuf::with_capacity(name.len() + 1 + value.len());
+        buf.extend_from_slice(name.as_bytes());
+        buf.push(b'=');
+        buf.extend_from_slice(value.as_bytes());
+        Self::intern(&buf)
+    }
+
+    fn intern(bytes: &[u8]) -> InternedString {
+        let guard = STRING_POOL.guard();
+        loop {
+            if let Some((entry, _)) = STRING_POOL.get_key_value(bytes, &guard) {
+                let node = entry.0;
+                if node.try_acquire() {
+                    return InternedString(node);
+                }
+                // Dead entry: its last holder is retiring it. Help, then look again.
+                retire_if_dead(node, &guard);
+                continue;
+            }
+
+            // Absent: insert a node carrying the pool's reference and ours.
+            let node = Node::allocate(bytes, 2);
+            match STRING_POOL.try_insert_with(PoolEntry(node), || (), &guard) {
+                Ok(_) => {
+                    STRING_MEMORY_USED.fetch_add(allocated_size(bytes.len()), Ordering::SeqCst);
+                    return InternedString(node);
+                }
+                Err(_) => {
+                    // Another thread inserted the same bytes first. The
+                    // rejected temporary `PoolEntry` has dropped and released
+                    // its pool reference, leaving this prospective holder
+                    // reference for us to release.
+                    node.release();
+                }
             }
         }
+    }
 
-        // If not found, acquire write lock and insert
-        let mut pool = write_lock(&STRING_POOL);
-
-        // Double-check after acquiring write lock (another thread may have inserted)
-        if let Some(existing) = pool.get(&val) {
-            return InternedString {
-                arc: existing.clone(),
-            };
-        }
-
-        // Insert new value
-        let size = arc_allocated_size(&val);
-        pool.insert(val.clone());
-        STRING_MEMORY_USED.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
-
-        InternedString { arc: val }
+    /// A new holder of `node`, which the caller already holds a reference to.
+    #[inline]
+    fn retained(node: Node) -> InternedString {
+        node.retain();
+        InternedString(node)
     }
 
     pub fn len(&self) -> usize {
-        self.arc.len()
+        self.0.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.arc.is_empty()
+        self.len() == 0
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        self.arc.as_ref()
+        self.0.bytes()
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        // SAFETY: we only intern valid UTF-8 strings
+        debug_assert!(
+            std::str::from_utf8(self.as_bytes()).is_ok(),
+            "InternedString: interned bytes are not valid UTF-8"
+        );
+        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+    }
+
+    /// True when the string contains a `=`, i.e. it splits as a label.
+    #[inline]
+    pub fn is_pair(&self) -> bool {
+        self.0.header().name_len != NO_SEPARATOR
+    }
+
+    /// The part before the first `=`; the whole string when there is none.
+    #[inline]
+    pub fn name(&self) -> &str {
+        let s = self.as_str();
+        match self.0.header().name_len {
+            NO_SEPARATOR => s,
+            n => &s[..n as usize],
+        }
+    }
+
+    /// The part after the first `=`; empty when there is none.
+    #[inline]
+    pub fn value(&self) -> &str {
+        let s = self.as_str();
+        match self.0.header().name_len {
+            NO_SEPARATOR => "",
+            n => &s[n as usize + 1..],
+        }
+    }
+
+    /// `(name, value)` for a string containing `=`, else `None`.
+    #[inline]
+    pub fn split_pair(&self) -> Option<(&str, &str)> {
+        self.is_pair().then(|| (self.name(), self.value()))
     }
 
     /// Return the number of references to this value.
     pub fn ref_count(&self) -> usize {
-        // The hashset holds one reference; we return the number of
+        // The pool holds one reference; we return the number of
         // references held by actual clients.
-        Arc::strong_count(&self.arc) - 1
+        self.0.strong().load(Ordering::Acquire) - 1
     }
 
     /// Return true if this is the only reference to this value.
@@ -278,10 +647,10 @@ impl InternedString {
         self.ref_count() == 1
     }
 
-    /// Bytes the pool allocated for this value: the `Arc` control block (the strong and weak
-    /// counts) followed by the payload. See [`arc_allocated_size`].
+    /// Bytes the pool allocated for this value: the header (reference count, length,
+    /// separator) followed by the payload. See [`allocated_size`].
     pub fn allocated_size(&self) -> usize {
-        arc_allocated_size(&self.arc)
+        allocated_size(self.len())
     }
 
     /// This holder's share of [`Self::allocated_size`].
@@ -296,12 +665,12 @@ impl InternedString {
 
     /// Return the number of unique interned strings.
     pub fn interned_count() -> usize {
-        read_lock(&STRING_POOL).len()
+        STRING_POOL.len()
     }
 
     /// Return the total memory used by all interned strings.
     pub fn memory_used() -> usize {
-        STRING_MEMORY_USED.load(std::sync::atomic::Ordering::Relaxed)
+        STRING_MEMORY_USED.load(Ordering::Relaxed)
     }
 
     /// Collect statistics about the interned string pool, including the top `k`
@@ -310,17 +679,23 @@ impl InternedString {
     /// Passing `k = 0` skips the top-K collection entirely (both `top_k_by_size` and
     /// `top_k_by_ref` will be empty).
     pub fn get_stats_with_top_k(k: usize) -> Stats {
-        let pool = read_lock(&STRING_POOL);
+        let guard = STRING_POOL.guard();
         let mut stats = Stats::default();
 
         // MinMaxHeap allows us to efficiently track top-K and extract the max values
         let mut size_heap: MinMaxHeap<TopKBySize> = MinMaxHeap::new();
         let mut ref_heap: MinMaxHeap<TopKByRef> = MinMaxHeap::new();
 
-        for arc in pool.iter() {
-            let ref_count = Arc::strong_count(arc) - 1; // exclude the pool's reference
-            let allocated = arc_allocated_size(arc);
-            let bytes = arc.as_ref().len();
+        for (entry, _) in STRING_POOL.iter(&guard) {
+            let node = entry.0;
+            let strong = node.strong().load(Ordering::Acquire);
+            if strong < 2 {
+                // Dead: being retired by its last holder. Not a live string.
+                continue;
+            }
+            let ref_count = strong - 1; // exclude the pool's reference
+            let bytes = node.len();
+            let allocated = allocated_size(bytes);
 
             let by_ref_stats = stats.by_ref_stats.entry(ref_count).or_default();
             by_ref_stats.count += 1;
@@ -336,6 +711,10 @@ impl InternedString {
             stats.total_stats.bytes += bytes;
             stats.total_stats.allocated += allocated;
 
+            // One slot per holder, interned or not: it is the denominator's share of the cost
+            // that dedup never touches.
+            stats.holder_count += ref_count;
+
             // Each duplicate reference that shares this allocation is a saved copy.
             // ref_count includes the pool's own ref, so duplicates = ref_count - 1.
             // (strings with ref_count == 1 have no duplicates → zero saving)
@@ -344,11 +723,13 @@ impl InternedString {
             }
 
             if k > 0 {
-                let value = InternedString {
-                    arc: Arc::clone(arc),
-                };
+                // The entry may have died since the load above; then it is
+                // not a live string and is skipped like the ones caught earlier.
+                if !node.try_acquire() {
+                    continue;
+                }
                 let entry = TopKEntry {
-                    value,
+                    value: InternedString(node),
                     ref_count,
                     bytes,
                     allocated,
@@ -390,6 +771,18 @@ impl InternedString {
             stats.memory_saved_bytes as f64 / total_uninterned as f64 * 100.0
         };
 
+        // The same saving against everything the strings cost, slots included. The slot is in
+        // both layouts, so it enters the denominator only, which is exactly why this figure
+        // sits below `memory_saved_pct` instead of alongside it.
+        stats.holder_slot_bytes = stats.holder_count * size_of::<InternedString>();
+        stats.total_storage_bytes = stats.total_stats.allocated + stats.holder_slot_bytes;
+        let storage_uninterned = stats.total_storage_bytes + stats.memory_saved_bytes;
+        stats.storage_saved_pct = if storage_uninterned == 0 {
+            0.0
+        } else {
+            stats.memory_saved_bytes as f64 / storage_uninterned as f64 * 100.0
+        };
+
         stats
     }
 
@@ -400,18 +793,75 @@ impl InternedString {
 
 impl Clone for InternedString {
     fn clone(&self) -> Self {
-        InternedString {
-            arc: self.arc.clone(),
+        Self::retained(self.0)
+    }
+}
+
+impl Drop for InternedString {
+    fn drop(&mut self) {
+        let node = self.0;
+        let strong = node.strong();
+        let mut current = strong.load(Ordering::Acquire);
+        loop {
+            match current {
+                // Another holder remains besides the pool: a plain decrement.
+                3.. => match strong.compare_exchange_weak(
+                    current,
+                    current - 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return,
+                    Err(seen) => current = seen,
+                },
+                // The pool and us: we are the last holder. Pin first, so that
+                // the node outlives our use of it below however the retirement
+                // races (see `Header`), then give up our reference — the entry
+                // is dead from that moment — and retire it.
+                2 => {
+                    let guard = STRING_POOL.guard();
+                    match strong.compare_exchange(2, 1, Ordering::AcqRel, Ordering::Acquire) {
+                        Ok(_) => {
+                            retire_if_dead(node, &guard);
+                            return;
+                        }
+                        Err(seen) => current = seen,
+                    }
+                }
+                // Only us: the pool's reference is already gone (the entry was
+                // retired without us, which the protocol rules out, but a
+                // decrement is the safe answer either way).
+                1 => {
+                    node.release();
+                    return;
+                }
+                0 => unreachable!("dropping an InternedString with no reference"),
+            }
         }
+    }
+}
+
+impl fmt::Debug for InternedString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl GetSize for InternedString {
+    /// A holder's share of the pool allocation; see [`Self::amortized_size`].
+    fn get_heap_size(&self) -> usize {
+        self.amortized_size()
     }
 }
 
 impl Borrow<str> for InternedString {
     fn borrow(&self) -> &str {
-        self.deref()
+        self.as_str()
     }
 }
 
+/// Hashes by content, not pointer: fingerprints derived from labels must be
+/// stable across processes.
 impl Hash for InternedString {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.as_bytes().hash(state);
@@ -420,51 +870,26 @@ impl Hash for InternedString {
 
 impl AsRef<[u8]> for InternedString {
     fn as_ref(&self) -> &[u8] {
-        self.arc.as_ref()
+        self.as_bytes()
     }
 }
 
 impl AsRef<str> for InternedString {
     fn as_ref(&self) -> &str {
-        self.deref()
+        self.as_str()
     }
 }
 
 impl Deref for InternedString {
     type Target = str;
     fn deref(&self) -> &str {
-        // SAFETY: we only intern valid UTF-8 strings
-        debug_assert!(
-            std::str::from_utf8(self.arc.as_ref()).is_ok(),
-            "InternedString: interned bytes are not valid UTF-8"
-        );
-        unsafe { std::str::from_utf8_unchecked(self.arc.as_ref()) }
+        self.as_str()
     }
 }
 
 impl Display for InternedString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let v: &str = self.deref();
-        write!(f, "{v}")
-    }
-}
-
-impl Drop for InternedString {
-    fn drop(&mut self) {
-        // Fast path: if there are definitely other external refs, do nothing.
-        // Counts: 1 ref is held by the pool (if still interned) and 1 by `self`.
-        if Arc::strong_count(&self.arc) > 2 {
-            return;
-        }
-
-        let mut pool = write_lock(&STRING_POOL);
-
-        // Only remove/account if the pool currently contains this arc AND `self` is
-        // the last external reference at the moment we hold the write lock.
-        if Arc::strong_count(&self.arc) == 2 && pool.remove(&self.arc) {
-            let size = arc_allocated_size(&self.arc);
-            STRING_MEMORY_USED.fetch_sub(size, std::sync::atomic::Ordering::SeqCst);
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -482,8 +907,16 @@ impl From<String> for InternedString {
 }
 
 impl From<&[u8]> for InternedString {
+    /// Panics if `s` is not valid UTF-8.
+    ///
+    /// Every `InternedString` exposes its bytes as `str`; validate before
+    /// storing them so `as_str` can safely use `from_utf8_unchecked`.
     fn from(s: &[u8]) -> Self {
-        Self::from_arc(Arc::from(s))
+        assert!(
+            std::str::from_utf8(s).is_ok(),
+            "InternedString bytes must be valid UTF-8"
+        );
+        Self::intern(s)
     }
 }
 
@@ -502,7 +935,7 @@ impl Default for InternedString {
 /// Efficiently compares two interned values by comparing their pointers.
 impl PartialEq for InternedString {
     fn eq(&self, other: &InternedString) -> bool {
-        Arc::ptr_eq(&self.arc, &other.arc)
+        self.0.0 == other.0.0
     }
 }
 
@@ -511,18 +944,6 @@ impl Eq for InternedString {}
 impl PartialOrd for InternedString {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
-    }
-    fn lt(&self, other: &Self) -> bool {
-        self.as_bytes().lt(other.as_bytes())
-    }
-    fn le(&self, other: &Self) -> bool {
-        self.as_bytes().le(other.as_bytes())
-    }
-    fn gt(&self, other: &Self) -> bool {
-        self.as_bytes().gt(other.as_bytes())
-    }
-    fn ge(&self, other: &Self) -> bool {
-        self.as_bytes().ge(other.as_bytes())
     }
 }
 
@@ -534,14 +955,32 @@ impl Ord for InternedString {
 
 #[cfg(test)]
 mod tests {
-    use super::{InternedString, STRING_MEMORY_USED, STRING_POOL};
+    use super::{
+        InternedString, MAX_REFCOUNT, Node, PoolEntry, STRING_MEMORY_USED, increment_refcount,
+    };
     use ahash::{HashSet, HashSetExt};
     use serial_test::serial;
     use std::collections::HashMap;
     use std::ops::Deref;
+    use std::sync::atomic::Ordering;
     use std::thread;
 
     // Tests are run serially to avoid interference via the global string pool and memory tracker.
+
+    #[test]
+    fn refcount_increment_stops_at_the_limit() {
+        assert_eq!(increment_refcount(MAX_REFCOUNT - 1), Some(MAX_REFCOUNT));
+        assert_eq!(increment_refcount(MAX_REFCOUNT), None);
+        assert_eq!(increment_refcount(usize::MAX), None);
+    }
+
+    #[test]
+    fn pool_entry_owns_one_reference() {
+        let node = Node::allocate(b"pool-entry", 2);
+        drop(PoolEntry(node));
+        assert_eq!(node.strong().load(Ordering::Acquire), 1);
+        node.release();
+    }
 
     // Test basic functionality.
     #[test]
@@ -627,10 +1066,11 @@ mod tests {
         assert_eq!(InternedString::interned_count(), 0);
     }
 
-    // Helper to reset memory tracking before each test
+    // Helper to reset memory tracking before each test. The pool itself is
+    // not cleared: every test scopes its holders, so its own entries are gone
+    // by now, and entries other tests hold concurrently must stay valid.
     fn reset_memory_tracking() {
         STRING_MEMORY_USED.store(0, std::sync::atomic::Ordering::SeqCst);
-        crate::common::sync::write_lock(&STRING_POOL).clear();
     }
 
     #[test]
@@ -834,6 +1274,13 @@ mod tests {
         assert_eq!(unicode1, unicode2);
         assert_ne!(unicode1, different);
         assert_eq!(unicode1.deref(), "🦀 Rust");
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic(expected = "InternedString bytes must be valid UTF-8")]
+    fn byte_slice_constructor_rejects_invalid_utf8() {
+        let _ = InternedString::from(&[0xff][..]);
     }
 
     #[test]
@@ -1189,6 +1636,83 @@ mod tests {
         assert_eq!(stats.total_stats.count, 1);
     }
 
+    /// `memory_saved_pct` weighs the pool against one allocation per holder and stops there, so
+    /// it climbs towards 100% as sharing improves however much the holders themselves cost.
+    /// `storage_saved_pct` restates the same saving over total storage, where the slot each
+    /// holder keeps either way sits in the denominator alone. The two are checked against hand
+    /// arithmetic here because the gap between them is the whole point of reporting both.
+    #[test]
+    #[serial]
+    fn storage_saving_counts_the_slot_every_holder_keeps() {
+        reset_memory_tracking();
+
+        const HOLDERS: usize = 8;
+        // 48 bytes of payload, so every figure below is exact in binary.
+        let payload = "storage-saving-fixture".to_string() + &"x".repeat(26);
+        assert_eq!(payload.len(), 48);
+
+        let first = InternedString::new(&payload);
+        let _clones: Vec<InternedString> = (1..HOLDERS).map(|_| first.clone()).collect();
+
+        let stats = InternedString::get_stats();
+        assert_eq!(stats.total_stats.count, 1, "fixture is the only live entry");
+
+        let allocated = super::HEADER_SIZE + payload.len();
+        assert_eq!(stats.total_stats.allocated, allocated);
+
+        // One holder per outstanding `InternedString`, each paying for its own slot.
+        assert_eq!(stats.holder_count, HOLDERS);
+        assert_eq!(
+            stats.holder_slot_bytes,
+            HOLDERS * size_of::<InternedString>()
+        );
+        assert_eq!(
+            stats.total_storage_bytes,
+            allocated + stats.holder_slot_bytes
+        );
+
+        // Seven allocations avoided, out of the eight an uninterned layout would make.
+        let saved = allocated * (HOLDERS - 1);
+        assert_eq!(stats.memory_saved_bytes, saved);
+        assert_eq!(
+            stats.memory_saved_pct,
+            saved as f64 / (saved + allocated) as f64 * 100.0
+        );
+        assert_eq!(
+            stats.storage_saved_pct,
+            saved as f64 / (saved + stats.total_storage_bytes) as f64 * 100.0
+        );
+
+        // 87.5% against the pool alone, 77.8% against everything the strings cost.
+        assert!(
+            stats.storage_saved_pct < stats.memory_saved_pct,
+            "slots belong in the denominator: {} vs {}",
+            stats.storage_saved_pct,
+            stats.memory_saved_pct
+        );
+    }
+
+    /// The slot is the whole difference between the two percentages, so a pool whose strings
+    /// are shared by exactly one holder each saves nothing under either measure.
+    #[test]
+    #[serial]
+    fn unshared_strings_save_nothing_under_either_measure() {
+        reset_memory_tracking();
+
+        let _a = InternedString::new("unshared-alpha");
+        let _b = InternedString::new("unshared-beta");
+
+        let stats = InternedString::get_stats();
+        assert_eq!(stats.holder_count, 2);
+        assert_eq!(stats.memory_saved_bytes, 0);
+        assert_eq!(stats.memory_saved_pct, 0.0);
+        assert_eq!(stats.storage_saved_pct, 0.0);
+        assert_eq!(
+            stats.total_storage_bytes,
+            stats.total_stats.allocated + 2 * size_of::<InternedString>()
+        );
+    }
+
     #[test]
     #[serial]
     fn test_top_k_entries_ref_count_excludes_pool_ref() {
@@ -1239,5 +1763,164 @@ mod tests {
         for entry in &stats.top_k_by_ref {
             assert_eq!(entry.ref_count, 2);
         }
+    }
+
+    // ── thin representation ────────────────────────────────────────────────
+
+    #[test]
+    #[serial]
+    fn interned_string_is_one_pointer() {
+        assert_eq!(size_of::<InternedString>(), size_of::<usize>());
+        assert_eq!(size_of::<Option<InternedString>>(), size_of::<usize>());
+        // The header replaces the `Arc<[u8]>` control block byte for byte.
+        assert_eq!(super::HEADER_SIZE, 2 * size_of::<usize>());
+        assert_eq!(InternedString::new("abc").allocated_size(), 16 + 3);
+    }
+
+    #[test]
+    #[serial]
+    fn name_and_value_split_at_first_separator() {
+        reset_memory_tracking();
+        let l = InternedString::new_pair("env", "prod");
+        assert!(l.is_pair());
+        assert_eq!(l.name(), "env");
+        assert_eq!(l.value(), "prod");
+        assert_eq!(l.split_pair(), Some(("env", "prod")));
+        assert_eq!(&*l, "env=prod");
+
+        // A value may itself contain `=`; only the first one splits.
+        let eq = InternedString::new_pair("q", "a=b=c");
+        assert_eq!(eq.split_pair(), Some(("q", "a=b=c")));
+
+        let bare = InternedString::new("no_separator");
+        assert!(!bare.is_pair());
+        assert_eq!(bare.name(), "no_separator");
+        assert_eq!(bare.value(), "");
+        assert_eq!(bare.split_pair(), None);
+
+        let empty = InternedString::default();
+        assert_eq!(empty.len(), 0);
+        assert_eq!(empty.name(), "");
+        assert_eq!(empty.split_pair(), None);
+
+        // Empty halves are still pairs.
+        let empty_value = InternedString::new_pair("k", "");
+        assert_eq!(empty_value.split_pair(), Some(("k", "")));
+        let empty_name = InternedString::new("=v");
+        assert_eq!(empty_name.split_pair(), Some(("", "v")));
+    }
+
+    #[test]
+    #[serial]
+    fn constructors_deduplicate_to_one_allocation() {
+        reset_memory_tracking();
+        let a = InternedString::new_pair("host", "h1");
+        let b = InternedString::new("host=h1");
+        let c: InternedString = String::from("host=h1").into();
+        let d = InternedString::from(b"host=h1".as_slice());
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(c, d);
+        assert_eq!(a.ref_count(), 4);
+        assert_eq!(InternedString::interned_count(), 1);
+        assert_eq!(InternedString::memory_used(), 16 + "host=h1".len());
+        // The split is a property of the content, whichever constructor ran first.
+        assert_eq!(b.split_pair(), Some(("host", "h1")));
+    }
+
+    #[test]
+    #[serial]
+    fn long_pair_beyond_stack_buffer() {
+        reset_memory_tracking();
+        let value = "v".repeat(1000);
+        let l = InternedString::new_pair("id", &value);
+        assert_eq!(l.name(), "id");
+        assert_eq!(l.value(), value);
+        assert_eq!(l.allocated_size(), 16 + 3 + 1000);
+    }
+
+    /// Two last holders dropping at once must not both take the fast path and
+    /// leave a holder-less entry in the pool.
+    #[test]
+    #[serial]
+    fn racing_last_holders_retire_the_entry() {
+        reset_memory_tracking();
+        for round in 0..200 {
+            let s = format!("race{round}");
+            let a = InternedString::new(&s);
+            let b = a.clone();
+            let c = a.clone();
+            let handles: Vec<_> = [a, b, c]
+                .into_iter()
+                .map(|h| thread::spawn(move || drop(h)))
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            assert_eq!(InternedString::interned_count(), 0, "round {round}");
+        }
+        assert_eq!(InternedString::memory_used(), 0);
+    }
+
+    /// Interning a string while its last holder is dropping it must yield a
+    /// live value either way.
+    #[test]
+    #[serial]
+    fn intern_races_drop_of_last_holder() {
+        reset_memory_tracking();
+        for round in 0..200 {
+            let s = format!("churn{round}");
+            let holder = InternedString::new(&s);
+            let dropper = thread::spawn(move || drop(holder));
+            let re = InternedString::new(&s);
+            dropper.join().unwrap();
+            assert_eq!(&*re, s);
+            assert_eq!(re.ref_count(), 1);
+            assert_eq!(InternedString::interned_count(), 1);
+            drop(re);
+            assert_eq!(InternedString::interned_count(), 0);
+        }
+    }
+
+    /// Many threads interning, cloning and dropping the same few strings: two
+    /// live values with equal content must always be the same allocation, and
+    /// nothing may be left behind.
+    #[test]
+    #[serial]
+    fn concurrent_churn_keeps_one_allocation_per_content() {
+        reset_memory_tracking();
+        const NAMES: [&str; 4] = ["churn=a", "churn=b", "churn=c", "churn=d"];
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                thread::spawn(move || {
+                    for i in 0..20_000usize {
+                        let s = NAMES[(i + t) % NAMES.len()];
+                        let a = InternedString::new(s);
+                        let b = InternedString::new_pair("churn", &s[6..]);
+                        assert_eq!(a, b, "{s}: equal content, distinct allocations");
+                        assert_eq!(a.value(), &s[6..]);
+                        if i % 3 == 0 {
+                            drop(a.clone());
+                        }
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(InternedString::interned_count(), 0);
+        assert_eq!(InternedString::memory_used(), 0);
+    }
+
+    #[test]
+    #[serial]
+    fn stats_top_k_holds_no_extra_references_afterwards() {
+        reset_memory_tracking();
+        let a = InternedString::new("solo");
+        let stats = InternedString::get_stats_with_top_k(1);
+        assert_eq!(stats.top_k_by_ref[0].ref_count, 1);
+        drop(stats);
+        assert_eq!(a.ref_count(), 1);
     }
 }
