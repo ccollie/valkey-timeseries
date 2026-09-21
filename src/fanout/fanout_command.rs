@@ -1,5 +1,5 @@
 use super::acl::get_fanout_user;
-use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc, validate_cluster_exec};
+use super::cluster_rpc::{get_cluster_command_timeout, invoke_rpc};
 use super::fanout_error::{ErrorKind, FanoutError};
 use crate::common::context::get_current_db;
 use crate::common::sync::lock;
@@ -79,8 +79,13 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// Generate the request to be sent to each target node.
     fn generate_request(&self) -> Self::Request;
 
-    /// Called once per successful response from a target node.
-    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);
+    /// Called once per response from a target node.
+    ///
+    /// Returning `Err(FanoutError)` will be treated as a
+    /// per-shard failure (it increments the aggregated error count and will cause the
+    /// overall fanout to reply with an error at completion). Implementations should
+    /// return `Ok(())` on success.
+    fn on_response(&mut self, resp: Self::Response, target: &NodeInfo) -> FanoutCommandResult;
 
     fn on_error(&mut self, error: FanoutError, target: &NodeInfo) {
         log_fanout_failure(Self::name(), target, &error);
@@ -89,10 +94,11 @@ pub trait FanoutCommand: Default + Send + 'static {
     /// Called once all responses have been received, or on timeout.
     fn on_completion(&mut self) {}
 
-    /// Return the final response after the fanout operation is complete.
-    /// By default, it returns a default instance of the response type.
-    fn get_response(self) -> Self::Response {
-        Self::Response::default()
+    /// If true, the fanout operation should abort immediately on the first
+    /// failing `on_response`. Default is `false` to preserve existing
+    /// per-shard error aggregation behavior.
+    fn fail_fast(&self) -> bool {
+        false
     }
 
     fn generate_error_reply(&self) -> FanoutError {
@@ -204,37 +210,6 @@ enum FanoutLifecycleState {
     Active,
     /// Completion callback already ran (or was explicitly finalized).
     Completed,
-}
-
-/// Execute the fanout operation synchronously across cluster nodes.
-pub fn exec_command_sync<OP: FanoutCommand>(
-    ctx: &Context,
-    command: OP,
-    targets: FanoutTarget,
-    timeout: Duration,
-) -> FanoutResult<OP::Response> {
-    use std::sync::Condvar;
-
-    let pair = Arc::new((Mutex::new(None), Condvar::new()));
-    let pair_clone = pair.clone();
-
-    let callback = move |op: OP, result: FanoutCommandResult| {
-        let (lock, cvar) = &*pair_clone;
-        let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
-        *completed = Some((op, result));
-        cvar.notify_one();
-    };
-
-    exec_command(ctx, command, targets, timeout, callback)?;
-
-    let (lock, cvar) = &*pair;
-    let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
-    while completed.is_none() {
-        completed = cvar.wait(completed).expect(MUTEX_POISONED_MSG);
-    }
-
-    let (op, result) = completed.take().unwrap();
-    result.map(|_| op.get_response())
 }
 
 /// Internal structure to manage the state of an ongoing fanout operation.
@@ -355,7 +330,6 @@ where
                 }
             }
         }
-        self.rpc_done()
     }
 
     fn on_completion(&mut self) {
