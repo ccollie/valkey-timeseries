@@ -1,7 +1,7 @@
 use crate::series::acl::ModuleUser;
 use std::cell::RefCell;
 use std::rc::Rc;
-use valkey_module::Context;
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 /// The ACL identity attached to the current thread's fan-out request.
 ///
@@ -60,6 +60,36 @@ impl Drop for FanoutAclScope {
 #[inline]
 pub fn fanout_acl_scope_active() -> bool {
     FANOUT_ACL_USER.with(|u| u.borrow().as_ref().is_some_and(|id| !id.name.is_empty()))
+}
+
+/// Run `f` with `user`'s ACL identity active on this thread, under a GIL the
+/// caller already holds.
+///
+/// The shard-side entry points take the GIL themselves through
+/// [`FanoutContext::lock`](crate::fanout::FanoutContext::lock); this is the
+/// coordinator-side counterpart for code that is already on the main thread
+/// (or a query worker holding `MODULE_CONTEXT`) and needs to execute a
+/// selector as the caller — the PromQL selector executor, whose local reads and
+/// cluster fan-outs both pick up the identity from the thread-local scope.
+/// The resolved [`ModuleUser`] handle lives only for the duration of `f`.
+pub fn with_fanout_user<T, F>(ctx: &Context, user: Option<&str>, f: F) -> ValkeyResult<T>
+where
+    F: FnOnce(&Context) -> ValkeyResult<T>,
+{
+    let Some(user) = user.filter(|name| !name.is_empty()) else {
+        return f(ctx);
+    };
+
+    let user_name = ctx.create_string(user);
+    let module_user = ModuleUser::from_name(&user_name).ok_or_else(|| {
+        ValkeyError::String(format!("ACL user '{user}' does not exist or is disabled"))
+    })?;
+    let _acl_scope = FanoutAclScope::enter(FanoutIdentity {
+        name: user.to_owned(),
+        user: Some(Rc::new(module_user)),
+    });
+
+    f(ctx)
 }
 
 pub(super) fn get_fanout_user(ctx: &Context) -> Option<String> {

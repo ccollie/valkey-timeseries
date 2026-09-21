@@ -8,6 +8,7 @@ use crate::aggregators::{PartialReducer, PartialState};
 use crate::commands::utils::{MRangeReplyShape, reply_with_mrange_series_results};
 use crate::common::context::key_for_display;
 use crate::common::replies::ReplyContext;
+use crate::common::threads::{IntoParRayon, IterIntoParRayon};
 use crate::common::{MultiSample, Sample};
 use crate::fanout::{FanoutClientCommand, FanoutTarget, NodeInfo, compute_hash_tag_fanout_target};
 use crate::fanout::{FanoutCommandResult, FanoutContext};
