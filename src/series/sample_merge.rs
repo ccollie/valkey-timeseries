@@ -5,7 +5,7 @@ use crate::series::bulk_add::merge_samples_into_series;
 use crate::series::index::get_series_key_by_id;
 use crate::series::{DuplicatePolicy, SampleAddResult, TimeSeries};
 use orx_parallel::ParResult;
-use orx_parallel::{Par, ParCollectionMut};
+use orx_parallel::{IterIntoParIter, Par};
 use smallvec::{SmallVec, smallvec};
 use valkey_module::{Context, ValkeyError, ValkeyResult};
 
@@ -106,30 +106,24 @@ pub(super) fn merge_samples(
 /// paired A/B of TS.MADD at 16, 128 and 1,024 samples per command.
 const MADD_SAMPLE_WORK: usize = 16;
 
-/// Merges samples across multiple series, supporting parallel processing when applicable.
+/// Merges each group's samples into its series, in parallel when the batch
+/// carries enough work. The merge phase may run on worker threads; nothing here
+/// takes the global context.
 ///
-/// The merge phase may run on worker threads, but compaction propagation runs afterwards,
-/// sequentially on the calling (command) thread: it acquires destination-series guards and
-/// must not lock the global context from inside the parallel section (the command thread
-/// already holds the GIL, so a `ThreadSafeContext` lock there deadlocks the server).
-///
-/// ### Parameters
-/// - `groups`: A slice of series with their related samples.
-/// - `ctx`: Command context; when present, compaction rules are propagated after the merge.
+/// This is the first of TS.MADD's three phases — every series' adds, then
+/// [`run_group_compactions`], then [`apply_group_retention`] — and the phases
+/// must not interleave across series: a compaction lands in another series
+/// that may itself be written by the same command, and the order the items
+/// take effect in is what the command's replies report.
 ///
 /// ### Returns
-/// Returns a `ValkeyResult` containing a `SmallVec` of tuples (group index, SampleAddResult) on success.:
-/// - The second element is the result of processing the samples for that series.
-///
-///
-pub fn multi_series_merge_samples(
-    groups: Vec<PerSeriesSamples>,
-    ctx: Option<&Context>,
+/// One `(input index, result)` per sample across all groups.
+pub fn merge_groups(
+    groups: &mut [PerSeriesSamples],
 ) -> ValkeyResult<SmallVec<[(usize, SampleAddResult); 8]>> {
     if groups.is_empty() {
         return Ok(smallvec![]);
     }
-    let mut groups = groups;
 
     // Dispatch to the pool only when the batch carries real work. An append costs
     // more than decoding a sample (normalisation, duplicate handling, chunk
@@ -137,15 +131,16 @@ pub fn multi_series_merge_samples(
     // thread avoids the pool round trip *and* orx's per-call runner construction.
     let total_samples: usize = groups.iter().map(|g| g.samples.len()).sum();
     let threads = request_par_threads(groups.len(), total_samples * MADD_SAMPLE_WORK);
-    let res = if threads == 1 {
+    if threads == 1 {
         let mut acc: SmallVec<[(usize, SampleAddResult); 8]> = SmallVec::new();
         for group in groups.iter_mut() {
             acc.extend(add_samples_internal(group)?);
         }
-        acc
+        Ok(acc)
     } else {
-        groups
-            .par_mut()
+        Ok(groups
+            .iter_mut()
+            .iter_into_par()
             .on_request_pool()
             .num_threads(threads)
             .map(add_samples_internal)
@@ -154,25 +149,42 @@ pub fn multi_series_merge_samples(
                 acc.extend(item);
                 acc
             })?
-            .unwrap()
-    };
-
-    if let Some(ctx) = ctx {
-        run_group_compactions(ctx, &mut groups);
+            .unwrap())
     }
+}
 
-    // Retention is applied only now. The merge above deliberately skipped the eager trim so
-    // that `add_group_sequentially`'s read-back still sees a sample which a later item in the
-    // same batch pushed outside the window — that is what lets retention be decided ahead of
-    // the duplicate policy (corpus: madd_retention_beats_duplicate_policy).
-    //
-    // Deferring it does *not* leak expired samples into the destination buckets: compaction
-    // aggregates through the retention-clamped `range_iter`, so a sample this trim is about to
-    // evict is already invisible to the bucket recalculation.
+/// The retention phase, after compaction. The merge deliberately skipped the eager trim so
+/// that `add_group_sequentially`'s read-back still sees a sample which a later item in the
+/// same batch pushed outside the window — that is what lets retention be decided ahead of
+/// the duplicate policy (corpus: madd_retention_beats_duplicate_policy).
+///
+/// Deferring it does *not* leak expired samples into the destination buckets: compaction
+/// aggregates through the retention-clamped `range_iter`, so a sample this trim is about to
+/// evict is already invisible to the bucket recalculation.
+pub fn apply_group_retention(groups: &mut [PerSeriesSamples]) {
     for group in groups.iter_mut() {
         group.series.apply_retention();
     }
+}
 
+/// Merges samples across multiple series: [`merge_groups`], then compaction
+/// propagation when `ctx` is given, then the retention trim — the three phases
+/// in order, for a caller with only grouped series.
+///
+/// Compaction runs sequentially on the calling (command) thread: it acquires
+/// destination-series guards and must not lock the global context from inside
+/// the parallel section (the command thread already holds the GIL, so a
+/// `ThreadSafeContext` lock there deadlocks the server).
+pub fn multi_series_merge_samples(
+    groups: Vec<PerSeriesSamples>,
+    ctx: Option<&Context>,
+) -> ValkeyResult<SmallVec<[(usize, SampleAddResult); 8]>> {
+    let mut groups = groups;
+    let res = merge_groups(&mut groups)?;
+    if let Some(ctx) = ctx {
+        run_group_compactions(ctx, &mut groups);
+    }
+    apply_group_retention(&mut groups);
     Ok(res)
 }
 
@@ -202,6 +214,14 @@ fn add_samples_internal(
     // input order, which reproduces RTS exactly.
     if has_in_batch_duplicate(&input.samples) {
         return Ok(add_group_sequentially(input));
+    }
+
+    // A small batch of in-order appends — a client's samples for one series,
+    // the usual multi-sample MADD — is appended one by one. The bulk merge
+    // below cannot save a re-encode here (there is none to save on an append)
+    // and costs a dozen allocations of grouping and splicing per series.
+    if input.samples.len() <= SEQUENTIAL_APPEND_MAX && is_ascending_append(input) {
+        return Ok(add_group_appending(input));
     }
 
     // Keep the samples in INPUT order: `normalize_batch`'s retention gate is input-order
@@ -247,6 +267,44 @@ fn add_samples_internal(
     }
 
     Ok(result)
+}
+
+/// Largest group appended sample by sample rather than through the bulk merge.
+const SEQUENTIAL_APPEND_MAX: usize = 64;
+
+/// True when every sample lands after the series' last timestamp and the
+/// batch is strictly ascending, so each add is a plain append: no upsert, no
+/// in-batch duplicate, no chunk re-encode.
+fn is_ascending_append(input: &PerSeriesSamples) -> bool {
+    let mut last = input
+        .series
+        .last_sample
+        .map(|s| s.timestamp)
+        .unwrap_or(Timestamp::MIN);
+    input.samples.iter().all(|s| {
+        let after = s.timestamp > last;
+        last = s.timestamp;
+        after
+    })
+}
+
+/// Appends an in-order batch (see [`is_ascending_append`]) sample by sample, in
+/// input order — the sequence of single adds RTS applies, with nothing to
+/// reorder: the accepted samples are already ascending for compaction.
+fn add_group_appending(input: &mut PerSeriesSamples) -> SmallVec<[(usize, SampleAddResult); 8]> {
+    let mut result: SmallVec<[(usize, SampleAddResult); 8]> = SmallVec::new();
+    let items: SmallVec<[IndexedSample; 6]> = std::mem::take(&mut input.samples);
+    for item in &items {
+        let res = input
+            .series
+            .add_deferring_retention(item.timestamp, item.value, None);
+        if let SampleAddResult::Ok(added) = res {
+            input.added.push(added);
+            input.added_order.push(added.timestamp);
+        }
+        result.push((item.index, res));
+    }
+    result
 }
 
 /// True if two samples in the group share a timestamp (checked over a sorted copy of the
@@ -304,7 +362,7 @@ fn add_group_sequentially(input: &mut PerSeriesSamples) -> SmallVec<[(usize, Sam
 /// Propagate each group's merged batch to its compaction destinations, one batch per series
 /// (the old per-sample path locked the context once per sample and rebuilt the open bucket
 /// for every in-order sample).
-fn run_group_compactions(ctx: &Context, groups: &mut [PerSeriesSamples]) {
+pub fn run_group_compactions(ctx: &Context, groups: &mut [PerSeriesSamples]) {
     for group in groups.iter_mut() {
         if group.series.rules.is_empty() || group.added.is_empty() {
             continue;

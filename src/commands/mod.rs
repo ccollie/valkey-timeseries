@@ -84,7 +84,7 @@ pub use command_parser::*;
 pub use ts_debug::*;
 pub use ts_mget::*;
 pub use ts_restore::*;
-use valkey_module::ValkeyResult;
+use valkey_module::{ValkeyResult, ValkeyString};
 
 use crate::fanout::register_fanout_operation;
 use ts_card_fanout_command::CardFanoutCommand;
@@ -106,6 +106,46 @@ pub(crate) fn register_fanout_operations() -> ValkeyResult<()> {
     register_fanout_operation::<QueryIndexFanoutCommand>()?;
     register_fanout_operation::<QueryLabelsFanoutCommand>()?;
     Ok(())
+}
+
+/// A command's arguments as `ValkeyString`s that neither retain nor free the
+/// underlying strings: they belong to the server for the duration of the call.
+///
+/// For a hand-written `ValkeyModuleCmdFunc` on a hot command. The
+/// `#[valkey_module_macros::command]` entry point retains every argument into a
+/// `Vec<ValkeyString>` and frees it afterwards — two API calls per argument.
+pub(crate) struct BorrowedArgs {
+    args: Vec<std::mem::ManuallyDrop<ValkeyString>>,
+}
+
+impl BorrowedArgs {
+    pub(crate) fn new(
+        ctx: *mut valkey_module::raw::RedisModuleCtx,
+        argv: *mut *mut valkey_module::raw::RedisModuleString,
+        argc: std::os::raw::c_int,
+    ) -> Self {
+        let args = if argv.is_null() {
+            Vec::new()
+        } else {
+            // SAFETY: the server passes `argc` valid pointers, live for the whole
+            // callback.
+            unsafe { std::slice::from_raw_parts(argv, argc as usize) }
+                .iter()
+                .map(|&arg| {
+                    std::mem::ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, arg))
+                })
+                .collect()
+        };
+        Self { args }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ValkeyString] {
+        // SAFETY: `ManuallyDrop<T>` is `repr(transparent)` over `T`, so the slices
+        // have the same layout; the elements are never dropped through this view.
+        unsafe {
+            std::slice::from_raw_parts(self.args.as_ptr().cast::<ValkeyString>(), self.args.len())
+        }
+    }
 }
 
 #[cfg(test)]

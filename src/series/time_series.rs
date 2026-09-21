@@ -239,7 +239,7 @@ impl TimeSeries {
     ///
     /// Batch writers use this so that compaction can observe the series as it was
     /// *before* this batch's trim — see [`Self::apply_retention`].
-    pub(super) fn add_deferring_retention(
+    pub(crate) fn add_deferring_retention(
         &mut self,
         ts: Timestamp,
         value: f64,
