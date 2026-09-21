@@ -75,4 +75,42 @@ unsafe impl GlobalAlloc for AlignedValkeyAlloc {
         let raw = unsafe { (ptr as *mut *mut u8).sub(1).read() };
         unsafe { ValkeyAlloc.dealloc(raw, Self::padded_layout(layout)) };
     }
+
+    /// `ValkeyAlloc` leaves this at the trait default — allocate, copy, free — so
+    /// every `Vec` growth paid a full copy. `RedisModule_Realloc` lets the server's
+    /// allocator extend the block in place when it can, which is what a chunk's
+    /// encoder buffer wants as it fills. Over-aligned layouts keep the default,
+    /// since their block carries the stashed base pointer.
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if layout.align() > MALLOC_GUARANTEED_ALIGN {
+            return unsafe { realloc_by_copy(self, ptr, layout, new_size) };
+        }
+        if cfg!(feature = "enable-system-alloc") {
+            return unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
+        }
+        // The same size rounding `ValkeyAlloc::alloc` applies.
+        let size = (new_size + layout.align() - 1) & !(layout.align() - 1);
+        match unsafe { valkey_module::raw::RedisModule_Realloc } {
+            Some(realloc) => unsafe { realloc(ptr.cast(), size).cast() },
+            None => unsafe { realloc_by_copy(self, ptr, layout, new_size) },
+        }
+    }
+}
+
+/// The `GlobalAlloc::realloc` default, spelled out so the aligned path can use it.
+unsafe fn realloc_by_copy(
+    alloc: &AlignedValkeyAlloc,
+    ptr: *mut u8,
+    layout: Layout,
+    new_size: usize,
+) -> *mut u8 {
+    let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+    let new_ptr = unsafe { alloc.alloc(new_layout) };
+    if !new_ptr.is_null() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr, new_ptr, layout.size().min(new_size));
+            alloc.dealloc(ptr, layout);
+        }
+    }
+    new_ptr
 }
