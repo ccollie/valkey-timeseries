@@ -317,37 +317,6 @@ enum FanoutLifecycleState {
     Completed,
 }
 
-/// Execute the fanout operation synchronously across cluster nodes.
-pub fn exec_command_sync<OP: FanoutCommand>(
-    ctx: &Context,
-    command: OP,
-    targets: FanoutTarget,
-    timeout: Duration,
-) -> FanoutResult<OP::Response> {
-    use std::sync::Condvar;
-
-    let pair = Arc::new((Mutex::new(None), Condvar::new()));
-    let pair_clone = pair.clone();
-
-    let callback = move |op: OP, result: FanoutCommandResult| {
-        let (lock, cvar) = &*pair_clone;
-        let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
-        *completed = Some((op, result));
-        cvar.notify_one();
-    };
-
-    exec_command(ctx, command, targets, timeout, callback)?;
-
-    let (lock, cvar) = &*pair;
-    let mut completed = lock.lock().expect(MUTEX_POISONED_MSG);
-    while completed.is_none() {
-        completed = cvar.wait(completed).expect(MUTEX_POISONED_MSG);
-    }
-
-    let (op, result) = completed.take().unwrap();
-    result.map(|_| op.get_response())
-}
-
 /// Internal structure to manage the state of an ongoing fanout operation.
 struct FanoutStateInner<OP, F>
 where
@@ -482,7 +451,6 @@ where
             Ok(()) => self.rpc_done(),
             Err(err) => self.on_error(err, target),
         }
-        self.rpc_done()
     }
 
     /// Completes the fan-out for a client that has gone. True when it was still running, so
