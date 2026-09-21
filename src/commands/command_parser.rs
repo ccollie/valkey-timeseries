@@ -264,7 +264,11 @@ pub fn parse_metric_name(arg: &str) -> ValkeyResult<Vec<Label>> {
 
 /// Parse a float value for use in a command argument, specifically ADD, MADD, and INCRBY/DECRBY.
 pub fn parse_value_arg(arg: &ValkeyString) -> ValkeyResult<f64> {
-    hashify::fnc_map_ignore_case!(arg.as_slice(),
+    let bytes = arg.as_slice();
+    if let Some(value) = parse_plain_decimal(bytes) {
+        return Ok(value);
+    }
+    hashify::fnc_map_ignore_case!(bytes,
         b"inf" => return Ok(f64::INFINITY),
         b"-inf" => return Ok(f64::NEG_INFINITY),
         b"nan" => return Ok(f64::NAN),
@@ -273,6 +277,79 @@ pub fn parse_value_arg(arg: &ValkeyString) -> ValkeyResult<f64> {
     );
     arg.parse_float()
         .map_err(|_| ValkeyError::Str(error_consts::INVALID_VALUE))
+}
+
+/// The value most samples carry — `-?digits[.digits]`, at most 17 digits, no
+/// exponent — parsed here rather than through the server's `StringToDouble`
+/// (an FFI call, an object-encoding check and `errno` handling around the same
+/// kind of parser). With no exponent and at most 17 digits the value can
+/// neither overflow nor underflow, the cases where the server's range check
+/// would reject it. Anything else (signs like `+`, exponents, `inf`, `nan`,
+/// garbage) returns `None` and takes the general path.
+///
+/// Correctly rounded: the digits form an exact integer mantissa, and when it
+/// is at most 2⁵³ the quotient by an exactly representable power of ten is the
+/// single IEEE division that rounds once (Clinger's fast path). A mantissa
+/// past that goes to the standard library's parser, which is also correctly
+/// rounded — the same bits either way.
+#[inline]
+fn parse_plain_decimal(bytes: &[u8]) -> Option<f64> {
+    const EXACT_POWERS_OF_TEN: [f64; 18] = [
+        1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+        1e17,
+    ];
+    const MAX_EXACT_MANTISSA: u64 = 1 << 53;
+
+    let (negative, digits) = match bytes.strip_prefix(b"-") {
+        Some(rest) => (true, rest),
+        None => (false, bytes),
+    };
+    let mut mantissa: u64 = 0;
+    let mut ndigits = 0usize;
+    let mut frac_digits: Option<usize> = None;
+    for &b in digits {
+        match b {
+            b'0'..=b'9' => {
+                mantissa = mantissa * 10 + u64::from(b - b'0');
+                ndigits += 1;
+                if let Some(f) = frac_digits.as_mut() {
+                    *f += 1;
+                }
+            }
+            b'.' if frac_digits.is_none() && ndigits > 0 => frac_digits = Some(0),
+            _ => return None,
+        }
+    }
+    // Digits on both sides of any point (`1.` and `.5` are left to the general
+    // parser), and few enough that the mantissa is exact in a `u64`.
+    if ndigits == 0 || ndigits > 17 || frac_digits == Some(0) {
+        return None;
+    }
+    let value = if mantissa <= MAX_EXACT_MANTISSA {
+        mantissa as f64 / EXACT_POWERS_OF_TEN[frac_digits.unwrap_or(0)]
+    } else {
+        // SAFETY: only ASCII digits and '.' were accepted above.
+        unsafe { std::str::from_utf8_unchecked(digits) }
+            .parse()
+            .ok()?
+    };
+    Some(if negative { -value } else { value })
+}
+
+/// A timestamp argument that is a plain run of decimal digits — every timestamp
+/// a client sends as milliseconds — folded straight from the bytes. Up to 18
+/// digits cannot overflow an `i64`. Anything else returns `None` and takes the
+/// general parser (which also handles `*`, RFC3339 and the fractional forms).
+#[inline]
+pub fn parse_plain_timestamp(bytes: &[u8]) -> Option<Timestamp> {
+    if bytes.is_empty() || bytes.len() > 18 || !bytes.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(
+        bytes
+            .iter()
+            .fold(0i64, |acc, &b| acc * 10 + i64::from(b - b'0')),
+    )
 }
 
 pub fn parse_join_operator(arg: &str) -> ValkeyResult<JoinReducer> {
@@ -1873,6 +1950,117 @@ pub(super) fn find_last_token_instance(
 mod tests {
     use super::*;
     use strum::IntoEnumIterator;
+
+    /// The plain-decimal fast path must agree bit for bit with the general float
+    /// parser on everything it accepts, and decline everything it must not judge.
+    #[test]
+    fn plain_decimal_fast_path_matches_general_parser() {
+        let accepted = [
+            "0",
+            "-0",
+            "1",
+            "-1",
+            "42",
+            "1.5",
+            "-1.5",
+            "0.1",
+            "1507.25",
+            "00012.5",
+            "12345678901234567",
+            "1.2345678901234567",
+            "-99999999999999999",
+            "0.3000000000000001",
+        ];
+        for s in accepted {
+            let fast = parse_plain_decimal(s.as_bytes()).unwrap_or_else(|| panic!("{s} declined"));
+            let general: f64 = s.parse().unwrap();
+            assert_eq!(fast.to_bits(), general.to_bits(), "{s}");
+        }
+        let declined = [
+            "",
+            "-",
+            ".",
+            "-.5",
+            ".5",
+            "1.",
+            "+1",
+            "1e5",
+            "1E5",
+            "1.5e-3",
+            "inf",
+            "-inf",
+            "nan",
+            "1_000",
+            " 1",
+            "1 ",
+            "1..2",
+            "1.2.3",
+            "123456789012345678",
+            "0.30000000000000004",
+            "0x10",
+            "1,5",
+            "--1",
+        ];
+        for s in declined {
+            assert!(parse_plain_decimal(s.as_bytes()).is_none(), "{s} accepted");
+        }
+    }
+
+    /// Random decimals of every accepted shape, bit-compared with the standard
+    /// parser: covers both the exact-division path and the long-mantissa fallback.
+    #[test]
+    fn plain_decimal_fast_path_matches_general_parser_randomized() {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            let ndigits = (next() % 17 + 1) as usize;
+            let mut text = String::new();
+            if next() % 2 == 0 {
+                text.push('-');
+            }
+            let dot = next() % (ndigits as u64 + 1);
+            for i in 0..ndigits {
+                if i as u64 == dot && i > 0 {
+                    text.push('.');
+                }
+                text.push((b'0' + (next() % 10) as u8) as char);
+            }
+            let fast =
+                parse_plain_decimal(text.as_bytes()).unwrap_or_else(|| panic!("{text} declined"));
+            let general: f64 = text.parse().unwrap();
+            assert_eq!(fast.to_bits(), general.to_bits(), "{text}");
+        }
+    }
+
+    #[test]
+    fn plain_timestamp_fast_path_matches_general_parser() {
+        for s in ["0", "1", "1700000000000", "000123", "999999999999999999"] {
+            let fast =
+                parse_plain_timestamp(s.as_bytes()).unwrap_or_else(|| panic!("{s} declined"));
+            assert_eq!(fast, parse_timestamp(s).unwrap(), "{s}");
+        }
+        for s in [
+            "",
+            "*",
+            "-1",
+            "+1",
+            "1.5",
+            "1e3",
+            "1700000000000 ",
+            "1000000000000000000",
+            "abc",
+        ] {
+            assert!(
+                parse_plain_timestamp(s.as_bytes()).is_none(),
+                "{s} accepted"
+            );
+        }
+    }
 
     /// DIV-0014. Built directly rather than through `RepeatedOptions::new()` so
     /// the two modes are exercised without touching the process-wide config,
