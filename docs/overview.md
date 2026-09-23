@@ -77,6 +77,7 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.FORECAST` and `TS.AUTOFORECAST`: Predict future samples. When storing predictions, both
   commands verify that the requested horizon fits within the supported timestamp range before
   forecasting begins.
+  In `TS.AUTOFORECAST`, the last `MODELS` clause replaces any earlier model list.
 
 ## Indexes
 

@@ -82,6 +82,7 @@ Comma-separated list of model families to evaluate. Supported values (case-insen
 | `MSTL`  | —           | No      | Multiple seasonal-trend decomposition with LOESS                            |
 
 If omitted, ARIMA, ETS, and THETA are enabled by default. At least one valid model must be specified.
+If `MODELS` appears more than once, the last clause replaces the entire earlier model list.
 </details>
 
 <details open>

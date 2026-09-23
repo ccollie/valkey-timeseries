@@ -58,7 +58,7 @@ The following commands are supported
 - [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
 - [`TS.ALTER`](docs/commands/ts.alter.md)
 - [`TS.AUTOCORRELATION`](docs/commands/ts.autocorrelation.md)
-- [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md) (checks STORE timestamp bounds before forecasting)
+- [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md) (last MODELS clause wins; checks STORE timestamp bounds)
 - [`TS.CARD`](docs/commands/ts.card.md)
 - [`TS.CREATE`](docs/commands/ts.create.md)
 - [`TS.CREATERULE`](docs/commands/ts.createrule.md)

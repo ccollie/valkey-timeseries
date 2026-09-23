@@ -2,7 +2,7 @@
 
 - [`TS.ADD`](commands/ts.add.md)
 - [`TS.AUTOCORRELATION`](commands/ts.autocorrelation.md)
-- [`TS.AUTOFORECAST`](commands/ts.autoforcast.md) (checks STORE timestamp bounds before forecasting)
+- [`TS.AUTOFORECAST`](commands/ts.autoforcast.md) (last MODELS clause wins; checks STORE timestamp bounds)
 - [`TS.BACKTEST`](commands/ts.backtest.md)
 - [`TS.TREND`](commands/ts.trend.md)
 - [`TS.ADDBULK`](commands/ts.addbulk.md)
