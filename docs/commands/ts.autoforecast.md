@@ -129,7 +129,9 @@ For each point `i`, `lower_interval[i] <= forecast[i] <= upper_interval[i]`.
 When specified, the response includes a `metrics` map computed with
 `anofox-forecast`'s `calculate_metrics` using in-sample observed values and
 fitted values from the selected model (a leading run of non-finite fitted values, such as an
-ARIMA warm-up period, is excluded). The seasonal period (given, or detected by `AUTO`), when set, is
+ARIMA warm-up period, is excluded). When the search picks ARIMA or SARIMA, whose fitted values
+are on their differenced scale, the fit is rebuilt on the scale of the series from the model's
+one-step residuals. The seasonal period (given, or detected by `AUTO`), when set, is
 used as the MASE seasonal period.
 
 Returned fields, in this order:

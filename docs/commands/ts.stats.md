@@ -44,7 +44,7 @@ Use `-` to denote the earliest timestamp, and `+` to denote the latest.
 ## Return
 
 `TS.STATS` returns a map in RESP3. In RESP2 it is a flat array of alternating field names and
-values; **the field order is not fixed** and can differ between calls, so look fields up by name.
+values, sorted by field name.
 Floats are doubles in RESP3 and bulk strings in RESP2.
 
 NaN and ±Inf samples are counted in `length` and `n_nans` and otherwise ignored: every other
@@ -55,7 +55,7 @@ statistic is computed over the finite values only.
 | `length`               | Integer | Number of samples in the range, including NaN/Inf                        |
 | `start_timestamp`      | Integer | First timestamp in the range                                             |
 | `end_timestamp`        | Integer | Last timestamp in the range                                              |
-| `mean`                 | Float   | Average value, computed in single precision (about 7 significant digits) |
+| `mean`                 | Float   | Average value                                                            |
 | `std`                  | Float   | Population standard deviation                                            |
 | `min`                  | Float   | Minimum value                                                            |
 | `max`                  | Float   | Maximum value                                                            |
@@ -74,12 +74,12 @@ statistic is computed over the finite values only.
 | `skewness`             | Float   | Adjusted skewness (see below)                                            |
 | `kurtosis`             | Float   | Adjusted excess kurtosis (see below)                                     |
 
-`skewness` is `n/((n−1)(n−2)) · Σ((x−mean)/σ)³` and `kurtosis` is
-`n(n+1)/((n−1)(n−2)(n−3)) · Σ((x−mean)/σ)⁴ − 3(n−1)²/((n−2)(n−3))`, where `σ` is the population
-standard deviation (`std`). `skewness` is NaN with fewer than 3 values and 0 for a constant
-series; `kurtosis` is NaN with fewer than 4 values or for a constant series. This differs from
-the usual sample estimators, which use the sample standard deviation, so the values are larger
-in magnitude, markedly so for short ranges.
+`skewness` is the adjusted Fisher–Pearson coefficient `n/((n−1)(n−2)) · Σ((x−mean)/s)³` and
+`kurtosis` the bias-adjusted excess kurtosis `n(n+1)/((n−1)(n−2)(n−3)) · Σ((x−mean)/s)⁴ −
+3(n−1)²/((n−2)(n−3))`, where `s` is the sample standard deviation — the estimators Excel's
+`SKEW`/`KURT` and pandas report. (`std` in the reply is the population standard deviation.)
+`skewness` is NaN with fewer than 3 values and 0 for a constant series; `kurtosis` is NaN with
+fewer than 4 values or for a constant series.
 
 An empty range (or empty series) is not an error: `length` is 0 and every other field is 0.
 `TS.STATS` runs inline and takes no `TIMEOUT`. It returns an error if the key does not exist or
@@ -90,7 +90,7 @@ is not a time series, or a timestamp cannot be parsed.
 <details open>
 <summary><code>TS.STATS</code> on a time series</summary>
 
-Create a time series and compute its statistics (RESP2 output; field order varies):
+Create a time series and compute its statistics (RESP2 output):
 
 ```
 127.0.0.1:6379> TS.CREATE ts:temperature
@@ -106,48 +106,48 @@ OK
 127.0.0.1:6379> TS.ADD ts:temperature 5000 22.9
 (integer) 5000
 127.0.0.1:6379> TS.STATS ts:temperature
- 1) "n_zeros"
- 2) (integer) 1
- 3) "plateau_size_non_zero"
- 4) (integer) 1
- 5) "start_timestamp"
- 6) (integer) 1000
- 7) "n_negative"
- 8) (integer) 0
- 9) "n_zeros_end"
-10) (integer) 0
-11) "min"
-12) "0"
-13) "length"
-14) (integer) 5
-15) "range"
-16) "23.1"
-17) "plateau_size"
-18) (integer) 1
-19) "median"
-20) "22.8"
-21) "mean"
-22) "18.259998321533203"
-23) "n_positive"
-24) (integer) 4
-25) "n_unique_values"
-26) (integer) 5
-27) "n_zeros_start"
+ 1) "end_timestamp"
+ 2) (integer) 5000
+ 3) "is_constant"
+ 4) (integer) 0
+ 5) "kurtosis"
+ 6) "4.9909823820233346"
+ 7) "length"
+ 8) (integer) 5
+ 9) "max"
+10) "23.1"
+11) "mean"
+12) "18.26"
+13) "median"
+14) "22.8"
+15) "min"
+16) "0"
+17) "n_nans"
+18) (integer) 0
+19) "n_negative"
+20) (integer) 0
+21) "n_positive"
+22) (integer) 4
+23) "n_unique_values"
+24) (integer) 5
+25) "n_zeros"
+26) (integer) 1
+27) "n_zeros_end"
 28) (integer) 0
-29) "is_constant"
+29) "n_zeros_start"
 30) (integer) 0
-31) "std"
-32) "9.13205728271805"
-33) "skewness"
-34) "-3.12148959227386"
-35) "kurtosis"
-36) "12.298368906273137"
-37) "end_timestamp"
-38) (integer) 5000
-39) "n_nans"
-40) (integer) 0
-41) "max"
-42) "23.1"
+31) "plateau_size"
+32) (integer) 1
+33) "plateau_size_non_zero"
+34) (integer) 1
+35) "range"
+36) "23.1"
+37) "skewness"
+38) "-2.233559777030494"
+39) "start_timestamp"
+40) (integer) 1000
+41) "std"
+42) "9.132053438301815"
 ```
 
 </details>

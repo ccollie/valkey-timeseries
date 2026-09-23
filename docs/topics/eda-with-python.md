@@ -262,7 +262,7 @@ mean / std : 63.51 / 12.33
 min / max  : 9.31 / 123.12
 median     : 63.36
 skewness   : 0.029
-kurtosis   : 0.039
+kurtosis   : 0.034
 NaN / Inf  : 4
 unique     : 1300
 ```
@@ -404,7 +404,7 @@ for name in sorted(feats):
 ```
 
 ```text
-kurtosis                     0.0442
+kurtosis                     0.0397
 length                       1344.0000
 linear_trend_intercept       51.1952
 linear_trend_p_value         0.0000
@@ -414,8 +414,8 @@ maximum                      123.1230
 mean                         63.5580
 ...
 skewness                     0.0189
-variance                     150.8877
-variance_sample              151.0000
+variance                     150.8891
+variance_sample              151.0015
 ```
 
 The four categories are `basic`, `distribution`, `autocorrelation`, and `trend`.
@@ -814,10 +814,10 @@ first interval    : 65.5 .. 75.6
 in-sample RMSE: 2.537
 ```
 
-`METRICS` needs the winning model's in-sample fitted values. SARIMA doesn't
-expose them, so if cross-validation picks SARIMA the whole call currently fails
-with `metrics error: fitted values are unavailable for selected model` — drop
-`METRICS` and retry, or evaluate with `TS.BACKTEST` instead.
+`METRICS` scores the winning model's in-sample fit. For a differencing model
+(ARIMA or SARIMA) that fit is rebuilt on the original scale from its one-step
+residuals, so the numbers are comparable across families; for an out-of-sample
+view, evaluate with `TS.BACKTEST`.
 
 Add `STORE energy:demand:forecast` to persist the forecast as a real series (its
 timestamps continue from the last observed point, one sampling interval apart),

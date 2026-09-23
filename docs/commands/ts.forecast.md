@@ -180,9 +180,11 @@ Returned fields per model:
 - `mase` — Mean Absolute Scaled Error (may be `null` when insufficient scaling history)
 - `r_squared` — Coefficient of determination
 
-If a model cannot produce fitted values (currently `SARIMA` and `GARCH`), or the
-metrics cannot be computed, the whole command fails with a `TSDB: metrics error: ...` error
-rather than omitting the field; no forecast is returned for any model.
+For ARIMA, SARIMA and AutoARIMA the in-sample fit is rebuilt on the scale of the series from
+the model's one-step residuals (the model itself reports it on its differenced scale), with the
+warm-up period excluded. `GARCH` models volatility and has no in-sample fit of the level, so its
+`metrics` entry is null. If the metrics cannot be computed for another reason, the whole command
+fails with a `TSDB: metrics error: ...` error; no forecast is returned for any model.
 </details>
 
 <details open>
@@ -444,9 +446,8 @@ can also be given as keywords, alongside `omega`, `max_iterations` and `toleranc
   the `TIMEOUT` (or `ts-analysis-timeout`) deadline elapsed before the result was available.
 - `TSDB: missing value for TIMEOUT` — `TIMEOUT` has no value, or it is not an integer.
 - `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
-- `TSDB: metrics error: fitted values are unavailable for selected model` — `METRICS` was
-  requested for a model that produces no fitted values; other metric failures are reported as
-  `TSDB: metrics error: <reason>`.
+- `TSDB: metrics error: <reason>` — `METRICS` was requested and the metrics could not be
+  computed from the model's in-sample fit.
 - `TSDB: failed to store forecast in key '<key>': <reason>` — an error occurred while writing
   `STORE` samples.
 - `TSDB: Failed to prepare time series for forecasting` — the series data could not be

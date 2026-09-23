@@ -154,13 +154,13 @@ O(n × lags) in the number of observations. At least 10 observations are require
 (`TSDB: insufficient data for stationarity test. Need at least 10 samples, got <n>`).
 
 A constant series (all values equal) is reported as stationary without running the tests:
-`statistic` 0, `pValue` 1, `lags` 0 and all critical values 0. A range containing a NaN sample
-is not rejected: the statistics and p-values come back as NaN, `isStationary` is 0, and the
-combined conclusion is `non_stationary`.
+`statistic` 0, `pValue` 1, `lags` 0 and all critical values 0. A range containing a NaN or
+infinite sample is rejected (`TSDB: the range contains NaN or infinite values; fill or drop them
+first (see TS.SANITIZE)`), since the tests are undefined over missing values.
 
 Other errors: the key does not exist or is not a time series; `LAGS` is not an integer, is
-negative or exceeds 1000; `LAGS` is combined with `TEST combined`; an unknown argument (reported
-as a wrong number of arguments).
+negative or exceeds 1000; `LAGS` is combined with `TEST combined`; an unknown argument
+(`TSDB: unknown argument '<arg>'`).
 
 ## Examples
 

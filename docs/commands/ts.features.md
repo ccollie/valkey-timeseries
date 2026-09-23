@@ -47,7 +47,7 @@ Use `+` to denote the latest timestamp in the series.
 <summary><code>CATEGORY</code></summary>
 
 A comma-separated list of feature categories to compute (case-insensitive). Duplicate categories
-within the list are rejected. If `CATEGORY` is given more than once, only the last list is used.
+within the list are rejected. If `CATEGORY` is given more than once, the lists are combined.
 
 Available categories and the features they include:
 
@@ -66,7 +66,7 @@ Example: `CATEGORY basic,trend`
 
 A comma-separated list of individual feature names to compute. Feature names are
 case-insensitive; a feature listed twice is computed once. If `FEATURE` is given more than once,
-only the last list is used.
+the lists are combined.
 
 **Simple features** (no parameters):
 
@@ -128,9 +128,11 @@ name (e.g., `"mean"`, `"quantile_0.5"`, `"autocorrelation_3"`, `"partial_autocor
 counts and flags such as `length` or `has_duplicate`. Features that produce `NaN` — for example
 `kurtosis` with fewer than 4 samples — are returned as null.
 
-Several features — including `mean`, `variance`, `variance_sample`, `standard_deviation`,
-`sum_values` and `abs_energy` — are computed in single precision (about 7 significant digits).
-`skewness` and `kurtosis` use the same formulas as [`TS.STATS`](ts.stats.md#return).
+Features are computed over the finite values in the range: `NaN` and ±infinite samples are
+skipped, so `length` counts only the finite ones and lags are counted over the remaining samples.
+
+`skewness` and `kurtosis` use the same bias-adjusted estimators as
+[`TS.STATS`](ts.stats.md#return).
 
 The final feature list is the union of features from `CATEGORY` and `FEATURE`,
 with duplicates removed.
@@ -138,12 +140,13 @@ with duplicates removed.
 Returns an error if:
 * The key does not exist or is not a time series
 * No samples exist in the specified time range (`TSDB: no samples in the specified time range`)
+* The range has samples but none of them is finite (`TSDB: no finite samples in the specified time range`)
 * Neither `CATEGORY` nor `FEATURE` is specified
   (`TSDB: at least one of CATEGORY or FEATURE must be specified`)
 * A category is repeated within the list (`TSDB: duplicate category '<name>'`)
 * A category or feature name is unrecognized, or a parameterized feature has an invalid
   parameter. These messages carry a doubled prefix, e.g.
-  `TSDB: TSDB forecast error: Unknown feature 'foo'`
+  `TSDB: Unknown feature 'foo'`
 * A list is empty (`TSDB: empty category list`, `TSDB: empty feature list`)
 * An unknown argument is given (`TSDB: unrecognized argument '<ARG>'`, upper-cased)
 
@@ -176,15 +179,15 @@ OK
  3) "maximum"
  4) "25"
  5) "mean"
- 6) "23.85999870300293"
+ 6) "23.860000000000003"
  7) "median"
  8) "23.9"
  9) "minimum"
 10) "22.8"
 11) "variance"
-12) "0.52239990234375"
+12) "0.5223999999999999"
 13) "variance_sample"
-14) "0.6529998779296875"
+14) "0.6529999999999998"
 ```
 
 ### Compute specific parameterized features
@@ -196,17 +199,17 @@ OK
 3) "quantile_0.5"
 4) "23.9"
 5) "skewness"
-6) "0.28445709746627007"
+6) "0.20353284790702908"
 ```
 
 ### Combine categories and features
 
 ```valkey
 127.0.0.1:6379> TS.FEATURES temp:readings 1000 5000 CATEGORY basic,trent FEATURE quantile:0.95
-(error) TSDB: TSDB forecast error: Unknown feature category: trent
+(error) TSDB: Unknown feature category: trent
 127.0.0.1:6379> TS.FEATURES temp:readings 1000 5000 CATEGORY basic,trend FEATURE kurtosis,pacf:2
  1) "kurtosis"
- 2) "5.610923800352969"
+ 2) "0.7109840552145794"
  3) "length"
  4) "5"
  5) "linear_trend_intercept"
@@ -220,7 +223,7 @@ OK
 13) "maximum"
 14) "25"
 15) "mean"
-16) "23.85999870300293"
+16) "23.860000000000003"
 17) "median"
 18) "23.9"
 19) "minimum"
@@ -228,9 +231,9 @@ OK
 21) "partial_autocorrelation_2"
 22) "-0.26285558136513704"
 23) "variance"
-24) "0.52239990234375"
+24) "0.5223999999999999"
 25) "variance_sample"
-26) "0.6529998779296875"
+26) "0.6529999999999998"
 ```
 
 ### A feature with no value
@@ -240,7 +243,7 @@ OK
 1) "autocorrelation_10"
 2) (nil)
 3) "mean"
-4) "23.85999870300293"
+4) "23.860000000000003"
 ```
 
 ### Error cases

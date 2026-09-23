@@ -37,7 +37,7 @@ TS.SANITIZE key fromTimestamp toTimestamp
 | `POLICY`         | The imputation policy to apply (see below). Defaults to `DROP`. |
 
 `POLICY` (if present) must come before `STORE`. Any other or out-of-order argument is rejected
-with `ERR wrong number of arguments for 'ts.sanitize' command`.
+with `TSDB: unknown argument '<arg>'`.
 
 ### STORE
 
@@ -173,8 +173,9 @@ If no samples remain after sanitizing, the destination is left untouched (and no
 - `TSDB: invalid fill value` — the FILL policy value could not be parsed as a float.
 - `TSDB: invalid argument` — an unknown policy name was specified.
 - `TSDB: STORE destination must be different from the source key` — `STORE` named the source key.
-- `ERR wrong number of arguments for 'ts.sanitize' command` — a policy argument is missing, or an
-  unrecognized or out-of-order argument follows the recognized ones.
+- `ERR wrong number of arguments for 'ts.sanitize' command` — a policy argument is missing.
+- `TSDB: unknown argument '<arg>'` — an unrecognized or out-of-order argument follows the
+  recognized ones.
 
 ## Examples
 

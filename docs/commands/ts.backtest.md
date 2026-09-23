@@ -401,7 +401,7 @@ On a 40-sample series, the earliest fold trains on only 25 samples:
 - `TSDB: wrong fromTimestamp` / `TSDB: wrong toTimestamp` — a range bound could not be parsed.
 - `TSDB: HORIZON is required` — the `HORIZON` argument is missing.
 - `TSDB: missing forecast horizon value` — `HORIZON` was given without a value.
-- `Couldn't parse as integer` — the `HORIZON` value is not an integer.
+- `TSDB: invalid forecast horizon, expected an integer` — the `HORIZON` value is not an integer.
 - `TSDB: forecast horizon must be greater than 0` — `HORIZON` is zero or negative.
 - `TSDB: forecast horizon must not exceed N (ts-forecast-max-horizon)` — `HORIZON` is above the
   configured cap.
@@ -411,8 +411,9 @@ On a 40-sample series, the earliest fold trains on only 25 samples:
   unsupported model, or has invalid parameters.
 - `TSDB: missing value for STRATEGY` / `TSDB: STRATEGY must be EXPANDING or ROLLING` — `STRATEGY` is
   missing its value or the value is invalid.
-- `TSDB: missing value for <OPTION>` — `INITIAL_WINDOW`, `STEP`, `N_FOLDS`, `GAP`, `PURGE`,
-  `EMBARGO`, or `SEASONAL_PERIOD` is missing its value or the value is not an integer.
+- `TSDB: missing value for <OPTION>` / `TSDB: invalid value for <OPTION>, expected an integer` —
+  `INITIAL_WINDOW`, `STEP`, `N_FOLDS`, `GAP`, `PURGE`, `EMBARGO`, or `SEASONAL_PERIOD` is missing
+  its value, or the value is not an integer.
 - `TSDB: <OPTION> must be greater than 0` — `N_FOLDS`, `STEP`, `INITIAL_WINDOW`, or
   `SEASONAL_PERIOD` was zero or negative.
 - `TSDB: <OPTION> must be non-negative` — `GAP`, `PURGE`, or `EMBARGO` was negative.
