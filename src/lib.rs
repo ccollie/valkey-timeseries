@@ -212,7 +212,7 @@ fn __shutdown_event_handler(ctx: &Context, _event: u64) {
     IS_SHUTTING_DOWN.store(true, Ordering::Relaxed);
 }
 
-#[cfg(not(any(test, doctest, use_system_alloc)))]
+#[cfg(not(all(test, doctest)))]
 macro_rules! get_allocator {
     () => {
         // Not `ValkeyAlloc` directly: it ignores `Layout::align()`, returning
@@ -221,7 +221,7 @@ macro_rules! get_allocator {
     };
 }
 
-#[cfg(any(test, doctest, use_system_alloc))]
+#[cfg(all(test, doctest))]
 macro_rules! get_allocator {
     () => {
         std::alloc::System
