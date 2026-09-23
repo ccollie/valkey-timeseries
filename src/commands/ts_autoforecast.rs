@@ -273,10 +273,13 @@ fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> Valke
 }
 
 fn parse_models(model_str: &str, config: &mut AutoForecastConfig) -> ValkeyResult<()> {
-    // remove all models first; we'll add back the ones specified by the user
+    // A repeated MODELS clause replaces the full candidate set.
     config.include_arima = false;
     config.include_ets = false;
     config.include_theta = false;
+    config.include_tbats = false;
+    config.include_mfles = false;
+    config.include_mstl = false;
 
     for family in model_str.split(',') {
         let model = family.trim().to_uppercase();
@@ -320,4 +323,28 @@ fn parse_models(model_str: &str, config: &mut AutoForecastConfig) -> ValkeyResul
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_models_replaces_every_family_but_preserves_seasonality() {
+        let mut config = AutoForecastConfig {
+            seasonal_period: Some(12),
+            ..AutoForecastConfig::default()
+        };
+
+        parse_models("TBATS,MFLES,MSTL", &mut config).unwrap();
+        parse_models("ARIMA", &mut config).unwrap();
+
+        assert!(config.include_arima);
+        assert!(!config.include_ets);
+        assert!(!config.include_theta);
+        assert!(!config.include_tbats);
+        assert!(!config.include_mfles);
+        assert!(!config.include_mstl);
+        assert_eq!(config.seasonal_period, Some(12));
+    }
 }
