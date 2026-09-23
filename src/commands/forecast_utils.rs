@@ -4,7 +4,7 @@ use crate::commands::analysis_runner::AnalysisCtx;
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::store_target::StoreTarget;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
-use crate::commands::utils::reply_with_double_array;
+use crate::commands::utils::{reply_with_accuracy_metrics, reply_with_double_array};
 use crate::common::replies::{
     ReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
 };
@@ -126,7 +126,7 @@ pub struct ForecastOutput {
     metrics: Option<AccuracyMetrics>,
 }
 
-pub(super) fn run_forecast<T: Forecaster>(
+pub(super) fn run_forecast<T: Forecaster + ?Sized>(
     series: &ForecastTimeSeries,
     model: &mut T,
     horizon: usize,
@@ -209,36 +209,10 @@ pub(super) fn get_upper_interval(forecast: &Forecast) -> Option<&[f64]> {
     Some(upper_values[0].as_slice())
 }
 
-pub(super) fn reply_with_accuracy_metrics(ctx: &ReplyContext, metrics: &AccuracyMetrics) {
+/// Writes the `metrics` entry of a forecast reply: the key, then the metrics map.
+pub(super) fn reply_with_metrics_entry(ctx: &ReplyContext, metrics: &AccuracyMetrics) {
     reply_with_str(ctx, "metrics");
-    reply_with_map(ctx, 7);
-
-    reply_with_str(ctx, "mae");
-    reply_with_double(ctx, metrics.mae);
-
-    reply_with_str(ctx, "mse");
-    reply_with_double(ctx, metrics.mse);
-
-    reply_with_str(ctx, "rmse");
-    reply_with_double(ctx, metrics.rmse);
-
-    reply_with_str(ctx, "mape");
-    match metrics.mape {
-        Some(v) => reply_with_double(ctx, v),
-        None => crate::common::replies::reply_with_null(ctx),
-    };
-
-    reply_with_str(ctx, "smape");
-    reply_with_double(ctx, metrics.smape);
-
-    reply_with_str(ctx, "mase");
-    match metrics.mase {
-        Some(v) => reply_with_double(ctx, v),
-        None => crate::common::replies::reply_with_null(ctx),
-    };
-
-    reply_with_str(ctx, "r_squared");
-    reply_with_double(ctx, metrics.r_squared);
+    reply_with_accuracy_metrics(ctx, metrics);
 }
 
 pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &ForecastOutput) {
@@ -293,6 +267,6 @@ pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &F
     }
 
     if let Some(m) = forecast_output.metrics.as_ref() {
-        reply_with_accuracy_metrics(ctx, m);
+        reply_with_metrics_entry(ctx, m);
     }
 }

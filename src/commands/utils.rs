@@ -2,10 +2,10 @@ use super::fanout_codec::generated::{Label as FanoutLabel, Sample as FanoutSampl
 use crate::commands::fanout_codec::MGetValue;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::replies::{
-    IntoRawCtx, ReplyContext, is_resp3_client, reply_label_ex, reply_with_array,
-    reply_with_bulk_string, reply_with_double, reply_with_labels, reply_with_labels_map,
-    reply_with_map, reply_with_multi_samples, reply_with_sample_ex, reply_with_samples,
-    reply_with_slice, reply_with_str,
+    IntoRawCtx, is_resp3_client, reply_label_ex, reply_with_array, reply_with_bulk_string,
+    reply_with_double, reply_with_labels, reply_with_labels_map, reply_with_map,
+    reply_with_multi_samples, reply_with_sample_ex, reply_with_samples, reply_with_slice,
+    reply_with_str,
 };
 use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fanout_mode};
 use crate::labels::Label;
@@ -216,7 +216,8 @@ pub(super) fn get_multi_command_targets(context: &Context, tags: &[String]) -> F
     }
 }
 
-pub fn reply_with_accuracy_metrics(ctx: &Context, metrics: &AccuracyMetrics) {
+/// Writes an accuracy-metrics map (7 entries; `mape` and `mase` are null when undefined).
+pub fn reply_with_accuracy_metrics<C: IntoRawCtx + Copy>(ctx: C, metrics: &AccuracyMetrics) {
     reply_with_map(ctx, 7);
 
     reply_with_str(ctx, "mae");
@@ -249,7 +250,7 @@ pub fn reply_with_accuracy_metrics(ctx: &Context, metrics: &AccuracyMetrics) {
     reply_with_double(ctx, metrics.r_squared);
 }
 
-pub(super) fn reply_with_double_array(ctx: &ReplyContext, values: &[f64]) {
+pub(super) fn reply_with_double_array<C: IntoRawCtx + Copy>(ctx: C, values: &[f64]) {
     reply_with_array(ctx, values.len());
     for value in values {
         reply_with_double(ctx, *value);

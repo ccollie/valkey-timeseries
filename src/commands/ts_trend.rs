@@ -3,7 +3,7 @@ use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::{parse_series_range_samples, parse_store_clause};
 use crate::commands::store_target::{StoreTarget, report_store_key_positions};
-use crate::commands::utils::reply_with_accuracy_metrics;
+use crate::commands::utils::{reply_with_accuracy_metrics, reply_with_double_array};
 use crate::common::Sample;
 use crate::common::replies::{
     reply_with_array, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
@@ -538,14 +538,6 @@ fn parse_trend_model(val: &str, args: &mut CommandArgIterator) -> ValkeyResult<T
             "TSDB: Invalid MODEL '{}'. Expected Exponential, Logistic, Polynomial, TheilSen, or Auto.",
             other
         ))),
-    }
-}
-
-/// Reply with an array of doubles, using the optimized raw API.
-fn reply_with_double_array(ctx: &Context, values: &[f64]) {
-    reply_with_array(ctx, values.len());
-    for &v in values {
-        reply_with_double(ctx, v);
     }
 }
 

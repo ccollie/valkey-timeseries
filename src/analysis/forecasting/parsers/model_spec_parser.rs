@@ -26,83 +26,11 @@ impl ModelSpec {
         }
     }
 
-    pub fn get_kwarg(&self, key: &str) -> Option<&SpecValue> {
-        self.keyword_args
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v)
-    }
-
     pub(super) fn remove_kwarg(&mut self, key: &str) -> Option<SpecValue> {
         if let Some(pos) = self.keyword_args.iter().position(|(k, _)| k == key) {
             Some(self.keyword_args.remove(pos).1)
         } else {
             None
-        }
-    }
-
-    pub fn get_kwarg_as_number(&self, key: &str) -> Result<Option<f64>, ModelSpecError> {
-        if let Some(value) = self.get_kwarg(key) {
-            match value {
-                SpecValue::Number(n) => Ok(Some(*n)),
-                _ => Err(ModelSpecError::new(format!(
-                    "Expected keyword argument '{key}' for model {} to be a number",
-                    self.model_name
-                ))),
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn get_kwarg_as_flag(&self, key: &str) -> Result<Option<bool>, ModelSpecError> {
-        if let Some(value) = self.get_kwarg(key) {
-            match value {
-                SpecValue::Flag(n) => Ok(Some(*n)),
-                _ => Err(ModelSpecError::new(format!(
-                    "Expected keyword argument '{key}' for model {} to be a flag",
-                    self.model_name
-                ))),
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn get_kwarg_as_ident(&self, key: &str) -> Option<&str> {
-        self.get_kwarg(key).and_then(|v| match v {
-            SpecValue::Ident(s) | SpecValue::String(s) => Some(s.as_str()),
-            _ => None,
-        })
-    }
-
-    pub fn get_usize_kwarg(&mut self, key: &str) -> Result<Option<usize>, ModelSpecError> {
-        if let Some(arg) = self.remove_kwarg(key) {
-            let value = arg.as_usize().map_err(|_| {
-                ModelSpecError::new(format!(
-                    "{key} must be an integer between 0 and {MAX_SPEC_INTEGER}"
-                ))
-            })?;
-            return Ok(Some(value));
-        }
-        Ok(None)
-    }
-
-    pub fn expect_kwarg_as_float_list(
-        &mut self,
-        key: &str,
-    ) -> Result<Option<Vec<f64>>, ModelSpecError> {
-        match self.remove_kwarg(key) {
-            Some(value) => {
-                let value = value.as_float_list().map_err(|_| {
-                    ModelSpecError::new(format!(
-                        "Expected argument '{key}' for model {} to be a list of float values",
-                        self.model_name
-                    ))
-                })?;
-                Ok(Some(value))
-            }
-            None => Ok(None),
         }
     }
 

@@ -5,7 +5,6 @@ use crate::commands::command_parser::parse_series_range_samples;
 use crate::common::replies::{
     IntoRawCtx, reply_with_array, reply_with_double, reply_with_integer, reply_with_str,
 };
-use anofox_forecast::detection::{PeriodDetectionConfig, detect_periods};
 use anofox_forecast::seasonality::{MSTL, MSTLResult, STL, STLResult};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -99,14 +98,7 @@ enum Decomposition {
 
 /// Resolve the seasonal period(s) and run STL (one period) or MSTL (several).
 fn decompose(values: &[f64], seasonality: Seasonality) -> ValkeyResult<Decomposition> {
-    let periods = match seasonality {
-        Seasonality::Periods(periods) => periods,
-        Seasonality::Auto => {
-            let config = PeriodDetectionConfig::default();
-            let periods = detect_periods(values, &config);
-            periods.iter().map(|p| p.period).collect()
-        }
-    };
+    let periods = seasonality.resolve(values);
 
     if periods.is_empty() {
         return Err(ValkeyError::Str(

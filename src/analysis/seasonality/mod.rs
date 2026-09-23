@@ -11,6 +11,20 @@ pub enum Seasonality {
     Periods(Vec<usize>),
 }
 
+impl Seasonality {
+    /// The periods to decompose `values` with: the given ones, or those detected in `values`
+    /// for `Auto`. Not validated; see [`MIN_SEASONAL_PERIOD`].
+    pub fn resolve(&self, values: &[f64]) -> Vec<usize> {
+        match self {
+            Seasonality::Periods(periods) => periods.clone(),
+            Seasonality::Auto => detect_periods(values, &PeriodDetectionConfig::default())
+                .iter()
+                .map(|p| p.period)
+                .collect(),
+        }
+    }
+}
+
 /// Smallest seasonal period STL/MSTL can decompose: a season needs at least two positions.
 /// Period 0 panics inside the decomposition (a division by zero).
 pub const MIN_SEASONAL_PERIOD: usize = 2;
@@ -20,14 +34,7 @@ pub fn seasonally_adjust(
     ts: &[f64],
     seasonality: &Seasonality,
 ) -> TimeSeriesAnalysisResult<Vec<f64>> {
-    let mut periods = match seasonality {
-        Seasonality::Periods(periods) => periods.clone(),
-        Seasonality::Auto => {
-            let config = PeriodDetectionConfig::default();
-            let periods = detect_periods(ts, &config);
-            periods.iter().map(|x| x.period).collect()
-        }
-    };
+    let mut periods = seasonality.resolve(ts);
 
     if periods.is_empty() {
         return Ok(ts.to_vec());

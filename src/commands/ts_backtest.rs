@@ -1,10 +1,10 @@
-use crate::analysis::forecasting::{DynForecaster, PreparedModelSpec, prepare_model_specs};
+use crate::analysis::forecasting::{PreparedModelSpec, prepare_model_specs};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{
     AnalysisTimeout, parse_timeout, run_analysis_in_background,
 };
 use crate::commands::command_parser::parse_forecast_horizon_value;
-use crate::commands::forecast_utils::{parse_timeseries_for_forecast, reply_with_accuracy_metrics};
+use crate::commands::forecast_utils::{parse_timeseries_for_forecast, reply_with_metrics_entry};
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{
     ReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_null,
@@ -12,7 +12,6 @@ use crate::common::replies::{
 };
 use crate::common::threads::map_on_current_pool;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
-use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
 use anofox_forecast::utils::cross_validation::{
     CVStrategy, ConstraintViolation, CvFoldGenerator, Fold,
@@ -330,10 +329,9 @@ fn evaluate_fold(
         .slice(fold.train_start, fold.train_end)
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
 
-    let boxed = spec
+    let mut model = spec
         .build()
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
-    let mut model = DynForecaster::from(boxed);
 
     let forecast = model
         .fit_predict(&train, fold.test_size())
@@ -491,7 +489,7 @@ fn reply_with_fold_result(
     reply_with_integer(ctx, test_end_ts);
 
     // Emits the "metrics" key and its map value itself.
-    reply_with_accuracy_metrics(ctx, &fold_result.metrics);
+    reply_with_metrics_entry(ctx, &fold_result.metrics);
 
     if with_predictions {
         reply_with_str(ctx, "predictions");

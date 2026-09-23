@@ -1,4 +1,3 @@
-use crate::analysis::forecasting::DynForecaster;
 use crate::analysis::forecasting::{
     PreparedModelSpec, build_transforms_from_specs, prepare_model_specs, wrap_model_with_transforms,
 };
@@ -153,11 +152,10 @@ fn process_models(
         let model = spec
             .build()
             .map_err(|e| ValkeyError::String(format!("TSDB: error building model: {e}")))?;
-        let model = wrap_model_with_transforms(model, &options.transforms);
-        let mut model: DynForecaster = DynForecaster::from(model);
+        let mut model = wrap_model_with_transforms(model, &options.transforms);
         let mut output = run_forecast(
             series,
-            &mut model,
+            model.as_mut(),
             options.horizon,
             options.level,
             options.include_metrics,
