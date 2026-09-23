@@ -96,7 +96,8 @@ Examples:
 <details open>
 <summary><code>PREDICT</code></summary>
 
-Number of steps ahead to predict the trend.
+Number of steps ahead to predict the trend: a positive integer no larger than the
+`ts-forecast-max-horizon` configuration parameter.
 
 When specified, the response includes a `predicted_trend` array with `horizon` values.
 

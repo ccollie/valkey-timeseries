@@ -83,7 +83,7 @@ results, plus an overall conclusion:
 <details open>
 <summary><code>LAGS n</code></summary>
 
-Number of lags to use in the test (non-negative integer). Only valid when `TEST` is
+Number of lags to use in the test (integer from 0 to 1000). Only valid when `TEST` is
 `adf` or `kpss`.
 
 - For `adf`: Controls the `max_lags` parameter of the ADF test. If omitted, a sensible

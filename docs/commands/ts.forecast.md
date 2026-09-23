@@ -63,7 +63,16 @@ Comma-separated list of model specifications to fit. Each model specification is
 `ModelName(args...)` with optional positional and keyword arguments. Supported model families are
 listed below.
 
-At least one model must be specified. All models are case-insensitive.
+At least one model must be specified. Model names and keyword names are case-insensitive.
+
+Arguments are checked before any model runs:
+
+- A keyword the model does not support is an error, so a misspelling cannot silently fall back
+  to a default.
+- Integer arguments (periods, windows, orders) must be whole numbers from 0 to 1,000,000.
+- ARIMA, SARIMA and GARCH orders are at most 20. Iteration counts (`iterations`, `max_rounds`,
+  `max_iterations`) are at most 10,000. Seasonal periods must be positive.
+- Lists such as `seasonal_period=[7, 365]` are flat; nested lists are rejected.
 
 #### Available Models
 
@@ -159,8 +168,8 @@ Specs use the same `Name(arg, ..., key=value)` syntax as `MODELS`; names are cas
 
 | Transform | Arguments | Description |
 |-----------|-----------|-------------|
-| `Difference(d)` | `d` — order (non-negative integer) | Ordinary differencing; consumes the first `d` observations. |
-| `SeasonalDifference(period)` | `period` — season length | Seasonal differencing; consumes the first `period` observations. |
+| `Difference(d)` | `d` — order (integer from 0 to 20) | Ordinary differencing; consumes the first `d` observations. |
+| `SeasonalDifference(period)` | `period` — season length (positive) | Seasonal differencing; consumes the first `period` observations. |
 | `Log` | — | Natural log. The series must be strictly positive. |
 | `BoxCox` / `BoxCox(lambda)` / `BoxCox(lambda=λ)` | optional `lambda` | Box-Cox power transform. With no lambda it is estimated from the data. |
 | `YeoJohnson` | — | Yeo-Johnson power transform (handles zero and negative values). |
