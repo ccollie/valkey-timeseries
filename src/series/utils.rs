@@ -231,33 +231,54 @@ pub fn create_and_store_series<'a>(
     Ok(series)
 }
 
-pub fn get_or_create_series<'a>(
+/// Opens the STORE destination `key`, creating it from `options` (plus the configured
+/// default compactions) when missing. Returns the series and whether it was created.
+///
+/// No ACL check and no replication: the destination's permissions are checked on the main
+/// thread before the command runs, and the caller replicates the whole write. `ts.create`
+/// still fires for a new destination.
+fn get_or_create_store_destination<'a>(
     ctx: &'a Context,
     key: &ValkeyString,
-    options: Option<TimeSeriesOptions>,
-) -> ValkeyResult<SeriesGuardMut<'a>> {
-    match try_get_timeseries_mut(ctx, key, Some(AclPermissions::UPDATE))? {
-        Some(series) => Ok(series),
-        None => create_and_store_series(ctx, key, options.unwrap_or_default(), true, true),
+    options: TimeSeriesOptions,
+) -> ValkeyResult<(SeriesGuardMut<'a>, bool)> {
+    if let Some(series) = try_get_timeseries_mut(ctx, key, None)? {
+        return Ok((series, false));
     }
+    create_and_store_internal(ctx, key, options, false, true)?;
+    let mut series = get_timeseries_mut(ctx, key, None)?;
+    add_default_compactions(ctx, &mut series, key)?;
+    Ok((series, true))
 }
 
-/// If STORE is specified for a command, results are written to the destination key instead of
-/// being returned inline. With MERGE, samples are merged into an existing
-/// destination series; without MERGE (overwrite mode), the destination is
-/// cleared first. Returns the number of samples written.
+/// What a STORE write did to its destination.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StoreWriteOutcome {
+    /// Samples accepted into the destination.
+    pub written: usize,
+    /// Whether the keyspace changed at all (the destination was created, cleared, or
+    /// written), i.e. whether the write has to be replicated.
+    pub changed: bool,
+}
+
+/// Writes STORE results to `dest_key`. With MERGE, samples are merged into an existing
+/// destination series (later samples win); without MERGE (overwrite mode), the destination is
+/// cleared first. `dest_opts` only applies when the destination has to be created.
+///
+/// Neither checks ACLs nor replicates: callers check the destination on the main thread and
+/// replicate the effect themselves. Given the same keyspace and inputs this produces the same
+/// result on every node, which is what lets a replica apply it from `TS._STORE`.
 pub fn create_or_update_series_with_samples(
     ctx: &Context,
     dest_key: &ValkeyString,
-    dest_opts: Option<TimeSeriesOptions>,
+    dest_opts: TimeSeriesOptions,
     write_mode: DestinationWriteMode,
     samples: &[Sample],
-    policy_override: Option<DuplicatePolicy>,
-) -> ValkeyResult<usize> {
+) -> ValkeyResult<StoreWriteOutcome> {
     if samples.is_empty() {
-        return Ok(0);
+        return Ok(StoreWriteOutcome::default());
     }
-    let mut dest_series = get_or_create_series(ctx, dest_key, dest_opts)?;
+    let (mut dest_series, created) = get_or_create_store_destination(ctx, dest_key, dest_opts)?;
 
     let mut delete_count = 0;
     if write_mode == DestinationWriteMode::Overwrite {
@@ -267,29 +288,25 @@ pub fn create_or_update_series_with_samples(
             .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
     }
 
-    let policy_override = if policy_override.is_none() && write_mode == DestinationWriteMode::Merge
-    {
-        Some(DuplicatePolicy::KeepLast)
-    } else {
-        policy_override
-    };
+    let policy_override =
+        (write_mode == DestinationWriteMode::Merge).then_some(DuplicatePolicy::KeepLast);
 
     let merged = dest_series
         .merge_samples(samples, policy_override)
         .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
 
-    let valid_merged = merged.iter().filter(|r| r.is_ok()).count();
-    if valid_merged > 0 || delete_count > 0 {
-        ctx.replicate_verbatim();
-        if delete_count > 0 {
-            ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", dest_key);
-        }
-        if valid_merged > 0 {
-            ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", dest_key);
-        }
+    let written = merged.iter().filter(|r| r.is_ok()).count();
+    if delete_count > 0 {
+        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.del", dest_key);
+    }
+    if written > 0 {
+        ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.add", dest_key);
     }
 
-    Ok(valid_merged)
+    Ok(StoreWriteOutcome {
+        written,
+        changed: created || delete_count > 0 || written > 0,
+    })
 }
 
 fn add_default_compactions(

@@ -1898,6 +1898,9 @@ pub(super) struct StoreOptions {
     pub options: TimeSeriesOptions,
     pub key: ValkeyString,
     pub write_mode: DestinationWriteMode,
+    /// The clause's option tokens (everything after the key) exactly as sent. Replicas
+    /// re-parse them with [`parse_store_options`] to create the destination the same way.
+    pub raw_options: Vec<Vec<u8>>,
 }
 
 /// STORE key
@@ -1910,16 +1913,57 @@ pub(super) struct StoreOptions {
 ///     [ENCODING encoding]
 ///     [IGNORE maxTimeDiff maxValDiff]
 ///     [METRIC metric]
+///
+/// Stops at the first token that is not a STORE option and leaves it for the caller.
 pub(super) fn parse_store_clause(args: &mut CommandArgIterator) -> ValkeyResult<StoreOptions> {
-    let mut write_mode = DestinationWriteMode::default();
-    let mut options = TimeSeriesOptions::from_config();
-
     let key = args
         .next_arg()
         .map_err(|_| ValkeyError::Str(error_consts::MISSING_KEY))?;
 
-    while let Some(arg) = args.next() {
-        let token = parse_command_arg_token(arg.as_slice()).unwrap_or_default();
+    let snapshot = args.clone();
+    let remaining = args.len();
+    let (options, write_mode) = parse_store_options(args)?;
+    let consumed = remaining - args.len();
+    let raw_options = snapshot
+        .take(consumed)
+        .map(|arg| arg.as_slice().to_vec())
+        .collect();
+
+    Ok(StoreOptions {
+        options,
+        key,
+        write_mode,
+        raw_options,
+    })
+}
+
+/// Parse the options that follow the key of a STORE clause, stopping (without consuming
+/// it) at the first token that is not one of them.
+pub(super) fn parse_store_options(
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<(TimeSeriesOptions, DestinationWriteMode)> {
+    let mut write_mode = DestinationWriteMode::default();
+    let mut options = TimeSeriesOptions::from_config();
+
+    while let Some(token) = args
+        .peek()
+        .and_then(|arg| parse_command_arg_token(arg.as_slice()))
+    {
+        match token {
+            CommandArgToken::ChunkSize
+            | CommandArgToken::Encoding
+            | CommandArgToken::DecimalDigits
+            | CommandArgToken::DuplicatePolicy
+            | CommandArgToken::OnDuplicate
+            | CommandArgToken::Metric
+            | CommandArgToken::Ignore
+            | CommandArgToken::Retention
+            | CommandArgToken::SignificantDigits
+            | CommandArgToken::Merge => {
+                args.next(); // the option keyword
+            }
+            _ => break,
+        }
         match token {
             CommandArgToken::ChunkSize => {
                 let arg = args
@@ -1965,17 +2009,12 @@ pub(super) fn parse_store_clause(args: &mut CommandArgIterator) -> ValkeyResult<
             CommandArgToken::Merge => {
                 write_mode = DestinationWriteMode::Merge;
             }
-            _ => {
-                break;
-            }
+            // Filtered out by the match above.
+            _ => {}
         };
     }
 
-    Ok(StoreOptions {
-        options,
-        key,
-        write_mode,
-    })
+    Ok((options, write_mode))
 }
 
 pub(super) fn parse_forecast_horizon_value(args: &mut CommandArgIterator) -> ValkeyResult<usize> {

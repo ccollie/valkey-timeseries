@@ -2,11 +2,12 @@ use crate::analysis::forecasting::infer_frequency_from_samples;
 use crate::commands::command_parser::{
     parse_duration_arg, parse_store_clause, parse_timestamp_range,
 };
+use crate::commands::store_target::StoreTarget;
 use crate::commands::{CommandArgIterator, parse_timestamp, parse_value_arg};
 use crate::common::replies::reply_with_samples;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
-use crate::series::{create_or_update_series_with_samples, get_timeseries_mut};
+use crate::series::get_timeseries_mut;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use valkey_module::{
@@ -62,7 +63,7 @@ acl_categories!(TS_FILLGAPS, "ts.fillgaps", "fast write timeseries");
         {
             notes: "Optional destination series written by the STORE clause.",
             flags: [ReadWrite, Update],
-            begin_search: Keyword({ keyword: "STORE", startfrom: 1 }),
+            begin_search: Keyword({ keyword: "STORE", startfrom: 4 }),
             find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
         }
     ]
@@ -110,7 +111,8 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 fill_value = parse_value_arg(&value_arg)?;
             },
             "STORE" => {
-                destination = Some(parse_store_clause(&mut args)?);
+                let store = parse_store_clause(&mut args)?;
+                destination = Some(StoreTarget::new(ctx, key.as_slice(), store)?);
             },
             _ => {
                 return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
@@ -169,14 +171,7 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         if gaps_filled == 0 {
             return Ok(ValkeyValue::from(0_i64));
         }
-        let written = create_or_update_series_with_samples(
-            ctx,
-            &dest.key,
-            Some(dest.options),
-            dest.write_mode,
-            &gap_samples,
-            None,
-        )?;
+        let written = dest.write(ctx, &gap_samples)?;
         return Ok(ValkeyValue::from(written));
     }
 

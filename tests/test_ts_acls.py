@@ -354,8 +354,9 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
 
     def test_timeseries_command_acl_categories(self):
         # Expected flags and ACL categories for every command the module registers, keyed by the
-        # lowercase registered name. `ts._debug`/`ts._restore` come from the positional table in
-        # src/lib.rs; the rest from the `acl_categories!` declaration beside each `#[command]`.
+        # lowercase registered name. `ts._debug`/`ts._restore`/`ts._store` come from the positional
+        # table in src/lib.rs; the rest from the `acl_categories!` declaration beside each
+        # `#[command]`.
         #
         # The command set is discovered from the server rather than listed here, and compared
         # against this dict's keys with set equality, so a new command fails this test until its
@@ -364,6 +365,7 @@ class TestTimeSeriesACL(ValkeyTimeSeriesTestCaseBase):
         expected = {
             'ts._debug': ([b'readonly', b'module'], {b'@read', b'@admin', b'@timeseries'}),
             'ts._restore': ([b'write', b'denyoom', b'module'], {b'@write', b'@admin', b'@timeseries'}),
+            'ts._store': ([b'write', b'denyoom', b'module'], {b'@write', b'@admin', b'@timeseries'}),
             'ts.add': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
             'ts.addbulk': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),
             'ts.alter': ([b'write', b'denyoom', b'module'], {b'@write', b'@timeseries'}),

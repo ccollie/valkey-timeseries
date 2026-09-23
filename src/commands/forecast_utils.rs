@@ -1,6 +1,7 @@
 use crate::analysis::forecasting::make_forecast_time_series;
 use crate::commands::CommandArgIterator;
 use crate::commands::command_parser::parse_series_range_samples;
+use crate::commands::store_target::StoreTarget;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
 use crate::commands::utils::{get_store_key_pos, reply_with_double_array};
 use crate::common::replies::{
@@ -8,9 +9,6 @@ use crate::common::replies::{
 };
 use crate::common::time::compute_median_step_ms;
 use crate::common::{Sample, Timestamp};
-use crate::series::{
-    DestinationWriteMode, TimeSeriesOptions, create_or_update_series_with_samples,
-};
 use anofox_forecast::core::{Forecast, TimeSeries as ForecastTimeSeries};
 use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
@@ -94,17 +92,15 @@ pub(super) fn store_anchor(
     Ok(anchor)
 }
 
-/// Write forecast `values` as consecutive samples after `anchor` into `dest_key`,
-/// creating or updating the series per `options` / `write_mode`. Takes the
-/// thread-safe lock for the write. Returns the number of samples written.
+/// Write forecast `values` as consecutive samples after `anchor` into `target`, under the
+/// thread-safe lock. Returns the number of samples written, or `None` when the client timed
+/// out first and nothing was written.
 pub(super) fn write_forecast_samples(
     ctx: &ThreadSafeReplyContext,
-    dest_key: &[u8],
-    options: Option<TimeSeriesOptions>,
-    write_mode: DestinationWriteMode,
+    target: &StoreTarget,
     values: &[f64],
     anchor: StoreAnchor,
-) -> ValkeyResult<usize> {
+) -> ValkeyResult<Option<usize>> {
     let samples: Vec<Sample> = values
         .iter()
         .enumerate()
@@ -112,14 +108,21 @@ pub(super) fn write_forecast_samples(
         .collect::<ValkeyResult<_>>()?;
 
     let lock = ctx.lock();
-    let key = lock.create_string(dest_key);
-    create_or_update_series_with_samples(&lock, &key, options, write_mode, &samples, None).map_err(
-        |e| {
-            let msg = format!("TSDB: failed to store forecast in key '{}': {}", key, e);
-            ctx.log_warning(&msg);
-            ValkeyError::String(msg)
-        },
-    )
+    // Checked under the lock: the timeout callback runs on the main thread, so it cannot fire
+    // between this check and the write. Once it has fired, the client has been told the
+    // command failed, so do not write behind it.
+    if ctx.is_timed_out() {
+        return Ok(None);
+    }
+    target.write(&lock, &samples).map(Some).map_err(|e| {
+        let msg = format!(
+            "TSDB: failed to store forecast in key '{}': {}",
+            String::from_utf8_lossy(target.key()),
+            e
+        );
+        ctx.log_warning(&msg);
+        ValkeyError::String(msg)
+    })
 }
 
 const STORE_STEP_ERROR: &str =

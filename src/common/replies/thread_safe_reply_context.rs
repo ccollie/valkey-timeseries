@@ -1,6 +1,7 @@
 use crate::common::replies::{IntoRawCtx, ReplyContext};
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::os::raw::{c_int, c_longlong};
 use std::ptr;
@@ -173,20 +174,22 @@ pub struct ThreadSafeReplyContext {
     blocked_client: BlockedClient,
 }
 
-pub struct ContextGuard {
+/// Holds the GIL for a [`ThreadSafeReplyContext`] and derefs to its context. Borrows the
+/// context rather than owning it, so dropping the guard only releases the lock.
+pub struct ContextGuard<'a> {
     ctx: Context,
+    _owner: PhantomData<&'a ThreadSafeReplyContext>,
 }
 
-impl Drop for ContextGuard {
+impl Drop for ContextGuard<'_> {
     fn drop(&mut self) {
         unsafe {
             raw::RedisModule_ThreadSafeContextUnlock.unwrap()(self.ctx.ctx);
-            raw::RedisModule_FreeThreadSafeContext.unwrap()(self.ctx.ctx);
         };
     }
 }
 
-impl Deref for ContextGuard {
+impl Deref for ContextGuard<'_> {
     type Target = Context;
 
     fn deref(&self) -> &Self::Target {
@@ -194,7 +197,7 @@ impl Deref for ContextGuard {
     }
 }
 
-impl Borrow<Context> for ContextGuard {
+impl Borrow<Context> for ContextGuard<'_> {
     fn borrow(&self) -> &Context {
         &self.ctx
     }
@@ -236,11 +239,16 @@ impl ThreadSafeReplyContext {
 
     /// All non-reply APIs require locking, so we mirror
     /// `valkey_module::ThreadSafeContext::lock` semantics.
-    pub fn lock(&self) -> ContextGuard {
+    ///
+    /// The guard runs calls against this blocked client's own context, not a detached one:
+    /// only this context has the client's selected db, so key writes land in the right db
+    /// and `RM_Replicate` propagates them with the right `SELECT`.
+    pub fn lock(&self) -> ContextGuard<'_> {
         unsafe { raw::RedisModule_ThreadSafeContextLock.unwrap()(self.ctx) };
-        let ctx = unsafe { raw::RedisModule_GetThreadSafeContext.unwrap()(ptr::null_mut()) };
-        let ctx = Context::new(ctx);
-        ContextGuard { ctx }
+        ContextGuard {
+            ctx: Context::new(self.ctx),
+            _owner: PhantomData,
+        }
     }
 
     /// Log a message at the specified `level` using the underlying context.

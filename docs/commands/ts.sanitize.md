@@ -131,7 +131,9 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
 - **STORE behavior:** When `STORE` is specified, the sanitized samples are written to the
   destination key in addition to being applied to the source series. Without `MERGE`, the
   destination is overwritten. With `MERGE`, samples are merged into an existing destination
-  using `KeepLast` semantics (duplicate timestamps are updated with the sanitized value).
+  using `KeepLast` semantics (duplicate timestamps are updated with the sanitized value). The
+  destination must differ from the source key; naming the source fails with
+  `TSDB: STORE destination must be different from the source key`.
 
 - **Notifications:** Keyspace notifications are sent for the `ts.sanitize` event
   when samples are modified.

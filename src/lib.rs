@@ -252,6 +252,7 @@ valkey_module! {
         // declaration beside each handler, applied by `assign_command_acl_categories`.
         ["ts._debug", commands::ts_debug_cmd, "readonly", 0, 0, 0, "read timeseries admin"],
         ["ts._restore", commands::ts_restore_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
+        ["ts._store", commands::ts_store_cmd, "write deny-oom", 1, 1, 1, "write timeseries admin"],
     ]
     event_handlers: [
         [@GENERIC @LOADED @TRIMMED: generic_key_events_handler]

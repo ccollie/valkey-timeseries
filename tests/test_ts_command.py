@@ -180,6 +180,15 @@ class TestTimeSeriesCommand(ValkeyTimeSeriesTestCaseBase):
                 f"['src', 'dest'], got {keys}"
             )
 
+    def test_getkeys_source_key_named_store(self):
+        """A source key spelled like the keyword must not be mistaken for the STORE clause."""
+        for command, prefix in self.STORE_COMMANDS.items():
+            keys = self.getkeys(command, "store", *prefix[1:], "STORE", "dest")
+            assert keys == ["store", "dest"], (
+                f"GETKEYS mismatch for '{command}' with a source named 'store': expected "
+                f"['store', 'dest'], got {keys}"
+            )
+
     def test_getkeys_without_store(self):
         """Without a STORE clause only the source key is reported."""
         for command, prefix in self.STORE_COMMANDS.items():
