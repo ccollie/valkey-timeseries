@@ -8,8 +8,9 @@ client.
 The goal is to show *what analysis you can push into the database* instead of
 pulling every sample into pandas. Valkey-TimeSeries is a compute engine as much
 as a store: feature extraction, decomposition, anomaly detection, stationarity
-testing, and imputation all run server-side on a background thread, close to the
-data. Python's job in this tutorial is orchestration and visualization.
+testing, and imputation all run server-side, close to the data (the heavier
+analyses move large ranges onto a dedicated worker pool). Python's job in this
+tutorial is orchestration and visualization.
 
 ---
 
@@ -53,9 +54,9 @@ Every stage of a standard time-series EDA maps onto one or more commands:
 | Autocorrelation | `TS.AUTOCORRELATION` (ACF/PACF/TRA) | Build ACF / PACF plots |
 | Seasonality | `TS.PERIODS` | Feed periods to downstream steps |
 | Decomposition | `TS.DECOMPOSE` (STL / MSTL) | Plot trend / seasonal / residual |
-| Trend | `TS.TREND` (5 models, AICc/BIC/holdout) | Compare models, project |
+| Trend | `TS.TREND` (auto model selection by AICc/BIC/holdout) | Compare models, project |
 | Stationarity | `TS.STATIONARITY` (ADF + KPSS) | Decide whether to difference |
-| Anomaly detection | `TS.OUTLIERS` (8 methods) | Annotate / alert |
+| Anomaly detection | `TS.OUTLIERS` (10 methods) | Annotate / alert |
 | Cleaning | `TS.OUTLIERS OUTPUT CLEANED`, `TS.SANITIZE` | Persist cleaned series |
 | Forecasting | `TS.AUTOFORECAST`, `TS.FORECAST`, `TS.BACKTEST` | Consume forecast + intervals |
 | Cross-series | `TS.JOIN` (INNER / ASOF / REDUCE), `TS.XCORR` | Align, correlate, and lead/lag two series |
@@ -70,8 +71,8 @@ does **not** do, which you handle client-side:
    snippet below is optional.
 2. **Transforms (differencing, log, scaling).** `TS.STATIONARITY` tells you
    *whether* a series needs differencing; it does not difference it for you.
-   Apply the transform in Python, or store a derived series with `TS.JOIN
-   ... REDUCE`.
+   Apply the transform in Python and load the result into a new key (Section 12
+   does exactly that).
 3. **Histograms / full empirical distribution.** `TS.STATS` gives skewness and
    kurtosis, `TS.FEATURES` gives quantiles, but binning is on you (from
    `TS.RANGE`).
@@ -96,8 +97,9 @@ pip install matplotlib      # optional, only for the plot snippets
 
 Start a Valkey server with the module loaded (see the project README), then
 connect. We negotiate **RESP3** (`protocol=3`) so that map-returning commands
-(`TS.STATS`, `TS.FEATURES`, `TS.STATIONARITY`, `TS.TREND`, `TS.DECOMPOSE`,
-`TS.AUTOFORECAST`) come back as native Python `dict`s.
+(`TS.INFO`, `TS.STATS`, `TS.FEATURES`, `TS.STATIONARITY`, `TS.TREND`,
+`TS.AUTOFORECAST`, `TS.XCORR`) come back as native Python `dict`s. `TS.DECOMPOSE`
+is the exception: it replies with a flat name/value array under both protocols.
 
 ```python
 import json
@@ -117,7 +119,7 @@ They are written to work under **both** RESP3 and RESP2, so you can drop
 ```python
 def as_map(reply):
     """A TS.* map reply is a dict under RESP3 or a flat [k, v, k, v, ...]
-    list under RESP2. Return a dict either way."""
+    list under RESP2 (and always for TS.DECOMPOSE). Return a dict either way."""
     if isinstance(reply, dict):
         return reply
     it = iter(reply)
@@ -256,13 +258,13 @@ print(f"unique     : {int(stats['n_unique_values'])}")
 
 ```text
 length     : 1329
-mean / std : 63.71 / 12.94
-min / max  : 21.30 / 118.65
-median     : 63.44
-skewness   : 0.031
-kurtosis   : 0.212
+mean / std : 63.51 / 12.33
+min / max  : 9.31 / 123.12
+median     : 63.36
+skewness   : 0.029
+kurtosis   : 0.039
 NaN / Inf  : 4
-unique     : 1325
+unique     : 1300
 ```
 
 **How to read it.** `n_nans = 4` immediately tells you the series has missing
@@ -284,8 +286,8 @@ separates them:
 * **NaN/Inf** — samples that exist but carry no valid value.
 
 `TS.FILLGAPS` finds the first kind. It infers the sampling frequency (or you pass
-`FREQUENCY`), computes which grid timestamps are missing, and returns them —
-**without modifying the source series** unless you add `STORE`.
+`FREQUENCY`), computes which grid timestamps are missing, and returns them. It
+**never modifies the source series** — `STORE` writes to a different key.
 
 ```python
 gaps = samples(client.execute_command(
@@ -297,19 +299,24 @@ for ts, _v in gaps[:5]:
 ```
 
 The returned value for each gap is `NaN` by default; pass `VALUE 0` to mark them
-with a sentinel instead. To *persist* a gap-filled grid into a new key (leaving
-the original untouched):
+with a sentinel instead. `STORE` writes *only the gap rows*, and without `MERGE` it
+clears the destination first. So to build a complete hourly grid, copy the raw
+series (Valkey's `COPY` works on time-series keys, labels included) and merge the
+gap rows into the copy:
 
 ```python
+GRID = "energy:demand:gridded"
+client.delete(GRID)
+client.copy(KEY, GRID)                              # working copy of the raw data
 written = client.execute_command(
     "TS.FILLGAPS", KEY, "-", "+", "FREQUENCY", "1h",
-    "VALUE", "nan", "STORE", "energy:demand:gridded",
+    "VALUE", "nan", "STORE", GRID, "MERGE",
 )
 print("gap rows written:", written)                 # -> 15
 ```
 
-Now `energy:demand:gridded` has NaN placeholders on a complete hourly grid,
-ready for imputation. `TS.FILLGAPS` is the *detection* half; `TS.SANITIZE` is the
+Now `energy:demand:gridded` holds all 1344 hourly slots, 19 of them NaN (the 15
+gaps plus the 4 NaN readings), ready for imputation. `TS.FILLGAPS` is the *detection* half; `TS.SANITIZE` is the
 *repair* half.
 
 ---
@@ -317,17 +324,23 @@ ready for imputation. `TS.FILLGAPS` is the *detection* half; `TS.SANITIZE` is th
 ## 6. Missing data — imputation
 
 `TS.SANITIZE` repairs NaN/Inf values within a range using one of **11 policies**.
-It defaults to `DROP`. Because it can write results to a separate key with
-`STORE`, it doubles as the "produce a clean copy for analysis" step.
+It defaults to `DROP`.
 
-Preview a policy without touching the source (no `STORE` ⇒ returns the sanitized
-samples inline):
+> **It always rewrites its source.** With or without `STORE`, the sanitized
+> samples replace the range in the source series; `STORE` *additionally* writes
+> them to a separate key (and replies with a count instead of the samples). There
+> is no dry run, so point it at a working copy — never at the raw key you want to
+> keep.
+
+To preview a policy, run it on a throwaway copy of the grid. Without `STORE` it
+returns the sanitized samples inline — here, the start of the 12-hour gap:
 
 ```python
+client.copy(GRID, "energy:demand:scratch", replace=True)
 preview = samples(client.execute_command(
-    "TS.SANITIZE", KEY, "-", "+", "POLICY", "INTERPOLATE",
+    "TS.SANITIZE", "energy:demand:scratch", "-", "+", "POLICY", "INTERPOLATE",
 ))
-print("first 3 sanitized:", preview[:3])
+print("gap, interpolated:", preview[500:503])
 ```
 
 The policy you pick depends on the data's character:
@@ -338,23 +351,25 @@ The policy you pick depends on the data's character:
 | `FORWARDFILL` / `BACKWARDFILL` | Step-like signals (last/next observation carried) |
 | `FORWARDBACKWARDFILL` | Handles interior *and* edge NaNs |
 | `FILLMEAN` / `FILLMEDIAN` | Stationary signals with no local structure |
+| `FILL value` | A known constant (e.g. `0` for "no events") |
 | `MOVINGAVERAGE window` | Noisy signals (centered window mean; window odd) |
 | `SEASONAL period\|auto` | Strong periodicity — fill from same phase in the cycle |
 | `DROP` / `ERROR` | Discard, or fail loudly if any NaN is present |
 
 Our demand series is seasonal, so `SEASONAL` (borrow the same hour from other
-days) is a natural choice. Persist the cleaned result into a dedicated analysis
-key so the raw series stays pristine:
+days) is a natural choice. Sanitize the grid and `STORE` the result into a
+dedicated analysis key (the grid is repaired in place too; the raw
+`energy:demand` is never touched):
 
 ```python
 CLEAN = "energy:demand:clean"
 client.delete(CLEAN)
 written = client.execute_command(
-    "TS.SANITIZE", KEY, "-", "+",
-    "POLICY", "SEASONAL", "auto",
+    "TS.SANITIZE", GRID, "-", "+",
+    "POLICY", "SEASONAL", "24",      # the daily cycle; Section 9 confirms it
     "STORE", CLEAN,
 )
-print("clean samples written:", written)
+print("clean samples written:", written)                    # -> 1344
 
 # Confirm the clean copy has zero NaNs.
 clean_stats = as_map(client.execute_command("TS.STATS", CLEAN))
@@ -362,11 +377,14 @@ print("NaN after sanitize:", int(clean_stats["n_nans"]))   # -> 0
 ```
 
 > **Guard `SEASONAL`.** It errors if more than 50% of a seasonal bucket is
-> missing, or if `auto` can't find a dominant period. On sparse data, fall back
-> to `INTERPOLATE` or `FORWARDBACKWARDFILL`.
+> missing. `SEASONAL auto` detects the period from the range itself and currently
+> fails (`unable to detect dominant period`) whenever that range still contains a
+> NaN — so name the period explicitly. On sparse data, fall back to `INTERPOLATE`
+> or `FORWARDBACKWARDFILL`.
 
-From here on, **heavy analysis runs against `energy:demand:clean`** — a NaN-free
-copy — while the raw `energy:demand` is kept for anomaly detection in Section 13.
+From here on, **analysis runs against `energy:demand:clean`** — a complete,
+NaN-free hourly grid. Imputation only touched the missing slots, so the injected
+anomalies are still in it for Section 13 to find.
 
 ---
 
@@ -386,17 +404,18 @@ for name in sorted(feats):
 ```
 
 ```text
-kurtosis                     0.2108
+kurtosis                     0.0442
 length                       1344.0000
-linear_trend_intercept       51.9034
+linear_trend_intercept       51.1952
 linear_trend_p_value         0.0000
-linear_trend_r_squared       0.2971
-linear_trend_slope           0.0197
-maximum                      118.6500
-mean                         63.7210
+linear_trend_r_squared       0.3381
+linear_trend_slope           0.0184
+maximum                      123.1230
+mean                         63.5580
 ...
-skewness                     0.0307
-variance                     167.4400
+skewness                     0.0189
+variance                     150.8877
+variance_sample              151.0000
 ```
 
 The four categories are `basic`, `distribution`, `autocorrelation`, and `trend`.
@@ -412,8 +431,8 @@ vec = as_map(client.execute_command(
 print({k: round(num(v), 4) for k, v in vec.items()})
 ```
 
-`quantile:0.95` becomes the key `quantile_0.95`; `autocorrelation:24` becomes
-`autocorrelation_24`. Features that evaluate to NaN come back as `null`
+`quantile:0.95` becomes the key `quantile_0.95`, `autocorrelation:24` becomes
+`autocorrelation_24`, and `pacf:1` becomes `partial_autocorrelation_1`. Features that evaluate to NaN come back as `null`
 (→ `float('nan')` via our `num` helper). This single call is the fastest way to
 turn a raw series into a row of model-ready numbers without transferring any
 samples to the client.
@@ -444,11 +463,12 @@ for lag in (1, 6, 12, 24, 48, 168):
 ```
 
 ```text
-lag   1:  acf=+0.902
-lag   6:  acf=+0.083
-lag  12:  acf=-0.560
-lag  24:  acf=+0.845     <- daily cycle
-lag 168:  acf=+0.640     <- weekly cycle
+lag   1:  acf=+0.913
+lag   6:  acf=+0.452
+lag  12:  acf=-0.024
+lag  24:  acf=+0.874     <- daily cycle
+lag  48:  acf=+0.774
+lag 168:  acf=+0.820     <- weekly cycle
 ```
 
 The peaks at lag 24 and lag 168 confirm the daily and weekly seasonality you'll
@@ -496,13 +516,14 @@ for period, power, strength, ac, n_cycles in periods:
 ```
 
 ```text
-period=  24  strength=0.71  acf=0.85  cycles=56     <- daily
-period= 168  strength=0.63  acf=0.64  cycles=8      <- weekly
+period= 168  strength=0.80  acf=0.82  cycles=8      <- weekly
+period=  24  strength=0.66  acf=0.87  cycles=56     <- daily
 ```
 
 `strength` is the actionable number: `> 0.6` is strong seasonality, `< 0.3` is
 weak. For a quick one-liner — "what's the single dominant cycle?" — use
-`DOMINANT`, which returns a bare integer (or `nil`):
+`DOMINANT`, which returns a bare integer (or `nil`). It runs its own single-period
+search, so it need not match the first row above:
 
 ```python
 dominant = client.execute_command("TS.PERIODS", CLEAN, "-", "+", "DOMINANT")
@@ -519,8 +540,9 @@ argument.
 
 `TS.DECOMPOSE` splits the series into **trend + seasonal + residual** using STL
 (one period) or MSTL (multiple periods). Pass `SEASONALITY auto` to let it detect
-periods, or name them explicitly. The reply is a map of component → `[ts, value]`
-arrays satisfying `original = trend + seasonal (+ ...) + residual`.
+periods, or name them explicitly. The reply is a flat array of component name →
+`[ts, value]` samples (`as_map` turns it into a dict) satisfying
+`original = trend + seasonal + residual`.
 
 Give it both cycles we found (MSTL):
 
@@ -563,9 +585,9 @@ which is exactly why `TS.OUTLIERS` can decompose first (Section 13).
 ## 11. Trend analysis
 
 `TS.TREND` fits and returns the trend component. In **Auto** mode (default) it
-fits five candidate models — Linear, Quadratic, Exponential, TheilSen,
-PiecewiseLinear — and selects one by an information criterion (AICc by default,
-or BIC / HOLDOUT).
+fits a set of candidate models — Linear, Quadratic, Exponential, Logistic,
+TheilSen, PiecewiseLinear — and selects one by an information criterion (AICc by
+default, or BIC / HOLDOUT).
 
 ```python
 trend = as_map(client.execute_command(
@@ -574,7 +596,7 @@ trend = as_map(client.execute_command(
 print("selected model:", trend["model"])            # -> e.g. "Linear"
 print("criterion     :", trend["criterion"])        # -> "AICc"
 
-metrics = as_map(trend["metrics"])
+metrics = as_map(trend["accuracy_metrics"])
 print("R^2  :", round(num(metrics["r_squared"]), 4))
 print("RMSE :", round(num(metrics["rmse"]), 4))
 
@@ -586,13 +608,14 @@ for name, s in scores:
 
 Three flags make it an EDA workhorse:
 
-* `FEATURES` — adds a `features` map describing the fitted component (e.g. slope).
+* `FEATURES` — adds a `features` map describing the fitted component (e.g.
+  `theilsen_slope`).
 * `METRICS` — adds `accuracy_metrics` (MAE, RMSE, MAPE, sMAPE, MASE, R²) of
   observed vs. fitted.
 * `PREDICT n` — projects the trend `n` steps ahead into `predicted_trend`.
 
 `RECENCY` controls *which* data drives the fit — often you care about the recent
-regime, not ancient history. And `STORE` writes the fitted (and predicted)
+regime, not ancient history (the default is the last 30%). And `STORE` writes the fitted (and predicted)
 trend to a key so you can overlay it with `TS.RANGE`:
 
 ```python
@@ -604,11 +627,12 @@ client.execute_command(
     "STORE", "energy:demand:trend",
 )
 overlay = samples(client.execute_command("TS.RANGE", "energy:demand:trend", "-", "+"))
-print("stored trend points:", len(overlay))
+print("stored trend points:", len(overlay))          # -> 1368 (1344 fitted + 24)
 ```
 
-TheilSen is the robust choice here because the raw anomalies would drag a
-least-squares line; the median-of-slopes estimator largely ignores them.
+TheilSen is the robust choice here because the anomalies still in the data
+would drag a least-squares line; the median-of-slopes estimator largely ignores
+them.
 
 ---
 
@@ -631,13 +655,15 @@ print(f"KPSS: stat={num(kpss['statistic']):.3f}  p={num(kpss['pValue']):.3f}  "
 ```
 
 ```text
-verdict: non_stationary
-ADF : stat=-1.842  p=0.359  stationary=0
-KPSS: stat=1.204   p=0.010  stationary=0
+verdict: inconclusive
+ADF : stat=-7.818  p=0.001  stationary=1
+KPSS: stat=7.382  p=0.000  stationary=0
 ```
 
-Our series trends upward, so the honest verdict is **non-stationary**. The module
-diagnoses this but leaves the remedy to you — **differencing is a client-side
+The tests disagree. ADF rejects a unit root — the hourly swings keep reverting —
+but KPSS rejects a constant mean, because the series trends upward. That split
+is the classic signature of a trend, and the verdict is **inconclusive**. The
+module diagnoses this but leaves the remedy to you — **differencing is a client-side
 transform** (one of the gaps from Section 1). Difference in Python, write the
 result to a new key, and re-test:
 
@@ -650,29 +676,35 @@ client.delete("energy:demand:diff")
 add_bulk("energy:demand:diff", diff_ts, diff_val)   # reuse the loader from Section 3
 
 st2 = as_map(client.execute_command("TS.STATIONARITY", "energy:demand:diff", "-", "+"))
-print("after differencing:", st2["conclusion"])     # typically -> stationary
+print("after differencing:", st2["conclusion"])     # -> stationary
 ```
 
 The `combined` verdict resolves the common textbook confusion: ADF's null is
 "non-stationary" while KPSS's null is "stationary", so they answer the question
 from opposite directions. When they agree you get a clean `stationary` /
 `non_stationary`; when they disagree you get `inconclusive` — a signal to inspect
-the series (often heteroskedastic variance) rather than trust one test.
+the series (a deterministic trend, as here, or heteroskedastic variance) rather
+than trust one test.
 
 ---
 
 ## 13. Anomaly detection and cleaning
 
-`TS.OUTLIERS` runs against the **raw** series (the one that still has the injected
-shocks). It offers eight methods — statistical (`ZSCORE`, `MODIFIED-ZSCORE`,
-`IQR`, `MAD`, `DOUBLE-MAD`), control-chart (`CUSUM`, `EWMA`,
-`SMOOTHED-ZSCORE`), and ML (`RCF`, Random Cut Forest) — plus three output modes.
+`TS.OUTLIERS` runs against `energy:demand:clean`: imputation left the injected
+shocks in place, and seasonal adjustment (below) needs exactly what that key
+provides — a regular grid with no NaNs. (On a range that still contains a NaN,
+`SEASONALITY` currently scores every sample `0` and reports nothing.) It offers
+ten methods — statistical (`ZSCORE`, `MODIFIED-ZSCORE`, `IQR`, `MAD`,
+`DOUBLE-MAD`, `ESD`), control-chart (`CUSUM`, `EWMA`, `SMOOTHED-ZSCORE`), and ML
+(`RCF`, Random Cut Forest) — plus three output modes.
 
-Detect first (`SIMPLE` returns `[timestamp, value, signal, score]` per anomaly):
+Detect first (`SIMPLE` returns `[timestamp, value, signal, score]` per anomaly;
+`score` is on a common 0–1 scale for every method, and anything above `0.5` was
+flagged):
 
 ```python
 anoms = client.execute_command(
-    "TS.OUTLIERS", KEY, "-", "+", "METHOD", "MODIFIED-ZSCORE", "THRESHOLD", "3.5",
+    "TS.OUTLIERS", CLEAN, "-", "+", "METHOD", "MODIFIED-ZSCORE", "THRESHOLD", "3.5",
 )
 print(f"{len(anoms)} anomalies")
 for ts, value, signal, score in anoms:
@@ -680,20 +712,32 @@ for ts, value, signal, score in anoms:
     print(f"  {ts}  {num(value):8.2f}  {direction:5s}  score={num(score):.2f}")
 ```
 
-A subtle point for seasonal data: a value can be perfectly normal *for 3 a.m.*
-yet flagged as low against the global mean. Add `SEASONALITY` so detection runs on
-the **de-seasonalized residual**, catching context-aware anomalies and ignoring
-the daily/weekly swing:
+```text
+2 anomalies
+  1706299200000      9.31  dip    score=0.55
+  1707346800000    123.12  spike  score=0.57
+```
+
+Only two of the four injected shocks clear a global threshold: a value can be
+perfectly normal *for 3 a.m.* yet look low against the global median, and the
+daily/weekly swing widens the spread enough to hide smaller shocks. Add
+`SEASONALITY` so detection runs on the **de-seasonalized residual**, catching
+context-aware anomalies and ignoring the swing:
 
 ```python
 anoms_seasonal = client.execute_command(
-    "TS.OUTLIERS", KEY, "-", "+",
+    "TS.OUTLIERS", CLEAN, "-", "+",
     "SEASONALITY", "24", "168",          # remove daily + weekly first
     "METHOD", "ZSCORE", "THRESHOLD", "3.0",
     "DIRECTION", "BOTH",
 )
-print("context-aware anomalies:", len(anoms_seasonal))
+print("context-aware anomalies:", len(anoms_seasonal))     # -> 7
 ```
+
+All four shocks are among the seven. The other three are the NaN readings
+`SEASONAL` imputed in Section 6: a flat per-hour median ignores the trend and the
+weekly phase, so the filled values stand out once both are removed — a useful
+check on your imputation.
 
 `OUTPUT FULL` returns every sample with its score plus method metadata (e.g. IQR
 fences, control limits) — useful for thresholded dashboards. And `OUTPUT CLEANED`
@@ -701,34 +745,37 @@ turns detection into **cleaning**, returning only the normal samples:
 
 ```python
 cleaned = samples(client.execute_command(
-    "TS.OUTLIERS", KEY, "-", "+", "OUTPUT", "CLEANED", "METHOD", "IQR", "THRESHOLD", "1.5",
+    "TS.OUTLIERS", CLEAN, "-", "+", "OUTPUT", "CLEANED", "METHOD", "IQR", "THRESHOLD", "1.5",
 ))
-print("kept", len(cleaned), "of", 1329, "samples")
+print("kept", len(cleaned), "of", 1344, "samples")        # -> kept 1342 of 1344
 ```
 
 ### The full clean pipeline
 
-Combining Sections 5, 6, and 13 gives the canonical raw → analysis-ready path.
-Note `TS.OUTLIERS OUTPUT CLEANED` *removes* anomalous points (creating gaps),
-which is why gap-fill/impute comes after it:
+Combining Sections 5, 6, and 13 gives the analysis-ready series. Note
+`TS.OUTLIERS OUTPUT CLEANED` *removes* anomalous points (creating gaps), which is
+why gap-fill/impute comes after it. `TS.FILLGAPS` can't `STORE` into its own
+source, and JSON has no NaN for `TS.ADDBULK`, so the holes go back in with one
+`TS.MADD`:
 
 ```python
-# 1) Drop outliers → 2) fill the gaps that leaves → 3) impute residual NaNs.
-cleaned_pairs = samples(client.execute_command(
-    "TS.OUTLIERS", KEY, "-", "+", "OUTPUT", "CLEANED",
-    "METHOD", "MODIFIED-ZSCORE", "THRESHOLD", "3.5",
+# 1) Drop outliers → 2) put the holes back as NaN → 3) impute them in place.
+ANALYSIS = "energy:demand:analysis"
+inliers = samples(client.execute_command(
+    "TS.OUTLIERS", CLEAN, "-", "+", "OUTPUT", "CLEANED",
+    "SEASONALITY", "24", "168", "METHOD", "ZSCORE", "THRESHOLD", "3.0",
 ))
-client.delete("energy:demand:analysis")
-add_bulk("energy:demand:analysis",
-         [t for t, _ in cleaned_pairs], [v for _, v in cleaned_pairs])
+client.delete(ANALYSIS)
+add_bulk(ANALYSIS, [t for t, _ in inliers], [v for _, v in inliers])
 
-client.execute_command("TS.FILLGAPS", "energy:demand:analysis", "-", "+",
-                       "FREQUENCY", "1h", "VALUE", "nan", "STORE",
-                       "energy:demand:analysis")
-client.execute_command("TS.SANITIZE", "energy:demand:analysis", "-", "+",
-                       "POLICY", "SEASONAL", "auto")
+holes = client.execute_command("TS.FILLGAPS", ANALYSIS, "-", "+", "FREQUENCY", "1h")
+if holes:
+    client.execute_command("TS.MADD", *[x for ts, _ in holes for x in (ANALYSIS, ts, "nan")])
+
+client.execute_command("TS.SANITIZE", ANALYSIS, "-", "+",    # rewrites ANALYSIS
+                       "POLICY", "SEASONAL", "24")
 print("analysis-ready:", int(as_map(
-    client.execute_command("TS.STATS", "energy:demand:analysis"))["n_nans"]), "NaNs")
+    client.execute_command("TS.STATS", ANALYSIS))["n_nans"]), "NaNs")   # -> 0
 ```
 
 ---
@@ -760,11 +807,23 @@ metrics = as_map(fc["metrics"])
 print("in-sample RMSE:", round(num(metrics["rmse"]), 3))
 ```
 
+```text
+selected model: ETS
+first 3 forecasts: [70.5, 73.6, 76.5]
+first interval    : 65.5 .. 75.6
+in-sample RMSE: 2.537
+```
+
+`METRICS` needs the winning model's in-sample fitted values. SARIMA doesn't
+expose them, so if cross-validation picks SARIMA the whole call currently fails
+with `metrics error: fitted values are unavailable for selected model` — drop
+`METRICS` and retry, or evaluate with `TS.BACKTEST` instead.
+
 Add `STORE energy:demand:forecast` to persist the forecast as a real series (its
-timestamps continue from the last observed point at the median interval), so you
-can query it with `TS.RANGE` or chart it beside the history. For a single named
-model use `TS.FORECAST`; to evaluate forecast accuracy over rolling origins use
-`TS.BACKTEST`.
+timestamps continue from the last observed point, one sampling interval apart),
+so you can query it with `TS.RANGE` or chart it beside the history. For a single
+named model use `TS.FORECAST`; to evaluate forecast accuracy over rolling origins
+use `TS.BACKTEST`.
 
 ---
 
@@ -784,12 +843,26 @@ Univariate EDA answers "how does this metric behave?" Two commands extend it to
   `-maxLag..=maxLag` in one call, entirely server-side.
 
 Suppose you also track outdoor `weather:temp` and want to know whether it *leads*
-`energy:demand` (e.g. a temperature swing today predicts tomorrow's demand) or
-lags it. Ask directly with `TS.XCORR`:
+`energy:demand` (a cold snap now predicts heating demand a few hours later) or
+lags it. For the tutorial we synthesize a temperature series on the same hourly
+grid that runs opposite to demand's swings, three hours ahead of them:
+
+```python
+TEMP = "weather:temp"
+client.delete(TEMP)
+temp_ts, temp_val = [], []
+for i in range(N - 3):
+    swing = values[i + 3] - (50 + 0.02 * (i + 3))   # demand 3 h later, detrended
+    temp_ts.append(timestamps[i])
+    temp_val.append(round(12 - 0.5 * swing + random.gauss(0, 1.5), 2))
+add_bulk(TEMP, temp_ts, temp_val)
+```
+
+Now ask the data which way round it is with `TS.XCORR`:
 
 ```python
 xcorr = as_map(client.execute_command(
-    "TS.XCORR", "weather:temp", "energy:demand:analysis", "-", "+", 48,
+    "TS.XCORR", TEMP, "energy:demand:analysis", "-", "+", 48,
 ))
 
 lags   = [int(x) for x in xcorr["lags"]]
@@ -801,16 +874,16 @@ print(f"peak lag: {int(xcorr['peak_lag'])}  "
 ```
 
 ```text
-peak lag: -6  peak correlation: +0.71  (n=1344 aligned pairs)
+peak lag: 3  peak correlation: -0.709  (n=1341 aligned pairs)
 ```
 
 **Reading the lag.** For key1=`weather:temp`, key2=`energy:demand:analysis`, and
-lag `h`: `weather:temp[t]` is compared against `energy:demand[t + h]`. A peak at
-`h = -6` means `energy:demand[t]` best correlates with `weather:temp[t - 6]` — in
-other words, **`energy:demand` leads `weather:temp`** by 6 hours (equivalently,
-temperature reacts to demand-correlated conditions 6 hours later — plausible for,
-say, a heating system responding to occupancy-driven demand). Swap the key order
-if you'd rather read the sign the other way; the curve is the mirror image.
+lag `h`: `weather:temp[t]` is compared against `energy:demand[t + h]` (lags count
+samples, so hours here). `peak_lag` is the lag with the largest *absolute*
+correlation. A peak at `h = +3` means **`weather:temp` leads `energy:demand` by 3
+hours**, and the negative sign says the relationship is inverse: colder now,
+higher demand three hours on. Swap the key order if you'd rather read the sign
+the other way; the curve is the mirror image.
 
 Plot the full CCF as a correlogram, exactly like the ACF/PACF plot in Section 8 —
 except this time the module computed every point, not just one lag per call:
@@ -829,10 +902,10 @@ ax.legend()
 plt.tight_layout(); plt.savefig("cross_correlogram.png")
 ```
 
-`TS.XCORR` only requires samples with **matching timestamps** in both series (an
+`TS.XCORR` only uses samples with **matching timestamps** in both series (an
 inner join). If your two series sit on different or offset grids, align them
-first — `TS.FILLGAPS` plus `TS.SANITIZE` to put both on the same grid, or an
-explicit `TS.JOIN ... ASOF` pass stored back into two new keys with `STORE`.
+first — `TS.FILLGAPS` plus `TS.SANITIZE` to put both on the same grid, or resample
+both with `TS.RANGE ... AGGREGATION` and load the buckets into new keys.
 
 `TS.JOIN` still earns its keep for anything beyond correlation — combining two
 series pointwise (`sub`, `div`, `pct_change`, ...) to derive a new series, e.g. a
@@ -840,7 +913,7 @@ spread or ratio to feed back into `TS.STATS`/`TS.OUTLIERS`:
 
 ```python
 spread = client.execute_command(
-    "TS.JOIN", "energy:demand:analysis", "weather:temp", "-", "+",
+    "TS.JOIN", "energy:demand:analysis", TEMP, "-", "+",
     "ASOF", "NEAREST", "30m",   # match within 30 minutes
     "REDUCE", "sub",            # demand - temp per aligned pair
 )
@@ -855,15 +928,15 @@ spread = client.execute_command(
 | Question you're asking | Command | Key options |
 |---|---|---|
 | What does this series look like? | `TS.STATS` | window `from to` |
-| Are timestamps missing? | `TS.FILLGAPS` | `FREQUENCY`, `VALUE`, `STORE` |
-| Are values missing (NaN)? | `TS.SANITIZE` | `POLICY` (11 of them), `STORE` |
+| Are timestamps missing? | `TS.FILLGAPS` | `FREQUENCY`, `VALUE`, `STORE ... MERGE` |
+| Are values missing (NaN)? | `TS.SANITIZE` | `POLICY` (11 of them), `STORE` — rewrites the source too |
 | Give me a feature vector | `TS.FEATURES` | `CATEGORY`, `FEATURE name:val` |
 | How autocorrelated / periodic? | `TS.AUTOCORRELATION` | `PARTIAL`, `TRA`, `AGGREGATED` |
 | What cycles exist? | `TS.PERIODS` | `MIN_STRENGTH`, `DOMINANT` |
 | Split trend/seasonal/residual | `TS.DECOMPOSE` | `SEASONALITY auto\|p...` |
 | What's the trend, and next? | `TS.TREND` | `MODEL`, `RECENCY`, `PREDICT`, `METRICS`, `STORE` |
 | Do I need to difference? | `TS.STATIONARITY` | `TEST adf\|kpss\|combined` |
-| Where are the anomalies? | `TS.OUTLIERS` | `METHOD` (8), `SEASONALITY`, `OUTPUT` |
+| Where are the anomalies? | `TS.OUTLIERS` | `METHOD` (10), `SEASONALITY`, `OUTPUT` |
 | Forecast the future | `TS.AUTOFORECAST` | `HORIZON`, `SEASONALITY`, `LEVEL`, `METRICS`, `STORE` |
 | Align / combine two series | `TS.JOIN` | `ASOF`, `REDUCE`, `AGGREGATION` |
 | Does X lead or lag Y? | `TS.XCORR` | `maxLag`, read `peak_lag`/`peak_correlation` |
@@ -901,9 +974,8 @@ def samples(reply):
 
 ### See also
 
-* Per-command references under [`docs/commands/`](commands/) — every option, edge
+* Per-command references under [`docs/commands/`](../commands/) — every option, edge
   case, and error is documented there.
-* [`docs/overview.md`](overview.md) — architecture, indexing, and cluster behavior.
-* [`docs/commands/ts.backtest.md`](commands/ts.backtest.md) — evaluate forecast
+* [`docs/overview.md`](../overview.md) — architecture, indexing, and cluster behavior.
+* [`docs/commands/ts.backtest.md`](../commands/ts.backtest.md) — evaluate forecast
   accuracy over rolling origins.
-```
