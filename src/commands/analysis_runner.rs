@@ -10,6 +10,8 @@
 use crate::commands::CommandArgIterator;
 use crate::common::replies::{ReplyContext, ThreadSafeReplyContext, block_client_with_timeout};
 use crate::common::threads::spawn_analysis;
+use crate::error_consts;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyValue};
 
 /// Deadline for an analysis command: the `TIMEOUT` argument if given, else
@@ -46,15 +48,31 @@ pub(super) const ANALYSIS_TIMEOUT_ERROR: &str =
 /// The deadline is server-enforced: on expiry the client gets
 /// [`ANALYSIS_TIMEOUT_ERROR`] and the job's own reply is discarded. Jobs check
 /// [`ThreadSafeReplyContext::is_timed_out`] before side effects such as `STORE`.
+///
+/// A panicking job is answered with an internal error rather than taking the server down
+/// (rayon aborts the process on a panic in a spawned job). The jobs run third-party model
+/// code on user data, so input validation cannot be relied on to rule every panic out.
 pub(super) fn run_analysis_job<F>(ctx: &Context, timeout: AnalysisTimeout, job: F)
 where
-    F: FnOnce(ThreadSafeReplyContext) + Send + 'static,
+    F: FnOnce(&ThreadSafeReplyContext) + Send + 'static,
 {
     let blocked_client = block_client_with_timeout(ctx, timeout.resolve(), ANALYSIS_TIMEOUT_ERROR);
     spawn_analysis(move || {
         let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
-        job(thread_ctx);
+        if catch_unwind(AssertUnwindSafe(|| job(&thread_ctx))).is_err() {
+            thread_ctx.log_warning("TSDB: analysis job panicked; replying with an error");
+            thread_ctx.reply(Err(ValkeyError::Str(error_consts::INTERNAL_ERROR)));
+        }
     });
+}
+
+/// Runs `f` on the main thread, turning a panic into an error reply: a panic must not unwind
+/// out of a command handler into the server.
+fn catch_inline_panic(ctx: &Context, f: impl FnOnce() -> ValkeyResult) -> ValkeyResult {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        ctx.log_warning("TSDB: analysis command panicked; replying with an error");
+        Err(ValkeyError::Str(error_consts::INTERNAL_ERROR))
+    })
 }
 
 /// Where a command's reply step is running. Reply helpers take a [`ReplyContext`],
@@ -63,7 +81,7 @@ where
 /// and takes the thread-safe lock in the background.
 pub(super) enum AnalysisCtx<'a> {
     Inline(&'a Context),
-    Background(ThreadSafeReplyContext),
+    Background(&'a ThreadSafeReplyContext),
 }
 
 impl AnalysisCtx<'_> {
@@ -130,8 +148,10 @@ where
     R: FnOnce(&AnalysisCtx<'_>, T) -> ValkeyResult + Send + 'static,
 {
     if samples <= inline_max {
-        let output = compute()?;
-        return reply(&AnalysisCtx::Inline(ctx), output);
+        return catch_inline_panic(ctx, || {
+            let output = compute()?;
+            reply(&AnalysisCtx::Inline(ctx), output)
+        });
     }
 
     run_analysis_job(ctx, timeout, move |thread_ctx| {

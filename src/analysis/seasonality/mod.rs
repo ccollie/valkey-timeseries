@@ -17,6 +17,10 @@ pub enum Seasonality {
     Periods(Vec<usize>),
 }
 
+/// Smallest seasonal period STL/MSTL can decompose: a season needs at least two positions.
+/// Period 0 panics inside the decomposition (a division by zero).
+pub const MIN_SEASONAL_PERIOD: usize = 2;
+
 /// Seasonal adjustment using (M)Stl decomposition
 pub fn seasonally_adjust(
     ts: &[f64],
@@ -38,10 +42,17 @@ pub fn seasonally_adjust(
     periods.sort_unstable();
 
     let n = ts.len();
-    if periods.len() == 1 {
-        let required = 2 * periods[0];
-        validate_insufficient_data::<Vec<f64>>(required, n)?;
+    for &period in &periods {
+        if period < MIN_SEASONAL_PERIOD {
+            return Err(TimeSeriesAnalysisError::InvalidInput(format!(
+                "seasonal period must be at least {MIN_SEASONAL_PERIOD}, got {period}"
+            )));
+        }
+        // Saturating, so a huge period fails the check instead of wrapping past it.
+        validate_insufficient_data::<()>(period.saturating_mul(2), n)?;
+    }
 
+    if periods.len() == 1 {
         STL::new(periods[0])
             .robust()
             .decompose(ts)
@@ -50,10 +61,6 @@ pub fn seasonally_adjust(
                 TimeSeriesAnalysisError::DecompositionError("STL decomposition failed".to_string())
             })
     } else {
-        let max_period = periods[periods.len() - 1];
-        let required = 2 * max_period;
-        validate_insufficient_data::<Vec<f64>>(required, n)?;
-
         // MSTL alternates between fitting the trend and each seasonal component; its
         // default of 2 outer iterations often hasn't converged by the time it stops,
         // which can leave point-anomalies partially absorbed into trend/seasonal
@@ -234,5 +241,21 @@ mod tests {
         let result = seasonally_adjust(&data, &Seasonality::Auto).unwrap();
 
         assert_eq!(result, data);
+    }
+
+    #[test]
+    fn seasonally_adjust_rejects_degenerate_periods() {
+        let data: Vec<f64> = (0..100).map(|i| (i % 7) as f64).collect();
+        // Period 0 would divide by zero inside STL.
+        for period in [0, 1] {
+            let err = seasonally_adjust(&data, &Seasonality::Periods(vec![period])).unwrap_err();
+            assert!(
+                matches!(err, TimeSeriesAnalysisError::InvalidInput(_)),
+                "{err:?}"
+            );
+        }
+        // 2 * usize::MAX wraps to a small number; it must still count as insufficient data.
+        let err = seasonally_adjust(&data, &Seasonality::Periods(vec![usize::MAX])).unwrap_err();
+        assert_insufficient_data(&err, usize::MAX, 100);
     }
 }

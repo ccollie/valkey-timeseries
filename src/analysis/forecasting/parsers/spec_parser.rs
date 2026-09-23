@@ -71,7 +71,11 @@ impl SpecValue {
 
     pub fn as_usize(&self) -> Result<usize, SpecError> {
         match self {
-            SpecValue::Number(n) if *n >= 0.0 && n.fract() == 0.0 => Ok(*n as usize),
+            SpecValue::Number(n) => spec_integer(*n).ok_or_else(|| {
+                SpecError::new(format!(
+                    "expected an integer between 0 and {MAX_SPEC_INTEGER}, got {n}"
+                ))
+            }),
             _ => Err(SpecError::new("expected a non-negative integer value")),
         }
     }
@@ -112,6 +116,17 @@ impl SpecValue {
             Err(SpecError::new("Expected a list value"))
         }
     }
+}
+
+/// Largest integer a spec argument may hold. Spec numbers are `f64`, and a plain `as usize`
+/// saturates, so an unbounded value reaches the models as `usize::MAX` and overflows their
+/// size arithmetic. A million is well past any real period, window or order.
+pub const MAX_SPEC_INTEGER: usize = 1_000_000;
+
+/// `n` as a `usize` when it is a whole number in `0..=MAX_SPEC_INTEGER`. Every integer taken
+/// from a spec goes through here.
+pub fn spec_integer(n: f64) -> Option<usize> {
+    (n >= 0.0 && n.fract() == 0.0 && n <= MAX_SPEC_INTEGER as f64).then_some(n as usize)
 }
 
 pub type KeywordArgs = Vec<(String, SpecValue)>;
@@ -295,8 +310,9 @@ impl Parser {
         loop {
             if matches!(self.peek(), Some(Token::Ident(_))) && self.peek_n(1) == Some(&Token::Eq) {
                 seen_keyword = true;
+                // Keywords are case-insensitive, like model names.
                 let key = match self.next() {
-                    Some(Token::Ident(v)) => v,
+                    Some(Token::Ident(v)) => v.to_ascii_lowercase(),
                     _ => unreachable!(),
                 };
                 self.expect(&Token::Eq, "Expected '=' after keyword")?;
@@ -326,22 +342,31 @@ impl Parser {
     }
 
     fn parse_value(&mut self) -> Result<SpecValue, SpecError> {
+        if self.consume(&Token::LBracket) {
+            return self.parse_list_value();
+        }
+        self.parse_scalar()
+    }
+
+    fn parse_scalar(&mut self) -> Result<SpecValue, SpecError> {
         match self.next() {
             Some(Token::Number(v)) => Ok(SpecValue::Number(v)),
             Some(Token::Ident(v)) => Ok(SpecValue::Ident(v)),
             Some(Token::String(v)) => Ok(SpecValue::String(v)),
             Some(Token::Boolean(v)) => Ok(SpecValue::Flag(v)),
-            Some(Token::LBracket) => self.parse_list_value(),
+            Some(Token::LBracket) => Err(SpecError::new("Nested lists are not supported")),
             _ => Err(SpecError::new("Expected value")),
         }
     }
 
+    /// Lists are flat: every consumer reads a list of numbers. Refusing nesting also keeps
+    /// the parser non-recursive, so no input can exhaust the stack.
     fn parse_list_value(&mut self) -> Result<SpecValue, SpecError> {
         let mut items = Vec::new();
 
         if self.peek() != Some(&Token::RBracket) {
             loop {
-                items.push(self.parse_value()?);
+                items.push(self.parse_scalar()?);
                 if !self.consume(&Token::Comma) || self.peek() == Some(&Token::RBracket) {
                     break;
                 }

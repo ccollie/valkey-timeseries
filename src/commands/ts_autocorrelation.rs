@@ -1,3 +1,4 @@
+use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use anofox_forecast::features::autocorrelation;
@@ -110,6 +111,13 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
 
     args.done()?;
 
+    // Plain and TRA are a single pass whatever the lag; these two grow with it.
+    if matches!(kind, Kind::Partial | Kind::Aggregated(_)) && lag > MAX_ANALYSIS_LAG {
+        return Err(ValkeyError::String(format!(
+            "TSDB: lag must not exceed {MAX_ANALYSIS_LAG} with PARTIAL or AGGREGATED"
+        )));
+    }
+
     let sample_count = values.len();
     run_analysis(
         ctx,
@@ -142,6 +150,7 @@ enum Kind {
     Aggregated(String),
 }
 
-/// Largest range that runs on the main thread. Every variant is linear in the
-/// range (~100 ms at 200k samples, release build), so the bar is high.
+/// Largest range that runs on the main thread. Plain and TRA are linear in the range
+/// (~100 ms at 200k samples, release build), so the bar is high; PARTIAL and AGGREGATED
+/// also grow with the lag, which is why that is capped at `MAX_ANALYSIS_LAG`.
 const INLINE_MAX_SAMPLES: usize = 50_000;

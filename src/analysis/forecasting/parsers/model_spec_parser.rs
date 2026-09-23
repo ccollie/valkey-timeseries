@@ -1,5 +1,5 @@
 use super::ForecastModelKind;
-use super::spec_parser::{KeywordArgs, SpecError, parse_specs};
+use super::spec_parser::{KeywordArgs, MAX_SPEC_INTEGER, SpecError, parse_specs, spec_integer};
 use std::fmt::Display;
 
 pub type ModelSpecError = SpecError;
@@ -79,7 +79,9 @@ impl ModelSpec {
     pub fn get_usize_kwarg(&mut self, key: &str) -> Result<Option<usize>, ModelSpecError> {
         if let Some(arg) = self.remove_kwarg(key) {
             let value = arg.as_usize().map_err(|_| {
-                ModelSpecError::new(format!("{} must be a non-negative integer", key))
+                ModelSpecError::new(format!(
+                    "{key} must be an integer between 0 and {MAX_SPEC_INTEGER}"
+                ))
             })?;
             return Ok(Some(value));
         }
@@ -201,10 +203,9 @@ pub(super) fn get_usize_kwarg(
 ) -> Result<Option<usize>, ModelSpecError> {
     if let Some(arg) = spec.remove_kwarg(key) {
         return match arg {
-            SpecValue::Number(n) if n >= 0.0 && n.fract() == 0.0 => Ok(Some(n as usize)),
+            SpecValue::Number(n) if let Some(value) = spec_integer(n) => Ok(Some(value)),
             _ => Err(ModelSpecError::new(format!(
-                "{} must be a non-negative integer",
-                key
+                "{key} must be an integer between 0 and {MAX_SPEC_INTEGER}"
             ))),
         };
     }
@@ -250,12 +251,13 @@ pub(super) fn value_as_usize_list(value: &SpecValue) -> Result<Vec<usize>, Model
         let mut numbers = Vec::new();
         for item in items {
             if let SpecValue::Number(n) = item {
-                if *n >= 1.0 && n.fract() == 0.0 {
-                    numbers.push(*n as usize);
-                } else {
-                    return Err(ModelSpecError::new(format!(
-                        "Expected all items in list to be positive integers, got {n}"
-                    )));
+                match spec_integer(*n).filter(|&v| v >= 1) {
+                    Some(value) => numbers.push(value),
+                    None => {
+                        return Err(ModelSpecError::new(format!(
+                            "Expected all items in list to be integers between 1 and {MAX_SPEC_INTEGER}, got {n}"
+                        )));
+                    }
                 }
             } else {
                 return Err(ModelSpecError::new(
@@ -271,10 +273,10 @@ pub(super) fn value_as_usize_list(value: &SpecValue) -> Result<Vec<usize>, Model
 
 fn as_usize(value: &SpecValue) -> Result<usize, ModelSpecError> {
     match value {
-        SpecValue::Number(n) if *n >= 0.0 && n.fract() == 0.0 => Ok(*n as usize),
-        _ => Err(ModelSpecError::new(
-            "Canonical signatures require integer positional values",
-        )),
+        SpecValue::Number(n) if let Some(value) = spec_integer(*n) => Ok(value),
+        _ => Err(ModelSpecError::new(format!(
+            "Canonical signatures require integer positional values between 0 and {MAX_SPEC_INTEGER}"
+        ))),
     }
 }
 
@@ -381,5 +383,29 @@ mod tests {
     fn parses_empty_bracketed_model_spec_list() {
         let specs = parse_model_specs("[]").unwrap();
         assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn lowercases_keyword_names() {
+        let specs = parse_model_specs("SES(Alpha=0.3)").unwrap();
+        assert_eq!(specs[0].keyword_args[0].0, "alpha");
+    }
+
+    #[test]
+    fn rejects_nested_lists() {
+        let err = parse_model_specs("MFLES(seasonal_period=[[7], 12])").unwrap_err();
+        assert!(err.to_string().contains("Nested lists"));
+        // Deep nesting is refused at the first inner bracket, without recursing.
+        let deep = format!("MFLES(seasonal_period={})", "[".repeat(100_000));
+        assert!(parse_model_specs(&deep).is_err());
+    }
+
+    #[test]
+    fn bounds_integer_values() {
+        assert_eq!(SpecValue::Number(1_000_000.0).as_usize(), Ok(1_000_000));
+        assert!(SpecValue::Number(1_000_001.0).as_usize().is_err());
+        assert!(SpecValue::Number(1e300).as_usize().is_err());
+        assert!(SpecValue::Number(-1.0).as_usize().is_err());
+        assert!(SpecValue::Number(1.5).as_usize().is_err());
     }
 }

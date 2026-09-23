@@ -1,3 +1,4 @@
+use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::commands::command_parser::parse_timestamp_range;
 use crate::common::replies::{
     reply_with_array, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
@@ -74,6 +75,11 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(ValkeyError::Str(
             "TSDB: MAXLAG must be a non-negative integer",
         ));
+    }
+    if maxlag as u64 > MAX_ANALYSIS_LAG as u64 {
+        return Err(ValkeyError::String(format!(
+            "TSDB: MAXLAG must not exceed {MAX_ANALYSIS_LAG}"
+        )));
     }
     let maxlag = maxlag as usize;
 

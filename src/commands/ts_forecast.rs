@@ -106,7 +106,7 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
 }
 
 fn process_forecast(
-    ctx: ThreadSafeReplyContext,
+    ctx: &ThreadSafeReplyContext,
     series: ForecastTimeSeries,
     options: ForecastOptions,
     anchor: Option<StoreAnchor>,
@@ -121,13 +121,13 @@ fn process_forecast(
 
     // With STORE the reply is the number of samples written, not the forecast.
     if let (Some(target), Some(anchor)) = (options.store.as_ref(), anchor) {
-        store_forecast(&ctx, target, &results, anchor);
+        store_forecast(ctx, target, &results, anchor);
         return;
     }
 
-    reply_with_array(&ctx, results.len());
+    reply_with_array(ctx, results.len());
     for output in results {
-        reply_with_forecast_output(&ctx, &output);
+        reply_with_forecast_output(ctx, &output);
     }
 }
 

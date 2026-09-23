@@ -2,6 +2,7 @@ use super::model_spec_parser::{
     ModelSpec, ModelSpecError, SpecValue, get_float_kwarg, get_kwarg_as_flag, get_usize_kwarg,
     parse_model_specs, value_as_usize_list,
 };
+use super::spec_parser::{MAX_SPEC_INTEGER, spec_integer};
 use super::utils::{parse_decomposition_type, parse_seasonal_type};
 use crate::analysis::forecasting::parsers::{
     ForecastModelKind, parse_seasonal_forecast_method, parse_trend_forecast_method,
@@ -72,23 +73,89 @@ pub fn prepare_model_specs(input: &str) -> Result<Vec<PreparedModelSpec>, ModelS
         .collect()
 }
 
+/// Largest ARIMA, SARIMA or GARCH order (`p`, `d`, `q`, `P`, `D`, `Q`). Fitting cost grows
+/// steeply with the order, and practical models stay in single digits.
+const MAX_MODEL_ORDER: usize = 20;
+
+/// Largest iteration or boosting-round count a spec may request. A model runs to completion
+/// even after the client's `TIMEOUT` has fired, so this bounds the work a request can queue.
+const MAX_MODEL_ITERATIONS: usize = 10_000;
+
+fn check_orders(model: &str, names: &[&str], values: &[usize]) -> Result<(), ModelSpecError> {
+    for (name, &value) in names.iter().zip(values) {
+        if value > MAX_MODEL_ORDER {
+            return Err(ModelSpecError::new(format!(
+                "{model} order {name} must not exceed {MAX_MODEL_ORDER}, got {value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn check_iterations(model: &str, name: &str, value: usize) -> Result<usize, ModelSpecError> {
+    if value > MAX_MODEL_ITERATIONS {
+        return Err(ModelSpecError::new(format!(
+            "{model} {name} must not exceed {MAX_MODEL_ITERATIONS}, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Seasonal models index by `i % period`, so a zero period would panic inside the model.
+fn check_periods(model: &str, periods: &[usize]) -> Result<(), ModelSpecError> {
+    if periods.contains(&0) {
+        return Err(ModelSpecError::new(format!(
+            "{model} seasonal periods must be positive"
+        )));
+    }
+    Ok(())
+}
+
 pub fn build_single_model(mut spec: ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
+    let model = build_model(&mut spec)?;
+    // Handlers remove the keywords they understand. Anything left over is misspelled or
+    // unsupported, and ignoring it would silently run a different model than the one asked for.
+    if !spec.keyword_args.is_empty() {
+        let unknown = spec
+            .keyword_args
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(ModelSpecError::new(format!(
+            "Unsupported keyword argument(s) for model {}: {unknown}",
+            spec.model_name
+        )));
+    }
+    Ok(model)
+}
+
+fn build_model(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
     match spec.model_type {
         ForecastModelKind::Arima => {
             spec.ensure_arity(3)?;
             let ints = spec.get_positionals_as_usize()?;
+            check_orders("ARIMA", &["p", "d", "q"], &ints)?;
             Ok(Box::new(ARIMA::new(ints[0], ints[1], ints[2])))
         }
-        ForecastModelKind::AutoArima => handle_auto_arima(&mut spec),
-        ForecastModelKind::Ets => handle_ets(&mut spec),
-        ForecastModelKind::AutoEts => handle_auto_ets(&mut spec), // Fallback (should have returned earlier)
+        ForecastModelKind::AutoArima => handle_auto_arima(spec),
+        ForecastModelKind::Ets => handle_ets(spec),
+        ForecastModelKind::AutoEts => handle_auto_ets(spec), // Fallback (should have returned earlier)
         ForecastModelKind::Sarima => {
             let ints = spec.get_positionals_as_usize()?;
+            check_orders("SARIMA", &["p", "d", "q", "P", "D", "Q"], &ints)?;
             let forecaster = match spec.positional_args.len() {
                 3 => SARIMA::new(ints[0], ints[1], ints[2], 0, 0, 0, 0),
-                7 => SARIMA::new(
-                    ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
-                ),
+                7 => {
+                    if ints[6] == 0 && ints[3..6].iter().any(|&order| order > 0) {
+                        return Err(ModelSpecError::new(
+                            "SARIMA seasonal_period must be positive when P, D or Q is set",
+                        ));
+                    }
+                    SARIMA::new(
+                        ints[0], ints[1], ints[2], ints[3], ints[4], ints[5], ints[6],
+                    )
+                }
                 _ => {
                     return Err(ModelSpecError::new(
                         "SARIMA requires either 3 positional args (p,d,q) or 7 positional args (p,d,q,P,D,Q,seasonal_period)",
@@ -97,32 +164,34 @@ pub fn build_single_model(mut spec: ModelSpec) -> Result<BoxedForecaster, ModelS
             };
             Ok(Box::new(forecaster))
         }
-        ForecastModelKind::Tbats => handle_tbats(&mut spec),
-        ForecastModelKind::AutoTbats => handle_auto_tbats(&mut spec),
-        ForecastModelKind::Theta => handle_theta(&mut spec),
-        ForecastModelKind::Mstl => handle_mstl(&mut spec),
-        ForecastModelKind::Mfles => handle_mfles(&mut spec),
-        ForecastModelKind::Naive => handle_naive(&mut spec),
-        ForecastModelKind::SeasonalNaive => handle_seasonal_naive(&mut spec),
-        ForecastModelKind::Sma => handle_sma(&mut spec),
-        ForecastModelKind::Adida => handle_adida(&mut spec),
-        ForecastModelKind::Croston => handle_croston(&mut spec),
-        ForecastModelKind::Imapa => handle_imapa(&mut spec),
-        ForecastModelKind::SeasonalEs => handle_seasonal_es(&mut spec),
-        ForecastModelKind::Tsb => handle_tsb(&mut spec),
-        ForecastModelKind::Ses => handle_ses(&mut spec),
-        ForecastModelKind::Garch => handle_garch(&mut spec),
-        ForecastModelKind::Holt => handle_holt(&mut spec),
-        ForecastModelKind::HoltWinters => handle_holt_winters(&mut spec),
-        ForecastModelKind::RandomWalkWithDrift => handle_random_walk_with_drift(&mut spec),
+        ForecastModelKind::Tbats => handle_tbats(spec),
+        ForecastModelKind::AutoTbats => handle_auto_tbats(spec),
+        ForecastModelKind::Theta => handle_theta(spec),
+        ForecastModelKind::Mstl => handle_mstl(spec),
+        ForecastModelKind::Mfles => handle_mfles(spec),
+        ForecastModelKind::Naive => handle_naive(spec),
+        ForecastModelKind::SeasonalNaive => handle_seasonal_naive(spec),
+        ForecastModelKind::Sma => handle_sma(spec),
+        ForecastModelKind::Adida => handle_adida(spec),
+        ForecastModelKind::Croston => handle_croston(spec),
+        ForecastModelKind::Imapa => handle_imapa(spec),
+        ForecastModelKind::SeasonalEs => handle_seasonal_es(spec),
+        ForecastModelKind::Tsb => handle_tsb(spec),
+        ForecastModelKind::Ses => handle_ses(spec),
+        ForecastModelKind::Garch => handle_garch(spec),
+        ForecastModelKind::Holt => handle_holt(spec),
+        ForecastModelKind::HoltWinters => handle_holt_winters(spec),
+        ForecastModelKind::RandomWalkWithDrift => handle_random_walk_with_drift(spec),
     }
 }
 
 fn try_as_seasonal_period(arg: &SpecValue) -> Result<usize, ModelSpecError> {
     match arg {
-        SpecValue::Number(n) if *n >= 1.0 && n.fract() == 0.0 => Ok(*n as usize),
+        SpecValue::Number(n) if let Some(period) = spec_integer(*n).filter(|&p| p >= 1) => {
+            Ok(period)
+        }
         _ => Err(ModelSpecError::new(format!(
-            "Expected a positive integer for seasonal period, but got {arg}"
+            "Expected an integer between 1 and {MAX_SPEC_INTEGER} for seasonal period, but got {arg}"
         ))),
     }
 }
@@ -147,7 +216,9 @@ pub fn get_seasonal_periods(spec: &mut ModelSpec) -> Result<Option<Vec<usize>>, 
         return Ok(None);
     };
     match arg {
-        SpecValue::Number(n) if n >= 1.0 && n.fract() == 0.0 => Ok(Some(vec![n as usize])),
+        SpecValue::Number(n) if let Some(period) = spec_integer(n).filter(|&p| p >= 1) => {
+            Ok(Some(vec![period]))
+        }
         SpecValue::List(items) => Ok(Some(value_as_usize_list(&SpecValue::List(items))?)),
         _ => Err(ModelSpecError::new(format!(
             "Expected 'seasonal_period' argument for model {} to be either a positive integer or a list of positive integers",
@@ -163,6 +234,7 @@ fn handle_auto_tbats(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecE
             "AutoTBATS requires at least one seasonal period",
         ));
     }
+    check_periods("AutoTBATS", &ints)?;
 
     let mut forecaster = AutoTBATS::new(ints);
 
@@ -202,14 +274,27 @@ fn handle_auto_arima(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecE
 }
 
 fn handle_mfles(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
-    // MFLES requires at least one seasonal period, so if none provided, return error instead of defaulting to 12.
-    // This is how the current library code functions internally currently
-    let periods = get_seasonal_periods(spec)?.unwrap_or_else(|| vec![12]);
+    // Periods come positionally, like MSTL(7, 365), or as `seasonal_period`; with neither,
+    // MFLES uses a period of 12.
+    let positional = spec.get_positionals_as_usize()?;
+    let keyword = get_seasonal_periods(spec)?;
+    let periods = match (positional.is_empty(), keyword) {
+        (false, Some(_)) => {
+            return Err(ModelSpecError::new(
+                "MFLES seasonal periods given both positionally and as seasonal_period",
+            ));
+        }
+        (false, None) => positional,
+        (true, Some(keyword)) => keyword,
+        (true, None) => vec![12],
+    };
+    check_periods("MFLES", &periods)?;
 
     let mut forecaster = MFLES::new(periods);
 
     if let Some(max_rounds) = get_usize_kwarg(spec, "max_rounds")? {
-        forecaster = forecaster.with_max_rounds(max_rounds);
+        forecaster =
+            forecaster.with_max_rounds(check_iterations("MFLES", "max_rounds", max_rounds)?);
     }
 
     if let Some(seasonal_lr) = get_float_kwarg(spec, "seasonal_lr")? {
@@ -240,11 +325,13 @@ fn handle_mstl(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> 
             "MSTL requires at least one seasonal period",
         ));
     }
+    check_periods("MSTL", &ints)?;
 
     let mut forecaster = MSTLForecaster::new(ints);
 
     if let Some(iterations) = get_usize_kwarg(spec, "iterations")? {
-        forecaster = forecaster.with_iterations(iterations);
+        forecaster =
+            forecaster.with_iterations(check_iterations("MSTL", "iterations", iterations)?);
     }
 
     if let Some(robust) = get_kwarg_as_flag(spec, "robust")?
@@ -306,6 +393,7 @@ fn handle_seasonal_naive(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelS
             "SeasonalNaive accepts at most 1 positional argument (period)",
         ));
     }
+    check_periods("SeasonalNaive", &[period])?;
 
     Ok(Box::new(SeasonalNaive::new(period)))
 }
@@ -425,6 +513,7 @@ fn handle_seasonal_es(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpec
             "SeasonalES requires a seasonal period, e.g. SeasonalES(12) or SeasonalES(period=12)",
         )
     })?;
+    check_periods("SeasonalES", &[period])?;
 
     let alpha = get_float_kwarg(spec, "alpha")?;
     let optimized = get_kwarg_as_flag(spec, "optimized")?.unwrap_or(false);
@@ -479,6 +568,7 @@ fn handle_garch(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError>
 
     let p = positional_p.or(keyword_p).unwrap_or(1);
     let q = positional_q.or(keyword_q).unwrap_or(1);
+    check_orders("GARCH", &["p", "q"], &[p, q])?;
 
     let mut builder = GARCH::builder().p(p).q(q);
 
@@ -487,7 +577,8 @@ fn handle_garch(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError>
     }
 
     if let Some(max_iterations) = get_usize_kwarg(spec, "max_iterations")? {
-        builder = builder.max_iterations(max_iterations);
+        builder =
+            builder.max_iterations(check_iterations("GARCH", "max_iterations", max_iterations)?);
     }
 
     if let Some(tolerance) = get_float_kwarg(spec, "tolerance")? {
@@ -553,6 +644,7 @@ fn handle_tbats(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError>
             "TBATS requires at least one seasonal period",
         ));
     }
+    check_periods("TBATS", &ints)?;
 
     let mut forecaster = TBATS::new(ints);
 
@@ -580,6 +672,7 @@ fn handle_tbats(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError>
 // Theta has no positional args, but we want to support keyword args for future extensibility
 // (e.g., decomposition type), so handle it separately to provide clearer error messages.
 fn handle_theta(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
+    spec.ensure_arity(0)?;
     let saved_spec = spec.clone();
 
     let forecaster = if let Some(period) = get_seasonal_period(spec)? {
@@ -620,11 +713,11 @@ fn handle_theta(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError>
 fn handle_holt_winters(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
     let nums = spec.get_positionals_as_numbers()?;
     let seasonal_period = match nums.first() {
-        Some(&n) if n >= 1.0 && n.fract() == 0.0 => n as usize,
+        Some(&n) if let Some(period) = spec_integer(n).filter(|&p| p >= 1) => period,
         Some(_) => {
-            return Err(ModelSpecError::new(
-                "HoltWinters seasonal period must be a positive integer",
-            ));
+            return Err(ModelSpecError::new(format!(
+                "HoltWinters seasonal period must be an integer between 1 and {MAX_SPEC_INTEGER}"
+            )));
         }
         None => {
             // Fall back to keyword arg if no positional args
@@ -911,5 +1004,72 @@ mod tests {
                 .to_string()
                 .contains("Invalid positional arguments")
         );
+    }
+
+    fn build_error(spec: &str) -> String {
+        match build_models_from_specs(spec) {
+            Ok(_) => panic!("{spec} should be rejected"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_keyword_arguments() {
+        assert!(build_error("SES(alhpa=0.3)").contains("Unsupported keyword argument(s)"));
+        assert!(build_error("MFLES(seasonal_periods=[7])").contains("seasonal_periods"));
+    }
+
+    #[test]
+    fn keywords_are_case_insensitive() {
+        assert!(build_models_from_specs("SES(ALPHA=0.3), GARCH(P=1, q=1)").is_ok());
+    }
+
+    #[test]
+    fn caps_model_orders_and_iterations() {
+        assert!(build_models_from_specs("ARIMA(20,1,20)").is_ok());
+        assert!(build_error("ARIMA(21,0,0)").contains("must not exceed"));
+        assert!(build_error("SARIMA(0,0,0,21,0,0,12)").contains("must not exceed"));
+        assert!(build_error("GARCH(p=50)").contains("must not exceed"));
+        assert!(build_error("MSTL(12, iterations=10001)").contains("must not exceed"));
+        assert!(build_error("MFLES(12, max_rounds=10001)").contains("must not exceed"));
+    }
+
+    #[test]
+    fn rejects_integers_past_the_spec_limit() {
+        // A saturating cast would otherwise hand the model usize::MAX.
+        assert!(build_models_from_specs("SeasonalNaive(1e30)").is_err());
+        assert!(build_models_from_specs("SARIMA(0,0,0,1,1,1,9e18)").is_err());
+        assert!(build_models_from_specs("HoltWinters(1e30)").is_err());
+    }
+
+    #[test]
+    fn rejects_zero_seasonal_periods() {
+        for spec in [
+            "SeasonalNaive(0)",
+            "SeasonalES(0)",
+            "MSTL(0)",
+            "TBATS(0)",
+            "AutoTBATS(0)",
+            "MFLES(0)",
+            "SARIMA(0,0,0,1,0,0,0)",
+        ] {
+            assert!(
+                build_models_from_specs(spec).is_err(),
+                "{spec} should be rejected"
+            );
+        }
+        // A non-seasonal SARIMA may leave the period at zero.
+        assert!(build_models_from_specs("SARIMA(1,0,0,0,0,0,0)").is_ok());
+    }
+
+    #[test]
+    fn mfles_takes_positional_periods() {
+        assert!(build_models_from_specs("MFLES(24), MFLES(7, 365)").is_ok());
+        assert!(build_error("MFLES(24, seasonal_period=12)").contains("both positionally"));
+    }
+
+    #[test]
+    fn theta_rejects_positional_arguments() {
+        assert!(build_models_from_specs("Theta(3)").is_err());
     }
 }
