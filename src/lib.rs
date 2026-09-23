@@ -10,7 +10,6 @@ use crate::common::module_options::{HANDLE_IO_ERRORS, declare_module_options};
 use crate::common::threads::init_thread_pool;
 use crate::config::register_config;
 use crate::fanout::{init_fanout, is_clustered};
-use logger_rust::{LogLevel, set_log_level};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use valkey_module::{Context, Status, ValkeyString, Version, valkey_module};
@@ -162,7 +161,6 @@ fn initialize(ctx: &Context, args: &[ValkeyString]) -> Status {
     // read while loading a TSDB-TYPE payload panics the server from inside `rdb_load`
     // rather than returning an error we can report.
     declare_module_options(ctx, HANDLE_IO_ERRORS);
-    set_log_level(LogLevel::Console);
 
     if let Err(e) = register_config(ctx, args) {
         let msg = format!("Failed to register config: {e}");

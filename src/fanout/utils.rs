@@ -1,5 +1,5 @@
 use crate::fanout::FanoutTarget;
-use valkey_module::{Context, ContextFlags, ValkeyResult, logging::log_warning};
+use valkey_module::{Context, ContextFlags, ValkeyResult};
 pub(crate) const SLOT_SIZE: u16 = 16384;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
@@ -17,25 +17,6 @@ pub fn is_clustered(ctx: &Context) -> bool {
 pub fn is_multi_or_lua(ctx: &Context) -> bool {
     let flags = ctx.get_flags();
     flags.contains(ContextFlags::MULTI) || flags.contains(ContextFlags::LUA)
-}
-
-/// Returns `true` when the current node owns the hash slot for `key` in cluster mode.
-/// In non-cluster mode, always returns `true`.
-pub fn key_belongs_to_local_node(ctx: &Context, key: &[u8]) -> bool {
-    if !is_clustered(ctx) {
-        return true;
-    }
-    let cluster_map = super::get_cluster_map();
-    let current_shard = cluster_map.get_local_shard();
-    let Some(current_shard) = current_shard else {
-        // If we don't have a local shard, we can't own any slots, though this should not happen
-        // in a healthy cluster setup.
-        log_warning(
-            "Cluster mode is enabled but no local shard found in cluster map. Assuming key does not belong to local node.",
-        );
-        return false;
-    };
-    current_shard.i_own_key(key)
 }
 
 /// Helper function to check if the Valkey server version is considered "legacy" (e.g., < 9).
