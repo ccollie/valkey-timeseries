@@ -59,6 +59,35 @@ pub fn spawn_analysis<F: FnOnce() + Send + 'static>(job: F) {
     ANALYSIS_POOL.spawn(job)
 }
 
+/// Maps `f` over `items`, in parallel on the current rayon pool when called from one of its
+/// workers and sequentially otherwise. Results keep the order of `items`.
+///
+/// The fallback is deliberate: the main thread holds the GIL, which jobs on the global pool may
+/// be waiting for, so it must never block on that pool; and unlike orx's default runner this
+/// never starts threads of its own. An analysis job on [`ANALYSIS_POOL`] therefore fans out
+/// across that pool, while the same code run inline stays on the main thread.
+pub fn map_on_current_pool<T, R, F>(items: &[T], f: F) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync,
+{
+    if items.len() < 2 || rayon_core::current_thread_index().is_none() {
+        return items.iter().map(f).collect();
+    }
+    let mut slots: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    let f = &f;
+    rayon_core::scope(|scope| {
+        for (slot, item) in slots.iter_mut().zip(items) {
+            scope.spawn(move |_| *slot = Some(f(item)));
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every scoped job ran"))
+        .collect()
+}
+
 /// Spawn a job in the context of a valkey GIL (Global Interpreter Lock).
 pub fn spawn_with_context<F: FnOnce(&Context) + Send + 'static>(job: F) {
     spawn(move || {
@@ -201,5 +230,27 @@ where
 
     unsafe {
         raw::ValkeyModule_EventLoopAddOneShot.unwrap()(Some(event_loop_callback), raw_data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_on_current_pool;
+    use rayon_core::ThreadPoolBuilder;
+
+    #[test]
+    fn map_on_current_pool_keeps_order_off_and_on_a_pool() {
+        let items: Vec<u64> = (0..100).collect();
+        let expected: Vec<u64> = items.iter().map(|x| x * x).collect();
+
+        // The test thread is not a rayon worker: sequential.
+        assert_eq!(map_on_current_pool(&items, |x| x * x), expected);
+
+        let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let on_pool = pool.install(|| {
+            assert!(rayon_core::current_thread_index().is_some());
+            map_on_current_pool(&items, |x| x * x)
+        });
+        assert_eq!(on_pool, expected);
     }
 }

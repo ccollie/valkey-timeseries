@@ -9,6 +9,7 @@ use crate::commands::{
     CommandArgIterator, CommandArgToken, parse_command_arg_token, parse_timestamp_range,
 };
 use crate::common::Sample;
+use crate::common::context::is_blocking_denied;
 use crate::common::hash::{IntMap, IntSet};
 use crate::common::replies::{
     ReplyContext, ThreadSafeReplyContext, block_client, reply_with_sample,
@@ -148,7 +149,8 @@ fn process_request(
 
     validate_rcf_options(&options, samples.len())?;
 
-    if !should_run_in_background(samples.len(), options.method()) {
+    // A client that cannot be blocked (MULTI, Lua, RM_Call) is answered inline.
+    if !should_run_in_background(samples.len(), options.method()) || is_blocking_denied(ctx) {
         let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
         let reply_ctx = ReplyContext::new(ctx.ctx);
         return match detect_anomalies(&values, &options) {

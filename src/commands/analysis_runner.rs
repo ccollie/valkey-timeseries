@@ -1,13 +1,19 @@
 //! Inline-or-background execution for CPU-bound analysis commands.
 //!
 //! Analysis commands (`TS.TREND`, `TS.DECOMPOSE`, `TS.PERIODS`, `TS.STATIONARITY`,
-//! `TS.AUTOCORRELATION`, and the forecasting family) split their work into a pure
-//! `compute` step and a `reply` step. Small inputs run both inline on the main thread,
-//! which keeps the common case cheap; above a per-command sample threshold the client
+//! `TS.AUTOCORRELATION`, `TS.XCORR`, `TS.FEATURES`, and the forecasting family) split their
+//! work into a pure `compute` step and a `reply` step. Small inputs run both inline on the main
+//! thread, which keeps the common case cheap; above a per-command work threshold the client
 //! is blocked and both steps run on the analysis pool, so a large input can never stall
 //! the server. Either way the reply code is written once against [`AnalysisCtx`].
+//!
+//! Where the client cannot be blocked — inside `MULTI`/`EXEC`, a Lua script or a module's
+//! `RM_Call` — everything runs inline instead. Blocking such a client makes the server answer
+//! with an error while the job still runs (and may still `STORE`), and some of those contexts
+//! trip a server assert.
 
 use crate::commands::CommandArgIterator;
+use crate::common::context::is_blocking_denied;
 use crate::common::replies::{ReplyContext, ThreadSafeReplyContext, block_client_with_timeout};
 use crate::common::threads::spawn_analysis;
 use crate::error_consts;
@@ -52,7 +58,7 @@ pub(super) const ANALYSIS_TIMEOUT_ERROR: &str =
 /// A panicking job is answered with an internal error rather than taking the server down
 /// (rayon aborts the process on a panic in a spawned job). The jobs run third-party model
 /// code on user data, so input validation cannot be relied on to rule every panic out.
-pub(super) fn run_analysis_job<F>(ctx: &Context, timeout: AnalysisTimeout, job: F)
+fn run_analysis_job<F>(ctx: &Context, timeout: AnalysisTimeout, job: F)
 where
     F: FnOnce(&ThreadSafeReplyContext) + Send + 'static,
 {
@@ -127,8 +133,10 @@ impl AnalysisCtx<'_> {
     }
 }
 
-/// Run `compute` then `reply`, inline when `samples <= inline_max` and on the analysis
-/// pool (with the client blocked under `timeout`) otherwise.
+/// Run `compute` then `reply`, inline when `work <= inline_max` (or when the client cannot be
+/// blocked) and on the analysis pool, with the client blocked under `timeout`, otherwise.
+/// `work` is the command's own cost measure: usually the sample count, or samples × lags
+/// where the cost grows with both.
 ///
 /// `reply` returns the same `ValkeyResult` a command handler would: `NoReply` after
 /// writing raw replies, a value to be sent, or an error. In the background the value or
@@ -136,7 +144,7 @@ impl AnalysisCtx<'_> {
 /// error after a partial reply corrupts the stream on either path.
 pub(super) fn run_analysis<T, C, R>(
     ctx: &Context,
-    samples: usize,
+    work: usize,
     inline_max: usize,
     timeout: AnalysisTimeout,
     compute: C,
@@ -147,7 +155,7 @@ where
     C: FnOnce() -> ValkeyResult<T> + Send + 'static,
     R: FnOnce(&AnalysisCtx<'_>, T) -> ValkeyResult + Send + 'static,
 {
-    if samples <= inline_max {
+    if work <= inline_max || is_blocking_denied(ctx) {
         return catch_inline_panic(ctx, || {
             let output = compute()?;
             reply(&AnalysisCtx::Inline(ctx), output)
@@ -164,4 +172,20 @@ where
 
     // Reply will be sent from the analysis pool
     Ok(ValkeyValue::NoReply)
+}
+
+/// [`run_analysis`] for work that is never cheap enough to run inline by choice, such as model
+/// fitting: always on the analysis pool, except where the client cannot be blocked.
+pub(super) fn run_analysis_in_background<T, C, R>(
+    ctx: &Context,
+    timeout: AnalysisTimeout,
+    compute: C,
+    reply: R,
+) -> ValkeyResult
+where
+    T: Send + 'static,
+    C: FnOnce() -> ValkeyResult<T> + Send + 'static,
+    R: FnOnce(&AnalysisCtx<'_>, T) -> ValkeyResult + Send + 'static,
+{
+    run_analysis(ctx, 1, 0, timeout, compute, reply)
 }

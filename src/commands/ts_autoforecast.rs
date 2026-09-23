@@ -1,17 +1,19 @@
 use crate::analysis::forecasting::normalize_model_name;
 use crate::analysis::seasonality::MIN_SEASONAL_PERIOD;
 use crate::commands::CommandArgIterator;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
+use crate::commands::analysis_runner::{
+    AnalysisTimeout, parse_timeout, run_analysis_in_background,
+};
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value, parse_store_clause,
 };
 use crate::commands::forecast_utils::{
-    StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
+    ForecastOutput, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
     reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
 };
 use crate::commands::store_target::StoreTarget;
 use crate::commands::utils::reply_with_double_array;
-use crate::common::replies::{ThreadSafeReplyContext, reply_with_str};
+use crate::common::replies::{ReplyContext, reply_with_str};
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::detection::detect_dominant_period;
 use anofox_forecast::models::auto_forecast::{AutoForecast, AutoForecastConfig};
@@ -112,12 +114,30 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
         .map(|_| store_anchor(&series, options.horizon))
         .transpose()?;
 
-    run_analysis_job(ctx, options.timeout, move |thread_ctx| {
-        process_forecast(thread_ctx, series, options, anchor);
-    });
-
-    // Reply will be sent from the analysis pool
-    Ok(ValkeyValue::NoReply)
+    let timeout = options.timeout;
+    run_analysis_in_background(
+        ctx,
+        timeout,
+        move || {
+            let mut options = options;
+            let store = options.store.take();
+            let output = fit_best_model(&series, options)?;
+            Ok((output, store))
+        },
+        move |actx, (output, store)| {
+            // With STORE the forecast is persisted first; a failed write is the
+            // command's failure, since the caller asked for the samples, not the reply.
+            if let (Some(target), Some(anchor)) = (store.as_ref(), anchor)
+                && write_forecast_samples(actx, target, output.forecast.primary(), anchor)?
+                    .is_none()
+            {
+                // Timed out: the client already has its error, and nothing was written.
+                return Ok(ValkeyValue::NoReply);
+            }
+            reply_with_forecast_output(&actx.reply_ctx(), &output);
+            Ok(ValkeyValue::NoReply)
+        },
+    )
 }
 
 fn parse_autoforecast_args(
@@ -182,12 +202,11 @@ fn parse_autoforecast_args(
     Ok(options)
 }
 
-fn process_forecast(
-    ctx: &ThreadSafeReplyContext,
-    series: ForecastTimeSeries,
+/// Run the automatic model search and forecast with the best model.
+fn fit_best_model(
+    series: &ForecastTimeSeries,
     mut options: AutoForecastOptions,
-    anchor: Option<StoreAnchor>,
-) {
+) -> ValkeyResult<ForecastOutput> {
     if options.config.seasonal_period.is_none() && options.auto_seasonality {
         options.config.seasonal_period = detect_dominant_period(series.primary_values());
     }
@@ -197,55 +216,25 @@ fn process_forecast(
     let mut model = AutoForecast::with_config(options.config.clone());
 
     // { model: "ARIMA", horizon: 5, forecast: [...], lower_interval: [...], upper_interval: [...] }
-    let output = run_forecast(
-        &series,
+    let mut output = run_forecast(
+        series,
         &mut model,
         options.horizon,
         options.level,
         options.metrics,
         seasonal_period,
-    );
-
-    let mut output = match output {
-        Ok(o) => o,
-        Err(err) => {
-            let msg = err.to_string();
-            ctx.log_warning(&msg);
-            ctx.reply(Err(err));
-            return;
-        }
-    };
+    )?;
 
     // selected_model_name() must be called AFTER fit_predict so the best model is known
     let model_name = model
         .selected_model_name()
         .map(|s| s.to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    let selected_model = normalize_model_name(&model_name);
-    output.model_name = selected_model.to_string();
-
-    // With STORE the forecast is persisted first; a failed write is the
-    // command's failure, since the caller asked for the samples, not the reply.
-    if let (Some(target), Some(anchor)) = (options.store.as_ref(), anchor) {
-        match write_forecast_samples(ctx, target, output.forecast.primary(), anchor) {
-            Ok(Some(_)) => {}
-            // Timed out: the client already has its error, and nothing was written.
-            Ok(None) => return,
-            Err(err) => {
-                ctx.reply(Err(err));
-                return;
-            }
-        }
-    }
-
-    reply_with_forecast_output(ctx, &output);
+    output.model_name = normalize_model_name(&model_name).to_string();
+    Ok(output)
 }
 
-pub(super) fn reply_with_interval_array(
-    ctx: &ThreadSafeReplyContext,
-    name: &'static str,
-    values: &[f64],
-) {
+pub(super) fn reply_with_interval_array(ctx: &ReplyContext, name: &'static str, values: &[f64]) {
     reply_with_str(ctx, name);
     reply_with_double_array(ctx, values);
 }

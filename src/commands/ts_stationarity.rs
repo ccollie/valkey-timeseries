@@ -9,7 +9,7 @@ use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, V
 
 const MIN_SAMPLES: usize = 10;
 
-acl_categories!(TS_STATIONARITY, "ts.stationarity", "fast read timeseries");
+acl_categories!(TS_STATIONARITY, "ts.stationarity", "read timeseries");
 /// ```text
 /// TS.STATIONARITY key startTime endTime
 ///     [TEST adf|kpss|combined]
