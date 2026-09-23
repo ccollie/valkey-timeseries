@@ -25,6 +25,15 @@ pub fn init_thread_pool() {
         .unwrap();
 }
 
+/// The message a panic was raised with, for logging a panic that was caught.
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
 /// Spawn a job which runs asynchronously.
 /// The job must be `'static` and thus cannot borrow local variables.
 ///
