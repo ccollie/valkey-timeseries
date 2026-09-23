@@ -118,6 +118,12 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   `replicate_verbatim` a command whose result a replica can't reproduce cheaply and exactly (model
   fits, pool jobs); `TS.SANITIZE` is the one exception — inline and deterministic, so it replicates
   itself and uses `write_unreplicated`.
+- Analysis commands run through `run_analysis`/`run_analysis_in_background`
+  (`src/commands/analysis_runner.rs`), never a hand-rolled `block_client` + `spawn`: the runner
+  falls back to inline where blocking is denied (MULTI, Lua, `RM_Call` — blocking there errors or
+  asserts), catches panics, and applies `TIMEOUT`. Fan out with `map_on_current_pool`
+  (`src/common/threads`), not orx `.par()` (spawns OS threads per call) or the global pool from
+  the main thread.
 
 ## Testing
 
