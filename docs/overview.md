@@ -67,6 +67,11 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 
 * `TS.OUTLIERS`: Identify outliers in a series based on a specified algorithm and parameters.
 
+### Gap Filling
+
+* `TS.FILLGAPS`: Find missing samples on a frequency grid. Each call examines at most 100,000
+  grid timestamps; use a shorter range or larger frequency for wider gaps.
+
 ## Indexes
 
 Valkey TimeSeries uses a label-based indexing system separate from the key space.
