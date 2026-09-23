@@ -118,6 +118,12 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   `replicate_verbatim` a command whose result a replica can't reproduce cheaply and exactly (model
   fits, pool jobs); `TS.SANITIZE` is the one exception — inline and deterministic, so it replicates
   itself and uses `write_unreplicated`.
+- **Key specs do not drive cluster routing.** Valkey's `getNodeByQuery` uses the legacy
+  first/last-key range, or the module callback if the command is flagged `GetkeysApi`; key specs
+  only feed `COMMAND GETKEYS` and ACLs. A command with a key outside that range (e.g. a `STORE`
+  destination) needs `GetkeysApi` plus an `is_keys_position_request` branch
+  (`report_store_key_positions`), or a node silently accepts a cross-slot write. `GETKEYS`
+  passing proves nothing here — test it on a cluster.
 - Analysis commands run through `run_analysis`/`run_analysis_in_background`
   (`src/commands/analysis_runner.rs`), never a hand-rolled `block_client` + `spawn`: the runner
   falls back to inline where blocking is denied (MULTI, Lua, `RM_Call` — blocking there errors or
@@ -131,6 +137,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   (`crate::tests::generators`) for fixtures rather than hand-rolled loops.
 - Integration: Python pytest under `tests/` (`test_ts_*.py`, `*_cme.py` = cluster-mode variants),
   driven by `./build.sh`.
+- Analysis `TIMEOUT` tests: use `TIMEOUT 1` on slow input rather than asserting elapsed time, and
+  call `wait_for_analysis_pool_idle` (`tests/common.py`) before asserting what an abandoned job
+  did not do — never a fixed `sleep`.
 - Compatibility harness (`tests/compat/`): diffs every reply against a pinned `redis:8.10` reference
   server, RESP2 + RESP3. Excluded from a plain `./build.sh`; opt in with `RTS_COMPAT=1` or
   `./build.sh compat`. Intentional mismatches go in `divergences.yml` as XFAIL-DIVERGENT — "reference

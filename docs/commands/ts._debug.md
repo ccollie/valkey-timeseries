@@ -43,7 +43,8 @@ TS._DEBUG <subcommand> [arguments]</subcommand>
 | `HELP`            | Display available subcommands and brief descriptions    |
 | `STRINGPOOLSTATS` | Report statistics for the global string interning pool  |
 | `LIST_CONFIGS`    | List module configuration parameters and current values |
-| `PANIC_NEXT_ANALYSIS_JOB` | Make the next background analysis job (`TS.OUTLIERS` on a large range) panic, to test that its client still gets an error reply |
+| `ANALYSIS_JOBS`   | Number of analysis jobs queued or running on the analysis lane, including ones whose client already timed out |
+| `PANIC_NEXT_ANALYSIS_JOB` | Make the next background analysis job panic, to test that its client still gets an error reply |
 
 ---
 
@@ -74,6 +75,8 @@ TS._DEBUG HELP
 4) "Show String Interner Stats"
 5) "TS._DEBUG LIST_CONFIGS [VERBOSE] [APP|DEV|HIDDEN]"
 6) "List config names (default) or VERBOSE details, optionally filtered by visibility"
+7) "TS._DEBUG ANALYSIS_JOBS"
+8) "Number of analysis jobs queued or running on the analysis lane"
 ```
 
 ---
