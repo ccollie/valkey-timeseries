@@ -1,4 +1,5 @@
 use crate::analysis::forecasting::normalize_model_name;
+use crate::analysis::seasonality::MIN_SEASONAL_PERIOD;
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
 use crate::commands::command_parser::{
@@ -96,6 +97,14 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
 
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_autoforecast_args(ctx, &source_key, &mut args)?;
+    let sample_count = series.primary_values().len();
+    if let Some(period) = options.config.seasonal_period
+        && period > sample_count
+    {
+        return Err(ValkeyError::String(format!(
+            "TSDB: SEASONALITY period {period} exceeds the {sample_count} samples in the range"
+        )));
+    }
     // Validate the STORE step and final timestamp before the model search.
     let anchor = options
         .store
@@ -134,8 +143,13 @@ fn parse_autoforecast_args(
                             args.next(); // consume AUTO
                             continue;
                         }
-                    let period = parse_single_value(args, "SEASONALITY")? as usize;
-                    options.config.seasonal_period = Some(period);
+                    let period = args.next_i64().map_err(|_| {
+                        ValkeyError::Str("TSDB: SEASONALITY must be AUTO or an integer period")
+                    })?;
+                    if period < MIN_SEASONAL_PERIOD as i64 {
+                        return Err(ValkeyError::Str("TSDB: SEASONALITY period must be at least 2"));
+                    }
+                    options.config.seasonal_period = Some(period as usize);
                 },
                 "MODELS" => {
                     let models = args.next_str().map_err(|_| ValkeyError::Str("TSDB: Missing value for MODELS"))?;
@@ -169,7 +183,7 @@ fn parse_autoforecast_args(
 }
 
 fn process_forecast(
-    ctx: ThreadSafeReplyContext,
+    ctx: &ThreadSafeReplyContext,
     series: ForecastTimeSeries,
     mut options: AutoForecastOptions,
     anchor: Option<StoreAnchor>,
@@ -213,7 +227,7 @@ fn process_forecast(
     // With STORE the forecast is persisted first; a failed write is the
     // command's failure, since the caller asked for the samples, not the reply.
     if let (Some(target), Some(anchor)) = (options.store.as_ref(), anchor) {
-        match write_forecast_samples(&ctx, target, output.forecast.primary(), anchor) {
+        match write_forecast_samples(ctx, target, output.forecast.primary(), anchor) {
             Ok(Some(_)) => {}
             // Timed out: the client already has its error, and nothing was written.
             Ok(None) => return,
@@ -224,7 +238,7 @@ fn process_forecast(
         }
     }
 
-    reply_with_forecast_output(&ctx, &output);
+    reply_with_forecast_output(ctx, &output);
 }
 
 pub(super) fn reply_with_interval_array(
@@ -234,22 +248,6 @@ pub(super) fn reply_with_interval_array(
 ) {
     reply_with_str(ctx, name);
     reply_with_double_array(ctx, values);
-}
-
-fn parse_single_value(iter: &mut CommandArgIterator, option_name: &str) -> ValkeyResult<f64> {
-    let Ok(value_str) = iter.next_str() else {
-        return Err(ValkeyError::String(format!(
-            "TSDB: Missing value for {option_name}"
-        )));
-    };
-
-    let value = value_str.parse().map_err(|_e| {
-        ValkeyError::String(format!(
-            "TSDB: invalid value for {option_name}: {value_str}"
-        ))
-    })?;
-
-    Ok(value)
 }
 
 fn parse_models(model_str: &str, config: &mut AutoForecastConfig) -> ValkeyResult<()> {

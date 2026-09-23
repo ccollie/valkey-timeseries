@@ -1,3 +1,4 @@
+use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::error::TsdbError;
 use anofox_forecast::features::Feature;
 use orx_parallel::ParIter;
@@ -144,6 +145,11 @@ pub fn parse_feature(s: &str) -> Result<Feature, TsdbError> {
                     return Err(TsdbError::ForecastError(
                         "Partial autocorrelation lag must be greater than 0".into(),
                     ));
+                }
+                if lag > MAX_ANALYSIS_LAG {
+                    return Err(TsdbError::ForecastError(format!(
+                        "Partial autocorrelation lag must not exceed {MAX_ANALYSIS_LAG}"
+                    )));
                 }
                 Ok(Feature::PartialAutocorrelation { lag })
             }

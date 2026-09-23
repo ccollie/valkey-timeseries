@@ -362,11 +362,15 @@ fn store_trend(
         let timestamps: Vec<i64> = samples.iter().map(|s| s.timestamp).collect();
         if let Some(step) = compute_median_step_ms(&timestamps) {
             let last_ts = samples.last().map(|s| s.timestamp).unwrap_or(0);
-            let predicted_samples = predicted_values
-                .iter()
-                .enumerate()
-                .map(|(i, &value)| Sample::new(last_ts + step * (i as i64 + 1), value));
-            store_samples.extend(predicted_samples);
+            for (i, &value) in predicted_values.iter().enumerate() {
+                let timestamp = (i as i64 + 1)
+                    .checked_mul(step)
+                    .and_then(|offset| last_ts.checked_add(offset))
+                    .ok_or(ValkeyError::Str(
+                        "TSDB: STORE predicted timestamps exceed the supported range",
+                    ))?;
+                store_samples.push(Sample::new(timestamp, value));
+            }
         } else {
             ctx.log_warning(
                 "TSDB: STORE predicted values skipped — could not determine step from input series",
@@ -481,6 +485,14 @@ fn parse_trend_args(
                 })?;
                 if n <= 0 {
                     return Err(ValkeyError::Str("TSDB: PREDICT must be greater than 0"));
+                }
+                // Predicting allocates O(PREDICT), possibly on the main thread, so it shares
+                // the forecast commands' horizon cap.
+                let max = crate::config::forecast_max_horizon();
+                if n as u64 > max as u64 {
+                    return Err(ValkeyError::String(format!(
+                        "TSDB: PREDICT must not exceed {max} (ts-forecast-max-horizon)"
+                    )));
                 }
                 options.predict = n as usize;
             },

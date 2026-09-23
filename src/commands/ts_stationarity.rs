@@ -1,3 +1,4 @@
+use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::common::replies::{
@@ -88,6 +89,11 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
                     return Err(ValkeyError::Str(
                         "TSDB: LAGS must be a non-negative integer",
                     ));
+                }
+                if lag as u64 > MAX_ANALYSIS_LAG as u64 {
+                    return Err(ValkeyError::String(format!(
+                        "TSDB: LAGS must not exceed {MAX_ANALYSIS_LAG}"
+                    )));
                 }
                 lags = Some(lag as usize);
             }

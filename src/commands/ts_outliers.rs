@@ -251,6 +251,11 @@ fn parse_seasonality(args: &mut CommandArgIterator) -> ValkeyResult<Seasonality>
     if periods.is_empty() || periods.len() > MAX_SEASONALITY_PERIODS {
         return Err(ValkeyError::Str("TSDB: invalid SEASONALITY periods"));
     }
+    if periods.iter().any(|&p| p < MIN_SEASONAL_PERIOD) {
+        return Err(ValkeyError::Str(
+            "TSDB: SEASONALITY periods must be at least 2",
+        ));
+    }
     // periods should be unique and sorted
     periods.sort_unstable();
     if !periods.windows(2).all(|w| w[0] != w[1]) {

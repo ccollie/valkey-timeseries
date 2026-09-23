@@ -241,7 +241,7 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
 }
 
 fn process_backtest(
-    ctx: ThreadSafeReplyContext,
+    ctx: &ThreadSafeReplyContext,
     series: ForecastTimeSeries,
     options: BacktestOptions,
 ) {
@@ -284,9 +284,9 @@ fn process_backtest(
         .map(|spec| evaluate_model(spec, &series, &folds, &options))
         .collect();
 
-    reply_with_array(&ctx, results.len());
+    reply_with_array(ctx, results.len());
     for result in &results {
-        reply_with_backtest_result(&ctx, &series, result, options.with_predictions);
+        reply_with_backtest_result(ctx, &series, result, options.with_predictions);
     }
 }
 

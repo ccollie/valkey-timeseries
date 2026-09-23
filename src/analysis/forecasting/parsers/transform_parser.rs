@@ -39,18 +39,52 @@ pub fn wrap_model_with_transforms(
     Box::new(builder.build())
 }
 
+/// Largest differencing order: each order is another pass over the series, and nothing
+/// past second or third order is used in practice.
+const MAX_DIFFERENCE_ORDER: usize = 20;
+
 pub fn build_single_transform(
     mut spec: TransformSpec,
 ) -> Result<Box<dyn Transform>, TransformSpecError> {
+    let transform = build_transform(&mut spec)?;
+    // Same contract as models: a keyword no branch consumed is an error, not a silent no-op.
+    if !spec.keyword_args.is_empty() {
+        let unsupported = spec
+            .keyword_args
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(TransformSpecError::new(format!(
+            "Unsupported keyword argument(s) for transform {}: {}",
+            spec.transform_name, unsupported
+        )));
+    }
+    Ok(transform)
+}
+
+fn build_transform(spec: &mut TransformSpec) -> Result<Box<dyn Transform>, TransformSpecError> {
     match spec.transform_type {
         ForecastTransformKind::Difference => {
             spec.ensure_arity(1)?;
             let d = as_usize(&spec.positional_args[0], &spec.transform_name)?;
+            if d > MAX_DIFFERENCE_ORDER {
+                return Err(TransformSpecError::new(format!(
+                    "Transform {} order must not exceed {MAX_DIFFERENCE_ORDER}",
+                    spec.transform_name
+                )));
+            }
             Ok(Box::new(DifferenceTransform::new(d)))
         }
         ForecastTransformKind::SeasonalDifference => {
             spec.ensure_arity(1)?;
             let period = as_usize(&spec.positional_args[0], &spec.transform_name)?;
+            if period == 0 {
+                return Err(TransformSpecError::new(format!(
+                    "Transform {} period must be positive",
+                    spec.transform_name
+                )));
+            }
             Ok(Box::new(SeasonalDifferenceTransform::new(period)))
         }
         ForecastTransformKind::BoxCox => {
@@ -65,22 +99,9 @@ pub fn build_single_transform(
                 }
             };
 
-            let keyword_lambda = remove_kwarg(&mut spec, "lambda")
+            let keyword_lambda = remove_kwarg(spec, "lambda")
                 .map(|value| parse_lambda(&value, &spec.transform_name))
                 .transpose()?;
-
-            if !spec.keyword_args.is_empty() {
-                let unsupported = spec
-                    .keyword_args
-                    .iter()
-                    .map(|(key, _)| key.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(TransformSpecError::new(format!(
-                    "Unsupported keyword argument(s) for transform {}: {}",
-                    spec.transform_name, unsupported
-                )));
-            }
 
             if positional_lambda.is_some() && keyword_lambda.is_some() {
                 return Err(TransformSpecError::new(format!(
@@ -174,6 +195,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(transforms.len(), 6);
+    }
+
+    #[test]
+    fn rejects_unknown_keywords_and_bad_orders() {
+        assert!(build_transforms_from_specs("Difference(1, order=2)").is_err());
+        assert!(build_transforms_from_specs("Log(base=10)").is_err());
+        assert!(build_transforms_from_specs("Difference(20)").is_ok());
+        assert!(build_transforms_from_specs("Difference(21)").is_err());
+        assert!(build_transforms_from_specs("SeasonalDifference(0)").is_err());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::analysis::seasonality::Seasonality;
+use crate::analysis::seasonality::{MIN_SEASONAL_PERIOD, Seasonality};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
@@ -116,12 +116,20 @@ fn decompose(values: &[f64], seasonality: Seasonality) -> ValkeyResult<Decomposi
 
     let n = values.len();
 
+    // Auto-detected periods are checked too: period 0 panics inside STL.
+    if let Some(&period) = periods.iter().find(|&&p| p < MIN_SEASONAL_PERIOD) {
+        return Err(ValkeyError::String(format!(
+            "TSDB: seasonal period must be at least {MIN_SEASONAL_PERIOD}, got {period}"
+        )));
+    }
+
+    // `period > n / 2` rather than `n < 2 * period`, which wraps for huge periods.
     if periods.len() == 1 {
         let period = periods[0];
-        if n < 2 * period {
+        if period > n / 2 {
             return Err(ValkeyError::String(format!(
                 "TSDB: insufficient data for STL decomposition. Need at least {} samples, got {}",
-                2 * period,
+                period.saturating_mul(2),
                 n
             )));
         }
@@ -133,10 +141,10 @@ fn decompose(values: &[f64], seasonality: Seasonality) -> ValkeyResult<Decomposi
             .ok_or(ValkeyError::Str("TSDB: STL decomposition failed"))
     } else {
         let max_period = *periods.iter().max().unwrap_or(&0);
-        if n < 2 * max_period {
+        if max_period > n / 2 {
             return Err(ValkeyError::String(format!(
                 "TSDB: insufficient data for MSTL decomposition. Need at least {} samples, got {}",
-                2 * max_period,
+                max_period.saturating_mul(2),
                 n
             )));
         }
@@ -186,6 +194,11 @@ fn parse_seasonality(args: &mut CommandArgIterator) -> ValkeyResult<Seasonality>
     if periods.is_empty() || periods.len() > MAX_SEASONALITY_PERIODS {
         return Err(ValkeyError::Str(
             "TSDB: invalid SEASONALITY periods. Expected 1-4 period values or 'auto'",
+        ));
+    }
+    if periods.iter().any(|&p| p < MIN_SEASONAL_PERIOD) {
+        return Err(ValkeyError::Str(
+            "TSDB: SEASONALITY periods must be at least 2",
         ));
     }
 
