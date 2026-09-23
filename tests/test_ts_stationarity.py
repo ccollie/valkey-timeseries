@@ -200,8 +200,7 @@ class TestStationarity(ValkeyTimeSeriesTestCaseBase):
     def test_white_noise_is_stationary(self):
         """White noise should be classified as stationary by ADF."""
         key = "test:stationarity:white_noise"
-        random.seed(42)  # reproducible
-        create_white_noise_series(self.client, key, count=100)
+        create_white_noise_series(self.client, key, count=100, seed=42)
 
         result = self.client.execute_command(
             "TS.STATIONARITY", key, "-", "+", "TEST", "adf"
@@ -216,8 +215,7 @@ class TestStationarity(ValkeyTimeSeriesTestCaseBase):
     def test_random_walk_is_nonstationary(self):
         """Random walk should be classified as non-stationary by ADF."""
         key = "test:stationarity:random_walk"
-        random.seed(123)  # reproducible
-        create_random_walk_series(self.client, key, count=100)
+        create_random_walk_series(self.client, key, count=100, seed=123)
 
         result = self.client.execute_command(
             "TS.STATIONARITY", key, "-", "+", "TEST", "adf"
@@ -282,9 +280,9 @@ class TestStationarity(ValkeyTimeSeriesTestCaseBase):
         """Test that stationarity respects the time range."""
         key = "test:stationarity:range"
         # Create a stationary series early, then a trend later
-        random.seed(77)
+        rng = random.Random(77)
         for i in range(30):
-            val = random.gauss(0.0, 1.0)
+            val = rng.gauss(0.0, 1.0)
             self.client.execute_command("TS.ADD", key, 1000 + i * 1000, val)
         # Add a trend afterwards
         for i in range(30):

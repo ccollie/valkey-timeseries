@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from sys import platform
 from dataclasses import dataclass, field
 from typing import Optional, List, Any
@@ -501,3 +502,22 @@ class LabelSearchResponse:
         # Legacy response: assume plain list of bulkstrings -> no has_more
         results = LabelValue.parse_response(response)
         return cls(has_more=False, results=results)
+
+
+def wait_for_analysis_pool_idle(client, timeout: float = 60.0) -> None:
+    """Wait until no analysis job is queued or running on the module's analysis pool.
+
+    A job whose client timed out keeps running in the background, so asserting that it left
+    no trace (for example, that it did not STORE) only means something once it has finished.
+    Polls `TS._DEBUG ANALYSIS_JOBS`, enabling debug mode for the duration.
+    """
+    previous = client.execute_command("CONFIG", "GET", "ts.debug-mode")[1]
+    client.execute_command("CONFIG", "SET", "ts.debug-mode", "yes")
+    try:
+        deadline = time.monotonic() + timeout
+        while client.execute_command("TS._DEBUG", "ANALYSIS_JOBS") != 0:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"analysis pool still busy after {timeout}s")
+            time.sleep(0.05)
+    finally:
+        client.execute_command("CONFIG", "SET", "ts.debug-mode", previous)

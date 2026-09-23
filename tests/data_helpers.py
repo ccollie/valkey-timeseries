@@ -396,18 +396,21 @@ def create_negative_linear_series(client, key: str, start_ms: int = 1000,
     values = [-(i + 1.0) for i in range(count)]
     _add(client, key, start_ms, values, step_ms)
 
-def create_white_noise_series(client, key, start_time=1000, count=50):
-    """Create a stationary white noise series ~ N(0, 1)."""
+def create_white_noise_series(client, key, start_time=1000, count=50, *, seed):
+    """Create a stationary white noise series ~ N(0, 1), reproducible from `seed`."""
+    rng = random.Random(seed)
     for i in range(count):
-        val = random.gauss(0.0, 1.0)
+        val = rng.gauss(0.0, 1.0)
         client.execute_command("TS.ADD", key, start_time + i * 1000, val)
     return start_time, count
 
 
-def create_random_walk_series(client, key, start_time=1000, count=50):
-    """Create a non-stationary random walk (cumulative sum of white noise)."""
+def create_random_walk_series(client, key, start_time=1000, count=50, *, seed):
+    """Create a non-stationary random walk (cumulative sum of white noise), reproducible
+    from `seed`."""
+    rng = random.Random(seed)
     val = 0.0
     for i in range(count):
-        val += random.gauss(0.0, 1.0)
+        val += rng.gauss(0.0, 1.0)
         client.execute_command("TS.ADD", key, start_time + i * 1000, val)
     return start_time, count

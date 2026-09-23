@@ -585,8 +585,9 @@ class TestBacktest(ValkeyTimeSeriesTestCaseBase):
         )
         entry = parse_backtest_response(result)[0]
         for fold in entry["folds"]:
-            assert fold["metrics"]["mase"] is not None, \
-                "MASE should be defined (lag-1) when SEASONAL_PERIOD is omitted"
+            mase = fold["metrics"]["mase"]
+            assert isinstance(mase, float) and math.isfinite(mase) and mase >= 0.0, \
+                f"MASE should be a finite, non-negative value (lag-1 scaling), got {mase!r}"
 
     # ══════════════════════════════════════════════════════════════════════
     # Per-model failure isolation
@@ -859,7 +860,10 @@ class TestBacktest(ValkeyTimeSeriesTestCaseBase):
             "TS.BACKTEST", key, "-", "+",
             "MODELS", "Naive()", "HORIZON", "5", "TIMEOUT", "30000"
         )
-        assert result is not None
+        [entry] = parse_backtest_response(result)
+        assert entry["model"] == "Naive()"
+        assert entry["n_folds"] >= 1
+        assert len(entry["folds"]) == entry["n_folds"]
 
     def test_error_timeout_negative(self):
         key = "test:backtest:err:timeout_negative"

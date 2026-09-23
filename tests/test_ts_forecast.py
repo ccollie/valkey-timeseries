@@ -883,10 +883,10 @@ class TestForecast(ValkeyTimeSeriesTestCaseBase):
         """Test forecast on a random-walk series."""
         key = "test:forecast:random_walk"
         import random
-        random.seed(42)
+        rng = random.Random(42)
         values = [100.0]
         for i in range(199):
-            values.append(values[-1] + random.gauss(0, 2))
+            values.append(values[-1] + rng.gauss(0, 2))
         _add(self.client, key, 1000, values, 60000)
 
         result = self.client.execute_command(

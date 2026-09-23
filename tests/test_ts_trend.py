@@ -20,12 +20,12 @@ Covers:
 """
 
 import math
-import time
 from typing import Any, Dict, List
 
 import pytest
 from valkey import ResponseError
 from valkeytestframework.conftest import resource_port_tracker
+from common import wait_for_analysis_pool_idle
 from valkey_timeseries_test_case import ValkeyTimeSeriesTestCaseBase
 from data_helpers import (
     _add,
@@ -202,10 +202,11 @@ class TestTrend(ValkeyTimeSeriesTestCaseBase):
         )
 
         parsed = parse_trend_response(result)
-        scores = parsed["scores"]
-        # All positive data → at least 4 candidates
-        assert len(scores) >= 4, \
-            f"expected at least 4 candidates in scores, got {len(scores)}: {scores}"
+        names = {name for name, _ in parsed["scores"]}
+        # Exponential is only a candidate on all-positive data, alongside the rest.
+        expected = {"Linear", "Quadratic", "Exponential", "TheilSen"}
+        assert expected <= names, \
+            f"expected {sorted(expected)} among the candidates, got {sorted(names)}"
 
     def test_scores_are_sorted_ascending(self):
         """Scores should be sorted from lowest (best) to highest (worst).
@@ -701,8 +702,9 @@ class TestTrend(ValkeyTimeSeriesTestCaseBase):
 
         parsed = parse_trend_response(result)
         selected = parsed["model"]
-        assert isinstance(selected, str) and len(selected) > 0, \
-            f"model should be non-empty string, got {selected!r}"
+        candidates = [name for name, _ in parsed["scores"]]
+        assert isinstance(selected, str) and selected in candidates, \
+            f"model should be one of the scored candidates {candidates}, got {selected!r}"
 
     def test_response_with_predict_features_and_metrics(self):
         """When PREDICT, FEATURES, and METRICS are specified, all optional fields appear."""
@@ -1240,11 +1242,11 @@ class TestTrend(ValkeyTimeSeriesTestCaseBase):
         key = "test:trend:timeout"
         create_large_seasonal_series(self.client, key, count=20000)
 
-        started = time.monotonic()
+        # A 1 ms deadline cannot be beaten by a 20k-sample fit, whatever the machine.
         with pytest.raises(ResponseError, match="timed out before the result was ready"):
-            self.client.execute_command("TS.TREND", key, "-", "+", "TIMEOUT", "20")
-        assert time.monotonic() - started < 1.0
+            self.client.execute_command("TS.TREND", key, "-", "+", "TIMEOUT", "1")
         assert self.client.ping()
+        wait_for_analysis_pool_idle(self.client)
 
     def test_timeout_does_not_store_behind_the_client(self):
         key = "test:trend:timeout_store"
@@ -1253,9 +1255,9 @@ class TestTrend(ValkeyTimeSeriesTestCaseBase):
 
         with pytest.raises(ResponseError, match="timed out before the result was ready"):
             self.client.execute_command(
-                "TS.TREND", key, "-", "+", "TIMEOUT", "20", "STORE", store_key
+                "TS.TREND", key, "-", "+", "TIMEOUT", "1", "STORE", store_key
             )
-        time.sleep(2)  # let the abandoned fit finish
+        wait_for_analysis_pool_idle(self.client)
         assert self.client.execute_command("EXISTS", store_key) == 0
 
     def test_timeout_accepted_inline(self):

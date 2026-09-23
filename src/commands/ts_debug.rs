@@ -1,6 +1,6 @@
 use super::ts_debug_configs::list_configs_cmd;
 use crate::commands::CommandArgIterator;
-use crate::commands::analysis_runner::panic_next_analysis_job;
+use crate::commands::analysis_runner::{analysis_jobs_in_flight, panic_next_analysis_job};
 use crate::commands::command_parser::parse_query_index_command_args;
 use crate::common::replies::*;
 use crate::common::string_interner::{BucketStats, InternedString, TopKEntry};
@@ -164,6 +164,10 @@ fn help_cmd(ctx: &Context, args: &mut CommandArgIterator) -> ValkeyResult<()> {
             "List config names (default) or VERBOSE details, optionally filtered by visibility",
         ),
         (
+            "TS._DEBUG ANALYSIS_JOBS",
+            "Number of analysis jobs queued or running on the analysis lane",
+        ),
+        (
             "TS._DEBUG PANIC_NEXT_ANALYSIS_JOB",
             "Make the next job on the analysis lane panic (tests the error reply)",
         ),
@@ -199,6 +203,11 @@ pub fn ts_debug_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult<()> 
         "QUERYINDEX" => local_query_index(ctx, &mut itr),
         "HELP" => help_cmd(ctx, &mut itr),
         "LIST_CONFIGS" => list_configs_cmd(ctx, &mut itr),
+        "ANALYSIS_JOBS" => {
+            itr.done()?;
+            reply_with_integer(ctx, analysis_jobs_in_flight() as i64);
+            Ok(())
+        }
         "PANIC_NEXT_ANALYSIS_JOB" => {
             itr.done()?;
             panic_next_analysis_job();
