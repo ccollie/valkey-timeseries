@@ -48,7 +48,7 @@ Use `+` to denote the latest timestamp.
 <details open>
 <summary><code>maxLag</code></summary>
 
-Maximum lag (non-negative integer, in samples) to test in either direction.
+Maximum lag (integer from 0 to 1000, in samples) to test in either direction.
 The command computes correlation at every integer lag in `-maxLag..=maxLag`.
 </details>
 

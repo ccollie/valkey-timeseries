@@ -64,7 +64,8 @@ The seasonal period of the data (number of observations per seasonal cycle). For
 - `24` for hourly data with daily seasonality
 - `7` for daily data with weekly seasonality
 
-When provided, the forecasting models will account for seasonal patterns in the data.
+When provided, the forecasting models will account for seasonal patterns in the data. The period
+must be an integer of at least 2 and no larger than the number of samples in the range.
 </details>
 
 <details open>

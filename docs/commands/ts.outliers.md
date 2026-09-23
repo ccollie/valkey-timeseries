@@ -77,7 +77,7 @@ SEASONALITY [AUTO | period1 ...]
   complex seasonal patterns.
 * For a single period: Uses STL (Seasonal-Trend decomposition using LOESS)
 * For multiple periods: Uses MSTL (Multiple Seasonal-Trend decomposition using LOESS)
-* Periods must be unique positive integers
+* Periods must be unique integers of at least 2
 * Requires at least `2 × max(period)` data points
 
 **Example:** `SEASONALITY 24 168` adjusts for daily (24 hours) and weekly (168 hours) patterns in hourly data.
@@ -517,7 +517,7 @@ Detect pattern-based anomalies using a sliding window:
     * For `SEASONALITY`: requires at least `2 × max(period)` samples
 * **Seasonality constraints:**
     * Maximum 4 periods allowed
-    * Periods must be unique positive integers
+    * Periods must be unique integers of at least 2
     * Automatically sorted in ascending order
 * **Score normalization:**
     * All anomaly scores normalized to [0.0, 1.0] range

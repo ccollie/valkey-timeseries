@@ -35,7 +35,8 @@ End timestamp for the range query. Use `+` for the latest sample.
 <details open>
 <summary><code>lag</code></summary>
 
-Lag value (positive integer) for the autocorrelation computation.
+Lag value (positive integer) for the autocorrelation computation. With `PARTIAL` or `AGGREGATED`,
+whose cost grows with the lag, it must not exceed 1000.
 </details>
 
 ## Optional arguments

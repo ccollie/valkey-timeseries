@@ -48,7 +48,8 @@ Use `+` to denote the latest timestamp in the series.
 Controls how seasonal periods are determined. One of:
 
 * `AUTO` (default) — Automatically detect seasonal periods from the data using a periodogram.
-* `<period> [period ...]` — One or more seasonal periods (positive integers).
+* `<period> [period ...]` — One or more seasonal periods (integers of at least 2). The range must
+  hold at least two full cycles of the largest period.
   - A single period uses STL decomposition.
   - Multiple periods (up to 4) use MSTL decomposition.
 

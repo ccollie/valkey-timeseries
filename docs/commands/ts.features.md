@@ -95,7 +95,7 @@ case-insensitive.
 |---------------------------|-------------------------------------------------|----------------------|---------------------------|
 | `quantile`                | `quantile:<q>`                                  | `q` — quantile value | Float between 0.0 and 1.0 |
 | `autocorrelation`         | `autocorrelation:<lag>`                         | `lag` — lag value    | Positive integer          |
-| `partial_autocorrelation` | `partial_autocorrelation:<lag>` or `pacf:<lag>` | `lag` — lag value    | Positive integer          |
+| `partial_autocorrelation` | `partial_autocorrelation:<lag>` or `pacf:<lag>` | `lag` — lag value    | Integer from 1 to 1000    |
 
 Example: `FEATURE mean,median,quantile:0.5,autocorrelation:3`
 </details>
