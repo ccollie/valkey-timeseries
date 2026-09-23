@@ -1491,7 +1491,7 @@ mod tests {
         ("ts-promql-set-lookback-to-step", "no"),
         ("ts-promql-optimize-queries", "no"),
         ("ts-promql-derived-filter-pushdown", "yes"),
-        ("ts-promql-enable-experimental-functions", "yes"),
+        ("ts-promql-enable-experimental-functions", "no"),
         ("ts-promql-max-query-len", "4096"),
         ("ts-promql-max-response-series", "1000"),
         ("ts-promql-max-points-per-timeseries", "0"),
