@@ -46,14 +46,15 @@ Use `+` to denote the latest timestamp in the series.
 <details open>
 <summary><code>CATEGORY</code></summary>
 
-A comma-separated list of feature categories to compute. Duplicate categories are rejected.
+A comma-separated list of feature categories to compute (case-insensitive). Duplicate categories
+within the list are rejected. If `CATEGORY` is given more than once, only the last list is used.
 
 Available categories and the features they include:
 
 | Category          | Included features                                                 |
 |-------------------|-------------------------------------------------------------------|
 | `basic`           | mean, median, variance, variance_sample, minimum, maximum, length |
-| `distribution`    | skewness, kurtosis, quantiles at 0.25, 0.5, 0.75                  | 
+| `distribution`    | skewness, kurtosis, quantiles at 0.25, 0.5, 0.75, 0.9, 0.95, 0.99 |
 | `autocorrelation` | autocorrelation at lags 1, 2, 3                                   |
 | `trend`           | linear trend intercept, slope, p-value, r-squared                 |
 
@@ -64,7 +65,8 @@ Example: `CATEGORY basic,trend`
 <summary><code>FEATURE</code></summary>
 
 A comma-separated list of individual feature names to compute. Feature names are
-case-insensitive.
+case-insensitive; a feature listed twice is computed once. If `FEATURE` is given more than once,
+only the last list is used.
 
 **Simple features** (no parameters):
 
@@ -75,6 +77,8 @@ case-insensitive.
 
 *Distribution:* `skewness`, `kurtosis`, `variance_larger_than_std`,
 `variation_coefficient`
+
+*Autocorrelation:* `time_reversal_asymmetry` (at lag 1)
 
 *Counting:* `count_above_mean`, `count_below_mean`, `number_crossing_mean`,
 `longest_strike_above_mean`, `longest_strike_below_mean`, `first_location_of_maximum`,
@@ -98,6 +102,8 @@ case-insensitive.
 | `autocorrelation`         | `autocorrelation:<lag>`                         | `lag` — lag value    | Positive integer          |
 | `partial_autocorrelation` | `partial_autocorrelation:<lag>` or `pacf:<lag>` | `lag` — lag value    | Integer from 1 to 1000    |
 
+An `autocorrelation` lag at or beyond the number of samples yields null.
+
 Example: `FEATURE mean,median,quantile:0.5,autocorrelation:3`
 </details>
 
@@ -108,34 +114,44 @@ Deadline for the command, in milliseconds; defaults to `ts-analysis-timeout`. Fe
 computed on a dedicated pool of analysis worker threads (sized by `ts-num-threads`), so they
 never stall the server. The deadline counts from when the request is accepted, including time
 spent queued behind other analysis work. When it elapses the client receives `TSDB: command
-timed out before the result was ready` and the request is abandoned. `0` disables the deadline
-for this call. Inside `MULTI` or a script, where a client cannot be blocked, the command runs
-inline instead.
+timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and the request is
+abandoned. `0` disables the deadline for this call. Inside `MULTI` or a script, where a client
+cannot be blocked, the command runs inline instead.
 </details>
 
 ## Return
 
-`TS.FEATURES` returns a map of `{feature_name: value}` pairs. Each key is the
-canonical feature name (e.g., `"mean"`, `"quantile_0.5"`, `"autocorrelation_3"`).
-Features that produce `NaN` are returned as null.
+`TS.FEATURES` returns a map of `{feature_name: value}` pairs, sorted by feature name: a map in
+RESP3, a flat array of alternating names and values in RESP2. Each key is the canonical feature
+name (e.g., `"mean"`, `"quantile_0.5"`, `"autocorrelation_3"`, `"partial_autocorrelation_2"`,
+`"time_reversal_asymmetry_1"`). Every value is a double (a bulk string in RESP2), including
+counts and flags such as `length` or `has_duplicate`. Features that produce `NaN` — for example
+`kurtosis` with fewer than 4 samples — are returned as null.
+
+Several features — including `mean`, `variance`, `variance_sample`, `standard_deviation`,
+`sum_values` and `abs_energy` — are computed in single precision (about 7 significant digits).
+`skewness` and `kurtosis` use the same formulas as [`TS.STATS`](ts.stats.md#return).
 
 The final feature list is the union of features from `CATEGORY` and `FEATURE`,
-with duplicates removed (first occurrence wins).
+with duplicates removed.
 
 Returns an error if:
-* The key does not exist
-* The key is not a time series
-* No samples exist in the specified time range
+* The key does not exist or is not a time series
+* No samples exist in the specified time range (`TSDB: no samples in the specified time range`)
 * Neither `CATEGORY` nor `FEATURE` is specified
-* A category or feature name is unrecognized
-* A duplicate category is specified
-* A parameterized feature has an invalid parameter
+  (`TSDB: at least one of CATEGORY or FEATURE must be specified`)
+* A category is repeated within the list (`TSDB: duplicate category '<name>'`)
+* A category or feature name is unrecognized, or a parameterized feature has an invalid
+  parameter. These messages carry a doubled prefix, e.g.
+  `TSDB: TSDB forecast error: Unknown feature 'foo'`
+* A list is empty (`TSDB: empty category list`, `TSDB: empty feature list`)
+* An unknown argument is given (`TSDB: unrecognized argument '<ARG>'`, upper-cased)
 
 ## Complexity
 
 `TS.FEATURES` reads the samples in the specified time range and computes each
-requested feature. Computation runs on a background thread. Performance is
-linear in the number of samples and features.
+requested feature. Computation always runs on the analysis pool (see `TIMEOUT`). Most features
+are linear in the number of samples; `pacf:<lag>` is O(n × lag).
 
 ## Examples
 
@@ -155,20 +171,20 @@ OK
 127.0.0.1:6379> TS.ADD temp:readings 5000 23.9
 (integer) 5000
 127.0.0.1:6379> TS.FEATURES temp:readings - + CATEGORY basic
-1) "length"
-2) (double) 5
-3) "maximum"
-4) (double) 25
-5) "mean"
-6) (double) 23.86
-7) "median"
-8) (double) 23.9
-9) "minimum"
-10) (double) 22.8
+ 1) "length"
+ 2) "5"
+ 3) "maximum"
+ 4) "25"
+ 5) "mean"
+ 6) "23.85999870300293"
+ 7) "median"
+ 8) "23.9"
+ 9) "minimum"
+10) "22.8"
 11) "variance"
-12) (double) 0.8104000000000001
+12) "0.52239990234375"
 13) "variance_sample"
-14) (double) 1.0130000000000001
+14) "0.6529998779296875"
 ```
 
 ### Compute specific parameterized features
@@ -176,45 +192,55 @@ OK
 ```valkey
 127.0.0.1:6379> TS.FEATURES temp:readings - + FEATURE quantile:0.5,autocorrelation:1,skewness
 1) "autocorrelation_1"
-2) (double) 0.12679363582220628
+2) "-0.7195633542062451"
 3) "quantile_0.5"
-4) (double) 23.9
+4) "23.9"
 5) "skewness"
-6) (double) 0.1490895255297672
+6) "0.28445709746627007"
 ```
 
 ### Combine categories and features
 
 ```valkey
 127.0.0.1:6379> TS.FEATURES temp:readings 1000 5000 CATEGORY basic,trent FEATURE quantile:0.95
-(error) TSDB: Unknown feature category: trent
+(error) TSDB: TSDB forecast error: Unknown feature category: trent
 127.0.0.1:6379> TS.FEATURES temp:readings 1000 5000 CATEGORY basic,trend FEATURE kurtosis,pacf:2
  1) "kurtosis"
- 2) (double) -2.723634766793434
+ 2) "5.610923800352969"
  3) "length"
- 4) (double) 5
+ 4) "5"
  5) "linear_trend_intercept"
- 6) (double) 22.860000000000003
+ 6) "23.52000000000001"
  7) "linear_trend_p_value"
- 8) (double) 0.5928919556203283
+ 8) "0.5412518806380207"
  9) "linear_trend_r_squared"
-10) (double) 0.10114942528735646
+10) "0.1106431852986195"
 11) "linear_trend_slope"
-12) (double) 0.40000000000000036
+12) "0.16999999999999602"
 13) "maximum"
-14) (double) 25
+14) "25"
 15) "mean"
-16) (double) 23.86
+16) "23.85999870300293"
 17) "median"
-18) (double) 23.9
+18) "23.9"
 19) "minimum"
-20) (double) 22.8
+20) "22.8"
 21) "partial_autocorrelation_2"
-22) (double) -0.3841584158415841
+22) "-0.26285558136513704"
 23) "variance"
-24) (double) 0.8104000000000001
+24) "0.52239990234375"
 25) "variance_sample"
-26) (double) 1.0130000000000001
+26) "0.6529998779296875"
+```
+
+### A feature with no value
+
+```valkey
+127.0.0.1:6379> TS.FEATURES temp:readings - + FEATURE mean,autocorrelation:10
+1) "autocorrelation_10"
+2) (nil)
+3) "mean"
+4) "23.85999870300293"
 ```
 
 ### Error cases
@@ -232,3 +258,7 @@ OK
 127.0.0.1:6379> TS.FEATURES temp:readings - +
 (error) TSDB: at least one of CATEGORY or FEATURE must be specified
 ```
+
+## ACL Categories
+
+`@read`, `@timeseries`

@@ -25,7 +25,7 @@ acl_categories!(TS_FILLGAPS, "ts.fillgaps", "write timeseries");
 ///   [STORE destinationKey
 ///     [MERGE]
 ///     [RETENTION retentionPeriod]
-///     [ENCODING <pco|gorilla|uncompressed|compressed>]
+///     [ENCODING <compressed|uncompressed|gorilla|chimp>]
 ///     [CHUNK_SIZE chunkSize]
 ///     [DUPLICATE_POLICY duplicatePolicy]
 ///     [SIGNIFICANT_DIGITS significantDigits | DECIMAL_DIGITS decimalDigits]

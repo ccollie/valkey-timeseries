@@ -43,12 +43,12 @@ acl_categories!(TS_SANITIZE, "ts.sanitize", "write timeseries");
 ///   - MOVINGAVERAGE window   - Replace with moving average (window must be odd > 0).
 ///   - SEASONAL period|<auto> - Replace with seasonal median (period must be > 0).
 ///
-/// If STORE is specified, results are written to the destination key instead of
-/// being returned inline. With MERGE, samples are merged into an existing
-/// destination series; without MERGE (overwrite mode), the destination is
-/// cleared first. Returns the number of samples written.
+/// The sanitized range always replaces the source range in place. If STORE is specified, the
+/// result is also written to the destination key: with MERGE, samples are merged into an
+/// existing destination series; without MERGE (overwrite mode), the destination is cleared
+/// first. Returns the number of samples written.
 ///
-/// Without STORE, returns the number of samples that were sanitized (imputed or dropped).
+/// Without STORE, returns the sanitized samples as `[timestamp, value]` pairs.
 #[valkey_module_macros::command({
     name: "ts.sanitize",
     flags: [Write, DenyOOM, GetkeysApi],

@@ -6,7 +6,7 @@ Fit user-specified forecasting models to a time series and return predicted futu
 hyperparameters. Unlike `TS.AUTOFORECAST`, which automatically selects the best model, this command
 lets you specify exactly one or more model specifications (e.g., `ARIMA(2,1,0)`, `SES(alpha=0.3)`)
 and returns their individual forecasts. Each model is fit independently and produces its own set
-of predicted values, prediction intervals, and accuracy metrics.
+of predicted values, plus prediction intervals with `LEVEL` and accuracy metrics with `METRICS`.
 
 ## Syntax
 
@@ -59,11 +59,14 @@ Use `+` to denote the latest timestamp in the series.
 <details open>
 <summary><code>MODELS model_spec[,model_spec ...]</code></summary>
 
-Comma-separated list of model specifications to fit. Each model specification is formatted as
-`ModelName(args...)` with optional positional and keyword arguments. Supported model families are
-listed below.
+Comma-separated list of model specifications to fit, optionally wrapped in `[...]`. Each model
+specification is formatted as `ModelName(args...)` with optional positional arguments followed by
+optional `key=value` keyword arguments; a model that takes no arguments can be written bare
+(`AutoARIMA` is the same as `AutoARIMA()`). Supported model families are listed below.
 
 At least one model must be specified. Model names and keyword names are case-insensitive.
+Keyword *values* that name an option (`additive`, `linear`, `Naive`, ...) are case-sensitive and
+must be spelled exactly as shown below. Flags are `true` or `false`; numbers may not be quoted.
 
 Arguments are checked before any model runs:
 
@@ -72,64 +75,47 @@ Arguments are checked before any model runs:
 - Integer arguments (periods, windows, orders) must be whole numbers from 0 to 1,000,000.
 - ARIMA, SARIMA and GARCH orders are at most 20. Iteration counts (`iterations`, `max_rounds`,
   `max_iterations`) are at most 10,000. Seasonal periods must be positive.
-- Lists such as `seasonal_period=[7, 365]` are flat; nested lists are rejected.
+- Lists such as `seasonal_period=[7, 365]` are flat; nested lists are rejected. Only MFLES accepts
+  more than one period in `seasonal_period`; the other models take a single period.
+- Where a value can be given positionally or by keyword, the positional value wins if both are
+  present (MFLES and HoltWinters reject a seasonal period given both ways instead).
 
 #### Available Models
 
-| Model            | Syntax                                                  | Description                                                                    |
-|------------------|---------------------------------------------------------|--------------------------------------------------------------------------------|
-| `ARIMA`          | `ARIMA(p, d, q)`                                        | ARIMA model with specified order                                               |
-| `AutoARIMA`      | `AutoARIMA()` or `AutoARIMA(seasonal_period=N)`         | Automatically selects the best ARIMA/SARIMA parameters                         |
-| `SARIMA`         | `SARIMA(p, d, q, P, D, Q, seasonal_period)`             | Seasonal ARIMA with explicit parameters (3 or 7 positional args)               |
-| `ETS`            | `ETS(error=M, trend=N, season=S)` or `ETS(A,N,A)`       | Explicit ETS model with known components                                       |
-| `AutoETS`        | `AutoETS()` or `AutoETS(seasonal_period=N)`              | Automatically selects the best ETS model                                       |
-| `SES`            | `SES(alpha=0.3)` or `SES(0.3)`                          | Simple Exponential Smoothing                                                   |
-| `Holt`           | `Holt()` or `Holt(alpha=0.3, beta=0.1, ...)`            | Holt linear trend model                                                        |
-| `HoltWinters`    | `HoltWinters()` or `HoltWinters(alpha=0.3, beta=0.1, gamma=0.1, seasonal_type="add", seasonal_period=12)` | Holt-Winters seasonal model |
-| `Naive`          | `Naive()`                                               | Naive (last value) forecaster                                                   |
-| `RandomWalkWithDrift` | `RandomWalkWithDrift()` or `RandomWalkWithDrift(changepoint=N)` | Random walk with drift forecaster; drift estimated from first differences |
-| `SeasonalNaive`  | `SeasonalNaive(12)` or `SeasonalNaive(period=12)`       | Seasonal naive forecaster                                                      |
-| `SMA`            | `SMA(5)` or `SMA(window=5)`                             | Simple Moving Average                                                          |
-| `Theta`          | `Theta()` or `Theta(theta_lines=2, decomposition="multiplicative")` | Theta method for forecasting                                        |
-| `Croston`        | `Croston()` or `Croston(alpha=0.3)`                     | Croston's intermittent demand forecasting                                      |
-| `ADIDA`          | `ADIDA()` or `ADIDA(size=5)`                            | Aggregate-Disaggregate Intermittent Demand Approach                            |
-| `IMAPA`          | `IMAPA()`                                               | Intermittent Multiple Aggregation Prediction Algorithm                         |
-| `TSB`            | `TSB(alpha_d=0.3, alpha_p=0.2)`                         | Teunter-Syntetos-Babai method                                                  |
-| `SeasonalES`     | `SeasonalES(12)` or `SeasonalES(seasonal_period=12)`    | Seasonal Exponential Smoothing                                                 |
-| `TBATS`          | `TBATS(12, 24)` or `TBATS(use_boxcox=false, seasonal_periods=[12,24])` | TBATS model with explicit configuration |
-| `AutoTBATS`      | `AutoTBATS(12)` or `AutoTBATS(12, 24)`                  | Auto-configured TBATS with given seasonal periods                              |
-| `MSTL`           | `MSTL(12)` or `MSTL(12, 24, iterations=5)`              | Multiple Seasonal-Trend decomposition using LOESS                              |
-| `MFLES`          | `MFLES(12)` or `MFLES(12, 24, robust=true)`             | Multiplicative-Fourier Least-squares Ensemble with Shrinkage                    |
-| `GARCH`          | `GARCH(1, 1)`                                           | Generalized AutoRegressive Conditional Heteroskedasticity model                 |
+| Model                 | Positional arguments                           | Keyword arguments                                                                                                  |
+|-----------------------|------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
+| `ARIMA`               | `p, d, q` (all three required)                 | —                                                                                                                  |
+| `SARIMA`              | `p, d, q` or `p, d, q, P, D, Q, seasonal_period` | —                                                                                                                |
+| `AutoARIMA`           | —                                              | `seasonal_period` (int)                                                                                            |
+| `ETS`                 | optional notation and/or seasonal period       | `seasonal_period` (int; only with a notation-only spec such as `ETS(AAA, seasonal_period=12)`)                    |
+| `AutoETS`             | —                                              | `seasonal_period` (int)                                                                                            |
+| `SES`                 | `alpha`                                        | `alpha` (float)                                                                                                    |
+| `Holt`                | `alpha, beta[, phi]`                           | `alpha`, `beta`, `phi` (float); `damped` (flag)                                                                    |
+| `HoltWinters`         | `seasonal_period[, alpha, beta, gamma]`        | `seasonal_period` (int); `seasonal_type` (`additive` (default) or `multiplicative`); `alpha`, `beta`, `gamma` (float) |
+| `SeasonalES`          | `period` (required, positional or keyword)     | `period` (int); `alpha` (float); `optimized` (flag)                                                                |
+| `Naive`               | —                                              | —                                                                                                                  |
+| `RandomWalkWithDrift` | `changepoint`                                  | `changepoint` (int)                                                                                                |
+| `SeasonalNaive`       | `period` (default 12)                          | `period` (int)                                                                                                     |
+| `SMA`                 | `window` (default 0 = mean of the whole range) | `window` (int); `changepoint` (int)                                                                                |
+| `Theta`               | —                                              | `seasonal_period` (int); `decomposition_type` (`additive` or `multiplicative`); `optimized` (flag); `theta` (float) |
+| `Croston`             | —                                              | `alpha` (float); `sba`, `sba_optimized`, `optimized` (flags)                                                       |
+| `ADIDA`               | —                                              | `alpha` (float); `aggregation_level` (int)                                                                         |
+| `IMAPA`               | —                                              | `max_aggregation` (int)                                                                                            |
+| `TSB`                 | `alpha_d, alpha_p`                             | `alpha_d`, `alpha_p` (float)                                                                                       |
+| `TBATS`               | one or more seasonal periods (required)        | `use_boxcox` (flag or number); `damped_trend` (float)                                                              |
+| `AutoTBATS`           | one or more seasonal periods (required)        | `use_boxcox_search`, `use_damped_trend_search`, `use_no_trend_search` (flags, default `true`)                      |
+| `MSTL`                | one or more seasonal periods (required)        | `iterations` (int); `robust` (flag); `trend_forecast_method`; `seasonal_forecast_method`                           |
+| `MFLES`               | zero or more seasonal periods (default `[12]`) | `seasonal_period` (int or list); `max_rounds` (int); `seasonal_lr`, `trend_lr` (float); `robust`, `multiplicative` (flags) |
+| `GARCH`               | `p[, q]`                                       | `p`, `q` (int, default 1); `omega` (float); `max_iterations` (int); `tolerance` (float)                            |
 
-**Common keyword arguments:**
-
-| Argument            | Type            | Description                                                  |
-|---------------------|-----------------|--------------------------------------------------------------|
-| `alpha`             | float           | Smoothing parameter for the level component                  |
-| `beta`              | float           | Smoothing parameter for the trend component                  |
-| `gamma`             | float           | Smoothing parameter for the seasonal component               |
-| `seasonal_period`   | integer         | Length of the seasonal cycle                                 |
-| `seasonal_periods`  | list of int     | Multiple seasonal periods (TBATS, MSTL, MFLES)               |
-| `seasonal_type`     | string          | `"add"` or `"multiplicative"`                                |
-| `theta_lines`       | integer         | Number of theta lines (Theta model, default 2)               |
-| `decomposition`     | string          | `"additive"` or `"multiplicative"` (Theta model)             |
-| `window`            | integer         | Window size (SMA)                                            |
-| `interval_size`     | integer         | Aggregation interval (ADIDA)                                 |
-| `iterations`        | integer         | Number of STL iterations (MSTL)                              |
-| `max_rounds`        | integer         | Maximum optimization rounds (MFLES)                          |
-| `robust`            | boolean         | Enable robust mode (MSTL, MFLES, TBATS)                      |
-| `trend_method`      | string          | Trend forecasting method (`"auto"`, `"arima"`, `"linear"`, etc.) |
-| `seasonal_method`   | string          | Seasonal forecasting method (`"auto"`, `"arima"`, `"naive"`, etc.) |
-| `multiplicative`    | boolean         | Use multiplicative seasonality (MFLES)                       |
-| `changepoint`       | integer         | Start index for drift estimation (RandomWalkWithDrift)      |
+See [Model Details](#model-details) for how the arguments combine.
 </details>
 
 <details open>
 <summary><code>HORIZON horizon</code></summary>
 
-Number of future data points to predict. Must be a positive integer no larger than the `ts-forecast-max-horizon` configuration
-parameter (default 10000).
+Number of future data points to predict. Must be a positive integer no larger than the
+`ts-forecast-max-horizon` configuration parameter (default 10000).
 </details>
 
 ## Optional Arguments
@@ -148,8 +134,8 @@ When specified, each model's response includes:
 
 For each point `i`, `lower_interval[i] <= forecast[i] <= upper_interval[i]`.
 
-Not all models support prediction intervals. Models that do not support intervals will omit
-the `lower_interval` and `upper_interval` fields, but `level` will still be included.
+`level` is emitted only together with the intervals: if a model returns no intervals, all three
+fields are omitted from that model's entry.
 </details>
 
 <details open>
@@ -173,7 +159,7 @@ Specs use the same `Name(arg, ..., key=value)` syntax as `MODELS`; names are cas
 | `Log` | — | Natural log. The series must be strictly positive. |
 | `BoxCox` / `BoxCox(lambda)` / `BoxCox(lambda=λ)` | optional `lambda` | Box-Cox power transform. With no lambda it is estimated from the data. |
 | `YeoJohnson` | — | Yeo-Johnson power transform (handles zero and negative values). |
-| `Scale(method)` | `Standardize`, `Normalize` or `RobustScale` | Rescale to zero-mean/unit-variance, `[0, 1]`, or median/IQR. |
+| `Scale(method)` | `Standardize`, `Normalize` or `RobustScale` (alias `Robust`), case-insensitive | Rescale to zero-mean/unit-variance, `[0, 1]`, or median/IQR. |
 
 Differencing shortens the series handed to the model by the transform's offset, so the range
 must contain enough samples for the model *after* the chain is applied.
@@ -194,6 +180,9 @@ Returned fields per model:
 - `mase` — Mean Absolute Scaled Error (may be `null` when insufficient scaling history)
 - `r_squared` — Coefficient of determination
 
+If a model cannot produce fitted values (currently `SARIMA` and `GARCH`), or the
+metrics cannot be computed, the whole command fails with a `TSDB: metrics error: ...` error
+rather than omitting the field; no forecast is returned for any model.
 </details>
 
 <details open>
@@ -201,26 +190,29 @@ Returned fields per model:
 
 Deadline for the command, in milliseconds, counted from when the request is accepted (so time
 spent queued behind other forecasting work counts). When it elapses the client receives
-`TSDB: command timed out before the result was ready` and the request is abandoned: its result
-is discarded and a `STORE` that has not yet happened is skipped. `0` disables the deadline for this call.
+`TSDB: command timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and
+the request is abandoned: its result is discarded and a `STORE` that has not yet happened is
+skipped. `0` disables the deadline for this call.
 
 When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
 `0` there means no default deadline).
 
 Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
-they never block the server's main thread; requests beyond the worker count wait in a queue.
+they do not block the server's main thread; requests beyond the worker count wait in a queue.
+The exception is a client that cannot be blocked — inside `MULTI`/`EXEC`, a Lua script or a
+module call — where the command runs inline on the main thread and no deadline applies.
 </details>
 
 <details open>
 <summary><code>STORE destinationKey</code></summary>
 
 Persist the forecast values into a time series key. The predicted values are stored as samples
-with timestamps continuing from the last observed timestamp using the series' median sampling
-interval.
+with timestamps continuing, one forecast step apart, from the last timestamp in the fitted range
+(see the step rule below).
 
 The destination must be a different key from the source; naming the source fails with
-`TSDB: STORE destination must be different from the source key`. Only the primary runs the analysis: replicas and the AOF receive the stored samples, not the
-command.
+`TSDB: STORE destination must be different from the source key`. Only the primary runs the
+analysis: replicas and the AOF receive the stored samples, not the command.
 
 > **Important:** `STORE` is only supported when a **single model** is specified. If multiple
 > models are provided with `STORE`, the command returns an error.
@@ -230,16 +222,20 @@ command.
 | Option                           | Description                                                                        |
 |----------------------------------|------------------------------------------------------------------------------------|
 | `MERGE`                          | Merge forecast samples into an existing destination key (default: overwrite)       |
-| `RETENTION retentionPeriod`      | Maximum retention period (in milliseconds) for the destination series              |
-| `ENCODING encoding`              | Chunk encoding: `COMPRESSED` (default), `UNCOMPRESSED`, `PCO`, or `GORILLA`       |
-| `CHUNK_SIZE chunkSize`           | Number of samples per memory chunk in the destination                              |
+| `RETENTION retentionPeriod`      | Retention period (milliseconds or a duration such as `1d`) for the destination     |
+| `ENCODING encoding`              | Chunk encoding: `COMPRESSED` (Chimp), `CHIMP`, `GORILLA` or `UNCOMPRESSED` (case-insensitive); anything else fails with `TSDB: unknown ENCODING parameter` |
+| `CHUNK_SIZE chunkSize`           | Chunk size of the destination, in bytes                                            |
 | `DUPLICATE_POLICY policy`        | Duplicate sample policy: `BLOCK`, `FIRST`, `LAST`, `MIN`, `MAX`, `SUM`             |
 | `SIGNIFICANT_DIGITS digits`      | Round to this many significant digits in the destination                           |
 | `DECIMAL_DIGITS digits`          | Round to this many decimal digits in the destination                               |
-| `METRIC metric`                  | Metric name label for the destination series                                       |
-| `IGNORE maxTimeDiff maxValDiff`  | Ignore samples differing by more than these thresholds when merging                |
+| `METRIC metric`                  | Metric name, with optional labels (`name{label="value",...}`), for the destination |
+| `IGNORE maxTimeDiff maxValDiff`  | The destination's `ignoreMaxTimeDiff`/`ignoreMaxValDiff`, as in `TS.CREATE`        |
 
-Without `MERGE` (overwrite mode), the destination is cleared before writing.
+The creation options (everything except `MERGE`) apply only when the destination does not exist
+yet; omitted ones come from the module configuration. An existing destination keeps its own
+settings.
+
+Without `MERGE` (overwrite mode), the destination's samples are cleared before writing.
 With `MERGE`, forecast samples use `KeepLast` semantics for duplicate timestamps.
 
 The forecast step is the series' detected sampling frequency, falling back to the median
@@ -249,45 +245,52 @@ command fails with an error rather than returning the forecast without storing i
 
 ## Return Value
 
-The response is an **array of flat key-value maps**, one entry per model specified in `MODELS`.
-Each map contains alternating keys and values with the following fields:
+The response is an **array of maps**, one entry per model specified in `MODELS`, in the order
+given. Under RESP3 each entry is a map; under RESP2 it is a flat array of alternating keys and
+values (doubles are sent as bulk strings). Each entry has the following fields:
 
 | Field            | Type            | Always Present | Description                                                                                              |
 |------------------|-----------------|----------------|----------------------------------------------------------------------------------------------------------|
-| `model`          | string          | Yes            | Name of the model as specified (e.g., `ARIMA(2,1,0)`, `SES(alpha=0.3)`)                                 |
+| `model`          | string          | Yes            | Normalised model spec (see below)                                                                        |
 | `horizon`        | integer         | Yes            | Number of forecast points                                                                                |
 | `forecast`       | array of double | Yes            | Predicted values in order                                                                                |
-| `level`          | double          | No             | Confidence level (only when `LEVEL` is specified)                                                        |
-| `lower_interval` | array of double | No             | Lower prediction interval bounds (only when supported by the model and `LEVEL` is specified)             |
-| `upper_interval` | array of double | No             | Upper prediction interval bounds (only when supported by the model and `LEVEL` is specified)             |
-| `metrics`        | map             | No             | Accuracy metrics map (only when `METRICS` is specified and the model supports fitted values)        |
+| `level`          | double          | No             | Confidence level (only when `LEVEL` is specified and the model returned intervals)                      |
+| `lower_interval` | array of double | No             | Lower prediction interval bounds (only when `LEVEL` is specified and the model returned intervals)       |
+| `upper_interval` | array of double | No             | Upper prediction interval bounds (only when `LEVEL` is specified and the model returned intervals)       |
+| `metrics`        | map             | No             | Accuracy metrics map (only when `METRICS` is specified)                                                  |
 
-**With `STORE`:** The response is a single integer representing the number of samples written
-to the destination key.
+`model` echoes the spec in a normalised form rather than verbatim: the model name in its canonical
+spelling, empty parentheses added, whitespace removed, keyword names lower-cased and numbers
+reformatted. For example `Naive` comes back as `Naive()`, `arima(2, 1, 0)` as `ARIMA(2,1,0)` and
+`ses(ALPHA=0.30)` as `SES(alpha=0.3)`.
+
+**With `STORE`:** The response is a single integer: the number of samples written to the
+destination key. With `MERGE` this can be less than `HORIZON` if the destination drops some of
+the samples.
 
 ### Example Response (without STORE)
 
 ```
-1) 1) "model"
-   2) "ARIMA(2,1,0)"
-   3) "horizon"
+1) 1) model
+   2) ARIMA(2,1,0)
+   3) horizon
    4) (integer) 5
-   5) "forecast"
-   6) 1) "105.32"
-      2) "105.78"
-      3) "106.24"
-      4) "106.70"
-      5) "107.16"
-2) 1) "model"
-   2) "SES(alpha=0.3)"
-   3) "horizon"
+   5) forecast
+   6) 1) "101"
+      2) "102"
+      3) "103"
+      4) "104"
+      5) "105"
+2) 1) model
+   2) SES(alpha=0.3)
+   3) horizon
    4) (integer) 5
-   5) "forecast"
-   6) 1) "104.50"
-      2) "104.75"
-      3) "105.00"
-      4) "105.25"
-      5) "105.50"
+   5) forecast
+   6) 1) "97.66666666666666"
+      2) "97.66666666666666"
+      3) "97.66666666666666"
+      4) "97.66666666666666"
+      5) "97.66666666666666"
 ```
 
 ### Example Response (with STORE)
@@ -301,226 +304,281 @@ to the destination key.
 ### ARIMA / SARIMA
 
 `ARIMA(p, d, q)` fits a non-seasonal ARIMA model with the specified autoregressive order `p`,
-differencing order `d`, and moving average order `q`.
+differencing order `d`, and moving average order `q`. All three are required and positional.
 
 `SARIMA(p, d, q, P, D, Q, seasonal_period)` fits a seasonal ARIMA model. You must provide
-either 3 arguments (non-seasonal) or 7 arguments (seasonal).
+either 3 arguments (non-seasonal) or 7 arguments (seasonal). `seasonal_period` may be `0` only
+when `P`, `D` and `Q` are all `0`.
 
-`AutoARIMA()` automatically searches for the best (S)ARIMA model using information criteria.
+`AutoARIMA()` automatically searches for the best ARIMA model; `AutoARIMA(seasonal_period=N)`
+searches seasonal models with period `N`. It takes no positional arguments.
 
 ### ETS / AutoETS
 
-`ETS(error, trend, season)` requires 3 positional arguments specifying the error, trend,
-and seasonal components. Each argument is a character: `A` (additive), `M` (multiplicative),
-`N` (none), or `Z`/`auto` (automatic selection). Example: `ETS(A,A,N)` is Holt's linear trend.
+`ETS` takes an optional model notation and an optional seasonal period, in either order:
+`ETS()`, `ETS(12)`, `ETS(AAA)`, `ETS(AAA, 12)`, `ETS(12, AAA)` or
+`ETS(AAA, seasonal_period=12)`. The notation is one identifier naming the error, trend and
+season components: error `A` or `M`, trend `N`, `A` or `Ad` (damped), season `N`, `A` or `M` —
+for example `ANN`, `AAN` (Holt's linear trend), `AAdN`, `MAM`. The defaults are `ANN` and a
+period of 1. Components cannot be passed as separate arguments (`ETS(A,N,A)` is rejected), and
+there is no automatic (`Z`) component; use `AutoETS` for that.
 
-Keyword form: `ETS(error=auto, trend=A, season=N)` is also supported.
-
-`AutoETS()` automatically selects the best ETS model.
+`AutoETS()` automatically selects the best ETS model; `AutoETS(seasonal_period=N)` includes
+seasonal candidates with period `N`. It takes no positional arguments.
 
 ### Theta
 
-`Theta()` implements the Theta method for forecasting. By default, it uses 2 theta lines
-with multiplicative decomposition. Keyword options include `theta_lines` and `decomposition`
-(`"additive"` or `"multiplicative"`).
+`Theta()` implements the Theta method (theta = 2). It takes no positional arguments and accepts
+one of these keyword combinations:
+
+- `seasonal_period=N` — seasonal Theta with multiplicative decomposition, optionally with
+  either `decomposition_type=additive|multiplicative` or `optimized=true|false`
+- `theta=x` — a fixed theta coefficient
+- `optimized=true` — optimise the smoothing parameter
+
+Any other combination (for example `theta` together with `optimized`, or `decomposition_type`
+without `seasonal_period`) fails with `Invalid options for Theta forecaster`.
 
 ### TBATS / AutoTBATS
 
-`TBATS(seasonal_period1, seasonal_period2, ...)` handles complex multiple seasonalities.
-Periods must be provided as positional arguments. Supports keyword arguments:
+`TBATS(period1, period2, ...)` handles complex multiple seasonalities. At least one period is
+required, given positionally. Keyword arguments:
 
-- `use_boxcox` (boolean, default: `true`) — whether to search for a Box-Cox transformation
-- `use_damped_trend` (boolean, default: `true`) — whether to search for damped trend
-- `use_no_trend` (boolean, default: `true`) — whether to consider models without a trend
-- `seasonal_periods` — list of seasonal periods as a keyword alternative
+- `use_boxcox` — `true` applies a log transform (λ = 0), `false` none (λ = 1), and a number
+  sets λ directly (clamped to `[0, 1]`). Without it, λ is estimated from the data when every
+  value is positive, and no transform is applied otherwise.
+- `damped_trend` — enables a damped trend with this damping factor φ (clamped to `[0.8, 0.99]`).
 
-`AutoTBATS(period1, period2, ...)` automatically selects the best TBATS configuration.
+`AutoTBATS(period1, period2, ...)` automatically selects the best TBATS configuration. Its
+`use_boxcox_search`, `use_damped_trend_search` and `use_no_trend_search` flags (all default
+`true`) can switch individual parts of the search off.
 
 ### MSTL
 
-`MSTL(seasonal_period1, seasonal_period2, ...)` decomposes the series into trend and multiple
-seasonal components using LOESS, then forecasts each separately.
+`MSTL(period1, period2, ...)` decomposes the series into trend and multiple seasonal
+components using LOESS, then forecasts each separately. At least one period is required, given
+positionally.
 
-Keyword arguments: `iterations`, `robust`, `trend_method`, `seasonal_method`.
+Keyword arguments: `iterations` (default 2), `robust=true`, `trend_forecast_method` (`linear`,
+`AutoETS` (default), `SES` or `Naive`; an unquoted identifier) and `seasonal_forecast_method`
+(`Naive` (default) or `Average`).
 
 ### MFLES
 
-`MFLES(seasonal_period1, seasonal_period2, ...)` uses Fourier basis functions for seasonal
-decomposition with learned trend.
+`MFLES(period1, period2, ...)` uses Fourier basis functions for seasonal decomposition with a
+learned trend. Periods can be given positionally or as `seasonal_period=N` /
+`seasonal_period=[N, M]`, but not both; with neither, the period is 12.
 
-Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust`, `multiplicative`.
+Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust=true`, `multiplicative`.
 
 ### Baseline Models
 
-- `Naive()` — forecasts all future values as the last observed value (random walk with drift)
-- `SeasonalNaive(period)` — forecasts using the value from the same seasonal position in
-  the previous cycle
-- `SMA(window)` — forecasts using the simple moving average of the last `window` observations
+- `Naive()` — forecasts all future values as the last observed value. Takes no arguments.
+- `RandomWalkWithDrift([changepoint])` — last value plus the average drift, estimated from the
+  first differences (from `changepoint` onward when given).
+- `SeasonalNaive([period])` — forecasts using the value from the same seasonal position in
+  the previous cycle (period default 12).
+- `SMA([window])` — forecasts the mean of the last `window` observations; `window` 0 (the
+  default) uses the whole range. `changepoint` limits the window to observations after it.
 
 ### Exponential Smoothing Variants
 
-- `SES(alpha)` — Simple Exponential Smoothing
-- `Holt(alpha, beta)` — Holt's linear trend method
-- `HoltWinters(alpha, beta, gamma, seasonal_type, seasonal_period)` — Holt-Winters seasonal
-- `SeasonalES(seasonal_period)` — Seasonal Exponential Smoothing
+- `SES([alpha])` — Simple Exponential Smoothing; `alpha` is optimised when omitted.
+- `Holt([alpha, beta[, phi]])` — Holt's linear trend method. Give `alpha` and `beta` together,
+  or neither to optimise them. A `phi`, or `damped=true` (φ = 0.98 when `alpha`/`beta` are
+  given), makes the trend damped.
+- `HoltWinters(seasonal_period[, alpha, beta, gamma])` — Holt-Winters seasonal method. The
+  period is required (positionally or as `seasonal_period=N`); the smoothing parameters are all
+  three or none (optimised), positionally or as keywords. `seasonal_type` is `additive`
+  (default) or `multiplicative`.
+- `SeasonalES(period)` — Seasonal Exponential Smoothing. The period is required (positionally
+  or as `period=N`); `alpha=x` fixes the smoothing parameter and `optimized=true` optimises it.
 
 ### Intermittent Demand Models
 
-- `Croston(alpha)` — Croston's method for intermittent demand
-- `ADIDA(size)` — Aggregate-Disaggregate Intermittent Demand Approach
-- `IMAPA()` — Intermittent Multiple Aggregation Prediction Algorithm
-- `TSB(alpha_d, alpha_p)` — Teunter-Syntetos-Babai method
+- `Croston()` — Croston's method; `alpha=x` sets the smoothing parameter, and the flags
+  `sba_optimized`, `sba` and `optimized` select a variant (checked in that order).
+- `ADIDA()` — Aggregate-Disaggregate Intermittent Demand Approach; keywords `alpha` and
+  `aggregation_level`.
+- `IMAPA()` — Intermittent Multiple Aggregation Prediction Algorithm; keyword `max_aggregation`.
+- `TSB([alpha_d, alpha_p])` — Teunter-Syntetos-Babai method; give both smoothing parameters
+  (positionally or as keywords) or neither.
 
 ### GARCH
 
-`GARCH(p, q)` fits a GARCH(p,q) model for volatility forecasting.
+`GARCH(p, q)` fits a GARCH(p,q) model for volatility forecasting. `p` and `q` default to 1 and
+can also be given as keywords, alongside `omega`, `max_iterations` and `tolerance`.
 
 ## Errors
 
-- `TSDB: the key does not exist` — the specified key does not hold a time series.
+- `TSDB: the key does not exist` — the source key does not exist.
+- `WRONGTYPE Operation against a key holding the wrong kind of value` — the source key is not a
+  time series.
 - `TSDB: HORIZON is required` — the `HORIZON` argument is missing.
+- `TSDB: missing forecast horizon value` — `HORIZON` has no value.
 - `TSDB: forecast horizon must be greater than 0` — `HORIZON` is zero or negative.
 - `TSDB: forecast horizon must not exceed N (ts-forecast-max-horizon)` — `HORIZON` is above the
   configured cap.
-- `TSDB: MODELS must contain at least one model specification` — no models were provided.
-- `TSDB: error parsing MODELS` — the model specification string could not be parsed.
-- `TSDB: error parsing TRANSFORMS` — a transform name is unknown or its arguments are invalid.
+- `TSDB: MODELS must contain at least one model specification` — `MODELS` is missing, empty or
+  `[]`.
+- `TSDB: missing value for MODELS` / `TSDB: missing value for TRANSFORMS` — the keyword has no
+  value.
+- `TSDB: error parsing MODELS: <reason>` — a model spec could not be parsed or validated, e.g.
+  `TSDB: error parsing MODELS: Unsupported model name Foo` or
+  `TSDB: error parsing MODELS: Unsupported keyword argument(s) for model SES: alhpa`.
+- `TSDB: error parsing TRANSFORMS: <reason>` — a transform name is unknown or its arguments are
+  invalid.
 - `TSDB: TRANSFORMS must contain at least one transform specification` — `TRANSFORMS` was given
   an empty string.
 - `TSDB: STORE is only supported with a single model` — `STORE` was specified with multiple models.
+- `TSDB: STORE destination must be different from the source key` — `STORE` names the source key.
 - `TSDB: STORE requires at least two samples in the range to determine the forecast step` — the
   range holds too few samples to infer where the stored forecast samples should be placed.
 - `TSDB: STORE forecast timestamps exceed the supported range` — the last timestamp and forecast
   step would overflow the timestamp type at the requested `HORIZON`; rejected before model work.
+- `TSDB: unknown ENCODING parameter` — the `STORE` `ENCODING` value is not one listed above.
 - `TSDB: LEVEL must be between 0 and 100` — `LEVEL` is out of the valid range.
-- `TSDB: Unknown argument` — an unrecognized argument was provided.
-- `TSDB: command timed out before the result was ready` — the `TIMEOUT` (or `ts-analysis-timeout`)
-  deadline elapsed before the result was available.
+- `TSDB: missing forecast confidence level` — `LEVEL` has no value, or it is not a number.
+- `TSDB: Unknown argument: <arg>` — an unrecognized argument was provided.
+- `TSDB: command timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` —
+  the `TIMEOUT` (or `ts-analysis-timeout`) deadline elapsed before the result was available.
+- `TSDB: missing value for TIMEOUT` — `TIMEOUT` has no value, or it is not an integer.
 - `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
-- `TSDB: failed to store forecast in key` — an error occurred while writing STORE samples.
+- `TSDB: metrics error: fitted values are unavailable for selected model` — `METRICS` was
+  requested for a model that produces no fitted values; other metric failures are reported as
+  `TSDB: metrics error: <reason>`.
+- `TSDB: failed to store forecast in key '<key>': <reason>` — an error occurred while writing
+  `STORE` samples.
 - `TSDB: Failed to prepare time series for forecasting` — the series data could not be
   converted to the format required by the forecasting library.
-- Model-specific errors from `anofox-forecast` (e.g., insufficient data, numerical issues).
+- Model errors from the forecasting library, prefixed with `TSDB: `, for example
+  `TSDB: empty input data` (no samples in the range) or
+  `TSDB: insufficient data: need at least 24, got 5 (...)`.
 
 ## Examples
+
+The examples use a series holding the values 1 to 100 at timestamps 1000 to 100000, one second
+apart.
 
 ### Basic forecast with a single ARIMA model
 
 ```
 127.0.0.1:6379> TS.CREATE ts:metrics
 OK
-127.0.0.1:6379> TS.ADD ts:metrics 1000 1.0
+127.0.0.1:6379> TS.ADD ts:metrics 1000 1
 (integer) 1000
-127.0.0.1:6379> TS.ADD ts:metrics 2000 2.0
+127.0.0.1:6379> TS.ADD ts:metrics 2000 2
 (integer) 2000
-127.0.0.1:6379> TS.ADD ts:metrics 3000 3.0
-... (add 100 linear data points)
+... (continue up to TS.ADD ts:metrics 100000 100)
 127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "ARIMA(2,1,0)" HORIZON 5
-1) 1) "model"
-   2) "ARIMA(2,1,0)"
-   3) "horizon"
+1) 1) model
+   2) ARIMA(2,1,0)
+   3) horizon
    4) (integer) 5
-   5) "forecast"
-   6) 1) "104.12"
-      2) "105.24"
-      3) "106.36"
-      4) "107.48"
-      5) "108.60"
+   5) forecast
+   6) 1) "101"
+      2) "102"
+      3) "103"
+      4) "104"
+      5) "105"
 ```
 
 ### Compare multiple models
 
+`model` echoes each spec in normalised form, so `Naive` would also come back as `Naive()`.
+
 ```
 127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "ARIMA(2,1,0), SES(alpha=0.3), Naive()" HORIZON 5
-1) 1) "model"
-   2) "ARIMA(2,1,0)"
-   3) "horizon"
+1) 1) model
+   2) ARIMA(2,1,0)
+   3) horizon
    4) (integer) 5
-   5) "forecast"
-   6) 1) "104.12"
-      2) "105.24"
-      3) "106.36"
-      4) "107.48"
-      5) "108.60"
-2) 1) "model"
-   2) "SES(alpha=0.3)"
-   3) "horizon"
+   5) forecast
+   6) 1) "101"
+      2) "102"
+      3) "103"
+      4) "104"
+      5) "105"
+2) 1) model
+   2) SES(alpha=0.3)
+   3) horizon
    4) (integer) 5
-   5) "forecast"
-   6) 1) "102.80"
-      2) "103.40"
-      3) "104.00"
-      4) "104.60"
-      5) "105.20"
-3) 1) "model"
-   2) "Naive()"
-   3) "horizon"
+   5) forecast
+   6) 1) "97.66666666666666"
+      2) "97.66666666666666"
+      3) "97.66666666666666"
+      4) "97.66666666666666"
+      5) "97.66666666666666"
+3) 1) model
+   2) Naive()
+   3) horizon
    4) (integer) 5
-   5) "forecast"
-   6) 1) "100.00"
-      2) "100.00"
-      3) "100.00"
-      4) "100.00"
-      5) "100.00"
+   5) forecast
+   6) 1) "100"
+      2) "100"
+      3) "100"
+      4) "100"
+      5) "100"
 ```
 
 ### Forecast with prediction intervals and metrics
 
 ```
-127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "ARIMA(2,1,0)" HORIZON 5 LEVEL 95 METRICS
-1) 1) "model"
-   2) "ARIMA(2,1,0)"
-   3) "horizon"
-   4) (integer) 5
-   5) "forecast"
-   6) 1) "104.12"
-      2) "105.24"
-      3) "106.36"
-      4) "107.48"
-      5) "108.60"
-   7) "level"
-   8) "95"
-   9) "lower_interval"
-   10) 1) "102.50"
-       2) "102.80"
-       3) "103.10"
-       4) "103.40"
-       5) "103.70"
-   11) "upper_interval"
-   12) 1) "105.74"
-       2) "107.68"
-       3) "109.62"
-       4) "111.56"
-       5) "113.50"
-   13) "metrics"
-   14) 1) "mae"
-       2) "0.15"
-       3) "mse"
-       4) "0.03"
-       5) "rmse"
-       6) "0.17"
-       7) "mape"
-       8) "1.23"
-       9) "smape"
-       10) "1.22"
-       11) "mase"
-       12) "1.05"
-       13) "r_squared"
-       14) "0.99"
+127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "SES(alpha=0.3)" HORIZON 5 LEVEL 95 METRICS
+1)  1) model
+    2) SES(alpha=0.3)
+    3) horizon
+    4) (integer) 5
+    5) forecast
+    6) 1) "97.66666666666666"
+       2) "97.66666666666666"
+       3) "97.66666666666666"
+       4) "97.66666666666666"
+       5) "97.66666666666666"
+    7) level
+    8) "95"
+    9) lower_interval
+   10) 1) "91.25548912787424"
+       2) "89.84082714770543"
+       3) "89.23383547658472"
+       4) "88.9518292066034"
+       5) "88.81692602120003"
+   11) upper_interval
+   12) 1) "104.07784420545907"
+       2) "105.49250618562789"
+       3) "106.0994978567486"
+       4) "106.38150412672991"
+       5) "106.51640731213328"
+   13) metrics
+   14)  1) mae
+        2) "3.222222222222233"
+        3) mse
+        4) "10.588235294117702"
+        5) rmse
+        6) "3.253956867279851"
+        7) mape
+        8) "11.558054562008587"
+        9) smape
+       10) "13.31459878225548"
+       11) mase
+       12) "3.222222222222233"
+       13) r_squared
+       14) "0.9872928469317519"
 ```
 
 ### Difference a trending series before a level-only model
 
 `Naive` repeats the last observation, so on a trend it flat-lines. Differencing first makes the
 trend the thing being forecast, and the result is re-integrated back into the original units.
+Here `temperature` rises by 2 every second, ending at 201.
 
 ```
 127.0.0.1:6379> TS.FORECAST temperature - + MODELS Naive HORIZON 3 TRANSFORMS Difference(1)
-1) 1) "model"
-   2) "Naive"
-   3) "horizon"
+1) 1) model
+   2) Naive()
+   3) horizon
    4) (integer) 3
-   5) "forecast"
+   5) forecast
    6) 1) "203"
       2) "205"
       3) "207"
@@ -528,20 +586,22 @@ trend the thing being forecast, and the result is re-integrated back into the or
 
 ### Store forecast into a destination key
 
+The stored samples continue one step (1000 ms here) after the last sample in the range.
+
 ```
 127.0.0.1:6379> TS.FORECAST ts:metrics - + MODELS "ARIMA(2,1,0)" HORIZON 5 STORE forecast:result
 (integer) 5
 127.0.0.1:6379> TS.RANGE forecast:result - +
 1) 1) (integer) 101000
-   2) 104.12
+   2) "101"
 2) 1) (integer) 102000
-   2) 105.24
+   2) "102"
 3) 1) (integer) 103000
-   2) 106.36
+   2) "103"
 4) 1) (integer) 104000
-   2) 107.48
+   2) "104"
 5) 1) (integer) 105000
-   2) 108.60
+   2) "105"
 ```
 
 ### Store with custom creation options

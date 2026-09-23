@@ -60,8 +60,10 @@ The command computes correlation at every integer lag in `-maxLag..=maxLag`.
 Deadline for the command, in milliseconds; defaults to `ts-analysis-timeout`. When the number
 of aligned pairs times `2 × maxLag + 1` exceeds 10,000,000, the correlations are computed on a
 dedicated pool of analysis worker threads (sized by `ts-num-threads`) so they never stall the
-server, and the deadline applies to them. When it elapses the client receives `TSDB: command
-timed out before the result was ready`. `0` disables the deadline for this call.
+server, and the deadline applies to them; the timestamp alignment itself always runs inline.
+When it elapses the client receives `TSDB: command timed out before the result was ready (see
+TIMEOUT / ts-analysis-timeout)`. `0` disables the deadline for this call. Any argument after
+`maxLag` other than `TIMEOUT` is rejected with `TSDB: invalid argument`.
 </details>
 
 ## Lag convention
@@ -85,20 +87,26 @@ series on a common grid if needed.
 
 ## Return
 
-`TS.XCORR` returns a map (key-value pairs) in RESP3 format:
+`TS.XCORR` returns a map in RESP3; in RESP2 the same fields arrive as a flat array of
+alternating names and values, in the order below. Doubles are bulk strings in RESP2.
 
-| Key                | Type            | Description                                                        |
-|--------------------|-----------------|----------------------------------------------------------------------|
+| Key                | Type             | Description                                                         |
+|--------------------|------------------|---------------------------------------------------------------------|
 | `lags`             | array of integer | The tested lags, `-maxLag..=maxLag`, in order                       |
 | `values`           | array of double  | Correlation coefficient at each corresponding lag, range `[-1, 1]`  |
 | `peak_lag`         | integer          | The lag with the largest absolute correlation                       |
 | `peak_correlation` | double           | The (signed) correlation value at `peak_lag`                        |
 | `n`                | integer          | Number of timestamp-aligned sample pairs used                       |
 
+When several lags tie for the largest absolute correlation, `peak_lag` is the lowest of them. A
+lag whose correlation is undefined (a NaN sample in the overlap) is reported as `nan` and is
+not chosen as the peak unless every lag is `nan`. A constant series correlates as `0` at
+every lag.
+
 Returns an error if:
-* Either key does not exist
-* `key1` and `key2` are identical
-* `maxLag` is negative
+* Either key does not exist or is not a time series
+* `key1` and `key2` are identical (`TSDB: duplicate join keys`)
+* `maxLag` is not an integer, is negative, or exceeds 1000 (`TSDB: MAXLAG must not exceed 1000`)
 * Fewer than `maxLag + 2` timestamp-aligned sample pairs exist in the range
 
 ## Complexity
@@ -106,40 +114,47 @@ Returns an error if:
 `TS.XCORR` is O(n × maxLag), where `n` is the number of timestamp-aligned sample
 pairs in the range.
 
+## ACL Categories
+
+`@read`, `@timeseries`
+
 ## Examples
 
 ### Detect a 2-step lead of one sensor over another
 
+Two series of 480 samples on the same timestamps, where `sensor:downstream` repeats
+`sensor:upstream` (plus noise) two samples later:
+
 ```valkey
 127.0.0.1:6379> TS.XCORR sensor:upstream sensor:downstream - + 5
  1) "lags"
- 2) 1) (integer) -5
-    2) (integer) -4
-    3) (integer) -3
-    4) (integer) -2
-    5) (integer) -1
-    6) (integer) 0
-    7) (integer) 1
-    8) (integer) 2
-    9) (integer) 3
-   10) (integer) 4
-   11) (integer) 5
+ 2)  1) (integer) -5
+     2) (integer) -4
+     3) (integer) -3
+     4) (integer) -2
+     5) (integer) -1
+     6) (integer) 0
+     7) (integer) 1
+     8) (integer) 2
+     9) (integer) 3
+    10) (integer) 4
+    11) (integer) 5
  3) "values"
- 4)  1) (double) 0.05
-     2) (double) 0.08
-     3) (double) 0.11
-     4) (double) 0.20
-     5) (double) 0.41
-     6) (double) 0.63
-     7) (double) 0.90
-     8) (double) 0.55
-     9) (double) 0.22
-    10) (double) 0.10
-    11) (double) 0.04
+ 4)  1) "0.0319810268535779"
+     2) "0.009782531825730863"
+     3) "-0.008677073186086012"
+     4) "0.060952581814017644"
+     5) "0.058564697222020325"
+     6) "-0.04799861471542607"
+     7) "0.023702292969867603"
+     8) "0.9604875608215362"
+     9) "0.012303861512756436"
+    10) "-0.042095504258574404"
+    11) "0.06686795186145182"
  5) "peak_lag"
  6) (integer) 2
  7) "peak_correlation"
- 8) (double) 0.9
+ 8) "0.9604875608215362"
  9) "n"
 10) (integer) 480
 ```
@@ -149,18 +164,20 @@ leads `sensor:downstream` by 2 samples.
 
 ### Contemporaneous correlation only
 
+With `sensor:a` holding `0, 1, …, 11` and `sensor:b` their squares, on the same 12 timestamps:
+
 ```valkey
-127.0.0.1:6379> TS.XCORR temp:room1 temp:room2 - + 0
-1) "lags"
-2) 1) (integer) 0
-3) "values"
-4) 1) (double) 0.87
-5) "peak_lag"
-6) (integer) 0
-7) "peak_correlation"
-8) (double) 0.87
-9) "n"
-10) (integer) 240
+127.0.0.1:6379> TS.XCORR sensor:a sensor:b - + 0
+ 1) "lags"
+ 2) 1) (integer) 0
+ 3) "values"
+ 4) 1) "0.9635292999382342"
+ 5) "peak_lag"
+ 6) (integer) 0
+ 7) "peak_correlation"
+ 8) "0.9635292999382342"
+ 9) "n"
+10) (integer) 12
 ```
 
 ### Error: identical keys

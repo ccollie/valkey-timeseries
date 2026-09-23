@@ -35,11 +35,15 @@ End timestamp for the range query. Use `+` for the latest sample.
 <details open>
 <summary><code>lag</code></summary>
 
-Lag value (positive integer) for the autocorrelation computation. With `PARTIAL` or `AGGREGATED`,
-whose cost grows with the lag, it must not exceed 1000.
+Lag value (non-negative integer) for the autocorrelation computation. The range must hold more
+than `lag` samples (more than `2 × lag` with `TRA`). With `PARTIAL` or `AGGREGATED`, whose cost
+grows with the lag, it must not exceed 1000.
 </details>
 
 ## Optional arguments
+
+`PARTIAL`, `TRA` and `AGGREGATED` select the statistic; at most one takes effect — if several are
+given, the last one wins.
 
 <details open>
 <summary><code>PARTIAL</code></summary>
@@ -73,17 +77,21 @@ Requires an aggregation function:
 * `var` - Variance of the autocorrelation values across lags 1..=lag
 * `std` - Standard deviation of the autocorrelation values across lags 1..=lag
 * `median` - Median of the autocorrelation values across lags 1..=lag
+
+The function name is case-insensitive. With `lag` 0 there are no lags to aggregate and the
+command returns the NaN error below.
 </details>
 
 <details open>
 <summary><code>TIMEOUT milliseconds</code></summary>
 
-Deadline for the command, in milliseconds. Ranges of up to 50,000 samples are computed
-inline; larger ranges run on a dedicated pool of analysis worker threads (sized by
-`ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
-counted from when the request is accepted, so time spent queued behind other analysis work
-counts. When it elapses the client receives `TSDB: command timed out before the result was
-ready` and the request is abandoned. `0` disables the deadline for this call.
+Deadline for the command, in milliseconds. Ranges of up to 50,000 samples (for `PARTIAL` and
+`AGGREGATED`, samples × `(lag + 1)` up to 50,000) are computed inline; anything larger runs on
+a dedicated pool of analysis worker threads (sized by `ts-num-threads`) so it never stalls the
+server, and the deadline applies to it. It is counted from when the request is accepted, so
+time spent queued behind other analysis work counts. When it elapses the client receives
+`TSDB: command timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and
+the request is abandoned. `0` disables the deadline for this call.
 
 When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
 `0` there means no default deadline).
@@ -91,21 +99,30 @@ When omitted, the `ts-analysis-timeout` configuration parameter applies (default
 
 ## Return
 
-`TS.AUTOCORRELATION` returns a double-precision floating point value representing
-the computed statistic. Returns an error if:
+`TS.AUTOCORRELATION` returns the computed statistic as a double (a bulk string in RESP2).
+Returns an error if:
 
-* The key does not exist
-* The key is not a time series
-* There is insufficient data for the requested lag
-* The computation results in NaN
+* The key does not exist or is not a time series
+* `lag` is not an integer (`TSDB: invalid lag value`) or is negative
+  (`TSDB: lag must be a non-negative integer`)
+* There is insufficient data for the requested lag (`TSDB: insufficient data for lag <lag>. Need
+  at least <lag + 1> samples, got <n>`; for `TRA`, `TSDB: insufficient data for TRA with lag
+  <lag>. Need at least <2 × lag + 1> samples, got <n>`)
+* `lag` exceeds 1000 with `PARTIAL` or `AGGREGATED`
+  (`TSDB: lag must not exceed 1000 with PARTIAL or AGGREGATED`)
+* The `AGGREGATED` function is not one of the four above (`TSDB: invalid AGGREGATED function.
+  Expected mean, var, std, or median`)
+* An option is unknown (`TSDB: unrecognized option`)
+* The computation results in NaN, for example when the range contains a NaN sample
+  (`TSDB: autocorrelation computation returned NaN`). A constant series is not an error: its
+  autocorrelation is reported as `0`.
 
 ## Complexity
 
-`TS.AUTOCORRELATION` reads the full time series and computes the statistic.
-For large time series, performance is linear in the number of samples.
-
-`PARTIAL` (PACF) uses the Durbin-Levinson algorithm which requires O(lag²) additional
-computation after the ACF values are computed.
+`TS.AUTOCORRELATION` reads the samples in the range and computes the statistic. The plain ACF
+and `TRA` are linear in the number of samples; `PARTIAL` and `AGGREGATED` compute the ACF at
+every lag up to `lag`, O(n × lag), and `PARTIAL` adds O(lag²) for the Durbin-Levinson
+recursion.
 
 ## Examples
 
@@ -115,41 +132,50 @@ computation after the ACF values are computed.
 127.0.0.1:6379> TS.CREATE temp:readings
 OK
 127.0.0.1:6379> TS.ADD temp:readings 1000 20.0
+(integer) 1000
 127.0.0.1:6379> TS.ADD temp:readings 2000 21.0
+(integer) 2000
 127.0.0.1:6379> TS.ADD temp:readings 3000 22.0
+(integer) 3000
 127.0.0.1:6379> TS.ADD temp:readings 4000 23.0
+(integer) 4000
 127.0.0.1:6379> TS.ADD temp:readings 5000 24.0
+(integer) 5000
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 1
-1
+"0.5"
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 2
-1
+"-0.16666666666666666"
 ```
 
 ### Partial autocorrelation
 
 ```valkey
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 1 PARTIAL
-1
+"0.5"
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 2 PARTIAL
-0
+"-0.5555555555555555"
 ```
 
 ### Time reversal asymmetry
 
 ```valkey
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 1 TRA
-0
+"1938.6666666666667"
 ```
 
 ### Aggregated autocorrelation
 
 ```valkey
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 3 AGGREGATED mean
-1
+"-0.2222222222222222"
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 3 AGGREGATED var
-0
+"0.5648148148148149"
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 3 AGGREGATED std
-0
+"0.7515416254704824"
 127.0.0.1:6379> TS.AUTOCORRELATION temp:readings - + 3 AGGREGATED median
-1
+"-0.16666666666666666"
 ```
+
+## ACL Categories
+
+`@read`, `@timeseries`

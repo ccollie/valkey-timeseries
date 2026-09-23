@@ -57,7 +57,7 @@ acl_categories!(TS_TREND, "ts.trend", "write timeseries");
 /// `TS.TREND` fits one or more trend components to a time series.
 ///
 /// When `MODEL` is `Auto` (the default), multiple candidate trend components
-/// (Linear, Quadratic, Exponential, TheilSen, PiecewiseLinear) are fitted and
+/// (Linear, Quadratic, Exponential, Logistic, TheilSen, PiecewiseLinear) are fitted and
 /// the best one is selected using an information criterion (AICc by default).
 /// When a specific `MODEL` is given, only that trend component is fitted.
 ///
@@ -76,7 +76,8 @@ acl_categories!(TS_TREND, "ts.trend", "write timeseries");
 /// Optional response fields:
 /// - `predicted_trend`: predicted trend values (when PREDICT is specified)
 /// - `features`: map of named features from the fitted component (when FEATURES is specified)
-/// - `metrics`: accuracy metrics between observed and fitted values (when METRICS is specified)
+/// - `accuracy_metrics`: accuracy metrics between observed and fitted values (when METRICS is
+///   specified)
 #[valkey_module_macros::command({
     name: "ts.trend",
     // Declared `Write` rather than `ReadOnly`: the STORE clause creates/updates the

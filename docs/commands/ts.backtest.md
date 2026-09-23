@@ -66,9 +66,13 @@ Comma-separated list of model specifications to evaluate. Uses the same grammar 
 positional and keyword arguments (e.g. `ARIMA(2,1,0)`, `SES(alpha=0.3)`, `MSTL(12, iterations=5)`).
 See the `TS.FORECAST` documentation for the full list of supported models and their parameters.
 
-At least one model must be specified. Each model is re-fit independently for every fold; folds
-run in parallel (see [Performance](#performance-folds-run-in-parallel)), but the total CPU work
-for slower models (`ARIMA`, `TBATS`, `AutoARIMA`, `AutoTBATS`) still scales with `N_FOLDS`.
+At least one model must be specified. The specs are parsed and validated before any work is scheduled,
+so a malformed or unsupported spec fails immediately with `TSDB: error parsing MODELS: <reason>`. If
+`MODELS` appears more than once, the last clause wins.
+
+Each model is re-fit independently for every fold; folds run in parallel (see
+[Performance](#performance-folds-run-in-parallel)), but the total CPU work for slower models (`ARIMA`,
+`TBATS`, `AutoARIMA`, `AutoTBATS`) still scales with `N_FOLDS`.
 </details>
 
 <details open>
@@ -117,7 +121,8 @@ it larger than `HORIZON` to sample sparsely across a long history.
 <summary><code>N_FOLDS n</code></summary>
 
 Target number of folds to evaluate per model. Folds are placed backwards from the end of the
-requested range, so the most recent data is always included.
+requested range, and the `n` most recent are kept, so the most recent data is included (unless
+`EMBARGO` later drops those folds — see below).
 
 If the data is too short to produce `n` folds while satisfying `INITIAL_WINDOW`, the number of
 folds is silently reduced to whatever is feasible — this is not an error. If not even one fold
@@ -158,15 +163,18 @@ Default: `0`.
 
 Number of points excluded from **later** folds' training windows immediately following each test
 window. Unlike `GAP`/`PURGE` (which only affect the boundary before a single fold's test window),
-`EMBARGO` acts across folds: it pushes a fold's training **start** forward past the region right
-after earlier folds' test sets, preventing information from a test window from bleeding into the
-training data of subsequent folds.
+`EMBARGO` acts across folds: walking the folds oldest first, each fold's training **start** is moved
+forward to `EMBARGO` points past the end of the latest earlier test window, whenever that is later
+than its own start. This keeps a test window, and the `EMBARGO` points after it, out of every later
+fold's training data.
 
-Because `EMBARGO` moves the training start forward, it can shrink a fold's training window and, with
-`STRATEGY EXPANDING`, makes the expanding window behave more like a delayed-start window. A
-sufficiently large `EMBARGO` may eliminate folds whose training window is fully consumed; those folds
-are dropped (see [N_FOLDS](#n_folds-n) — the effective fold count may fall below the requested
-value, and this is not an error).
+A fold whose training window is fully consumed by this is dropped (after the `N_FOLDS` cap is
+applied, so the effective fold count may fall below the requested value; this is not an error). In
+walk-forward validation a later fold's training window normally covers the earlier test windows, so
+unless `STEP` exceeds `HORIZON + GAP + PURGE + EMBARGO`, **any non-zero `EMBARGO` leaves only the
+earliest fold**. With a large enough `STEP`, later folds survive with training windows of at most
+`STEP - HORIZON - GAP - PURGE - EMBARGO` points, so `STRATEGY EXPANDING` behaves like a delayed-start
+window.
 
 Default: `0`.
 </details>
@@ -201,26 +209,29 @@ large backtests.
 
 Deadline for the command, in milliseconds, counted from when the request is accepted (so time
 spent queued behind other forecasting work counts). When it elapses the client receives
-`TSDB: command timed out before the result was ready` and the request is abandoned: its result
-is discarded. `0` disables the deadline for this call.
+`TSDB: command timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` and the
+request is abandoned: its result is discarded. `0` disables the deadline for this call.
 
 When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
 `0` there means no default deadline).
 
 Forecasting commands run on a dedicated pool of worker threads sized by `ts-num-threads`, so
-they never block the server's main thread; requests beyond the worker count wait in a queue.
+they do not block the server's main thread; requests beyond the worker count wait in a queue.
+The exception is a call that cannot block — inside `MULTI`/`EXEC`, a Lua script, or a module's
+`RM_Call` — which runs inline on the main thread (folds sequentially), where no deadline applies.
 </details>
 
 ## How Backtesting Works
 
-For each model, `TS.BACKTEST`:
+`TS.BACKTEST`:
 
-1. Computes fold boundaries across the requested `[fromTimestamp, toTimestamp]` range based on
-   `STRATEGY`, `INITIAL_WINDOW`, `HORIZON`, `STEP`, `N_FOLDS`, `GAP`, `PURGE`, and `EMBARGO`. Folds
-   are placed backwards from the end of the range, so the most recent `HORIZON` points always belong
-   to the last fold's test window.
-2. For each fold, fits a **fresh instance** of the model on the fold's training window only (the
-   model never sees the test window's data) and forecasts `HORIZON` points forward.
+1. Computes fold boundaries once, shared by every model, across the samples in the requested
+   `[fromTimestamp, toTimestamp]` range based on `STRATEGY`, `INITIAL_WINDOW`, `HORIZON`, `STEP`,
+   `N_FOLDS`, `GAP`, `PURGE`, and `EMBARGO`. All sizes count samples, not time. Folds are placed
+   backwards from the end of the range, so the most recent `HORIZON` points belong to the last
+   fold's test window (unless `EMBARGO` drops the later folds).
+2. For each model and fold, fits a **fresh instance** of the model on the fold's training window
+   only (the model never sees the test window's data) and forecasts `HORIZON` points forward.
 3. Compares the forecast against the actual observed values in the test window, computing
    per-fold accuracy metrics (`mae`, `mse`, `rmse`, `mape`, `smape`, `mase`, `r_squared`).
 4. Aggregates per-fold metrics into an overall summary (`mae`, `rmse`, `smape`, `mape`, plus
@@ -228,18 +239,18 @@ For each model, `TS.BACKTEST`:
    consistent the model's accuracy is over time).
 
 If a model fails on any fold (for example, a model requiring more data than the earliest fold's
-training window provides), that model's response entry contains an `error` field instead of
-`metrics`/`folds`. Other models in the same `MODELS` list are unaffected and still return results.
+training window provides), that model's response entry contains only `model` and `error`. Other
+models in the same `MODELS` list are unaffected and still return results.
 
 ### Performance: folds run in parallel
 
 Within a single model, all of its folds are fit and scored **in parallel** across the module's
-worker thread pool — the dominant cost (one full model fit per fold) is not paid serially.
+analysis worker pool — the dominant cost (one full model fit per fold) is not paid serially.
 Models in `MODELS` are still dispatched one at a time, so that one model's fold failure can't
 abort another model's still-in-progress results; with multiple folds per model this still means
 most of the total work happens concurrently. The whole command additionally runs off the main
-Valkey thread (like `TS.FORECAST`/`TS.AUTOFORECAST`), so it never blocks other clients while
-backtesting runs.
+Valkey thread (like `TS.FORECAST`/`TS.AUTOFORECAST`), so it does not block other clients while
+backtesting runs — except where the client cannot be blocked (see `TIMEOUT`).
 
 `STRATEGY EXPANDING`'s later folds still cost more per-fold than earlier ones (larger training
 window), so total wall-clock time for a backtest isn't perfectly flat across `N_FOLDS`, but it no
@@ -247,17 +258,18 @@ longer scales linearly with fold count the way naive sequential evaluation would
 
 ## Return Value
 
-The response is an **array of flat key-value maps**, one entry per model specified in `MODELS`.
+The response is an **array of maps** (flat key-value arrays in RESP2), one entry per model specified
+in `MODELS`, in the same order.
 
 | Field       | Type            | Always Present | Description                                                                 |
 |-------------|-----------------|-----------------|-------------------------------------------------------------------------------|
-| `model`     | string          | Yes             | Name of the model as specified (e.g., `ARIMA(2,1,0)`)                        |
-| `horizon`   | integer         | Yes             | Forecast horizon used for each fold                                          |
-| `strategy`  | string          | Yes             | `"expanding"` or `"rolling"`                                                 |
-| `n_folds`   | integer         | Yes             | Number of folds actually evaluated (may be less than requested `N_FOLDS`)    |
+| `model`     | string          | Yes             | The model spec in canonical form (e.g. `ARIMA(2,1,0)`; `Naive` becomes `Naive()`) |
+| `horizon`   | integer         | No              | Forecast horizon used for each fold (absent if `error` is present)           |
+| `strategy`  | string          | No              | `"expanding"` or `"rolling"` (absent if `error` is present)                  |
+| `n_folds`   | integer         | No              | Number of folds actually evaluated, may be less than `N_FOLDS` (absent if `error` is present) |
 | `metrics`   | map             | No              | Aggregated accuracy metrics across all folds (absent if `error` is present)  |
 | `folds`     | array of maps   | No              | Per-fold results (absent if `error` is present)                              |
-| `error`     | string          | No              | Present only if this model failed to fit on one or more folds                |
+| `error`     | string          | No              | Present only if this model failed on one or more folds; the entry then holds only `model` and `error` |
 
 **`metrics` map** (aggregated across folds):
 
@@ -266,9 +278,9 @@ The response is an **array of flat key-value maps**, one entry per model specifi
 | `mae`       | double  | Mean of per-fold Mean Absolute Error                                 |
 | `rmse`      | double  | Mean of per-fold Root Mean Squared Error                             |
 | `smape`     | double  | Mean of per-fold Symmetric Mean Absolute Percentage Error            |
-| `mape`      | double  | Mean of per-fold Mean Absolute Percentage Error (`null` if any fold's actuals contain zeros) |
-| `mae_std`   | double  | Standard deviation of `mae` across folds                             |
-| `rmse_std`  | double  | Standard deviation of `rmse` across folds                            |
+| `mape`      | double  | Mean of per-fold Mean Absolute Percentage Error (`null` if any fold's `mape` is `null`, e.g. its actuals contain zeros) |
+| `mae_std`   | double  | Population standard deviation of `mae` across folds (`0` for a single fold) |
+| `rmse_std`  | double  | Population standard deviation of `rmse` across folds (`0` for a single fold) |
 
 **Each entry in `folds`:**
 
@@ -327,7 +339,7 @@ The response is an **array of flat key-value maps**, one entry per model specifi
               9) "smape"
               10) "1.95"
               11) "mase"
-              12) (nil)
+              12) "0.87"
               13) "r_squared"
               14) "0.98"
        2) ... (remaining folds)
@@ -358,43 +370,60 @@ The response is an **array of flat key-value maps**, one entry per model specifi
 
 ### Example Response (model failure isolated to one entry)
 
+On a 40-sample series, the earliest fold trains on only 25 samples:
+
 ```
+127.0.0.1:6379> TS.BACKTEST ts:short - + MODELS "SARIMA(1,1,1,1,1,1,12), Naive" HORIZON 3 INITIAL_WINDOW 10
 1) 1) "model"
-   2) "SARIMA(2,1,1,1,1,1,52)"
+   2) "SARIMA(1,1,1,1,1,1,12)"
    3) "error"
-   4) "TSDB: insufficient training data for seasonal period 52 in fold 1"
+   4) "TSDB: insufficient data: need at least 27, got 25 (SARIMA(1,1,1)(1,1,1)_12 requires at least 27 observations)"
 2) 1) "model"
    2) "Naive()"
    3) "horizon"
-   4) (integer) 7
+   4) (integer) 3
    5) "strategy"
    6) "expanding"
    7) "n_folds"
    8) (integer) 5
    9) "metrics"
    10) ...
+   11) "folds"
+   12) ...
 ```
 
 ## Errors
 
-- `TSDB: the key does not exist` — the specified key does not hold a time series.
+- `ERR wrong number of arguments for 'ts.backtest' command` — fewer than seven arguments after the
+  command name.
+- `TSDB: the key does not exist` — the specified key does not exist (a key of another type gives
+  `WRONGTYPE`).
+- `TSDB: wrong fromTimestamp` / `TSDB: wrong toTimestamp` — a range bound could not be parsed.
 - `TSDB: HORIZON is required` — the `HORIZON` argument is missing.
+- `TSDB: missing forecast horizon value` — `HORIZON` was given without a value.
+- `Couldn't parse as integer` — the `HORIZON` value is not an integer.
 - `TSDB: forecast horizon must be greater than 0` — `HORIZON` is zero or negative.
 - `TSDB: forecast horizon must not exceed N (ts-forecast-max-horizon)` — `HORIZON` is above the
   configured cap.
-- `TSDB: MODELS must contain at least one model specification` — no models were provided.
-- `TSDB: error parsing MODELS` — the model specification string could not be parsed.
-- `TSDB: STRATEGY must be EXPANDING or ROLLING` — an invalid `STRATEGY` value was given.
+- `TSDB: MODELS must contain at least one model specification` — `MODELS` is missing or empty.
+- `TSDB: missing value for MODELS` — `MODELS` was given without a value.
+- `TSDB: error parsing MODELS: <reason>` — a model specification could not be parsed, names an
+  unsupported model, or has invalid parameters.
+- `TSDB: missing value for STRATEGY` / `TSDB: STRATEGY must be EXPANDING or ROLLING` — `STRATEGY` is
+  missing its value or the value is invalid.
+- `TSDB: missing value for <OPTION>` — `INITIAL_WINDOW`, `STEP`, `N_FOLDS`, `GAP`, `PURGE`,
+  `EMBARGO`, or `SEASONAL_PERIOD` is missing its value or the value is not an integer.
 - `TSDB: <OPTION> must be greater than 0` — `N_FOLDS`, `STEP`, `INITIAL_WINDOW`, or
   `SEASONAL_PERIOD` was zero or negative.
 - `TSDB: <OPTION> must be non-negative` — `GAP`, `PURGE`, or `EMBARGO` was negative.
 - `TSDB: not enough data for backtest with the given HORIZON/INITIAL_WINDOW` — the requested
   range is too short to produce even one fold. The minimum length for a single fold is
   `INITIAL_WINDOW + PURGE + GAP + HORIZON` observations.
-- `TSDB: Unknown argument` — an unrecognized argument was provided.
-- `TSDB: command timed out before the result was ready` — the `TIMEOUT` (or `ts-analysis-timeout`)
-  deadline elapsed before the result was available.
-- `TSDB: TIMEOUT must be zero or positive` — a negative `TIMEOUT` was given.
+- `TSDB: Unknown argument: <arg>` — an unrecognized argument was provided.
+- `TSDB: missing value for TIMEOUT` / `TSDB: TIMEOUT must be zero or positive` — `TIMEOUT` is missing
+  its value or is negative.
+- `TSDB: command timed out before the result was ready (see TIMEOUT / ts-analysis-timeout)` — the
+  `TIMEOUT` (or `ts-analysis-timeout`) deadline elapsed before the result was available.
 - `TSDB: Failed to prepare time series for forecasting` — the series data could not be converted
   to the format required by the forecasting library.
 - Per-model, per-fold failures do **not** abort the whole command — see
@@ -433,7 +462,7 @@ The response is an **array of flat key-value maps**, one entry per model specifi
    12) ...
 ```
 
-`ARIMA(2,1,0)` shows lower error than `Naive()` across all 5 folds — a reasonable signal to
+`ARIMA(2,1,0)` shows lower average error than `Naive()` over the 5 folds — a reasonable signal to
 prefer it in `TS.FORECAST`.
 
 ### Rolling window with explicit step and gap
@@ -463,7 +492,7 @@ overlapping folds.
 
 ```
 127.0.0.1:6379> TS.BACKTEST ts:metrics - + MODELS "ARIMA(2,1,0)" HORIZON 12 \
-  PURGE 5 EMBARGO 10 N_FOLDS 5
+  STEP 60 PURGE 5 EMBARGO 10 N_FOLDS 3
 1) 1) "model"
    2) "ARIMA(2,1,0)"
    3) "horizon"
@@ -471,7 +500,7 @@ overlapping folds.
    5) "strategy"
    6) "expanding"
    7) "n_folds"
-   8) (integer) 5
+   8) (integer) 3
    9) "metrics"
    10) ...
    11) "folds"
@@ -479,9 +508,10 @@ overlapping folds.
 ```
 
 `PURGE 5` drops the 5 points immediately before each test window from training (guarding against
-boundary leakage from engineered features), and `EMBARGO 10` excludes the 10 points after each
-earlier fold's test window from later folds' training. If the embargo consumes a fold's training
-window entirely, that fold is dropped and `n_folds` reflects the surviving count.
+boundary leakage from engineered features), and `EMBARGO 10` excludes each earlier test window and
+the 10 points after it from later folds' training. With `STEP 60`, each later fold keeps a training
+window of `60 - 12 - 5 - 10 = 33` points. With the default `STEP` (= `HORIZON`) the embargo would
+consume every later fold's training window, leaving `n_folds` at 1 (the earliest fold).
 
 ### Inspect raw predictions vs actuals per fold
 
@@ -502,3 +532,7 @@ window entirely, that fold is dropped and `n_folds` reflects the surviving count
           14) 1) "101.00" 2) "102.30" 3) "102.60" 4) "104.10" 5) "104.20"
        2) ... (remaining folds)
 ```
+
+## ACL Categories
+
+`read timeseries`

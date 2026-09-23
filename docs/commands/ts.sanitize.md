@@ -2,6 +2,9 @@
 
 Sanitize missing (NaN/infinite) values in a time series within a specified timestamp range.
 
+**The source series is always rewritten in place**: the sanitized samples replace the range in
+the source key, with or without `STORE`. `STORE` additionally writes them to a destination key.
+
 ## Syntax
 
 ```
@@ -33,16 +36,20 @@ TS.SANITIZE key fromTimestamp toTimestamp
 |------------------|-----------------------------------------------------------------|
 | `POLICY`         | The imputation policy to apply (see below). Defaults to `DROP`. |
 
+`POLICY` (if present) must come before `STORE`. Any other or out-of-order argument is rejected
+with `ERR wrong number of arguments for 'ts.sanitize' command`.
+
 ### STORE
 
-Writes the sanitized samples to a destination key instead of returning them inline.
+Also writes the sanitized samples to a destination key, and returns a count instead of the
+samples. The source range is rewritten either way.
 
 | Option                    | Description                                                     |
 |---------------------------|-----------------------------------------------------------------|
 | `destinationKey`          | Key name for the destination time series                        |
 | `MERGE`                   | Merge sanitized samples into an existing destination key        |
 | `RETENTION retentionPeriod`   | Maximum retention period for the destination                |
-| `ENCODING encoding`       | Chunk encoding: `COMPRESSED` or `UNCOMPRESSED`                  |
+| `ENCODING encoding`       | Chunk encoding: `COMPRESSED` (the default encoding, Chimp), `UNCOMPRESSED`, `GORILLA` or `CHIMP` |
 | `CHUNK_SIZE chunkSize`    | Number of samples per memory chunk in the destination           |
 | `DUPLICATE_POLICY policy` | Duplicate sample policy for the destination (`BLOCK`, `FIRST`, `LAST`, `MIN`, `MAX`, `SUM`) |
 | `SIGNIFICANT_DIGITS digits` | Round to this many significant digits in the destination     |
@@ -52,6 +59,7 @@ Writes the sanitized samples to a destination key instead of returning them inli
 
 Without `MERGE` (overwrite mode), the destination is cleared before writing.
 With `MERGE`, sanitized samples are merged into an existing destination series.
+If no samples remain after sanitizing, the destination is left untouched (and not created).
 
 ## Policies
 
@@ -75,6 +83,7 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
   (same format as `TS.RANGE`).
 
 - **With `STORE`:** Returns the number of samples written to the destination key as an integer.
+  The source range is still rewritten.
 
 ## Behavior
 
@@ -128,6 +137,9 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
   only samples within that range are considered. Samples outside the range are not used as
   interpolation anchors.
 
+- **Source rewrite:** Unless the `ERROR` policy fails, the source range is always replaced by the
+  sanitized samples, even when nothing was missing and even when `STORE` is given.
+
 - **STORE behavior:** When `STORE` is specified, the sanitized samples are written to the
   destination key in addition to being applied to the source series. Without `MERGE`, the
   destination is overwritten. With `MERGE`, samples are merged into an existing destination
@@ -135,27 +147,34 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
   destination must differ from the source key; naming the source fails with
   `TSDB: STORE destination must be different from the source key`.
 
-- **Notifications:** Keyspace notifications are sent for the `ts.sanitize` event
-  when samples are modified.
+- **Notifications:** A `ts.sanitize` keyspace notification is sent for the source key on every
+  successful call. A `STORE` write sends `ts.del` (when overwrite mode cleared existing samples)
+  and `ts.add` for the destination.
 
-- **Replication:** The command is replicated to all replicas.
+- **Replication:** The command itself is replicated to replicas and the AOF, which re-run it
+  (sanitizing is deterministic); this covers the `STORE` write too.
 
 ## Errors
 
 - `TSDB: the key does not exist` — the specified key does not hold a time series.
-- `TSDB: sanitize error: missing values` — the ERROR policy was specified and missing values
-  were found.
-- `TSDB: sanitize error: insufficient data` — not enough data for the SEASONAL policy
-  (period exceeds the number of samples).
-- `TSDB: sanitize error: invalid parameter` — an invalid policy parameter was provided
-  (e.g., even window for MOVINGAVERAGE, or >50% missing in a seasonal bucket).
+- `TSDB: sanitize error: missing values detected in data` — the ERROR policy was specified and
+  missing values were found.
+- `TSDB: sanitize error: insufficient data: need at least <period>, got <n>` — the SEASONAL
+  period exceeds the number of samples in the range.
+- `TSDB: sanitize error: invalid parameter: seasonal bucket <b> has >50% missing values (<missing>/<total>)`
+  — more than half the values in a SEASONAL bucket are missing.
 - `TSDB: MovingAverage window must be an odd positive integer` — the MOVINGAVERAGE window
   is even or zero.
+- `TSDB: invalid MovingAverage window` — the MOVINGAVERAGE window is not a non-negative integer.
 - `TSDB: Seasonal period must be a positive integer` — the SEASONAL period is zero.
+- `TSDB: invalid Seasonal period` — the SEASONAL period is neither a non-negative integer nor `auto`.
 - `TSDB: unable to detect dominant period for seasonal imputation` — automatic period
   detection failed for SEASONAL with `auto`.
 - `TSDB: invalid fill value` — the FILL policy value could not be parsed as a float.
 - `TSDB: invalid argument` — an unknown policy name was specified.
+- `TSDB: STORE destination must be different from the source key` — `STORE` named the source key.
+- `ERR wrong number of arguments for 'ts.sanitize' command` — a policy argument is missing, or an
+  unrecognized or out-of-order argument follows the recognized ones.
 
 ## Examples
 
@@ -170,14 +189,14 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
 (integer) 3000
 127.0.0.1:6379> TS.SANITIZE ts:metrics 1000 3000
 1) 1) (integer) 1000
-   2) 1.0
+   2) "1"
 2) 1) (integer) 3000
-   2) 3.0
+   2) "3"
 127.0.0.1:6379> TS.RANGE ts:metrics - +
 1) 1) (integer) 1000
-   2) 1.0
+   2) "1"
 2) 1) (integer) 3000
-   2) 3.0
+   2) "3"
 ```
 
 ### Check for missing values
@@ -188,28 +207,30 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
 127.0.0.1:6379> TS.ADD temperature:room1 2000 NaN
 (integer) 2000
 127.0.0.1:6379> TS.SANITIZE temperature:room1 1000 2000 POLICY ERROR
-(error) TSDB: sanitize error: missing values
+(error) TSDB: sanitize error: missing values detected in data
 ```
+
+The series is left unchanged.
 
 ### Drop missing values
 
 ```
-127.0.0.1:6379> TS.ADD ts:metrics 1000 1.0
+127.0.0.1:6379> TS.ADD ts:readings 1000 1.0
 (integer) 1000
-127.0.0.1:6379> TS.ADD ts:metrics 2000 NaN
+127.0.0.1:6379> TS.ADD ts:readings 2000 NaN
 (integer) 2000
-127.0.0.1:6379> TS.ADD ts:metrics 3000 3.0
+127.0.0.1:6379> TS.ADD ts:readings 3000 3.0
 (integer) 3000
-127.0.0.1:6379> TS.SANITIZE ts:metrics 1000 3000 POLICY DROP
+127.0.0.1:6379> TS.SANITIZE ts:readings 1000 3000 POLICY DROP
 1) 1) (integer) 1000
-   2) 1.0
+   2) "1"
 2) 1) (integer) 3000
-   2) 3.0
-127.0.0.1:6379> TS.RANGE ts:metrics - +
+   2) "3"
+127.0.0.1:6379> TS.RANGE ts:readings - +
 1) 1) (integer) 1000
-   2) 1.0
+   2) "1"
 2) 1) (integer) 3000
-   2) 3.0
+   2) "3"
 ```
 
 ### Fill missing with interpolation
@@ -223,11 +244,11 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
 (integer) 3000
 127.0.0.1:6379> TS.SANITIZE ts:temp 1000 3000 POLICY INTERPOLATE
 1) 1) (integer) 1000
-   2) 20.0
+   2) "20"
 2) 1) (integer) 2000
-   2) 25.0
+   2) "25"
 3) 1) (integer) 3000
-   2) 30.0
+   2) "30"
 ```
 
 ### Fill missing with forward-fill
@@ -241,11 +262,11 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
 (integer) 3000
 127.0.0.1:6379> TS.SANITIZE ts:sensor 1000 3000 POLICY FORWARDFILL
 1) 1) (integer) 1000
-   2) 10.0
+   2) "10"
 2) 1) (integer) 2000
-   2) 10.0
+   2) "10"
 3) 1) (integer) 3000
-   2) 10.0
+   2) "10"
 ```
 
 ### Store sanitized result to a new key
@@ -261,10 +282,17 @@ With `MERGE`, sanitized samples are merged into an existing destination series.
 (integer) 2
 127.0.0.1:6379> TS.RANGE ts:clean - +
 1) 1) (integer) 1000
-   2) 1.0
+   2) "1"
 2) 1) (integer) 3000
-   2) 3.0
+   2) "3"
+127.0.0.1:6379> TS.RANGE ts:raw - +
+1) 1) (integer) 1000
+   2) "1"
+2) 1) (integer) 3000
+   2) "3"
 ```
+
+The NaN sample is dropped from `ts:raw` as well: `STORE` does not leave the source untouched.
 
 ### Store with MERGE into an existing key
 
@@ -283,9 +311,9 @@ OK
 (integer) 2
 127.0.0.1:6379> TS.RANGE ts:merged - +
 1) 1) (integer) 500
-   2) 99.0
+   2) "99"
 2) 1) (integer) 1000
-   2) 1.0
+   2) "1"
 3) 1) (integer) 3000
-   2) 3.0
+   2) "3"
 ```

@@ -47,11 +47,15 @@ Use `+` to denote the latest timestamp in the series.
 
 Controls how seasonal periods are determined. One of:
 
-* `AUTO` (default) — Automatically detect seasonal periods from the data using a periodogram.
-* `<period> [period ...]` — One or more seasonal periods (integers of at least 2). The range must
-  hold at least two full cycles of the largest period.
+* `AUTO` (the default, also used when `SEASONALITY` is omitted) — Detect seasonal periods from
+  the data. If none are found the command fails with
+  `TSDB: at least one seasonality period is required`.
+* `<period> [period ...]` — One to four distinct seasonal periods, each an integer of at least 2,
+  in samples. The range must hold at least two full cycles of the largest period
+  (`samples >= 2 × period`).
   - A single period uses STL decomposition.
-  - Multiple periods (up to 4) use MSTL decomposition.
+  - Multiple periods use MSTL decomposition; the components are reported in ascending period
+    order, whatever order they were given in.
 
 Examples:
 - `SEASONALITY 24` — daily seasonality for hourly data
@@ -68,7 +72,8 @@ inline; larger ranges run on a dedicated pool of analysis worker threads (sized 
 `ts-num-threads`) so they never stall the server, and the deadline applies to them. It is
 counted from when the request is accepted, so time spent queued behind other analysis work
 counts. When it elapses the client receives `TSDB: command timed out before the result was
-ready` and the request is abandoned. `0` disables the deadline for this call.
+ready (see TIMEOUT / ts-analysis-timeout)` and the request is abandoned. `0` disables the
+deadline for this call.
 
 When omitted, the `ts-analysis-timeout` configuration parameter applies (default 60000 ms;
 `0` there means no default deadline).
@@ -76,7 +81,10 @@ When omitted, the `ts-analysis-timeout` configuration parameter applies (default
 
 ## Return
 
-`TS.DECOMPOSE` returns an array of key-value pairs containing the decomposition results.
+`TS.DECOMPOSE` returns a flat array of alternating component names and sample arrays, in both
+RESP2 and RESP3 (it is not a RESP3 map). Each sample is a `[timestamp, value]` pair; values are
+doubles in RESP3 and bulk strings in RESP2. Every component has one sample per sample in the
+range, with the original timestamps.
 
 ### STL response (single period)
 
@@ -122,7 +130,21 @@ When omitted, the `ts-analysis-timeout` configuration parameter applies (default
    2) ...
 ```
 
-The components satisfy the identity: `original = trend + seasonal (+ seasonal_components) + residual`
+In the MSTL response each `seasonal_components` entry is a `[period, samples]` pair, in ascending
+period order.
+
+The components satisfy the identity `original = trend + seasonal + residual`, where for MSTL
+`seasonal` is the sum of the `seasonal_components`.
+
+Returns an error if:
+
+* The key does not exist or is not a time series
+* A period is below 2, repeated, or more than four are given (`TSDB: SEASONALITY periods must be
+  at least 2`, `TSDB: SEASONALITY periods must be unique`, `TSDB: invalid SEASONALITY periods.
+  Expected 1-4 period values or 'auto'`)
+* The range is shorter than two cycles of the largest period (`TSDB: insufficient data for STL
+  decomposition. Need at least <2 × period> samples, got <n>`, or the same with `MSTL`)
+* `AUTO` detects no period — including for an empty or very short range
 
 ## Examples
 
@@ -155,5 +177,10 @@ The components satisfy the identity: `original = trend + seasonal (+ seasonal_co
 `TS.DECOMPOSE` is O(n × p × i) where n is the number of samples, p is the number of seasonal periods,
 and i is the number of inner/outer LOESS iterations.
 
-The command blocks the client during computation and may be slow for very large time series.
-Consider using `FILTER_BY_TS` or limiting the time range for better performance with large datasets.
+Ranges of more than 2,000 samples are computed on the analysis pool (see `TIMEOUT`), so the
+server is never stalled; the calling client waits for the result. Narrow the time range to bound
+the cost on large series.
+
+## ACL Categories
+
+`@read`, `@timeseries`
