@@ -2115,6 +2115,22 @@ mod tests {
 
     /// Peer-controlled input: a symbol-table response whose ref arrays point
     /// past the end of the dictionary must be rejected, not indexed.
+    /// Released nodes decode the symbol table as two top-level `repeated
+    /// string` fields, 6 and 7. Pin the wire bytes so a later refactor cannot
+    /// retype or renumber them without failing here.
+    #[test]
+    fn symbol_table_keeps_its_released_wire_layout() {
+        use prost::Message;
+        let resp = MultiRangeResponse {
+            symbol_table_names: vec!["n".into()],
+            symbol_table_values: vec!["v".into()],
+            ..Default::default()
+        };
+        // Tag (6 << 3 | LEN) = 0x32 and (7 << 3 | LEN) = 0x3a, each followed
+        // by a one-byte string.
+        assert_eq!(resp.encode_to_vec(), vec![0x32, 1, b'n', 0x3a, 1, b'v']);
+    }
+
     #[test]
     fn ingest_response_rejects_out_of_range_symbol_table_ref() {
         let resp = MultiRangeResponse {
@@ -2159,7 +2175,8 @@ mod tests {
             series: vec![wire],
             group_partials: Vec::new(),
             // No symbol table and no refs: labels carried directly.
-            symbol_table: Some(SymbolTable::default()),
+            symbol_table_names: Vec::new(),
+            symbol_table_values: Vec::new(),
         };
 
         let mut cmd = MRangeFanoutCommand::default();
