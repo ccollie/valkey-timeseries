@@ -798,6 +798,21 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
             )
         assert self.client.execute_command("EXISTS", store_key) == 0
 
+    def test_store_rejects_timestamp_overflow_before_forecasting(self):
+        """A large step and horizon cannot wrap stored sample timestamps."""
+        key = "test:autoforecast:store:timestamp_overflow"
+        store_key = "test:autoforecast:store:timestamp_overflow:out"
+        self.client.execute_command("TS.CREATE", key)
+        self.client.execute_command("TS.ADD", key, 0, 1)
+        self.client.execute_command("TS.ADD", key, 4_000_000_000_000_000, 2)
+
+        with pytest.raises(ResponseError, match="STORE forecast timestamps exceed the supported range"):
+            self.client.execute_command(
+                "TS.AUTOFORECAST", key, "-", "+",
+                "HORIZON", "3000", "STORE", store_key
+            )
+        assert self.client.execute_command("EXISTS", store_key) == 0
+
     def test_store_write_failure_is_an_error(self):
         """A destination holding another type cannot be written; the command
         reports that instead of returning the forecast as if it had stored."""

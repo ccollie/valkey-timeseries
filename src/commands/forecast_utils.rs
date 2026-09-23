@@ -49,8 +49,15 @@ pub(super) struct StoreAnchor {
 
 impl StoreAnchor {
     /// Timestamp of the `i`-th (zero-based) forecast point.
-    pub fn timestamp_at(&self, i: usize) -> Timestamp {
-        self.last_ts + self.step_ms * (i as i64 + 1)
+    pub fn timestamp_at(&self, i: usize) -> ValkeyResult<Timestamp> {
+        let steps = i
+            .checked_add(1)
+            .and_then(|count| i64::try_from(count).ok())
+            .ok_or(ValkeyError::Str(STORE_TIMESTAMP_OVERFLOW_ERROR))?;
+        self.step_ms
+            .checked_mul(steps)
+            .and_then(|delta| self.last_ts.checked_add(delta))
+            .ok_or(ValkeyError::Str(STORE_TIMESTAMP_OVERFLOW_ERROR))
     }
 }
 
@@ -60,8 +67,12 @@ impl StoreAnchor {
 /// positive gap between samples. Both need at least two distinct timestamps,
 /// so a range that cannot yield a step is rejected here — on the main thread,
 /// before the client is blocked — rather than silently downgrading `STORE`
-/// to a plain reply after the models have run.
-pub(super) fn store_anchor(series: &ForecastTimeSeries) -> ValkeyResult<StoreAnchor> {
+/// to a plain reply after the models have run. The final timestamp for the
+/// requested horizon is checked here for the same reason.
+pub(super) fn store_anchor(
+    series: &ForecastTimeSeries,
+    horizon: usize,
+) -> ValkeyResult<StoreAnchor> {
     let timestamps = series.timestamps();
     let last_ts = timestamps
         .last()
@@ -76,7 +87,11 @@ pub(super) fn store_anchor(series: &ForecastTimeSeries) -> ValkeyResult<StoreAnc
             compute_median_step_ms(&millis)
         })
         .ok_or(ValkeyError::Str(STORE_STEP_ERROR))?;
-    Ok(StoreAnchor { last_ts, step_ms })
+    let anchor = StoreAnchor { last_ts, step_ms };
+    if horizon > 0 {
+        anchor.timestamp_at(horizon - 1)?;
+    }
+    Ok(anchor)
 }
 
 /// Write forecast `values` as consecutive samples after `anchor` into `dest_key`,
@@ -93,8 +108,8 @@ pub(super) fn write_forecast_samples(
     let samples: Vec<Sample> = values
         .iter()
         .enumerate()
-        .map(|(i, &value)| Sample::new(anchor.timestamp_at(i), value))
-        .collect();
+        .map(|(i, &value)| anchor.timestamp_at(i).map(|ts| Sample::new(ts, value)))
+        .collect::<ValkeyResult<_>>()?;
 
     let lock = ctx.lock();
     let key = lock.create_string(dest_key);
@@ -109,6 +124,8 @@ pub(super) fn write_forecast_samples(
 
 const STORE_STEP_ERROR: &str =
     "TSDB: STORE requires at least two samples in the range to determine the forecast step";
+const STORE_TIMESTAMP_OVERFLOW_ERROR: &str =
+    "TSDB: STORE forecast timestamps exceed the supported range";
 
 pub struct ForecastOutput {
     pub(crate) model_name: String,

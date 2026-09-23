@@ -377,6 +377,8 @@ Keyword arguments: `max_rounds`, `seasonal_lr`, `trend_lr`, `robust`, `multiplic
 - `TSDB: STORE is only supported with a single model` — `STORE` was specified with multiple models.
 - `TSDB: STORE requires at least two samples in the range to determine the forecast step` — the
   range holds too few samples to infer where the stored forecast samples should be placed.
+- `TSDB: STORE forecast timestamps exceed the supported range` — the last timestamp and forecast
+  step would overflow the timestamp type at the requested `HORIZON`; rejected before model work.
 - `TSDB: LEVEL must be between 0 and 100` — `LEVEL` is out of the valid range.
 - `TSDB: Unknown argument` — an unrecognized argument was provided.
 - `TSDB: command timed out before the result was ready` — the `TIMEOUT` (or `ts-analysis-timeout`)

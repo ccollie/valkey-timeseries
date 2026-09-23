@@ -99,12 +99,11 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
 
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_autoforecast_args(&mut args)?;
-    // STORE needs a step to place the forecast samples; reject a range that
-    // cannot provide one now rather than after the model search has run.
+    // Validate the STORE step and final timestamp before the model search.
     let anchor = options
         .destination_key
         .as_ref()
-        .map(|_| store_anchor(&series))
+        .map(|_| store_anchor(&series, options.horizon))
         .transpose()?;
 
     run_analysis_job(ctx, options.timeout, move |thread_ctx| {
