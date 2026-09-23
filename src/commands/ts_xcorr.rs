@@ -1,7 +1,9 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
+use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_timestamp_range;
 use crate::common::replies::{
-    reply_with_array, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
+    ReplyContext, reply_with_array, reply_with_double, reply_with_integer, reply_with_map,
+    reply_with_str,
 };
 use crate::error_consts;
 use crate::join::{JoinOptions, JoinResultType, process_join};
@@ -14,7 +16,7 @@ use valkey_module::{
 
 acl_categories!(TS_XCORR, "ts.xcorr", "read timeseries");
 /// ```text
-/// TS.XCORR key1 key2 fromTimestamp toTimestamp maxLag
+/// TS.XCORR key1 key2 fromTimestamp toTimestamp maxLag [TIMEOUT milliseconds]
 /// ```
 ///
 /// `TS.XCORR` computes the cross-correlation function (CCF) between two time series
@@ -83,7 +85,14 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
     let maxlag = maxlag as usize;
 
-    args.done()?;
+    let mut timeout = AnalysisTimeout::default();
+    while let Some(arg) = args.next() {
+        if arg.as_slice().eq_ignore_ascii_case(b"TIMEOUT") {
+            timeout.set(parse_timeout(&mut args)?);
+        } else {
+            return Err(ValkeyError::Str(error_consts::INVALID_ARGUMENT));
+        }
+    }
 
     // Both series must exist; `get_timeseries` reports a missing key as an error.
     let left_series = get_timeseries(ctx, &key1, Some(AclPermissions::ACCESS))?;
@@ -116,7 +125,35 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         )));
     }
 
-    let maxlag = maxlag as i64;
+    // The join above reads the series, so it stays on the main thread; the lag loop is
+    // O(n × lags) and goes to the pool once it is big enough to stall the server.
+    let work = n.saturating_mul(2 * maxlag + 1);
+    run_analysis(
+        ctx,
+        work,
+        INLINE_MAX_WORK,
+        timeout,
+        move || Ok(cross_correlate(&x, &y, maxlag as i64)),
+        |actx, result| {
+            reply_with_xcorr(&actx.reply_ctx(), &result);
+            Ok(ValkeyValue::NoReply)
+        },
+    )
+}
+
+/// Largest `pairs × lags` product computed on the main thread: about 10 ms (release build).
+const INLINE_MAX_WORK: usize = 10_000_000;
+
+struct CrossCorrelation {
+    lags: Vec<i64>,
+    values: Vec<f64>,
+    peak_lag: i64,
+    peak_correlation: f64,
+    n: usize,
+}
+
+fn cross_correlate(x: &[f64], y: &[f64], maxlag: i64) -> CrossCorrelation {
+    let n = x.len();
     let width = (2 * maxlag + 1) as usize;
     let mut lags: Vec<i64> = Vec::with_capacity(width);
     let mut values: Vec<f64> = Vec::with_capacity(width);
@@ -125,7 +162,7 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     for h in -maxlag..=maxlag {
         let corr = match h.cmp(&0) {
-            std::cmp::Ordering::Equal => simd::correlation(&x, &y),
+            std::cmp::Ordering::Equal => simd::correlation(x, y),
             std::cmp::Ordering::Greater => {
                 let h = h as usize;
                 simd::correlation(&x[..n - h], &y[h..])
@@ -145,28 +182,36 @@ pub fn ts_xcorr_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         values.push(corr);
     }
 
+    CrossCorrelation {
+        lags,
+        values,
+        peak_lag,
+        peak_correlation,
+        n,
+    }
+}
+
+fn reply_with_xcorr(ctx: &ReplyContext, result: &CrossCorrelation) {
     reply_with_map(ctx, 5);
 
     reply_with_str(ctx, "lags");
-    reply_with_array(ctx, lags.len());
-    for &l in &lags {
+    reply_with_array(ctx, result.lags.len());
+    for &l in &result.lags {
         reply_with_integer(ctx, l);
     }
 
     reply_with_str(ctx, "values");
-    reply_with_array(ctx, values.len());
-    for &v in &values {
+    reply_with_array(ctx, result.values.len());
+    for &v in &result.values {
         reply_with_double(ctx, v);
     }
 
     reply_with_str(ctx, "peak_lag");
-    reply_with_integer(ctx, peak_lag);
+    reply_with_integer(ctx, result.peak_lag);
 
     reply_with_str(ctx, "peak_correlation");
-    reply_with_double(ctx, peak_correlation);
+    reply_with_double(ctx, result.peak_correlation);
 
     reply_with_str(ctx, "n");
-    reply_with_integer(ctx, n as i64);
-
-    Ok(ValkeyValue::NoReply)
+    reply_with_integer(ctx, result.n as i64);
 }

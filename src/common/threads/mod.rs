@@ -301,3 +301,25 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::map_on_current_pool;
+    use rayon_core::ThreadPoolBuilder;
+
+    #[test]
+    fn map_on_current_pool_keeps_order_off_and_on_a_pool() {
+        let items: Vec<u64> = (0..100).collect();
+        let expected: Vec<u64> = items.iter().map(|x| x * x).collect();
+
+        // The test thread is not a rayon worker: sequential.
+        assert_eq!(map_on_current_pool(&items, |x| x * x), expected);
+
+        let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let on_pool = pool.install(|| {
+            assert!(rayon_core::current_thread_index().is_some());
+            map_on_current_pool(&items, |x| x * x)
+        });
+        assert_eq!(on_pool, expected);
+    }
+}

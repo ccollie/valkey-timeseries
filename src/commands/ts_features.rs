@@ -1,11 +1,11 @@
 use crate::analysis::forecasting::features::{
     FeatureCategory, compute_features_map, parse_feature,
 };
-use crate::commands::parse_timestamp_range;
-use crate::common::replies::{
-    ThreadSafeReplyContext, block_client, reply_with_double, reply_with_map, reply_with_str,
+use crate::commands::analysis_runner::{
+    AnalysisTimeout, parse_timeout, run_analysis_in_background,
 };
-use crate::common::threads::spawn;
+use crate::commands::parse_timestamp_range;
+use crate::common::replies::{reply_with_double, reply_with_map, reply_with_null, reply_with_str};
 use crate::series::get_timeseries;
 use anofox_forecast::features::Feature;
 use valkey_module::{
@@ -17,6 +17,7 @@ acl_categories!(TS_FEATURES, "ts.features", "read timeseries");
 /// TS.FEATURES key startTimestamp endTimestamp
 ///     [CATEGORY <basic|distribution|autocorrelation|trend>,..]
 ///     [FEATURE feature1,feature2,feature3..]
+///     [TIMEOUT milliseconds]
 /// ```
 ///
 /// `TS.FEATURES` computes a set of statistical features on a time series.
@@ -63,6 +64,7 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     // Parse optional CATEGORY and FEATURE arguments
     let mut categories: Vec<FeatureCategory> = Vec::new();
     let mut features: Vec<Feature> = Vec::new();
+    let mut timeout = AnalysisTimeout::default();
 
     while args.peek().is_some() {
         let arg = args.peek().unwrap();
@@ -80,6 +82,10 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                 args.next(); // consume FEATURE
                 let feat_str = args.next_str()?;
                 features = parse_features(feat_str)?;
+            }
+            "TIMEOUT" => {
+                args.next(); // consume TIMEOUT
+                timeout.set(parse_timeout(&mut args)?);
             }
             other => {
                 return Err(ValkeyError::String(format!(
@@ -127,28 +133,24 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
-    // Run feature computation on a background thread
-    let blocked_client = block_client(ctx);
-    spawn(move || {
-        let thread_ctx = ThreadSafeReplyContext::with_blocked_client(blocked_client);
-
-        let result_map = compute_features_map(&values, &unique_features);
-
-        let map_len = result_map.len();
-        reply_with_map(&thread_ctx, map_len);
-
-        for (name, value) in &result_map {
-            reply_with_str(&thread_ctx, name);
-            if value.is_nan() {
-                crate::common::replies::reply_with_null(&thread_ctx);
-            } else {
-                reply_with_double(&thread_ctx, *value);
+    run_analysis_in_background(
+        ctx,
+        timeout,
+        move || Ok(compute_features_map(&values, &unique_features)),
+        |actx, result_map| {
+            let reply_ctx = actx.reply_ctx();
+            reply_with_map(&reply_ctx, result_map.len());
+            for (name, value) in &result_map {
+                reply_with_str(&reply_ctx, name);
+                if value.is_nan() {
+                    reply_with_null(&reply_ctx);
+                } else {
+                    reply_with_double(&reply_ctx, *value);
+                }
             }
-        }
-    });
-
-    // Reply will be sent from the background thread
-    Ok(ValkeyValue::NoReply)
+            Ok(ValkeyValue::NoReply)
+        },
+    )
 }
 
 /// Parse a comma-separated list of category names, rejecting duplicates.

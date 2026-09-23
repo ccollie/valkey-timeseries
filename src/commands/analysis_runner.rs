@@ -62,3 +62,19 @@ where
     // Answered later, from the analysis lane.
     Ok(ValkeyValue::NoReply)
 }
+
+/// [`run_analysis`] for work that is never cheap enough to run inline by choice, such as model
+/// fitting: always on the analysis pool, except where the client cannot be blocked.
+pub(super) fn run_analysis_in_background<T, C, R>(
+    ctx: &Context,
+    timeout: AnalysisTimeout,
+    compute: C,
+    reply: R,
+) -> ValkeyResult
+where
+    T: Send + 'static,
+    C: FnOnce() -> ValkeyResult<T> + Send + 'static,
+    R: FnOnce(&AnalysisCtx<'_>, T) -> ValkeyResult + Send + 'static,
+{
+    run_analysis(ctx, 1, 0, timeout, compute, reply)
+}

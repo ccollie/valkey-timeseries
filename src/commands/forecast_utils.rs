@@ -1,11 +1,12 @@
 use crate::analysis::forecasting::make_forecast_time_series;
 use crate::commands::CommandArgIterator;
+use crate::commands::analysis_runner::AnalysisCtx;
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::store_target::StoreTarget;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
 use crate::commands::utils::{get_store_key_pos, reply_with_double_array};
 use crate::common::replies::{
-    ThreadSafeReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
+    ReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
 };
 use crate::common::time::compute_median_step_ms;
 use crate::common::{Sample, Timestamp};
@@ -93,10 +94,10 @@ pub(super) fn store_anchor(
 }
 
 /// Write forecast `values` as consecutive samples after `anchor` into `target`, under the
-/// thread-safe lock. Returns the number of samples written, or `None` when the client timed
-/// out first and nothing was written.
+/// GIL. Returns the number of samples written, or `None` when the client timed out first and
+/// nothing was written.
 pub(super) fn write_forecast_samples(
-    ctx: &ThreadSafeReplyContext,
+    actx: &AnalysisCtx<'_>,
     target: &StoreTarget,
     values: &[f64],
     anchor: StoreAnchor,
@@ -107,21 +108,22 @@ pub(super) fn write_forecast_samples(
         .map(|(i, &value)| anchor.timestamp_at(i).map(|ts| Sample::new(ts, value)))
         .collect::<ValkeyResult<_>>()?;
 
-    let lock = ctx.lock();
-    // Checked under the lock: the timeout callback runs on the main thread, so it cannot fire
-    // between this check and the write. Once it has fired, the client has been told the
-    // command failed, so do not write behind it.
-    if ctx.is_timed_out() {
-        return Ok(None);
-    }
-    target.write(&lock, &samples).map(Some).map_err(|e| {
-        let msg = format!(
-            "TSDB: failed to store forecast in key '{}': {}",
-            String::from_utf8_lossy(target.key()),
-            e
-        );
-        ctx.log_warning(&msg);
-        ValkeyError::String(msg)
+    actx.with_locked_context(|ctx| {
+        // Checked under the lock: the timeout callback runs on the main thread, so it cannot
+        // fire between this check and the write. Once it has fired, the client has been told
+        // the command failed, so do not write behind it.
+        if actx.is_timed_out() {
+            return Ok(None);
+        }
+        target.write(ctx, &samples).map(Some).map_err(|e| {
+            let msg = format!(
+                "TSDB: failed to store forecast in key '{}': {}",
+                String::from_utf8_lossy(target.key()),
+                e
+            );
+            ctx.log_warning(&msg);
+            ValkeyError::String(msg)
+        })
     })
 }
 
@@ -221,7 +223,7 @@ pub(super) fn get_upper_interval(forecast: &Forecast) -> Option<&[f64]> {
     Some(upper_values[0].as_slice())
 }
 
-pub(super) fn reply_with_accuracy_metrics(ctx: &ThreadSafeReplyContext, metrics: &AccuracyMetrics) {
+pub(super) fn reply_with_accuracy_metrics(ctx: &ReplyContext, metrics: &AccuracyMetrics) {
     reply_with_str(ctx, "metrics");
     reply_with_map(ctx, 7);
 
@@ -253,10 +255,7 @@ pub(super) fn reply_with_accuracy_metrics(ctx: &ThreadSafeReplyContext, metrics:
     reply_with_double(ctx, metrics.r_squared);
 }
 
-pub(super) fn reply_with_forecast_output(
-    ctx: &ThreadSafeReplyContext,
-    forecast_output: &ForecastOutput,
-) {
+pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &ForecastOutput) {
     let mut map_len: usize = 3; // model, horizon, forecast are always included
 
     let forecast = &forecast_output.forecast;

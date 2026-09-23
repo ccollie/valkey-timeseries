@@ -7,7 +7,7 @@ use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
-acl_categories!(TS_STATS, "ts.stats", "fast read timeseries");
+acl_categories!(TS_STATS, "ts.stats", "read timeseries");
 /// ```text
 /// TS.STATS key [fromTimestamp toTimestamp]
 /// ```

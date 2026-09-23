@@ -1,26 +1,29 @@
 use crate::analysis::forecasting::{DynForecaster, PreparedModelSpec, prepare_model_specs};
 use crate::commands::CommandArgIterator;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
+use crate::commands::analysis_runner::{
+    AnalysisTimeout, parse_timeout, run_analysis_in_background,
+};
 use crate::commands::command_parser::parse_forecast_horizon_value;
 use crate::commands::forecast_utils::{
     handle_forecast_key_pos_request, parse_timeseries_for_forecast, reply_with_accuracy_metrics,
 };
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{
-    ThreadSafeReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_null,
+    ReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_null,
     reply_with_str, reply_with_usize,
 };
+use crate::common::threads::map_on_current_pool;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
 use anofox_forecast::utils::cross_validation::{
     CVStrategy, ConstraintViolation, CvFoldGenerator, Fold,
 };
-use orx_parallel::{ParIter, ParIterResult, Parallelizable};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 struct BacktestOptions {
-    models_spec: String,
+    /// Parsed and validated on the main thread, so a bad spec fails before the client blocks.
+    models: Vec<PreparedModelSpec>,
     horizon: usize,
     initial_window: usize,
     strategy: CVStrategy,
@@ -37,7 +40,7 @@ struct BacktestOptions {
 impl Default for BacktestOptions {
     fn default() -> Self {
         Self {
-            models_spec: String::new(),
+            models: Vec::new(),
             horizon: 0,
             initial_window: 0, // 0 = "not set"; resolved once HORIZON is known
             strategy: CVStrategy::Expanding,
@@ -125,12 +128,23 @@ pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_backtest_args(&mut args)?;
 
-    run_analysis_job(ctx, options.timeout, move |thread_ctx| {
-        process_backtest(thread_ctx, series, options);
-    });
-
-    // Reply will be sent from the analysis pool
-    Ok(ValkeyValue::NoReply)
+    let timeout = options.timeout;
+    run_analysis_in_background(
+        ctx,
+        timeout,
+        move || {
+            let results = run_backtest(&series, &options)?;
+            Ok((series, results, options.with_predictions))
+        },
+        |actx, (series, results, with_predictions)| {
+            let reply_ctx = actx.reply_ctx();
+            reply_with_array(&reply_ctx, results.len());
+            for result in &results {
+                reply_with_backtest_result(&reply_ctx, &series, result, with_predictions);
+            }
+            Ok(ValkeyValue::NoReply)
+        },
+    )
 }
 
 fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOptions> {
@@ -148,8 +162,10 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
                 horizon_set = true;
             },
             "MODELS" => {
-                options.models_spec = args.next_string()
+                let spec = args.next_string()
                     .map_err(|_| ValkeyError::Str("TSDB: missing value for MODELS"))?;
+                options.models = prepare_model_specs(&spec)
+                    .map_err(|e| ValkeyError::String(format!("TSDB: error parsing MODELS: {e}")))?;
             },
             "INITIAL_WINDOW" => {
                 let value = args.next_i64()
@@ -228,7 +244,7 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
     if !horizon_set {
         return Err(ValkeyError::Str("TSDB: HORIZON is required"));
     }
-    if options.models_spec.is_empty() {
+    if options.models.is_empty() {
         return Err(ValkeyError::Str(
             "TSDB: MODELS must contain at least one model specification",
         ));
@@ -240,20 +256,10 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
     Ok(options)
 }
 
-fn process_backtest(
-    ctx: &ThreadSafeReplyContext,
-    series: ForecastTimeSeries,
-    options: BacktestOptions,
-) {
-    let specs = match prepare_model_specs(&options.models_spec) {
-        Ok(s) => s,
-        Err(e) => {
-            let err = ValkeyError::String(format!("TSDB: error parsing MODELS: {e}"));
-            ctx.reply(Err(err));
-            return;
-        }
-    };
-
+fn run_backtest(
+    series: &ForecastTimeSeries,
+    options: &BacktestOptions,
+) -> ValkeyResult<Vec<BacktestModelResult>> {
     let generator = CvFoldGenerator::new()
         .n_folds(options.n_folds)
         .horizon(options.horizon)
@@ -268,26 +274,20 @@ fn process_backtest(
     let folds = match generator.generate(series.len()) {
         Ok(folds) if !folds.is_empty() => folds,
         _ => {
-            let err = ValkeyError::Str(
+            return Err(ValkeyError::Str(
                 "TSDB: not enough data for backtest with the given HORIZON/INITIAL_WINDOW",
-            );
-            ctx.reply(Err(err));
-            return;
+            ));
         }
     };
 
     // Folds are evaluated in parallel per model (the expensive part: one full fit+predict per
     // fold), while models themselves are dispatched sequentially — MODELS lists are typically
     // small, and this keeps a failing model's folds from aborting other models' results.
-    let results: Vec<BacktestModelResult> = specs
+    Ok(options
+        .models
         .iter()
-        .map(|spec| evaluate_model(spec, &series, &folds, &options))
-        .collect();
-
-    reply_with_array(ctx, results.len());
-    for result in &results {
-        reply_with_backtest_result(ctx, &series, result, options.with_predictions);
-    }
+        .map(|spec| evaluate_model(spec, series, &folds, options))
+        .collect())
 }
 
 fn evaluate_model(
@@ -296,11 +296,11 @@ fn evaluate_model(
     folds: &[Fold],
     options: &BacktestOptions,
 ) -> BacktestModelResult {
-    let result: Result<Vec<FoldResult>, ValkeyError> = folds
-        .par()
-        .map(|fold| evaluate_fold(spec, series, fold, options.seasonal_period))
-        .into_fallible_result()
-        .collect();
+    let result: Result<Vec<FoldResult>, ValkeyError> = map_on_current_pool(folds, |fold| {
+        evaluate_fold(spec, series, fold, options.seasonal_period)
+    })
+    .into_iter()
+    .collect();
 
     match result {
         Ok(fold_results) => {
@@ -401,7 +401,7 @@ fn strategy_name(strategy: CVStrategy) -> &'static str {
 }
 
 fn reply_with_backtest_result(
-    ctx: &ThreadSafeReplyContext,
+    ctx: &ReplyContext,
     series: &ForecastTimeSeries,
     result: &BacktestModelResult,
     with_predictions: bool,
@@ -447,7 +447,7 @@ fn reply_with_backtest_result(
     }
 }
 
-fn reply_with_aggregated_metrics(ctx: &ThreadSafeReplyContext, m: &AggregatedSummary) {
+fn reply_with_aggregated_metrics(ctx: &ReplyContext, m: &AggregatedSummary) {
     reply_with_map(ctx, 6);
 
     reply_with_str(ctx, "mae");
@@ -472,7 +472,7 @@ fn reply_with_aggregated_metrics(ctx: &ThreadSafeReplyContext, m: &AggregatedSum
 }
 
 fn reply_with_fold_result(
-    ctx: &ThreadSafeReplyContext,
+    ctx: &ReplyContext,
     series: &ForecastTimeSeries,
     fold_result: &FoldResult,
     with_predictions: bool,

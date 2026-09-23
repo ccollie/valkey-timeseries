@@ -2,7 +2,7 @@ use super::fanout_codec::generated::{Label as FanoutLabel, Sample as FanoutSampl
 use crate::commands::fanout_codec::MGetValue;
 use crate::common::constants::{REDUCER_KEY, SOURCE_KEY};
 use crate::common::replies::{
-    IntoRawCtx, ThreadSafeReplyContext, is_resp3_client, reply_label_ex, reply_with_array,
+    IntoRawCtx, ReplyContext, is_resp3_client, reply_label_ex, reply_with_array,
     reply_with_bulk_string, reply_with_double, reply_with_labels, reply_with_labels_map,
     reply_with_map, reply_with_multi_samples, reply_with_sample_ex, reply_with_samples,
     reply_with_slice, reply_with_str,
@@ -249,7 +249,7 @@ pub fn reply_with_accuracy_metrics(ctx: &Context, metrics: &AccuracyMetrics) {
     reply_with_double(ctx, metrics.r_squared);
 }
 
-pub(super) fn reply_with_double_array(ctx: &ThreadSafeReplyContext, values: &[f64]) {
+pub(super) fn reply_with_double_array(ctx: &ReplyContext, values: &[f64]) {
     reply_with_array(ctx, values.len());
     for value in values {
         reply_with_double(ctx, *value);

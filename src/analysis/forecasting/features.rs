@@ -1,8 +1,7 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
+use crate::common::threads::map_on_current_pool;
 use crate::error::TsdbError;
 use anofox_forecast::features::Feature;
-use orx_parallel::ParIter;
-use orx_parallel::Parallelizable;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -244,19 +243,7 @@ pub fn compute_features_map(data: &[f64], features: &[Feature]) -> BTreeMap<Stri
         .cloned()
         .collect();
 
-    let pairs: Vec<(String, f64)> = unique
-        .as_slice()
-        .par()
-        .map(|feature: &Feature| (feature.name(), feature.compute(data)))
-        .collect();
-
-    pairs.into_iter().collect()
-}
-
-/// Compute features and return a flat vector of values (legacy).
-pub fn compute_features(data: &[f64], features: &[Feature]) -> Vec<f64> {
-    features
-        .par()
-        .map(|feature| feature.compute(data))
+    map_on_current_pool(&unique, |feature| (feature.name(), feature.compute(data)))
+        .into_iter()
         .collect()
 }

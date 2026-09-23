@@ -3,7 +3,9 @@ use crate::analysis::forecasting::{
     PreparedModelSpec, build_transforms_from_specs, prepare_model_specs, wrap_model_with_transforms,
 };
 use crate::commands::CommandArgIterator;
-use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis_job};
+use crate::commands::analysis_runner::{
+    AnalysisCtx, AnalysisTimeout, parse_timeout, run_analysis_in_background,
+};
 use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
 };
@@ -13,7 +15,7 @@ use crate::commands::forecast_utils::{
 };
 use crate::commands::parse_store_clause;
 use crate::commands::store_target::StoreTarget;
-use crate::common::replies::{ThreadSafeReplyContext, reply_with_array};
+use crate::common::replies::reply_with_array;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::transform::Transform;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -97,61 +99,48 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         .map(|_| store_anchor(&series, options.horizon))
         .transpose()?;
 
-    run_analysis_job(ctx, options.timeout, move |thread_ctx| {
-        process_forecast(thread_ctx, series, options, anchor);
-    });
-
-    // Reply will be sent from the analysis pool
-    Ok(ValkeyValue::NoReply)
+    let timeout = options.timeout;
+    run_analysis_in_background(
+        ctx,
+        timeout,
+        move || {
+            let results = process_models(&series, &options)?;
+            Ok((results, options.store))
+        },
+        move |actx, (results, store)| {
+            // With STORE the reply is the number of samples written, not the forecast.
+            if let (Some(target), Some(anchor)) = (store.as_ref(), anchor) {
+                return store_forecast(actx, target, &results, anchor);
+            }
+            let reply_ctx = actx.reply_ctx();
+            reply_with_array(&reply_ctx, results.len());
+            for output in &results {
+                reply_with_forecast_output(&reply_ctx, output);
+            }
+            Ok(ValkeyValue::NoReply)
+        },
+    )
 }
 
-fn process_forecast(
-    ctx: &ThreadSafeReplyContext,
-    series: ForecastTimeSeries,
-    options: ForecastOptions,
-    anchor: Option<StoreAnchor>,
-) {
-    let results = match process_models(&series, &options) {
-        Ok(results) => results,
-        Err(e) => {
-            ctx.reply(Err(e));
-            return;
-        }
-    };
-
-    // With STORE the reply is the number of samples written, not the forecast.
-    if let (Some(target), Some(anchor)) = (options.store.as_ref(), anchor) {
-        store_forecast(ctx, target, &results, anchor);
-        return;
-    }
-
-    reply_with_array(ctx, results.len());
-    for output in results {
-        reply_with_forecast_output(ctx, &output);
-    }
-}
-
-/// Persist the predicted values into the STORE destination key and reply
-/// with the number of samples written, or with an error if the write fails.
+/// Persist the predicted values into the STORE destination key; the reply is the number of
+/// samples written.
 fn store_forecast(
-    ctx: &ThreadSafeReplyContext,
+    actx: &AnalysisCtx<'_>,
     target: &StoreTarget,
     results: &[ForecastOutput],
     anchor: StoreAnchor,
-) {
+) -> ValkeyResult {
     // STORE is limited to a single model, so the outputs concatenate into one
     // run of consecutive steps after the last observed sample.
     let values: Vec<f64> = results
         .iter()
         .flat_map(|output| output.forecast.primary().iter().copied())
         .collect();
-    let reply = match write_forecast_samples(ctx, target, &values, anchor) {
-        Ok(Some(written)) => Ok(ValkeyValue::Integer(written as i64)),
+    match write_forecast_samples(actx, target, &values, anchor)? {
+        Some(written) => Ok(ValkeyValue::Integer(written as i64)),
         // Timed out: the client already has its error, and nothing was written.
-        Ok(None) => return,
-        Err(e) => Err(e),
-    };
-    ctx.reply(reply);
+        None => Ok(ValkeyValue::NoReply),
+    }
 }
 
 fn process_models(

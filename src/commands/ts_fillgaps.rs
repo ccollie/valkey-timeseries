@@ -16,7 +16,7 @@ use valkey_module::{
 
 const MAX_FILLGAPS_GRID_POINTS: i128 = 100_000;
 
-acl_categories!(TS_FILLGAPS, "ts.fillgaps", "fast write timeseries");
+acl_categories!(TS_FILLGAPS, "ts.fillgaps", "write timeseries");
 /// ```text
 /// TS.FILLGAPS key startTimestamp endTimestamp
 ///   [VALUE value]

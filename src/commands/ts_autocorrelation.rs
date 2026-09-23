@@ -118,10 +118,14 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         )));
     }
 
-    let sample_count = values.len();
+    // PARTIAL and AGGREGATED revisit the series once per lag.
+    let work = match kind {
+        Kind::Partial | Kind::Aggregated(_) => values.len().saturating_mul(lag + 1),
+        Kind::Plain | Kind::Tra => values.len(),
+    };
     run_analysis(
         ctx,
-        sample_count,
+        work,
         INLINE_MAX_SAMPLES,
         timeout,
         move || {
@@ -150,7 +154,7 @@ enum Kind {
     Aggregated(String),
 }
 
-/// Largest range that runs on the main thread. Plain and TRA are linear in the range
-/// (~100 ms at 200k samples, release build), so the bar is high; PARTIAL and AGGREGATED
-/// also grow with the lag, which is why that is capped at `MAX_ANALYSIS_LAG`.
+/// Largest amount of work that runs on the main thread, in samples (× (lag + 1) for PARTIAL and
+/// AGGREGATED, which revisit the series once per lag). Plain and TRA are linear in the range
+/// (~100 ms at 200k samples, release build), so the bar is high.
 const INLINE_MAX_SAMPLES: usize = 50_000;
