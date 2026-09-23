@@ -35,11 +35,8 @@ pub fn valkey_cached_time_millis() -> i64 {
 }
 
 pub fn current_time_millis() -> i64 {
-    cfg_if::cfg_if! {
-        if #[cfg(test)] {
-            system_time_millis()
-        } else {
-            valkey_current_time_millis()
-        }
+    cfg_select! {
+        test => { system_time_millis() }
+        _ => { valkey_current_time_millis() }
     }
 }
