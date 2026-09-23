@@ -67,7 +67,7 @@ The following commands are supported
 - [`TS.DECRBY`](docs/commands/ts.decrby.md)
 - [`TS.DEL`](docs/commands/ts.del.md)
 - [`TS.FEATURES`](docs/commands/ts.features.md)
-- [`TS.FILLGAPS`](docs/commands/ts.fillgaps.md)
+- [`TS.FILLGAPS`](docs/commands/ts.fillgaps.md) (up to 100,000 grid timestamps per call)
 - [`TS.FORECAST`](docs/commands/ts.forecast.md)
 - [`TS.GET`](docs/commands/ts.get.md)
 - [`TS.INCRBY`](docs/commands/ts.incrby.md)

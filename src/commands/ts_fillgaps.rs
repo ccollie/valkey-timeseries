@@ -13,6 +13,8 @@ use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };
 
+const MAX_FILLGAPS_GRID_POINTS: i128 = 100_000;
+
 acl_categories!(TS_FILLGAPS, "ts.fillgaps", "fast write timeseries");
 /// ```text
 /// TS.FILLGAPS key startTimestamp endTimestamp
@@ -116,10 +118,6 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         );
     }
 
-    // Build a set of existing timestamps for O(1) lookup
-    let existing_timestamps: BTreeSet<Timestamp> =
-        existing_samples.iter().map(|s| s.timestamp).collect();
-
     // Determine frequency
     let frequency = match frequency {
         Some(dur) => dur,
@@ -135,11 +133,24 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ));
     }
 
-    // Generate expected timestamps and find gaps
-    let mut gap_samples = Vec::new();
     let aligned_start = calc_range_start(start_ts, align_timestamp, frequency);
-
     let freq_ms = frequency.as_millis() as i64;
+    // Bound the work before allocating the lookup set or the output. Use i128 so
+    // an extreme timestamp range cannot overflow while computing the grid size.
+    if aligned_start <= end_ts {
+        let grid_points =
+            (i128::from(end_ts) - i128::from(aligned_start)) / i128::from(freq_ms) + 1;
+        if grid_points > MAX_FILLGAPS_GRID_POINTS {
+            return Err(ValkeyError::String(format!(
+                "TSDB: TS.FILLGAPS range exceeds the maximum of {MAX_FILLGAPS_GRID_POINTS} timestamps"
+            )));
+        }
+    }
+
+    // Generate expected timestamps and find gaps
+    let existing_timestamps: BTreeSet<Timestamp> =
+        existing_samples.iter().map(|s| s.timestamp).collect();
+    let mut gap_samples = Vec::new();
     let mut current_ts = aligned_start;
     while current_ts <= end_ts {
         if current_ts >= start_ts && !existing_timestamps.contains(&current_ts) {

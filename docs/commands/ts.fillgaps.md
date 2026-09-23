@@ -60,6 +60,8 @@ TS.FILLGAPS key startTimestamp endTimestamp
 
 - **Gap Filling:** For each expected timestamp in the sequence that does not already have a sample,
   the value specified by `VALUE` is inserted (defaults to `NaN`). Existing samples are never overwritten.
+  A call may examine at most 100,000 timestamps on the frequency grid; use a shorter range or a
+  larger `FREQUENCY` when the requested grid would exceed that limit.
 
 - **Alignment:** When `ALIGN` is specified, the timestamp sequence starts from the nearest
   grid-aligned timestamp at or before `startTimestamp`, using the given alignment reference.
@@ -82,6 +84,8 @@ TS.FILLGAPS key startTimestamp endTimestamp
 
 - `TSDB: the key does not exist` — the specified key does not hold a time series.
 - `TSDB: frequency must be positive` — the specified or inferred frequency is zero or negative.
+- `TSDB: TS.FILLGAPS range exceeds the maximum of 100000 timestamps` — the requested frequency
+  and range would require checking more than 100,000 grid timestamps.
 - `TSDB: insufficient data to infer frequency; at least 2 samples required` — not enough
   samples to determine the frequency automatically.
 - `TSDB: cannot infer frequency; no dominant interval found` — the intervals between samples

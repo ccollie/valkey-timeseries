@@ -556,6 +556,26 @@ class TestTimeSeriesFillgaps(ValkeyTimeSeriesTestCaseBase):
         info = self.ts_info('ts_large_gaps')
         assert info['totalSamples'] == 2
 
+    @pytest.mark.parametrize('store', [False, True])
+    def test_fillgaps_rejects_oversized_grid(self, store):
+        """A huge requested range fails before generating or storing gaps."""
+        source = 'ts_fillgaps_oversized_source'
+        destination = 'ts_fillgaps_oversized_destination'
+        self.client.execute_command('TS.CREATE', source)
+        self.client.execute_command('TS.ADD', source, 0, 1)
+        self.client.execute_command('TS.ADD', source, 1000, 2)
+
+        args = ['TS.FILLGAPS', source, 0, 1_000_000_000, 'FREQUENCY', 1]
+        if store:
+            args.extend(['STORE', destination])
+
+        with pytest.raises(ResponseError, match='maximum of 100000 timestamps'):
+            self.client.execute_command(*args)
+
+        assert self._get_timestamps(source) == [0, 1000]
+        if store:
+            assert self.client.execute_command('EXISTS', destination) == 0
+
     def test_fillgaps_with_many_existing_samples(self):
         """Fill gaps in a series that already has many regular samples."""
         self._create_series_with_uniform_data('ts_dense', 0, 10, 100)

@@ -15,6 +15,7 @@
 - [`TS.DEL`](commands/ts.del.md)
 - [`TS.DELETERULE`](commands/ts.deleterule.md)
 - [`TS.FEATURES`](commands/ts.features.md)
+- [`TS.FILLGAPS`](commands/ts.fillgaps.md) (up to 100,000 grid timestamps per call)
 - [`TS.FORECAST`](commands/ts.forecast.md)
 - [`TS.GET`](commands/ts.get.md)
 - [`TS.INCRBY`](commands/ts.incrby.md)
