@@ -58,8 +58,10 @@ Minimum seasonal differencing strength (0–1) for a period to be accepted.
 <details open>
 <summary><code>DOMINANT</code></summary>
 
-When specified, only the dominant (most significant) period is returned as an
-integer value. Returns `nil` if no significant period is detected.
+When specified, only the dominant period is returned, as an integer: the first entry of the
+list `TS.PERIODS` returns without `DOMINANT`. It is also the period that `TS.AUTOFORECAST ...
+SEASONALITY AUTO` and `TS.SANITIZE ... POLICY SEASONAL auto` use. Returns `nil` if no
+significant period is detected.
 
 Without this option, all detected periods are returned as an array of arrays,
 each containing: `[period, power, strength, acf, n_cycles]`.

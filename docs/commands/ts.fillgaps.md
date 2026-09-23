@@ -56,10 +56,12 @@ TS.FILLGAPS key startTimestamp endTimestamp
 - **Frequency Inference:** When `FREQUENCY` is omitted or `auto`, the command infers the dominant
   interval from the existing samples **within `[startTimestamp, endTimestamp]`** (samples outside
   the range are not consulted) by finding the most common difference between consecutive
-  timestamps. At least two samples are required for inference, and the modal interval must account
-  for at least 50% of all intervals. If the greatest common divisor of all intervals is itself an
-  observed interval and divides the modal one, the GCD is used instead, so a series with deleted
-  samples still yields its base frequency.
+  timestamps; when two intervals are equally common, the smaller wins. At least two samples are
+  required for inference, and the modal interval must account for at least 50% of all intervals.
+  If the greatest common divisor of all intervals divides the modal one and makes up at least 10%
+  of the intervals itself, the GCD is used instead, so a series with deleted samples still yields
+  its base frequency, while a single off-grid sample (say, one extra point 30 seconds into a
+  1-minute series) does not halve it.
 
 - **Gap Filling:** For each expected timestamp in the sequence that does not already have a sample,
   the value specified by `VALUE` is inserted (defaults to `NaN`). Existing samples are never overwritten.

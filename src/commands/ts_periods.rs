@@ -1,3 +1,4 @@
+use crate::analysis::seasonality::MAX_REPORTED_PERIODS;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
@@ -90,7 +91,8 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let config = PeriodDetectionConfig {
         min_strength: min_strength.unwrap_or(0.05),
-        max_periods: if dominant { 1 } else { 5 },
+        // DOMINANT is the head of the full list, not a separate search limited to one.
+        max_periods: MAX_REPORTED_PERIODS,
         ..Default::default()
     };
 

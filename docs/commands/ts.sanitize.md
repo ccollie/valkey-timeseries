@@ -130,7 +130,8 @@ If no samples remain after sanitizing, the destination is left untouched (and no
 - **SEASONAL policy:** Values are grouped by their position in a seasonal cycle
   (`index % period`). Each missing value is replaced with the median of valid values in the same
   seasonal position. The period must be greater than 0 and not exceed the number of samples.
-  When `auto` is specified, the dominant period is detected automatically from the data.
+  When `auto` is specified, the dominant period is detected automatically from the data — the
+  period `TS.PERIODS ... DOMINANT` reports, found on a gap-filled copy of the range.
   If more than 50% of values in any seasonal bucket are missing, the command returns an error.
 
 - **Interpolation and range boundaries:** When interpolating within a restricted timestamp range,

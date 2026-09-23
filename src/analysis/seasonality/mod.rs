@@ -27,6 +27,23 @@ impl Seasonality {
     }
 }
 
+/// How many periods `TS.PERIODS` reports.
+pub const MAX_REPORTED_PERIODS: usize = 5;
+
+/// The strongest period in `values`: the first of the list `TS.PERIODS` reports.
+///
+/// Every "dominant period" in the module comes from here, so `TS.PERIODS … DOMINANT` names the
+/// same period `SEASONALITY AUTO` and `POLICY SEASONAL auto` use. anofox's own dominant-period
+/// search passes a limit of one into candidate selection, which can pick a different, weaker
+/// period than the head of the full list.
+pub fn dominant_period(values: &[f64]) -> Option<usize> {
+    let config = PeriodDetectionConfig {
+        max_periods: MAX_REPORTED_PERIODS,
+        ..Default::default()
+    };
+    detect_periods(values, &config).first().map(|p| p.period)
+}
+
 /// Smallest seasonal period STL/MSTL can decompose: a season needs at least two positions.
 /// Period 0 panics inside the decomposition (a division by zero).
 pub const MIN_SEASONAL_PERIOD: usize = 2;

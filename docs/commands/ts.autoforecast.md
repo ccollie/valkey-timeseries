@@ -80,8 +80,9 @@ The seasonal period of the data (number of observations per seasonal cycle). For
 When provided, the forecasting models will account for seasonal patterns in the data. The period
 must be an integer of at least 2 and no larger than the number of samples in the range.
 
-`AUTO` detects the dominant period from the data instead; if none is detected the models run
-non-seasonally. Without `SEASONALITY`, all models are fitted non-seasonally.
+`AUTO` detects the dominant period from the data instead (the one `TS.PERIODS ... DOMINANT`
+reports); if none is detected the models run non-seasonally. Without `SEASONALITY`, all models
+are fitted non-seasonally.
 </details>
 
 <details open>

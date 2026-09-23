@@ -150,6 +150,14 @@ class TestAnalysisRegressions(ValkeyTimeSeriesTestCaseBase):
         )
         assert [ts for ts, _ in filled] == [500, 1500]
 
+    def test_fillgaps_inference_ignores_one_stray_sample(self):
+        """One off-grid point used to make the GCD the frequency, doubling the grid."""
+        timestamps = [i * 60_000 for i in range(60) if i != 30] + [10 * 60_000 + 30_000]
+        self.client.execute_command("TS.CREATE", "m")
+        self.client.execute_command("TS.MADD", *[x for ts in timestamps for x in ("m", ts, 1)])
+        filled = self.client.execute_command("TS.FILLGAPS", "m", "-", "+", "VALUE", 0)
+        assert [ts for ts, _ in filled] == [30 * 60_000]
+
     def test_stats_moments_are_exact_and_ordered(self):
         self.add("s", [1.0, 2.0, 3.0, 4.0, 10.0])
         reply = self.client.execute_command("TS.STATS", "s")
@@ -206,6 +214,19 @@ class TestAnalysisRegressions(ValkeyTimeSeriesTestCaseBase):
         xcorr = as_dict(self.client.execute_command("TS.XCORR", "x", "y", "-", "+", 1))
         assert all(v is None for v in xcorr["values"])
         assert xcorr["peak_correlation"] is None
+
+    def test_dominant_period_is_the_head_of_the_full_list(self):
+        """DOMINANT ran a separate search limited to one period and could disagree."""
+        rng = random.Random(5)
+        values = [
+            100 + 4 * math.sin(i * 2 * math.pi / 24) + 9 * math.sin(i * 2 * math.pi / 168)
+            + rng.gauss(0, 1)
+            for i in range(1344)
+        ]
+        self.add("s", values, step=3_600_000)
+        periods = self.client.execute_command("TS.PERIODS", "s", "-", "+")
+        dominant = self.client.execute_command("TS.PERIODS", "s", "-", "+", "DOMINANT")
+        assert periods and dominant == periods[0][0]
 
     # -- Model specs and messages -------------------------------------------------------------
 

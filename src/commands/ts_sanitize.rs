@@ -1,4 +1,5 @@
 use crate::analysis::forecasting::imputation::{ImputationPolicy, interpolate_series, sanitize};
+use crate::analysis::seasonality::dominant_period;
 use crate::commands::command_parser::{
     CommandArgToken, parse_command_arg_token, parse_store_clause, parse_timestamp_range,
     reject_extra_args,
@@ -8,7 +9,6 @@ use crate::common::Sample;
 use crate::common::replies::reply_with_samples;
 use crate::error_consts;
 use crate::series::{DuplicatePolicy, get_timeseries_mut};
-use anofox_forecast::detection::detect_dominant_period;
 use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
     ValkeyValue,
@@ -234,7 +234,7 @@ fn infer_seasonal_period(samples: &[Sample]) -> ValkeyResult<usize> {
         .iter()
         .map(|s| s.value)
         .collect();
-    detect_dominant_period(&values).ok_or(ValkeyError::Str(
+    dominant_period(&values).ok_or(ValkeyError::Str(
         "TSDB: unable to detect dominant period for seasonal imputation",
     ))
 }

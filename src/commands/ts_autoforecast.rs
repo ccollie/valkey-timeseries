@@ -1,5 +1,5 @@
 use crate::analysis::forecasting::{is_arima_family, normalize_model_name};
-use crate::analysis::seasonality::MIN_SEASONAL_PERIOD;
+use crate::analysis::seasonality::{MIN_SEASONAL_PERIOD, dominant_period};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{
     AnalysisTimeout, parse_timeout, run_analysis_in_background,
@@ -15,7 +15,6 @@ use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{ReplyContext, reply_with_str};
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
-use anofox_forecast::detection::detect_dominant_period;
 use anofox_forecast::models::auto_forecast::{AutoForecast, AutoForecastConfig};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -210,7 +209,7 @@ fn fit_best_model(
     mut options: AutoForecastOptions,
 ) -> ValkeyResult<ForecastOutput> {
     if options.config.seasonal_period.is_none() && options.auto_seasonality {
-        options.config.seasonal_period = detect_dominant_period(series.primary_values());
+        options.config.seasonal_period = dominant_period(series.primary_values());
     }
 
     let seasonal_period = options.config.seasonal_period;
