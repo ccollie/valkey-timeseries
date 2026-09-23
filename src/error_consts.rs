@@ -198,6 +198,10 @@ pub const READ_BLOCKING_NOT_ALLOWED: &str = "TSDB: blocking TS.READ (with BLOCK)
 // server's own text for an overflowing block deadline, which is what clients received before the
 // module started checking the limit itself.
 pub const BLOCK_TIMEOUT_OUT_OF_RANGE: &str = "ERR timeout is out of range";
+/// TS.QUERY / TS.QUERYRANGE always reply from a query worker, so they block the
+/// client, and they cannot evaluate inline instead: the evaluation waits on
+/// selector reads that need the module lock the calling thread already holds.
+pub const PROMQL_BLOCKING_NOT_ALLOWED: &str = "TSDB: TS.QUERY and TS.QUERYRANGE are not allowed inside MULTI, EVAL, or a deny-blocking context";
 // CONDITION is an additive extension with no reference text to match; the wording follows the
 // clause-named style of the probed constants above. A bad operator reuses
 // INVALID_COMPARISON_OPERATOR, which `ComparisonOperator::try_from` already returns.
