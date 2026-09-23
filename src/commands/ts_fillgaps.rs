@@ -7,7 +7,7 @@ use crate::commands::{CommandArgIterator, parse_timestamp, parse_value_arg};
 use crate::common::replies::reply_with_samples;
 use crate::common::{Sample, Timestamp};
 use crate::error_consts;
-use crate::series::get_timeseries_mut;
+use crate::series::get_timeseries;
 use std::collections::BTreeSet;
 use std::time::Duration;
 use valkey_module::{
@@ -82,7 +82,8 @@ pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let key = args.next_arg()?;
     let date_range = parse_timestamp_range(&mut args)?;
     // Get the series (must exist)
-    let series = get_timeseries_mut(ctx, &key, Some(AclPermissions::UPDATE))?;
+    // Read-only: the source is never written (a STORE destination must be another key).
+    let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS))?;
 
     let (start_ts, end_ts) = date_range.get_series_range(&series, None, false);
 
@@ -197,16 +198,34 @@ fn parse_align(args: &mut CommandArgIterator, start_ts: Timestamp) -> ValkeyResu
         .map_err(|_| ValkeyError::Str("TSDB: invalid ALIGN timestamp value"))
 }
 
+/// The last grid point at or before `start_ts` on the grid through `align_timestamp` with step
+/// `freq`. It may precede the range (even be negative); the caller only emits grid points
+/// inside it, so the offset is kept rather than clamped.
 fn calc_range_start(
     start_ts: Timestamp,
     align_timestamp: Option<Timestamp>,
     freq: Duration,
 ) -> Timestamp {
-    let align_ts = match align_timestamp {
-        None => return start_ts,
-        Some(ts) => ts,
+    let Some(align_ts) = align_timestamp else {
+        return start_ts;
     };
-    let diff = start_ts - align_ts;
-    let delta = freq.as_millis() as i64;
-    (start_ts - ((diff % delta + delta) % delta)).max(0)
+    let delta = freq.as_millis() as i128;
+    let offset = (i128::from(start_ts) - i128::from(align_ts)).rem_euclid(delta);
+    (i128::from(start_ts) - offset).max(i128::from(Timestamp::MIN)) as Timestamp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calc_range_start;
+    use std::time::Duration;
+
+    #[test]
+    fn grid_start_keeps_the_alignment_offset() {
+        let second = Duration::from_millis(1000);
+        // Grid 500, 1500, ... over a range starting at 0: the point before the range is -500.
+        assert_eq!(calc_range_start(0, Some(500), second), -500);
+        assert_eq!(calc_range_start(2300, Some(500), second), 1500);
+        assert_eq!(calc_range_start(1500, Some(500), second), 1500);
+        assert_eq!(calc_range_start(2300, None, second), 2300);
+    }
 }

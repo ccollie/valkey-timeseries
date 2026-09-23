@@ -76,12 +76,13 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             "CATEGORY" => {
                 args.next(); // consume CATEGORY
                 let cat_str = args.next_str()?;
-                categories = parse_categories(cat_str)?;
+                // Repeated clauses add up; duplicate features are dropped below.
+                categories.extend(parse_categories(cat_str)?);
             }
             "FEATURE" => {
                 args.next(); // consume FEATURE
                 let feat_str = args.next_str()?;
-                features = parse_features(feat_str)?;
+                features.extend(parse_features(feat_str)?);
             }
             "TIMEOUT" => {
                 args.next(); // consume TIMEOUT
@@ -131,7 +132,19 @@ pub fn ts_features_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ));
     }
 
-    let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
+    // Features are computed over the finite values only, as TS.STATS does. Several of them
+    // sort their input, and a NaN makes the comparison inconsistent: Rust's sort detects that
+    // and panics, depending on the data.
+    let values: Vec<f64> = samples
+        .iter()
+        .map(|s| s.value)
+        .filter(|v| v.is_finite())
+        .collect();
+    if values.is_empty() {
+        return Err(ValkeyError::Str(
+            "TSDB: no finite samples in the specified time range",
+        ));
+    }
 
     run_analysis_in_background(
         ctx,
@@ -163,8 +176,8 @@ fn parse_categories(input: &str) -> Result<Vec<FeatureCategory>, ValkeyError> {
         if part.is_empty() {
             continue;
         }
-        let category = FeatureCategory::try_from(part)
-            .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
+        let category =
+            FeatureCategory::try_from(part).map_err(|e| ValkeyError::String(e.to_string()))?;
 
         if !seen.insert(category) {
             return Err(ValkeyError::String(format!(
@@ -192,7 +205,7 @@ fn parse_features(input: &str) -> Result<Vec<Feature>, ValkeyError> {
         if part.is_empty() {
             continue;
         }
-        let feature = parse_feature(part).map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
+        let feature = parse_feature(part).map_err(|e| ValkeyError::String(e.to_string()))?;
         features.push(feature);
     }
 

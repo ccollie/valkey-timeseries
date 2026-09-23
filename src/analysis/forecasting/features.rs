@@ -1,4 +1,5 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
+use crate::analysis::forecasting::stats::moments;
 use crate::common::threads::map_on_current_pool;
 use crate::error::TsdbError;
 use anofox_forecast::features::Feature;
@@ -231,6 +232,23 @@ fn parse_simple_feature(name: &str) -> Result<Feature, TsdbError> {
     }
 }
 
+/// Computes one feature. The moment statistics come from [`moments`] rather than anofox, which
+/// computes them in single precision and mis-scales skewness and kurtosis.
+fn compute_feature(feature: &Feature, data: &[f64]) -> f64 {
+    match feature {
+        Feature::Mean => moments::mean(data),
+        Feature::Variance => moments::variance(data),
+        Feature::VarianceSample => moments::variance_sample(data),
+        Feature::StandardDeviation => moments::standard_deviation(data),
+        Feature::SumValues => moments::sum(data),
+        Feature::AbsEnergy => moments::abs_energy(data),
+        Feature::RootMeanSquare => moments::root_mean_square(data),
+        Feature::Skewness => moments::skewness(data),
+        Feature::Kurtosis => moments::kurtosis(data),
+        other => other.compute(data),
+    }
+}
+
 /// Compute features and return a map of feature name → value.
 ///
 /// Features are deduplicated by their canonical name before computation.
@@ -243,7 +261,9 @@ pub fn compute_features_map(data: &[f64], features: &[Feature]) -> BTreeMap<Stri
         .cloned()
         .collect();
 
-    map_on_current_pool(&unique, |feature| (feature.name(), feature.compute(data)))
-        .into_iter()
-        .collect()
+    map_on_current_pool(&unique, |feature| {
+        (feature.name(), compute_feature(feature, data))
+    })
+    .into_iter()
+    .collect()
 }

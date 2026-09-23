@@ -19,6 +19,7 @@ use crate::common::Sample;
 use crate::series::acl::check_key_permissions;
 use crate::series::{
     DestinationWriteMode, TimeSeriesOptions, create_or_update_series_with_samples,
+    try_get_timeseries,
 };
 use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
@@ -83,6 +84,13 @@ impl StoreTarget {
             ctx.replicate(STORE_REPLICATION_COMMAND, args.as_slice());
         }
         Ok(outcome.written)
+    }
+
+    /// Fails with `WRONGTYPE` if the destination holds something other than a series. For a
+    /// command that also rewrites its source, so it can fail before changing anything.
+    pub fn check_destination_type(&self, ctx: &Context) -> ValkeyResult<()> {
+        let key = ctx.create_string(self.key.as_slice());
+        try_get_timeseries(ctx, &key, None).map(|_| ())
     }
 
     /// Writes `samples` without replicating, for a command that replicates itself verbatim

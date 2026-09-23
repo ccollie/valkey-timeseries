@@ -1896,11 +1896,25 @@ pub(super) fn parse_store_options(
     Ok((options, write_mode))
 }
 
+/// Fails on the first argument left over after an analysis command's options, naming it —
+/// clearer than the generic wrong-arity error `NextArg::done` gives.
+pub(super) fn reject_extra_args(args: &mut CommandArgIterator) -> ValkeyResult<()> {
+    match args.next() {
+        None => Ok(()),
+        Some(arg) => Err(ValkeyError::String(format!(
+            "TSDB: unknown argument '{}'",
+            arg.to_string_lossy()
+        ))),
+    }
+}
+
 pub(super) fn parse_forecast_horizon_value(args: &mut CommandArgIterator) -> ValkeyResult<usize> {
     if args.peek().is_none() {
         return Err(ValkeyError::Str("TSDB: missing forecast horizon value"));
     }
-    let next = args.next_i64()?;
+    let next = args
+        .next_i64()
+        .map_err(|_| ValkeyError::Str("TSDB: invalid forecast horizon, expected an integer"))?;
     if next <= 0 {
         return Err(ValkeyError::Str(
             "TSDB: forecast horizon must be greater than 0",

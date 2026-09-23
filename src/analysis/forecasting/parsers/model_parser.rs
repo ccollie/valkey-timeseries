@@ -4,6 +4,7 @@ use super::model_spec_parser::{
 };
 use super::spec_parser::{MAX_SPEC_INTEGER, spec_integer};
 use super::utils::{parse_decomposition_type, parse_seasonal_type};
+use crate::analysis::forecasting::InputScaleFitted;
 use crate::analysis::forecasting::parsers::{
     ForecastModelKind, parse_seasonal_forecast_method, parse_trend_forecast_method,
 };
@@ -81,6 +82,21 @@ const MAX_MODEL_ORDER: usize = 20;
 /// even after the client's `TIMEOUT` has fired, so this bounds the work a request can queue.
 const MAX_MODEL_ITERATIONS: usize = 10_000;
 
+/// A parameter that may be given positionally or by keyword, but not both.
+fn positional_or_keyword<T>(
+    model: &str,
+    name: &str,
+    positional: Option<T>,
+    keyword: Option<T>,
+) -> Result<Option<T>, ModelSpecError> {
+    match (positional, keyword) {
+        (Some(_), Some(_)) => Err(ModelSpecError::new(format!(
+            "{model} received {name} both positionally and as a keyword"
+        ))),
+        (positional, keyword) => Ok(positional.or(keyword)),
+    }
+}
+
 fn check_orders(model: &str, names: &[&str], values: &[usize]) -> Result<(), ModelSpecError> {
     for (name, &value) in names.iter().zip(values) {
         if value > MAX_MODEL_ORDER {
@@ -127,7 +143,14 @@ pub fn build_single_model(mut spec: ModelSpec) -> Result<BoxedForecaster, ModelS
             spec.model_name
         )));
     }
-    Ok(model)
+    // anofox reports ARIMA-family fits on the differenced scale; wrap them so METRICS and
+    // TRANSFORMS pipelines see the fit on the scale of the series (see `input_scale`).
+    Ok(match spec.model_type {
+        ForecastModelKind::Arima | ForecastModelKind::AutoArima | ForecastModelKind::Sarima => {
+            Box::new(InputScaleFitted::new(model))
+        }
+        _ => model,
+    })
 }
 
 fn build_model(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
@@ -367,7 +390,12 @@ fn handle_random_walk_with_drift(spec: &mut ModelSpec) -> Result<BoxedForecaster
 
     let positional_changepoint = nums.first().copied();
     let keyword_changepoint = get_usize_kwarg(spec, "changepoint")?;
-    let changepoint = positional_changepoint.or(keyword_changepoint);
+    let changepoint = positional_or_keyword(
+        &spec.model_name,
+        "changepoint",
+        positional_changepoint,
+        keyword_changepoint,
+    )?;
 
     if nums.len() > 1 {
         return Err(ModelSpecError::new(
@@ -386,7 +414,13 @@ fn handle_seasonal_naive(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelS
 
     let positional_period = nums.first().copied();
     let keyword_period = get_usize_kwarg(spec, "period")?;
-    let period = positional_period.or(keyword_period).unwrap_or(12);
+    let period = positional_or_keyword(
+        &spec.model_name,
+        "period",
+        positional_period,
+        keyword_period,
+    )?
+    .unwrap_or(12);
 
     if nums.len() > 1 {
         return Err(ModelSpecError::new(
@@ -403,7 +437,13 @@ fn handle_sma(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
 
     let positional_window = nums.first().copied();
     let keyword_window = get_usize_kwarg(spec, "window")?;
-    let window = positional_window.or(keyword_window).unwrap_or(0);
+    let window = positional_or_keyword(
+        &spec.model_name,
+        "window",
+        positional_window,
+        keyword_window,
+    )?
+    .unwrap_or(0);
 
     let mut forecaster = SimpleMovingAverage::new(window);
 
@@ -480,8 +520,18 @@ fn handle_tsb(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
     let keyword_alpha_d = get_float_kwarg(spec, "alpha_d")?;
     let keyword_alpha_p = get_float_kwarg(spec, "alpha_p")?;
 
-    let alpha_d = positional_alpha_d.or(keyword_alpha_d);
-    let alpha_p = positional_alpha_p.or(keyword_alpha_p);
+    let alpha_d = positional_or_keyword(
+        &spec.model_name,
+        "alpha_d",
+        positional_alpha_d,
+        keyword_alpha_d,
+    )?;
+    let alpha_p = positional_or_keyword(
+        &spec.model_name,
+        "alpha_p",
+        positional_alpha_p,
+        keyword_alpha_p,
+    )?;
 
     let forecaster = match (alpha_d, alpha_p) {
         (Some(d), Some(p)) => TSB::new().with_params(d, p),
@@ -508,7 +558,13 @@ fn handle_seasonal_es(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpec
     // Period is required — from positional or keyword arg.
     let positional_period = nums.first().copied();
     let keyword_period = get_usize_kwarg(spec, "period")?;
-    let period = positional_period.or(keyword_period).ok_or_else(|| {
+    let period = positional_or_keyword(
+        &spec.model_name,
+        "period",
+        positional_period,
+        keyword_period,
+    )?
+    .ok_or_else(|| {
         ModelSpecError::new(
             "SeasonalES requires a seasonal period, e.g. SeasonalES(12) or SeasonalES(period=12)",
         )
@@ -541,7 +597,7 @@ fn handle_ses(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> {
     // Alpha can come from a positional arg or the "alpha" keyword arg.
     let positional_alpha = nums.first().copied();
     let keyword_alpha = get_float_kwarg(spec, "alpha")?;
-    let alpha = positional_alpha.or(keyword_alpha);
+    let alpha = positional_or_keyword(&spec.model_name, "alpha", positional_alpha, keyword_alpha)?;
 
     let forecaster = match alpha {
         Some(a) => SimpleExponentialSmoothing::new(a),
@@ -566,8 +622,8 @@ fn handle_garch(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError>
     let keyword_p = get_usize_kwarg(spec, "p")?;
     let keyword_q = get_usize_kwarg(spec, "q")?;
 
-    let p = positional_p.or(keyword_p).unwrap_or(1);
-    let q = positional_q.or(keyword_q).unwrap_or(1);
+    let p = positional_or_keyword(&spec.model_name, "p", positional_p, keyword_p)?.unwrap_or(1);
+    let q = positional_or_keyword(&spec.model_name, "q", positional_q, keyword_q)?.unwrap_or(1);
     check_orders("GARCH", &["p", "q"], &[p, q])?;
 
     let mut builder = GARCH::builder().p(p).q(q);
@@ -606,9 +662,16 @@ fn handle_holt(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpecError> 
     let keyword_phi = get_float_kwarg(spec, "phi")?;
     let damped_flag = get_kwarg_as_flag(spec, "damped")?;
 
-    let alpha = positional_alpha.or(keyword_alpha);
-    let beta = positional_beta.or(keyword_beta);
-    let phi = positional_phi.or(keyword_phi);
+    let alpha = positional_or_keyword(&spec.model_name, "alpha", positional_alpha, keyword_alpha)?;
+    let beta = positional_or_keyword(&spec.model_name, "beta", positional_beta, keyword_beta)?;
+    let phi = positional_or_keyword(&spec.model_name, "phi", positional_phi, keyword_phi)?;
+
+    // A fixed phi needs fixed alpha and beta: anofox only optimises phi together with them.
+    if phi.is_some() && alpha.is_none() && beta.is_none() {
+        return Err(ModelSpecError::new(
+            "Holt phi requires alpha and beta; use damped=true for an optimized damped trend",
+        ));
+    }
 
     // Determine if damping should be used: explicit phi, positional phi, or damped=true
     let use_damping = phi.is_some() || damped_flag.unwrap_or(false);
@@ -744,21 +807,24 @@ fn handle_holt_winters(spec: &mut ModelSpec) -> Result<BoxedForecaster, ModelSpe
     let gamma = get_float_kwarg(spec, "gamma")?;
 
     let param_offset = if nums.is_empty() { 0 } else { 1 }; // skip seasonal period
-    let alpha = if nums.len() > param_offset {
-        Some(nums[param_offset])
-    } else {
-        alpha
-    };
-    let beta = if nums.len() > param_offset + 1 {
-        Some(nums[param_offset + 1])
-    } else {
-        beta
-    };
-    let gamma = if nums.len() > param_offset + 2 {
-        Some(nums[param_offset + 2])
-    } else {
-        gamma
-    };
+    let alpha = positional_or_keyword(
+        &spec.model_name,
+        "alpha",
+        nums.get(param_offset).copied(),
+        alpha,
+    )?;
+    let beta = positional_or_keyword(
+        &spec.model_name,
+        "beta",
+        nums.get(param_offset + 1).copied(),
+        beta,
+    )?;
+    let gamma = positional_or_keyword(
+        &spec.model_name,
+        "gamma",
+        nums.get(param_offset + 2).copied(),
+        gamma,
+    )?;
 
     let forecaster = match (alpha, beta, gamma) {
         (Some(a), Some(b), Some(g)) => HoltWinters::new(a, b, g, seasonal_period, seasonal_type),
@@ -886,7 +952,7 @@ fn get_trend_forecast_method(
     spec: &mut ModelSpec,
 ) -> Result<Option<TrendForecastMethod>, ModelSpecError> {
     if let Some(arg) = spec.remove_kwarg("trend_forecast_method") {
-        if let SpecValue::Ident(arg) = &arg
+        if let SpecValue::Ident(arg) | SpecValue::String(arg) = &arg
             && let Some(method) = parse_trend_forecast_method(arg.as_str())
         {
             return Ok(Some(method));
@@ -1071,5 +1137,28 @@ mod tests {
     #[test]
     fn theta_rejects_positional_arguments() {
         assert!(build_models_from_specs("Theta(3)").is_err());
+    }
+
+    #[test]
+    fn rejects_a_parameter_given_twice() {
+        assert!(build_error("SeasonalNaive(12, period=6)").contains("both positionally"));
+        assert!(build_error("SES(0.3, alpha=0.5)").contains("both positionally"));
+        assert!(build_error("HoltWinters(12, 0.3, alpha=0.5)").contains("both positionally"));
+    }
+
+    #[test]
+    fn holt_phi_needs_alpha_and_beta() {
+        assert!(build_error("Holt(phi=0.9)").contains("phi requires alpha and beta"));
+        assert!(build_models_from_specs("Holt(0.3, 0.1, phi=0.9), Holt(damped=true)").is_ok());
+    }
+
+    #[test]
+    fn keyword_values_are_case_insensitive() {
+        assert!(
+            build_models_from_specs(
+                "HoltWinters(12, seasonal_type=Additive), MSTL(12, trend_forecast_method='AutoETS', seasonal_forecast_method=AVERAGE)"
+            )
+            .is_ok()
+        );
     }
 }

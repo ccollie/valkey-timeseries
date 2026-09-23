@@ -1,4 +1,4 @@
-use crate::analysis::forecasting::normalize_model_name;
+use crate::analysis::forecasting::{is_arima_family, normalize_model_name};
 use crate::analysis::seasonality::MIN_SEASONAL_PERIOD;
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{
@@ -223,6 +223,8 @@ fn fit_best_model(
         options.level,
         options.metrics,
         seasonal_period,
+        // anofox builds the candidates itself, so an ARIMA winner is not wrapped at build time.
+        |model| model.selected_model_name().is_some_and(is_arima_family),
     )?;
 
     // selected_model_name() must be called AFTER fit_predict so the best model is known

@@ -1,6 +1,7 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
+use crate::commands::command_parser::reject_extra_args;
 use anofox_forecast::features::autocorrelation;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
@@ -109,7 +110,7 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         )
     }
 
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     // Plain and TRA are a single pass whatever the lag; these two grow with it.
     if matches!(kind, Kind::Partial | Kind::Aggregated(_)) && lag > MAX_ANALYSIS_LAG {

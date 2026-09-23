@@ -2,11 +2,12 @@ use crate::analysis::seasonality::{MIN_SEASONAL_PERIOD, Seasonality};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
+use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
     IntoRawCtx, reply_with_array, reply_with_double, reply_with_integer, reply_with_str,
 };
 use anofox_forecast::seasonality::{MSTL, MSTLResult, STL, STLResult};
-use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 const MAX_SEASONALITY_PERIODS: usize = 4;
 
@@ -61,7 +62,7 @@ pub fn ts_decompose_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult 
         }
     }
 
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     let timestamps: Vec<i64> = samples.iter().map(|s| s.timestamp).collect();
     let sample_count = values.len();

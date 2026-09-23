@@ -1,4 +1,4 @@
-use crate::analysis::forecasting::make_forecast_time_series;
+use crate::analysis::forecasting::{input_scale_fitted, make_forecast_time_series};
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::AnalysisCtx;
 use crate::commands::command_parser::parse_series_range_samples;
@@ -6,7 +6,8 @@ use crate::commands::store_target::StoreTarget;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
 use crate::commands::utils::{reply_with_accuracy_metrics, reply_with_double_array};
 use crate::common::replies::{
-    ReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
+    ReplyContext, reply_with_double, reply_with_map, reply_with_null, reply_with_str,
+    reply_with_usize,
 };
 use crate::common::time::compute_median_step_ms;
 use crate::common::{Sample, Timestamp};
@@ -118,14 +119,27 @@ const STORE_STEP_ERROR: &str =
 const STORE_TIMESTAMP_OVERFLOW_ERROR: &str =
     "TSDB: STORE forecast timestamps exceed the supported range";
 
+/// The `METRICS` section of a forecast reply.
+pub(super) enum ForecastMetrics {
+    NotRequested,
+    /// Requested, but the model reports no in-sample fit to score (GARCH models volatility,
+    /// not the level). Replied as `null` rather than failing the whole command.
+    Unavailable,
+    Computed(AccuracyMetrics),
+}
+
 pub struct ForecastOutput {
     pub(crate) model_name: String,
     horizon: usize,
     level: Option<f64>,
     pub(crate) forecast: Forecast,
-    metrics: Option<AccuracyMetrics>,
+    metrics: ForecastMetrics,
 }
 
+/// Fits `model` and forecasts `horizon` steps. With `with_metrics`, scores the in-sample fit
+/// against the series; `fit_from_residuals` is asked after fitting whether the model's
+/// `fitted_values()` are on a differenced scale (an ARIMA-family model picked by an automatic
+/// search), in which case the fit is rebuilt from its residuals instead.
 pub(super) fn run_forecast<T: Forecaster + ?Sized>(
     series: &ForecastTimeSeries,
     model: &mut T,
@@ -133,6 +147,7 @@ pub(super) fn run_forecast<T: Forecaster + ?Sized>(
     level: Option<f64>,
     with_metrics: bool,
     seasonal_period: Option<usize>,
+    fit_from_residuals: impl FnOnce(&T) -> bool,
 ) -> Result<ForecastOutput, ValkeyError> {
     let res = if let Some(level) = level {
         model.fit_predict_with_intervals(series, horizon, level / 100.0)
@@ -149,37 +164,43 @@ pub(super) fn run_forecast<T: Forecaster + ?Sized>(
     };
 
     let metrics = if with_metrics {
-        let fitted = match model.fitted_values() {
-            Some(v) => v,
-            None => {
-                let msg = "TSDB: metrics error: fitted values are unavailable for selected model";
-                return Err(ValkeyError::Str(msg));
-            }
-        };
-
         let actual = series.primary_values();
-        let actual = if fitted.len() < actual.len() {
-            &actual[actual.len() - fitted.len()..]
+        let rebuilt;
+        let fitted = if fit_from_residuals(model) {
+            rebuilt = model
+                .residuals()
+                .and_then(|residuals| input_scale_fitted(actual, model.fitted_values(), residuals));
+            rebuilt.as_deref()
         } else {
-            actual
+            model.fitted_values()
         };
+        match fitted {
+            None => ForecastMetrics::Unavailable,
+            Some(fitted) => {
+                let actual = if fitted.len() < actual.len() {
+                    &actual[actual.len() - fitted.len()..]
+                } else {
+                    actual
+                };
 
-        // Some models (e.g. ARIMA) report NaN for a leading warm-up period
-        // where insufficient lagged terms are available to produce a fitted
-        // value. Trim that warm-up prefix from both series before scoring so
-        // metrics reflect only the values the model actually fitted.
-        let warmup = fitted.iter().take_while(|v| !v.is_finite()).count();
-        let (actual, fitted) = (&actual[warmup..], &fitted[warmup..]);
+                // Some models (e.g. ARIMA) report NaN for a leading warm-up period
+                // where insufficient lagged terms are available to produce a fitted
+                // value. Trim that warm-up prefix from both series before scoring so
+                // metrics reflect only the values the model actually fitted.
+                let warmup = fitted.iter().take_while(|v| !v.is_finite()).count();
+                let (actual, fitted) = (&actual[warmup..], &fitted[warmup..]);
 
-        match calculate_metrics(actual, fitted, seasonal_period) {
-            Ok(m) => Some(m),
-            Err(e) => {
-                let msg = format!("TSDB: metrics error: {}", e);
-                return Err(ValkeyError::String(msg));
+                match calculate_metrics(actual, fitted, seasonal_period) {
+                    Ok(m) => ForecastMetrics::Computed(m),
+                    Err(e) => {
+                        let msg = format!("TSDB: metrics error: {}", e);
+                        return Err(ValkeyError::String(msg));
+                    }
+                }
             }
         }
     } else {
-        None
+        ForecastMetrics::NotRequested
     };
 
     let forecast_output = ForecastOutput {
@@ -242,7 +263,7 @@ pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &F
     if upper_interval.is_some() {
         map_len += 1;
     }
-    if forecast_output.metrics.is_some() {
+    if !matches!(forecast_output.metrics, ForecastMetrics::NotRequested) {
         map_len += 1;
     }
     reply_with_map(ctx, map_len);
@@ -266,7 +287,12 @@ pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &F
         reply_with_interval_array(ctx, "upper_interval", upper_values);
     }
 
-    if let Some(m) = forecast_output.metrics.as_ref() {
-        reply_with_metrics_entry(ctx, m);
+    match &forecast_output.metrics {
+        ForecastMetrics::NotRequested => {}
+        ForecastMetrics::Unavailable => {
+            reply_with_str(ctx, "metrics");
+            reply_with_null(ctx);
+        }
+        ForecastMetrics::Computed(m) => reply_with_metrics_entry(ctx, m),
     }
 }

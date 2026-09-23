@@ -1,7 +1,9 @@
 use crate::analysis::forecasting::try_parse_trend_criterion;
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
-use crate::commands::command_parser::{parse_series_range_samples, parse_store_clause};
+use crate::commands::command_parser::{
+    parse_series_range_samples, parse_store_clause, reject_extra_args,
+};
 use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::commands::utils::{reply_with_accuracy_metrics, reply_with_double_array};
 use crate::common::Sample;
@@ -126,7 +128,7 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
     let options = parse_trend_args(ctx, &source_key, &mut args)?;
 
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     let sample_count = values.len();
     let timeout = options.timeout;
@@ -457,7 +459,7 @@ fn parse_trend_args(
                         Recency::Fraction(f)
                     },
                     other => return Err(ValkeyError::String(format!(
-                        "TSDB: invalid RECENCY '{}'. Expected FULL, WINDOW, or FRACTION",
+                        "TSDB: invalid RECENCY '{}'. Expected AUTO, FULL, WINDOW, or FRACTION",
                         other
                     ))),
                 };

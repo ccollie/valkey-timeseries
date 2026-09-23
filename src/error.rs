@@ -69,10 +69,10 @@ pub enum TsdbError {
     #[error("End of stream")]
     EndOfStream,
 
-    #[error("TSDB permissions error: {0}")]
+    #[error("TSDB: permissions error: {0}")]
     PermissionsError(String),
 
-    #[error("TSDB forecast error: {0}")]
+    #[error("TSDB: {0}")]
     ForecastError(String),
 }
 

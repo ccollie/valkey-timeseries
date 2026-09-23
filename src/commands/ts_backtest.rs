@@ -161,12 +161,7 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
                     .map_err(|e| ValkeyError::String(format!("TSDB: error parsing MODELS: {e}")))?;
             },
             "INITIAL_WINDOW" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for INITIAL_WINDOW"))?;
-                if value <= 0 {
-                    return Err(ValkeyError::Str("TSDB: INITIAL_WINDOW must be greater than 0"));
-                }
-                options.initial_window = value as usize;
+                options.initial_window = parse_count(args, "INITIAL_WINDOW", 1)?;
             },
             "STRATEGY" => {
                 let s = args.next_string()
@@ -178,52 +173,22 @@ fn parse_backtest_args(args: &mut CommandArgIterator) -> ValkeyResult<BacktestOp
                 };
             },
             "STEP" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for STEP"))?;
-                if value <= 0 {
-                    return Err(ValkeyError::Str("TSDB: STEP must be greater than 0"));
-                }
-                options.step = Some(value as usize);
+                options.step = Some(parse_count(args, "STEP", 1)?);
             },
             "N_FOLDS" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for N_FOLDS"))?;
-                if value <= 0 {
-                    return Err(ValkeyError::Str("TSDB: N_FOLDS must be greater than 0"));
-                }
-                options.n_folds = value as usize;
+                options.n_folds = parse_count(args, "N_FOLDS", 1)?;
             },
             "GAP" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for GAP"))?;
-                if value < 0 {
-                    return Err(ValkeyError::Str("TSDB: GAP must be non-negative"));
-                }
-                options.gap = value as usize;
+                options.gap = parse_count(args, "GAP", 0)?;
             },
             "PURGE" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for PURGE"))?;
-                if value < 0 {
-                    return Err(ValkeyError::Str("TSDB: PURGE must be non-negative"));
-                }
-                options.purge = value as usize;
+                options.purge = parse_count(args, "PURGE", 0)?;
             },
             "EMBARGO" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for EMBARGO"))?;
-                if value < 0 {
-                    return Err(ValkeyError::Str("TSDB: EMBARGO must be non-negative"));
-                }
-                options.embargo = value as usize;
+                options.embargo = parse_count(args, "EMBARGO", 0)?;
             },
             "SEASONAL_PERIOD" => {
-                let value = args.next_i64()
-                    .map_err(|_| ValkeyError::Str("TSDB: missing value for SEASONAL_PERIOD"))?;
-                if value <= 0 {
-                    return Err(ValkeyError::Str("TSDB: SEASONAL_PERIOD must be greater than 0"));
-                }
-                options.seasonal_period = Some(value as usize);
+                options.seasonal_period = Some(parse_count(args, "SEASONAL_PERIOD", 1)?);
             },
             "WITH_PREDICTIONS" => {
                 options.with_predictions = true;
@@ -497,4 +462,27 @@ fn reply_with_fold_result(
         reply_with_str(ctx, "actuals");
         reply_with_double_array(ctx, &fold_result.actuals);
     }
+}
+
+/// Reads the integer value of a numeric option, at least `minimum` (0 or 1), telling a missing
+/// value apart from one that is not an integer.
+fn parse_count(args: &mut CommandArgIterator, option: &str, minimum: i64) -> ValkeyResult<usize> {
+    let Some(arg) = args.next() else {
+        return Err(ValkeyError::String(format!(
+            "TSDB: missing value for {option}"
+        )));
+    };
+    let value = arg.parse_integer().map_err(|_| {
+        ValkeyError::String(format!(
+            "TSDB: invalid value for {option}, expected an integer"
+        ))
+    })?;
+    if value < minimum {
+        return Err(ValkeyError::String(if minimum > 0 {
+            format!("TSDB: {option} must be greater than 0")
+        } else {
+            format!("TSDB: {option} must be non-negative")
+        }));
+    }
+    Ok(value as usize)
 }

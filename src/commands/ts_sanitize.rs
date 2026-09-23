@@ -1,6 +1,7 @@
-use crate::analysis::forecasting::imputation::{ImputationPolicy, sanitize};
+use crate::analysis::forecasting::imputation::{ImputationPolicy, interpolate_series, sanitize};
 use crate::commands::command_parser::{
     CommandArgToken, parse_command_arg_token, parse_store_clause, parse_timestamp_range,
+    reject_extra_args,
 };
 use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::common::Sample;
@@ -116,7 +117,7 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     } else {
         None
     };
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     // Capture policy variant before moving `policy` into sanitize().
     // - MA/Seasonal: samples is NOT modified; `sanitized` is the full imputed result.
@@ -125,6 +126,12 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         &policy,
         ImputationPolicy::MovingAverage(_) | ImputationPolicy::Seasonal(_)
     );
+
+    // The source is rewritten below before the destination is written; check the destination
+    // first so a WRONGTYPE destination fails the command before anything has changed.
+    if let Some(dest) = &destination {
+        dest.check_destination_type(ctx)?;
+    }
 
     // Apply the sanitization policy
     let sanitized = sanitize(&mut samples, policy)
@@ -220,8 +227,13 @@ fn parse_policy(
     Ok(policy)
 }
 
-fn infer_seasonal_period(args: &[Sample]) -> ValkeyResult<usize> {
-    let values: Vec<f64> = args.iter().map(|s| s.value).collect();
+fn infer_seasonal_period(samples: &[Sample]) -> ValkeyResult<usize> {
+    // The values being imputed are missing by definition, and period detection cannot see
+    // through them, so detect on a linearly gap-filled copy.
+    let values: Vec<f64> = interpolate_series(samples, true)
+        .iter()
+        .map(|s| s.value)
+        .collect();
     detect_dominant_period(&values).ok_or(ValkeyError::Str(
         "TSDB: unable to detect dominant period for seasonal imputation",
     ))

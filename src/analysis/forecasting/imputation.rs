@@ -180,8 +180,9 @@ fn calc_median(values: &[Sample]) -> f64 {
     }
 }
 
-/// Linear interpolation for a series with NaN values.
-fn interpolate_series(samples: &[Sample], fill_edges: bool) -> Vec<Sample> {
+/// Linear interpolation over missing values. Like every other policy, missing means
+/// non-finite: ±Inf is replaced along with NaN, and never used as an interpolation anchor.
+pub(crate) fn interpolate_series(samples: &[Sample], fill_edges: bool) -> Vec<Sample> {
     if samples.is_empty() {
         return vec![];
     }
@@ -192,9 +193,9 @@ fn interpolate_series(samples: &[Sample], fill_edges: bool) -> Vec<Sample> {
     // Find and fill NaN segments
     let mut i = 0;
     while i < n {
-        if result[i].value.is_nan() {
+        if !result[i].value.is_finite() {
             let start = i;
-            while i < n && result[i].value.is_nan() {
+            while i < n && !result[i].value.is_finite() {
                 i += 1;
             }
             let left = if start > 0 {
@@ -896,6 +897,22 @@ mod tests {
     fn interpolate_series_empty() {
         let result = interpolate_series(&[], true);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn interpolate_series_treats_infinity_as_missing() {
+        let samples = vec![
+            Sample::new(1, 1.0),
+            Sample::new(2, f64::INFINITY),
+            Sample::new(3, f64::NAN),
+            Sample::new(4, f64::NEG_INFINITY),
+            Sample::new(5, 5.0),
+        ];
+        let values: Vec<f64> = interpolate_series(&samples, true)
+            .iter()
+            .map(|s| s.value)
+            .collect();
+        assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
     }
 
     // ============================================================

@@ -1,5 +1,6 @@
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
+use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
     reply_with_array, reply_with_double, reply_with_integer, reply_with_null,
 };
@@ -84,7 +85,7 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         }
     }
 
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     let config = PeriodDetectionConfig {
         min_strength: min_strength.unwrap_or(0.05),

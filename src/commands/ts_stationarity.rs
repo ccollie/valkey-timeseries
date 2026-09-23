@@ -1,6 +1,7 @@
 use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_series_range_samples;
+use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
     IntoRawCtx, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
 };
@@ -55,6 +56,14 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     let samples = parse_series_range_samples(ctx, &mut args)?;
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
+    // The tests are undefined over missing values: a NaN turns every statistic into NaN,
+    // which would otherwise be reported as a "non_stationary" conclusion.
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err(ValkeyError::Str(
+            "TSDB: the range contains NaN or infinite values; fill or drop them first (see TS.SANITIZE)",
+        ));
+    }
+
     // Minimum data check
     if values.len() < MIN_SAMPLES {
         return Err(ValkeyError::String(format!(
@@ -105,7 +114,7 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         }
     }
 
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     // LAGS is incompatible with combined test
     if test_type == TestType::Combined && lags.is_some() {

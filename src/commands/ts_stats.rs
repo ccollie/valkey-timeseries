@@ -1,7 +1,8 @@
 use crate::analysis::forecasting::stats::{SeriesStats, calculate_stats};
+use crate::commands::command_parser::reject_extra_args;
 use crate::commands::parse_timestamp_range;
 use crate::series::get_timeseries;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use valkey_module::redisvalue::ValkeyValueKey;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
@@ -70,7 +71,7 @@ pub fn ts_stats_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         None
     };
 
-    args.done()?;
+    reject_extra_args(&mut args)?;
 
     let series = get_timeseries(ctx, &key, Some(AclPermissions::ACCESS))?;
 
@@ -108,7 +109,8 @@ pub fn ts_stats_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
 
 /// Build the Valkey response map from a `SeriesStats` struct.
 fn stats_to_response(stats: &SeriesStats) -> ValkeyValue {
-    let mut map: HashMap<ValkeyValueKey, ValkeyValue> = HashMap::new();
+    // Ordered, so RESP2's flat array has a stable field order (sorted by name).
+    let mut map: BTreeMap<ValkeyValueKey, ValkeyValue> = BTreeMap::new();
 
     map.insert("length".into(), ValkeyValue::Integer(stats.length as i64));
     map.insert(
@@ -162,5 +164,5 @@ fn stats_to_response(stats: &SeriesStats) -> ValkeyValue {
     map.insert("skewness".into(), ValkeyValue::Float(stats.skewness));
     map.insert("kurtosis".into(), ValkeyValue::Float(stats.kurtosis));
 
-    ValkeyValue::Map(map)
+    ValkeyValue::OrderedMap(map)
 }

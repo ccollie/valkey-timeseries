@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod test_data;
 
+use crate::analysis::forecasting::imputation::interpolate_series;
 use crate::analysis::{TimeSeriesAnalysisError, TimeSeriesAnalysisResult};
+use crate::common::Sample;
 use anofox_forecast::detection::{PeriodDetectionConfig, detect_periods};
 use anofox_forecast::seasonality::{MSTL, STL};
 
@@ -29,15 +31,49 @@ impl Seasonality {
 /// Period 0 panics inside the decomposition (a division by zero).
 pub const MIN_SEASONAL_PERIOD: usize = 2;
 
+/// `values` with non-finite entries linearly interpolated (edges take the nearest value).
+fn fill_missing(values: &[f64]) -> Vec<f64> {
+    let samples: Vec<Sample> = values
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| Sample::new(i as i64, v))
+        .collect();
+    interpolate_series(&samples, true)
+        .into_iter()
+        .map(|s| s.value)
+        .collect()
+}
+
+/// `remainder` with NaN put back wherever `input` was missing.
+fn restore_missing(input: &[f64], mut remainder: Vec<f64>) -> Vec<f64> {
+    for (r, v) in remainder.iter_mut().zip(input) {
+        if !v.is_finite() {
+            *r = f64::NAN;
+        }
+    }
+    remainder
+}
+
 /// Seasonal adjustment using (M)Stl decomposition
+///
+/// A single NaN would propagate through the whole decomposition and leave nothing to score, so
+/// missing (non-finite) values are linearly filled for the decomposition and come back as NaN
+/// in the remainder, exactly where they were in the input.
 pub fn seasonally_adjust(
-    ts: &[f64],
+    input: &[f64],
     seasonality: &Seasonality,
 ) -> TimeSeriesAnalysisResult<Vec<f64>> {
+    let filled;
+    let ts = if input.iter().all(|v| v.is_finite()) {
+        input
+    } else {
+        filled = fill_missing(input);
+        filled.as_slice()
+    };
     let mut periods = seasonality.resolve(ts);
 
     if periods.is_empty() {
-        return Ok(ts.to_vec());
+        return Ok(input.to_vec());
     }
 
     periods.sort_unstable();
@@ -57,7 +93,7 @@ pub fn seasonally_adjust(
         STL::new(periods[0])
             .robust()
             .decompose(ts)
-            .map(|res| res.remainder)
+            .map(|res| restore_missing(input, res.remainder))
             .ok_or_else(|| {
                 TimeSeriesAnalysisError::DecompositionError("STL decomposition failed".to_string())
             })
@@ -71,7 +107,7 @@ pub fn seasonally_adjust(
             .robust()
             .with_iterations(5)
             .decompose(ts)
-            .map(|res| res.remainder)
+            .map(|res| restore_missing(input, res.remainder))
             .ok_or_else(|| {
                 TimeSeriesAnalysisError::DecompositionError("MSTL decomposition failed".to_string())
             })
@@ -258,5 +294,25 @@ mod tests {
         // 2 * usize::MAX wraps to a small number; it must still count as insufficient data.
         let err = seasonally_adjust(&data, &Seasonality::Periods(vec![usize::MAX])).unwrap_err();
         assert_insufficient_data(&err, usize::MAX, 100);
+    }
+
+    #[test]
+    fn seasonally_adjust_keeps_missing_values_local() {
+        let mut data: Vec<f64> = (0..240)
+            .map(|i| 10.0 + (i as f64 * std::f64::consts::TAU / 24.0).sin())
+            .collect();
+        data[50] = f64::NAN;
+        data[130] = f64::INFINITY;
+        let remainder = seasonally_adjust(&data, &Seasonality::Periods(vec![24])).unwrap();
+        for (i, r) in remainder.iter().enumerate() {
+            if i == 50 || i == 130 {
+                assert!(r.is_nan(), "position {i} should stay missing");
+            } else {
+                assert!(
+                    r.is_finite(),
+                    "position {i} should have a remainder, got {r}"
+                );
+            }
+        }
     }
 }

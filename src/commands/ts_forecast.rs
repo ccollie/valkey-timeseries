@@ -160,6 +160,8 @@ fn process_models(
             options.level,
             options.include_metrics,
             None, // seasonal_period can be added as an option if needed
+            // ARIMA-family models are wrapped at build time to report an input-scale fit.
+            |_| false,
         )?;
         output.model_name = spec.display_name().to_string();
         results.push(output);
