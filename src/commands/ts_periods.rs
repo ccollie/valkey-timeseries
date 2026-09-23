@@ -2,7 +2,7 @@ use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analy
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
-    reply_with_array, reply_with_double, reply_with_integer, reply_with_null,
+    reply_with_array, reply_with_integer, reply_with_null, reply_with_statistic,
 };
 use anofox_forecast::detection::period::{PeriodDetectionConfig, detect_periods};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -118,9 +118,9 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
                     // Each period returned as an array: [period, power, strength, acf, n_cycles]
                     reply_with_array(&ctx, 5);
                     reply_with_integer(&ctx, p.period as i64);
-                    reply_with_double(&ctx, p.power);
-                    reply_with_double(&ctx, p.strength);
-                    reply_with_double(&ctx, p.acf);
+                    reply_with_statistic(&ctx, p.power);
+                    reply_with_statistic(&ctx, p.strength);
+                    reply_with_statistic(&ctx, p.acf);
                     reply_with_integer(&ctx, p.n_cycles as i64);
                 }
             }

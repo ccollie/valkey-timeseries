@@ -2,7 +2,7 @@ use crate::analysis::MAX_ANALYSIS_LAG;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::parse_timestamp_range;
 use crate::common::replies::{
-    ReplyContext, reply_with_array, reply_with_double, reply_with_integer, reply_with_map,
+    ReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_statistic,
     reply_with_str,
 };
 use crate::error_consts;
@@ -203,14 +203,14 @@ fn reply_with_xcorr(ctx: &ReplyContext, result: &CrossCorrelation) {
     reply_with_str(ctx, "values");
     reply_with_array(ctx, result.values.len());
     for &v in &result.values {
-        reply_with_double(ctx, v);
+        reply_with_statistic(ctx, v);
     }
 
     reply_with_str(ctx, "peak_lag");
     reply_with_integer(ctx, result.peak_lag);
 
     reply_with_str(ctx, "peak_correlation");
-    reply_with_double(ctx, result.peak_correlation);
+    reply_with_statistic(ctx, result.peak_correlation);
 
     reply_with_str(ctx, "n");
     reply_with_integer(ctx, result.n as i64);

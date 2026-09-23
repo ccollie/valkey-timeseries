@@ -56,14 +56,6 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
 
     let lag = lag as usize;
 
-    if values.len() <= lag {
-        return Err(ValkeyError::String(format!(
-            "TSDB: insufficient data for lag {lag}. Need at least {} samples, got {}",
-            lag + 1,
-            values.len()
-        )));
-    }
-
     let mut kind = Kind::Plain;
     let mut timeout = AnalysisTimeout::default();
     while let Some(arg) = args.peek() {
@@ -76,13 +68,6 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
             },
             "TRA" => {
                 args.next();
-                if values.len() <= 2 * lag {
-                    return Err(ValkeyError::String(format!(
-                        "TSDB: insufficient data for TRA with lag {lag}. Need at least {} samples, got {}",
-                        2 * lag + 1,
-                        values.len()
-                    )));
-                }
                 kind = Kind::Tra;
             },
             "AGGREGATED" => {
@@ -116,6 +101,22 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     if matches!(kind, Kind::Partial | Kind::Aggregated(_)) && lag > MAX_ANALYSIS_LAG {
         return Err(ValkeyError::String(format!(
             "TSDB: lag must not exceed {MAX_ANALYSIS_LAG} with PARTIAL or AGGREGATED"
+        )));
+    }
+
+    // Data checks come after the options, so a malformed call reports its syntax error first.
+    if values.len() <= lag {
+        return Err(ValkeyError::String(format!(
+            "TSDB: insufficient data for lag {lag}. Need at least {} samples, got {}",
+            lag + 1,
+            values.len()
+        )));
+    }
+    if matches!(kind, Kind::Tra) && values.len() <= lag.saturating_mul(2) {
+        return Err(ValkeyError::String(format!(
+            "TSDB: insufficient data for TRA with lag {lag}. Need at least {} samples, got {}",
+            lag.saturating_mul(2).saturating_add(1),
+            values.len()
         )));
     }
 

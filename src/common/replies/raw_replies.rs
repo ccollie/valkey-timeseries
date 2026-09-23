@@ -205,6 +205,26 @@ pub fn reply_with_double<C: IntoRawCtx>(ctx: C, value: f64) -> Status {
     raw::reply_with_double(raw_ctx, value)
 }
 
+/// Replies with a computed statistic: its value, or null when it is undefined (NaN), e.g. the
+/// kurtosis of three values or a correlation against a constant series. Sample values are sent
+/// with [`reply_with_double`] instead, so a stored NaN stays NaN as in `TS.RANGE`.
+pub fn reply_with_statistic<C: IntoRawCtx>(ctx: C, value: f64) -> Status {
+    if value.is_nan() {
+        reply_with_null(ctx)
+    } else {
+        reply_with_double(ctx, value)
+    }
+}
+
+/// [`reply_with_statistic`] as a [`ValkeyValue`], for replies built as values.
+pub fn statistic_value(value: f64) -> valkey_module::ValkeyValue {
+    if value.is_nan() {
+        valkey_module::ValkeyValue::Null
+    } else {
+        valkey_module::ValkeyValue::Float(value)
+    }
+}
+
 pub fn reply_with_bool<C: IntoRawCtx>(ctx: C, value: bool) -> Status {
     let raw_ctx = ctx.into_raw();
     raw::reply_with_bool(raw_ctx, value.into())

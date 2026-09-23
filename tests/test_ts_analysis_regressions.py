@@ -183,6 +183,30 @@ class TestAnalysisRegressions(ValkeyTimeSeriesTestCaseBase):
         filled = reader.execute_command("TS.FILLGAPS", "s", "-", "+", "FREQUENCY", 1000)
         assert [ts for ts, _ in filled] == [3000, 4000]
 
+    @pytest.mark.parametrize("argv,match", [
+        (["TS.STATIONARITY", "short", "-", "+", "TEST", "bogus"], "invalid TEST"),
+        (["TS.AUTOCORRELATION", "short", "-", "+", 10, "BOGUS"], "unrecognized option"),
+        (["TS.PERIODS", "short", "-", "+", "MIN_STRENGTH", 5], "MIN_STRENGTH must be between"),
+        (["TS.TREND", "short", "-", "+", "MODEL", "bogus"], None),
+    ], ids=lambda value: value[0] if isinstance(value, list) else "")
+    def test_option_errors_come_before_data_errors(self, argv, match):
+        """A too-short range used to be reported before a malformed option."""
+        self.add("short", [1.0, 2.0])
+        with pytest.raises(ResponseError, match=match) as error:
+            self.client.execute_command(*argv)
+        assert "insufficient data" not in str(error.value)
+
+    def test_undefined_statistics_are_null(self):
+        """NaN statistics were sent as `nan` by some commands and null by others."""
+        self.add("three", [1.0, 2.0, 4.0])
+        stats = as_dict(self.client.execute_command("TS.STATS", "three"))
+        assert stats["kurtosis"] is None
+        self.add("x", [1.0, 2.0, float("nan"), 4.0, 5.0, 6.0])
+        self.add("y", [2.0, 1.0, 3.0, 5.0, 4.0, 6.0])
+        xcorr = as_dict(self.client.execute_command("TS.XCORR", "x", "y", "-", "+", 1))
+        assert all(v is None for v in xcorr["values"])
+        assert xcorr["peak_correlation"] is None
+
     # -- Model specs and messages -------------------------------------------------------------
 
     @pytest.mark.parametrize("spec,match", [

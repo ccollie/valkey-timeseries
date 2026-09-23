@@ -1,6 +1,7 @@
 use crate::analysis::forecasting::stats::{SeriesStats, calculate_stats};
 use crate::commands::command_parser::reject_extra_args;
 use crate::commands::parse_timestamp_range;
+use crate::common::replies::statistic_value;
 use crate::series::get_timeseries;
 use std::collections::BTreeMap;
 use valkey_module::redisvalue::ValkeyValueKey;
@@ -121,12 +122,12 @@ fn stats_to_response(stats: &SeriesStats) -> ValkeyValue {
         "end_timestamp".into(),
         ValkeyValue::Integer(stats.end_timestamp),
     );
-    map.insert("mean".into(), ValkeyValue::Float(stats.mean));
-    map.insert("std".into(), ValkeyValue::Float(stats.std));
-    map.insert("min".into(), ValkeyValue::Float(stats.min));
-    map.insert("max".into(), ValkeyValue::Float(stats.max));
-    map.insert("median".into(), ValkeyValue::Float(stats.median));
-    map.insert("range".into(), ValkeyValue::Float(stats.range));
+    map.insert("mean".into(), statistic_value(stats.mean));
+    map.insert("std".into(), statistic_value(stats.std));
+    map.insert("min".into(), statistic_value(stats.min));
+    map.insert("max".into(), statistic_value(stats.max));
+    map.insert("median".into(), statistic_value(stats.median));
+    map.insert("range".into(), statistic_value(stats.range));
     map.insert("n_nans".into(), ValkeyValue::Integer(stats.n_nans as i64));
     map.insert("n_zeros".into(), ValkeyValue::Integer(stats.n_zeros as i64));
     map.insert(
@@ -161,8 +162,8 @@ fn stats_to_response(stats: &SeriesStats) -> ValkeyValue {
         "n_zeros_end".into(),
         ValkeyValue::Integer(stats.n_zeros_end as i64),
     );
-    map.insert("skewness".into(), ValkeyValue::Float(stats.skewness));
-    map.insert("kurtosis".into(), ValkeyValue::Float(stats.kurtosis));
+    map.insert("skewness".into(), statistic_value(stats.skewness));
+    map.insert("kurtosis".into(), statistic_value(stats.kurtosis));
 
     ValkeyValue::OrderedMap(map)
 }

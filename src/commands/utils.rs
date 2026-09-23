@@ -5,7 +5,7 @@ use crate::common::replies::{
     IntoRawCtx, is_resp3_client, reply_label_ex, reply_with_array, reply_with_bulk_string,
     reply_with_double, reply_with_labels, reply_with_labels_map, reply_with_map,
     reply_with_multi_samples, reply_with_sample_ex, reply_with_samples, reply_with_slice,
-    reply_with_str,
+    reply_with_statistic, reply_with_str,
 };
 use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fanout_mode};
 use crate::labels::Label;
@@ -221,33 +221,33 @@ pub fn reply_with_accuracy_metrics<C: IntoRawCtx + Copy>(ctx: C, metrics: &Accur
     reply_with_map(ctx, 7);
 
     reply_with_str(ctx, "mae");
-    reply_with_double(ctx, metrics.mae);
+    reply_with_statistic(ctx, metrics.mae);
 
     reply_with_str(ctx, "mse");
-    reply_with_double(ctx, metrics.mse);
+    reply_with_statistic(ctx, metrics.mse);
 
     reply_with_str(ctx, "rmse");
-    reply_with_double(ctx, metrics.rmse);
+    reply_with_statistic(ctx, metrics.rmse);
 
     reply_with_str(ctx, "mape");
     if let Some(v) = metrics.mape {
-        reply_with_double(ctx, v);
+        reply_with_statistic(ctx, v);
     } else {
         crate::common::replies::reply_with_null(ctx);
     }
 
     reply_with_str(ctx, "smape");
-    reply_with_double(ctx, metrics.smape);
+    reply_with_statistic(ctx, metrics.smape);
 
     reply_with_str(ctx, "mase");
     if let Some(v) = metrics.mase {
-        reply_with_double(ctx, v);
+        reply_with_statistic(ctx, v);
     } else {
         crate::common::replies::reply_with_null(ctx);
     }
 
     reply_with_str(ctx, "r_squared");
-    reply_with_double(ctx, metrics.r_squared);
+    reply_with_statistic(ctx, metrics.r_squared);
 }
 
 pub(super) fn reply_with_double_array<C: IntoRawCtx + Copy>(ctx: C, values: &[f64]) {

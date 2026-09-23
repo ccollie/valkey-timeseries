@@ -99,8 +99,8 @@ alternating names and values, in the order below. Doubles are bulk strings in RE
 | `n`                | integer          | Number of timestamp-aligned sample pairs used                       |
 
 When several lags tie for the largest absolute correlation, `peak_lag` is the lowest of them. A
-lag whose correlation is undefined (a NaN sample in the overlap) is reported as `nan` and is
-not chosen as the peak unless every lag is `nan`. A constant series correlates as `0` at
+lag whose correlation is undefined (a NaN sample in the overlap) is reported as null and is
+not chosen as the peak; if every lag is undefined, `peak_correlation` is null. A constant series correlates as `0` at
 every lag.
 
 Returns an error if:

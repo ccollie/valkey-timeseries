@@ -3,7 +3,7 @@ use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analy
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
-    IntoRawCtx, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
+    IntoRawCtx, reply_with_integer, reply_with_map, reply_with_statistic, reply_with_str,
 };
 use anofox_forecast::validation::stationarity::{self, StationarityResult};
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -234,10 +234,10 @@ enum TestType {
 /// and writing the `test` / `conclusion` fields before calling this.
 fn reply_result_fields<C: IntoRawCtx + Copy>(ctx: C, result: &StationarityResult) {
     reply_with_str(ctx, "statistic");
-    reply_with_double(ctx, result.statistic);
+    reply_with_statistic(ctx, result.statistic);
 
     reply_with_str(ctx, "pValue");
-    reply_with_double(ctx, result.p_value);
+    reply_with_statistic(ctx, result.p_value);
 
     reply_with_str(ctx, "lags");
     reply_with_integer(ctx, result.lags as i64);
@@ -246,13 +246,13 @@ fn reply_result_fields<C: IntoRawCtx + Copy>(ctx: C, result: &StationarityResult
     reply_with_integer(ctx, i64::from(result.is_stationary));
 
     reply_with_str(ctx, "cv1pct");
-    reply_with_double(ctx, result.critical_values.cv_1pct);
+    reply_with_statistic(ctx, result.critical_values.cv_1pct);
 
     reply_with_str(ctx, "cv5pct");
-    reply_with_double(ctx, result.critical_values.cv_5pct);
+    reply_with_statistic(ctx, result.critical_values.cv_5pct);
 
     reply_with_str(ctx, "cv10pct");
-    reply_with_double(ctx, result.critical_values.cv_10pct);
+    reply_with_statistic(ctx, result.critical_values.cv_10pct);
 }
 
 fn reply_single_test<C: IntoRawCtx + Copy>(

@@ -408,24 +408,24 @@ fn reply_with_aggregated_metrics(ctx: &ReplyContext, m: &AggregatedSummary) {
     reply_with_map(ctx, 6);
 
     reply_with_str(ctx, "mae");
-    crate::common::replies::reply_with_double(ctx, m.mae);
+    crate::common::replies::reply_with_statistic(ctx, m.mae);
     reply_with_str(ctx, "rmse");
-    crate::common::replies::reply_with_double(ctx, m.rmse);
+    crate::common::replies::reply_with_statistic(ctx, m.rmse);
     reply_with_str(ctx, "smape");
-    crate::common::replies::reply_with_double(ctx, m.smape);
+    crate::common::replies::reply_with_statistic(ctx, m.smape);
     reply_with_str(ctx, "mape");
     match m.mape {
         Some(v) => {
-            crate::common::replies::reply_with_double(ctx, v);
+            crate::common::replies::reply_with_statistic(ctx, v);
         }
         None => {
             reply_with_null(ctx);
         }
     }
     reply_with_str(ctx, "mae_std");
-    crate::common::replies::reply_with_double(ctx, m.mae_std);
+    crate::common::replies::reply_with_statistic(ctx, m.mae_std);
     reply_with_str(ctx, "rmse_std");
-    crate::common::replies::reply_with_double(ctx, m.rmse_std);
+    crate::common::replies::reply_with_statistic(ctx, m.rmse_std);
 }
 
 fn reply_with_fold_result(

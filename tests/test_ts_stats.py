@@ -134,9 +134,9 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert s['is_constant'] == 1
         assert s['plateau_size'] == 1
         assert s['plateau_size_non_zero'] == 1
-        # skewness/kurtosis may be NaN for a single value (division by zero)
-        assert math.isnan(s['skewness'])
-        assert math.isnan(s['kurtosis'])
+        # skewness/kurtosis are undefined for a single value, and undefined statistics are null
+        assert s['skewness'] is None
+        assert s['kurtosis'] is None
 
     def test_all_identical_nonzero(self):
         """TS.STATS when all values are identical and non-zero."""
@@ -238,9 +238,9 @@ class TestTsStats(ValkeyTimeSeriesTestCaseBase):
         assert s['min'] == 10.0
         assert s['max'] == 30.0
         assert s['n_unique_values'] == 2
-        # skewness/kurtosis may be NaN when only 2 finite values remain
-        assert math.isnan(s['skewness'])
-        assert math.isnan(s['kurtosis'])
+        # skewness/kurtosis are undefined with only 2 finite values, and come back null
+        assert s['skewness'] is None
+        assert s['kurtosis'] is None
 
     def test_plateau_detection(self):
         """TS.STATS detects the longest plateau correctly."""

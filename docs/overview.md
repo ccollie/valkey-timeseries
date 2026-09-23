@@ -110,6 +110,10 @@ with it. The destination must differ from the source and, in cluster mode, hash 
 Replicas and the AOF receive the stored samples, not the command, so the analysis runs only on
 the primary.
 
+A statistic that is undefined for the input (the kurtosis of three values, a correlation against
+a constant series) is returned as null. Sample values are returned as stored, so a NaN sample
+still comes back as `nan`, as in `TS.RANGE`.
+
 ## Indexes
 
 Valkey TimeSeries uses a label-based indexing system separate from the key space.

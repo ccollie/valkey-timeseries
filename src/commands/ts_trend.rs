@@ -8,7 +8,7 @@ use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::commands::utils::{reply_with_accuracy_metrics, reply_with_double_array};
 use crate::common::Sample;
 use crate::common::replies::{
-    reply_with_array, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
+    reply_with_array, reply_with_integer, reply_with_map, reply_with_statistic, reply_with_str,
 };
 use crate::common::time::compute_median_step_ms;
 use anofox_forecast::seasonality::auto_trend::{AutoTrend, TrendCriterion};
@@ -120,15 +120,16 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let samples = parse_series_range_samples(ctx, &mut args)?;
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
+    let options = parse_trend_args(ctx, &source_key, &mut args)?;
+
+    reject_extra_args(&mut args)?;
+
+    // Checked after the options, so a malformed call reports its syntax error first.
     if values.len() < 4 {
         return Err(ValkeyError::Str(
             "TSDB: insufficient data for trend fitting. Need at least 4 samples.",
         ));
     }
-
-    let options = parse_trend_args(ctx, &source_key, &mut args)?;
-
-    reject_extra_args(&mut args)?;
 
     let sample_count = values.len();
     let timeout = options.timeout;
@@ -549,7 +550,7 @@ fn reply_with_scores(ctx: &Context, scores: &[(String, f64)]) {
     for (name, score) in scores {
         reply_with_array(ctx, 2);
         reply_with_str(ctx, name);
-        reply_with_double(ctx, *score);
+        reply_with_statistic(ctx, *score);
     }
 }
 
@@ -558,6 +559,6 @@ fn reply_with_trend_features(ctx: &Context, features: &[(String, f64)]) {
     reply_with_map(ctx, features.len());
     for (name, value) in features {
         reply_with_str(ctx, name);
-        reply_with_double(ctx, *value);
+        reply_with_statistic(ctx, *value);
     }
 }

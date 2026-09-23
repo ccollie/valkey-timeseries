@@ -78,8 +78,9 @@ statistic is computed over the finite values only.
 `kurtosis` the bias-adjusted excess kurtosis `n(n+1)/((n−1)(n−2)(n−3)) · Σ((x−mean)/s)⁴ −
 3(n−1)²/((n−2)(n−3))`, where `s` is the sample standard deviation — the estimators Excel's
 `SKEW`/`KURT` and pandas report. (`std` in the reply is the population standard deviation.)
-`skewness` is NaN with fewer than 3 values and 0 for a constant series; `kurtosis` is NaN with
-fewer than 4 values or for a constant series.
+`skewness` is null with fewer than 3 values and 0 for a constant series; `kurtosis` is null with
+fewer than 4 values or for a constant series. Like every analysis command, `TS.STATS` returns an
+undefined statistic as null rather than NaN.
 
 An empty range (or empty series) is not an error: `length` is 0 and every other field is 0.
 `TS.STATS` runs inline and takes no `TIMEOUT`. It returns an error if the key does not exist or
@@ -155,52 +156,52 @@ OK
 <details open>
 <summary><code>TS.STATS</code> with a timestamp range</summary>
 
-Compute statistics over a specific time window. With only three values, `kurtosis` is NaN:
+Compute statistics over a specific time window. With only three values, `kurtosis` is null:
 
 ```
 127.0.0.1:6379> TS.STATS ts:temperature 2000 4000
- 1) "mean"
- 2) "15.300000190734863"
- 3) "kurtosis"
- 4) "nan"
- 5) "n_positive"
- 6) (integer) 2
- 7) "n_unique_values"
+ 1) "end_timestamp"
+ 2) (integer) 4000
+ 3) "is_constant"
+ 4) (integer) 0
+ 5) "kurtosis"
+ 6) (nil)
+ 7) "length"
  8) (integer) 3
- 9) "plateau_size"
-10) (integer) 1
-11) "n_zeros_start"
-12) (integer) 0
-13) "skewness"
-14) "-3.1801467555253087"
-15) "start_timestamp"
-16) (integer) 2000
-17) "end_timestamp"
-18) (integer) 4000
-19) "max"
-20) "23.1"
-21) "is_constant"
-22) (integer) 0
-23) "std"
-24) "10.819426153905052"
-25) "plateau_size_non_zero"
+ 9) "max"
+10) "23.1"
+11) "mean"
+12) "15.300000000000002"
+13) "median"
+14) "22.8"
+15) "min"
+16) "0"
+17) "n_nans"
+18) (integer) 0
+19) "n_negative"
+20) (integer) 0
+21) "n_positive"
+22) (integer) 2
+23) "n_unique_values"
+24) (integer) 3
+25) "n_zeros"
 26) (integer) 1
 27) "n_zeros_end"
 28) (integer) 1
-29) "length"
-30) (integer) 3
-31) "min"
-32) "0"
-33) "n_zeros"
+29) "n_zeros_start"
+30) (integer) 0
+31) "plateau_size"
+32) (integer) 1
+33) "plateau_size_non_zero"
 34) (integer) 1
-35) "n_negative"
-36) (integer) 0
-37) "n_nans"
-38) (integer) 0
-39) "range"
-40) "23.1"
-41) "median"
-42) "22.8"
+35) "range"
+36) "23.1"
+37) "skewness"
+38) "-1.7310521129921668"
+39) "start_timestamp"
+40) (integer) 2000
+41) "std"
+42) "10.819426971887191"
 ```
 
 </details>
