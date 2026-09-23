@@ -12,6 +12,7 @@ be selected by category or specified individually.
 TS.FEATURES key startTimestamp endTimestamp
     [CATEGORY <basic|distribution|autocorrelation|trend>,..]
     [FEATURE feature1,feature2,feature3..]
+    [TIMEOUT milliseconds]
 ```
 
 [Examples](#examples)
@@ -98,6 +99,18 @@ case-insensitive.
 | `partial_autocorrelation` | `partial_autocorrelation:<lag>` or `pacf:<lag>` | `lag` — lag value    | Integer from 1 to 1000    |
 
 Example: `FEATURE mean,median,quantile:0.5,autocorrelation:3`
+</details>
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds; defaults to `ts-analysis-timeout`. Features are
+computed on a dedicated pool of analysis worker threads (sized by `ts-num-threads`), so they
+never stall the server. The deadline counts from when the request is accepted, including time
+spent queued behind other analysis work. When it elapses the client receives `TSDB: command
+timed out before the result was ready` and the request is abandoned. `0` disables the deadline
+for this call. Inside `MULTI` or a script, where a client cannot be blocked, the command runs
+inline instead.
 </details>
 
 ## Return

@@ -10,7 +10,7 @@ correlation coefficient between the aligned value sequences at every lag in
 ## Syntax
 
 ```
-TS.XCORR key1 key2 fromTimestamp toTimestamp maxLag
+TS.XCORR key1 key2 fromTimestamp toTimestamp maxLag [TIMEOUT milliseconds]
 ```
 
 [Examples](#examples)
@@ -50,6 +50,18 @@ Use `+` to denote the latest timestamp.
 
 Maximum lag (integer from 0 to 1000, in samples) to test in either direction.
 The command computes correlation at every integer lag in `-maxLag..=maxLag`.
+</details>
+
+## Optional arguments
+
+<details open>
+<summary><code>TIMEOUT milliseconds</code></summary>
+
+Deadline for the command, in milliseconds; defaults to `ts-analysis-timeout`. When the number
+of aligned pairs times `2 × maxLag + 1` exceeds 10,000,000, the correlations are computed on a
+dedicated pool of analysis worker threads (sized by `ts-num-threads`) so they never stall the
+server, and the deadline applies to them. When it elapses the client receives `TSDB: command
+timed out before the result was ready`. `0` disables the deadline for this call.
 </details>
 
 ## Lag convention
