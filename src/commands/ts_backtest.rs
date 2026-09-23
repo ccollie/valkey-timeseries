@@ -4,9 +4,7 @@ use crate::commands::analysis_runner::{
     AnalysisTimeout, parse_timeout, run_analysis_in_background,
 };
 use crate::commands::command_parser::parse_forecast_horizon_value;
-use crate::commands::forecast_utils::{
-    handle_forecast_key_pos_request, parse_timeseries_for_forecast, reply_with_accuracy_metrics,
-};
+use crate::commands::forecast_utils::{parse_timeseries_for_forecast, reply_with_accuracy_metrics};
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{
     ReplyContext, reply_with_array, reply_with_integer, reply_with_map, reply_with_null,
@@ -118,10 +116,6 @@ acl_categories!(TS_BACKTEST, "ts.backtest", "read timeseries");
 pub(crate) fn ts_backtest_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 8 {
         return Err(ValkeyError::WrongArity);
-    }
-
-    if handle_forecast_key_pos_request(ctx, &args)? {
-        return Ok(ValkeyValue::NoReply);
     }
 
     let mut args = args.into_iter().skip(1).peekable();

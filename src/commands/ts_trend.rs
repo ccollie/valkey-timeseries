@@ -2,7 +2,7 @@ use crate::analysis::forecasting::try_parse_trend_criterion;
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
 use crate::commands::command_parser::{parse_series_range_samples, parse_store_clause};
-use crate::commands::store_target::StoreTarget;
+use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::commands::utils::reply_with_accuracy_metrics;
 use crate::common::Sample;
 use crate::common::replies::{
@@ -82,7 +82,7 @@ acl_categories!(TS_TREND, "ts.trend", "write timeseries");
     // Declared `Write` rather than `ReadOnly`: the STORE clause creates/updates the
     // destination series and replicates, so the command must not be routed to replicas
     // or treated as read-only, even though it is a pure read when STORE is omitted.
-    flags: [Write, DenyOOM],
+    flags: [Write, DenyOOM, GetkeysApi],
     summary: "Fit trend components to a time series, optionally selecting the best model.",
     complexity: "O(N*M) where N is the number of samples in the range and M is the number of candidate trend models.",
     since: "1.0.0",
@@ -106,11 +106,7 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Err(ValkeyError::WrongArity);
     }
 
-    if ctx.is_keys_position_request() {
-        ctx.key_at_pos(1); // key is always at position 1
-        if let Some(store_pos) = get_store_key_pos(&args)? {
-            ctx.key_at_pos(store_pos as i32);
-        }
+    if report_store_key_positions(ctx, &args) {
         return Ok(ValkeyValue::NoReply);
     }
 
@@ -409,18 +405,6 @@ impl Default for TrendOptions {
             timeout: AnalysisTimeout::default(),
         }
     }
-}
-
-fn get_store_key_pos(args: &[ValkeyString]) -> ValkeyResult<Option<usize>> {
-    for (i, arg) in args.iter().enumerate() {
-        if arg.eq_ignore_ascii_case(b"store") {
-            if i + 1 >= args.len() {
-                return Err(ValkeyError::Str("TSDB: Missing value for STORE argument"));
-            }
-            return Ok(Some(i + 1));
-        }
-    }
-    Ok(None)
 }
 
 fn parse_trend_args(

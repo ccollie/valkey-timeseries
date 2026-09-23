@@ -35,6 +35,7 @@ class TestTimeSeriesCommandKeys(ValkeyTimeSeriesTestCaseBase):
         (["TS.OUTLIERS", "k", "-", "+", "MAD", "3"], [b"k"]),
         (["TS.MADD", "k1", "1", "1.0", "k2", "2", "2.0"], [b"k1", b"k2"]),
         (["TS.JOIN", "k1", "k2", "-", "+"], [b"k1", b"k2"]),
+        (["TS.XCORR", "k1", "k2", "-", "+", "5"], [b"k1", b"k2"]),
         # numkeys-style key spec: the count at index 1 says how many keys follow.
         (["TS.NRANGE", "2", "k1", "k2", "-", "+"], [b"k1", b"k2"]),
         (["TS.NRANGE", "1", "k1", "-", "+"], [b"k1"]),
@@ -81,8 +82,14 @@ class TestTimeSeriesCommandKeys(ValkeyTimeSeriesTestCaseBase):
     def test_command_docs_metadata(self):
         # Every user-facing command is registered with a summary, complexity and since via the
         # command-info annotations. Spot-check a representative set across the read/write and
-        # keyed/keyless categories.
-        for command in ["TS.CREATE", "TS.ADD", "TS.RANGE", "TS.READ", "TS.MGET", "TS.CREATERULE"]:
+        # keyed/keyless categories, plus every analysis command.
+        analysis = [
+            "TS.FORECAST", "TS.AUTOFORECAST", "TS.BACKTEST", "TS.FILLGAPS", "TS.SANITIZE",
+            "TS.TREND", "TS.STATIONARITY", "TS.DECOMPOSE", "TS.PERIODS", "TS.AUTOCORRELATION",
+            "TS.XCORR", "TS.STATS", "TS.FEATURES",
+        ]
+        core = ["TS.CREATE", "TS.ADD", "TS.RANGE", "TS.READ", "TS.MGET", "TS.CREATERULE"]
+        for command in core + analysis:
             docs = self.client.execute_command(f"COMMAND DOCS {command}")
             assert docs and docs[0].decode().upper() == command, (
                 f"COMMAND DOCS did not return an entry for {command}"

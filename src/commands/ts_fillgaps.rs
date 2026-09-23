@@ -2,7 +2,7 @@ use crate::analysis::forecasting::infer_frequency_from_samples;
 use crate::commands::command_parser::{
     parse_duration_arg, parse_store_clause, parse_timestamp_range,
 };
-use crate::commands::store_target::StoreTarget;
+use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::commands::{CommandArgIterator, parse_timestamp, parse_value_arg};
 use crate::common::replies::reply_with_samples;
 use crate::common::{Sample, Timestamp};
@@ -49,7 +49,7 @@ acl_categories!(TS_FILLGAPS, "ts.fillgaps", "write timeseries");
 /// destination key and the number of samples written is returned.
 #[valkey_module_macros::command({
     name: "ts.fillgaps",
-    flags: [Write, DenyOOM],
+    flags: [Write, DenyOOM, GetkeysApi],
     summary: "Fill missing timestamps in a time series over a range.",
     complexity: "O(N) where N is the number of timestamps in the range.",
     since: "1.0.0",
@@ -71,6 +71,10 @@ acl_categories!(TS_FILLGAPS, "ts.fillgaps", "write timeseries");
 pub fn ts_fillgaps_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 4 {
         return Err(ValkeyError::WrongArity);
+    }
+
+    if report_store_key_positions(ctx, &args) {
+        return Ok(ValkeyValue::NoReply);
     }
 
     let mut args = args.into_iter().skip(1).peekable();

@@ -2,7 +2,7 @@ use crate::analysis::forecasting::imputation::{ImputationPolicy, sanitize};
 use crate::commands::command_parser::{
     CommandArgToken, parse_command_arg_token, parse_store_clause, parse_timestamp_range,
 };
-use crate::commands::store_target::StoreTarget;
+use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::common::Sample;
 use crate::common::replies::reply_with_samples;
 use crate::error_consts;
@@ -51,7 +51,7 @@ acl_categories!(TS_SANITIZE, "ts.sanitize", "write timeseries");
 /// Without STORE, returns the number of samples that were sanitized (imputed or dropped).
 #[valkey_module_macros::command({
     name: "ts.sanitize",
-    flags: [Write, DenyOOM],
+    flags: [Write, DenyOOM, GetkeysApi],
     summary: "Replace or drop missing values in a time series.",
     complexity: "O(N) where N is the number of samples in the range.",
     since: "1.0.0",
@@ -74,6 +74,10 @@ acl_categories!(TS_SANITIZE, "ts.sanitize", "write timeseries");
 pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() < 4 {
         return Err(ValkeyError::WrongArity);
+    }
+
+    if report_store_key_positions(ctx, &args) {
+        return Ok(ValkeyValue::NoReply);
     }
 
     let mut args = args.into_iter().skip(1).peekable();

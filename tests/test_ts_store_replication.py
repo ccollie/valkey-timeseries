@@ -174,3 +174,17 @@ class TestTimeSeriesStoreReplication(ReplicationTestCase):
         with pytest.raises(Exception, match="internal command"):
             self.client.execute_command("TS._STORE", "dst", "")
         assert self.client.execute_command("EXISTS", "dst") == 0
+
+    @pytest.mark.parametrize("command", [
+        ["TS.FORECAST", "src", "-", "+", "MODELS", FORECAST_MODEL, "HORIZON", 2],
+        ["TS.AUTOFORECAST", "src", "-", "+", "HORIZON", 2],
+        ["TS.TREND", "src", "-", "+"],
+        ["TS.FILLGAPS", "src", "-", "+", "FREQUENCY", 500],
+        ["TS.SANITIZE", "src", "-", "+"],
+    ], ids=lambda argv: argv[0])
+    def test_store_to_a_key_of_another_type_is_rejected(self, command):
+        self.add_series("src", 60)
+        self.client.execute_command("SET", "dst", "not a series")
+        with pytest.raises(Exception, match="WRONGTYPE"):
+            self.client.execute_command(*command, "STORE", "dst")
+        assert self.client.execute_command("GET", "dst") == b"not a series"

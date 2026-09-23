@@ -20,7 +20,7 @@ use crate::series::acl::check_key_permissions;
 use crate::series::{
     DestinationWriteMode, TimeSeriesOptions, create_or_update_series_with_samples,
 };
-use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult};
+use valkey_module::{AclPermissions, Context, ValkeyError, ValkeyResult, ValkeyString};
 
 /// Name of the internal command a STORE write is replicated as.
 pub(super) const STORE_REPLICATION_COMMAND: &str = "TS._STORE";
@@ -98,6 +98,37 @@ impl StoreTarget {
         )
         .map(|outcome| outcome.written)
     }
+}
+
+/// Index of the first argument after the source key and range at which a `STORE` clause can
+/// start. Matches `startfrom` in the commands' key specs, so a source key literally named
+/// `store` is never mistaken for the keyword.
+const STORE_SEARCH_START: usize = 4;
+
+/// Answers the server's key-position request for a command with an optional `STORE` clause.
+/// Returns `true` when this call was such a request, which the handler must then end with
+/// `NoReply`.
+///
+/// Cluster routing ignores key specs: for a module command it uses either the legacy
+/// first/last-key range, which only covers the source here, or this callback when the command
+/// is flagged `getkeys-api`. Without it a node would accept a destination in another slot
+/// (a cross-slot write) instead of answering `CROSSSLOT`.
+pub(super) fn report_store_key_positions(ctx: &Context, args: &[ValkeyString]) -> bool {
+    if !ctx.is_keys_position_request() {
+        return false;
+    }
+    ctx.key_at_pos(1);
+    if let Some(store) = args
+        .iter()
+        .skip(STORE_SEARCH_START)
+        .position(|arg| arg.as_slice().eq_ignore_ascii_case(b"STORE"))
+    {
+        let key = STORE_SEARCH_START + store + 1;
+        if key < args.len() {
+            ctx.key_at_pos(key as i32);
+        }
+    }
+    true
 }
 
 pub(super) fn encode_store_samples(samples: &[Sample]) -> Vec<u8> {

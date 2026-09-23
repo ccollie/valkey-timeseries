@@ -4,7 +4,7 @@ use crate::commands::analysis_runner::AnalysisCtx;
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::store_target::StoreTarget;
 use crate::commands::ts_autoforecast::reply_with_interval_array;
-use crate::commands::utils::{get_store_key_pos, reply_with_double_array};
+use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{
     ReplyContext, reply_with_double, reply_with_map, reply_with_str, reply_with_usize,
 };
@@ -13,21 +13,7 @@ use crate::common::{Sample, Timestamp};
 use anofox_forecast::core::{Forecast, TimeSeries as ForecastTimeSeries};
 use anofox_forecast::models::Forecaster;
 use anofox_forecast::prelude::{AccuracyMetrics, calculate_metrics};
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
-
-pub(super) fn handle_forecast_key_pos_request(
-    ctx: &Context,
-    args: &[ValkeyString],
-) -> ValkeyResult<bool> {
-    if ctx.is_keys_position_request() {
-        ctx.key_at_pos(1); // key is always at position 1
-        if let Some(store_pos) = get_store_key_pos(args)? {
-            ctx.key_at_pos(store_pos as i32);
-        }
-        return Ok(true);
-    }
-    Ok(false)
-}
+use valkey_module::{Context, ValkeyError, ValkeyResult};
 
 pub(super) fn parse_timeseries_for_forecast(
     ctx: &Context,

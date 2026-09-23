@@ -10,11 +10,11 @@ use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value,
 };
 use crate::commands::forecast_utils::{
-    ForecastOutput, StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
+    ForecastOutput, StoreAnchor, parse_timeseries_for_forecast, reply_with_forecast_output,
+    run_forecast, store_anchor, write_forecast_samples,
 };
 use crate::commands::parse_store_clause;
-use crate::commands::store_target::StoreTarget;
+use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::common::replies::reply_with_array;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::transform::Transform;
@@ -60,7 +60,7 @@ acl_categories!(TS_FORECAST, "ts.forecast", "write timeseries");
 ///
 #[valkey_module_macros::command({
     name: "ts.forecast",
-    flags: [Write, DenyOOM],
+    flags: [Write, DenyOOM, GetkeysApi],
     summary: "Forecast future values of a time series using one or more explicit models.",
     complexity: "O(N*M) where N is the number of samples in the range and M is the number of models.",
     since: "1.0.0",
@@ -84,7 +84,7 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         return Err(ValkeyError::WrongArity);
     }
 
-    if handle_forecast_key_pos_request(ctx, &args)? {
+    if report_store_key_positions(ctx, &args) {
         return Ok(ValkeyValue::NoReply);
     }
 

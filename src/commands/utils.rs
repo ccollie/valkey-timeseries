@@ -11,7 +11,7 @@ use crate::fanout::{FanoutTarget, client_allows_replica_fanout, compute_query_fa
 use crate::labels::Label;
 use crate::series::request_types::{MRangeOptions, MRangeSeriesResult, SeriesResultData};
 use anofox_forecast::utils::AccuracyMetrics;
-use valkey_module::{Context, Status, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue, raw};
+use valkey_module::{Context, Status, ValkeyResult, ValkeyValue, raw};
 
 pub(super) fn reply_with_fanout_label<C: IntoRawCtx>(ctx: C, label: &FanoutLabel) {
     let raw_ctx = ctx.into_raw();
@@ -254,16 +254,4 @@ pub(super) fn reply_with_double_array(ctx: &ReplyContext, values: &[f64]) {
     for value in values {
         reply_with_double(ctx, *value);
     }
-}
-
-pub(super) fn get_store_key_pos(args: &[ValkeyString]) -> ValkeyResult<Option<usize>> {
-    for (i, arg) in args.iter().enumerate() {
-        if arg.eq_ignore_ascii_case(b"store") {
-            if i + 1 >= args.len() {
-                return Err(ValkeyError::Str("TSDB: Missing value for STORE argument"));
-            }
-            return Ok(Some(i + 1));
-        }
-    }
-    Ok(None)
 }

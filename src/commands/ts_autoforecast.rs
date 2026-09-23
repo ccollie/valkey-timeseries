@@ -8,10 +8,10 @@ use crate::commands::command_parser::{
     parse_forecast_confidence_level, parse_forecast_horizon_value, parse_store_clause,
 };
 use crate::commands::forecast_utils::{
-    ForecastOutput, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
-    reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
+    ForecastOutput, parse_timeseries_for_forecast, reply_with_forecast_output, run_forecast,
+    store_anchor, write_forecast_samples,
 };
-use crate::commands::store_target::StoreTarget;
+use crate::commands::store_target::{StoreTarget, report_store_key_positions};
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{ReplyContext, reply_with_str};
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
@@ -66,7 +66,7 @@ acl_categories!(TS_AUTOFORECAST, "ts.autoforecast", "write timeseries");
 /// and selects the best one based on cross-validation error.
 #[valkey_module_macros::command({
     name: "ts.autoforecast",
-    flags: [Write, DenyOOM],
+    flags: [Write, DenyOOM, GetkeysApi],
     summary: "Forecast a time series, automatically selecting the best-fitting model.",
     complexity: "O(N*M) where N is the number of samples in the range and M is the number of candidate models.",
     since: "1.0.0",
@@ -90,7 +90,7 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
         return Err(ValkeyError::WrongArity);
     }
 
-    if handle_forecast_key_pos_request(ctx, &args)? {
+    if report_store_key_positions(ctx, &args) {
         return Ok(ValkeyValue::NoReply);
     }
 
