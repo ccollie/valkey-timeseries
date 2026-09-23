@@ -46,12 +46,6 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     let samples = parse_series_range_samples(ctx, &mut args)?;
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
-    if values.len() < 4 {
-        return Err(ValkeyError::Str(
-            "TSDB: insufficient data for period detection. Need at least 4 samples.",
-        ));
-    }
-
     // Parse optional arguments: MIN_STRENGTH, DOMINANT and TIMEOUT
     let mut min_strength: Option<f64> = None;
     let mut dominant = false;
@@ -86,6 +80,13 @@ pub fn ts_periods_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     }
 
     reject_extra_args(&mut args)?;
+
+    // Checked after the options, so a malformed call reports its syntax error first.
+    if values.len() < 4 {
+        return Err(ValkeyError::Str(
+            "TSDB: insufficient data for period detection. Need at least 4 samples.",
+        ));
+    }
 
     let config = PeriodDetectionConfig {
         min_strength: min_strength.unwrap_or(0.05),

@@ -82,7 +82,9 @@ TS.FILLGAPS key startTimestamp endTimestamp
   same creation/write semantics as the other analysis commands' `STORE` clauses (e.g.
   `TS.FORECAST ... STORE`). A
   `ts.add`-style keyspace notification is sent and the written samples are replicated. If there
-  are no gaps, the destination key is left untouched. `destinationKey` must differ from the
+  are no gaps, the destination key is left untouched. The series options apply only when the
+  destination is created; as with `TS.ADD`, an existing destination keeps its own settings and
+  the options are ignored. `destinationKey` must differ from the
   source key; naming the source fails with
   `TSDB: STORE destination must be different from the source key`.
 

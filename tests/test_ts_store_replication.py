@@ -108,6 +108,10 @@ class TestTimeSeriesStoreReplication(ReplicationTestCase):
         self.assert_replica_matches("dst", "fresh")
         kept = self.replica.execute_command("TS.RANGE", "dst", 1, 1)
         assert [(ts, float(v)) for ts, v in kept] == [(1, 42.0)]
+        # Like TS.ADD, an existing destination keeps its own settings: RETENTION is ignored.
+        for client in (self.client, self.replica):
+            existing = client.execute_command("TS.INFO", "dst")
+            assert dict(zip(existing[::2], existing[1::2]))[b"retentionTime"] == 0
         info = self.replica.execute_command("TS.INFO", "fresh")
         info = dict(zip(info[::2], info[1::2]))
         assert info[b"retentionTime"] == 987654

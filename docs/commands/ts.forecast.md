@@ -234,8 +234,8 @@ analysis: replicas and the AOF receive the stored samples, not the command.
 | `IGNORE maxTimeDiff maxValDiff`  | The destination's `ignoreMaxTimeDiff`/`ignoreMaxValDiff`, as in `TS.CREATE`        |
 
 The creation options (everything except `MERGE`) apply only when the destination does not exist
-yet; omitted ones come from the module configuration. An existing destination keeps its own
-settings.
+yet; omitted ones come from the module configuration. As with `TS.ADD`, an existing destination
+keeps its own settings and the options are ignored.
 
 Without `MERGE` (overwrite mode), the destination's samples are cleared before writing.
 With `MERGE`, forecast samples use `KeepLast` semantics for duplicate timestamps.

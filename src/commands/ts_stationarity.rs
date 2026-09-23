@@ -56,22 +56,6 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     let samples = parse_series_range_samples(ctx, &mut args)?;
     let values: Vec<f64> = samples.iter().map(|s| s.value).collect();
 
-    // The tests are undefined over missing values: a NaN turns every statistic into NaN,
-    // which would otherwise be reported as a "non_stationary" conclusion.
-    if values.iter().any(|v| !v.is_finite()) {
-        return Err(ValkeyError::Str(
-            "TSDB: the range contains NaN or infinite values; fill or drop them first (see TS.SANITIZE)",
-        ));
-    }
-
-    // Minimum data check
-    if values.len() < MIN_SAMPLES {
-        return Err(ValkeyError::String(format!(
-            "TSDB: insufficient data for stationarity test. Need at least {MIN_SAMPLES} samples, got {}",
-            values.len()
-        )));
-    }
-
     // Parse optional TEST, LAGS and TIMEOUT
     let mut test_type = TestType::Combined;
     let mut lags: Option<usize> = None;
@@ -121,6 +105,23 @@ pub fn ts_stationarity_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         return Err(ValkeyError::Str(
             "TSDB: LAGS option is not supported with TEST combined",
         ));
+    }
+
+    // Data checks come after the options, so a malformed call reports its syntax error first.
+    // The tests are undefined over missing values: a NaN turns every statistic into NaN,
+    // which would otherwise be reported as a "non_stationary" conclusion.
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err(ValkeyError::Str(
+            "TSDB: the range contains NaN or infinite values; fill or drop them first (see TS.SANITIZE)",
+        ));
+    }
+
+    // Minimum data check
+    if values.len() < MIN_SAMPLES {
+        return Err(ValkeyError::String(format!(
+            "TSDB: insufficient data for stationarity test. Need at least {MIN_SAMPLES} samples, got {}",
+            values.len()
+        )));
     }
 
     let sample_count = values.len();

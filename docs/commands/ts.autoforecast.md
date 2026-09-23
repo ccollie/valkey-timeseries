@@ -191,8 +191,8 @@ Only the primary runs the analysis: replicas and the AOF receive the stored samp
 | `METRIC metric`                         | Metric name / labels of a newly created destination                                    |
 | `IGNORE maxTimeDiff maxValDiff`         | `IGNORE` thresholds of a newly created destination, as in `TS.CREATE`                   |
 
-The series options (all but `MERGE`) apply only when the destination is created; an existing
-destination keeps its own settings.
+The series options (all but `MERGE`) apply only when the destination is created. As with
+`TS.ADD`, an existing destination keeps its own settings and the options are ignored.
 
 - If the destination key does not exist, a new time series is created.
 - Without `MERGE` (the default), an existing destination is cleared before the forecast is written.

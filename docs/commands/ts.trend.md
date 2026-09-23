@@ -158,7 +158,8 @@ command.
   the fitted (and optionally predicted) samples into the existing series instead.
 - The other clause options (`RETENTION`, `ENCODING`, `CHUNK_SIZE`, `DUPLICATE_POLICY`,
   `SIGNIFICANT_DIGITS`/`DECIMAL_DIGITS`, `METRIC`, `IGNORE`) configure a newly created destination,
-  as in the other `STORE` clauses.
+  as in the other `STORE` clauses. As with `TS.ADD`, an existing destination keeps its own
+  settings and the options are ignored.
 
 With `STORE`, the reply is the number of samples written (an integer) instead of the fit.
 
