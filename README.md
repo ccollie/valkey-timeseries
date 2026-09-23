@@ -19,7 +19,7 @@ well as provide a superset of the _RedisTimeSeries_ API.
 - Compatibility with the [RedisTimeSeries](https://oss.redislabs.com/redistimeseries/) API.
 
 ## Guides
-- [Time-Series EDA with Valkey-TimeSeries and Python](docs/eda-with-python.md) — an end-to-end exploratory data analysis walkthrough (profiling, imputation, feature extraction, autocorrelation, seasonality/decomposition, trends, stationarity, anomaly detection, and forecasting) using the `valkey-py` client.
+- [Time-Series EDA with Valkey-TimeSeries and Python](docs/topics/eda-with-python.md) — an end-to-end exploratory data analysis walkthrough (profiling, imputation, feature extraction, autocorrelation, seasonality/decomposition, trends, stationarity, anomaly detection, and forecasting) using the `valkey-py` client.
 
 ## Scaling
 
@@ -58,17 +58,18 @@ The following commands are supported
 - [`TS.ADDBULK`](docs/commands/ts.addbulk.md)
 - [`TS.ALTER`](docs/commands/ts.alter.md)
 - [`TS.AUTOCORRELATION`](docs/commands/ts.autocorrelation.md)
-- [`TS.AUTOFORECAST`](docs/commands/ts.autoforcast.md) (last MODELS clause wins; checks STORE timestamp bounds)
+- [`TS.AUTOFORECAST`](docs/commands/ts.autoforecast.md)
+- [`TS.BACKTEST`](docs/commands/ts.backtest.md)
 - [`TS.CARD`](docs/commands/ts.card.md)
 - [`TS.CREATE`](docs/commands/ts.create.md)
 - [`TS.CREATERULE`](docs/commands/ts.createrule.md)
 - [`TS.DECOMPOSE`](docs/commands/ts.decompose.md)
-- [`TS.DELETERULE`](docs/commands/ts.deleterule.md)
 - [`TS.DECRBY`](docs/commands/ts.decrby.md)
 - [`TS.DEL`](docs/commands/ts.del.md)
+- [`TS.DELETERULE`](docs/commands/ts.deleterule.md)
 - [`TS.FEATURES`](docs/commands/ts.features.md)
-- [`TS.FILLGAPS`](docs/commands/ts.fillgaps.md) (up to 100,000 grid timestamps per call)
-- [`TS.FORECAST`](docs/commands/ts.forecast.md) (checks STORE timestamp bounds before forecasting)
+- [`TS.FILLGAPS`](docs/commands/ts.fillgaps.md)
+- [`TS.FORECAST`](docs/commands/ts.forecast.md)
 - [`TS.GET`](docs/commands/ts.get.md)
 - [`TS.INCRBY`](docs/commands/ts.incrby.md)
 - [`TS.INFO`](docs/commands/ts.info.md)
@@ -78,8 +79,8 @@ The following commands are supported
 - [`TS.LABELVALUES`](docs/commands/ts.labelvalues.md)
 - [`TS.MADD`](docs/commands/ts.madd.md)
 - [`TS.MDEL`](docs/commands/ts.mdel.md)
-- [`TS.MGET`](docs/commands/ts.mget.md)
 - [`TS.METRICNAMES`](docs/commands/ts.metricnames.md)
+- [`TS.MGET`](docs/commands/ts.mget.md)
 - [`TS.MRANGE`](docs/commands/ts.mrange.md)
 - [`TS.MREVRANGE`](docs/commands/ts.mrevrange.md)
 - [`TS.NRANGE`](docs/commands/ts.nrange.md)
@@ -93,6 +94,7 @@ The following commands are supported
 - [`TS.REVRANGE`](docs/commands/ts.revrange.md)
 - [`TS.SANITIZE`](docs/commands/ts.sanitize.md)
 - [`TS.STATIONARITY`](docs/commands/ts.stationarity.md)
+- [`TS.STATS`](docs/commands/ts.stats.md)
 - [`TS.TREND`](docs/commands/ts.trend.md)
 - [`TS.XCORR`](docs/commands/ts.xcorr.md)
 - [`TS._DEBUG`](docs/commands/ts._debug.md)

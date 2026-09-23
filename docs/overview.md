@@ -63,21 +63,52 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.LABELVALUES`: Get all values for a specific label name in the index.
 * `TS.LABELSTATS`: Get statistics about label usage in the index.
 
+### Data Cleaning
+
+* `TS.FILLGAPS`: Find missing samples on a frequency grid and fill them with a value. Each call
+  examines at most 100,000 grid timestamps; use a shorter range or larger frequency for wider gaps.
+* `TS.SANITIZE`: Drop or impute missing values (a constant, the mean or median, interpolation,
+  forward/backward fill, a moving average or a seasonal median), rewriting the range in place.
+
+### Statistics & Features
+
+* `TS.STATS`: Summary statistics for a range (mean, standard deviation, median, min/max,
+  skewness, kurtosis, and counts of NaN, zero, positive, negative and unique values).
+* `TS.FEATURES`: Compute named statistical features, individually or by category.
+* `TS.AUTOCORRELATION`: Autocorrelation, partial autocorrelation and related statistics at a lag.
+* `TS.XCORR`: Cross-correlation between two timestamp-aligned series over a range of lags.
+* `TS.STATIONARITY`: ADF and KPSS stationarity tests.
+
+### Seasonality & Trend
+
+* `TS.PERIODS`: Detect the seasonal periods of a series.
+* `TS.DECOMPOSE`: Split a series into trend, seasonal and remainder components (STL or MSTL).
+* `TS.TREND`: Fit a trend model, chosen automatically or named, and optionally extrapolate it.
+
 ### Anomaly Detection
 
 * `TS.OUTLIERS`: Identify outliers in a series based on a specified algorithm and parameters.
 
-### Gap Filling
-
-* `TS.FILLGAPS`: Find missing samples on a frequency grid. Each call examines at most 100,000
-  grid timestamps; use a shorter range or larger frequency for wider gaps.
-
 ### Forecasting
 
-* `TS.FORECAST` and `TS.AUTOFORECAST`: Predict future samples. When storing predictions, both
-  commands verify that the requested horizon fits within the supported timestamp range before
-  forecasting begins.
-  In `TS.AUTOFORECAST`, the last `MODELS` clause replaces any earlier model list.
+* `TS.FORECAST`: Forecast with one or more named models.
+* `TS.AUTOFORECAST`: Forecast with the best model from an automatic search.
+* `TS.BACKTEST`: Evaluate models over rolling or expanding historical windows.
+
+### Running the analysis commands
+
+Small inputs are processed on the main thread. Larger ones, and all model fitting, run on a
+dedicated pool of analysis threads with the client blocked, bounded by the command's `TIMEOUT`
+or the `ts-analysis-timeout` configuration. Inside `MULTI` or a script, where a client cannot be
+blocked, they run inline. User-supplied sizes are capped (lags at 1,000, horizons at
+`ts-forecast-max-horizon`, model orders and iteration counts) so a single call cannot exhaust
+memory or stall the server.
+
+`TS.FORECAST`, `TS.AUTOFORECAST`, `TS.TREND`, `TS.FILLGAPS` and `TS.SANITIZE` accept a `STORE`
+clause that writes the result to a destination series instead of, or in addition to, replying
+with it. The destination must differ from the source and, in cluster mode, hash to the same slot.
+Replicas and the AOF receive the stored samples, not the command, so the analysis runs only on
+the primary.
 
 ## Indexes
 

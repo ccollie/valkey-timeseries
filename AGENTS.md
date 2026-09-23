@@ -76,8 +76,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   `proto/v1/`, registered via `register_fanout_operations` (8 ops: LabelStats, Card, LabelSearch,
   MDel, MGet, MRange, QueryIndex, QueryLabels).
 - Other command surfaces beyond RTS: `TS.JOIN` (`src/join/`), the analysis commands
-  (`TS.OUTLIERS`, `TS.AUTOFORECAST`, `TS.DECOMPOSE`, `TS.PERIODS`, `TS.AUTOCORRELATION`, `TS.TREND`,
-  `TS.SANITIZE`, `TS.STATIONARITY`, `TS.FEATURES`, `TS.STATS`) backed by `src/analysis/`
+  (`TS.OUTLIERS`, `TS.FORECAST`, `TS.AUTOFORECAST`, `TS.BACKTEST`, `TS.DECOMPOSE`, `TS.PERIODS`,
+  `TS.AUTOCORRELATION`, `TS.XCORR`, `TS.TREND`, `TS.FILLGAPS`, `TS.SANITIZE`, `TS.STATIONARITY`,
+  `TS.FEATURES`, `TS.STATS`) backed by `src/analysis/`
   (`forecasting`, `outliers`, `seasonality`, `math`, `quantile_estimators`; sources in
   `src/analysis/README.md`; shared helpers in `src/commands/forecast_utils.rs`), `TS.ADDBULK`,
   `TS.LABELSTATS`, `TS.METRICNAMES`, `TS.MDEL`, Prometheus-style selectors (`src/parser/`).
