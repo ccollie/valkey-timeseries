@@ -92,12 +92,11 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
     let mut args = args.into_iter().skip(1).peekable();
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
     let options = parse_forecast_args(&mut args)?;
-    // STORE needs a step to place the forecast samples; reject a range that
-    // cannot provide one now rather than after the models have run.
+    // Validate the STORE step and final timestamp before dispatching models.
     let anchor = options
         .destination_key
         .as_ref()
-        .map(|_| store_anchor(&series))
+        .map(|_| store_anchor(&series, options.horizon))
         .transpose()?;
 
     run_analysis_job(ctx, options.timeout, move |thread_ctx| {

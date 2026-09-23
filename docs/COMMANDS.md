@@ -2,7 +2,7 @@
 
 - [`TS.ADD`](commands/ts.add.md)
 - [`TS.AUTOCORRELATION`](commands/ts.autocorrelation.md)
-- [`TS.AUTOFORECAST`](commands/ts.autoforcast.md)
+- [`TS.AUTOFORECAST`](commands/ts.autoforcast.md) (checks STORE timestamp bounds before forecasting)
 - [`TS.BACKTEST`](commands/ts.backtest.md)
 - [`TS.TREND`](commands/ts.trend.md)
 - [`TS.ADDBULK`](commands/ts.addbulk.md)
@@ -16,7 +16,7 @@
 - [`TS.DELETERULE`](commands/ts.deleterule.md)
 - [`TS.FEATURES`](commands/ts.features.md)
 - [`TS.FILLGAPS`](commands/ts.fillgaps.md) (up to 100,000 grid timestamps per call)
-- [`TS.FORECAST`](commands/ts.forecast.md)
+- [`TS.FORECAST`](commands/ts.forecast.md) (checks STORE timestamp bounds before forecasting)
 - [`TS.GET`](commands/ts.get.md)
 - [`TS.INCRBY`](commands/ts.incrby.md)
 - [`TS.INFO`](commands/ts.info.md)

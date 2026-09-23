@@ -293,6 +293,8 @@ TS.AUTOFORECAST temperature:sensor1 30d + HORIZON 7
 - `TSDB: Missing value for STORE` — The `STORE` argument was given without a key name.
 - `TSDB: STORE requires at least two samples in the range to determine the forecast step` — the range
   holds too few samples to infer where the stored forecast samples should be placed.
+- `TSDB: STORE forecast timestamps exceed the supported range` — the last timestamp and forecast
+  step would overflow the timestamp type at the requested `HORIZON`; rejected before model work.
 - `TSDB: failed to store forecast in key` — the forecast samples could not be written to the destination.
 - `TSDB: Unknown argument` — An unrecognized optional argument was provided.
 - `TSDB: command timed out before the result was ready` — the `TIMEOUT` (or `ts-analysis-timeout`)

@@ -72,6 +72,12 @@ The command set generally follows the `TS.<COMMAND>` pattern.
 * `TS.FILLGAPS`: Find missing samples on a frequency grid. Each call examines at most 100,000
   grid timestamps; use a shorter range or larger frequency for wider gaps.
 
+### Forecasting
+
+* `TS.FORECAST` and `TS.AUTOFORECAST`: Predict future samples. When storing predictions, both
+  commands verify that the requested horizon fits within the supported timestamp range before
+  forecasting begins.
+
 ## Indexes
 
 Valkey TimeSeries uses a label-based indexing system separate from the key space.
