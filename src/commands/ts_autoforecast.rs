@@ -124,15 +124,17 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
             let output = fit_best_model(&series, options)?;
             Ok((output, store))
         },
-        move |actx, (output, store)| {
+        move |actx, (mut output, store)| {
             // With STORE the forecast is persisted first; a failed write is the
             // command's failure, since the caller asked for the samples, not the reply.
-            if let (Some(target), Some(anchor)) = (store.as_ref(), anchor)
-                && write_forecast_samples(actx, target, output.forecast.primary(), anchor)?
-                    .is_none()
-            {
-                // Timed out: the client already has its error, and nothing was written.
-                return Ok(ValkeyValue::NoReply);
+            // Unlike the other STORE commands the reply stays the forecast (it names the
+            // model the search picked), with the number of samples written added as `stored`.
+            if let (Some(target), Some(anchor)) = (store.as_ref(), anchor) {
+                match write_forecast_samples(actx, target, output.forecast.primary(), anchor)? {
+                    Some(written) => output.stored = Some(written),
+                    // Timed out: the client already has its error, and nothing was written.
+                    None => return Ok(ValkeyValue::NoReply),
+                }
             }
             reply_with_forecast_output(&actx.reply_ctx(), &output);
             Ok(ValkeyValue::NoReply)

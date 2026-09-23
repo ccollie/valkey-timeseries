@@ -205,7 +205,9 @@ destination keeps its own settings.
 ## Return Value
 
 The response is a map (a flat array of alternating keys and values in RESP2) with the following fields.
-The reply is the same with or without `STORE`: the forecast map, sent after the samples are written.
+With `STORE` the reply is still the forecast map, sent after the samples are written, with a
+`stored` field added. It differs from the other `STORE` commands, which reply with the count only,
+because the map names the model the search picked.
 
 | Field            | Type            | Always Present | Description                                                                                                    |
 |------------------|-----------------|----------------|----------------------------------------------------------------------------------------------------------------|
@@ -216,6 +218,7 @@ The reply is the same with or without `STORE`: the forecast map, sent after the 
 | `lower_interval` | array of double | No             | Lower prediction interval bounds                                                                               |
 | `upper_interval` | array of double | No             | Upper prediction interval bounds                                                                               |
 | `metrics`        | map             | No             | Accuracy metrics map (only when `METRICS` is specified)                                                        |
+| `stored`         | integer         | No             | Samples written to the destination (only with `STORE`)                                                         |
 
 ### Example Response
 
@@ -325,7 +328,8 @@ TS.AUTOFORECAST temperature:sensor1 - + HORIZON 24 SEASONALITY AUTO MODELS ARIMA
 ### Store Forecast to a Key
 
 Predict 5 points and persist them to a destination key (replacing its contents), creating it with a
-one-day retention if it does not exist. The reply is the usual forecast map:
+one-day retention if it does not exist. The reply is the usual forecast map plus `stored`, the
+number of samples written:
 
 ```
 TS.AUTOFORECAST temperature:sensor1 - + HORIZON 5 STORE {temperature:sensor1}:forecast RETENTION 86400000

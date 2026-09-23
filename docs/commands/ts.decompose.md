@@ -81,8 +81,8 @@ When omitted, the `ts-analysis-timeout` configuration parameter applies (default
 
 ## Return
 
-`TS.DECOMPOSE` returns a flat array of alternating component names and sample arrays, in both
-RESP2 and RESP3 (it is not a RESP3 map). Each sample is a `[timestamp, value]` pair; values are
+`TS.DECOMPOSE` returns a map of component names to sample arrays in RESP3, and a flat array of
+alternating names and sample arrays in RESP2. Each sample is a `[timestamp, value]` pair; values are
 doubles in RESP3 and bulk strings in RESP2. Every component has one sample per sample in the
 range, with the original timestamps.
 

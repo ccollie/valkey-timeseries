@@ -56,6 +56,15 @@ class TestAnalysisResp3(ValkeyTimeSeriesTestCaseBase):
         assert isinstance(entry, dict)
         assert {"model", "horizon", "forecast", "metrics"} <= keys_of(entry)
 
+    def test_autoforecast_with_store(self):
+        c3 = self.resp3()
+        entry = self.run(
+            c3, "TS.AUTOFORECAST", "s", "-", "+", "HORIZON", 5, "MODELS", "ETS",
+            "LEVEL", 90, "METRICS", "STORE", "dst",
+        )
+        assert isinstance(entry, dict)
+        assert entry[b"stored"] == 5
+
     def test_backtest_with_predictions(self):
         c3 = self.resp3()
         [entry] = self.run(
@@ -105,9 +114,18 @@ class TestAnalysisResp3(ValkeyTimeSeriesTestCaseBase):
         c3 = self.resp3()
         assert isinstance(self.run(c3, "TS.STATS", "s", "-", "+"), dict)
 
+    @pytest.mark.parametrize("periods,components", [
+        ([24], {"original", "trend", "seasonal", "residual"}),
+        ([12, 24], {"original", "trend", "seasonal_components", "residual"}),
+    ], ids=["stl", "mstl"])
+    def test_decompose_is_a_map(self, periods, components):
+        c3 = self.resp3()
+        result = self.run(c3, "TS.DECOMPOSE", "s", "-", "+", "SEASONALITY", *periods)
+        assert isinstance(result, dict)
+        assert keys_of(result) == components
+
     def test_other_analysis_replies_stay_in_sync(self):
         c3 = self.resp3()
-        self.run(c3, "TS.DECOMPOSE", "s", "-", "+", "SEASONALITY", 24)
         self.run(c3, "TS.PERIODS", "s", "-", "+")
         self.run(c3, "TS.AUTOCORRELATION", "s", "-", "+", 3, "PARTIAL")
         self.run(c3, "TS.FILLGAPS", "s", "-", "+", "FREQUENCY", 500)

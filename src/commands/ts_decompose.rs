@@ -4,7 +4,8 @@ use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analy
 use crate::commands::command_parser::parse_series_range_samples;
 use crate::commands::command_parser::reject_extra_args;
 use crate::common::replies::{
-    IntoRawCtx, reply_with_array, reply_with_double, reply_with_integer, reply_with_str,
+    IntoRawCtx, reply_with_array, reply_with_double, reply_with_integer, reply_with_map,
+    reply_with_str,
 };
 use anofox_forecast::seasonality::{MSTL, MSTLResult, STL, STLResult};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -206,7 +207,7 @@ fn parse_seasonality(args: &mut CommandArgIterator) -> ValkeyResult<Seasonality>
 
 /// Reply with STL decomposition result.
 ///
-/// Response format (array of 4):
+/// Response format (a map in RESP3, a flat array of 8 in RESP2):
 ///   "original" -> [[ts, val], ...]
 ///   "trend" -> [[ts, val], ...]
 ///   "seasonal" -> [[ts, val], ...]
@@ -217,7 +218,7 @@ fn reply_stl_result<C: IntoRawCtx + Copy>(
     original: &[f64],
     result: &STLResult,
 ) -> ValkeyResult {
-    reply_with_array(ctx, 8);
+    reply_with_map(ctx, 4);
 
     // original
     reply_with_str(ctx, "original");
@@ -240,7 +241,7 @@ fn reply_stl_result<C: IntoRawCtx + Copy>(
 
 /// Reply with MSTL decomposition result.
 ///
-/// Response format (array of 8):
+/// Response format (a map in RESP3, a flat array of 8 in RESP2):
 ///   "original"              -> [[ts, val], ...]
 ///   "trend"                 -> [[ts, val], ...]
 ///   "seasonal_components"   -> [ [period, [[ts, val], ...]], ... ]
@@ -251,7 +252,7 @@ fn reply_mstl_result<C: IntoRawCtx + Copy>(
     original: &[f64],
     result: &MSTLResult,
 ) -> ValkeyResult {
-    reply_with_array(ctx, 8);
+    reply_with_map(ctx, 4);
 
     // original
     reply_with_str(ctx, "original");

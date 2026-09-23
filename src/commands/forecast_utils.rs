@@ -134,6 +134,8 @@ pub struct ForecastOutput {
     level: Option<f64>,
     pub(crate) forecast: Forecast,
     metrics: ForecastMetrics,
+    /// Samples written by `STORE`, when the reply is the forecast itself (TS.AUTOFORECAST).
+    pub(crate) stored: Option<usize>,
 }
 
 /// Fits `model` and forecasts `horizon` steps. With `with_metrics`, scores the in-sample fit
@@ -209,6 +211,7 @@ pub(super) fn run_forecast<T: Forecaster + ?Sized>(
         level,
         forecast,
         metrics,
+        stored: None,
     };
 
     Ok(forecast_output)
@@ -266,6 +269,9 @@ pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &F
     if !matches!(forecast_output.metrics, ForecastMetrics::NotRequested) {
         map_len += 1;
     }
+    if forecast_output.stored.is_some() {
+        map_len += 1;
+    }
     reply_with_map(ctx, map_len);
 
     reply_with_str(ctx, "model");
@@ -294,5 +300,10 @@ pub(super) fn reply_with_forecast_output(ctx: &ReplyContext, forecast_output: &F
             reply_with_null(ctx);
         }
         ForecastMetrics::Computed(m) => reply_with_metrics_entry(ctx, m),
+    }
+
+    if let Some(stored) = forecast_output.stored {
+        reply_with_str(ctx, "stored");
+        reply_with_usize(ctx, stored);
     }
 }

@@ -98,8 +98,7 @@ pip install matplotlib      # optional, only for the plot snippets
 Start a Valkey server with the module loaded (see the project README), then
 connect. We negotiate **RESP3** (`protocol=3`) so that map-returning commands
 (`TS.INFO`, `TS.STATS`, `TS.FEATURES`, `TS.STATIONARITY`, `TS.TREND`,
-`TS.AUTOFORECAST`, `TS.XCORR`) come back as native Python `dict`s. `TS.DECOMPOSE`
-is the exception: it replies with a flat name/value array under both protocols.
+`TS.DECOMPOSE`, `TS.AUTOFORECAST`, `TS.XCORR`) come back as native Python `dict`s.
 
 ```python
 import json
@@ -119,7 +118,7 @@ They are written to work under **both** RESP3 and RESP2, so you can drop
 ```python
 def as_map(reply):
     """A TS.* map reply is a dict under RESP3 or a flat [k, v, k, v, ...]
-    list under RESP2 (and always for TS.DECOMPOSE). Return a dict either way."""
+    list under RESP2. Return a dict either way."""
     if isinstance(reply, dict):
         return reply
     it = iter(reply)

@@ -105,6 +105,7 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         horizon = int(parsed["horizon"])
         assert horizon == 5, f"Expected horizon=5, got {horizon}"
         assert "forecast" in parsed, f"Missing forecast in {parsed}"
+        assert "stored" not in parsed
         forecasts = get_forecast_values(parsed)
         assert len(forecasts) == 5, f"Expected 5 forecast values, got {len(forecasts)}"
         # The selected model should be one of the known families
@@ -361,6 +362,8 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         parsed = parse_forecast_response(result)
         forecasts = get_forecast_values(parsed)
         assert len(forecasts) == 5
+        # The reply stays the forecast map, with the number of samples written added.
+        assert int(parsed["stored"]) == 5
 
         # Verify the stored key exists and has the forecast values
         assert self.client.execute_command("EXISTS", store_key) == 1, \
@@ -415,6 +418,7 @@ class TestAutoForecast(ValkeyTimeSeriesTestCaseBase):
         parsed = parse_forecast_response(result)
         forecasts = get_forecast_values(parsed)
         assert len(forecasts) == 3
+        assert int(parsed["stored"]) == 3
 
         # Stored key should now have the forecast values
         stored = self.client.execute_command("TS.RANGE", store_key, "-", "+")
