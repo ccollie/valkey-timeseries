@@ -12,6 +12,11 @@ use orx_parallel::{
 /// functions instead. Without it every `.par()` call spins up std threads via orx's
 /// `StdDefaultPool`, ignoring `ts-num-threads` entirely. Enter parallel iteration through
 /// the `*_rayon` methods below rather than the bare orx entry points.
+///
+/// Like rayon's own free functions, it runs on the *calling worker's* pool when called from
+/// inside one, and on the global pool otherwise. PromQL evaluations rely on that: they run
+/// installed on their own pool (`query_workers::run_evaluation`), so the `*_rayon` calls
+/// they reach never park global workers that a module-lock holder may be waiting on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlobalRayonPool;
 
