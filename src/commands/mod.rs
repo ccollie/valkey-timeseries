@@ -9,8 +9,8 @@
 /// `every_annotated_command_declares_acl_categories` test below pins the two lists to the same
 /// length, so a handler without a declaration (or a stray declaration) fails `cargo test`.
 ///
-/// `TS._DEBUG` / `TS._RESTORE` are not here: they are registered through the positional
-/// `commands:` table in `valkey_module!`, which sets categories itself.
+/// `TS._DEBUG` / `TS._RESTORE` / `TS._STORE` are not here: they are registered through the
+/// positional `commands:` table in `valkey_module!`, which sets categories itself.
 #[linkme::distributed_slice]
 pub static COMMAND_ACL_CATEGORIES: [(&'static str, &'static str)] = [..];
 
@@ -38,6 +38,7 @@ pub mod command_parser;
 mod fanout_codec;
 mod forecast_utils;
 mod label_search_utils;
+mod store_target;
 mod ts_add;
 mod ts_addbulk;
 mod ts_alter;
@@ -86,6 +87,7 @@ mod ts_restore;
 mod ts_sanitize;
 mod ts_stationarity;
 mod ts_stats;
+mod ts_store;
 mod ts_trend;
 mod ts_xcorr;
 mod utils;
@@ -99,6 +101,7 @@ pub use command_parser::*;
 pub use ts_debug::*;
 pub use ts_mget::*;
 pub use ts_restore::*;
+pub use ts_store::*;
 use valkey_module::ValkeyResult;
 
 use crate::fanout::register_fanout_operation;

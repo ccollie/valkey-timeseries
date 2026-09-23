@@ -191,11 +191,16 @@ impl ThreadSafeReplyContext {
 
     /// All non-reply APIs require locking, so we mirror
     /// `valkey_module::ThreadSafeContext::lock` semantics.
-    pub fn lock(&self) -> ContextGuard {
+    ///
+    /// The guard runs calls against this blocked client's own context, not a detached one:
+    /// only this context has the client's selected db, so key writes land in the right db
+    /// and `RM_Replicate` propagates them with the right `SELECT`.
+    pub fn lock(&self) -> ContextGuard<'_> {
         unsafe { raw::RedisModule_ThreadSafeContextLock.unwrap()(self.ctx) };
-        let ctx = unsafe { raw::RedisModule_GetThreadSafeContext.unwrap()(ptr::null_mut()) };
-        let ctx = Context::new(ctx);
-        ContextGuard { ctx }
+        ContextGuard {
+            ctx: Context::new(self.ctx),
+            _owner: PhantomData,
+        }
     }
 
     /// Log a message at the specified `level` using the underlying context.

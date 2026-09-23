@@ -140,6 +140,10 @@ they never block the server's main thread; requests beyond the worker count wait
 Persist the forecast values into a time series key. The predicted values are stored as samples with timestamps continuing
 from the last observed timestamp using the series' median sampling interval.
 
+The destination must be a different key from the source; naming the source fails with
+`TSDB: STORE destination must be different from the source key`. Only the primary runs the analysis: replicas and the AOF receive the stored samples, not the
+command.
+
 - If the destination key does not exist, a new time series is created.
 - If the destination key already exists, the forecast samples are merged into it.
 - The forecast step is the series' detected sampling frequency, falling back to the median positive gap

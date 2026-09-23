@@ -12,9 +12,8 @@ use crate::commands::forecast_utils::{
     reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
 };
 use crate::commands::parse_store_clause;
+use crate::commands::store_target::StoreTarget;
 use crate::common::replies::{ThreadSafeReplyContext, reply_with_array};
-use crate::series::DestinationWriteMode;
-use crate::series::TimeSeriesOptions;
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::transform::Transform;
 use valkey_module::{Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
@@ -30,9 +29,7 @@ struct ForecastOptions {
     horizon: usize,
     include_metrics: bool,
     level: Option<f64>,
-    destination_key: Option<Vec<u8>>,
-    series_options: Option<TimeSeriesOptions>,
-    write_mode: DestinationWriteMode,
+    store: Option<StoreTarget>,
     timeout: AnalysisTimeout,
 }
 
@@ -75,7 +72,7 @@ acl_categories!(TS_FORECAST, "ts.forecast", "write timeseries");
         {
             notes: "Optional destination series written by the STORE clause.",
             flags: [ReadWrite, Update],
-            begin_search: Keyword({ keyword: "STORE", startfrom: 1 }),
+            begin_search: Keyword({ keyword: "STORE", startfrom: 4 }),
             find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
         }
     ]
@@ -89,12 +86,13 @@ pub(crate) fn ts_forecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
         return Ok(ValkeyValue::NoReply);
     }
 
+    let source_key = args[1].as_slice().to_vec();
     let mut args = args.into_iter().skip(1).peekable();
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
-    let options = parse_forecast_args(&mut args)?;
+    let options = parse_forecast_args(ctx, &source_key, &mut args)?;
     // Validate the STORE step and final timestamp before dispatching models.
     let anchor = options
-        .destination_key
+        .store
         .as_ref()
         .map(|_| store_anchor(&series, options.horizon))
         .transpose()?;
@@ -122,12 +120,8 @@ fn process_forecast(
     };
 
     // With STORE the reply is the number of samples written, not the forecast.
-    if let (Some(dest_key), Some(anchor)) = (options.destination_key.as_ref(), anchor) {
-        // The client has already been told the command failed; do not write behind it.
-        if ctx.is_timed_out() {
-            return;
-        }
-        store_forecast(&ctx, dest_key, &options, &results, anchor);
+    if let (Some(target), Some(anchor)) = (options.store.as_ref(), anchor) {
+        store_forecast(&ctx, target, &results, anchor);
         return;
     }
 
@@ -141,8 +135,7 @@ fn process_forecast(
 /// with the number of samples written, or with an error if the write fails.
 fn store_forecast(
     ctx: &ThreadSafeReplyContext,
-    dest_key: &[u8],
-    options: &ForecastOptions,
+    target: &StoreTarget,
     results: &[ForecastOutput],
     anchor: StoreAnchor,
 ) {
@@ -152,15 +145,12 @@ fn store_forecast(
         .iter()
         .flat_map(|output| output.forecast.primary().iter().copied())
         .collect();
-    let reply = write_forecast_samples(
-        ctx,
-        dest_key,
-        options.series_options.clone(),
-        options.write_mode,
-        &values,
-        anchor,
-    )
-    .map(|written| ValkeyValue::Integer(written as i64));
+    let reply = match write_forecast_samples(ctx, target, &values, anchor) {
+        Ok(Some(written)) => Ok(ValkeyValue::Integer(written as i64)),
+        // Timed out: the client already has its error, and nothing was written.
+        Ok(None) => return,
+        Err(e) => Err(e),
+    };
     ctx.reply(reply);
 }
 
@@ -190,7 +180,11 @@ fn process_models(
     Ok(results)
 }
 
-fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOptions> {
+fn parse_forecast_args(
+    ctx: &Context,
+    source_key: &[u8],
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<ForecastOptions> {
     let mut options = ForecastOptions::default();
     let mut horizon_set = false;
 
@@ -225,10 +219,8 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
                     options.timeout.set(parse_timeout(args)?);
                 },
                 "STORE" => {
-                    let store_options = parse_store_clause(args)?;
-                    options.destination_key = Some(store_options.key.into());
-                    options.series_options = Some(store_options.options);
-                    options.write_mode = store_options.write_mode;
+                    let store = parse_store_clause(args)?;
+                    options.store = Some(StoreTarget::new(ctx, source_key, store)?);
                 },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: Unknown argument: {}", arg)));
@@ -246,7 +238,7 @@ fn parse_forecast_args(args: &mut CommandArgIterator) -> ValkeyResult<ForecastOp
         ));
     }
 
-    if options.destination_key.is_some() && options.models.len() > 1 {
+    if options.store.is_some() && options.models.len() > 1 {
         return Err(ValkeyError::Str(
             "TSDB: STORE is only supported with a single model",
         ));

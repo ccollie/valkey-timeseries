@@ -8,9 +8,9 @@ use crate::commands::forecast_utils::{
     StoreAnchor, handle_forecast_key_pos_request, parse_timeseries_for_forecast,
     reply_with_forecast_output, run_forecast, store_anchor, write_forecast_samples,
 };
+use crate::commands::store_target::StoreTarget;
 use crate::commands::utils::reply_with_double_array;
 use crate::common::replies::{ThreadSafeReplyContext, reply_with_str};
-use crate::series::{DestinationWriteMode, TimeSeriesOptions};
 use anofox_forecast::core::TimeSeries as ForecastTimeSeries;
 use anofox_forecast::detection::detect_dominant_period;
 use anofox_forecast::models::auto_forecast::{AutoForecast, AutoForecastConfig};
@@ -20,9 +20,7 @@ struct AutoForecastOptions {
     horizon: usize,
     level: Option<f64>,
     metrics: bool,
-    destination_key: Option<Vec<u8>>,
-    create_options: Option<TimeSeriesOptions>,
-    write_mode: Option<DestinationWriteMode>,
+    store: Option<StoreTarget>,
     config: AutoForecastConfig,
     auto_seasonality: bool,
     timeout: AnalysisTimeout,
@@ -34,9 +32,7 @@ impl Default for AutoForecastOptions {
             horizon: 5,
             level: None,
             metrics: false,
-            destination_key: None,
-            create_options: None,
-            write_mode: None,
+            store: None,
             config: AutoForecastConfig::default(),
             auto_seasonality: false,
             timeout: AnalysisTimeout::default(),
@@ -81,7 +77,7 @@ acl_categories!(TS_AUTOFORECAST, "ts.autoforecast", "write timeseries");
         {
             notes: "Optional destination series written by the STORE clause.",
             flags: [ReadWrite, Update],
-            begin_search: Keyword({ keyword: "STORE", startfrom: 1 }),
+            begin_search: Keyword({ keyword: "STORE", startfrom: 4 }),
             find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
         }
     ]
@@ -95,13 +91,14 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
         return Ok(ValkeyValue::NoReply);
     }
 
+    let source_key = args[1].as_slice().to_vec();
     let mut args = args.into_iter().skip(1).peekable();
 
     let series = parse_timeseries_for_forecast(ctx, &mut args)?;
-    let options = parse_autoforecast_args(&mut args)?;
+    let options = parse_autoforecast_args(ctx, &source_key, &mut args)?;
     // Validate the STORE step and final timestamp before the model search.
     let anchor = options
-        .destination_key
+        .store
         .as_ref()
         .map(|_| store_anchor(&series, options.horizon))
         .transpose()?;
@@ -114,7 +111,11 @@ pub(crate) fn ts_autoforecast_cmd(ctx: &Context, args: Vec<ValkeyString>) -> Val
     Ok(ValkeyValue::NoReply)
 }
 
-fn parse_autoforecast_args(args: &mut CommandArgIterator) -> ValkeyResult<AutoForecastOptions> {
+fn parse_autoforecast_args(
+    ctx: &Context,
+    source_key: &[u8],
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<AutoForecastOptions> {
     let mut options = AutoForecastOptions::default();
     let mut horizon_set = false;
 
@@ -151,10 +152,8 @@ fn parse_autoforecast_args(args: &mut CommandArgIterator) -> ValkeyResult<AutoFo
                     options.timeout.set(parse_timeout(args)?);
                 },
                 "STORE" => {
-                    let store_options = parse_store_clause(args)?;
-                    options.destination_key = Some(store_options.key.into());
-                    options.create_options = Some(store_options.options);
-                    options.write_mode = Some(store_options.write_mode);
+                    let store = parse_store_clause(args)?;
+                    options.store = Some(StoreTarget::new(ctx, source_key, store)?);
                 },
             _ => {
                 return Err(ValkeyError::String(format!("TSDB: Unknown argument: {}", arg)));
@@ -213,38 +212,19 @@ fn process_forecast(
 
     // With STORE the forecast is persisted first; a failed write is the
     // command's failure, since the caller asked for the samples, not the reply.
-    if let (Some(dest_key), Some(anchor)) = (options.destination_key.as_ref(), anchor) {
-        // The client has already been told the command failed; do not write behind it.
-        if ctx.is_timed_out() {
-            return;
-        }
-        if let Err(err) =
-            store_forecast(&ctx, dest_key, &options, output.forecast.primary(), anchor)
-        {
-            ctx.reply(Err(err));
-            return;
+    if let (Some(target), Some(anchor)) = (options.store.as_ref(), anchor) {
+        match write_forecast_samples(&ctx, target, output.forecast.primary(), anchor) {
+            Ok(Some(_)) => {}
+            // Timed out: the client already has its error, and nothing was written.
+            Ok(None) => return,
+            Err(err) => {
+                ctx.reply(Err(err));
+                return;
+            }
         }
     }
 
     reply_with_forecast_output(&ctx, &output);
-}
-
-fn store_forecast(
-    ctx: &ThreadSafeReplyContext,
-    dest_key: &[u8],
-    options: &AutoForecastOptions,
-    forecast: &[f64],
-    anchor: StoreAnchor,
-) -> ValkeyResult<()> {
-    write_forecast_samples(
-        ctx,
-        dest_key,
-        options.create_options.clone(),
-        options.write_mode.unwrap_or_default(),
-        forecast,
-        anchor,
-    )
-    .map(|_| ())
 }
 
 pub(super) fn reply_with_interval_array(

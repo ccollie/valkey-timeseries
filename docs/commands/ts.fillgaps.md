@@ -76,9 +76,10 @@ TS.FILLGAPS key startTimestamp endTimestamp
 
 - **STORE:** With `STORE`, the filled gap samples are written to `destinationKey` using the
   same creation/write semantics as other `STORE` clauses (e.g. `TS.RANGE ... STORE`). A
-  `ts.add`-style keyspace notification is sent and the write is replicated, exactly as if the
-  samples had been added to `destinationKey` directly. If there are no gaps, the destination
-  key is left untouched.
+  `ts.add`-style keyspace notification is sent and the written samples are replicated. If there
+  are no gaps, the destination key is left untouched. `destinationKey` must differ from the
+  source key; naming the source fails with
+  `TSDB: STORE destination must be different from the source key`.
 
 ## Errors
 

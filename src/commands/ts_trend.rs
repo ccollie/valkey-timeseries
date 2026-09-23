@@ -1,18 +1,14 @@
 use crate::analysis::forecasting::try_parse_trend_criterion;
 use crate::commands::CommandArgIterator;
 use crate::commands::analysis_runner::{AnalysisTimeout, parse_timeout, run_analysis};
-use crate::commands::command_parser::{
-    StoreOptions, parse_series_range_samples, parse_store_clause,
-};
+use crate::commands::command_parser::{parse_series_range_samples, parse_store_clause};
+use crate::commands::store_target::StoreTarget;
 use crate::commands::utils::reply_with_accuracy_metrics;
 use crate::common::Sample;
 use crate::common::replies::{
     reply_with_array, reply_with_double, reply_with_integer, reply_with_map, reply_with_str,
 };
 use crate::common::time::compute_median_step_ms;
-use crate::series::{
-    DestinationWriteMode, TimeSeriesOptions, create_or_update_series_with_samples,
-};
 use anofox_forecast::seasonality::auto_trend::{AutoTrend, TrendCriterion};
 use anofox_forecast::seasonality::traits::{Recency, TrendComponent};
 use anofox_forecast::seasonality::{
@@ -100,7 +96,7 @@ acl_categories!(TS_TREND, "ts.trend", "write timeseries");
         {
             notes: "Optional destination series written by the STORE clause.",
             flags: [ReadWrite, Update],
-            begin_search: Keyword({ keyword: "STORE", startfrom: 1 }),
+            begin_search: Keyword({ keyword: "STORE", startfrom: 4 }),
             find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
         }
     ]
@@ -118,6 +114,7 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         return Ok(ValkeyValue::NoReply);
     }
 
+    let source_key = args[1].as_slice().to_vec();
     let mut args = args.into_iter().skip(1).peekable();
 
     // Get the time series and extract sample values
@@ -130,7 +127,7 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         ));
     }
 
-    let options = parse_trend_args(&mut args)?;
+    let options = parse_trend_args(ctx, &source_key, &mut args)?;
 
     args.done()?;
 
@@ -149,12 +146,15 @@ pub fn ts_trend_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             // If STORE was specified, persist the fitted (and optionally predicted)
             // trend values and reply with the count instead of the fit.
             if let Some(store) = options.store_options {
-                // The client has already been told the command failed; do not
-                // write behind it.
-                if actx.is_timed_out() {
-                    return Ok(ValkeyValue::NoReply);
-                }
-                return actx.with_locked_context(|ctx| store_trend(ctx, store, &samples, &fit));
+                return actx.with_locked_context(|ctx| {
+                    // Checked under the lock: the timeout callback runs on the main thread,
+                    // so it cannot fire between this check and the write. Once it has fired,
+                    // the client has been told the command failed; do not write behind it.
+                    if actx.is_timed_out() {
+                        return Ok(ValkeyValue::NoReply);
+                    }
+                    store_trend(ctx, &store, &samples, &fit)
+                });
             }
             reply_with_fit(actx.reply_ctx().context(), &fit)
         },
@@ -344,32 +344,13 @@ fn reply_with_fit(ctx: &Context, fit: &TrendFit) -> ValkeyResult {
     Ok(ValkeyValue::NoReply)
 }
 
-/// STORE target, held as bytes so the options can cross to the analysis pool
-/// (`ValkeyString` is not `Send`).
-struct TrendStore {
-    key: Vec<u8>,
-    options: TimeSeriesOptions,
-    write_mode: DestinationWriteMode,
-}
-
-impl From<StoreOptions> for TrendStore {
-    fn from(store: StoreOptions) -> Self {
-        Self {
-            key: store.key.into(),
-            options: store.options,
-            write_mode: store.write_mode,
-        }
-    }
-}
-
 /// Persist fitted (and optionally predicted) trend values to a destination key.
 fn store_trend(
     ctx: &Context,
-    store: TrendStore,
+    store: &StoreTarget,
     samples: &[Sample],
     fit: &TrendFit,
 ) -> ValkeyResult<ValkeyValue> {
-    let destination = ctx.create_string(store.key.as_slice());
     let mut store_samples: Vec<Sample> = fit
         .fitted
         .iter()
@@ -393,14 +374,7 @@ fn store_trend(
         }
     }
 
-    let written = create_or_update_series_with_samples(
-        ctx,
-        &destination,
-        Some(store.options),
-        store.write_mode,
-        &store_samples,
-        None,
-    )?;
+    let written = store.write(ctx, &store_samples)?;
     Ok(ValkeyValue::Integer(written as i64))
 }
 
@@ -415,7 +389,7 @@ struct TrendOptions {
     predict: usize,
     features: bool,
     metrics: bool,
-    store_options: Option<TrendStore>,
+    store_options: Option<StoreTarget>,
     timeout: AnalysisTimeout,
 }
 
@@ -445,7 +419,11 @@ fn get_store_key_pos(args: &[ValkeyString]) -> ValkeyResult<Option<usize>> {
     Ok(None)
 }
 
-fn parse_trend_args(args: &mut CommandArgIterator) -> ValkeyResult<TrendOptions> {
+fn parse_trend_args(
+    ctx: &Context,
+    source_key: &[u8],
+    args: &mut CommandArgIterator,
+) -> ValkeyResult<TrendOptions> {
     let mut options = TrendOptions::default();
 
     while let Some(arg) = args.next() {
@@ -513,8 +491,8 @@ fn parse_trend_args(args: &mut CommandArgIterator) -> ValkeyResult<TrendOptions>
                 options.metrics = true;
             },
             "STORE" => {
-                let opts = parse_store_clause(args)?;
-                options.store_options = Some(opts.into());
+                let store = parse_store_clause(args)?;
+                options.store_options = Some(StoreTarget::new(ctx, source_key, store)?);
             },
             "TIMEOUT" => {
                 options.timeout.set(parse_timeout(args)?);

@@ -2,10 +2,11 @@ use crate::analysis::forecasting::imputation::{ImputationPolicy, sanitize};
 use crate::commands::command_parser::{
     CommandArgToken, parse_command_arg_token, parse_store_clause, parse_timestamp_range,
 };
+use crate::commands::store_target::StoreTarget;
 use crate::common::Sample;
 use crate::common::replies::reply_with_samples;
 use crate::error_consts;
-use crate::series::{DuplicatePolicy, create_or_update_series_with_samples, get_timeseries_mut};
+use crate::series::{DuplicatePolicy, get_timeseries_mut};
 use anofox_forecast::detection::detect_dominant_period;
 use valkey_module::{
     AclPermissions, Context, NextArg, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString,
@@ -65,7 +66,7 @@ acl_categories!(TS_SANITIZE, "ts.sanitize", "write timeseries");
         {
             notes: "Optional destination series written by the STORE clause.",
             flags: [ReadWrite, Update],
-            begin_search: Keyword({ keyword: "STORE", startfrom: 1 }),
+            begin_search: Keyword({ keyword: "STORE", startfrom: 4 }),
             find_keys: Range({ last_key: 0, steps: 1, limit: 0 })
         }
     ]
@@ -106,10 +107,12 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
         .is_some_and(|s| parse_command_arg_token(s) == Some(CommandArgToken::Store))
     {
         args.next(); // consume STORE
-        Some(parse_store_clause(&mut args)?)
+        let store = parse_store_clause(&mut args)?;
+        Some(StoreTarget::new(ctx, key.as_slice(), store)?)
     } else {
         None
     };
+    args.done()?;
 
     // Capture policy variant before moving `policy` into sanitize().
     // - MA/Seasonal: samples is NOT modified; `sanitized` is the full imputed result.
@@ -145,20 +148,14 @@ pub fn ts_sanitize_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
             .map_err(|e| ValkeyError::String(format!("TSDB: {e}")))?;
     }
 
+    // Sanitizing is deterministic and runs inline, so the replica re-runs the command. That
+    // covers the STORE write below too, which must therefore not replicate itself.
     ctx.replicate_verbatim();
     ctx.notify_keyspace_event(NotifyEvent::MODULE, "ts.sanitize", &key);
     // --- End write-back ---
 
     if let Some(dest) = destination {
-        let written = create_or_update_series_with_samples(
-            ctx,
-            &dest.key,
-            Some(dest.options),
-            dest.write_mode,
-            to_return,
-            None,
-        )?;
-
+        let written = dest.write_unreplicated(ctx, to_return)?;
         return Ok(ValkeyValue::from(written));
     }
 

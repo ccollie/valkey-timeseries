@@ -209,6 +209,10 @@ Persist the forecast values into a time series key. The predicted values are sto
 with timestamps continuing from the last observed timestamp using the series' median sampling
 interval.
 
+The destination must be a different key from the source; naming the source fails with
+`TSDB: STORE destination must be different from the source key`. Only the primary runs the analysis: replicas and the AOF receive the stored samples, not the
+command.
+
 > **Important:** `STORE` is only supported when a **single model** is specified. If multiple
 > models are provided with `STORE`, the command returns an error.
 

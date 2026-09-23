@@ -59,8 +59,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
 
 - `src/commands/` — one `ts_<name>.rs` file per command, exporting `ts_<name>_cmd`. Almost all are
   registered via `#[valkey_module_macros::command({...})]` on the handler, picked up by
-  `register_commands`. Only `ts._debug` and `ts._restore` (internal/admin, undocumented) sit in the
-  positional `commands:` table in `src/lib.rs` instead — see Conventions below for why.
+  `register_commands`. Only `ts._debug`, `ts._restore` and `ts._store` (internal/admin,
+  undocumented) sit in the positional `commands:` table in `src/lib.rs` instead — see Conventions
+  below for why.
 - `src/series/` — storage, chunk encodings, compaction, background tasks, indexes, serialization.
   - `chunks/`: three encodings — **Chimp** (default), **Gorilla**, **Uncompressed**
     (`DEFAULT_CHUNK_ENCODING` in `src/config.rs`). Storage encoding is a user choice; cluster *wire*
@@ -94,8 +95,9 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   (`src/commands/mod.rs`). These feed a `linkme::distributed_slice` (`COMMAND_ACL_CATEGORIES`) that
   `assign_command_acl_categories` applies at load time, **aborting the module load** on an unknown
   name/category. A test (`every_annotated_command_declares_acl_categories`) pins the two counts to
-  match, so a handler missing its declaration fails `cargo test`. `ts._debug`/`ts._restore` are the
-  only exceptions — registered positionally in `valkey_module!`, which sets their categories directly.
+  match, so a handler missing its declaration fails `cargo test`. `ts._debug`/`ts._restore`/
+  `ts._store` are the only exceptions — registered positionally in `valkey_module!`, which sets
+  their categories directly.
 - Wire encoding for cluster fan-out is decided in exactly one place — `samples_to_chunk[_lossless]`
   in `src/series/chunks/serialization.rs` (below `WIRE_COMPRESSION_MIN_SAMPLES`=16 samples:
   uncompressed; at/above: Chimp). Don't hand-roll encoding at a call site or add a third tier —
@@ -109,7 +111,13 @@ Valkey module (Rust crate) exposing `TS.*` commands via `valkey_module!` in `src
   deliberate, record it in [COMPATIBILITY.md](COMPATIBILITY.md) and/or `tests/compat/divergences.yml`
   (behavior-kind entries need explicit PR sign-off).
 - When adding/changing a command, update `docs/COMMANDS.md`, `docs/commands/`, `docs/overview.md`,
-  and `README.md` (skip this for `TS._DEBUG`/`TS._RESTORE` — intentionally undocumented internals).
+  and `README.md` (skip this for `TS._DEBUG`/`TS._RESTORE`/`TS._STORE` — intentionally undocumented
+  internals).
+- A `STORE` clause writes through `StoreTarget` (`src/commands/store_target.rs`): validate it on the
+  main thread, write under the lock, and let it replicate the result as `TS._STORE`. Don't
+  `replicate_verbatim` a command whose result a replica can't reproduce cheaply and exactly (model
+  fits, pool jobs); `TS.SANITIZE` is the one exception — inline and deterministic, so it replicates
+  itself and uses `write_unreplicated`.
 
 ## Testing
 

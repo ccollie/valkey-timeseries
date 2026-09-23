@@ -135,6 +135,10 @@ Returned metrics:
 Persist the fitted trend values into a time series key. The fitted values are stored with their
 original timestamps from the input series.
 
+The destination must be a different key from the source; naming the source fails with
+`TSDB: STORE destination must be different from the source key`. Only the primary runs the analysis: replicas and the AOF receive the stored samples, not the
+command.
+
 - If the destination key does not exist, a new time series is created.
 - If the destination key already exists, it is overwritten by default. Pass `MERGE` to merge
   the fitted (and optionally predicted) samples into the existing series instead.
