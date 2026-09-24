@@ -1,9 +1,14 @@
 mod executor;
+mod orx_pool;
 
 pub use executor::{BoundedExecutor, ExecutorBusy};
 
 use crate::common::context::{get_current_db, set_current_db};
 use crate::is_main_thread;
+pub use orx_pool::{
+    GlobalRayonPool, IntoParRayon, IterIntoParRayon, ParCollectionRayon, ParMutRayon, ParRayon,
+    ParWithPool, RayonPool,
+};
 use rayon_core::{Scope, ThreadPoolBuilder};
 use std::os::raw::c_void;
 use valkey_module::logging::log_notice;

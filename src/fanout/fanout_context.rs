@@ -3,6 +3,7 @@ use crate::fanout::{FanoutAclScope, FanoutIdentity};
 use crate::series::acl::ModuleUser;
 use std::ops::Deref;
 use std::rc::Rc;
+use valkey_module::logging::ValkeyLogLevel;
 use valkey_module::{
     Context, DetachedContext, DetachedContextGuard, MODULE_CONTEXT, Status, ValkeyError,
     ValkeyResult,
@@ -107,6 +108,11 @@ impl FanoutContext {
         };
 
         Ok(FanoutContextGuard { _acl: acl, ctx })
+    }
+
+    /// Log a warning without taking the GIL.
+    pub fn log_warning(&self, message: &str) {
+        self.ctx.log(ValkeyLogLevel::Warning, message);
     }
 }
 

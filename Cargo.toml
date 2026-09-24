@@ -18,6 +18,7 @@ croaring = "2.8.0"
 enquote = "1.1.0"
 enum_dispatch = "0.3.13"
 get-size2 = { version = "0.11.0", features = ["derive"] }
+halfbrown = { version = "0.4", features = ["arraybackend"] }
 hashify = { version = "0.3" }
 itertools = "0.15.0"
 linkme = "0.3"
@@ -26,7 +27,9 @@ logos = "0.16"
 # 4.0's default is a persistent pool whose callers block without helping, so the nested
 # parallel iterators here (per-series inside per-query) could deadlock it once every worker
 # waits on an inner scope. Reusing threads is a separate, measured change.
-orx-parallel = { version = "4", features = ["transient-pool"] }
+# `rayon-core`: orx's `Scope` impl for rayon scopes, which the rayon-pool adapters in
+# `common::threads::orx_pool` run on.
+orx-parallel = { version = "4", features = ["transient-pool", "rayon-core"] }
 min-max-heap = "1.3"
 num-traits = "0.2"
 krcf = "0.4"
@@ -37,6 +40,8 @@ rand = { version = "0.10" }
 rand_distr = { version = "0.6", optional = true }
 smallvec = "1.16"
 speedate = "0.17"
+strum = { version = "0.28", features = ["derive"] }
+strum_macros = "0.28"
 thiserror = "2.0"
 topo_sort = "0.4.0"
 valkey-module = "0.1.14"
@@ -61,8 +66,7 @@ crc16 = "0.4.0"
 # `test-utils` module (src/tests) without it leaking into the shipped module.
 valkey-timeseries = { path = ".", features = ["test-utils"] }
 criterion = { version = "0.8", features = ["html_reports"] }
-strum = { version = "0.28", features = ["derive"] }
-strum_macros = "0.28"
+rstest = "0.26"
 test-case = "3.3"
 serial_test = { version = "4.0.1", default-features = false }
 proptest = "1"

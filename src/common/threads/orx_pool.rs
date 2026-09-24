@@ -1,13 +1,13 @@
 use core::num::NonZeroUsize;
 use orx_parallel::{
-    DefaultExecutor, IntoParIter, IterIntoParIter, ParIter, ParThreadPool, Parallelizable,
-    ParallelizableCollection, ParallelizableCollectionMut, RunnerWithPool,
+    IntoParIter, IterIntoParIter, Par, ParCollection, ParCollectionMut, Parallelizable, Runner,
+    ThreadPool,
 };
 
 /// orx-parallel adapter over the module's global rayon pool (built in
 /// [`init_thread_pool`](super::init_thread_pool)).
 ///
-/// orx-parallel's own `rayon-core` feature only covers an owned `rayon_core::ThreadPool`, and
+/// orx-parallel's own `rayon-core` feature only covers a `rayon_core::ThreadPool` handle, and
 /// rayon never hands out a handle to the global registry, so this delegates to the free
 /// functions instead. Without it every `.par()` call spins up std threads via orx's
 /// `StdDefaultPool`, ignoring `ts-num-threads` entirely. Enter parallel iteration through
@@ -20,23 +20,14 @@ use orx_parallel::{
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GlobalRayonPool;
 
-impl ParThreadPool for GlobalRayonPool {
+impl ThreadPool for GlobalRayonPool {
     type ScopeRef<'s, 'env, 'scope>
         = &'s rayon_core::Scope<'scope>
     where
         'scope: 's,
         'env: 'scope + 's;
 
-    fn run_in_scope<'s, 'env, 'scope, W>(s: &Self::ScopeRef<'s, 'env, 'scope>, work: W)
-    where
-        'scope: 's,
-        'env: 'scope + 's,
-        W: Fn() + Send + 'scope + 'env,
-    {
-        s.spawn(move |_| work());
-    }
-
-    fn scoped_computation<'env, 'scope, F>(&'env mut self, f: F)
+    fn scope<'env, 'scope, F>(&'env self, f: F)
     where
         'env: 'scope,
         for<'s> F: FnOnce(&'s rayon_core::Scope<'scope>) + Send,
@@ -49,10 +40,6 @@ impl ParThreadPool for GlobalRayonPool {
     }
 }
 
-/// The orx runner every `*_rayon` entry point produces: the global rayon pool with orx's
-/// default chunk-sizing executor.
-pub type RayonRunner = RunnerWithPool<GlobalRayonPool, DefaultExecutor>;
-
 /// orx-parallel adapter over one specific `rayon_core::ThreadPool`, for a
 /// computation that must not depend on the global pool — the PromQL selector
 /// executor's materialization, which runs while global workers may be parked
@@ -60,23 +47,14 @@ pub type RayonRunner = RunnerWithPool<GlobalRayonPool, DefaultExecutor>;
 #[derive(Clone, Copy)]
 pub struct RayonPool(pub &'static rayon_core::ThreadPool);
 
-impl ParThreadPool for RayonPool {
+impl ThreadPool for RayonPool {
     type ScopeRef<'s, 'env, 'scope>
         = &'s rayon_core::Scope<'scope>
     where
         'scope: 's,
         'env: 'scope + 's;
 
-    fn run_in_scope<'s, 'env, 'scope, W>(s: &Self::ScopeRef<'s, 'env, 'scope>, work: W)
-    where
-        'scope: 's,
-        'env: 'scope + 's,
-        W: Fn() + Send + 'scope + 'env,
-    {
-        s.spawn(move |_| work());
-    }
-
-    fn scoped_computation<'env, 'scope, F>(&'env mut self, f: F)
+    fn scope<'env, 'scope, F>(&'env self, f: F)
     where
         'env: 'scope,
         for<'s> F: FnOnce(&'s rayon_core::Scope<'scope>) + Send,
@@ -89,14 +67,25 @@ impl ParThreadPool for RayonPool {
     }
 }
 
+/// orx 3's `.with_pool(pool)`, which 4.0 replaced with `.runner(..)`: runs the computation on
+/// `pool` with fixed chunk sizing — the executor 3.x attached there (4.0's default runner
+/// chunks adaptively).
+pub trait ParWithPool: Par {
+    fn with_pool<P: ThreadPool + Sync>(self, pool: P) -> impl Par<Item = Self::Item> {
+        self.runner(Runner::fixed_with_pool(pool))
+    }
+}
+
+impl<T: Par> ParWithPool for T {}
+
 /// `.par()` on the global rayon pool, for borrowed sources such as `&[T]` and ranges.
 ///
 /// orx splits `.par()` across two disjoint blanket traits ([`Parallelizable`] for types that
-/// are themselves concurrent-iterable, [`ParallelizableCollection`] for owning collections
+/// are themselves concurrent-iterable, [`ParCollection`] for owning collections
 /// like `Vec<T>`), so `par_rayon` is split the same way; both resolve at the call site
 /// exactly where orx's own `.par()` does.
 pub trait ParRayon: Parallelizable {
-    fn par_rayon(&self) -> impl ParIter<RayonRunner, Item = Self::Item> {
+    fn par_rayon(&self) -> impl Par<Item = Self::Item> {
         self.par().with_pool(GlobalRayonPool)
     }
 }
@@ -104,26 +93,26 @@ pub trait ParRayon: Parallelizable {
 impl<T: Parallelizable> ParRayon for T {}
 
 /// `.par()` on the global rayon pool, for owning collections such as `Vec<T>`.
-pub trait ParCollectionRayon: ParallelizableCollection {
-    fn par_rayon(&self) -> impl ParIter<RayonRunner, Item = &Self::Item> {
+pub trait ParCollectionRayon: ParCollection {
+    fn par_rayon(&self) -> impl Par<Item = &Self::Item> {
         self.par().with_pool(GlobalRayonPool)
     }
 }
 
-impl<T: ParallelizableCollection> ParCollectionRayon for T {}
+impl<T: ParCollection> ParCollectionRayon for T {}
 
 /// `.par_mut()` on the global rayon pool.
-pub trait ParMutRayon: ParallelizableCollectionMut {
-    fn par_mut_rayon(&mut self) -> impl ParIter<RayonRunner, Item = &mut Self::Item> {
+pub trait ParMutRayon: ParCollectionMut {
+    fn par_mut_rayon(&mut self) -> impl Par<Item = &mut Self::Item> {
         self.par_mut().with_pool(GlobalRayonPool)
     }
 }
 
-impl<T: ParallelizableCollectionMut> ParMutRayon for T {}
+impl<T: ParCollectionMut> ParMutRayon for T {}
 
 /// `.into_par()` on the global rayon pool.
 pub trait IntoParRayon: IntoParIter {
-    fn into_par_rayon(self) -> impl ParIter<RayonRunner, Item = Self::Item>
+    fn into_par_rayon(self) -> impl Par<Item = Self::Item>
     where
         Self: Sized,
     {
@@ -135,7 +124,7 @@ impl<T: IntoParIter> IntoParRayon for T {}
 
 /// `.iter_into_par()` on the global rayon pool.
 pub trait IterIntoParRayon: IterIntoParIter {
-    fn iter_into_par_rayon(self) -> impl ParIter<RayonRunner, Item = Self::Item>
+    fn iter_into_par_rayon(self) -> impl Par<Item = Self::Item>
     where
         Self: Sized,
         Self::Item: Send,
@@ -149,7 +138,7 @@ impl<T: IterIntoParIter> IterIntoParRayon for T {}
 #[cfg(test)]
 mod tests {
     use super::{GlobalRayonPool, ParCollectionRayon};
-    use orx_parallel::{ParIter, ParThreadPool};
+    use orx_parallel::{Par, ThreadPool};
 
     #[test]
     fn runs_on_rayon_workers() {
