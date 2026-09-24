@@ -106,6 +106,11 @@ impl FanoutContext {
 
         Ok(FanoutContextGuard { _acl: acl, ctx })
     }
+
+    /// Log a warning without taking the GIL.
+    pub fn log_warning(&self, message: &str) {
+        self.ctx.log(ValkeyLogLevel::Warning, message);
+    }
 }
 
 #[cfg(test)]
