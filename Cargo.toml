@@ -41,6 +41,7 @@ rand = { version = "0.10" }
 rand_distr = { version = "0.6", optional = true }
 smallvec = "1.16"
 speedate = "0.17"
+strum = { version = "0.28", features = ["derive"] }
 thiserror = "2.0"
 valkey-module = "0.1.14"
 valkey-module-macros = "0.1.14"
@@ -59,7 +60,6 @@ crc16 = "0.4.0"
 # `test-utils` module (src/tests) without it leaking into the shipped module.
 valkey-timeseries = { path = ".", features = ["test-utils"] }
 criterion = { version = "0.8", features = ["html_reports"] }
-strum = { version = "0.28", features = ["derive"] }
 strum_macros = "0.28"
 approx = "0.5"
 test-case = "3.3"

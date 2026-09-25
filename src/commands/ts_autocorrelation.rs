@@ -73,7 +73,7 @@ pub fn ts_autocorrelation_cmd(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
             "AGGREGATED" => {
                 args.next();
                 let agg_str = args.next_str()?;
-                let valid =  hashify::tiny_set_ignore_case! {
+                let valid =  hashify::set_ignore_case! {
                     agg_str.as_bytes(),
                     "MEAN",
                     "VAR",

@@ -9,7 +9,7 @@ use crate::error_consts;
 use crate::join::{JoinOptions, JoinResultType, process_join};
 use crate::series::get_timeseries;
 use anofox_forecast::simd;
-use joinkit::EitherOrBoth;
+use itertools::EitherOrBoth;
 use valkey_module::{
     AclPermissions, Context, NextArg, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue,
 };

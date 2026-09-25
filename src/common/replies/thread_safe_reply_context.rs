@@ -208,19 +208,6 @@ impl ThreadSafeReplyContext {
         Context::new(self.ctx).log(level, message);
     }
 
-    /// Convenience logging helpers.
-    pub fn log_debug(&self, message: &str) {
-        self.log(ValkeyLogLevel::Debug, message);
-    }
-
-    pub fn log_notice(&self, message: &str) {
-        self.log(ValkeyLogLevel::Notice, message);
-    }
-
-    pub fn log_verbose(&self, message: &str) {
-        self.log(ValkeyLogLevel::Verbose, message);
-    }
-
     pub fn log_warning(&self, message: &str) {
         self.log(ValkeyLogLevel::Warning, message);
     }

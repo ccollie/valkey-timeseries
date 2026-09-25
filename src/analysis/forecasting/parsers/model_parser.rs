@@ -23,6 +23,7 @@ use anofox_forecast::models::{
     TrendForecastMethod,
 };
 
+#[cfg(test)]
 pub fn build_models_from_specs(
     input: &str,
 ) -> Result<Vec<(BoxedForecaster, String)>, ModelSpecError> {

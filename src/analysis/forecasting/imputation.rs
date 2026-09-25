@@ -427,29 +427,9 @@ pub fn impute_seasonal(samples: &[Sample], period: usize) -> Result<Vec<Sample>,
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use chrono::{DateTime, TimeZone, Utc};
+    use chrono::{TimeZone, Utc};
 
     // --- Helpers ---
-
-    fn create_timestamp(year: i32, month: u32, day: u32, hour: u32) -> i64 {
-        let date = Utc.with_ymd_and_hms(year, month, day, hour, 0, 0).unwrap();
-        date.timestamp()
-    }
-
-    fn make_timestamps(n: usize) -> Vec<DateTime<Utc>> {
-        (0..n)
-            .map(|i| Utc.with_ymd_and_hms(2024, 1, 1, i as u32, 0, 0).unwrap())
-            .collect()
-    }
-
-    fn make_daily_timestamps(n: usize) -> Vec<DateTime<Utc>> {
-        (0..n)
-            .map(|i| {
-                Utc.with_ymd_and_hms(2024, 1, 1 + i as u32, 0, 0, 0)
-                    .unwrap()
-            })
-            .collect()
-    }
 
     /// Build samples with hourly timestamps starting at 2024-01-01T00:00:00.
     fn make_samples(values: Vec<f64>) -> Vec<Sample> {

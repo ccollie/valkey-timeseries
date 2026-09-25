@@ -2,27 +2,6 @@ use logos::Logos;
 use std::collections::HashSet;
 use std::fmt::Display;
 
-#[derive(Clone, PartialEq)]
-pub enum ValueType {
-    Number,
-    Ident,
-    String,
-    Flag,
-    List,
-}
-
-impl Display for ValueType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ValueType::Number => write!(f, "number"),
-            ValueType::Ident => write!(f, "ident"),
-            ValueType::String => write!(f, "string"),
-            ValueType::Flag => write!(f, "flag"),
-            ValueType::List => write!(f, "list"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecValue {
     Number(f64),
@@ -51,16 +30,6 @@ impl Display for SpecValue {
 }
 
 impl SpecValue {
-    pub fn value_type(&self) -> ValueType {
-        match self {
-            SpecValue::Number(_) => ValueType::Number,
-            SpecValue::Ident(_) => ValueType::Ident,
-            SpecValue::String(_) => ValueType::String,
-            SpecValue::Flag(_) => ValueType::Flag,
-            SpecValue::List(_) => ValueType::List,
-        }
-    }
-
     pub fn as_float(&self) -> Result<f64, SpecError> {
         if let SpecValue::Number(n) = self {
             Ok(*n)
@@ -84,36 +53,6 @@ impl SpecValue {
         match self {
             SpecValue::Ident(s) | SpecValue::String(s) => Some(s.as_str()),
             _ => None,
-        }
-    }
-
-    pub fn as_flag(&self) -> Result<bool, SpecError> {
-        if let SpecValue::Flag(value) = self {
-            Ok(*value)
-        } else {
-            Err(SpecError::new("expected a flag value"))
-        }
-    }
-
-    pub fn as_usize_list(&self) -> Result<Vec<usize>, SpecError> {
-        if let SpecValue::List(items) = self {
-            items
-                .iter()
-                .map(|x| x.as_usize())
-                .collect::<Result<Vec<_>, _>>()
-        } else {
-            Err(SpecError::new("Expected a list value"))
-        }
-    }
-
-    pub fn as_float_list(&self) -> Result<Vec<f64>, SpecError> {
-        if let SpecValue::List(items) = self {
-            items
-                .iter()
-                .map(|x| x.as_float())
-                .collect::<Result<Vec<_>, _>>()
-        } else {
-            Err(SpecError::new("Expected a list value"))
         }
     }
 }
